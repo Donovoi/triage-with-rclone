@@ -1,0 +1,19 @@
+# Cargo configuration for rclone-triage
+# Ensures single standalone binary with no external dependencies on Windows
+
+# Windows MSVC target - static CRT linking
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+# Windows GNU target - for cross-compilation from Linux
+[target.x86_64-pc-windows-gnu]
+rustflags = ["-C", "target-feature=+crt-static", "-C", "link-arg=-static"]
+linker = "x86_64-w64-mingw32-gcc"
+
+# Note: Linux builds use default dynamic linking for development
+# The static linking is specifically for Windows deployment
+
+# Default target when building on Windows
+# Uncomment below if primarily building on Windows:
+# [build]
+# target = "x86_64-pc-windows-msvc"

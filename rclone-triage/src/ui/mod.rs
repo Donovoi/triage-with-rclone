@@ -1,0 +1,564 @@
+//! TUI application state machine
+//!
+//! Defines the core application state and transitions used by the UI.
+
+use crate::case::directory::CaseDirectories;
+use crate::case::Case;
+use crate::forensics::changes::ChangeTracker;
+use crate::forensics::logger::ForensicLogger;
+use crate::forensics::state::SystemStateSnapshot;
+use crate::providers::CloudProvider;
+use crate::ui::widgets::SessionInputForm;
+use anyhow::{bail, Result};
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+
+pub mod layout;
+pub mod render;
+pub mod runner;
+pub mod screens;
+pub mod widgets;
+
+/// Application states for the TUI flow
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AppState {
+    CaseSetup,
+    ProviderSelect,
+    Authenticating,
+    FileList,
+    Downloading,
+    Complete,
+}
+
+impl AppState {
+    /// Get the next logical state in the flow
+    #[allow(dead_code)]
+    pub fn next(self) -> Self {
+        match self {
+            AppState::CaseSetup => AppState::ProviderSelect,
+            AppState::ProviderSelect => AppState::Authenticating,
+            AppState::Authenticating => AppState::FileList,
+            AppState::FileList => AppState::Downloading,
+            AppState::Downloading => AppState::Complete,
+            AppState::Complete => AppState::Complete,
+        }
+    }
+
+    /// Get the previous logical state in the flow
+    #[allow(dead_code)]
+    pub fn previous(self) -> Self {
+        match self {
+            AppState::CaseSetup => AppState::CaseSetup,
+            AppState::ProviderSelect => AppState::CaseSetup,
+            AppState::Authenticating => AppState::ProviderSelect,
+            AppState::FileList => AppState::Authenticating,
+            AppState::Downloading => AppState::FileList,
+            AppState::Complete => AppState::Downloading,
+        }
+    }
+}
+
+/// Core application state container
+#[allow(dead_code)]
+pub struct App {
+    /// Current application state
+    pub state: AppState,
+    /// Session input form state
+    pub session_form: SessionInputForm,
+    /// Case metadata
+    pub case: Option<Case>,
+    /// Case directory structure
+    pub directories: Option<CaseDirectories>,
+    /// Forensic logger (hash-chained)
+    pub logger: Option<Arc<ForensicLogger>>,
+    /// Initial system state snapshot (captured at start)
+    pub initial_state: Option<SystemStateSnapshot>,
+    /// Change tracker for documenting modifications
+    pub change_tracker: Arc<Mutex<ChangeTracker>>,
+    /// Provider list for selection
+    pub providers: Vec<CloudProvider>,
+    /// Selected provider index
+    pub provider_selected: usize,
+    /// Chosen provider (persisted for auth)
+    pub chosen_provider: Option<CloudProvider>,
+    /// Auth status message
+    pub auth_status: String,
+    /// File listing entries (paths only, for display)
+    pub file_entries: Vec<String>,
+    /// Full file entries with hash info (for download verification)
+    pub file_entries_full: Vec<crate::files::FileEntry>,
+    /// Currently highlighted file index
+    pub file_selected: usize,
+    /// Files marked for download (paths)
+    pub files_to_download: Vec<String>,
+    /// Download status message
+    pub download_status: String,
+    /// Download progress (current/total)
+    pub download_progress: (usize, usize),
+    /// Final report lines
+    pub report_lines: Vec<String>,
+    /// SSO status for currently selected provider
+    pub sso_status: Option<crate::providers::auth::SsoStatus>,
+}
+
+impl App {
+    /// Create a new app with the initial state
+    #[allow(dead_code)]
+    pub fn new() -> Self {
+        // Capture initial system state before any operations
+        let initial_state = SystemStateSnapshot::capture("Initial state before session").ok();
+
+        Self {
+            state: AppState::CaseSetup,
+            session_form: SessionInputForm::new(),
+            case: None,
+            directories: None,
+            logger: None,
+            initial_state,
+            change_tracker: Arc::new(Mutex::new(ChangeTracker::new())),
+            providers: CloudProvider::all().to_vec(),
+            provider_selected: 0,
+            chosen_provider: None,
+            auth_status: String::new(),
+            file_entries: Vec::new(),
+            file_entries_full: Vec::new(),
+            file_selected: 0,
+            files_to_download: Vec::new(),
+            download_status: String::new(),
+            download_progress: (0, 0),
+            report_lines: Vec::new(),
+            sso_status: None,
+        }
+    }
+
+    /// Initialize case and directories from session name
+    #[allow(dead_code)]
+    pub fn init_case(&mut self, output_dir: PathBuf) -> Result<()> {
+        let session_name = &self.session_form.session_name;
+        let case = Case::new(session_name.clone(), output_dir)?;
+        let directories = crate::case::directory::create_case_directories(&case)?;
+
+        // Track created directories
+        {
+            let mut tracker = self.change_tracker.lock().unwrap();
+            tracker.track_file_created(&directories.base, "Created case base directory");
+            tracker.track_file_created(&directories.logs, "Created logs directory");
+            tracker.track_file_created(&directories.downloads, "Created downloads directory");
+            tracker.track_file_created(&directories.listings, "Created listings directory");
+            tracker.track_file_created(&directories.config, "Created config directory");
+        }
+
+        // Create forensic logger in logs directory
+        let log_path = directories.logs.join("rclone-triage.log");
+        let logger = ForensicLogger::new(&log_path)?;
+        logger.info(format!("Session started: {}", case.session_id()))?;
+
+        // Track log file creation
+        self.track_file(&log_path, "Created forensic log file");
+
+        self.case = Some(case);
+        self.directories = Some(directories);
+        self.logger = Some(Arc::new(logger));
+        Ok(())
+    }
+
+    /// Track a file creation in the change tracker
+    #[allow(dead_code)]
+    pub fn track_file(&self, path: impl AsRef<std::path::Path>, description: impl Into<String>) {
+        if let Ok(mut tracker) = self.change_tracker.lock() {
+            tracker.track_file_created(path, description);
+        }
+    }
+
+    /// Track an environment variable change
+    #[allow(dead_code)]
+    pub fn track_env_var(&self, name: impl Into<String>, description: impl Into<String>) {
+        if let Ok(mut tracker) = self.change_tracker.lock() {
+            tracker.track_env_set(name, description);
+        }
+    }
+
+    /// Capture final state and return the diff from initial state
+    #[allow(dead_code)]
+    pub fn capture_final_state(&self) -> Option<crate::forensics::state::StateDiff> {
+        let final_state = SystemStateSnapshot::capture("Final state after session").ok()?;
+        self.initial_state
+            .as_ref()
+            .map(|initial| initial.diff(&final_state))
+    }
+
+    /// Get the change tracker report
+    #[allow(dead_code)]
+    pub fn change_report(&self) -> String {
+        self.change_tracker
+            .lock()
+            .map(|tracker| tracker.generate_report())
+            .unwrap_or_else(|_| "Failed to generate change report".to_string())
+    }
+
+    /// Log an info message if logger is available
+    #[allow(dead_code)]
+    pub fn log_info(&self, message: impl AsRef<str>) {
+        if let Some(ref logger) = self.logger {
+            let _ = logger.info(message);
+        }
+    }
+
+    /// Log an error message if logger is available
+    #[allow(dead_code)]
+    pub fn log_error(&self, message: impl AsRef<str>) {
+        if let Some(ref logger) = self.logger {
+            let _ = logger.error(message);
+        }
+    }
+
+    /// Get downloads directory path
+    #[allow(dead_code)]
+    pub fn downloads_dir(&self) -> Option<PathBuf> {
+        self.directories.as_ref().map(|d| d.downloads.clone())
+    }
+
+    /// Get config directory path
+    #[allow(dead_code)]
+    pub fn config_dir(&self) -> Option<PathBuf> {
+        self.directories.as_ref().map(|d| d.config.clone())
+    }
+
+    /// Move to the next state in the flow
+    #[allow(dead_code)]
+    pub fn advance(&mut self) {
+        self.state = self.state.next();
+    }
+
+    /// Move to the previous state in the flow
+    #[allow(dead_code)]
+    pub fn back(&mut self) {
+        self.state = self.state.previous();
+    }
+
+    /// Handle character input in the current state
+    #[allow(dead_code)]
+    pub fn input_char(&mut self, ch: char) {
+        if self.state != AppState::CaseSetup {
+            return;
+        }
+        // Allow any printable character for session name
+        if ch.is_ascii_graphic() || ch == ' ' {
+            self.session_form.session_name.push(ch);
+        }
+    }
+
+    /// Handle backspace in the current state
+    #[allow(dead_code)]
+    pub fn input_backspace(&mut self) {
+        if self.state != AppState::CaseSetup {
+            return;
+        }
+        self.session_form.session_name.pop();
+    }
+
+    /// Move provider selection up
+    #[allow(dead_code)]
+    pub fn provider_up(&mut self) {
+        if self.state != AppState::ProviderSelect || self.providers.is_empty() {
+            return;
+        }
+        if self.provider_selected == 0 {
+            self.provider_selected = self.providers.len() - 1;
+        } else {
+            self.provider_selected -= 1;
+        }
+    }
+
+    /// Move provider selection down
+    #[allow(dead_code)]
+    pub fn provider_down(&mut self) {
+        if self.state != AppState::ProviderSelect || self.providers.is_empty() {
+            return;
+        }
+        self.provider_selected = (self.provider_selected + 1) % self.providers.len();
+    }
+
+    /// Get the currently selected provider
+    #[allow(dead_code)]
+    pub fn selected_provider(&self) -> Option<CloudProvider> {
+        self.providers.get(self.provider_selected).copied()
+    }
+
+    /// Persist the current provider selection for authentication
+    #[allow(dead_code)]
+    pub fn confirm_provider(&mut self) {
+        self.chosen_provider = self.selected_provider();
+    }
+
+    /// Update SSO status for the selected provider
+    #[allow(dead_code)]
+    pub fn update_sso_status(&mut self) {
+        if let Some(provider) = self.selected_provider() {
+            self.sso_status = Some(crate::providers::auth::detect_sso_sessions(provider));
+        }
+    }
+
+    /// Get SSO summary for display
+    #[allow(dead_code)]
+    pub fn sso_summary(&self) -> String {
+        if let Some(provider) = self.selected_provider() {
+            crate::providers::auth::get_sso_summary(provider)
+        } else {
+            "No provider selected".to_string()
+        }
+    }
+
+    /// Check if SSO authentication is available for the selected provider
+    #[allow(dead_code)]
+    pub fn has_sso_available(&self) -> bool {
+        self.sso_status
+            .as_ref()
+            .map(|s| s.has_sessions)
+            .unwrap_or(false)
+    }
+
+    /// Move file selection up
+    #[allow(dead_code)]
+    pub fn file_up(&mut self) {
+        if self.state != AppState::FileList || self.file_entries.is_empty() {
+            return;
+        }
+        if self.file_selected == 0 {
+            self.file_selected = self.file_entries.len() - 1;
+        } else {
+            self.file_selected -= 1;
+        }
+    }
+
+    /// Move file selection down
+    #[allow(dead_code)]
+    pub fn file_down(&mut self) {
+        if self.state != AppState::FileList || self.file_entries.is_empty() {
+            return;
+        }
+        self.file_selected = (self.file_selected + 1) % self.file_entries.len();
+    }
+
+    /// Toggle whether the current file is selected for download
+    #[allow(dead_code)]
+    pub fn toggle_file_download(&mut self) {
+        if self.state != AppState::FileList || self.file_entries.is_empty() {
+            return;
+        }
+        if let Some(path) = self.file_entries.get(self.file_selected).cloned() {
+            if self.files_to_download.contains(&path) {
+                self.files_to_download.retain(|p| p != &path);
+            } else {
+                self.files_to_download.push(path);
+            }
+        }
+    }
+
+    /// Look up full FileEntry by path (to get hash info for verification)
+    #[allow(dead_code)]
+    pub fn get_file_entry(&self, path: &str) -> Option<&crate::files::FileEntry> {
+        self.file_entries_full.iter().find(|e| e.path == path)
+    }
+
+    /// Select all files for download
+    #[allow(dead_code)]
+    pub fn select_all_files(&mut self) {
+        if self.state != AppState::FileList {
+            return;
+        }
+        self.files_to_download = self.file_entries.clone();
+    }
+
+    /// Attempt an explicit transition with validation
+    #[allow(dead_code)]
+    pub fn transition(&mut self, next: AppState) -> Result<()> {
+        if Self::is_valid_transition(self.state, next) {
+            self.state = next;
+            Ok(())
+        } else {
+            bail!("Invalid transition: {:?} -> {:?}", self.state, next);
+        }
+    }
+
+    /// Check if a transition is valid
+    #[allow(dead_code)]
+    pub fn is_valid_transition(from: AppState, to: AppState) -> bool {
+        match (from, to) {
+            (AppState::CaseSetup, AppState::ProviderSelect) => true,
+            (AppState::ProviderSelect, AppState::Authenticating) => true,
+            (AppState::Authenticating, AppState::FileList) => true,
+            (AppState::FileList, AppState::Downloading) => true,
+            (AppState::Downloading, AppState::Complete) => true,
+            (state, same) if state == same => true,
+            _ => false,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_state_sequence() {
+        let mut state = AppState::CaseSetup;
+        state = state.next();
+        assert_eq!(state, AppState::ProviderSelect);
+        state = state.next();
+        assert_eq!(state, AppState::Authenticating);
+        state = state.next();
+        assert_eq!(state, AppState::FileList);
+        state = state.next();
+        assert_eq!(state, AppState::Downloading);
+        state = state.next();
+        assert_eq!(state, AppState::Complete);
+        state = state.next();
+        assert_eq!(state, AppState::Complete);
+    }
+
+    #[test]
+    fn test_app_transitions() {
+        let mut app = App::new();
+        assert_eq!(app.state, AppState::CaseSetup);
+
+        app.advance();
+        assert_eq!(app.state, AppState::ProviderSelect);
+
+        app.back();
+        assert_eq!(app.state, AppState::CaseSetup);
+    }
+
+    #[test]
+    fn test_session_input_handling() {
+        let mut app = App::new();
+        app.input_char('m');
+        app.input_char('y');
+        app.input_char('-');
+        app.input_char('s');
+        assert_eq!(app.session_form.session_name, "my-s");
+
+        app.input_backspace();
+        assert_eq!(app.session_form.session_name, "my-");
+    }
+
+    #[test]
+    fn test_provider_selection() {
+        let mut app = App::new();
+        app.state = AppState::ProviderSelect;
+        let original = app.provider_selected;
+        app.provider_down();
+        assert_ne!(app.provider_selected, original);
+        app.provider_up();
+        assert_eq!(app.provider_selected, original);
+    }
+
+    #[test]
+    fn test_confirm_provider() {
+        let mut app = App::new();
+        app.state = AppState::ProviderSelect;
+        app.confirm_provider();
+        assert!(app.chosen_provider.is_some());
+    }
+
+    #[test]
+    fn test_file_selection() {
+        let mut app = App::new();
+        app.state = AppState::FileList;
+        app.file_entries = vec!["file1.txt".to_string(), "file2.txt".to_string()];
+
+        assert_eq!(app.file_selected, 0);
+        app.file_down();
+        assert_eq!(app.file_selected, 1);
+        app.file_up();
+        assert_eq!(app.file_selected, 0);
+
+        // Toggle download selection
+        app.toggle_file_download();
+        assert_eq!(app.files_to_download.len(), 1);
+        assert!(app.files_to_download.contains(&"file1.txt".to_string()));
+
+        // Toggle again to deselect
+        app.toggle_file_download();
+        assert!(app.files_to_download.is_empty());
+    }
+
+    #[test]
+    fn test_valid_transition() {
+        assert!(App::is_valid_transition(
+            AppState::CaseSetup,
+            AppState::ProviderSelect
+        ));
+        assert!(!App::is_valid_transition(
+            AppState::CaseSetup,
+            AppState::FileList
+        ));
+    }
+
+    #[test]
+    fn test_transition_validation() {
+        let mut app = App::new();
+        app.transition(AppState::ProviderSelect).unwrap();
+        let result = app.transition(AppState::FileList);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_init_case_creates_directories() {
+        use tempfile::tempdir;
+
+        let mut app = App::new();
+        app.session_form.session_name = "test-session".to_string();
+
+        let temp_dir = tempdir().unwrap();
+        app.init_case(temp_dir.path().to_path_buf()).unwrap();
+
+        // Verify case was created
+        assert!(app.case.is_some());
+        assert!(app.directories.is_some());
+        assert!(app.logger.is_some());
+
+        // Verify directories exist
+        let dirs = app.directories.as_ref().unwrap();
+        assert!(dirs.base.exists());
+        assert!(dirs.downloads.exists());
+        assert!(dirs.config.exists());
+        assert!(dirs.logs.exists());
+        assert!(dirs.listings.exists());
+
+        // Verify log file was created
+        let log_path = dirs.logs.join("rclone-triage.log");
+        assert!(log_path.exists());
+
+        // Verify helper methods
+        assert!(app.downloads_dir().is_some());
+        assert!(app.config_dir().is_some());
+    }
+
+    #[test]
+    fn test_logging_methods() {
+        use tempfile::tempdir;
+
+        let mut app = App::new();
+        app.session_form.session_name = "log-test".to_string();
+
+        let temp_dir = tempdir().unwrap();
+        app.init_case(temp_dir.path().to_path_buf()).unwrap();
+
+        // Test logging methods don't panic
+        app.log_info("Test info message");
+        app.log_error("Test error message");
+
+        // Verify log file has content
+        let log_path = app
+            .directories
+            .as_ref()
+            .unwrap()
+            .logs
+            .join("rclone-triage.log");
+        let log_content = std::fs::read_to_string(&log_path).unwrap();
+        assert!(log_content.contains("Test info message"));
+        assert!(log_content.contains("Test error message"));
+    }
+}
