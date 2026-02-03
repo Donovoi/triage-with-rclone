@@ -10,6 +10,7 @@ pub mod forensics;
 pub mod providers;
 pub mod rclone;
 pub mod ui;
+pub mod utils;
 
 // Common re-exports for convenience in integration tests or downstream tools.
 pub use case::Case;
@@ -17,3 +18,4 @@ pub use cleanup::Cleanup;
 pub use files::*;
 pub use forensics::*;
 pub use ui::*;
+pub use utils::*;
