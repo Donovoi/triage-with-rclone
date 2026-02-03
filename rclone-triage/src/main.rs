@@ -21,21 +21,24 @@ use crate::ui::App as TuiApp;
 use anyhow::Result;
 use clap::Parser;
 use cleanup::Cleanup;
+use std::sync::{Arc, Mutex};
 
 fn main() -> Result<()> {
     println!("rclone-triage v{}", env!("CARGO_PKG_VERSION"));
 
     let args = Cli::parse();
-    let mut app_guard = AppGuard::new();
+    let app_guard = AppGuard::new();
 
     // Capture initial system state before any operations
     let initial_state = SystemStateSnapshot::capture("Initial state before session").ok();
 
     // Ctrl+C handler for graceful shutdown
     {
-        let mut cleanup = app_guard.cleanup.clone_for_signal();
+        let cleanup = app_guard.cleanup.clone();
         let _ = ctrlc::set_handler(move || {
-            let _ = cleanup.execute();
+            if let Ok(mut cleanup) = cleanup.lock() {
+                let _ = cleanup.execute();
+            }
             std::process::exit(130);
         });
     }
@@ -45,7 +48,10 @@ fn main() -> Result<()> {
 
     // Extract embedded rclone
     let binary = embedded::ExtractedBinary::extract()?;
-    app_guard.cleanup.track_file(binary.path());
+    app_guard.track_file(binary.path());
+    if let Some(dir) = binary.temp_dir() {
+        app_guard.track_dir(dir);
+    }
 
     // Initialize session
     let case = Case::new(&args.name, args.output_dir.clone())?;
@@ -54,6 +60,7 @@ fn main() -> Result<()> {
     // Optional TUI loop
     if args.tui {
         let mut app = TuiApp::new();
+        app.set_cleanup(app_guard.cleanup.clone());
         crate::ui::runner::run_loop(&mut app)?;
         return Ok(());
     }
@@ -62,6 +69,7 @@ fn main() -> Result<()> {
     if let Some(provider) = args.provider {
         println!("Authenticating {}...", provider);
         let config = RcloneConfig::for_case(&case.output_dir)?;
+        app_guard.track_env_value("RCLONE_CONFIG", config.original_env());
         let runner = RcloneRunner::new(binary.path()).with_config(config.path());
 
         let remote_name = provider.short_name();
@@ -87,20 +95,40 @@ fn main() -> Result<()> {
 
 /// Ensures cleanup is run on drop
 struct AppGuard {
-    cleanup: Cleanup,
+    cleanup: Arc<Mutex<Cleanup>>,
 }
 
 impl AppGuard {
     fn new() -> Self {
         Self {
-            cleanup: Cleanup::new(),
+            cleanup: Arc::new(Mutex::new(Cleanup::new())),
+        }
+    }
+
+    fn track_file(&self, path: impl AsRef<std::path::Path>) {
+        if let Ok(mut cleanup) = self.cleanup.lock() {
+            cleanup.track_file(path);
+        }
+    }
+
+    fn track_dir(&self, path: impl AsRef<std::path::Path>) {
+        if let Ok(mut cleanup) = self.cleanup.lock() {
+            cleanup.track_dir(path);
+        }
+    }
+
+    fn track_env_value(&self, name: impl Into<String>, old_value: Option<String>) {
+        if let Ok(mut cleanup) = self.cleanup.lock() {
+            cleanup.track_env_value(name, old_value);
         }
     }
 }
 
 impl Drop for AppGuard {
     fn drop(&mut self) {
-        let _ = self.cleanup.execute();
+        if let Ok(mut cleanup) = self.cleanup.lock() {
+            let _ = cleanup.execute();
+        }
     }
 }
 

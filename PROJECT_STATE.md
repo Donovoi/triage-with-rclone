@@ -7,7 +7,7 @@
 - `/home/toor/triage-with-rclone/rclone-triage/` - Rust project
 - Implementation plan: `/home/toor/triage-with-rclone/IMPLEMENTATION_PLAN.md`
 
-### Status: ALL 30 STEPS COMPLETE ✅
+### Status: Core workflow complete; Enhanced Cleanup wiring in progress ⏳
 
 All implementation steps are complete and wired together:
 
@@ -18,7 +18,7 @@ All implementation steps are complete and wired together:
 5. ✅ Phase 5 (Steps 15-18): TUI app state machine, widgets, layout, screens
 6. ✅ Phase 6 (Steps 19-21): File listing, download queue, CSV export
 7. ✅ Phase 7 (Steps 22-24): Case management, directory structure, forensic report
-8. ✅ Phase 8 (Steps 25-27): Cleanup implementation, Drop impl, signal handling
+8. ⏳ Phase 8 (Steps 25-27): Enhanced cleanup wiring (shared cleanup + report integration)
 9. ✅ Phase 9 (Steps 28-29): Main entry point, CLI arguments
 10. ✅ Phase 10 (Step 30): Documentation updated
 
@@ -29,6 +29,7 @@ All implementation steps are complete and wired together:
   - 18 integration tests
 - Run with: `cargo test --release -- --test-threads=1`
 - Windows cross-compilation verified (60MB PE32+ executable)
+ - Recent targeted checks (2026-02-03): `cargo test cleanup`, `cargo test case::report::tests::test_generate_report --release`
 
 ### TUI Workflow
 

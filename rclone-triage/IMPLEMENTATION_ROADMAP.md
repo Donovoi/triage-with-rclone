@@ -297,25 +297,27 @@ cargo test providers::credentials
 
 ---
 
-## Phase 8: Enhanced Cleanup (Priority: MEDIUM)
+## Phase 8: Enhanced Cleanup (Priority: MEDIUM) (In Progress)
 
 **Goal:** Ensure all temp files removed, document what can't be reverted.
 
-### Step 8.1: Wire Full Cleanup
+### Step 8.1: Wire Full Cleanup (In Progress)
 
 **Files:** `src/cleanup.rs`, `src/main.rs`
 
 **Tasks:**
 
-1. Track all temp files created
-2. Track env vars modified
-3. Execute cleanup on exit (normal or Ctrl+C)
-4. Document unrevertable changes in report
+1. ✅ Track all temp files created (embedded rclone binary + temp dir)
+2. ✅ Track env vars modified (RCLONE_CONFIG original value)
+3. ✅ Execute cleanup on exit (normal and Ctrl+C)
+4. ✅ Document unrevertable changes in report
 
 **Verification:**
 
 ```bash
 cargo test cleanup
+# Also ran:
+# cargo test case::report::tests::test_generate_report --release
 # Manual: run TUI, exit, verify no temp files remain
 ls /tmp/rclone*  # Should be empty
 ```
@@ -413,7 +415,7 @@ cargo test case::directory --release
 | 5. SSO/Silent Auth   | ✅ Complete | 128   | 57       |
 | 6. Download Flow     | ✅ Complete | 128   | 57       |
 | 7. Custom OAuth      | ✅ Complete | 128   | 57       |
-| 8. Cleanup           | Not Started | -     | -        |
+| 8. Cleanup           | In Progress | -     | -        |
 | 9. Testing           | Not Started | -     | -        |
 
 ---
