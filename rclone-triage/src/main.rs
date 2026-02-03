@@ -7,8 +7,13 @@ use rclone_triage::case::Case;
 use rclone_triage::cleanup::Cleanup;
 use rclone_triage::embedded;
 use rclone_triage::files::list_path;
-use rclone_triage::forensics::state::SystemStateSnapshot;
-use rclone_triage::providers::{auth::authenticate_with_rclone, CloudProvider};
+use rclone_triage::forensics::{
+    generate_password, get_forensic_access_point_status, render_wifi_qr,
+    open_onedrive_vault, start_forensic_access_point, stop_forensic_access_point,
+    SystemStateSnapshot,
+};
+use rclone_triage::providers::auth::{authenticate_with_mobile, authenticate_with_rclone};
+use rclone_triage::providers::CloudProvider;
 use rclone_triage::rclone::{start_web_gui, RcloneConfig, RcloneRunner};
 use rclone_triage::ui::App as TuiApp;
 use anyhow::Result;
@@ -70,6 +75,88 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    if args.forensic_ap_start {
+        let ssid = args
+            .forensic_ap_ssid
+            .clone()
+            .unwrap_or_else(|| "FORENSIC-AP".to_string());
+        let password = args
+            .forensic_ap_password
+            .clone()
+            .unwrap_or_else(generate_password);
+
+        let info = start_forensic_access_point(
+            &ssid,
+            &password,
+            args.forensic_ap_timeout_minutes,
+        )?;
+
+        println!("Forensic Access Point started:");
+        println!("  SSID: {}", info.ssid);
+        println!("  Password: {}", info.password);
+        println!("  IP: {}", info.ip_address);
+        println!("  DNS: {}", info.dns_servers.join(", "));
+        if let Some(adapter) = info.adapter_name {
+            println!("  Adapter: {}", adapter);
+        }
+        if !info.dns_configured {
+            if let Some(err) = info.dns_error {
+                println!("  DNS warning: {}", err);
+            }
+        }
+        if let Ok(qr) = render_wifi_qr(&ssid, &password) {
+            println!("\nScan to connect:\n{}", qr);
+        }
+        return Ok(());
+    }
+
+    if args.forensic_ap_stop {
+        stop_forensic_access_point(true)?;
+        println!("Forensic Access Point stopped.");
+        return Ok(());
+    }
+
+    if args.forensic_ap_status {
+        let status = get_forensic_access_point_status()?;
+        println!("Forensic Access Point status:");
+        println!("  Active: {}", status.active);
+        if let Some(ssid) = status.ssid {
+            println!("  SSID: {}", ssid);
+        }
+        println!("  Clients: {}", status.connected_clients);
+        if let Some(adapter) = status.adapter_name {
+            println!("  Adapter: {}", adapter);
+        }
+        if let Some(ip) = status.ip_address {
+            println!("  IP: {}", ip);
+        }
+        return Ok(());
+    }
+
+    if args.onedrive_vault {
+        let mount_point = args
+            .onedrive_vault_mount
+            .clone()
+            .unwrap_or_else(default_vault_mount);
+        let destination = args
+            .onedrive_vault_dest
+            .clone()
+            .unwrap_or_else(default_vault_destination);
+
+        let result =
+            open_onedrive_vault(&mount_point, &destination, !args.onedrive_vault_no_wait)?;
+
+        println!("OneDrive Vault processed:");
+        println!("  Mount: {:?}", result.mount_point);
+        println!("  Destination: {:?}", result.destination);
+        println!("  Files copied: {}", result.copied_files.len());
+        println!("  BitLocker disabled: {}", result.bitlocker_disabled);
+        for warning in result.warnings {
+            println!("  Warning: {}", warning);
+        }
+        return Ok(());
+    }
+
     // Optional TUI loop
     if args.tui {
         let mut app = TuiApp::new();
@@ -86,7 +173,11 @@ fn main() -> Result<()> {
         let runner = RcloneRunner::new(binary.path()).with_config(config.path());
 
         let remote_name = provider.short_name();
-        let _auth = authenticate_with_rclone(provider, &runner, &config, remote_name)?;
+        let _auth = if args.mobile_auth {
+            authenticate_with_mobile(provider, &config, remote_name, args.mobile_auth_port)?
+        } else {
+            authenticate_with_rclone(provider, &runner, &config, remote_name)?
+        };
 
         let listing = list_path(&runner, &format!("{}:", remote_name))?;
         println!("Listed {} entries", listing.len());
@@ -164,6 +255,14 @@ struct Cli {
     #[arg(long, default_value_t = false)]
     tui: bool,
 
+    /// Use mobile authentication (QR code + local callback)
+    #[arg(long, default_value_t = false)]
+    mobile_auth: bool,
+
+    /// Mobile auth callback port
+    #[arg(long, default_value_t = 53682)]
+    mobile_auth_port: u16,
+
     /// Start rclone Web GUI (rcd --rc-web-gui)
     #[arg(long, default_value_t = false)]
     web_gui: bool,
@@ -179,4 +278,63 @@ struct Cli {
     /// Web GUI password (optional)
     #[arg(long)]
     web_gui_pass: Option<String>,
+
+    /// Start the forensic WiFi Access Point (Windows only)
+    #[arg(long, default_value_t = false)]
+    forensic_ap_start: bool,
+
+    /// Stop the forensic WiFi Access Point (Windows only)
+    #[arg(long, default_value_t = false)]
+    forensic_ap_stop: bool,
+
+    /// Show forensic WiFi Access Point status (Windows only)
+    #[arg(long, default_value_t = false)]
+    forensic_ap_status: bool,
+
+    /// Forensic Access Point SSID
+    #[arg(long)]
+    forensic_ap_ssid: Option<String>,
+
+    /// Forensic Access Point password
+    #[arg(long)]
+    forensic_ap_password: Option<String>,
+
+    /// Forensic Access Point auto-shutdown timeout (minutes)
+    #[arg(long)]
+    forensic_ap_timeout_minutes: Option<u64>,
+
+    /// Open OneDrive Personal Vault and copy VHDX (Windows only)
+    #[arg(long, default_value_t = false)]
+    onedrive_vault: bool,
+
+    /// OneDrive vault mount point
+    #[arg(long)]
+    onedrive_vault_mount: Option<String>,
+
+    /// OneDrive vault destination path
+    #[arg(long)]
+    onedrive_vault_dest: Option<String>,
+
+    /// Skip waiting for user confirmation after Windows Hello
+    #[arg(long, default_value_t = false)]
+    onedrive_vault_no_wait: bool,
+}
+
+fn default_vault_mount() -> String {
+    if cfg!(windows) {
+        "C:\\OneDriveTemp\\".to_string()
+    } else {
+        "./OneDriveTemp".to_string()
+    }
+}
+
+fn default_vault_destination() -> String {
+    if cfg!(windows) {
+        if let Ok(profile) = std::env::var("USERPROFILE") {
+            return format!("{}\\Desktop\\OneDriveVault", profile);
+        }
+        "C:\\OneDriveVault".to_string()
+    } else {
+        "./OneDriveVault".to_string()
+    }
 }

@@ -6,9 +6,17 @@
 //! - Change tracking and documentation
 
 pub mod changes;
+pub mod access_point;
 pub mod logger;
+pub mod onedrive_vault;
 pub mod state;
 
+pub use access_point::{
+    get_forensic_access_point_status, generate_password, render_wifi_qr,
+    start_forensic_access_point, stop_forensic_access_point, ForensicAccessPointInfo,
+    ForensicAccessPointStatus,
+};
 pub use changes::ChangeTracker;
 pub use logger::ForensicLogger;
+pub use onedrive_vault::{open_onedrive_vault, OneDriveVaultResult};
 pub use state::SystemStateSnapshot;

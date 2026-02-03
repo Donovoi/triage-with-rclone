@@ -7,6 +7,7 @@ pub mod browser;
 pub mod config;
 pub mod credentials;
 pub mod discovery;
+pub mod mobile;
 pub mod session;
 
 use serde::{Deserialize, Serialize};

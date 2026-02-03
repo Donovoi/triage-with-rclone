@@ -54,14 +54,21 @@ impl OAuthFlow {
     /// # Returns
     /// The authorization code from the OAuth redirect
     pub fn run(&self, auth_url: &str) -> Result<OAuthResult> {
+        // Open browser
+        open::that(auth_url)
+            .with_context(|| format!("Failed to open browser with URL: {}", auth_url))?;
+
+        self.wait_for_redirect()
+    }
+
+    /// Wait for the OAuth redirect without opening a browser.
+    ///
+    /// Useful for mobile/QR flows where the user opens the URL on another device.
+    pub fn wait_for_redirect(&self) -> Result<OAuthResult> {
         // Start local server
         let bind_addr = format!("127.0.0.1:{}", self.port);
         let server = Server::http(&bind_addr)
             .map_err(|e| anyhow::anyhow!("Failed to start OAuth server on {}: {}", bind_addr, e))?;
-
-        // Open browser
-        open::that(auth_url)
-            .with_context(|| format!("Failed to open browser with URL: {}", auth_url))?;
 
         // Wait for redirect with timeout
         let request = server.recv_timeout(self.timeout)?.ok_or_else(|| {
