@@ -7,7 +7,7 @@ Each phase has verification steps to ensure quality.
 
 ## Current State (2026-02-02)
 
-- ✅ 118 tests passing (100 unit + 18 integration)
+- ✅ 128 tests passing (110 unit + 18 integration)
 - ✅ Windows cross-compilation working (60MB exe)
 - ✅ Basic TUI flow: auth → list → download
 - ✅ Case management wired (directories, state tracking)
@@ -16,6 +16,7 @@ Each phase has verification steps to ensure quality.
 - ✅ Change tracker wired to TUI
 - ✅ Report generation with forensic data
 - ✅ SSO/Silent authentication (reuse browser sessions)
+- ✅ Download flow with hash verification
 
 ---
 
@@ -224,7 +225,28 @@ cargo test providers::auth
 
 ```bash
 cargo test --release -- --test-threads=1
-# All 118 tests pass
+# All 128 tests pass
+```
+
+---
+
+### Step 5.4: Browser Selection UI ✅ COMPLETE
+
+**Goal:** Let users choose a browser for OAuth auth flows.
+
+**Files:** `src/ui/mod.rs`, `src/ui/runner.rs`, `src/ui/render.rs`, `src/ui/screens/browser_select.rs`, `src/ui/widgets/browser_list.rs`, `src/providers/auth.rs`
+
+**Tasks:**
+
+1. Add `BrowserSelect` state between ProviderSelect and Authenticating
+2. Detect installed browsers and render selection list
+3. Store chosen browser (or default) in App state
+4. Use `authenticate_with_browser_choice()` when a browser is selected
+
+**Verification:**
+
+```bash
+cargo test ui::tests::test_browser_selection
 ```
 
 ---
@@ -252,24 +274,24 @@ cargo test files::download
 
 ---
 
-## Phase 7: Custom OAuth (Priority: LOW)
+## Phase 7: Custom OAuth (Priority: LOW) ✅ COMPLETE
 
 **Goal:** Support custom OAuth credentials to avoid rate limits.
 
 ### Step 7.1: Wire ProviderConfig OAuth
 
-**Files:** `src/providers/config.rs`, `src/providers/auth.rs`
+**Files:** `src/providers/config.rs`, `src/providers/auth.rs`, `src/providers/credentials.rs`
 
 **Tasks:**
 
-1. Load custom client_id/secret from config
+1. Load custom client_id/secret from config (`~/.config/rclone-triage/oauth.json` or `RCLONE_TRIAGE_OAUTH_CONFIG`)
 2. Pass to rclone config create command
 3. Support config file for credentials
 
 **Verification:**
 
 ```bash
-cargo test providers::config
+cargo test providers::credentials
 # Manual: test with custom OAuth credentials
 ```
 
@@ -384,13 +406,13 @@ cargo test case::directory --release
 
 | Phase                | Status      | Tests | Warnings |
 | -------------------- | ----------- | ----- | -------- |
-| 1. Case Management   | ✅ Complete | 118   | 10       |
-| 2. Forensic Logging  | ✅ Complete | 118   | 10       |
-| 3. Report Generation | ✅ Complete | 118   | 10       |
-| 4. CSV Export        | ✅ Complete | 118   | 10       |
-| 5. SSO/Silent Auth   | ✅ Complete | 118   | 10       |
-| 6. Download Flow     | Not Started | -     | -        |
-| 7. Custom OAuth      | Not Started | -     | -        |
+| 1. Case Management   | ✅ Complete | 128   | 57       |
+| 2. Forensic Logging  | ✅ Complete | 128   | 57       |
+| 3. Report Generation | ✅ Complete | 128   | 57       |
+| 4. CSV Export        | ✅ Complete | 128   | 57       |
+| 5. SSO/Silent Auth   | ✅ Complete | 128   | 57       |
+| 6. Download Flow     | ✅ Complete | 128   | 57       |
+| 7. Custom OAuth      | ✅ Complete | 128   | 57       |
 | 8. Cleanup           | Not Started | -     | -        |
 | 9. Testing           | Not Started | -     | -        |
 

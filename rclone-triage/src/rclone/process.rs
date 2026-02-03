@@ -82,13 +82,70 @@ impl RcloneRunner {
         self.run_with_timeout(args, self.default_timeout)
     }
 
+    /// Run a rclone command with additional environment variables
+    pub fn run_with_env(&self, args: &[&str], envs: &[(&str, &str)]) -> Result<RcloneOutput> {
+        self.run_with_timeout_env(args, self.default_timeout, envs)
+    }
+
     /// Run a rclone command with a specific timeout
     pub fn run_with_timeout(
         &self,
         args: &[&str],
         timeout: Option<Duration>,
     ) -> Result<RcloneOutput> {
-        let mut cmd = self.build_command(args);
+        let mut cmd = self.build_command_with_env(args, None);
+
+        // Spawn the process
+        let mut child = cmd
+            .spawn()
+            .with_context(|| format!("Failed to spawn rclone: {:?}", self.exe_path))?;
+
+        // Set up output capture
+        let stdout = child.stdout.take().expect("stdout piped");
+        let stderr = child.stderr.take().expect("stderr piped");
+
+        let (stdout_tx, stdout_rx) = mpsc::channel();
+        let (stderr_tx, stderr_rx) = mpsc::channel();
+
+        // Spawn threads to capture output
+        let stdout_thread = thread::spawn(move || {
+            capture_output(stdout, stdout_tx);
+        });
+
+        let stderr_thread = thread::spawn(move || {
+            capture_output(stderr, stderr_tx);
+        });
+
+        // Wait for process with optional timeout
+        let (status, timed_out) = match timeout {
+            Some(duration) => wait_with_timeout(&mut child, duration)?,
+            None => (child.wait()?, false),
+        };
+
+        // Wait for output threads
+        stdout_thread.join().expect("stdout thread panicked");
+        stderr_thread.join().expect("stderr thread panicked");
+
+        // Collect output
+        let stdout: Vec<String> = stdout_rx.try_iter().collect();
+        let stderr: Vec<String> = stderr_rx.try_iter().collect();
+
+        Ok(RcloneOutput {
+            stdout,
+            stderr,
+            status: status.code().unwrap_or(-1),
+            timed_out,
+        })
+    }
+
+    /// Run a rclone command with a specific timeout and env overrides
+    pub fn run_with_timeout_env(
+        &self,
+        args: &[&str],
+        timeout: Option<Duration>,
+        envs: &[(&str, &str)],
+    ) -> Result<RcloneOutput> {
+        let mut cmd = self.build_command_with_env(args, Some(envs));
 
         // Spawn the process
         let mut child = cmd
@@ -138,7 +195,7 @@ impl RcloneRunner {
     where
         F: FnMut(&str),
     {
-        let mut cmd = self.build_command(args);
+        let mut cmd = self.build_command_with_env(args, None);
 
         let mut child = cmd
             .spawn()
@@ -154,7 +211,7 @@ impl RcloneRunner {
         });
 
         // Stream stdout
-        let mut stdout_lines = Vec::new();
+        let mut stdout_lines: Vec<String> = Vec::new();
         let reader = BufReader::new(stdout);
         for line in reader.lines() {
             if let Ok(line) = line {
@@ -200,7 +257,7 @@ impl RcloneRunner {
     }
 
     /// Build the command with appropriate flags
-    fn build_command(&self, args: &[&str]) -> Command {
+    fn build_command_with_env(&self, args: &[&str], envs: Option<&[(&str, &str)]>) -> Command {
         let mut cmd = Command::new(&self.exe_path);
 
         // Add config flag if set
@@ -210,6 +267,12 @@ impl RcloneRunner {
 
         // Add user args
         cmd.args(args);
+
+        if let Some(envs) = envs {
+            for (key, value) in envs {
+                cmd.env(key, value);
+            }
+        }
 
         // Configure stdio
         cmd.stdout(Stdio::piped())
