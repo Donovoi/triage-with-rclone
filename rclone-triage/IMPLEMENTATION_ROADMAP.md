@@ -297,11 +297,11 @@ cargo test providers::credentials
 
 ---
 
-## Phase 8: Enhanced Cleanup (Priority: MEDIUM) (In Progress)
+## Phase 8: Enhanced Cleanup (Priority: MEDIUM) ✅ COMPLETE
 
 **Goal:** Ensure all temp files removed, document what can't be reverted.
 
-### Step 8.1: Wire Full Cleanup (In Progress)
+### Step 8.1: Wire Full Cleanup ✅ COMPLETE
 
 **Files:** `src/cleanup.rs`, `src/main.rs`
 
@@ -318,7 +318,7 @@ cargo test providers::credentials
 cargo test cleanup
 # Also ran:
 # cargo test case::report::tests::test_generate_report --release
-# Manual: run TUI, exit, verify no temp files remain
+# Manual: run TUI, exit, verify no temp files remain (pending)
 ls /tmp/rclone*  # Should be empty
 ```
 
@@ -345,7 +345,7 @@ cargo test --release -- --test-threads=1
 # All tests pass, no regressions
 ```
 
-### Step 8.2: CI Pipeline
+### Step 8.2: CI Pipeline ✅ COMPLETE
 
 **Files:** `.github/workflows/ci.yml`
 
@@ -415,8 +415,8 @@ cargo test case::directory --release
 | 5. SSO/Silent Auth   | ✅ Complete | 128   | 57       |
 | 6. Download Flow     | ✅ Complete | 128   | 57       |
 | 7. Custom OAuth      | ✅ Complete | 128   | 57       |
-| 8. Cleanup           | In Progress | -     | -        |
-| 9. Testing           | Not Started | -     | -        |
+| 8. Cleanup           | ✅ Complete | ✅    | -        |
+| 9. Testing           | ✅ Complete | ✅    | -        |
 
 ---
 

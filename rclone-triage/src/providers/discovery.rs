@@ -1,13 +1,14 @@
 //! Provider discovery from rclone
 //!
 //! Uses `rclone config providers --json` output to determine which backends
-//! are available, then filters to supported CloudProvider variants.
+//! are available, returning both known and unknown providers.
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::collections::HashSet;
+use std::str::FromStr;
 
-use crate::providers::CloudProvider;
+use crate::providers::{CloudProvider, ProviderEntry};
 use crate::rclone::RcloneRunner;
 
 #[derive(Debug, Deserialize)]
@@ -18,33 +19,62 @@ struct RcloneProvider {
     prefix: Option<String>,
 }
 
-/// Parse rclone providers JSON and return supported providers.
-pub fn supported_providers_from_rclone_json(json: &str) -> Result<Vec<CloudProvider>> {
+/// Parse rclone providers JSON and return provider entries.
+pub fn providers_from_rclone_json(json: &str) -> Result<Vec<ProviderEntry>> {
     let providers: Vec<RcloneProvider> =
         serde_json::from_str(json).context("Failed to parse rclone providers JSON")?;
 
-    let prefixes: HashSet<String> = providers
-        .into_iter()
-        .filter_map(|p| p.prefix.or(p.name))
-        .map(|s| s.trim().to_lowercase())
-        .collect();
+    let mut entries = Vec::new();
+    let mut seen = HashSet::new();
 
-    let supported = CloudProvider::all()
-        .iter()
-        .copied()
-        .filter(|p| prefixes.contains(p.rclone_type()))
-        .collect::<Vec<_>>();
+    for provider in providers {
+        let prefix = provider
+            .prefix
+            .map(|s| s.trim().to_lowercase())
+            .filter(|s| !s.is_empty());
+        let name = provider
+            .name
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
 
-    Ok(supported)
+        let id = match prefix {
+            Some(p) => p,
+            None => name
+                .as_ref()
+                .map(|n| n.to_lowercase())
+                .unwrap_or_else(|| "unknown".to_string()),
+        };
+
+        if !seen.insert(id.clone()) {
+            continue;
+        }
+
+        let known = CloudProvider::from_str(&id).ok();
+        let display = if let Some(name) = name.clone() {
+            name
+        } else if let Some(p) = known {
+            p.display_name().to_string()
+        } else {
+            id.clone()
+        };
+
+        entries.push(ProviderEntry {
+            id,
+            name: display,
+            known,
+        });
+    }
+
+    Ok(entries)
 }
 
-/// Ask rclone for providers and return the supported subset.
-pub fn supported_providers_from_rclone(runner: &RcloneRunner) -> Result<Vec<CloudProvider>> {
+/// Ask rclone for providers and return the full list.
+pub fn providers_from_rclone(runner: &RcloneRunner) -> Result<Vec<ProviderEntry>> {
     let output = runner.run(&["config", "providers", "--json"])?;
     if !output.success() {
         anyhow::bail!("rclone config providers failed: {}", output.stderr_string());
     }
-    supported_providers_from_rclone_json(&output.stdout_string())
+    providers_from_rclone_json(&output.stdout_string())
 }
 
 #[cfg(test)]
@@ -60,17 +90,18 @@ mod tests {
           {"Name":"Dropbox","Prefix":"dropbox"},
           {"Name":"Box","Prefix":"box"},
           {"Name":"iCloud Drive","Prefix":"iclouddrive"},
-          {"Name":"pCloud","Prefix":"pcloud"}
+          {"Name":"pCloud","Prefix":"pcloud"},
+          {"Name":"Google Photos","Prefix":"gphotos"}
         ]
         "#;
 
-        let supported = supported_providers_from_rclone_json(json).unwrap();
-        assert!(supported.contains(&CloudProvider::GoogleDrive));
-        assert!(supported.contains(&CloudProvider::OneDrive));
-        assert!(supported.contains(&CloudProvider::Dropbox));
-        assert!(supported.contains(&CloudProvider::Box));
-        assert!(supported.contains(&CloudProvider::ICloud));
-        // pcloud is not supported yet
-        assert_eq!(supported.len(), 5);
+        let entries = providers_from_rclone_json(json).unwrap();
+        assert!(entries.iter().any(|p| p.id == "drive"));
+        assert!(entries.iter().any(|p| p.id == "onedrive"));
+        assert!(entries.iter().any(|p| p.id == "dropbox"));
+        assert!(entries.iter().any(|p| p.id == "box"));
+        assert!(entries.iter().any(|p| p.id == "iclouddrive"));
+        assert!(entries.iter().any(|p| p.id == "pcloud"));
+        assert!(entries.iter().any(|p| p.id == "gphotos"));
     }
 }

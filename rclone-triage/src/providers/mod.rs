@@ -14,6 +14,31 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::str::FromStr;
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderEntry {
+    pub id: String,
+    pub name: String,
+    pub known: Option<CloudProvider>,
+}
+
+impl ProviderEntry {
+    pub fn display_name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn short_name(&self) -> &str {
+        &self.id
+    }
+
+    pub fn from_known(provider: CloudProvider) -> Self {
+        Self {
+            id: provider.rclone_type().to_string(),
+            name: provider.display_name().to_string(),
+            known: Some(provider),
+        }
+    }
+}
+
 /// Supported cloud providers
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum CloudProvider {
@@ -27,6 +52,10 @@ pub enum CloudProvider {
     Box,
     /// Apple iCloud Drive
     ICloud,
+    /// Google Photos
+    GooglePhotos,
+    /// pCloud
+    PCloud,
 }
 
 impl CloudProvider {
@@ -38,7 +67,13 @@ impl CloudProvider {
             CloudProvider::Dropbox,
             CloudProvider::Box,
             CloudProvider::ICloud,
+            CloudProvider::GooglePhotos,
+            CloudProvider::PCloud,
         ]
+    }
+
+    pub fn entries() -> Vec<ProviderEntry> {
+        Self::all().iter().copied().map(ProviderEntry::from_known).collect()
     }
 
     /// Get the rclone remote type for this provider
@@ -49,6 +84,8 @@ impl CloudProvider {
             CloudProvider::Dropbox => "dropbox",
             CloudProvider::Box => "box",
             CloudProvider::ICloud => "iclouddrive",
+            CloudProvider::GooglePhotos => "gphotos",
+            CloudProvider::PCloud => "pcloud",
         }
     }
 
@@ -60,6 +97,8 @@ impl CloudProvider {
             CloudProvider::Dropbox => "Dropbox",
             CloudProvider::Box => "Box",
             CloudProvider::ICloud => "iCloud Drive",
+            CloudProvider::GooglePhotos => "Google Photos",
+            CloudProvider::PCloud => "pCloud",
         }
     }
 
@@ -71,6 +110,8 @@ impl CloudProvider {
             CloudProvider::Dropbox => "dropbox",
             CloudProvider::Box => "box",
             CloudProvider::ICloud => "icloud",
+            CloudProvider::GooglePhotos => "gphotos",
+            CloudProvider::PCloud => "pcloud",
         }
     }
 
@@ -82,6 +123,8 @@ impl CloudProvider {
             CloudProvider::Dropbox => &["dropbox"],
             CloudProvider::Box => &["sha1"],
             CloudProvider::ICloud => &[],
+            CloudProvider::GooglePhotos => &[],
+            CloudProvider::PCloud => &["sha1", "md5"],
         }
     }
 }
@@ -102,6 +145,10 @@ impl FromStr for CloudProvider {
             "dropbox" => Ok(CloudProvider::Dropbox),
             "box" => Ok(CloudProvider::Box),
             "icloud" | "iclouddrive" | "icloud_drive" => Ok(CloudProvider::ICloud),
+            "gphotos" | "googlephotos" | "google_photos" | "google photos" => {
+                Ok(CloudProvider::GooglePhotos)
+            }
+            "pcloud" => Ok(CloudProvider::PCloud),
             _ => Err(format!("Unknown provider: {}", s)),
         }
     }

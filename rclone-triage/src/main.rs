@@ -166,18 +166,40 @@ fn main() -> Result<()> {
     }
 
     // Minimal auth + listing wiring (CLI-driven)
-    if let Some(provider) = args.provider {
-        println!("Authenticating {}...", provider);
+    if let Some(provider_name) = args.provider.clone() {
+        let parsed: Result<CloudProvider, _> = provider_name.parse();
+        let known = parsed.ok();
+        let display_name = known
+            .map(|p| p.display_name().to_string())
+            .unwrap_or_else(|| provider_name.clone());
+
+        println!("Authenticating {}...", display_name);
         let config = RcloneConfig::for_case(&case.output_dir)?;
         app_guard.track_env_value("RCLONE_CONFIG", config.original_env());
         let runner = RcloneRunner::new(binary.path()).with_config(config.path());
 
-        let remote_name = provider.short_name();
-        let _auth = if args.mobile_auth {
-            authenticate_with_mobile(provider, &config, remote_name, args.mobile_auth_port)?
+        let remote_name = known
+            .map(|p| p.short_name().to_string())
+            .unwrap_or_else(|| provider_name.clone());
+        if let Some(provider) = known {
+            if args.mobile_auth {
+                authenticate_with_mobile(provider, &config, &remote_name, args.mobile_auth_port)?;
+            } else {
+                authenticate_with_rclone(provider, &runner, &config, &remote_name)?;
+            }
         } else {
-            authenticate_with_rclone(provider, &runner, &config, remote_name)?
-        };
+            if args.mobile_auth {
+                anyhow::bail!("Mobile auth only supported for known OAuth providers");
+            }
+            let args = ["config", "create", remote_name.as_str(), provider_name.as_str()];
+            let output = runner.run(&args)?;
+            if !output.success() {
+                anyhow::bail!("Failed to authenticate: {}", output.stderr_string());
+            }
+            if !config.has_remote(&remote_name)? {
+                anyhow::bail!("Remote {} was not created", remote_name);
+            }
+        }
 
         let listing = list_path(&runner, &format!("{}:", remote_name))?;
         println!("Listed {} entries", listing.len());
@@ -247,9 +269,9 @@ struct Cli {
     #[arg(long, short = 'o', default_value = ".")]
     output_dir: std::path::PathBuf,
 
-    /// Cloud provider to authenticate (e.g., gdrive, onedrive, dropbox)
+    /// Cloud provider/backend to authenticate (e.g., drive, onedrive, s3)
     #[arg(long)]
-    provider: Option<CloudProvider>,
+    provider: Option<String>,
 
     /// Launch interactive TUI
     #[arg(long, default_value_t = false)]
