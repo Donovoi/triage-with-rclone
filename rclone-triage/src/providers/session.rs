@@ -417,6 +417,7 @@ impl SessionExtractor {
     /// Decrypt using Windows DPAPI
     #[cfg(windows)]
     fn decrypt_dpapi(&self, encrypted: &[u8]) -> Result<String> {
+        use windows::Win32::Foundation::{LocalFree, HLOCAL};
         use windows::Win32::Security::Cryptography::{
             CryptUnprotectData, CRYPTPROTECT_UI_FORBIDDEN, CRYPT_INTEGER_BLOB,
         };
@@ -444,7 +445,7 @@ impl SessionExtractor {
             if result.is_ok() && !output.pbData.is_null() {
                 let decrypted =
                     std::slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec();
-                windows::Win32::System::Memory::LocalFree(output.pbData as _);
+                let _ = LocalFree(HLOCAL(output.pbData as _));
                 Ok(String::from_utf8_lossy(&decrypted).to_string())
             } else {
                 bail!("DPAPI decryption failed");
