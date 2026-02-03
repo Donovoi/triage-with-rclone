@@ -41,6 +41,8 @@ fn perform_auth_flow<B: ratatui::backend::Backend>(
     let config_dir = app
         .config_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."));
+    // Track env var change before config sets it
+    app.track_env_var("RCLONE_CONFIG", "Set RCLONE_CONFIG for case config");
     let config = crate::rclone::RcloneConfig::for_case(&config_dir)?;
 
     // Track config file creation
@@ -129,6 +131,7 @@ fn perform_auth_flow<B: ratatui::backend::Backend>(
                                 app.log_error(format!("CSV export failed: {}", e));
                             } else {
                                 app.log_info(format!("Exported listing to {:?}", csv_path));
+                                app.track_file(&csv_path, "Exported file listing CSV");
                             }
                         }
 
@@ -170,10 +173,23 @@ fn perform_download_flow<B: ratatui::backend::Backend>(
     app: &mut App,
     terminal: &mut Terminal<B>,
 ) -> Result<()> {
-    use crate::files::download::{DownloadQueue, DownloadRequest};
+    use crate::files::download::{DownloadPhase, DownloadQueue, DownloadRequest};
 
-    app.download_status = format!("Downloading {} files...", app.files_to_download.len());
-    app.download_progress = (0, app.files_to_download.len());
+    let total_files = app.files_to_download.len();
+    app.download_status = format!("Downloading {} files...", total_files);
+    app.download_progress = (0, total_files);
+    app.download_current_bytes = None;
+    app.download_done_bytes = 0;
+    let total_bytes: u64 = app
+        .files_to_download
+        .iter()
+        .filter_map(|file| app.get_file_entry(file).map(|e| e.size))
+        .sum();
+    app.download_total_bytes = if total_bytes > 0 {
+        Some(total_bytes)
+    } else {
+        None
+    };
     terminal.draw(|f| render_state(f, app))?;
 
     let binary = crate::embedded::ExtractedBinary::extract()?;
@@ -186,6 +202,8 @@ fn perform_download_flow<B: ratatui::backend::Backend>(
     let config_dir = app
         .config_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."));
+    // Track env var change before config sets it
+    app.track_env_var("RCLONE_CONFIG", "Set RCLONE_CONFIG for case config");
     let config = crate::rclone::RcloneConfig::for_case(&config_dir)?;
     app.cleanup_track_env_value("RCLONE_CONFIG", config.original_env());
     let runner = crate::rclone::RcloneRunner::new(binary.path()).with_config(config.path());
@@ -222,22 +240,58 @@ fn perform_download_flow<B: ratatui::backend::Backend>(
             }
 
             // Get expected hash from file listing (if available)
-            let (expected_hash, hash_type) = app
+            let (expected_hash, hash_type, expected_size) = app
                 .get_file_entry(file)
-                .map(|e| (e.hash.clone(), e.hash_type.clone()))
-                .unwrap_or((None, None));
+                .map(|e| (e.hash.clone(), e.hash_type.clone(), Some(e.size)))
+                .unwrap_or((None, None, None));
 
             let request = DownloadRequest::new_copyto(&source, dest.to_string_lossy())
-                .with_hash(expected_hash, hash_type);
+                .with_hash(expected_hash, hash_type)
+                .with_size(expected_size);
             queue.add(request);
         }
 
         // Execute downloads with progress callback
-        // Since we can't borrow app mutably in the callback, we collect updates
         let files_clone = app.files_to_download.clone();
+        let mut completed_bytes: u64 = 0;
         let results = queue.download_all_with_progress(&runner, |progress| {
-            // Progress callback - can't update TUI here due to borrow, but logging works
-            tracing::info!("{}", progress.status);
+            match progress.phase {
+                DownloadPhase::Starting | DownloadPhase::InProgress | DownloadPhase::Failed => {
+                    app.download_progress = (progress.current, progress.total);
+                }
+                DownloadPhase::Completed => {
+                    app.download_progress = (progress.current + 1, progress.total);
+                }
+            }
+
+            match progress.phase {
+                DownloadPhase::InProgress => {
+                    if let (Some(done), Some(total)) = (progress.bytes_done, progress.bytes_total) {
+                        app.download_current_bytes = Some((done, total));
+                        if let Some(overall_total) = app.download_total_bytes {
+                            let done_total = completed_bytes.saturating_add(done);
+                            app.download_done_bytes = done_total.min(overall_total);
+                        }
+                    }
+                }
+                DownloadPhase::Completed => {
+                    if let Some(total) = progress.bytes_total.or(progress.bytes_done) {
+                        completed_bytes = completed_bytes.saturating_add(total);
+                        if let Some(overall_total) = app.download_total_bytes {
+                            app.download_done_bytes = completed_bytes.min(overall_total);
+                        } else {
+                            app.download_done_bytes = completed_bytes;
+                        }
+                    }
+                    app.download_current_bytes = progress.bytes_total.map(|t| (t, t));
+                }
+                DownloadPhase::Starting | DownloadPhase::Failed => {
+                    app.download_current_bytes = None;
+                }
+            }
+
+            app.download_status = progress.status.clone();
+            let _ = terminal.draw(|f| render_state(f, app));
         });
 
         // Process results

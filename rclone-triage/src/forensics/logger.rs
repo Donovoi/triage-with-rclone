@@ -261,7 +261,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let log_path = dir.path().join("test.log");
 
-        let logger = ForensicLogger::new(&log_path).unwrap();
+        let _logger = ForensicLogger::new(&log_path).unwrap();
         assert!(log_path.exists());
     }
 

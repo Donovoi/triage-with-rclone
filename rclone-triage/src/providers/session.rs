@@ -9,7 +9,6 @@
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use super::browser::{Browser, BrowserType};
@@ -294,41 +293,39 @@ impl SessionExtractor {
             )
             .context("Failed to query cookies")?;
 
-        for row in rows {
-            if let Ok((
+        for (
+            name,
+            encrypted_value,
+            host_key,
+            path,
+            expires_utc,
+            is_secure,
+            is_httponly,
+        ) in rows.flatten()
+        {
+            // Decrypt the cookie value
+            let value = self
+                .decrypt_chromium_cookie(&encrypted_value)
+                .unwrap_or_default();
+
+            // Convert Chrome timestamp (microseconds since 1601) to Unix timestamp
+            let expires = if expires_utc > 0 {
+                // Chrome epoch is 1601-01-01, Unix epoch is 1970-01-01
+                // Difference is 11644473600 seconds
+                (expires_utc / 1_000_000) - 11644473600
+            } else {
+                0
+            };
+
+            cookies.push(Cookie {
                 name,
-                encrypted_value,
-                host_key,
+                value,
+                domain: host_key,
                 path,
-                expires_utc,
-                is_secure,
-                is_httponly,
-            )) = row
-            {
-                // Decrypt the cookie value
-                let value = self
-                    .decrypt_chromium_cookie(&encrypted_value)
-                    .unwrap_or_default();
-
-                // Convert Chrome timestamp (microseconds since 1601) to Unix timestamp
-                let expires = if expires_utc > 0 {
-                    // Chrome epoch is 1601-01-01, Unix epoch is 1970-01-01
-                    // Difference is 11644473600 seconds
-                    (expires_utc / 1_000_000) - 11644473600
-                } else {
-                    0
-                };
-
-                cookies.push(Cookie {
-                    name,
-                    value,
-                    domain: host_key,
-                    path,
-                    expires,
-                    secure: is_secure,
-                    http_only: is_httponly,
-                });
-            }
+                expires,
+                secure: is_secure,
+                http_only: is_httponly,
+            });
         }
 
         // Clean up temp file

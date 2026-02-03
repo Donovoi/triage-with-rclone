@@ -146,11 +146,8 @@ impl ProviderConfig {
         }
 
         // Provider-specific params
-        match self.provider {
-            CloudProvider::Dropbox => {
-                url.push_str("&token_access_type=offline");
-            }
-            _ => {}
+        if self.provider == CloudProvider::Dropbox {
+            url.push_str("&token_access_type=offline");
         }
 
         url

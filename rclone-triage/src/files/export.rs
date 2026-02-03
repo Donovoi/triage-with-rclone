@@ -1,7 +1,6 @@
 //! CSV export for file listings
 
 use anyhow::{Context, Result};
-use chrono::{DateTime, Utc};
 use csv::WriterBuilder;
 use serde::Serialize;
 use std::fs::OpenOptions;
@@ -61,6 +60,7 @@ pub fn export_listing(entries: &[FileEntry], path: impl AsRef<Path>) -> Result<(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::{DateTime, Utc};
     use tempfile::tempdir;
 
     #[test]

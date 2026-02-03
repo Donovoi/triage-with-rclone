@@ -3,24 +3,16 @@
 //! A single-file Windows executable that embeds rclone and provides
 //! a TUI interface for cloud data acquisition.
 
-mod case;
-mod cleanup;
-mod embedded;
-mod files;
-mod forensics;
-mod providers;
-mod rclone;
-mod ui;
-
-use crate::case::Case;
-use crate::files::list_path;
-use crate::forensics::state::SystemStateSnapshot;
-use crate::providers::{auth::authenticate_with_rclone, CloudProvider};
-use crate::rclone::{RcloneConfig, RcloneRunner};
-use crate::ui::App as TuiApp;
+use rclone_triage::case::Case;
+use rclone_triage::cleanup::Cleanup;
+use rclone_triage::embedded;
+use rclone_triage::files::list_path;
+use rclone_triage::forensics::state::SystemStateSnapshot;
+use rclone_triage::providers::{auth::authenticate_with_rclone, CloudProvider};
+use rclone_triage::rclone::{RcloneConfig, RcloneRunner};
+use rclone_triage::ui::App as TuiApp;
 use anyhow::Result;
 use clap::Parser;
-use cleanup::Cleanup;
 use std::sync::{Arc, Mutex};
 
 fn main() -> Result<()> {
@@ -61,7 +53,7 @@ fn main() -> Result<()> {
     if args.tui {
         let mut app = TuiApp::new();
         app.set_cleanup(app_guard.cleanup.clone());
-        crate::ui::runner::run_loop(&mut app)?;
+        rclone_triage::ui::runner::run_loop(&mut app)?;
         return Ok(());
     }
 

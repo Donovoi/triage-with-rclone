@@ -111,6 +111,12 @@ pub struct App {
     pub download_status: String,
     /// Download progress (current/total)
     pub download_progress: (usize, usize),
+    /// Current file bytes progress (done/total)
+    pub download_current_bytes: Option<(u64, u64)>,
+    /// Total bytes across selected files (if known)
+    pub download_total_bytes: Option<u64>,
+    /// Bytes completed across downloads (if known)
+    pub download_done_bytes: u64,
     /// Final report lines
     pub report_lines: Vec<String>,
     /// SSO status for currently selected provider
@@ -147,6 +153,9 @@ impl App {
             files_to_download: Vec::new(),
             download_status: String::new(),
             download_progress: (0, 0),
+            download_current_bytes: None,
+            download_total_bytes: None,
+            download_done_bytes: 0,
             report_lines: Vec::new(),
             sso_status: None,
         }
@@ -506,6 +515,12 @@ impl App {
             (state, same) if state == same => true,
             _ => false,
         }
+    }
+}
+
+impl Default for App {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

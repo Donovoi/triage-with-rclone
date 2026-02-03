@@ -24,7 +24,8 @@ This repository provides a forensic-first cloud triage tool built around rclone.
 
 ### Tests
 
-- `cargo test --release -- --test-threads=1`
+- Linux/WSL: `cargo test --release -- --test-threads=1`
+- Windows (local): `powershell -ExecutionPolicy Bypass -File scripts/run-windows-tests.ps1`
 
 ### Forensic notes
 

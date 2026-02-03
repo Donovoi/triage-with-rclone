@@ -276,7 +276,12 @@ impl RcloneConfig {
 
     /// Create a config in a case-specific directory
     pub fn for_case(case_dir: impl AsRef<Path>) -> Result<Self> {
-        let config_path = case_dir.as_ref().join("config").join("rclone.conf");
+        let case_dir = case_dir.as_ref();
+        let config_path = match case_dir.file_name().and_then(|name| name.to_str()) {
+            Some("config") => case_dir.join("rclone.conf"),
+            Some("rclone.conf") => case_dir.to_path_buf(),
+            _ => case_dir.join("config").join("rclone.conf"),
+        };
         Self::new(config_path)
     }
 
@@ -458,6 +463,17 @@ mod tests {
         let config = RcloneConfig::new(&config_path).unwrap();
         assert!(config_path.exists());
         assert!(config.created);
+    }
+
+    #[test]
+    fn test_for_case_accepts_config_dir() {
+        let dir = tempdir().unwrap();
+        let config_dir = dir.path().join("config");
+        fs::create_dir_all(&config_dir).unwrap();
+
+        let config = RcloneConfig::for_case(&config_dir).unwrap();
+        assert_eq!(config.path(), config_dir.join("rclone.conf"));
+        assert!(config.path().exists());
     }
 
     #[test]

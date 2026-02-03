@@ -6,7 +6,7 @@ pub mod listing;
 
 #[allow(unused_imports)]
 pub use download::{
-    compute_file_hash, DownloadMode, DownloadProgress, DownloadQueue, DownloadRequest,
+    compute_file_hash, DownloadMode, DownloadPhase, DownloadProgress, DownloadQueue, DownloadRequest,
     DownloadResult,
 };
 #[allow(unused_imports)]

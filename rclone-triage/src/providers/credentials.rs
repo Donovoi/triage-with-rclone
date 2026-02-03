@@ -41,11 +41,6 @@ pub struct CustomOAuthConfig {
 }
 
 impl CustomOAuthConfig {
-    /// Parse a config from JSON string
-    pub fn from_str(content: &str) -> Result<Self> {
-        serde_json::from_str(content).context("Failed to parse custom OAuth JSON")
-    }
-
     /// Return credentials for a provider if present
     pub fn credentials_for(&self, provider: CloudProvider) -> Option<OAuthCredentials> {
         let candidates = [
@@ -64,6 +59,14 @@ impl CustomOAuthConfig {
         }
 
         None
+    }
+}
+
+impl std::str::FromStr for CustomOAuthConfig {
+    type Err = anyhow::Error;
+
+    fn from_str(content: &str) -> Result<Self, Self::Err> {
+        serde_json::from_str(content).context("Failed to parse custom OAuth JSON")
     }
 }
 
@@ -91,7 +94,7 @@ pub fn custom_oauth_config_path() -> Option<PathBuf> {
 pub fn load_custom_oauth_config_from_path(path: impl AsRef<Path>) -> Result<CustomOAuthConfig> {
     let content =
         fs::read_to_string(&path).with_context(|| format!("Failed to read {:?}", path.as_ref()))?;
-    CustomOAuthConfig::from_str(&content)
+    content.parse::<CustomOAuthConfig>()
 }
 
 /// Load custom OAuth config from the default location (if present)

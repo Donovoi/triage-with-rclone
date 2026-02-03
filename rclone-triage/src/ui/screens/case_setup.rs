@@ -18,6 +18,12 @@ impl CaseSetupScreen {
     }
 }
 
+impl Default for CaseSetupScreen {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Widget for &CaseSetupScreen {
     fn render(self, area: Rect, buf: &mut Buffer) {
         (&self.form).render(area, buf);
