@@ -19,13 +19,6 @@ jobs:
           workspaces: rclone-triage -> rclone-triage/target
       - name: Build (release)
         run: cargo build --release
-      - name: Upload Windows EXE
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: rclone-triage-windows-exe
-          path: rclone-triage/target/release/rclone-triage.exe
-          if-no-files-found: warn
       - name: Run tests
         run: cargo test --release -- --test-threads=1
       - name: Clippy
@@ -34,6 +27,8 @@ jobs:
   test-windows:
     name: Test (Windows)
     runs-on: windows-latest
+    permissions:
+      contents: write
     defaults:
       run:
         working-directory: rclone-triage
@@ -45,7 +40,29 @@ jobs:
           workspaces: rclone-triage -> rclone-triage/target
       - name: Build (release)
         run: cargo build --release
+      - name: Upload Windows EXE
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rclone-triage-windows-exe
+          path: rclone-triage/target/release/rclone-triage.exe
+          if-no-files-found: warn
       - name: Run tests
         run: cargo test --release -- --test-threads=1
       - name: Clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Compute nightly tag
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        shell: pwsh
+        run: |
+          $timestamp = (Get-Date -AsUTC).ToString("yyyyMMdd-HHmm")
+          "NIGHTLY_TAG=nightly-$timestamp" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "NIGHTLY_NAME=Nightly $((Get-Date -AsUTC).ToString("yyyy-MM-dd HH:mm 'UTC'"))" | Out-File -FilePath $env:GITHUB_ENV -Append
+      - name: Create nightly release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.NIGHTLY_TAG }}
+          name: ${{ env.NIGHTLY_NAME }}
+          target_commitish: ${{ github.sha }}
+          files: rclone-triage/target/release/rclone-triage.exe
