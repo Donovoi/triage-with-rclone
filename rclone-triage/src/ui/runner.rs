@@ -29,6 +29,10 @@ fn perform_auth_flow<B: ratatui::backend::Backend>(
 
     // Track the extracted binary
     app.track_file(binary.path(), "Extracted rclone binary to temp directory");
+    app.cleanup_track_file(binary.path());
+    if let Some(dir) = binary.temp_dir() {
+        app.cleanup_track_dir(dir);
+    }
 
     app.auth_status = "Creating config...".to_string();
     terminal.draw(|f| render_state(f, app))?;
@@ -41,6 +45,7 @@ fn perform_auth_flow<B: ratatui::backend::Backend>(
 
     // Track config file creation
     app.track_file(config.path(), "Created rclone config file");
+    app.cleanup_track_env_value("RCLONE_CONFIG", config.original_env());
 
     let runner = crate::rclone::RcloneRunner::new(binary.path()).with_config(config.path());
 
@@ -172,12 +177,17 @@ fn perform_download_flow<B: ratatui::backend::Backend>(
     terminal.draw(|f| render_state(f, app))?;
 
     let binary = crate::embedded::ExtractedBinary::extract()?;
+    app.cleanup_track_file(binary.path());
+    if let Some(dir) = binary.temp_dir() {
+        app.cleanup_track_dir(dir);
+    }
 
     // Use case config directory if available
     let config_dir = app
         .config_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."));
     let config = crate::rclone::RcloneConfig::for_case(&config_dir)?;
+    app.cleanup_track_env_value("RCLONE_CONFIG", config.original_env());
     let runner = crate::rclone::RcloneRunner::new(binary.path()).with_config(config.path());
 
     if let Some(provider) = app.chosen_provider {
@@ -329,10 +339,21 @@ fn perform_download_flow<B: ratatui::backend::Backend>(
                 .ok()
                 .map(|tracker| tracker.generate_report());
 
+            // Attempt cleanup and capture any unrevertable changes
+            let cleanup_report = app.cleanup.as_ref().and_then(|cleanup| {
+                if let Ok(mut cleanup) = cleanup.lock() {
+                    let _ = cleanup.execute();
+                    cleanup.cleanup_report()
+                } else {
+                    None
+                }
+            });
+
             let report_content = crate::case::report::generate_report(
                 case,
                 state_diff.as_ref(),
                 change_report.as_deref(),
+                cleanup_report.as_deref(),
                 log_hash.as_deref(),
             );
 

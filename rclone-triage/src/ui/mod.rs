@@ -3,6 +3,7 @@
 //! Defines the core application state and transitions used by the UI.
 
 use crate::case::directory::CaseDirectories;
+use crate::cleanup::Cleanup;
 use crate::case::Case;
 use crate::forensics::changes::ChangeTracker;
 use crate::forensics::logger::ForensicLogger;
@@ -76,6 +77,8 @@ pub struct App {
     pub directories: Option<CaseDirectories>,
     /// Forensic logger (hash-chained)
     pub logger: Option<Arc<ForensicLogger>>,
+    /// Cleanup manager for temp files/env vars (shared with main)
+    pub cleanup: Option<Arc<Mutex<Cleanup>>>,
     /// Initial system state snapshot (captured at start)
     pub initial_state: Option<SystemStateSnapshot>,
     /// Change tracker for documenting modifications
@@ -127,6 +130,7 @@ impl App {
             case: None,
             directories: None,
             logger: None,
+            cleanup: None,
             initial_state,
             change_tracker: Arc::new(Mutex::new(ChangeTracker::new())),
             providers: CloudProvider::all().to_vec(),
@@ -177,6 +181,42 @@ impl App {
         self.directories = Some(directories);
         self.logger = Some(Arc::new(logger));
         Ok(())
+    }
+
+    /// Attach shared cleanup manager
+    #[allow(dead_code)]
+    pub fn set_cleanup(&mut self, cleanup: Arc<Mutex<Cleanup>>) {
+        self.cleanup = Some(cleanup);
+    }
+
+    /// Track a temp file for cleanup
+    #[allow(dead_code)]
+    pub fn cleanup_track_file(&self, path: impl AsRef<std::path::Path>) {
+        if let Some(ref cleanup) = self.cleanup {
+            if let Ok(mut cleanup) = cleanup.lock() {
+                cleanup.track_file(path);
+            }
+        }
+    }
+
+    /// Track a temp directory for cleanup
+    #[allow(dead_code)]
+    pub fn cleanup_track_dir(&self, path: impl AsRef<std::path::Path>) {
+        if let Some(ref cleanup) = self.cleanup {
+            if let Ok(mut cleanup) = cleanup.lock() {
+                cleanup.track_dir(path);
+            }
+        }
+    }
+
+    /// Track an env var change for cleanup
+    #[allow(dead_code)]
+    pub fn cleanup_track_env_value(&self, name: impl Into<String>, old_value: Option<String>) {
+        if let Some(ref cleanup) = self.cleanup {
+            if let Ok(mut cleanup) = cleanup.lock() {
+                cleanup.track_env_value(name, old_value);
+            }
+        }
     }
 
     /// Track a file creation in the change tracker

@@ -13,6 +13,7 @@ pub fn generate_report(
     case: &Case,
     state_diff: Option<&StateDiff>,
     change_report: Option<&str>,
+    cleanup_report: Option<&str>,
     log_hash: Option<&str>,
 ) -> String {
     let mut report = String::new();
@@ -67,6 +68,11 @@ pub fn generate_report(
         report.push('\n');
     }
 
+    if let Some(cleanup_report) = cleanup_report {
+        report.push_str(cleanup_report);
+        report.push('\n');
+    }
+
     if let Some(hash) = log_hash {
         report.push_str("--- Log Integrity ---\n");
         report.push_str(&format!("Final Log Hash: {}\n\n", hash));
@@ -93,7 +99,7 @@ mod tests {
     #[test]
     fn test_generate_report() {
         let case = Case::new("my-session", std::path::PathBuf::from("/tmp")).unwrap();
-        let report = generate_report(&case, None, None, Some("hash123"));
+        let report = generate_report(&case, None, None, None, Some("hash123"));
         assert!(report.contains("Report"));
         assert!(report.contains("hash123"));
     }

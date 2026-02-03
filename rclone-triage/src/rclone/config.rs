@@ -285,6 +285,11 @@ impl RcloneConfig {
         &self.config_path
     }
 
+    /// Get the original RCLONE_CONFIG value before this config was created
+    pub fn original_env(&self) -> Option<String> {
+        self.original_env.clone()
+    }
+
     /// Check if a remote is configured
     pub fn has_remote(&self, name: &str) -> Result<bool> {
         let content = fs::read_to_string(&self.config_path)
