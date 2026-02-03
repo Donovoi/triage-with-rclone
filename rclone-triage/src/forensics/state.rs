@@ -307,7 +307,7 @@ mod tests {
 
     #[test]
     fn test_diff_detects_file_change() {
-        let mut before =
+        let before =
             SystemStateSnapshot::capture("before").expect("Failed to capture before snapshot");
 
         let mut after = before.clone();
@@ -329,7 +329,7 @@ mod tests {
 
     #[test]
     fn test_generate_report() {
-        let mut before =
+        let before =
             SystemStateSnapshot::capture("before operation").expect("Failed to capture snapshot");
 
         let mut after = before.clone();

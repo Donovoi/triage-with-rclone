@@ -20,6 +20,12 @@ impl DownloadScreen {
     }
 }
 
+impl Default for DownloadScreen {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Widget for &DownloadScreen {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let chunks = Layout::default()

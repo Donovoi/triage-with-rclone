@@ -5,7 +5,7 @@ use ratatui::Frame;
 use crate::ui::screens::{
     auth::AuthScreen, browser_select::BrowserSelectScreen, case_setup::CaseSetupScreen,
     download::DownloadScreen, files::FilesScreen, provider_select::ProviderSelectScreen,
-    report::ReportScreen, welcome::WelcomeScreen,
+    report::ReportScreen,
 };
 use crate::ui::{App, AppState};
 
@@ -79,6 +79,27 @@ pub fn render_state(frame: &mut Frame, app: &App) {
             let mut screen = DownloadScreen::new();
             if !app.download_status.is_empty() {
                 screen.overall.label = app.download_status.clone();
+            }
+            let overall_ratio = if let Some(total_bytes) = app.download_total_bytes {
+                if total_bytes > 0 {
+                    let done = app.download_done_bytes.min(total_bytes);
+                    done as f64 / total_bytes as f64
+                } else {
+                    0.0
+                }
+            } else if app.download_progress.1 > 0 {
+                app.download_progress.0 as f64 / app.download_progress.1 as f64
+            } else {
+                0.0
+            };
+            screen.overall.set_progress(overall_ratio);
+
+            if let Some((done, total)) = app.download_current_bytes {
+                if total > 0 {
+                    screen.current.set_progress(done as f64 / total as f64);
+                    screen.current.label =
+                        format!("Current: {} / {} bytes", done, total);
+                }
             }
             frame.render_widget(&screen, area);
         }

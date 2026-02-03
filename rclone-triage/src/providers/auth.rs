@@ -92,7 +92,7 @@ fn run_rclone_with_browser_env(
 ) -> Result<crate::rclone::process::RcloneOutput> {
     if let Some(ref path) = browser.executable_path {
         let path_str = path.to_string_lossy().to_string();
-        let envs = vec![
+        let envs = [
             ("BROWSER".to_string(), path_str.clone()),
             ("RCLONE_BROWSER".to_string(), path_str),
         ];

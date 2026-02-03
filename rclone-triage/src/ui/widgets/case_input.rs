@@ -24,6 +24,12 @@ impl SessionInputForm {
     }
 }
 
+impl Default for SessionInputForm {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Widget for &SessionInputForm {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let block = Block::default()

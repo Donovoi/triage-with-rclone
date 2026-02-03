@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test-linux:
+    name: Test (Linux)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: rclone-triage
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rclone-triage -> rclone-triage/target
+      - name: Build (release)
+        run: cargo build --release
+      - name: Run tests
+        run: cargo test --release -- --test-threads=1
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features
+
+  test-windows:
+    name: Test (Windows)
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: rclone-triage
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rclone-triage -> rclone-triage/target
+      - name: Build (release)
+        run: cargo build --release
+      - name: Run tests
+        run: cargo test --release -- --test-threads=1

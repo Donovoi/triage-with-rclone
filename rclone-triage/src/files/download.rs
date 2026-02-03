@@ -19,9 +19,20 @@ pub enum DownloadMode {
     CopyTo,
 }
 
+/// Phase of a download operation
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DownloadPhase {
+    Starting,
+    InProgress,
+    Completed,
+    Failed,
+}
+
 /// Progress of a download operation
 #[derive(Debug, Clone)]
 pub struct DownloadProgress {
+    /// Current phase
+    pub phase: DownloadPhase,
     /// Current file index (0-based)
     pub current: usize,
     /// Total number of files
@@ -40,6 +51,7 @@ impl DownloadProgress {
     /// Create a new progress update for starting a file download
     pub fn starting(current: usize, total: usize, file: &str) -> Self {
         Self {
+            phase: DownloadPhase::Starting,
             current,
             total,
             current_file: file.to_string(),
@@ -49,9 +61,36 @@ impl DownloadProgress {
         }
     }
 
+    /// Create a progress update during a download
+    pub fn progress(current: usize, total: usize, file: &str, done: u64, total_bytes: u64) -> Self {
+        let percent = if total_bytes > 0 {
+            (done as f64 / total_bytes as f64) * 100.0
+        } else {
+            0.0
+        };
+        Self {
+            phase: DownloadPhase::InProgress,
+            current,
+            total,
+            current_file: file.to_string(),
+            status: format!(
+                "Downloading {}/{}: {} ({:.0}% - {} / {} bytes)",
+                current + 1,
+                total,
+                file,
+                percent,
+                done,
+                total_bytes
+            ),
+            bytes_done: Some(done),
+            bytes_total: Some(total_bytes),
+        }
+    }
+
     /// Create a progress update for completed file
     pub fn completed(current: usize, total: usize, file: &str, size: u64) -> Self {
         Self {
+            phase: DownloadPhase::Completed,
             current,
             total,
             current_file: file.to_string(),
@@ -70,6 +109,7 @@ impl DownloadProgress {
     /// Create a progress update for failed file
     pub fn failed(current: usize, total: usize, file: &str, error: &str) -> Self {
         Self {
+            phase: DownloadPhase::Failed,
             current,
             total,
             current_file: file.to_string(),
@@ -119,6 +159,8 @@ pub struct DownloadRequest {
     pub expected_hash: Option<String>,
     /// Hash type (sha256, md5, etc.)
     pub expected_hash_type: Option<String>,
+    /// Expected size (bytes) for progress calculations
+    pub expected_size: Option<u64>,
 }
 
 #[allow(dead_code)]
@@ -130,6 +172,7 @@ impl DownloadRequest {
             mode: DownloadMode::Copy,
             expected_hash: None,
             expected_hash_type: None,
+            expected_size: None,
         }
     }
 
@@ -140,6 +183,7 @@ impl DownloadRequest {
             mode: DownloadMode::CopyTo,
             expected_hash: None,
             expected_hash_type: None,
+            expected_size: None,
         }
     }
 
@@ -147,6 +191,12 @@ impl DownloadRequest {
     pub fn with_hash(mut self, hash: Option<String>, hash_type: Option<String>) -> Self {
         self.expected_hash = hash;
         self.expected_hash_type = hash_type;
+        self
+    }
+
+    /// Set expected size for progress calculations
+    pub fn with_size(mut self, size: Option<u64>) -> Self {
+        self.expected_size = size;
         self
     }
 }
@@ -209,13 +259,10 @@ impl DownloadQueue {
             ],
         };
 
-        // Only add progress stats for Copy mode (directories)
-        // CopyTo is single file and doesn't benefit from stats
-        if request.mode == DownloadMode::Copy {
-            args.push("--progress".to_string());
-            args.push("--stats".to_string());
-            args.push("1s".to_string());
-        }
+        // Add progress stats for both copy and copyto (used by TUI)
+        args.push("--progress".to_string());
+        args.push("--stats".to_string());
+        args.push("1s".to_string());
 
         if self.dry_run {
             args.push("--dry-run".to_string());
@@ -252,7 +299,20 @@ impl DownloadQueue {
             // Notify starting
             progress_callback(DownloadProgress::starting(i, total, &request.source));
 
-            let result = self.download_one_verified(rclone, request);
+            let result = if self.timeout.is_some() {
+                // Timeout handling isn't supported for streaming progress yet
+                self.download_one_verified(rclone, request)
+            } else {
+                self.download_one_verified_with_progress(rclone, request, |done, total_bytes| {
+                    progress_callback(DownloadProgress::progress(
+                        i,
+                        total,
+                        &request.source,
+                        done,
+                        total_bytes,
+                    ));
+                })
+            };
             match &result {
                 DownloadResult {
                     success: true,
@@ -283,6 +343,86 @@ impl DownloadQueue {
         }
 
         results
+    }
+
+    /// Execute a single download with hash verification and progress parsing
+    fn download_one_verified_with_progress<F>(
+        &self,
+        rclone: &RcloneRunner,
+        request: &DownloadRequest,
+        mut progress_callback: F,
+    ) -> DownloadResult
+    where
+        F: FnMut(u64, u64),
+    {
+        let args = self.build_args(request);
+        let args_ref: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+
+        let expected_size = request.expected_size;
+
+        let output = rclone.run_streaming_stderr(&args_ref, |line| {
+            if let Some((done, total)) = parse_transferred_progress(line, expected_size) {
+                progress_callback(done, total);
+            }
+        });
+
+        match output {
+            Ok(output) if output.success() => {
+                // Get file metadata
+                let dest_path = Path::new(&request.destination);
+                let size = std::fs::metadata(dest_path).ok().map(|m| m.len());
+
+                // Compute hash if verification enabled and we have an expected hash
+                let (hash, hash_type, hash_verified) =
+                    if self.verify_hashes && request.expected_hash.is_some() {
+                        let hash_type = request.expected_hash_type.as_deref().unwrap_or("sha256");
+                        match compute_file_hash(dest_path, hash_type) {
+                            Ok(computed) => {
+                                let verified = request
+                                    .expected_hash
+                                    .as_ref()
+                                    .map(|expected| expected.eq_ignore_ascii_case(&computed))
+                                    .unwrap_or(false);
+                                (Some(computed), Some(hash_type.to_string()), Some(verified))
+                            }
+                            Err(_) => (None, None, None),
+                        }
+                    } else {
+                        (None, None, None)
+                    };
+
+                DownloadResult {
+                    source: request.source.clone(),
+                    destination: request.destination.clone(),
+                    success: true,
+                    error: None,
+                    size,
+                    hash,
+                    hash_type,
+                    hash_verified,
+                }
+            }
+            Ok(output) => DownloadResult {
+                source: request.source.clone(),
+                destination: request.destination.clone(),
+                success: false,
+                error: Some(output.stderr_string()),
+                size: None,
+                hash: None,
+                hash_type: None,
+                hash_verified: None,
+            },
+            Err(e) => DownloadResult {
+                source: request.source.clone(),
+                destination: request.destination.clone(),
+                success: false,
+                error: Some(e.to_string()),
+                size: None,
+                hash: None,
+                hash_type: None,
+                hash_verified: None,
+            },
+        }
     }
 
     /// Execute a single download with hash verification
@@ -380,6 +520,12 @@ impl DownloadQueue {
     }
 }
 
+impl Default for DownloadQueue {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Compute hash of a file
 pub fn compute_file_hash(path: &Path, hash_type: &str) -> Result<String> {
     let mut file = File::open(path)?;
@@ -406,12 +552,99 @@ pub fn compute_file_hash(path: &Path, hash_type: &str) -> Result<String> {
     }
 }
 
+fn parse_transferred_progress(line: &str, expected_total: Option<u64>) -> Option<(u64, u64)> {
+    if let Some((done, total)) = parse_transferred_bytes(line) {
+        return Some((done, total));
+    }
+
+    if let (Some(percent), Some(total)) = (parse_transferred_percent(line), expected_total) {
+        let done = ((total as f64) * (percent / 100.0)).round() as u64;
+        return Some((done.min(total), total));
+    }
+
+    None
+}
+
+fn parse_transferred_bytes(line: &str) -> Option<(u64, u64)> {
+    let idx = line.find("Transferred:")?;
+    let after = line[idx + "Transferred:".len()..].trim();
+    let first = after.split(',').next()?.trim();
+    let mut parts = first.split('/');
+    let done_str = parts.next()?.trim();
+    let total_str = parts.next()?.trim();
+
+    let done = parse_size_to_bytes(done_str)?;
+    let total = parse_size_to_bytes(total_str)?;
+    Some((done, total))
+}
+
+fn parse_transferred_percent(line: &str) -> Option<f64> {
+    if !line.contains("Transferred:") {
+        return None;
+    }
+    for part in line.split(',') {
+        let trimmed = part.trim();
+        if let Some(percent_idx) = trimmed.find('%') {
+            let mut number = trimmed[..percent_idx].trim();
+            if let Some(rest) = number.strip_prefix("Transferred:") {
+                number = rest.trim();
+            }
+            if let Ok(value) = number.parse::<f64>() {
+                return Some(value);
+            }
+        }
+    }
+    None
+}
+
+fn parse_size_to_bytes(input: &str) -> Option<u64> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let mut parts = trimmed.split_whitespace();
+    let first = parts.next()?;
+    let (number_str, unit_str) = if let Some(unit) = parts.next() {
+        (first, unit)
+    } else if let Some(idx) = first.find(|c: char| c.is_ascii_alphabetic()) {
+        first.split_at(idx)
+    } else {
+        return None;
+    };
+
+    let number_str = number_str.replace(',', "");
+    let value: f64 = number_str.parse().ok()?;
+    let unit = unit_str.trim().trim_end_matches("/s").to_ascii_lowercase();
+
+    let multiplier = match unit.as_str() {
+        "b" | "byte" | "bytes" => 1.0,
+        "kb" => 1_000.0,
+        "kib" => 1_024.0,
+        "mb" => 1_000_000.0,
+        "mib" => 1_048_576.0,
+        "gb" => 1_000_000_000.0,
+        "gib" => 1_073_741_824.0,
+        "tb" => 1_000_000_000_000.0,
+        "tib" => 1_099_511_627_776.0,
+        "pb" => 1_000_000_000_000_000.0,
+        "pib" => 1_125_899_906_842_624.0,
+        "eb" => 1_000_000_000_000_000_000.0,
+        "eib" => 1_152_921_504_606_846_976.0,
+        _ => return None,
+    };
+
+    Some((value * multiplier) as u64)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::embedded::ExtractedBinary;
     use std::fs;
     use tempfile::tempdir;
+
+    #[cfg(windows)]
+    use crate::embedded::ExtractedBinary;
 
     #[test]
     fn test_build_args_copy() {
@@ -435,6 +668,31 @@ mod tests {
             .with_hash(Some("abc123".to_string()), Some("sha256".to_string()));
         assert_eq!(req.expected_hash, Some("abc123".to_string()));
         assert_eq!(req.expected_hash_type, Some("sha256".to_string()));
+    }
+
+    #[test]
+    fn test_parse_transferred_bytes() {
+        let line =
+            "Transferred:   1.00 MiB / 2.00 MiB, 50%, 1.00 MiB/s, ETA 1s";
+        let parsed = parse_transferred_bytes(line).unwrap();
+        assert_eq!(parsed.0, 1_048_576);
+        assert_eq!(parsed.1, 2_097_152);
+    }
+
+    #[test]
+    fn test_parse_transferred_bytes_compact_units() {
+        let line = "Transferred: 512KiB / 1MiB, 50%, 1MiB/s, ETA 1s";
+        let parsed = parse_transferred_bytes(line).unwrap();
+        assert_eq!(parsed.0, 524_288);
+        assert_eq!(parsed.1, 1_048_576);
+    }
+
+    #[test]
+    fn test_parse_transferred_percent_fallback() {
+        let line = "Transferred: 50%, 1.00 MiB/s, ETA 1s";
+        let parsed = parse_transferred_progress(line, Some(2_000)).unwrap();
+        assert_eq!(parsed.0, 1_000);
+        assert_eq!(parsed.1, 2_000);
     }
 
     #[test]
@@ -474,6 +732,7 @@ mod tests {
         assert_eq!(hash, "5eb63bbbe01eeed093cb22bb8f5acdc3");
     }
 
+    #[cfg(windows)]
     #[test]
     fn test_download_copyto_local() {
         let binary = ExtractedBinary::extract().expect("Failed to extract rclone");
@@ -498,6 +757,7 @@ mod tests {
         assert!(output.success());
     }
 
+    #[cfg(windows)]
     #[test]
     fn test_download_with_progress_callback() {
         // This test verifies the progress callback mechanism works correctly.

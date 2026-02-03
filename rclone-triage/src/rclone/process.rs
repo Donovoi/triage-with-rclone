@@ -4,10 +4,10 @@
 //! for hiding console windows and capturing output.
 
 use anyhow::{bail, Context, Result};
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::{self, Sender};
 use std::thread;
 use std::time::Duration;
 
@@ -210,15 +210,8 @@ impl RcloneRunner {
             capture_output(stderr, stderr_tx);
         });
 
-        // Stream stdout
-        let mut stdout_lines: Vec<String> = Vec::new();
-        let reader = BufReader::new(stdout);
-        for line in reader.lines() {
-            if let Ok(line) = line {
-                on_line(&line);
-                stdout_lines.push(line);
-            }
-        }
+        // Stream stdout (treat both \n and \r as line breaks for progress updates)
+        let stdout_lines = stream_lines(stdout, |line| on_line(line))?;
 
         let status = child.wait()?;
         stderr_thread.join().expect("stderr thread panicked");
@@ -227,6 +220,41 @@ impl RcloneRunner {
         Ok(RcloneOutput {
             stdout: stdout_lines,
             stderr,
+            status: status.code().unwrap_or(-1),
+            timed_out: false,
+        })
+    }
+
+    /// Run rclone with streaming callback for stderr (useful for progress output)
+    pub fn run_streaming_stderr<F>(&self, args: &[&str], mut on_line: F) -> Result<RcloneOutput>
+    where
+        F: FnMut(&str),
+    {
+        let mut cmd = self.build_command_with_env(args, None);
+
+        let mut child = cmd
+            .spawn()
+            .with_context(|| format!("Failed to spawn rclone: {:?}", self.exe_path))?;
+
+        let stdout = child.stdout.take().expect("stdout piped");
+        let stderr = child.stderr.take().expect("stderr piped");
+
+        // Capture stdout in background
+        let (stdout_tx, stdout_rx) = mpsc::channel();
+        let stdout_thread = thread::spawn(move || {
+            capture_output(stdout, stdout_tx);
+        });
+
+        // Stream stderr in foreground
+        let stderr_lines = stream_lines(stderr, |line| on_line(line))?;
+
+        let status = child.wait()?;
+        stdout_thread.join().expect("stdout thread panicked");
+        let stdout: Vec<String> = stdout_rx.try_iter().collect();
+
+        Ok(RcloneOutput {
+            stdout,
+            stderr: stderr_lines,
             status: status.code().unwrap_or(-1),
             timed_out: false,
         })
@@ -298,11 +326,59 @@ impl RcloneRunner {
 /// Capture output from a reader and send it through a channel
 fn capture_output<R: std::io::Read>(reader: R, tx: Sender<String>) {
     let reader = BufReader::new(reader);
-    for line in reader.lines() {
-        if let Ok(line) = line {
-            let _ = tx.send(line);
+    for line in reader.lines().flatten() {
+        let _ = tx.send(line);
+    }
+}
+
+fn stream_lines<R: Read, F: FnMut(&str)>(mut reader: R, mut on_line: F) -> std::io::Result<Vec<String>> {
+    let mut lines = Vec::new();
+    let mut buffer = [0u8; 1024];
+    let mut current: Vec<u8> = Vec::new();
+    let mut last_was_cr = false;
+
+    loop {
+        let read = reader.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        for &byte in &buffer[..read] {
+            match byte {
+                b'\n' => {
+                    if last_was_cr {
+                        last_was_cr = false;
+                        continue;
+                    }
+                    if !current.is_empty() {
+                        let line = String::from_utf8_lossy(&current).to_string();
+                        on_line(&line);
+                        lines.push(line);
+                        current.clear();
+                    }
+                }
+                b'\r' => {
+                    last_was_cr = true;
+                    if !current.is_empty() {
+                        let line = String::from_utf8_lossy(&current).to_string();
+                        on_line(&line);
+                        lines.push(line);
+                        current.clear();
+                    }
+                }
+                _ => {
+                    last_was_cr = false;
+                    current.push(byte);
+                }
+            }
         }
     }
+    if !current.is_empty() {
+        let line = String::from_utf8_lossy(&current).to_string();
+        on_line(&line);
+        lines.push(line);
+    }
+
+    Ok(lines)
 }
 
 /// Wait for a child process with timeout
@@ -325,7 +401,7 @@ fn wait_with_timeout(child: &mut Child, timeout: Duration) -> Result<(ExitStatus
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, windows))]
 mod tests {
     use super::*;
     use crate::embedded::ExtractedBinary;

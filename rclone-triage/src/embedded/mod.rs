@@ -8,7 +8,6 @@ use rust_embed::RustEmbed;
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicBool;
 
 /// Embedded assets (rclone.exe for Windows)
 #[derive(RustEmbed)]
@@ -22,8 +21,6 @@ pub const RCLONE_EXE_SHA256: &str =
 /// Rclone version embedded
 pub const RCLONE_VERSION: &str = "1.68.2";
 
-/// Track whether cleanup has been registered
-static CLEANUP_REGISTERED: AtomicBool = AtomicBool::new(false);
 
 /// Manages the extracted rclone binary
 pub struct ExtractedBinary {
