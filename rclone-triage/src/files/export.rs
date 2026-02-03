@@ -89,7 +89,7 @@ pub fn export_listing_xlsx(entries: &[FileEntry], path: impl AsRef<Path>) -> Res
 
         if let Some(modified) = entry.modified {
             worksheet
-                .write_string(row, 2, &modified.to_rfc3339())
+                .write_string(row, 2, modified.to_rfc3339())
                 .context("Failed to write modified")?;
         }
 

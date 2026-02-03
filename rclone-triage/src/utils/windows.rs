@@ -17,7 +17,7 @@ pub fn window_exists(title_substring: &str) -> Result<bool> {
             bail!("Failed to query window titles");
         }
         let text = String::from_utf8_lossy(&output.stdout);
-        return Ok(text.trim() == "1");
+        Ok(text.trim() == "1")
     }
 
     #[cfg(not(windows))]
@@ -57,7 +57,7 @@ foreach ($p in $processes) {{
         if !output.status.success() {
             bail!("Failed to close window");
         }
-        return Ok(());
+        Ok(())
     }
 
     #[cfg(not(windows))]

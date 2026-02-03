@@ -7,7 +7,7 @@ where
 {
     let mut remaining = seconds;
     while remaining > 0 {
-        if remaining % 5 == 0 {
+        if remaining.is_multiple_of(5) {
             if let Some(ref mut cb) = on_tick {
                 cb(remaining);
             }
