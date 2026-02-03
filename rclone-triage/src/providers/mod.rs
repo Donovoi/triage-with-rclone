@@ -5,6 +5,7 @@
 pub mod auth;
 pub mod browser;
 pub mod config;
+pub mod credentials;
 pub mod session;
 
 use serde::{Deserialize, Serialize};

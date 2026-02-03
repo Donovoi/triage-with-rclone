@@ -3,8 +3,9 @@
 use ratatui::Frame;
 
 use crate::ui::screens::{
-    auth::AuthScreen, case_setup::CaseSetupScreen, download::DownloadScreen, files::FilesScreen,
-    provider_select::ProviderSelectScreen, report::ReportScreen, welcome::WelcomeScreen,
+    auth::AuthScreen, browser_select::BrowserSelectScreen, case_setup::CaseSetupScreen,
+    download::DownloadScreen, files::FilesScreen, provider_select::ProviderSelectScreen,
+    report::ReportScreen, welcome::WelcomeScreen,
 };
 use crate::ui::{App, AppState};
 
@@ -25,6 +26,20 @@ pub fn render_state(frame: &mut Frame, app: &App) {
                 .collect::<Vec<_>>();
             let mut screen = ProviderSelectScreen::new(names);
             screen.list.selected = app.provider_selected;
+            frame.render_widget(&screen, area);
+        }
+        AppState::BrowserSelect => {
+            let mut names = Vec::new();
+            names.push("System Default".to_string());
+            for browser in &app.browsers {
+                if browser.is_default {
+                    names.push(format!("{} (default)", browser.display_name()));
+                } else {
+                    names.push(browser.display_name().to_string());
+                }
+            }
+            let mut screen = BrowserSelectScreen::new(names);
+            screen.list.selected = app.browser_selected;
             frame.render_widget(&screen, area);
         }
         AppState::Authenticating => {
@@ -93,6 +108,7 @@ mod tests {
         for state in [
             AppState::CaseSetup,
             AppState::ProviderSelect,
+            AppState::BrowserSelect,
             AppState::Authenticating,
             AppState::FileList,
             AppState::Downloading,

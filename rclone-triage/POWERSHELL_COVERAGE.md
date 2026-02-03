@@ -76,7 +76,8 @@ This document tracks the implementation coverage of the Rust `rclone-triage` aga
 | `Browser` class                         | `Browser` struct                       | ✅         |
 | `Update-BrowserObjects`                 | `BrowserDetector::detect_all()`        | ✅         |
 | Browser switching/detection             | `BrowserDetector::get_default_browser` | ✅         |
-| `Set-CustomOAuthCredentials`            | N/A                                    | ❌ MISSING |
+| Browser selection (TUI)                 | `BrowserSelectScreen`                  | ✅         |
+| `Set-CustomOAuthCredentials`            | `CustomOAuthConfig` (credentials file) | ✅         |
 | `Set-CustomOAuthCredentialsInteractive` | N/A                                    | ❌ MISSING |
 | `Get-RcloneOAuthCredentials`            | N/A                                    | ❌ MISSING |
 | `Start-RcloneSmartAuth` (SSO)           | `smart_authenticate()`                 | ✅         |
@@ -91,7 +92,7 @@ This document tracks the implementation coverage of the Rust `rclone-triage` aga
 
 **Remaining Gaps:**
 
-- Custom OAuth credentials to avoid rate limiting
+- Interactive custom OAuth credential setup
 
 ---
 
@@ -278,7 +279,7 @@ This document tracks the implementation coverage of the Rust `rclone-triage` aga
 
 ### High Priority (Core Functionality Gaps)
 
-1. **Custom OAuth Credentials** - Prevents rate limiting issues
+1. ~~**Custom OAuth Credentials**~~ - ✅ IMPLEMENTED via custom OAuth config file
 2. ~~**Provider User Info APIs**~~ - ✅ IMPLEMENTED via JWT parsing
 3. ~~**rclone Config Parsing**~~ - ✅ IMPLEMENTED via `ParsedConfig`
 4. ~~**JWT Token Decoding**~~ - ✅ IMPLEMENTED via `UserInfo::from_jwt()`
@@ -335,13 +336,13 @@ The Rust implementation has a solid foundation with:
 
 But lacks:
 
-- ❌ Custom OAuth credentials
 - ❌ Mobile device authentication
 - ❌ WiFi Access Point creation
 - ❌ Excel export
 
 Recently added:
 
+- ✅ Custom OAuth credentials (config file)
 - ✅ Multi-browser authentication workflow
 - ✅ Provider user info extraction (JWT)
 - ✅ Advanced rclone config parsing

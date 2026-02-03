@@ -45,31 +45,45 @@ fn perform_auth_flow<B: ratatui::backend::Backend>(
     let runner = crate::rclone::RcloneRunner::new(binary.path()).with_config(config.path());
 
     if let Some(provider) = app.chosen_provider {
-        let remote_name = provider.short_name();
-
-        // Detect SSO sessions first
-        let sso_status = crate::providers::auth::detect_sso_sessions(provider);
-        if sso_status.has_sessions {
+        // If user selected a browser, use it; otherwise use smart auth (SSO + interactive)
+        let auth_result = if let Some(ref browser) = app.chosen_browser {
             app.auth_status = format!(
-                "Found existing {} sessions - attempting SSO...",
-                provider.display_name()
+                "Authenticating {} via {}...",
+                provider.display_name(),
+                browser.display_name()
             );
-            app.log_info(format!(
-                "Found {} browser(s) with {} sessions - attempting SSO auth",
-                sso_status.browsers_with_sessions.len(),
-                provider.display_name()
-            ));
+            terminal.draw(|f| render_state(f, app))?;
+
+            crate::providers::auth::authenticate_with_browser_choice(
+                provider, browser, &runner, &config,
+            )
         } else {
-            app.auth_status = format!("Authenticating {}...", provider.display_name());
-            app.log_info(format!(
-                "No existing sessions for {} - using interactive auth",
-                provider.display_name()
-            ));
-        }
+            // Detect SSO sessions first
+            let sso_status = crate::providers::auth::detect_sso_sessions(provider);
+            if sso_status.has_sessions {
+                app.auth_status = format!(
+                    "Found existing {} sessions - attempting SSO...",
+                    provider.display_name()
+                );
+                app.log_info(format!(
+                    "Found {} browser(s) with {} sessions - attempting SSO auth",
+                    sso_status.browsers_with_sessions.len(),
+                    provider.display_name()
+                ));
+            } else {
+                app.auth_status = format!("Authenticating {}...", provider.display_name());
+                app.log_info(format!(
+                    "No existing sessions for {} - using interactive auth",
+                    provider.display_name()
+                ));
+            }
+            terminal.draw(|f| render_state(f, app))?;
+
+            crate::providers::auth::smart_authenticate(provider, &runner, &config, provider.short_name())
+        };
         terminal.draw(|f| render_state(f, app))?;
 
-        // Use smart_authenticate which tries SSO first, then falls back to interactive
-        match crate::providers::auth::smart_authenticate(provider, &runner, &config, remote_name) {
+        match auth_result {
             Ok(result) => {
                 let auth_type = if result.was_silent {
                     "SSO"
@@ -86,15 +100,18 @@ fn perform_auth_flow<B: ratatui::backend::Backend>(
                 if let Some(ref mut case) = app.case {
                     case.add_provider(crate::case::AuthenticatedProvider {
                         provider,
-                        remote_name: remote_name.to_string(),
-                        user_info: None, // TODO: Get from rclone about
+                        remote_name: result.remote_name.clone(),
+                        user_info: result.user_info.clone(),
                     });
                 }
+
+                // Persist remote name for later listing/download
+                app.chosen_remote = Some(result.remote_name.clone());
 
                 app.auth_status = "Listing files...".to_string();
                 terminal.draw(|f| render_state(f, app))?;
 
-                match crate::files::list_path(&runner, &format!("{}:", remote_name)) {
+                match crate::files::list_path(&runner, &format!("{}:", result.remote_name)) {
                     Ok(entries) => {
                         // Export file listing to CSV
                         if let Some(ref dirs) = app.directories {
@@ -164,7 +181,10 @@ fn perform_download_flow<B: ratatui::backend::Backend>(
     let runner = crate::rclone::RcloneRunner::new(binary.path()).with_config(config.path());
 
     if let Some(provider) = app.chosen_provider {
-        let remote_name = provider.short_name();
+        let remote_name = app
+            .chosen_remote
+            .as_deref()
+            .unwrap_or(provider.short_name());
 
         // Use case downloads directory if available
         let dest_dir = app
@@ -444,9 +464,12 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                             }
                         } else if app.state == crate::ui::AppState::ProviderSelect {
                             app.confirm_provider();
+                            app.refresh_browsers();
+                            app.advance(); // Move to BrowserSelect
+                        } else if app.state == crate::ui::AppState::BrowserSelect {
+                            app.confirm_browser();
                             app.advance(); // Move to Authenticating
 
-                            // Perform auth flow
                             if app.state == crate::ui::AppState::Authenticating {
                                 perform_auth_flow(app, &mut terminal)?;
                             }
@@ -470,6 +493,8 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                     KeyCode::Up => {
                         if app.state == crate::ui::AppState::ProviderSelect {
                             app.provider_up();
+                        } else if app.state == crate::ui::AppState::BrowserSelect {
+                            app.browser_up();
                         } else if app.state == crate::ui::AppState::FileList {
                             app.file_up();
                         }
@@ -477,6 +502,8 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                     KeyCode::Down => {
                         if app.state == crate::ui::AppState::ProviderSelect {
                             app.provider_down();
+                        } else if app.state == crate::ui::AppState::BrowserSelect {
+                            app.browser_down();
                         } else if app.state == crate::ui::AppState::FileList {
                             app.file_down();
                         }

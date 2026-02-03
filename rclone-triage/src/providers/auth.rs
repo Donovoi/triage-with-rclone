@@ -5,7 +5,8 @@
 //! Includes SSO/Silent authentication by detecting existing browser sessions.
 
 use super::browser::{Browser, BrowserAuthSession, BrowserDetector};
-use super::session::{browsers_with_sessions, BrowserSession};
+use super::credentials::{custom_oauth_credentials_for, OAuthCredentials};
+use super::session::{browsers_with_sessions, BrowserSession, SessionExtractor};
 use super::{config::ProviderConfig, CloudProvider};
 use crate::rclone::{OAuthFlow, RcloneConfig, RcloneRunner};
 use anyhow::{bail, Context, Result};
@@ -38,6 +39,71 @@ pub struct SsoStatus {
     pub recommended_browser: Option<Browser>,
 }
 
+fn resolve_custom_oauth(provider: CloudProvider) -> Option<OAuthCredentials> {
+    match custom_oauth_credentials_for(provider) {
+        Ok(Some(creds)) => {
+            tracing::info!("Using custom OAuth credentials for {}", provider);
+            Some(creds)
+        }
+        Ok(None) => None,
+        Err(e) => {
+            tracing::warn!("Failed to load custom OAuth credentials: {}", e);
+            None
+        }
+    }
+}
+
+fn build_rclone_auth_args(
+    provider: CloudProvider,
+    remote_name: &str,
+    non_interactive: bool,
+) -> Vec<String> {
+    let mut args = vec![
+        "config".to_string(),
+        "create".to_string(),
+        remote_name.to_string(),
+        provider.rclone_type().to_string(),
+    ];
+
+    if let Some(creds) = resolve_custom_oauth(provider) {
+        if !creds.client_id.trim().is_empty() {
+            args.push("client_id".to_string());
+            args.push(creds.client_id);
+        }
+        if let Some(secret) = creds.client_secret {
+            if !secret.trim().is_empty() {
+                args.push("client_secret".to_string());
+                args.push(secret);
+            }
+        }
+    }
+
+    if non_interactive {
+        args.push("--non-interactive".to_string());
+    }
+
+    args
+}
+
+fn run_rclone_with_browser_env(
+    browser: &Browser,
+    rclone: &RcloneRunner,
+    args: &[&str],
+) -> Result<crate::rclone::process::RcloneOutput> {
+    if let Some(ref path) = browser.executable_path {
+        let path_str = path.to_string_lossy().to_string();
+        let envs = vec![
+            ("BROWSER".to_string(), path_str.clone()),
+            ("RCLONE_BROWSER".to_string(), path_str),
+        ];
+        let envs_ref: Vec<(&str, &str)> =
+            envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        return rclone.run_with_env(args, &envs_ref);
+    }
+
+    rclone.run(args)
+}
+
 /// Authenticate to a cloud provider
 pub fn authenticate(
     provider: CloudProvider,
@@ -67,13 +133,9 @@ pub fn authenticate(
 
     // Use rclone to complete the config with the auth code
     // rclone config create <name> <type> config_token=<token>
-    let output = rclone.run(&[
-        "config",
-        "create",
-        remote_name,
-        provider.rclone_type(),
-        "--non-interactive",
-    ])?;
+    let args = build_rclone_auth_args(provider, remote_name, true);
+    let args_ref: Vec<&str> = args.iter().map(String::as_str).collect();
+    let output = rclone.run(&args_ref)?;
 
     if !output.success() {
         bail!("Failed to create rclone remote: {}", output.stderr_string());
@@ -101,7 +163,9 @@ pub fn authenticate_with_rclone(
     remote_name: &str,
 ) -> Result<AuthResult> {
     // Use rclone config create with interactive OAuth
-    let output = rclone.run(&["config", "create", remote_name, provider.rclone_type()])?;
+    let args = build_rclone_auth_args(provider, remote_name, false);
+    let args_ref: Vec<&str> = args.iter().map(String::as_str).collect();
+    let output = rclone.run(&args_ref)?;
 
     if !output.success() {
         bail!(
@@ -156,12 +220,9 @@ pub fn authenticate_with_browser(
 
     // Authenticate using rclone's flow
     // The default browser will be used by rclone - we track which browser was intended
-    let output = rclone.run(&[
-        "config",
-        "create",
-        &temp_remote_name,
-        provider.rclone_type(),
-    ])?;
+    let args = build_rclone_auth_args(provider, &temp_remote_name, false);
+    let args_ref: Vec<&str> = args.iter().map(String::as_str).collect();
+    let output = run_rclone_with_browser_env(browser, rclone, &args_ref)?;
 
     if !output.success() {
         bail!(
@@ -385,7 +446,9 @@ pub fn authenticate_with_sso(
 
     // Use rclone config create - the browser already has the session,
     // so OAuth should complete quickly/silently
-    let output = rclone.run(&["config", "create", &remote_name, provider.rclone_type()])?;
+    let args = build_rclone_auth_args(provider, &remote_name, false);
+    let args_ref: Vec<&str> = args.iter().map(String::as_str).collect();
+    let output = run_rclone_with_browser_env(browser, rclone, &args_ref)?;
 
     if !output.success() {
         bail!(
@@ -471,6 +534,31 @@ pub fn smart_authenticate(
 
     // Step 3: Fall back to normal authentication
     authenticate_with_rclone(provider, rclone, config, remote_name)
+}
+
+/// Authenticate using a user-selected browser
+///
+/// Tries SSO with that browser if a valid session exists,
+/// otherwise falls back to interactive auth in that browser.
+pub fn authenticate_with_browser_choice(
+    provider: CloudProvider,
+    browser: &Browser,
+    rclone: &RcloneRunner,
+    config: &RcloneConfig,
+) -> Result<AuthResult> {
+    if let Ok(extractor) = SessionExtractor::new() {
+        if let Ok(session) = extractor.extract_session(browser, provider) {
+            if session.is_valid {
+                if let Ok(result) =
+                    authenticate_with_sso(provider, browser, &session, rclone, config)
+                {
+                    return Ok(result);
+                }
+            }
+        }
+    }
+
+    authenticate_with_browser(provider, browser, rclone, config)
 }
 
 /// Get SSO status summary for display in TUI

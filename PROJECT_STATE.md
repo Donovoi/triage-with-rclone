@@ -24,8 +24,8 @@ All implementation steps are complete and wired together:
 
 ### Test Results
 
-- **118 tests passing** (2026-02-02)
-  - 100 unit tests in library
+- **128 tests passing** (2026-02-02)
+  - 110 unit tests in library
   - 18 integration tests
 - Run with: `cargo test --release -- --test-threads=1`
 - Windows cross-compilation verified (60MB PE32+ executable)
@@ -36,6 +36,7 @@ The TUI is fully wired with end-to-end flow:
 
 - **CaseSetup** → Enter session name (or blank for auto-generated)
 - **ProviderSelect** → Arrow keys to select, Enter to authenticate
+- **BrowserSelect** → Choose system default or a specific browser
 - **Authenticating** → Opens browser for OAuth, lists files when complete
 - **FileList** → Space to select files, 'a' for all, Enter to download
 - **Downloading** → Shows progress per file

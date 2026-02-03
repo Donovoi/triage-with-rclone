@@ -7,6 +7,7 @@ use crate::case::Case;
 use crate::forensics::changes::ChangeTracker;
 use crate::forensics::logger::ForensicLogger;
 use crate::forensics::state::SystemStateSnapshot;
+use crate::providers::browser::Browser;
 use crate::providers::CloudProvider;
 use crate::ui::widgets::SessionInputForm;
 use anyhow::{bail, Result};
@@ -25,6 +26,7 @@ pub mod widgets;
 pub enum AppState {
     CaseSetup,
     ProviderSelect,
+    BrowserSelect,
     Authenticating,
     FileList,
     Downloading,
@@ -37,7 +39,8 @@ impl AppState {
     pub fn next(self) -> Self {
         match self {
             AppState::CaseSetup => AppState::ProviderSelect,
-            AppState::ProviderSelect => AppState::Authenticating,
+            AppState::ProviderSelect => AppState::BrowserSelect,
+            AppState::BrowserSelect => AppState::Authenticating,
             AppState::Authenticating => AppState::FileList,
             AppState::FileList => AppState::Downloading,
             AppState::Downloading => AppState::Complete,
@@ -51,7 +54,8 @@ impl AppState {
         match self {
             AppState::CaseSetup => AppState::CaseSetup,
             AppState::ProviderSelect => AppState::CaseSetup,
-            AppState::Authenticating => AppState::ProviderSelect,
+            AppState::BrowserSelect => AppState::ProviderSelect,
+            AppState::Authenticating => AppState::BrowserSelect,
             AppState::FileList => AppState::Authenticating,
             AppState::Downloading => AppState::FileList,
             AppState::Complete => AppState::Downloading,
@@ -82,6 +86,14 @@ pub struct App {
     pub provider_selected: usize,
     /// Chosen provider (persisted for auth)
     pub chosen_provider: Option<CloudProvider>,
+    /// Browser list for selection (installed browsers)
+    pub browsers: Vec<Browser>,
+    /// Selected browser index (0 = system default)
+    pub browser_selected: usize,
+    /// Chosen browser (None = system default)
+    pub chosen_browser: Option<Browser>,
+    /// Chosen remote name from auth (may include browser prefix)
+    pub chosen_remote: Option<String>,
     /// Auth status message
     pub auth_status: String,
     /// File listing entries (paths only, for display)
@@ -120,6 +132,10 @@ impl App {
             providers: CloudProvider::all().to_vec(),
             provider_selected: 0,
             chosen_provider: None,
+            browsers: crate::providers::auth::get_available_browsers(),
+            browser_selected: 0,
+            chosen_browser: None,
+            chosen_remote: None,
             auth_status: String::new(),
             file_entries: Vec::new(),
             file_entries_full: Vec::new(),
@@ -290,6 +306,61 @@ impl App {
     #[allow(dead_code)]
     pub fn confirm_provider(&mut self) {
         self.chosen_provider = self.selected_provider();
+        self.chosen_remote = None;
+    }
+
+    /// Refresh browser list and reset selection
+    #[allow(dead_code)]
+    pub fn refresh_browsers(&mut self) {
+        self.browsers = crate::providers::auth::get_available_browsers();
+        self.browser_selected = 0;
+        self.chosen_browser = None;
+    }
+
+    /// Move browser selection up
+    #[allow(dead_code)]
+    pub fn browser_up(&mut self) {
+        if self.state != AppState::BrowserSelect {
+            return;
+        }
+        let total = self.browsers.len() + 1; // +1 for "System Default"
+        if total == 0 {
+            return;
+        }
+        if self.browser_selected == 0 {
+            self.browser_selected = total - 1;
+        } else {
+            self.browser_selected -= 1;
+        }
+    }
+
+    /// Move browser selection down
+    #[allow(dead_code)]
+    pub fn browser_down(&mut self) {
+        if self.state != AppState::BrowserSelect {
+            return;
+        }
+        let total = self.browsers.len() + 1;
+        if total == 0 {
+            return;
+        }
+        self.browser_selected = (self.browser_selected + 1) % total;
+    }
+
+    /// Get the currently selected browser (None = system default)
+    #[allow(dead_code)]
+    pub fn selected_browser(&self) -> Option<Browser> {
+        if self.browser_selected == 0 {
+            None
+        } else {
+            self.browsers.get(self.browser_selected - 1).cloned()
+        }
+    }
+
+    /// Persist the current browser selection for authentication
+    #[allow(dead_code)]
+    pub fn confirm_browser(&mut self) {
+        self.chosen_browser = self.selected_browser();
     }
 
     /// Update SSO status for the selected provider
@@ -387,7 +458,8 @@ impl App {
     pub fn is_valid_transition(from: AppState, to: AppState) -> bool {
         match (from, to) {
             (AppState::CaseSetup, AppState::ProviderSelect) => true,
-            (AppState::ProviderSelect, AppState::Authenticating) => true,
+            (AppState::ProviderSelect, AppState::BrowserSelect) => true,
+            (AppState::BrowserSelect, AppState::Authenticating) => true,
             (AppState::Authenticating, AppState::FileList) => true,
             (AppState::FileList, AppState::Downloading) => true,
             (AppState::Downloading, AppState::Complete) => true,
@@ -406,6 +478,8 @@ mod tests {
         let mut state = AppState::CaseSetup;
         state = state.next();
         assert_eq!(state, AppState::ProviderSelect);
+        state = state.next();
+        assert_eq!(state, AppState::BrowserSelect);
         state = state.next();
         assert_eq!(state, AppState::Authenticating);
         state = state.next();
@@ -490,10 +564,28 @@ mod tests {
             AppState::CaseSetup,
             AppState::ProviderSelect
         ));
+        assert!(App::is_valid_transition(
+            AppState::ProviderSelect,
+            AppState::BrowserSelect
+        ));
         assert!(!App::is_valid_transition(
             AppState::CaseSetup,
             AppState::FileList
         ));
+    }
+
+    #[test]
+    fn test_browser_selection() {
+        let mut app = App::new();
+        app.state = AppState::BrowserSelect;
+        app.browsers = vec![Browser::new(crate::providers::browser::BrowserType::Chrome)];
+        app.browser_selected = 0;
+        app.browser_down();
+        assert_eq!(app.browser_selected, 1);
+        app.browser_up();
+        assert_eq!(app.browser_selected, 0);
+        app.confirm_browser();
+        assert!(app.chosen_browser.is_none());
     }
 
     #[test]
