@@ -19,6 +19,13 @@ jobs:
           workspaces: rclone-triage -> rclone-triage/target
       - name: Build (release)
         run: cargo build --release
+      - name: Upload Windows EXE
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rclone-triage-windows-exe
+          path: rclone-triage/target/release/rclone-triage.exe
+          if-no-files-found: warn
       - name: Run tests
         run: cargo test --release -- --test-threads=1
       - name: Clippy
