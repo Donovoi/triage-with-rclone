@@ -195,8 +195,6 @@ impl BrowserDetector {
     /// Detect browsers on Windows
     #[cfg(windows)]
     fn detect_windows(browser_type: BrowserType) -> Option<Browser> {
-        use std::path::Path;
-
         let mut browser = Browser::new(browser_type);
 
         // Define paths for each browser

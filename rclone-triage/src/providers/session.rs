@@ -400,18 +400,10 @@ impl SessionExtractor {
     /// Decrypt v10/v11 Chromium cookie on Windows using DPAPI
     #[cfg(windows)]
     fn decrypt_chromium_v10_windows(&self, encrypted: &[u8]) -> Result<String> {
-        use aes_gcm::{
-            aead::{Aead, KeyInit},
-            Aes256Gcm, Nonce,
-        };
-
         // The encrypted data format is: nonce (12 bytes) + ciphertext + tag (16 bytes)
         if encrypted.len() < 28 {
             bail!("Encrypted data too short");
         }
-
-        let nonce = &encrypted[..12];
-        let ciphertext = &encrypted[12..];
 
         // Get the encryption key from Local State file
         // For now, return empty - full implementation would read and decrypt Local State
