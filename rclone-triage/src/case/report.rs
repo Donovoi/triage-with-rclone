@@ -34,8 +34,9 @@ pub fn generate_report(
     } else {
         for p in &case.providers {
             report.push_str(&format!(
-                "- {} (remote: {}) {}\n",
-                p.provider,
+                "- {} [{}] (remote: {}) {}\n",
+                p.provider_name,
+                p.provider_id,
                 p.remote_name,
                 p.user_info.clone().unwrap_or_default()
             ));

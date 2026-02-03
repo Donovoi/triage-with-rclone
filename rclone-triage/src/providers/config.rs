@@ -39,6 +39,8 @@ impl ProviderConfig {
             CloudProvider::Dropbox => Self::dropbox(),
             CloudProvider::Box => Self::box_(),
             CloudProvider::ICloud => Self::icloud(),
+            CloudProvider::GooglePhotos => Self::google_photos(),
+            CloudProvider::PCloud => Self::pcloud(),
         }
     }
 
@@ -122,6 +124,38 @@ impl ProviderConfig {
         }
     }
 
+    /// Google Photos configuration
+    fn google_photos() -> Self {
+        Self {
+            provider: CloudProvider::GooglePhotos,
+            oauth: OAuthConfig {
+                // Rclone's default client ID
+                client_id: "202264815644.apps.googleusercontent.com",
+                client_secret: "X4Z3ca8xfWDb1Voo-F9a7ZxJ",
+                auth_url: "https://accounts.google.com/o/oauth2/auth",
+                token_url: "https://oauth2.googleapis.com/token",
+                scopes: &["https://www.googleapis.com/auth/photoslibrary.readonly"],
+            },
+            rclone_options: &[],
+        }
+    }
+
+    /// pCloud configuration
+    fn pcloud() -> Self {
+        Self {
+            provider: CloudProvider::PCloud,
+            oauth: OAuthConfig {
+                // Rclone's default client ID
+                client_id: "pcp-ctrl",
+                client_secret: "",
+                auth_url: "https://my.pcloud.com/oauth2/authorize",
+                token_url: "https://api.pcloud.com/oauth2_token",
+                scopes: &[],
+            },
+            rclone_options: &[],
+        }
+    }
+
     /// Check if this provider uses OAuth
     pub fn uses_oauth(&self) -> bool {
         !self.oauth.client_id.is_empty()
@@ -200,6 +234,8 @@ mod tests {
         assert!(ProviderConfig::for_provider(CloudProvider::OneDrive).uses_oauth());
         assert!(ProviderConfig::for_provider(CloudProvider::Dropbox).uses_oauth());
         assert!(ProviderConfig::for_provider(CloudProvider::Box).uses_oauth());
+        assert!(ProviderConfig::for_provider(CloudProvider::GooglePhotos).uses_oauth());
+        assert!(ProviderConfig::for_provider(CloudProvider::PCloud).uses_oauth());
         // iCloud doesn't use OAuth
         assert!(!ProviderConfig::for_provider(CloudProvider::ICloud).uses_oauth());
     }

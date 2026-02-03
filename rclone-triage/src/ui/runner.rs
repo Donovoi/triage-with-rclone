@@ -17,10 +17,9 @@ use crate::ui::screens::welcome::WelcomeScreen;
 use crate::ui::{render::render_state, App};
 
 fn try_refresh_providers(app: &mut App) {
-    let allow = cfg!(windows)
-        || std::env::var("RCLONE_TRIAGE_DYNAMIC_PROVIDERS")
-            .map(|v| v != "0")
-            .unwrap_or(false);
+    let allow = std::env::var("RCLONE_TRIAGE_DYNAMIC_PROVIDERS")
+        .map(|v| v != "0")
+        .unwrap_or(true);
 
     if !allow {
         return;
@@ -40,7 +39,7 @@ fn try_refresh_providers(app: &mut App) {
     }
 
     let runner = crate::rclone::RcloneRunner::new(binary.path());
-    match crate::providers::discovery::supported_providers_from_rclone(&runner) {
+    match crate::providers::discovery::providers_from_rclone(&runner) {
         Ok(providers) if !providers.is_empty() => {
             app.providers = providers;
         }
@@ -88,42 +87,93 @@ fn perform_auth_flow<B: ratatui::backend::Backend>(
 
     let runner = crate::rclone::RcloneRunner::new(binary.path()).with_config(config.path());
 
-    if let Some(provider) = app.chosen_provider {
+    if let Some(provider) = app.chosen_provider.clone() {
+        struct AuthOutcome {
+            remote_name: String,
+            user_info: Option<String>,
+            was_silent: bool,
+        }
+
         // If user selected a browser, use it; otherwise use smart auth (SSO + interactive)
-        let auth_result = if let Some(ref browser) = app.chosen_browser {
-            app.auth_status = format!(
-                "Authenticating {} via {}...",
-                provider.display_name(),
-                browser.display_name()
-            );
-            terminal.draw(|f| render_state(f, app))?;
-
-            crate::providers::auth::authenticate_with_browser_choice(
-                provider, browser, &runner, &config,
-            )
-        } else {
-            // Detect SSO sessions first
-            let sso_status = crate::providers::auth::detect_sso_sessions(provider);
-            if sso_status.has_sessions {
+        let auth_result: Result<AuthOutcome> = if let Some(known) = provider.known {
+            if let Some(ref browser) = app.chosen_browser {
                 app.auth_status = format!(
-                    "Found existing {} sessions - attempting SSO...",
-                    provider.display_name()
+                    "Authenticating {} via {}...",
+                    provider.display_name(),
+                    browser.display_name()
                 );
-                app.log_info(format!(
-                    "Found {} browser(s) with {} sessions - attempting SSO auth",
-                    sso_status.browsers_with_sessions.len(),
-                    provider.display_name()
-                ));
+                terminal.draw(|f| render_state(f, app))?;
+
+                crate::providers::auth::authenticate_with_browser_choice(
+                    known, browser, &runner, &config,
+                )
+                .map(|result| AuthOutcome {
+                    remote_name: result.remote_name,
+                    user_info: result.user_info,
+                    was_silent: result.was_silent,
+                })
             } else {
-                app.auth_status = format!("Authenticating {}...", provider.display_name());
-                app.log_info(format!(
-                    "No existing sessions for {} - using interactive auth",
-                    provider.display_name()
-                ));
+                // Detect SSO sessions first
+                let sso_status = crate::providers::auth::detect_sso_sessions(known);
+                if sso_status.has_sessions {
+                    app.auth_status = format!(
+                        "Found existing {} sessions - attempting SSO...",
+                        provider.display_name()
+                    );
+                    app.log_info(format!(
+                        "Found {} browser(s) with {} sessions - attempting SSO auth",
+                        sso_status.browsers_with_sessions.len(),
+                        provider.display_name()
+                    ));
+                } else {
+                    app.auth_status = format!("Authenticating {}...", provider.display_name());
+                    app.log_info(format!(
+                        "No existing sessions for {} - using interactive auth",
+                        provider.display_name()
+                    ));
+                }
+                terminal.draw(|f| render_state(f, app))?;
+
+                crate::providers::auth::smart_authenticate(
+                    known,
+                    &runner,
+                    &config,
+                    provider.short_name(),
+                )
+                .map(|result| AuthOutcome {
+                    remote_name: result.remote_name,
+                    user_info: result.user_info,
+                    was_silent: result.was_silent,
+                })
             }
+        } else {
+            app.auth_status = format!("Authenticating {}...", provider.display_name());
+            app.log_info(format!(
+                "Using generic rclone auth for {}",
+                provider.display_name()
+            ));
             terminal.draw(|f| render_state(f, app))?;
 
-            crate::providers::auth::smart_authenticate(provider, &runner, &config, provider.short_name())
+            let remote_name = provider.short_name();
+            let args = ["config", "create", remote_name, provider.short_name()];
+            let output = runner.run(&args)?;
+            if !output.success() {
+                anyhow::bail!(
+                    "Failed to authenticate with {}: {}",
+                    provider.display_name(),
+                    output.stderr_string()
+                );
+            }
+
+            if !config.has_remote(remote_name)? {
+                anyhow::bail!("Remote {} was not created", remote_name);
+            }
+
+            Ok(AuthOutcome {
+                remote_name: remote_name.to_string(),
+                user_info: None,
+                was_silent: false,
+            })
         };
         terminal.draw(|f| render_state(f, app))?;
 
@@ -143,7 +193,8 @@ fn perform_auth_flow<B: ratatui::backend::Backend>(
                 // Track authenticated provider in case
                 if let Some(ref mut case) = app.case {
                     case.add_provider(crate::case::AuthenticatedProvider {
-                        provider,
+                        provider_id: provider.id.clone(),
+                        provider_name: provider.display_name().to_string(),
                         remote_name: result.remote_name.clone(),
                         user_info: result.user_info.clone(),
                     });
@@ -274,7 +325,7 @@ fn perform_download_flow<B: ratatui::backend::Backend>(
     app.cleanup_track_env_value("RCLONE_CONFIG", config.original_env());
     let runner = crate::rclone::RcloneRunner::new(binary.path()).with_config(config.path());
 
-    if let Some(provider) = app.chosen_provider {
+    if let Some(provider) = app.chosen_provider.clone() {
         let remote_name = app
             .chosen_remote
             .as_deref()
@@ -606,8 +657,19 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                             }
                         } else if app.state == crate::ui::AppState::ProviderSelect {
                             app.confirm_provider();
-                            app.refresh_browsers();
-                            app.advance(); // Move to BrowserSelect
+                            if app
+                                .chosen_provider
+                                .as_ref()
+                                .and_then(|p| p.known)
+                                .is_some()
+                            {
+                                app.refresh_browsers();
+                                app.advance(); // Move to BrowserSelect
+                            } else {
+                                app.chosen_browser = None;
+                                app.state = crate::ui::AppState::Authenticating;
+                                perform_auth_flow(app, &mut terminal)?;
+                            }
                         } else if app.state == crate::ui::AppState::BrowserSelect {
                             app.confirm_browser();
                             app.advance(); // Move to Authenticating

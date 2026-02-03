@@ -9,7 +9,7 @@ use crate::forensics::changes::ChangeTracker;
 use crate::forensics::logger::ForensicLogger;
 use crate::forensics::state::SystemStateSnapshot;
 use crate::providers::browser::Browser;
-use crate::providers::CloudProvider;
+use crate::providers::{CloudProvider, ProviderEntry};
 use crate::ui::widgets::SessionInputForm;
 use anyhow::{bail, Result};
 use std::path::PathBuf;
@@ -84,11 +84,11 @@ pub struct App {
     /// Change tracker for documenting modifications
     pub change_tracker: Arc<Mutex<ChangeTracker>>,
     /// Provider list for selection
-    pub providers: Vec<CloudProvider>,
+    pub providers: Vec<ProviderEntry>,
     /// Selected provider index
     pub provider_selected: usize,
     /// Chosen provider (persisted for auth)
-    pub chosen_provider: Option<CloudProvider>,
+    pub chosen_provider: Option<ProviderEntry>,
     /// Browser list for selection (installed browsers)
     pub browsers: Vec<Browser>,
     /// Selected browser index (0 = system default)
@@ -139,7 +139,7 @@ impl App {
             cleanup: None,
             initial_state,
             change_tracker: Arc::new(Mutex::new(ChangeTracker::new())),
-            providers: CloudProvider::all().to_vec(),
+            providers: CloudProvider::entries(),
             provider_selected: 0,
             chosen_provider: None,
             browsers: crate::providers::auth::get_available_browsers(),
@@ -347,8 +347,8 @@ impl App {
 
     /// Get the currently selected provider
     #[allow(dead_code)]
-    pub fn selected_provider(&self) -> Option<CloudProvider> {
-        self.providers.get(self.provider_selected).copied()
+    pub fn selected_provider(&self) -> Option<ProviderEntry> {
+        self.providers.get(self.provider_selected).cloned()
     }
 
     /// Persist the current provider selection for authentication
@@ -416,7 +416,11 @@ impl App {
     #[allow(dead_code)]
     pub fn update_sso_status(&mut self) {
         if let Some(provider) = self.selected_provider() {
-            self.sso_status = Some(crate::providers::auth::detect_sso_sessions(provider));
+            if let Some(known) = provider.known {
+                self.sso_status = Some(crate::providers::auth::detect_sso_sessions(known));
+            } else {
+                self.sso_status = None;
+            }
         }
     }
 
@@ -424,7 +428,11 @@ impl App {
     #[allow(dead_code)]
     pub fn sso_summary(&self) -> String {
         if let Some(provider) = self.selected_provider() {
-            crate::providers::auth::get_sso_summary(provider)
+            if let Some(known) = provider.known {
+                crate::providers::auth::get_sso_summary(known)
+            } else {
+                "SSO not available for this provider".to_string()
+            }
         } else {
             "No provider selected".to_string()
         }

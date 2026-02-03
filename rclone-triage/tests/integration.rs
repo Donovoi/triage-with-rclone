@@ -6,7 +6,6 @@ use rclone_triage::case::{AuthenticatedProvider, Case, DownloadedFile};
 use rclone_triage::files::{
     export_listing, list_path, DownloadPhase, DownloadQueue, DownloadRequest,
 };
-use rclone_triage::providers::CloudProvider;
 use rclone_triage::rclone::{start_web_gui, RcloneConfig, RcloneRunner};
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -343,7 +342,8 @@ esac
     assert!(dest_file.exists());
 
     case.add_provider(AuthenticatedProvider {
-        provider: CloudProvider::GoogleDrive,
+        provider_id: "drive".to_string(),
+        provider_name: "Google Drive".to_string(),
         remote_name: "mock".to_string(),
         user_info: Some("test@example.com".to_string()),
     });

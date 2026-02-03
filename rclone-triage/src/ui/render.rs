@@ -45,6 +45,7 @@ pub fn render_state(frame: &mut Frame, app: &App) {
         AppState::Authenticating => {
             let name = app
                 .chosen_provider
+                .as_ref()
                 .map(|p| p.display_name().to_string())
                 .unwrap_or_else(|| "Provider".to_string());
             let status = if app.auth_status.is_empty() {

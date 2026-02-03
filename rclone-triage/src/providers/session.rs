@@ -134,6 +134,31 @@ impl ProviderCookieConfig {
                 ],
                 identity_cookies: vec![],
             },
+            CloudProvider::GooglePhotos => Self {
+                domains: vec![
+                    ".google.com",
+                    "accounts.google.com",
+                    "photos.google.com",
+                    ".googleapis.com",
+                ],
+                auth_cookies: vec![
+                    "SID",
+                    "HSID",
+                    "SSID",
+                    "APISID",
+                    "SAPISID",
+                    "__Secure-1PSID",
+                    "__Secure-3PSID",
+                    "OSID",
+                    "LSID",
+                ],
+                identity_cookies: vec!["GMAIL_AT", "ACCOUNT_CHOOSER"],
+            },
+            CloudProvider::PCloud => Self {
+                domains: vec![".pcloud.com", "my.pcloud.com", "api.pcloud.com"],
+                auth_cookies: vec!["pcauth", "pcloud_auth", "pcid"],
+                identity_cookies: vec![],
+            },
         }
     }
 }

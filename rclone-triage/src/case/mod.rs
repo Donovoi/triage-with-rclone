@@ -7,8 +7,6 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-use crate::providers::CloudProvider;
-
 pub mod directory;
 pub mod report;
 
@@ -26,7 +24,8 @@ pub struct Case {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthenticatedProvider {
-    pub provider: CloudProvider,
+    pub provider_id: String,
+    pub provider_name: String,
     pub remote_name: String,
     pub user_info: Option<String>,
 }

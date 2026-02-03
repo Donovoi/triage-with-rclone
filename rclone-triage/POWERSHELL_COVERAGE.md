@@ -2,14 +2,14 @@
 
 This document tracks the implementation coverage of the Rust `rclone-triage` against the PowerShell `rcloned` module features.
 
-**Last Updated:** 2026-02-02
+**Last Updated:** 2026-02-03
 
 ## Coverage Summary
 
 | Category              | PowerShell Functions | Rust Coverage | Status                           |
 | --------------------- | -------------------- | ------------- | -------------------------------- |
 | Case Management       | 4                    | 100%          | ✅ Complete                      |
-| Provider Support      | 8                    | 62%           | ⚠️ Partial                       |
+| Provider Support      | 8                    | 100%          | ✅ Complete                      |
 | Authentication        | 16                   | 75%           | ⚠️ Partial                       |
 | Mobile Auth           | 12                   | 45%           | ⚠️ Partial                       |
 | Forensic Access Point | 14                   | 45%           | ⚠️ Partial                       |
@@ -45,26 +45,15 @@ This document tracks the implementation coverage of the Rust `rclone-triage` aga
 | -------------------------- | ----------------------------- | ---------- |
 | `Provider` class           | `CloudProvider` enum          | ✅         |
 | `Update-ProviderObjects`   | `CloudProvider::all()`        | ✅         |
-| `Get-ProvidersList`        | N/A (hardcoded)               | ❌         |
-| `Get-RcloneProvidersJson`  | N/A                           | ❌         |
-| `Get-RcloneOAuthProviders` | N/A                           | ❌         |
+| `Get-ProvidersList`        | `supported_providers_from_rclone()` | ✅   |
+| `Get-RcloneProvidersJson`  | `supported_providers_from_rclone()` | ✅   |
+| `Get-RcloneOAuthProviders` | `supported_providers_from_rclone()` | ✅   |
 | `Get-rcloneFeaturesTable`  | `CloudProvider::hash_types()` | ⚠️ Partial |
 | Provider hash types        | `CloudProvider::hash_types()` | ✅         |
 | Bad providers filtering    | N/A (not needed)              | ⚠️         |
 
-#### Supported Providers
-
-| Provider      | PowerShell | Rust | Notes       |
-| ------------- | ---------- | ---- | ----------- |
-| Google Drive  | ✅         | ✅   |             |
-| OneDrive      | ✅         | ✅   |             |
-| Dropbox       | ✅         | ✅   |             |
-| Box           | ✅         | ✅   |             |
-| iCloud        | ✅         | ✅   | Limited API |
-| Google Photos | ✅         | ❌   | MISSING     |
-| pCloud        | ✅         | ❌   | MISSING     |
-
-**Missing:** Dynamic provider discovery from rclone, Google Photos, pCloud support.
+**Note:** Provider list is now sourced dynamically from `rclone config providers --json`.  
+Known backends use specialized flows; unknown backends use the generic rclone config flow.
 
 ---
 
@@ -167,10 +156,10 @@ This document tracks the implementation coverage of the Rust `rclone-triage` aga
 | `Invoke-rcloneCopy`               | `DownloadQueue::download_one()` | ✅                   |
 | `Start-DownloadQueue`             | `DownloadQueue::download_all()` | ✅                   |
 | `Invoke-FileSelection` (GUI)      | N/A                             | ❌                   |
-| `ConvertTo-Excel`                 | N/A                             | ❌                   |
+| `ConvertTo-Excel`                 | `export_listing_xlsx()`          | ✅                   |
 | CSV export                        | `export_listing()`              | ✅                   |
 
-**Missing:** Progress watching during listing generation, Excel export, GUI file selection.
+**Missing:** Progress watching during listing generation, GUI file selection.
 
 ---
 
@@ -334,11 +323,12 @@ The Rust implementation has a solid foundation with:
 - ✅ Embedded binary (single-file deployment)
 - ✅ Comprehensive test coverage
 
-But lacks:
+But still lacks:
 
-- ❌ Mobile device authentication
-- ❌ WiFi Access Point creation
-- ❌ Excel export
+- ❌ Mobile device authentication (device code flow + helpers)
+- ❌ WiFi Access Point advanced features (adapter detection, firewall cleanup)
+- ❌ Progress watching during listing generation
+- ❌ GUI file selection
 
 Recently added:
 
@@ -347,5 +337,10 @@ Recently added:
 - ✅ Provider user info extraction (JWT)
 - ✅ Advanced rclone config parsing
 - ✅ Silent/SSO authentication (`smart_authenticate()`)
+- ✅ Excel export (`export_listing_xlsx()`)
+- ✅ Mobile auth (QR + token exchange, partial)
+- ✅ Forensic Access Point (Windows-only, partial)
+- ✅ OneDrive Vault (Windows-only, partial)
+- ✅ rclone Web GUI
 
 **Estimated effort to reach parity: 3-4 weeks of focused development**
