@@ -6,6 +6,7 @@
 
 use super::browser::{Browser, BrowserAuthSession, BrowserDetector};
 use super::credentials::{custom_oauth_credentials_for, OAuthCredentials};
+use super::mobile::{exchange_code_for_token, render_qr_code};
 use super::session::{browsers_with_sessions, BrowserSession, SessionExtractor};
 use super::{config::ProviderConfig, CloudProvider};
 use crate::rclone::{OAuthFlow, RcloneConfig, RcloneRunner};
@@ -192,6 +193,99 @@ pub fn authenticate_with_rclone(
         provider,
         remote_name: remote_name.to_string(),
         user_info: final_user_info,
+        browser: None,
+        was_silent: false,
+    })
+}
+
+/// Authenticate using a mobile device (QR code + local callback)
+pub fn authenticate_with_mobile(
+    provider: CloudProvider,
+    config: &RcloneConfig,
+    remote_name: &str,
+    port: u16,
+) -> Result<AuthResult> {
+    let provider_config = ProviderConfig::for_provider(provider);
+
+    if !provider_config.uses_oauth() {
+        bail!(
+            "{} does not use OAuth. Manual configuration required.",
+            provider
+        );
+    }
+
+    let custom = resolve_custom_oauth(provider);
+    let client_id = custom
+        .as_ref()
+        .map(|c| c.client_id.as_str())
+        .unwrap_or(provider_config.oauth.client_id);
+    let client_secret = custom
+        .as_ref()
+        .and_then(|c| c.client_secret.as_deref())
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| {
+            let secret = provider_config.oauth.client_secret;
+            if secret.trim().is_empty() {
+                None
+            } else {
+                Some(secret)
+            }
+        });
+
+    let oauth = OAuthFlow::new().with_port(port);
+    let redirect_uri = oauth.redirect_uri();
+    let auth_url = provider_config.build_auth_url_with_client_id(client_id, &redirect_uri, None);
+    let qr = render_qr_code(&auth_url)?;
+
+    println!("Open this URL on your mobile device to authenticate:");
+    println!("{}", auth_url);
+    println!("\nScan this QR code:");
+    println!("{}", qr);
+    println!("Waiting for authorization callback...");
+
+    let result = oauth
+        .wait_for_redirect()
+        .with_context(|| format!("OAuth authentication failed for {}", provider))?;
+
+    let token_json = exchange_code_for_token(
+        provider_config.oauth.token_url,
+        &result.code,
+        &redirect_uri,
+        client_id,
+        client_secret,
+    )?;
+    let token_str = serde_json::to_string(&token_json)?;
+
+    let mut options: Vec<(String, String)> = Vec::new();
+    for (key, value) in provider_config.rclone_options {
+        options.push(((*key).to_string(), (*value).to_string()));
+    }
+    if !client_id.trim().is_empty() {
+        options.push(("client_id".to_string(), client_id.to_string()));
+    }
+    if let Some(secret) = client_secret {
+        options.push(("client_secret".to_string(), secret.to_string()));
+    }
+    options.push(("token".to_string(), token_str));
+
+    let options_ref: Vec<(&str, &str)> = options
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
+
+    config.set_remote(remote_name, provider.rclone_type(), &options_ref)?;
+
+    if !config.has_remote(remote_name)? {
+        bail!("Remote {} was not created", remote_name);
+    }
+
+    let user_info = config.get_user_info(remote_name).ok().flatten();
+    let user_identifier = user_info.and_then(|u| u.best_identifier());
+
+    Ok(AuthResult {
+        provider,
+        remote_name: remote_name.to_string(),
+        user_info: user_identifier,
         browser: None,
         was_silent: false,
     })

@@ -11,8 +11,8 @@ This document tracks the implementation coverage of the Rust `rclone-triage` aga
 | Case Management       | 4                    | 100%          | ✅ Complete                      |
 | Provider Support      | 8                    | 62%           | ⚠️ Partial                       |
 | Authentication        | 16                   | 75%           | ⚠️ Partial                       |
-| Mobile Auth           | 12                   | 0%            | ❌ Not Started                   |
-| Forensic Access Point | 14                   | 0%            | ❌ Not Started                   |
+| Mobile Auth           | 12                   | 45%           | ⚠️ Partial                       |
+| Forensic Access Point | 14                   | 45%           | ⚠️ Partial                       |
 | File Operations       | 8                    | 75%           | ⚠️ Partial                       |
 | Forensic Logging      | 4                    | 100%          | ✅ Complete                      |
 | System State          | 4                    | 100%          | ✅ Complete                      |
@@ -96,7 +96,7 @@ This document tracks the implementation coverage of the Rust `rclone-triage` aga
 
 ---
 
-### 4. Mobile Device Authentication ❌ NOT STARTED
+### 4. Mobile Device Authentication ⚠️ PARTIAL
 
 | PowerShell Function                      | Rust Equivalent               | Status   |
 | ---------------------------------------- | ----------------------------- | -------- |
@@ -106,11 +106,11 @@ This document tracks the implementation coverage of the Rust `rclone-triage` aga
 | `Request-TokenFromDeviceCode`            | N/A                           | ❌       |
 | `Get-DeviceCodeConfig`                   | N/A                           | ❌       |
 | `Start-MobileOAuthServer`                | N/A                           | ❌       |
-| `Start-MobileOAuthCallbackServer`        | N/A                           | ❌       |
-| `Build-OAuthAuthorizationUrl`            | `OAuthFlow::build_auth_url()` | ⚠️ Basic |
-| `Complete-OAuthTokenExchange`            | N/A                           | ❌       |
-| `Get-OAuthTokenFromCode`                 | N/A                           | ❌       |
-| QR Code generation (`New-ConsoleQRCode`) | N/A                           | ❌       |
+| `Start-MobileOAuthCallbackServer`        | `OAuthFlow::wait_for_redirect()` | ✅    |
+| `Build-OAuthAuthorizationUrl`            | `ProviderConfig::build_auth_url_with_client_id()` | ✅ |
+| `Complete-OAuthTokenExchange`            | `exchange_code_for_token()`   | ✅       |
+| `Get-OAuthTokenFromCode`                 | `exchange_code_for_token()`   | ✅       |
+| QR Code generation (`New-ConsoleQRCode`) | `render_qr_code()`            | ✅       |
 | `Get-QRCodeData`                         | N/A                           | ❌       |
 | `ConvertTo-ConsoleQRCode`                | N/A                           | ❌       |
 
@@ -118,24 +118,24 @@ This document tracks the implementation coverage of the Rust `rclone-triage` aga
 
 ---
 
-### 5. Forensic Access Point (WiFi Hotspot) ❌ NOT STARTED
+### 5. Forensic Access Point (WiFi Hotspot) ⚠️ PARTIAL
 
 | PowerShell Function              | Rust Equivalent | Status |
 | -------------------------------- | --------------- | ------ |
-| `Start-ForensicAccessPoint`      | N/A             | ❌     |
-| `Stop-ForensicAccessPoint`       | N/A             | ❌     |
-| `Get-ForensicAccessPointStatus`  | N/A             | ❌     |
+| `Start-ForensicAccessPoint`      | `start_forensic_access_point()` | ✅ |
+| `Stop-ForensicAccessPoint`       | `stop_forensic_access_point()`  | ✅ |
+| `Get-ForensicAccessPointStatus`  | `get_forensic_access_point_status()` | ✅ |
 | `Test-NativeAPSupport`           | N/A             | ❌     |
 | `Wait-ForUSBWiFiAdapter`         | N/A             | ❌     |
-| `New-ForensicAPPassword`         | N/A             | ❌     |
-| `Set-HostedNetworkConfig`        | N/A             | ❌     |
-| `Start-HostedNetwork`            | N/A             | ❌     |
-| `Get-ForensicAPIPAddress`        | N/A             | ❌     |
-| `Set-ForensicAPDNS` (AdGuard)    | N/A             | ❌     |
-| `Restore-OriginalDNS`            | N/A             | ❌     |
+| `New-ForensicAPPassword`         | `generate_password()` | ✅ |
+| `Set-HostedNetworkConfig`        | `start_forensic_access_point()` | ✅ |
+| `Start-HostedNetwork`            | `start_forensic_access_point()` | ✅ |
+| `Get-ForensicAPIPAddress`        | `start_forensic_access_point()` | ✅ |
+| `Set-ForensicAPDNS` (AdGuard)    | `start_forensic_access_point()` | ✅ |
+| `Restore-OriginalDNS`            | `stop_forensic_access_point()`  | ✅ |
 | `Remove-ForensicAPFirewallRules` | N/A             | ❌     |
 | `Start-ForensicAPTimer`          | N/A             | ❌     |
-| `New-WiFiConnectionQRCode`       | N/A             | ❌     |
+| `New-WiFiConnectionQRCode`       | `render_wifi_qr()` | ✅  |
 
 **Impact:** Creates WiFi hotspot so mobile devices can connect to PC for authentication. Uses AdGuard DNS for security.
 
@@ -255,11 +255,11 @@ This document tracks the implementation coverage of the Rust `rclone-triage` aga
 
 ---
 
-### 14. OneDrive Specific ❌ NOT STARTED
+### 14. OneDrive Specific ⚠️ PARTIAL
 
 | PowerShell Function  | Rust Equivalent | Status |
 | -------------------- | --------------- | ------ |
-| `Open-OneDriveVault` | N/A             | ❌     |
+| `Open-OneDriveVault` | `open_onedrive_vault()` | ✅ |
 
 **Impact:** OneDrive Personal Vault requires special handling (Windows Hello, BitLocker).
 

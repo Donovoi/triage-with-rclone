@@ -129,10 +129,20 @@ impl ProviderConfig {
 
     /// Build OAuth authorization URL
     pub fn build_auth_url(&self, redirect_uri: &str, state: Option<&str>) -> String {
+        self.build_auth_url_with_client_id(self.oauth.client_id, redirect_uri, state)
+    }
+
+    /// Build OAuth authorization URL with a custom client_id
+    pub fn build_auth_url_with_client_id(
+        &self,
+        client_id: &str,
+        redirect_uri: &str,
+        state: Option<&str>,
+    ) -> String {
         let mut url = format!(
             "{}?client_id={}&redirect_uri={}&response_type=code",
             self.oauth.auth_url,
-            urlencoded(self.oauth.client_id),
+            urlencoded(client_id),
             urlencoded(redirect_uri),
         );
 
