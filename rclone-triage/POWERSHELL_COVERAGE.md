@@ -18,7 +18,7 @@ This document tracks the implementation coverage of the Rust `rclone-triage` aga
 | System State          | 4                    | 100%          | ✅ Complete                      |
 | rclone Operations     | 5                    | 80%           | ⚠️ Partial                       |
 | UI/Menu System        | 5                    | 100%          | ✅ Complete (different approach) |
-| Utilities             | 15+                  | 30%           | ⚠️ Partial                       |
+| Utilities             | 15+                  | 60%           | ⚠️ Partial                       |
 
 **Overall Coverage: ~55%**
 
@@ -67,7 +67,7 @@ Known backends use specialized flows; unknown backends use the generic rclone co
 | Browser switching/detection             | `BrowserDetector::get_default_browser` | ✅         |
 | Browser selection (TUI)                 | `BrowserSelectScreen`                  | ✅         |
 | `Set-CustomOAuthCredentials`            | `CustomOAuthConfig` (credentials file) | ✅         |
-| `Set-CustomOAuthCredentialsInteractive` | N/A                                    | ❌ MISSING |
+| `Set-CustomOAuthCredentialsInteractive` | `--set-oauth-creds` CLI                | ✅ |
 | `Get-RcloneOAuthCredentials`            | N/A                                    | ❌ MISSING |
 | `Start-RcloneSmartAuth` (SSO)           | `smart_authenticate()`                 | ✅         |
 | `Test-RcloneSilentSSO`                  | `detect_sso_sessions()`                | ✅         |
@@ -90,10 +90,10 @@ Known backends use specialized flows; unknown backends use the generic rclone co
 | PowerShell Function                      | Rust Equivalent               | Status   |
 | ---------------------------------------- | ----------------------------- | -------- |
 | `New-MobileDeviceAuthentication`         | N/A                           | ❌       |
-| `Start-DeviceCodeFlow`                   | N/A                           | ❌       |
-| `Request-DeviceCode`                     | N/A                           | ❌       |
-| `Request-TokenFromDeviceCode`            | N/A                           | ❌       |
-| `Get-DeviceCodeConfig`                   | N/A                           | ❌       |
+| `Start-DeviceCodeFlow`                   | `authenticate_with_device_code()` | ✅   |
+| `Request-DeviceCode`                     | `request_device_code()`       | ✅       |
+| `Request-TokenFromDeviceCode`            | `poll_device_code_for_token()` | ✅      |
+| `Get-DeviceCodeConfig`                   | `device_code_config()`        | ✅       |
 | `Start-MobileOAuthServer`                | N/A                           | ❌       |
 | `Start-MobileOAuthCallbackServer`        | `OAuthFlow::wait_for_redirect()` | ✅    |
 | `Build-OAuthAuthorizationUrl`            | `ProviderConfig::build_auth_url_with_client_id()` | ✅ |
@@ -114,7 +114,7 @@ Known backends use specialized flows; unknown backends use the generic rclone co
 | `Start-ForensicAccessPoint`      | `start_forensic_access_point()` | ✅ |
 | `Stop-ForensicAccessPoint`       | `stop_forensic_access_point()`  | ✅ |
 | `Get-ForensicAccessPointStatus`  | `get_forensic_access_point_status()` | ✅ |
-| `Test-NativeAPSupport`           | N/A             | ❌     |
+| `Test-NativeAPSupport`           | `test_native_ap_support()` | ✅ |
 | `Wait-ForUSBWiFiAdapter`         | N/A             | ❌     |
 | `New-ForensicAPPassword`         | `generate_password()` | ✅ |
 | `Set-HostedNetworkConfig`        | `start_forensic_access_point()` | ✅ |
@@ -122,7 +122,7 @@ Known backends use specialized flows; unknown backends use the generic rclone co
 | `Get-ForensicAPIPAddress`        | `start_forensic_access_point()` | ✅ |
 | `Set-ForensicAPDNS` (AdGuard)    | `start_forensic_access_point()` | ✅ |
 | `Restore-OriginalDNS`            | `stop_forensic_access_point()`  | ✅ |
-| `Remove-ForensicAPFirewallRules` | N/A             | ❌     |
+| `Remove-ForensicAPFirewallRules` | `remove_firewall_rules()` | ✅ |
 | `Start-ForensicAPTimer`          | N/A             | ❌     |
 | `New-WiFiConnectionQRCode`       | `render_wifi_qr()` | ✅  |
 
@@ -151,15 +151,15 @@ Known backends use specialized flows; unknown backends use the generic rclone co
 | --------------------------------- | ------------------------------- | -------------------- |
 | `Get-RemoteFileList`              | `list_path()`                   | ✅                   |
 | `Invoke-RemoteFileListGeneration` | `list_path()`                   | ✅                   |
-| `Invoke-ProcessAndWatchFile`      | N/A                             | ❌ Progress watching |
+| `Invoke-ProcessAndWatchFile`      | `list_path_with_progress()`     | ✅ |
 | `Invoke-CSVFileDownloader`        | `DownloadQueue`                 | ⚠️ Basic             |
 | `Invoke-rcloneCopy`               | `DownloadQueue::download_one()` | ✅                   |
 | `Start-DownloadQueue`             | `DownloadQueue::download_all()` | ✅                   |
-| `Invoke-FileSelection` (GUI)      | N/A                             | ❌                   |
+| `Invoke-FileSelection` (GUI)      | Mount + selection file import   | ✅ (manual)          |
 | `ConvertTo-Excel`                 | `export_listing_xlsx()`          | ✅                   |
 | CSV export                        | `export_listing()`              | ✅                   |
 
-**Missing:** Progress watching during listing generation, GUI file selection.
+**Missing:** None in this category.
 
 ---
 
@@ -224,12 +224,12 @@ Known backends use specialized flows; unknown backends use the generic rclone co
 | PowerShell Function          | Rust Equivalent | Status |
 | ---------------------------- | --------------- | ------ |
 | `Get-FileName` (file dialog) | N/A (TUI-based) | ⚠️     |
-| `Format-Bytes`               | N/A             | ❌     |
-| `Get-LocalIPAddress`         | N/A             | ❌     |
-| HTTP helpers                 | N/A             | ❌     |
-| `Start-SleepWithCountdown`   | N/A             | ❌     |
-| `Invoke-ButtonPress` (FlaUI) | N/A             | ❌     |
-| `Close-Window`               | N/A             | ❌     |
+| `Format-Bytes`               | `format_bytes()`                | ✅ |
+| `Get-LocalIPAddress`         | `get_local_ip_address()`        | ✅ |
+| HTTP helpers                 | `http_get_json_with_retry()`    | ✅ |
+| `Start-SleepWithCountdown`   | `sleep_with_countdown()`        | ✅ |
+| `Invoke-ButtonPress` (FlaUI) | N/A                             | ❌ |
+| `Close-Window`               | `close_window_by_title()`       | ✅ |
 
 ---
 

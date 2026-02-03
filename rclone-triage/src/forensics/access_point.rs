@@ -53,7 +53,17 @@ pub fn start_forensic_access_point(
     password: &str,
     timeout_minutes: Option<u64>,
 ) -> Result<ForensicAccessPointInfo> {
+    let native = test_native_ap_support()?;
+    if !native.supported {
+        if let Some(reason) = native.reason {
+            bail!("Access Point not supported: {}", reason);
+        } else {
+            bail!("Access Point not supported on this adapter");
+        }
+    }
+
     set_hostednetwork_config(ssid, password)?;
+    ensure_firewall_rules(ssid)?;
     start_hostednetwork()?;
 
     let adapter = get_ap_adapter_name().ok().flatten();
@@ -107,6 +117,7 @@ pub fn stop_forensic_access_point(force: bool) -> Result<()> {
     if let Some(name) = adapter {
         let _ = reset_dns_servers(&name);
     }
+    let _ = remove_firewall_rules();
     Ok(())
 }
 
@@ -153,6 +164,14 @@ fn run_powershell(script: &str) -> Result<String> {
 }
 
 #[cfg(windows)]
+#[derive(Debug, Clone)]
+struct NativeApSupport {
+    supported: bool,
+    adapter_name: Option<String>,
+    reason: Option<String>,
+}
+
+#[cfg(windows)]
 fn set_hostednetwork_config(ssid: &str, password: &str) -> Result<()> {
     let _ = run_netsh(&["wlan", "set", "hostednetwork", "mode=allow"])?;
     let ssid_arg = format!("ssid={}", ssid);
@@ -172,6 +191,57 @@ fn stop_hostednetwork() -> Result<()> {
     let _ = run_netsh(&["wlan", "stop", "hostednetwork"])?;
     let _ = run_netsh(&["wlan", "set", "hostednetwork", "mode=disallow"])?;
     Ok(())
+}
+
+#[cfg(windows)]
+fn test_native_ap_support() -> Result<NativeApSupport> {
+    let script = r#"
+$wifiAdapters = Get-NetAdapter | Where-Object {
+  $_.PhysicalMediaType -eq 'Native 802.11' -or
+  $_.InterfaceDescription -like '*Wireless*' -or
+  $_.InterfaceDescription -like '*Wi-Fi*' -or
+  $_.InterfaceDescription -like '*WLAN*'
+}
+
+if (-not $wifiAdapters) {
+  Write-Output "SUPPORTED=0;REASON=No wireless adapters found"
+  exit
+}
+
+$drivers = netsh wlan show drivers 2>&1
+if ($drivers -match 'Hosted network supported\\s*:\\s*Yes') {
+  $adapterName = ($wifiAdapters | Select-Object -First 1).Name
+  Write-Output "SUPPORTED=1;ADAPTER=$adapterName"
+} elseif ($drivers -match 'Hosted network supported\\s*:\\s*No') {
+  Write-Output "SUPPORTED=0;REASON=WiFi driver does not support Hosted Network mode"
+} else {
+  Write-Output "SUPPORTED=0;REASON=Could not determine Hosted Network support"
+}
+"#;
+    let out = run_powershell(script)?;
+    let mut supported = false;
+    let mut adapter_name = None;
+    let mut reason = None;
+    for part in out.split(';') {
+        let part = part.trim();
+        if let Some(value) = part.strip_prefix("SUPPORTED=") {
+            supported = value.trim() == "1";
+        } else if let Some(value) = part.strip_prefix("ADAPTER=") {
+            if !value.trim().is_empty() {
+                adapter_name = Some(value.trim().to_string());
+            }
+        } else if let Some(value) = part.strip_prefix("REASON=") {
+            if !value.trim().is_empty() {
+                reason = Some(value.trim().to_string());
+            }
+        }
+    }
+
+    Ok(NativeApSupport {
+        supported,
+        adapter_name,
+        reason,
+    })
 }
 
 #[cfg(windows)]
@@ -242,6 +312,34 @@ fn reset_dns_servers(adapter: &str) -> Result<()> {
         escaped
     );
     let _ = run_powershell(&script)?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn ensure_firewall_rules(ssid: &str) -> Result<()> {
+    let escaped = ssid.replace('\'', "''");
+    let script = format!(
+        r#"
+$ruleName = "Forensic-AP-{ssid}"
+$existing = Get-NetFirewallRule -DisplayName $ruleName -ErrorAction SilentlyContinue
+if (-not $existing) {{
+  New-NetFirewallRule -DisplayName $ruleName -Direction Inbound -Action Allow -Profile Any -Protocol TCP -LocalPort 53682 | Out-Null
+  New-NetFirewallRule -DisplayName "$ruleName-UDP" -Direction Inbound -Action Allow -Profile Any -Protocol UDP -LocalPort 53 | Out-Null
+}}
+"#,
+        ssid = escaped
+    );
+    let _ = run_powershell(&script)?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn remove_firewall_rules() -> Result<()> {
+    let script = r#"
+$rules = Get-NetFirewallRule -DisplayName 'Forensic-AP-*' -ErrorAction SilentlyContinue
+if ($rules) { $rules | Remove-NetFirewallRule -ErrorAction SilentlyContinue }
+"#;
+    let _ = run_powershell(script)?;
     Ok(())
 }
 

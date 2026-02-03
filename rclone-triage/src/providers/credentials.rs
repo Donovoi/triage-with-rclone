@@ -122,6 +122,52 @@ pub fn custom_oauth_credentials_for(provider: CloudProvider) -> Result<Option<OA
     Ok(config.credentials_for(provider))
 }
 
+/// Load the custom OAuth config (or create an empty config if missing).
+pub fn load_or_init_custom_oauth_config(path: &Path) -> Result<CustomOAuthConfig> {
+    if path.exists() {
+        load_custom_oauth_config_from_path(path)
+    } else {
+        Ok(CustomOAuthConfig::default())
+    }
+}
+
+/// Write the custom OAuth config to disk.
+pub fn write_custom_oauth_config(path: &Path, config: &CustomOAuthConfig) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("Failed to create {:?}", parent))?;
+    }
+    let json = serde_json::to_string_pretty(config).context("Failed to serialize OAuth config")?;
+    fs::write(path, json).with_context(|| format!("Failed to write {:?}", path))?;
+    Ok(())
+}
+
+/// Upsert OAuth credentials for a provider key.
+pub fn upsert_custom_oauth_credentials(
+    provider_key: &str,
+    client_id: String,
+    client_secret: Option<String>,
+    path_override: Option<PathBuf>,
+) -> Result<PathBuf> {
+    let path = if let Some(path) = path_override {
+        path
+    } else {
+        custom_oauth_config_path()
+            .ok_or_else(|| anyhow::anyhow!("Unable to resolve OAuth config path"))?
+    };
+
+    let mut config = load_or_init_custom_oauth_config(&path)?;
+    config.providers.insert(
+        provider_key.to_string(),
+        OAuthCredentials {
+            client_id,
+            client_secret,
+        },
+    );
+    write_custom_oauth_config(&path, &config)?;
+    Ok(path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -158,5 +204,25 @@ mod tests {
         let creds = config.credentials_for(CloudProvider::Dropbox).unwrap();
         assert_eq!(creds.client_id, "dbx");
         assert_eq!(creds.client_secret, None);
+    }
+
+    #[test]
+    fn test_upsert_custom_oauth_credentials() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("oauth.json");
+
+        let saved = upsert_custom_oauth_credentials(
+            "drive",
+            "client123".to_string(),
+            Some("secret123".to_string()),
+            Some(path.clone()),
+        )
+        .unwrap();
+
+        assert_eq!(saved, path);
+        let config = load_custom_oauth_config_from_path(&path).unwrap();
+        let creds = config.credentials_for(CloudProvider::GoogleDrive).unwrap();
+        assert_eq!(creds.client_id, "client123");
+        assert_eq!(creds.client_secret.as_deref(), Some("secret123"));
     }
 }

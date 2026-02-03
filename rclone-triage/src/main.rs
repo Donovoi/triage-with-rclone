@@ -12,7 +12,10 @@ use rclone_triage::forensics::{
     open_onedrive_vault, start_forensic_access_point, stop_forensic_access_point,
     SystemStateSnapshot,
 };
-use rclone_triage::providers::auth::{authenticate_with_mobile, authenticate_with_rclone};
+use rclone_triage::providers::auth::{
+    authenticate_with_device_code, authenticate_with_mobile, authenticate_with_rclone,
+};
+use rclone_triage::providers::credentials::upsert_custom_oauth_credentials;
 use rclone_triage::providers::CloudProvider;
 use rclone_triage::rclone::{start_web_gui, RcloneConfig, RcloneRunner};
 use rclone_triage::ui::App as TuiApp;
@@ -157,6 +160,24 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    if let Some(provider_key) = args.set_oauth_creds.clone() {
+        let client_id = prompt_line("Client ID: ")?;
+        let client_secret = prompt_line("Client Secret (optional): ")?;
+        let secret = if client_secret.trim().is_empty() {
+            None
+        } else {
+            Some(client_secret)
+        };
+        let path = upsert_custom_oauth_credentials(
+            &provider_key,
+            client_id,
+            secret,
+            args.oauth_config_path.map(std::path::PathBuf::from),
+        )?;
+        println!("Saved OAuth credentials to {:?}", path);
+        return Ok(());
+    }
+
     // Optional TUI loop
     if args.tui {
         let mut app = TuiApp::new();
@@ -182,13 +203,15 @@ fn main() -> Result<()> {
             .map(|p| p.short_name().to_string())
             .unwrap_or_else(|| provider_name.clone());
         if let Some(provider) = known {
-            if args.mobile_auth {
+            if args.device_code {
+                authenticate_with_device_code(provider, &config, &remote_name)?;
+            } else if args.mobile_auth {
                 authenticate_with_mobile(provider, &config, &remote_name, args.mobile_auth_port)?;
             } else {
                 authenticate_with_rclone(provider, &runner, &config, &remote_name)?;
             }
         } else {
-            if args.mobile_auth {
+            if args.mobile_auth || args.device_code {
                 anyhow::bail!("Mobile auth only supported for known OAuth providers");
             }
             let args = ["config", "create", remote_name.as_str(), provider_name.as_str()];
@@ -285,6 +308,18 @@ struct Cli {
     #[arg(long, default_value_t = 53682)]
     mobile_auth_port: u16,
 
+    /// Use OAuth device code flow (supported providers only)
+    #[arg(long, default_value_t = false)]
+    device_code: bool,
+
+    /// Set custom OAuth credentials for a provider/backend (interactive)
+    #[arg(long)]
+    set_oauth_creds: Option<String>,
+
+    /// Override custom OAuth config path
+    #[arg(long)]
+    oauth_config_path: Option<String>,
+
     /// Start rclone Web GUI (rcd --rc-web-gui)
     #[arg(long, default_value_t = false)]
     web_gui: bool,
@@ -340,6 +375,16 @@ struct Cli {
     /// Skip waiting for user confirmation after Windows Hello
     #[arg(long, default_value_t = false)]
     onedrive_vault_no_wait: bool,
+}
+
+fn prompt_line(prompt: &str) -> Result<String> {
+    use std::io::{self, Write};
+    let mut stdout = io::stdout();
+    stdout.write_all(prompt.as_bytes())?;
+    stdout.flush()?;
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+    Ok(input.trim().to_string())
 }
 
 fn default_vault_mount() -> String {

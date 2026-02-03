@@ -10,8 +10,9 @@ use crate::forensics::logger::ForensicLogger;
 use crate::forensics::state::SystemStateSnapshot;
 use crate::providers::browser::Browser;
 use crate::providers::{CloudProvider, ProviderEntry};
+use crate::rclone::MountedRemote;
 use crate::ui::widgets::SessionInputForm;
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -121,6 +122,8 @@ pub struct App {
     pub report_lines: Vec<String>,
     /// SSO status for currently selected provider
     pub sso_status: Option<crate::providers::auth::SsoStatus>,
+    /// Mounted remote for GUI selection
+    pub mounted_remote: Option<MountedRemote>,
 }
 
 impl App {
@@ -158,6 +161,7 @@ impl App {
             download_done_bytes: 0,
             report_lines: Vec::new(),
             sso_status: None,
+            mounted_remote: None,
         }
     }
 
@@ -490,6 +494,57 @@ impl App {
         self.file_entries_full.iter().find(|e| e.path == path)
     }
 
+    /// Path to selection file for GUI-based selection
+    pub fn selection_file_path(&self) -> Option<PathBuf> {
+        self.directories
+            .as_ref()
+            .map(|d| d.listings.join("selection.txt"))
+    }
+
+    /// Load file selection from a text file (one path per line).
+    pub fn load_selection_from_file(&mut self, path: &PathBuf) -> Result<usize> {
+        let content = std::fs::read_to_string(path)
+            .with_context(|| format!("Failed to read selection file {:?}", path))?;
+
+        let mount_prefix = self
+            .mounted_remote
+            .as_ref()
+            .map(|m| m.mount_point().to_path_buf());
+
+        let mut selected = Vec::new();
+        for line in content.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+
+            let mut candidate = line.to_string();
+            if let Some(ref prefix) = mount_prefix {
+                if let Ok(stripped) = PathBuf::from(line).strip_prefix(prefix) {
+                    candidate = stripped.to_string_lossy().trim_start_matches(['/', '\\']).to_string();
+                } else if line.starts_with(prefix.to_string_lossy().as_ref()) {
+                    candidate = line[prefix.to_string_lossy().len()..]
+                        .trim_start_matches(['/', '\\'])
+                        .to_string();
+                }
+            }
+
+            if self.file_entries.contains(&candidate) {
+                selected.push(candidate);
+            }
+        }
+
+        self.files_to_download = selected;
+        Ok(self.files_to_download.len())
+    }
+
+    /// Unmount the currently mounted remote (if any).
+    pub fn unmount_remote(&mut self) {
+        if let Some(mounted) = self.mounted_remote.take() {
+            let _ = mounted.unmount();
+        }
+    }
+
     /// Select all files for download
     #[allow(dead_code)]
     pub fn select_all_files(&mut self) {
@@ -619,6 +674,23 @@ mod tests {
         // Toggle again to deselect
         app.toggle_file_download();
         assert!(app.files_to_download.is_empty());
+    }
+
+    #[test]
+    fn test_load_selection_from_file() {
+        use tempfile::tempdir;
+
+        let mut app = App::new();
+        app.state = AppState::FileList;
+        app.file_entries = vec!["a.txt".to_string(), "b.txt".to_string()];
+
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("selection.txt");
+        std::fs::write(&path, "a.txt\nmissing.txt\n").unwrap();
+
+        let count = app.load_selection_from_file(&path).unwrap();
+        assert_eq!(count, 1);
+        assert_eq!(app.files_to_download, vec!["a.txt".to_string()]);
     }
 
     #[test]

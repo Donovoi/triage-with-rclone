@@ -223,7 +223,16 @@ fn perform_auth_flow<B: ratatui::backend::Backend>(
                 app.auth_status = "Listing files...".to_string();
                 terminal.draw(|f| render_state(f, app))?;
 
-                match crate::files::list_path(&runner, &format!("{}:", result.remote_name)) {
+                let listing_result = crate::files::listing::list_path_with_progress(
+                    &runner,
+                    &format!("{}:", result.remote_name),
+                    |count| {
+                        app.auth_status = format!("Listing files... ({} found)", count);
+                        let _ = terminal.draw(|f| render_state(f, app));
+                    },
+                );
+
+                match listing_result {
                     Ok(entries) => {
                         // Export file listing to CSV
                         if let Some(ref dirs) = app.directories {
@@ -291,6 +300,8 @@ fn perform_download_flow<B: ratatui::backend::Backend>(
     terminal: &mut Terminal<B>,
 ) -> Result<()> {
     use crate::files::download::{DownloadPhase, DownloadQueue, DownloadRequest};
+
+    app.unmount_remote();
 
     let total_files = app.files_to_download.len();
     app.download_status = format!("Downloading {} files...", total_files);
@@ -710,6 +721,103 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                             app.browser_down();
                         } else if app.state == crate::ui::AppState::FileList {
                             app.file_down();
+                        }
+                    }
+                    KeyCode::Char('m') => {
+                        if app.state == crate::ui::AppState::FileList {
+                            if app.mounted_remote.is_some() {
+                                app.log_info("Remote already mounted for GUI selection");
+                                continue;
+                            }
+
+                            let binary = match crate::embedded::ExtractedBinary::extract() {
+                                Ok(binary) => binary,
+                                Err(e) => {
+                                    app.log_error(format!("Mount failed (extract): {}", e));
+                                    continue;
+                                }
+                            };
+                            app.cleanup_track_file(binary.path());
+                            if let Some(dir) = binary.temp_dir() {
+                                app.cleanup_track_dir(dir);
+                            }
+
+                            let config_dir = app
+                                .config_dir()
+                                .unwrap_or_else(|| std::path::PathBuf::from("."));
+                            app.track_env_var("RCLONE_CONFIG", "Set RCLONE_CONFIG for mount");
+                            let config = match crate::rclone::RcloneConfig::for_case(&config_dir) {
+                                Ok(config) => config,
+                                Err(e) => {
+                                    app.log_error(format!("Mount failed (config): {}", e));
+                                    continue;
+                                }
+                            };
+                            app.cleanup_track_env_value("RCLONE_CONFIG", config.original_env());
+
+                            let remote_name = app
+                                .chosen_remote
+                                .clone()
+                                .or_else(|| app.chosen_provider.as_ref().map(|p| p.short_name().to_string()));
+                            let Some(remote_name) = remote_name else {
+                                app.log_error("Mount failed: no remote selected");
+                                continue;
+                            };
+
+                            let manager = match crate::rclone::MountManager::new(binary.path()) {
+                                Ok(manager) => manager.with_config(config.path()),
+                                Err(e) => {
+                                    app.log_error(format!("Mount failed: {}", e));
+                                    continue;
+                                }
+                            };
+
+                            match manager.mount_and_explore(&remote_name, None) {
+                                Ok(mounted) => {
+                                    let mount_path = mounted.mount_point().to_path_buf();
+                                    app.mounted_remote = Some(mounted);
+                                    app.log_info(format!("Mounted remote at {:?}", mount_path));
+                                    if let Some(path) = app.selection_file_path() {
+                                        app.log_info(format!(
+                                            "Create selection file at {:?} (one path per line), then press 'i' to load.",
+                                            path
+                                        ));
+                                    } else {
+                                        app.log_info("No selection file path available");
+                                    }
+                                }
+                                Err(e) => {
+                                    app.log_error(format!("Mount failed: {}", e));
+                                }
+                            }
+                        }
+                    }
+                    KeyCode::Char('u') => {
+                        if app.state == crate::ui::AppState::FileList {
+                            app.unmount_remote();
+                            app.log_info("Unmounted remote");
+                        }
+                    }
+                    KeyCode::Char('i') => {
+                        if app.state == crate::ui::AppState::FileList {
+                            if let Some(path) = app.selection_file_path() {
+                                match app.load_selection_from_file(&path) {
+                                    Ok(count) => {
+                                        app.log_info(format!(
+                                            "Loaded {} selected files from {:?}",
+                                            count, path
+                                        ));
+                                    }
+                                    Err(e) => {
+                                        app.log_error(format!(
+                                            "Failed to load selection from {:?}: {}",
+                                            path, e
+                                        ));
+                                    }
+                                }
+                            } else {
+                                app.log_error("Selection file path not available");
+                            }
                         }
                     }
                     KeyCode::Char(' ') => {

@@ -6,7 +6,10 @@
 
 use super::browser::{Browser, BrowserAuthSession, BrowserDetector};
 use super::credentials::{custom_oauth_credentials_for, OAuthCredentials};
-use super::mobile::{exchange_code_for_token, render_qr_code};
+use super::mobile::{
+    device_code_config, exchange_code_for_token, poll_device_code_for_token, render_qr_code,
+    request_device_code,
+};
 use super::session::{browsers_with_sessions, BrowserSession, SessionExtractor};
 use super::{config::ProviderConfig, CloudProvider};
 use crate::rclone::{OAuthFlow, RcloneConfig, RcloneRunner};
@@ -275,6 +278,83 @@ pub fn authenticate_with_mobile(
 
     config.set_remote(remote_name, provider.rclone_type(), &options_ref)?;
 
+    if !config.has_remote(remote_name)? {
+        bail!("Remote {} was not created", remote_name);
+    }
+
+    let user_info = config.get_user_info(remote_name).ok().flatten();
+    let user_identifier = user_info.and_then(|u| u.best_identifier());
+
+    Ok(AuthResult {
+        provider,
+        remote_name: remote_name.to_string(),
+        user_info: user_identifier,
+        browser: None,
+        was_silent: false,
+    })
+}
+
+/// Authenticate using device code flow (for providers that support it).
+pub fn authenticate_with_device_code(
+    provider: CloudProvider,
+    config: &RcloneConfig,
+    remote_name: &str,
+) -> Result<AuthResult> {
+    let provider_config = ProviderConfig::for_provider(provider);
+    if !provider_config.uses_oauth() {
+        bail!(
+            "{} does not use OAuth. Manual configuration required.",
+            provider
+        );
+    }
+
+    let device_config = device_code_config(provider)?
+        .ok_or_else(|| anyhow::anyhow!("Device code flow not supported for {}", provider))?;
+
+    let device_info = request_device_code(&device_config)?;
+    let verification = device_info
+        .verification_uri_complete
+        .clone()
+        .unwrap_or_else(|| device_info.verification_uri.clone());
+
+    println!("Device code authentication for {}", provider.display_name());
+    println!("User code: {}", device_info.user_code);
+    println!("Verify at: {}", device_info.verification_uri);
+    if let Ok(qr) = render_qr_code(&verification) {
+        println!("\nScan this QR code:\n{}", qr);
+    }
+    if let Some(message) = device_info.message.as_ref() {
+        println!("{}", message);
+    }
+    println!("Waiting for authorization...");
+
+    let token_json = poll_device_code_for_token(
+        &device_config,
+        &device_info.device_code,
+        device_info.interval,
+        device_info.expires_in,
+    )?;
+
+    let token_str = serde_json::to_string(&token_json)?;
+
+    let mut options: Vec<(String, String)> = Vec::new();
+    for (key, value) in provider_config.rclone_options {
+        options.push(((*key).to_string(), (*value).to_string()));
+    }
+    if !device_config.client_id.trim().is_empty() {
+        options.push(("client_id".to_string(), device_config.client_id));
+    }
+    if let Some(secret) = device_config.client_secret {
+        options.push(("client_secret".to_string(), secret));
+    }
+    options.push(("token".to_string(), token_str));
+
+    let options_ref: Vec<(&str, &str)> = options
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
+
+    config.set_remote(remote_name, provider.rclone_type(), &options_ref)?;
     if !config.has_remote(remote_name)? {
         bail!("Remote {} was not created", remote_name);
     }

@@ -65,6 +65,42 @@ pub fn list_path(rclone: &RcloneRunner, target: &str) -> Result<Vec<FileEntry>> 
     Ok(entries.into_iter().map(FileEntry::from).collect())
 }
 
+/// List files for a given rclone path, reporting progress as entries are seen.
+pub fn list_path_with_progress<F>(
+    rclone: &RcloneRunner,
+    target: &str,
+    mut on_progress: F,
+) -> Result<Vec<FileEntry>>
+where
+    F: FnMut(usize),
+{
+    let mut count = 0usize;
+    let mut last_emit = 0usize;
+    let output = rclone.run_streaming(&["lsjson", "--hash", "--recursive", target], |line| {
+        if line.contains("\"Path\"") {
+            count += 1;
+            if count - last_emit >= 100 {
+                on_progress(count);
+                last_emit = count;
+            }
+        }
+    })?;
+
+    if !output.success() {
+        bail!("rclone lsjson failed: {}", output.stderr_string());
+    }
+
+    if count != last_emit {
+        on_progress(count);
+    }
+
+    let json = output.stdout_string();
+    let entries: Vec<RcloneLsJsonEntry> =
+        serde_json::from_str(&json).with_context(|| "Failed to parse rclone lsjson output")?;
+
+    Ok(entries.into_iter().map(FileEntry::from).collect())
+}
+
 fn select_hash(hashes: Option<&HashMap<String, String>>) -> (Option<String>, Option<String>) {
     let hashes = match hashes {
         Some(h) => h,
