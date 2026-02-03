@@ -1,6 +1,8 @@
 //! OneDrive Personal Vault helpers (Windows only).
 
 use anyhow::{bail, Result};
+#[cfg(windows)]
+use anyhow::Context;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
