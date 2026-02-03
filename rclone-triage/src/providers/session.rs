@@ -445,7 +445,7 @@ impl SessionExtractor {
             if result.is_ok() && !output.pbData.is_null() {
                 let decrypted =
                     std::slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec();
-                let _ = LocalFree(HLOCAL(output.pbData as _));
+                let _ = LocalFree(Some(HLOCAL(output.pbData as _)));
                 Ok(String::from_utf8_lossy(&decrypted).to_string())
             } else {
                 bail!("DPAPI decryption failed");
