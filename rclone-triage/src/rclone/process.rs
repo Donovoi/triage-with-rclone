@@ -321,12 +321,22 @@ impl RcloneRunner {
     pub fn exe_path(&self) -> &Path {
         &self.exe_path
     }
+
+    /// Get the config path if set
+    pub fn config_path(&self) -> Option<&Path> {
+        self.config_path.as_deref()
+    }
+
+    /// Get the default timeout
+    pub fn timeout(&self) -> Option<Duration> {
+        self.default_timeout
+    }
 }
 
 /// Capture output from a reader and send it through a channel
 fn capture_output<R: std::io::Read>(reader: R, tx: Sender<String>) {
     let reader = BufReader::new(reader);
-    for line in reader.lines().flatten() {
+    for line in reader.lines().map_while(Result::ok) {
         let _ = tx.send(line);
     }
 }

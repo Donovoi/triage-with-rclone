@@ -206,12 +206,12 @@ This document tracks the implementation coverage of the Rust `rclone-triage` aga
 | `ConvertFrom-rcloneConfig`          | `ParsedConfig::parse()`      | ✅                    |
 | `New-rcloneConfig`                  | `RcloneConfig::for_case()`   | ✅                    |
 | `Get-ExistingrcloneConfig`          | `RcloneConfig::parse()`      | ✅                    |
-| `Start-rcloneWeb` (web GUI)         | N/A                          | ❌                    |
+| `Start-rcloneWeb` (web GUI)         | `start_web_gui()`            | ✅                    |
 | `Start-rcloneMount` (network share) | `MountManager::mount()`      | ✅                    |
 | Open file explorer after mount      | `open_file_explorer()`       | ✅                    |
-| `Test-RcloneOAuthConnectivity`      | N/A                          | ❌                    |
+| `Test-RcloneOAuthConnectivity`      | `test_connectivity()`        | ✅                    |
 
-**Missing:** Web GUI, connectivity test.
+**Missing:** None in this category.
 
 ---
 

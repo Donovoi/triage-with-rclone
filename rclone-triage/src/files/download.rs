@@ -2,9 +2,12 @@
 
 use anyhow::{bail, Result};
 use sha2::{Digest, Sha256};
+use std::collections::VecDeque;
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
+use std::sync::{mpsc, Arc, Mutex};
+use std::thread;
 use std::time::Duration;
 
 use crate::rclone::{RcloneOutput, RcloneRunner};
@@ -292,6 +295,7 @@ impl DownloadQueue {
     where
         F: FnMut(DownloadProgress),
     {
+        if self.parallel <= 1 {
         let total = self.requests.len();
         let mut results = Vec::with_capacity(total);
 
@@ -343,6 +347,151 @@ impl DownloadQueue {
         }
 
         results
+        } else {
+            self.download_all_parallel_with_progress(rclone, &mut progress_callback)
+        }
+    }
+
+    fn download_all_parallel_with_progress<F>(
+        &self,
+        rclone: &RcloneRunner,
+        progress_callback: &mut F,
+    ) -> Vec<DownloadResult>
+    where
+        F: FnMut(DownloadProgress),
+    {
+        #[derive(Debug)]
+        enum Event {
+            Progress(DownloadProgress),
+            Result(usize, DownloadResult),
+        }
+
+        let total = self.requests.len();
+        let queue: Arc<Mutex<VecDeque<(usize, DownloadRequest)>>> = Arc::new(Mutex::new(
+            self.requests
+                .iter()
+                .cloned()
+                .enumerate()
+                .collect::<VecDeque<_>>(),
+        ));
+
+        let (event_tx, event_rx) = mpsc::channel::<Event>();
+        let mut handles = Vec::new();
+
+        for _ in 0..self.parallel {
+            let queue = Arc::clone(&queue);
+            let event_tx = event_tx.clone();
+
+            let mut runner = RcloneRunner::new(rclone.exe_path());
+            if let Some(config) = rclone.config_path() {
+                runner = runner.with_config(config);
+            }
+            if let Some(timeout) = rclone.timeout() {
+                runner = runner.with_timeout(timeout);
+            }
+
+            let verify_hashes = self.verify_hashes;
+
+            let handle = thread::spawn(move || {
+                loop {
+                    let next = {
+                        let mut guard = queue.lock().expect("download queue lock");
+                        guard.pop_front()
+                    };
+
+                    let (index, request) = match next {
+                        Some(item) => item,
+                        None => break,
+                    };
+
+                    let total_files = total;
+                    let _ = event_tx.send(Event::Progress(DownloadProgress::starting(
+                        index,
+                        total_files,
+                        &request.source,
+                    )));
+
+                    let result = if runner.timeout().is_some() {
+                        let mut queue = DownloadQueue::new();
+                        queue.set_verify_hashes(verify_hashes);
+                        queue.download_one_verified(&runner, &request)
+                    } else {
+                        let mut queue = DownloadQueue::new();
+                        queue.set_verify_hashes(verify_hashes);
+                        queue.download_one_verified_with_progress(
+                            &runner,
+                            &request,
+                            |done, total_bytes| {
+                                let _ = event_tx.send(Event::Progress(
+                                    DownloadProgress::progress(
+                                        index,
+                                        total_files,
+                                        &request.source,
+                                        done,
+                                        total_bytes,
+                                    ),
+                                ));
+                            },
+                        )
+                    };
+
+                    match &result {
+                        DownloadResult {
+                            success: true,
+                            size,
+                            ..
+                        } => {
+                            let _ = event_tx.send(Event::Progress(DownloadProgress::completed(
+                                index,
+                                total_files,
+                                &request.source,
+                                size.unwrap_or(0),
+                            )));
+                        }
+                        DownloadResult {
+                            success: false,
+                            error,
+                            ..
+                        } => {
+                            let _ = event_tx.send(Event::Progress(DownloadProgress::failed(
+                                index,
+                                total_files,
+                                &request.source,
+                                error.as_deref().unwrap_or("Unknown error"),
+                            )));
+                        }
+                    }
+
+                    let _ = event_tx.send(Event::Result(index, result));
+                }
+            });
+
+            handles.push(handle);
+        }
+
+        drop(event_tx);
+
+        let mut results: Vec<Option<DownloadResult>> = vec![None; total];
+        let mut completed = 0;
+
+        while completed < total {
+            match event_rx.recv() {
+                Ok(Event::Progress(progress)) => progress_callback(progress),
+                Ok(Event::Result(index, result)) => {
+                    if results[index].is_none() {
+                        results[index] = Some(result);
+                        completed += 1;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+
+        for handle in handles {
+            let _ = handle.join();
+        }
+
+        results.into_iter().flatten().collect()
     }
 
     /// Execute a single download with hash verification and progress parsing
