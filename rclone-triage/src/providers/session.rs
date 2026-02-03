@@ -387,7 +387,7 @@ impl SessionExtractor {
         // Older format - try DPAPI directly on Windows
         #[cfg(windows)]
         {
-            return self.decrypt_dpapi(encrypted);
+            self.decrypt_dpapi(encrypted)
         }
 
         // On non-Windows, assume plaintext for old format
@@ -423,7 +423,7 @@ impl SessionExtractor {
         };
 
         unsafe {
-            let mut input = CRYPT_INTEGER_BLOB {
+            let input = CRYPT_INTEGER_BLOB {
                 cbData: encrypted.len() as u32,
                 pbData: encrypted.as_ptr() as *mut u8,
             };
@@ -433,7 +433,7 @@ impl SessionExtractor {
             };
 
             let result = CryptUnprotectData(
-                &mut input,
+                &input,
                 None,
                 None,
                 None,

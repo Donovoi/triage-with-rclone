@@ -167,7 +167,6 @@ fn run_powershell(script: &str) -> Result<String> {
 #[derive(Debug, Clone)]
 struct NativeApSupport {
     supported: bool,
-    adapter_name: Option<String>,
     reason: Option<String>,
 }
 
@@ -220,16 +219,11 @@ if ($drivers -match 'Hosted network supported\\s*:\\s*Yes') {
 "#;
     let out = run_powershell(script)?;
     let mut supported = false;
-    let mut adapter_name = None;
     let mut reason = None;
     for part in out.split(';') {
         let part = part.trim();
         if let Some(value) = part.strip_prefix("SUPPORTED=") {
             supported = value.trim() == "1";
-        } else if let Some(value) = part.strip_prefix("ADAPTER=") {
-            if !value.trim().is_empty() {
-                adapter_name = Some(value.trim().to_string());
-            }
         } else if let Some(value) = part.strip_prefix("REASON=") {
             if !value.trim().is_empty() {
                 reason = Some(value.trim().to_string());
@@ -239,7 +233,6 @@ if ($drivers -match 'Hosted network supported\\s*:\\s*Yes') {
 
     Ok(NativeApSupport {
         supported,
-        adapter_name,
         reason,
     })
 }
