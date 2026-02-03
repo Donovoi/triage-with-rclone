@@ -136,7 +136,7 @@ mod tests {
             "google drive": { "client_id": "id3", "client_secret": "secret3" }
         }"#;
 
-        let config = CustomOAuthConfig::from_str(json).unwrap();
+        let config: CustomOAuthConfig = json.parse().unwrap();
 
         let drive = config.credentials_for(CloudProvider::GoogleDrive).unwrap();
         assert_eq!(drive.client_id, "id1");

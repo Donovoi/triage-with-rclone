@@ -302,7 +302,8 @@ fn test_end_to_end_directory_workflow() {
 
     for subdir in &subdirs {
         let path = case_dir.join(subdir);
-        fs::create_dir_all(&path).expect(&format!("Failed to create {}", subdir));
+        fs::create_dir_all(&path)
+            .unwrap_or_else(|_| panic!("Failed to create {}", subdir));
     }
 
     // Verify all directories exist
@@ -569,7 +570,7 @@ fn test_csv_export_format() {
     // Create CSV with BOM for Excel compatibility
     let bom = "\u{FEFF}";
     let header = "Path,Size,Modified,Hash,HashType";
-    let rows = vec![
+    let rows = [
         "Documents/report.pdf,102400,2024-06-15T10:30:00Z,abc123,MD5",
         "Photos/vacation.jpg,5242880,2024-07-15T14:30:00Z,def456,SHA1",
         "\"File with, comma.txt\",1024,2024-01-01T00:00:00Z,ghi789,MD5",
@@ -656,7 +657,7 @@ fn test_app_state_transitions() {
     }
 
     // Verify we have a complete chain
-    let states = vec![
+    let states = [
         TestState::CaseSetup,
         TestState::ProviderSelect,
         TestState::Authenticating,

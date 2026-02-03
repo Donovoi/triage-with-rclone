@@ -9,7 +9,7 @@ use rclone_triage::embedded;
 use rclone_triage::files::list_path;
 use rclone_triage::forensics::state::SystemStateSnapshot;
 use rclone_triage::providers::{auth::authenticate_with_rclone, CloudProvider};
-use rclone_triage::rclone::{RcloneConfig, RcloneRunner};
+use rclone_triage::rclone::{start_web_gui, RcloneConfig, RcloneRunner};
 use rclone_triage::ui::App as TuiApp;
 use anyhow::Result;
 use clap::Parser;
@@ -48,6 +48,27 @@ fn main() -> Result<()> {
     // Initialize session
     let case = Case::new(&args.name, args.output_dir.clone())?;
     println!("Session initialized: {}", case.session_id());
+
+    if args.web_gui {
+        let config = RcloneConfig::for_case(&case.output_dir)?;
+        app_guard.track_env_value("RCLONE_CONFIG", config.original_env());
+        let port = args.web_gui_port;
+        let addr = format!("http://127.0.0.1:{}/", port);
+
+        println!("Starting rclone Web GUI at {}", addr);
+        let mut web = start_web_gui(
+            binary.path(),
+            Some(config.path()),
+            port,
+            args.web_gui_user.as_deref(),
+            args.web_gui_pass.as_deref(),
+        )?;
+        println!("Press Ctrl+C to stop.");
+
+        let status = web.wait()?;
+        println!("Web GUI exited with status: {}", status);
+        return Ok(());
+    }
 
     // Optional TUI loop
     if args.tui {
@@ -142,4 +163,20 @@ struct Cli {
     /// Launch interactive TUI
     #[arg(long, default_value_t = false)]
     tui: bool,
+
+    /// Start rclone Web GUI (rcd --rc-web-gui)
+    #[arg(long, default_value_t = false)]
+    web_gui: bool,
+
+    /// Web GUI port
+    #[arg(long, default_value_t = 5572)]
+    web_gui_port: u16,
+
+    /// Web GUI username (optional)
+    #[arg(long)]
+    web_gui_user: Option<String>,
+
+    /// Web GUI password (optional)
+    #[arg(long)]
+    web_gui_pass: Option<String>,
 }

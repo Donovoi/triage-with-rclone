@@ -11,5 +11,6 @@ pub use download::{
 };
 #[allow(unused_imports)]
 pub use export::export_listing;
+pub use export::export_listing_xlsx;
 #[allow(unused_imports)]
 pub use listing::{list_path, FileEntry};

@@ -16,6 +16,43 @@ use std::time::Duration;
 use crate::ui::screens::welcome::WelcomeScreen;
 use crate::ui::{render::render_state, App};
 
+fn try_refresh_providers(app: &mut App) {
+    let allow = cfg!(windows)
+        || std::env::var("RCLONE_TRIAGE_DYNAMIC_PROVIDERS")
+            .map(|v| v != "0")
+            .unwrap_or(false);
+
+    if !allow {
+        return;
+    }
+
+    let binary = match crate::embedded::ExtractedBinary::extract() {
+        Ok(binary) => binary,
+        Err(e) => {
+            app.log_error(format!("Provider discovery failed (extract): {}", e));
+            return;
+        }
+    };
+
+    app.cleanup_track_file(binary.path());
+    if let Some(dir) = binary.temp_dir() {
+        app.cleanup_track_dir(dir);
+    }
+
+    let runner = crate::rclone::RcloneRunner::new(binary.path());
+    match crate::providers::discovery::supported_providers_from_rclone(&runner) {
+        Ok(providers) if !providers.is_empty() => {
+            app.providers = providers;
+        }
+        Ok(_) => {
+            app.log_info("Provider discovery returned empty list; using defaults");
+        }
+        Err(e) => {
+            app.log_error(format!("Provider discovery failed: {}", e));
+        }
+    }
+}
+
 /// Perform the authentication flow (extract binary, create config, auth, list files)
 fn perform_auth_flow<B: ratatui::backend::Backend>(
     app: &mut App,
@@ -115,6 +152,23 @@ fn perform_auth_flow<B: ratatui::backend::Backend>(
                 // Persist remote name for later listing/download
                 app.chosen_remote = Some(result.remote_name.clone());
 
+                app.auth_status = "Testing connectivity...".to_string();
+                terminal.draw(|f| render_state(f, app))?;
+
+                let connectivity =
+                    crate::rclone::test_connectivity(&runner, &result.remote_name)?;
+                if connectivity.ok {
+                    app.log_info(format!(
+                        "Connectivity OK ({} ms)",
+                        connectivity.duration.as_millis()
+                    ));
+                } else {
+                    app.log_error(format!(
+                        "Connectivity failed: {}",
+                        connectivity.error.unwrap_or_else(|| "Unknown error".to_string())
+                    ));
+                }
+
                 app.auth_status = "Listing files...".to_string();
                 terminal.draw(|f| render_state(f, app))?;
 
@@ -132,6 +186,18 @@ fn perform_auth_flow<B: ratatui::backend::Backend>(
                             } else {
                                 app.log_info(format!("Exported listing to {:?}", csv_path));
                                 app.track_file(&csv_path, "Exported file listing CSV");
+                            }
+
+                            let xlsx_path = dirs
+                                .listings
+                                .join(format!("{}_files.xlsx", provider.short_name()));
+                            if let Err(e) =
+                                crate::files::export::export_listing_xlsx(&entries, &xlsx_path)
+                            {
+                                app.log_error(format!("Excel export failed: {}", e));
+                            } else {
+                                app.log_info(format!("Exported listing to {:?}", xlsx_path));
+                                app.track_file(&xlsx_path, "Exported file listing Excel");
                             }
                         }
 
@@ -536,6 +602,7 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                                 app.auth_status = format!("Failed to create case: {}", e);
                             } else {
                                 app.advance(); // Move to ProviderSelect
+                                try_refresh_providers(app);
                             }
                         } else if app.state == crate::ui::AppState::ProviderSelect {
                             app.confirm_provider();
