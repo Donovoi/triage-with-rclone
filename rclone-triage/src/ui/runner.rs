@@ -122,6 +122,19 @@ fn try_refresh_providers(app: &mut App) {
     }
 }
 
+fn resolve_provider_remotes(
+    config: &crate::rclone::RcloneConfig,
+    provider: &crate::providers::ProviderEntry,
+) -> Result<Vec<String>> {
+    let parsed = config.parse()?;
+    let remotes = parsed
+        .remotes_by_type(provider.short_name())
+        .into_iter()
+        .map(|remote| remote.name.clone())
+        .collect();
+    Ok(remotes)
+}
+
 /// Perform the authentication flow (extract binary, create config, auth, list files)
 fn perform_auth_flow<B: ratatui::backend::Backend>(
     app: &mut App,
@@ -359,6 +372,233 @@ fn perform_auth_flow<B: ratatui::backend::Backend>(
         }
     } else {
         app.auth_status = "No provider selected".to_string();
+    }
+
+    Ok(())
+}
+
+/// Perform a listing-only flow using an existing config (no authentication).
+fn perform_list_flow<B: ratatui::backend::Backend>(
+    app: &mut App,
+    terminal: &mut Terminal<B>,
+) -> Result<()> {
+    let Some(provider) = app.chosen_provider.clone() else {
+        app.provider_status = "No provider selected.".to_string();
+        return Ok(());
+    };
+
+    app.provider_status = format!("Preparing listing for {}...", provider.display_name());
+    terminal.draw(|f| render_state(f, app))?;
+
+    let binary = crate::embedded::ExtractedBinary::extract()?;
+    app.cleanup_track_file(binary.path());
+    if let Some(dir) = binary.temp_dir() {
+        app.cleanup_track_dir(dir);
+    }
+
+    let config_dir = app
+        .config_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    app.track_env_var("RCLONE_CONFIG", "Set RCLONE_CONFIG for listing");
+    let config = match crate::rclone::RcloneConfig::for_case(&config_dir) {
+        Ok(config) => config,
+        Err(e) => {
+            app.provider_status = format!("Listing failed (config): {}", e);
+            app.log_error(format!("Listing failed (config): {}", e));
+            return Ok(());
+        }
+    };
+    app.cleanup_track_env_value("RCLONE_CONFIG", config.original_env());
+
+    let remotes = match resolve_provider_remotes(&config, &provider) {
+        Ok(remotes) => remotes,
+        Err(e) => {
+            app.provider_status = format!("Listing failed (parse config): {}", e);
+            app.log_error(format!("Listing failed (parse config): {}", e));
+            return Ok(());
+        }
+    };
+
+    let Some(remote_name) = remotes.first().cloned() else {
+        app.provider_status = format!(
+            "No authenticated remotes found for {}. Copy a config to {:?} and retry.",
+            provider.display_name(),
+            config.path()
+        );
+        app.log_error(format!(
+            "No authenticated remotes found for {}",
+            provider.display_name()
+        ));
+        return Ok(());
+    };
+
+    if remotes.len() > 1 {
+        app.log_info(format!(
+            "Multiple remotes found for {}. Using {}.",
+            provider.display_name(),
+            remote_name
+        ));
+    }
+
+    app.chosen_remote = Some(remote_name.clone());
+    app.files_to_download.clear();
+    app.file_entries.clear();
+    app.file_entries_full.clear();
+    app.file_selected = 0;
+
+    let runner = crate::rclone::RcloneRunner::new(binary.path()).with_config(config.path());
+
+    app.provider_status = format!("Listing {}...", remote_name);
+    terminal.draw(|f| render_state(f, app))?;
+
+    let listing_result = crate::files::listing::list_path_with_progress(
+        &runner,
+        &format!("{}:", remote_name),
+        |count| {
+            app.provider_status = format!("Listing {}... ({} found)", remote_name, count);
+            let _ = terminal.draw(|f| render_state(f, app));
+        },
+    );
+
+    match listing_result {
+        Ok(entries) => {
+            if let Some(ref dirs) = app.directories {
+                let csv_path = dirs
+                    .listings
+                    .join(format!("{}_files.csv", provider.short_name()));
+                if let Err(e) = crate::files::export::export_listing(&entries, &csv_path) {
+                    app.log_error(format!("CSV export failed: {}", e));
+                } else {
+                    app.log_info(format!("Exported listing to {:?}", csv_path));
+                    app.track_file(&csv_path, "Exported file listing CSV");
+                }
+
+                let xlsx_path = dirs
+                    .listings
+                    .join(format!("{}_files.xlsx", provider.short_name()));
+                if let Err(e) = crate::files::export::export_listing_xlsx(&entries, &xlsx_path) {
+                    app.log_error(format!("Excel export failed: {}", e));
+                } else {
+                    app.log_info(format!("Exported listing to {:?}", xlsx_path));
+                    app.track_file(&xlsx_path, "Exported file listing Excel");
+                }
+            }
+
+            app.file_entries_full = entries.clone();
+            app.file_entries = entries.iter().map(|e| e.path.clone()).collect();
+            app.log_info(format!(
+                "Listed {} files from {}",
+                app.file_entries.len(),
+                provider.display_name()
+            ));
+            app.provider_status = format!("Found {} files", app.file_entries.len());
+            app.state = crate::ui::AppState::FileList;
+        }
+        Err(e) => {
+            app.provider_status = format!("Listing failed: {}", e);
+            app.log_error(format!("Listing failed: {}", e));
+        }
+    }
+
+    Ok(())
+}
+
+/// Perform a mount flow using an existing config (no authentication).
+fn perform_mount_flow<B: ratatui::backend::Backend>(
+    app: &mut App,
+    terminal: &mut Terminal<B>,
+) -> Result<()> {
+    let Some(provider) = app.chosen_provider.clone() else {
+        app.provider_status = "No provider selected.".to_string();
+        return Ok(());
+    };
+
+    if app.mounted_remote.is_some() {
+        app.provider_status = "Remote already mounted.".to_string();
+        return Ok(());
+    }
+
+    app.provider_status = format!("Preparing mount for {}...", provider.display_name());
+    terminal.draw(|f| render_state(f, app))?;
+
+    let binary = crate::embedded::ExtractedBinary::extract()?;
+    app.cleanup_track_file(binary.path());
+    if let Some(dir) = binary.temp_dir() {
+        app.cleanup_track_dir(dir);
+    }
+
+    let config_dir = app
+        .config_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    app.track_env_var("RCLONE_CONFIG", "Set RCLONE_CONFIG for mount");
+    let config = match crate::rclone::RcloneConfig::for_case(&config_dir) {
+        Ok(config) => config,
+        Err(e) => {
+            app.provider_status = format!("Mount failed (config): {}", e);
+            app.log_error(format!("Mount failed (config): {}", e));
+            return Ok(());
+        }
+    };
+    app.cleanup_track_env_value("RCLONE_CONFIG", config.original_env());
+
+    let remotes = match resolve_provider_remotes(&config, &provider) {
+        Ok(remotes) => remotes,
+        Err(e) => {
+            app.provider_status = format!("Mount failed (parse config): {}", e);
+            app.log_error(format!("Mount failed (parse config): {}", e));
+            return Ok(());
+        }
+    };
+
+    let Some(remote_name) = remotes.first().cloned() else {
+        app.provider_status = format!(
+            "No authenticated remotes found for {}. Copy a config to {:?} and retry.",
+            provider.display_name(),
+            config.path()
+        );
+        app.log_error(format!(
+            "No authenticated remotes found for {}",
+            provider.display_name()
+        ));
+        return Ok(());
+    };
+
+    if remotes.len() > 1 {
+        app.log_info(format!(
+            "Multiple remotes found for {}. Using {}.",
+            provider.display_name(),
+            remote_name
+        ));
+    }
+
+    let manager = match crate::rclone::MountManager::new(binary.path()) {
+        Ok(manager) => manager.with_config(config.path()),
+        Err(e) => {
+            app.provider_status = format!("Mount failed: {}", e);
+            app.log_error(format!("Mount failed: {}", e));
+            return Ok(());
+        }
+    };
+
+    app.provider_status = format!("Mounting {}...", remote_name);
+    terminal.draw(|f| render_state(f, app))?;
+
+    match manager.mount_and_explore(&remote_name, None) {
+        Ok(mounted) => {
+            let mount_path = mounted.mount_point().to_path_buf();
+            app.mounted_remote = Some(mounted);
+            app.chosen_remote = Some(remote_name);
+            app.file_entries.clear();
+            app.file_entries_full.clear();
+            app.files_to_download.clear();
+            app.file_selected = 0;
+            app.provider_status = format!("Mounted remote at {:?}", mount_path);
+            app.state = crate::ui::AppState::FileList;
+        }
+        Err(e) => {
+            app.provider_status = format!("Mount failed: {}", e);
+            app.log_error(format!("Mount failed: {}", e));
+        }
     }
 
     Ok(())
@@ -757,18 +997,8 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                     KeyCode::Char('q') | KeyCode::Esc => break,
                     KeyCode::Enter => {
                         if app.state == crate::ui::AppState::MainMenu {
-                            if app.menu_selected < app.menu_items.len() {
-                                let action = app.menu_items[app.menu_selected].action;
-                                app.selected_action = Some(action);
-                                app.menu_status.clear();
-                                if action == crate::ui::MenuAction::Exit {
-                                    break;
-                                }
-                                if action == crate::ui::MenuAction::AdditionalOptions {
-                                    app.state = crate::ui::AppState::AdditionalOptions;
-                                } else {
-                                    app.state = crate::ui::AppState::ModeConfirm;
-                                }
+                            if handle_main_menu_enter(app) {
+                                break;
                             }
                         } else if app.state == crate::ui::AppState::AdditionalOptions {
                             if let Some(item) = app.additional_menu_selected_item() {
@@ -823,43 +1053,62 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                             if app.chosen_provider.is_none() {
                                 continue;
                             }
-                            if app.selected_action == Some(crate::ui::MenuAction::MobileAuth) {
-                                app.state = crate::ui::AppState::MobileAuthFlow;
-                            } else if app.selected_action == Some(crate::ui::MenuAction::SmartAuth) {
-                                app.chosen_browser = None;
-                                app.state = crate::ui::AppState::Authenticating;
-                                perform_auth_flow(app, &mut terminal)?;
-                            } else if app
-                                .chosen_provider
-                                .as_ref()
-                                .and_then(|p| p.known)
-                                .is_some()
-                            {
-                                app.refresh_browsers();
-                                app.advance(); // Move to BrowserSelect
-                            } else {
-                                app.chosen_browser = None;
-                                app.state = crate::ui::AppState::Authenticating;
-                                perform_auth_flow(app, &mut terminal)?;
+                            match app.selected_action {
+                                Some(crate::ui::MenuAction::MobileAuth) => {
+                                    app.state = crate::ui::AppState::MobileAuthFlow;
+                                }
+                                Some(crate::ui::MenuAction::SmartAuth) => {
+                                    app.chosen_browser = None;
+                                    app.state = crate::ui::AppState::Authenticating;
+                                    perform_auth_flow(app, &mut terminal)?;
+                                }
+                                Some(crate::ui::MenuAction::RetrieveList) => {
+                                    perform_list_flow(app, &mut terminal)?;
+                                }
+                                Some(crate::ui::MenuAction::MountProvider) => {
+                                    perform_mount_flow(app, &mut terminal)?;
+                                }
+                                Some(crate::ui::MenuAction::DownloadFromCsv) => {
+                                    app.menu_status =
+                                        "CSV/XLSX download queue is not yet available in the TUI."
+                                            .to_string();
+                                    app.state = crate::ui::AppState::MainMenu;
+                                }
+                                _ => {
+                                    if app
+                                        .chosen_provider
+                                        .as_ref()
+                                        .and_then(|p| p.known)
+                                        .is_some()
+                                    {
+                                        app.refresh_browsers();
+                                        app.advance(); // Move to BrowserSelect
+                                    } else {
+                                        app.chosen_browser = None;
+                                        app.state = crate::ui::AppState::Authenticating;
+                                        perform_auth_flow(app, &mut terminal)?;
+                                    }
+                                }
                             }
                         } else if app.state == crate::ui::AppState::MobileAuthFlow {
                             if let Some(item) = app.mobile_flow_selected_item() {
                                 match item.action {
                                     crate::ui::MenuAction::MobileAuthRedirect => {
-                                        app.mobile_auth_flow = Some(crate::ui::MobileAuthFlow::Redirect);
-                                        app.state = crate::ui::AppState::Authenticating;
-                                        perform_auth_flow(app, &mut terminal)?;
+                                        app.mobile_auth_flow =
+                                            Some(crate::ui::MobileAuthFlow::Redirect);
+                                        app.menu_status = "Mobile auth flow is not yet available in the TUI."
+                                            .to_string();
                                     }
                                     crate::ui::MenuAction::MobileAuthRedirectWithAp => {
                                         app.mobile_auth_flow =
                                             Some(crate::ui::MobileAuthFlow::RedirectWithAccessPoint);
-                                        app.state = crate::ui::AppState::Authenticating;
-                                        perform_auth_flow(app, &mut terminal)?;
+                                        app.menu_status = "Mobile auth flow is not yet available in the TUI."
+                                            .to_string();
                                     }
                                     crate::ui::MenuAction::MobileAuthDeviceCode => {
                                         app.mobile_auth_flow = Some(crate::ui::MobileAuthFlow::DeviceCode);
-                                        app.state = crate::ui::AppState::Authenticating;
-                                        perform_auth_flow(app, &mut terminal)?;
+                                        app.menu_status = "Mobile auth flow is not yet available in the TUI."
+                                            .to_string();
                                     }
                                     crate::ui::MenuAction::BackToProviders => {
                                         app.state = crate::ui::AppState::ProviderSelect;
@@ -890,6 +1139,16 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                     KeyCode::Backspace => {
                         if app.state == crate::ui::AppState::CaseSetup {
                             app.input_backspace();
+                        } else if app.state == crate::ui::AppState::FileList {
+                            if matches!(
+                                app.selected_action,
+                                Some(crate::ui::MenuAction::RetrieveList)
+                                    | Some(crate::ui::MenuAction::MountProvider)
+                            ) {
+                                app.state = crate::ui::AppState::ProviderSelect;
+                            } else {
+                                app.back();
+                            }
                         } else {
                             app.back();
                         }
@@ -1071,6 +1330,37 @@ fn should_handle_key(key: &KeyEvent) -> bool {
     key.kind == KeyEventKind::Press
 }
 
+fn handle_main_menu_enter(app: &mut App) -> bool {
+    if app.menu_selected >= app.menu_items.len() {
+        return false;
+    }
+
+    let action = app.menu_items[app.menu_selected].action;
+    app.selected_action = Some(action);
+    app.menu_status.clear();
+
+    match action {
+        crate::ui::MenuAction::Exit => {
+            app.exit_requested = true;
+            true
+        }
+        crate::ui::MenuAction::AdditionalOptions => {
+            app.state = crate::ui::AppState::AdditionalOptions;
+            false
+        }
+        crate::ui::MenuAction::DownloadFromCsv => {
+            app.menu_status =
+                "CSV/XLSX download queue is not yet available in the TUI.".to_string();
+            app.state = crate::ui::AppState::MainMenu;
+            false
+        }
+        _ => {
+            app.state = crate::ui::AppState::ModeConfirm;
+            false
+        }
+    }
+}
+
 fn handle_provider_help_key(app: &mut App, key: &KeyEvent) -> bool {
     if app.state != crate::ui::AppState::ProviderSelect {
         return false;
@@ -1124,13 +1414,7 @@ fn handle_mouse_event(app: &mut App, area: ratatui::layout::Rect, mouse: MouseEv
                 if let Some(index) = list_index_from_click(list_area, mouse.row) {
                     if index < app.menu_items.len() {
                         app.menu_selected = index;
-                        let action = app.menu_items[index].action;
-                        app.selected_action = Some(action);
-                        if action == crate::ui::MenuAction::Exit {
-                            app.exit_requested = true;
-                        } else {
-                            app.advance();
-                        }
+                        handle_main_menu_enter(app);
                     }
                 }
             }
@@ -1350,5 +1634,46 @@ mod tests {
         let quit = KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE);
         assert!(!handle_provider_help_key(&mut app, &quit));
         assert!(app.show_provider_help);
+    }
+
+    #[test]
+    fn test_main_menu_enter_additional_options() {
+        let mut app = App::new();
+        let index = app
+            .menu_items
+            .iter()
+            .position(|item| item.action == crate::ui::MenuAction::AdditionalOptions)
+            .unwrap();
+        app.menu_selected = index;
+
+        let exited = handle_main_menu_enter(&mut app);
+
+        assert!(!exited);
+        assert_eq!(app.state, crate::ui::AppState::AdditionalOptions);
+        assert_eq!(
+            app.selected_action,
+            Some(crate::ui::MenuAction::AdditionalOptions)
+        );
+    }
+
+    #[test]
+    fn test_main_menu_enter_download_sets_status() {
+        let mut app = App::new();
+        let index = app
+            .menu_items
+            .iter()
+            .position(|item| item.action == crate::ui::MenuAction::DownloadFromCsv)
+            .unwrap();
+        app.menu_selected = index;
+
+        let exited = handle_main_menu_enter(&mut app);
+
+        assert!(!exited);
+        assert_eq!(app.state, crate::ui::AppState::MainMenu);
+        assert_eq!(
+            app.selected_action,
+            Some(crate::ui::MenuAction::DownloadFromCsv)
+        );
+        assert!(!app.menu_status.is_empty());
     }
 }
