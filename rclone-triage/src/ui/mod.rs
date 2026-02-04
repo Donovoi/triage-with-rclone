@@ -30,6 +30,7 @@ pub enum AppState {
     MainMenu,
     AdditionalOptions,
     OneDriveMenu,
+    ModeConfirm,
     CaseSetup,
     ProviderSelect,
     MobileAuthFlow,
@@ -45,9 +46,10 @@ impl AppState {
     #[allow(dead_code)]
     pub fn next(self) -> Self {
         match self {
-            AppState::MainMenu => AppState::CaseSetup,
+            AppState::MainMenu => AppState::ModeConfirm,
             AppState::AdditionalOptions => AppState::AdditionalOptions,
             AppState::OneDriveMenu => AppState::OneDriveMenu,
+            AppState::ModeConfirm => AppState::CaseSetup,
             AppState::CaseSetup => AppState::ProviderSelect,
             AppState::ProviderSelect => AppState::BrowserSelect,
             AppState::MobileAuthFlow => AppState::Authenticating,
@@ -66,6 +68,7 @@ impl AppState {
             AppState::MainMenu => AppState::MainMenu,
             AppState::AdditionalOptions => AppState::MainMenu,
             AppState::OneDriveMenu => AppState::AdditionalOptions,
+            AppState::ModeConfirm => AppState::MainMenu,
             AppState::CaseSetup => AppState::MainMenu,
             AppState::ProviderSelect => AppState::CaseSetup,
             AppState::MobileAuthFlow => AppState::ProviderSelect,
@@ -162,6 +165,8 @@ pub struct App {
     pub provider_selected: usize,
     /// Provider discovery status message
     pub provider_status: String,
+    /// Provider selection state (multi-select)
+    pub provider_checked: Vec<bool>,
     /// Show help overlay in provider selection
     pub show_provider_help: bool,
     /// Timestamp of last provider refresh attempt
@@ -174,6 +179,8 @@ pub struct App {
     pub browsers: Vec<Browser>,
     /// Selected browser index (0 = system default)
     pub browser_selected: usize,
+    /// Browser selection state (multi-select)
+    pub browser_checked: Vec<bool>,
     /// Chosen browser (None = system default)
     pub chosen_browser: Option<Browser>,
     /// Chosen remote name from auth (may include browser prefix)
@@ -218,10 +225,12 @@ impl App {
         let onedrive_menu_items = Self::onedrive_menu_items();
         let mobile_flow_items = Self::mobile_flow_items();
         let providers = CloudProvider::entries();
+        let providers_len = providers.len();
         let provider_status = format!(
             "Using built-in providers ({}). Press 'r' to refresh.",
-            providers.len()
+            providers_len
         );
+        let browser_list = crate::providers::auth::get_available_browsers();
 
         Self {
             state: AppState::MainMenu,
@@ -247,12 +256,14 @@ impl App {
             providers,
             provider_selected: 0,
             provider_status,
+            provider_checked: vec![false; providers_len],
             show_provider_help: false,
             provider_last_updated: None,
             provider_last_error: None,
             chosen_provider: None,
-            browsers: crate::providers::auth::get_available_browsers(),
+            browsers: browser_list.clone(),
             browser_selected: 0,
+            browser_checked: vec![false; browser_list.len() + 1],
             chosen_browser: None,
             chosen_remote: None,
             auth_status: String::new(),
@@ -656,6 +667,34 @@ impl App {
         self.provider_selected = (self.provider_selected + 1) % self.providers.len();
     }
 
+    /// Toggle whether the current provider is selected
+    #[allow(dead_code)]
+    pub fn toggle_provider_selection(&mut self) {
+        if self.state != AppState::ProviderSelect || self.providers.is_empty() {
+            return;
+        }
+        if let Some(entry) = self.provider_checked.get_mut(self.provider_selected) {
+            *entry = !*entry;
+        }
+    }
+
+    /// Get all selected providers
+    #[allow(dead_code)]
+    pub fn selected_providers(&self) -> Vec<ProviderEntry> {
+        self.providers
+            .iter()
+            .cloned()
+            .zip(self.provider_checked.iter().copied())
+            .filter_map(|(provider, checked)| if checked { Some(provider) } else { None })
+            .collect()
+    }
+
+    /// Check if any provider is selected
+    #[allow(dead_code)]
+    pub fn has_selected_providers(&self) -> bool {
+        self.provider_checked.iter().any(|checked| *checked)
+    }
+
     /// Get the currently selected provider
     #[allow(dead_code)]
     pub fn selected_provider(&self) -> Option<ProviderEntry> {
@@ -665,7 +704,14 @@ impl App {
     /// Persist the current provider selection for authentication
     #[allow(dead_code)]
     pub fn confirm_provider(&mut self) {
-        self.chosen_provider = self.selected_provider();
+        let selected = self.selected_providers();
+        if selected.is_empty() {
+            self.provider_status =
+                "Select at least one provider (Space toggles selection).".to_string();
+            self.chosen_provider = None;
+            return;
+        }
+        self.chosen_provider = Some(selected[0].clone());
         self.chosen_remote = None;
     }
 
@@ -674,6 +720,7 @@ impl App {
     pub fn refresh_browsers(&mut self) {
         self.browsers = crate::providers::auth::get_available_browsers();
         self.browser_selected = 0;
+        self.browser_checked = vec![false; self.browsers.len() + 1];
         self.chosen_browser = None;
     }
 
@@ -717,10 +764,51 @@ impl App {
         }
     }
 
+    /// Toggle whether the current browser is selected
+    #[allow(dead_code)]
+    pub fn toggle_browser_selection(&mut self) {
+        if self.state != AppState::BrowserSelect {
+            return;
+        }
+        let total = self.browsers.len() + 1;
+        if total == 0 {
+            return;
+        }
+        if self.browser_checked.len() != total {
+            self.browser_checked = vec![false; total];
+        }
+        if let Some(entry) = self.browser_checked.get_mut(self.browser_selected) {
+            *entry = !*entry;
+        }
+    }
+
+    /// Check if any browser is selected
+    #[allow(dead_code)]
+    pub fn has_selected_browsers(&self) -> bool {
+        self.browser_checked.iter().any(|checked| *checked)
+    }
+
     /// Persist the current browser selection for authentication
     #[allow(dead_code)]
     pub fn confirm_browser(&mut self) {
-        self.chosen_browser = self.selected_browser();
+        if !self.has_selected_browsers() {
+            self.auth_status = "Select at least one browser (Space toggles selection).".to_string();
+            self.chosen_browser = None;
+            return;
+        }
+        let mut chosen = None;
+        for (idx, checked) in self.browser_checked.iter().copied().enumerate() {
+            if !checked {
+                continue;
+            }
+            if idx == 0 {
+                chosen = None;
+                break;
+            }
+            chosen = self.browsers.get(idx - 1).cloned();
+            break;
+        }
+        self.chosen_browser = chosen;
     }
 
     /// Update SSO status for the selected provider
@@ -876,7 +964,8 @@ impl App {
     #[allow(dead_code)]
     pub fn is_valid_transition(from: AppState, to: AppState) -> bool {
         match (from, to) {
-            (AppState::MainMenu, AppState::CaseSetup) => true,
+            (AppState::MainMenu, AppState::ModeConfirm) => true,
+            (AppState::ModeConfirm, AppState::CaseSetup) => true,
             (AppState::CaseSetup, AppState::ProviderSelect) => true,
             (AppState::ProviderSelect, AppState::BrowserSelect) => true,
             (AppState::BrowserSelect, AppState::Authenticating) => true,
@@ -903,6 +992,8 @@ mod tests {
     fn test_state_sequence() {
         let mut state = AppState::MainMenu;
         state = state.next();
+        assert_eq!(state, AppState::ModeConfirm);
+        state = state.next();
         assert_eq!(state, AppState::CaseSetup);
         state = state.next();
         assert_eq!(state, AppState::ProviderSelect);
@@ -926,7 +1017,7 @@ mod tests {
         assert_eq!(app.state, AppState::MainMenu);
 
         app.advance();
-        assert_eq!(app.state, AppState::CaseSetup);
+        assert_eq!(app.state, AppState::ModeConfirm);
 
         app.back();
         assert_eq!(app.state, AppState::MainMenu);
@@ -961,6 +1052,7 @@ mod tests {
     fn test_confirm_provider() {
         let mut app = App::new();
         app.state = AppState::ProviderSelect;
+        app.provider_checked[app.provider_selected] = true;
         app.confirm_provider();
         assert!(app.chosen_provider.is_some());
     }

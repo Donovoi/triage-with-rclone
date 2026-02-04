@@ -11,9 +11,9 @@ pub struct ProviderSelectScreen {
 }
 
 impl ProviderSelectScreen {
-    pub fn new(providers: Vec<String>) -> Self {
+    pub fn new(providers: Vec<String>, checked: Vec<bool>, selected: usize) -> Self {
         Self {
-            list: ProviderList::new(providers),
+            list: ProviderList::new(providers, checked, selected),
         }
     }
 }
@@ -35,7 +35,7 @@ mod tests {
         let screen = ProviderSelectScreen::new(vec![
             "Google Drive".to_string(),
             "Dropbox".to_string(),
-        ]);
+        ], vec![false, true], 1);
         (&screen).render(Rect::new(0, 0, 50, 10), &mut buf);
     }
 }

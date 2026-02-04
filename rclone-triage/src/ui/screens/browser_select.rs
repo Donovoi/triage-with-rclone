@@ -11,9 +11,9 @@ pub struct BrowserSelectScreen {
 }
 
 impl BrowserSelectScreen {
-    pub fn new(browsers: Vec<String>) -> Self {
+    pub fn new(browsers: Vec<String>, checked: Vec<bool>, selected: usize) -> Self {
         Self {
-            list: BrowserList::new(browsers),
+            list: BrowserList::new(browsers, checked, selected),
         }
     }
 }
@@ -35,7 +35,7 @@ mod tests {
         let screen = BrowserSelectScreen::new(vec![
             "System Default".to_string(),
             "Mozilla Firefox".to_string(),
-        ]);
+        ], vec![false, true], 1);
         (&screen).render(Rect::new(0, 0, 50, 10), &mut buf);
     }
 }
