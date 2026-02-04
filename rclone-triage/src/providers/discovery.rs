@@ -124,8 +124,10 @@ pub fn providers_from_rclone_json(json: &str) -> Result<ProviderDiscoveryResult>
 
     let mut entries = Vec::new();
     let mut seen = HashSet::new();
-    let mut stats = ProviderDiscoveryStats::default();
-    stats.total = providers.len();
+    let mut stats = ProviderDiscoveryStats {
+        total: providers.len(),
+        ..Default::default()
+    };
 
     for provider in providers {
         let prefix = provider
