@@ -825,6 +825,10 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                             }
                             if app.selected_action == Some(crate::ui::MenuAction::MobileAuth) {
                                 app.state = crate::ui::AppState::MobileAuthFlow;
+                            } else if app.selected_action == Some(crate::ui::MenuAction::SmartAuth) {
+                                app.chosen_browser = None;
+                                app.state = crate::ui::AppState::Authenticating;
+                                perform_auth_flow(app, &mut terminal)?;
                             } else if app
                                 .chosen_provider
                                 .as_ref()
@@ -1287,7 +1291,7 @@ mod tests {
 
         handle_mouse_event(&mut app, area, click);
 
-        assert_eq!(app.state, crate::ui::AppState::CaseSetup);
+        assert_eq!(app.state, crate::ui::AppState::ModeConfirm);
         assert_eq!(app.selected_action, Some(crate::ui::MenuAction::Authenticate));
     }
 
