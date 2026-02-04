@@ -3,15 +3,19 @@
 //! Sets up terminal backend and renders a single frame.
 
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
+use crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
+    MouseButton, MouseEvent, MouseEventKind,
+};
 use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
+use chrono::Local;
 use std::io::stdout;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::ui::screens::welcome::WelcomeScreen;
 use crate::ui::{render::render_state, App};
@@ -23,10 +27,20 @@ fn apply_discovered_providers(app: &mut App, providers: Vec<crate::providers::Pr
             app.provider_selected = 0;
         }
         app.provider_status = format!("Loaded {} providers from rclone.", app.providers.len());
+        record_provider_refresh(app, None);
     } else {
         app.provider_status = "Provider discovery returned empty list; using defaults.".to_string();
         app.log_info("Provider discovery returned empty list; using defaults");
+        record_provider_refresh(
+            app,
+            Some("Provider discovery returned empty list.".to_string()),
+        );
     }
+}
+
+fn record_provider_refresh(app: &mut App, error: Option<String>) {
+    app.provider_last_updated = Some(Local::now());
+    app.provider_last_error = error;
 }
 
 fn refresh_providers_from_json(app: &mut App, json: &str) -> Result<()> {
@@ -45,6 +59,10 @@ fn try_refresh_providers(app: &mut App) {
             "Provider refresh disabled by RCLONE_TRIAGE_DYNAMIC_PROVIDERS=0. Using built-in providers ({}).",
             app.providers.len()
         );
+        record_provider_refresh(
+            app,
+            Some("Provider refresh disabled by RCLONE_TRIAGE_DYNAMIC_PROVIDERS=0.".to_string()),
+        );
         return;
     }
 
@@ -56,6 +74,10 @@ fn try_refresh_providers(app: &mut App) {
             let message = format!("Provider discovery failed (extract): {}", e);
             app.provider_status = format!("Provider discovery failed: {}. Using built-in list.", e);
             app.log_error(message);
+            record_provider_refresh(
+                app,
+                Some(format!("Provider discovery failed (extract): {}", e)),
+            );
             return;
         }
     };
@@ -71,7 +93,8 @@ fn try_refresh_providers(app: &mut App) {
         Err(e) => {
             let message = format!("Provider discovery failed: {}", e);
             app.provider_status = format!("Provider discovery failed: {}. Using built-in list.", e);
-            app.log_error(message);
+            app.log_error(message.clone());
+            record_provider_refresh(app, Some(message));
             return;
         }
     };
@@ -81,13 +104,20 @@ fn try_refresh_providers(app: &mut App) {
         app.provider_status =
             format!("Provider discovery failed: {}. Using built-in list.", stderr);
         app.log_error(format!("Provider discovery failed: {}", stderr));
+        record_provider_refresh(
+            app,
+            Some(format!("Provider discovery failed: {}", stderr)),
+        );
         return;
     }
 
     if let Err(e) = refresh_providers_from_json(app, &output.stdout_string()) {
         let message = format!("Provider discovery failed: {}", e);
         app.provider_status = format!("Provider discovery failed: {}. Using built-in list.", e);
-        app.log_error(message);
+        app.log_error(message.clone());
+        record_provider_refresh(app, Some(message));
+    } else {
+        record_provider_refresh(app, None);
     }
 }
 
@@ -643,7 +673,7 @@ fn perform_download_flow<B: ratatui::backend::Backend>(
 pub fn run_once() -> Result<()> {
     enable_raw_mode()?;
     let mut out = stdout();
-    execute!(out, EnterAlternateScreen)?;
+    execute!(out, EnterAlternateScreen, EnableMouseCapture)?;
 
     let backend = CrosstermBackend::new(out);
     let mut terminal = Terminal::new(backend)?;
@@ -669,7 +699,7 @@ pub fn run_once() -> Result<()> {
 pub fn run_loop(app: &mut App) -> Result<()> {
     enable_raw_mode()?;
     let mut out = stdout();
-    execute!(out, EnterAlternateScreen)?;
+    execute!(out, EnterAlternateScreen, EnableMouseCapture)?;
 
     let backend = CrosstermBackend::new(out);
     let mut terminal = Terminal::new(backend)?;
@@ -680,27 +710,55 @@ pub fn run_loop(app: &mut App) -> Result<()> {
         fn drop(&mut self) {
             let _ = disable_raw_mode();
             let mut out = std::io::stdout();
-            let _ = execute!(out, LeaveAlternateScreen);
+            let _ = execute!(out, DisableMouseCapture, LeaveAlternateScreen);
         }
     }
     let _guard = TuiGuard;
 
     try_refresh_providers(app);
 
+    let mut last_nav: Option<(KeyCode, Instant)> = None;
+
     loop {
         terminal.draw(|f| {
             render_state(f, app);
         })?;
 
+        let area = terminal.size()?;
         if event::poll(Duration::from_millis(200))? {
-            if let Event::Key(key) = event::read()? {
-                if !should_handle_key(&key) {
-                    continue;
-                }
-                match key.code {
+            match event::read()? {
+                Event::Key(key) => {
+                    if !should_handle_key(&key) {
+                        continue;
+                    }
+                    let now = Instant::now();
+                    if matches!(key.code, KeyCode::Up | KeyCode::Down) {
+                        if let Some((prev, at)) = last_nav {
+                            if prev == key.code && now.duration_since(at) < Duration::from_millis(80)
+                            {
+                                continue;
+                            }
+                        }
+                        last_nav = Some((key.code, now));
+                    }
+
+                    if handle_provider_help_key(app, &key) {
+                        continue;
+                    }
+
+                    match key.code {
                     KeyCode::Char('q') | KeyCode::Esc => break,
                     KeyCode::Enter => {
-                        if app.state == crate::ui::AppState::CaseSetup {
+                        if app.state == crate::ui::AppState::MainMenu {
+                            if app.menu_selected < app.menu_items.len() {
+                                let action = app.menu_items[app.menu_selected].action;
+                                app.selected_action = Some(action);
+                                if action == crate::ui::MenuAction::Exit {
+                                    break;
+                                }
+                            }
+                            app.advance();
+                        } else if app.state == crate::ui::AppState::CaseSetup {
                             // Initialize case directories before moving to provider select
                             let output_dir = std::env::current_dir()
                                 .unwrap_or_else(|_| std::path::PathBuf::from("."));
@@ -750,7 +808,9 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                         }
                     }
                     KeyCode::Up => {
-                        if app.state == crate::ui::AppState::ProviderSelect {
+                        if app.state == crate::ui::AppState::MainMenu {
+                            app.menu_up();
+                        } else if app.state == crate::ui::AppState::ProviderSelect {
                             app.provider_up();
                         } else if app.state == crate::ui::AppState::BrowserSelect {
                             app.browser_up();
@@ -759,7 +819,9 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                         }
                     }
                     KeyCode::Down => {
-                        if app.state == crate::ui::AppState::ProviderSelect {
+                        if app.state == crate::ui::AppState::MainMenu {
+                            app.menu_down();
+                        } else if app.state == crate::ui::AppState::ProviderSelect {
                             app.provider_down();
                         } else if app.state == crate::ui::AppState::BrowserSelect {
                             app.browser_down();
@@ -883,9 +945,19 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                     }
                     KeyCode::Tab => app.toggle_file_download(),
                     KeyCode::Char(ch) => app.input_char(ch),
-                    _ => {}
+                        _ => {}
+                    }
                 }
+                Event::Mouse(mouse) => {
+                    let area_rect = ratatui::layout::Rect::new(0, 0, area.width, area.height);
+                    handle_mouse_event(app, area_rect, mouse);
+                }
+                _ => {}
             }
+        }
+
+        if app.exit_requested {
+            break;
         }
     }
 
@@ -896,9 +968,130 @@ fn should_handle_key(key: &KeyEvent) -> bool {
     key.kind == KeyEventKind::Press
 }
 
+fn handle_provider_help_key(app: &mut App, key: &KeyEvent) -> bool {
+    if app.state != crate::ui::AppState::ProviderSelect {
+        return false;
+    }
+
+    if app.show_provider_help {
+        match key.code {
+            KeyCode::Char('q') => false,
+            KeyCode::Char('?') | KeyCode::Char('h') | KeyCode::Esc => {
+                app.show_provider_help = false;
+                true
+            }
+            _ => true,
+        }
+    } else {
+        match key.code {
+            KeyCode::Char('?') | KeyCode::Char('h') => {
+                app.show_provider_help = true;
+                true
+            }
+            _ => false,
+        }
+    }
+}
+
+fn handle_mouse_event(app: &mut App, area: ratatui::layout::Rect, mouse: MouseEvent) {
+    match mouse.kind {
+        MouseEventKind::ScrollUp => match app.state {
+            crate::ui::AppState::MainMenu => app.menu_up(),
+            crate::ui::AppState::ProviderSelect => app.provider_up(),
+            crate::ui::AppState::BrowserSelect => app.browser_up(),
+            crate::ui::AppState::FileList => app.file_up(),
+            _ => {}
+        },
+        MouseEventKind::ScrollDown => match app.state {
+            crate::ui::AppState::MainMenu => app.menu_down(),
+            crate::ui::AppState::ProviderSelect => app.provider_down(),
+            crate::ui::AppState::BrowserSelect => app.browser_down(),
+            crate::ui::AppState::FileList => app.file_down(),
+            _ => {}
+        },
+        MouseEventKind::Down(MouseButton::Left) => match app.state {
+            crate::ui::AppState::MainMenu => {
+                let list_area = main_menu_list_area(area);
+                if let Some(index) = list_index_from_click(list_area, mouse.row) {
+                    if index < app.menu_items.len() {
+                        app.menu_selected = index;
+                        let action = app.menu_items[index].action;
+                        app.selected_action = Some(action);
+                        if action == crate::ui::MenuAction::Exit {
+                            app.exit_requested = true;
+                        } else {
+                            app.advance();
+                        }
+                    }
+                }
+            }
+            crate::ui::AppState::ProviderSelect => {
+                let list_area = provider_list_area(area);
+                if let Some(index) = list_index_from_click(list_area, mouse.row) {
+                    if index < app.providers.len() {
+                        app.provider_selected = index;
+                    }
+                }
+            }
+            crate::ui::AppState::BrowserSelect => {
+                if let Some(index) = list_index_from_click(area, mouse.row) {
+                    if index < app.browsers.len() + 1 {
+                        app.browser_selected = index;
+                    }
+                }
+            }
+            crate::ui::AppState::FileList => {
+                if let Some(index) = list_index_from_click(area, mouse.row) {
+                    if index < app.file_entries.len() {
+                        app.file_selected = index;
+                    }
+                }
+            }
+            _ => {}
+        },
+        _ => {}
+    }
+}
+
+fn provider_list_area(area: ratatui::layout::Rect) -> ratatui::layout::Rect {
+    let chunks = ratatui::layout::Layout::default()
+        .direction(ratatui::layout::Direction::Vertical)
+        .constraints([ratatui::layout::Constraint::Min(3), ratatui::layout::Constraint::Length(4)])
+        .split(area);
+    let columns = ratatui::layout::Layout::default()
+        .direction(ratatui::layout::Direction::Horizontal)
+        .constraints([
+            ratatui::layout::Constraint::Percentage(65),
+            ratatui::layout::Constraint::Percentage(35),
+        ])
+        .split(chunks[0]);
+    columns[0]
+}
+
+fn main_menu_list_area(area: ratatui::layout::Rect) -> ratatui::layout::Rect {
+    let chunks = ratatui::layout::Layout::default()
+        .direction(ratatui::layout::Direction::Vertical)
+        .constraints([ratatui::layout::Constraint::Min(3), ratatui::layout::Constraint::Length(4)])
+        .split(area);
+    chunks[0]
+}
+
+fn list_index_from_click(area: ratatui::layout::Rect, row: u16) -> Option<usize> {
+    if area.height < 2 {
+        return None;
+    }
+    let content_start = area.y.saturating_add(1);
+    let content_end = area.y + area.height - 1;
+    if row < content_start || row >= content_end {
+        return None;
+    }
+    Some((row - content_start) as usize)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
     use std::io::IsTerminal;
 
     #[test]
@@ -948,5 +1141,81 @@ mod tests {
             state: event::KeyEventState::NONE,
         };
         assert!(!should_handle_key(&repeat));
+    }
+
+    #[test]
+    fn test_main_menu_click_advances() {
+        let mut app = App::new();
+        let area = ratatui::layout::Rect::new(0, 0, 100, 20);
+        let list_area = main_menu_list_area(area);
+        let click_row = list_area.y + 1;
+        let click = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: list_area.x + 1,
+            row: click_row,
+            modifiers: KeyModifiers::NONE,
+        };
+
+        handle_mouse_event(&mut app, area, click);
+
+        assert_eq!(app.state, crate::ui::AppState::CaseSetup);
+        assert_eq!(app.selected_action, Some(crate::ui::MenuAction::Authenticate));
+    }
+
+    #[test]
+    fn test_main_menu_click_exit_sets_flag() {
+        let mut app = App::new();
+        let area = ratatui::layout::Rect::new(0, 0, 100, 20);
+        let list_area = main_menu_list_area(area);
+        let exit_index = app.menu_items.len() - 1;
+        let click_row = list_area.y + 1 + exit_index as u16;
+        let click = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: list_area.x + 1,
+            row: click_row,
+            modifiers: KeyModifiers::NONE,
+        };
+
+        handle_mouse_event(&mut app, area, click);
+
+        assert!(app.exit_requested);
+        assert_eq!(app.state, crate::ui::AppState::MainMenu);
+        assert_eq!(app.selected_action, Some(crate::ui::MenuAction::Exit));
+    }
+
+    #[test]
+    fn test_provider_list_area_respects_split() {
+        let area = ratatui::layout::Rect::new(0, 0, 100, 20);
+        let list_area = provider_list_area(area);
+        assert_eq!(list_area.width, 65);
+    }
+
+    #[test]
+    fn test_provider_help_toggle_consumes_keys() {
+        let mut app = App::new();
+        app.state = crate::ui::AppState::ProviderSelect;
+
+        let open = KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE);
+        assert!(handle_provider_help_key(&mut app, &open));
+        assert!(app.show_provider_help);
+
+        let up = KeyEvent::new(KeyCode::Up, KeyModifiers::NONE);
+        assert!(handle_provider_help_key(&mut app, &up));
+        assert!(app.show_provider_help);
+
+        let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+        assert!(handle_provider_help_key(&mut app, &esc));
+        assert!(!app.show_provider_help);
+    }
+
+    #[test]
+    fn test_provider_help_does_not_consume_quit() {
+        let mut app = App::new();
+        app.state = crate::ui::AppState::ProviderSelect;
+        app.show_provider_help = true;
+
+        let quit = KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE);
+        assert!(!handle_provider_help_key(&mut app, &quit));
+        assert!(app.show_provider_help);
     }
 }
