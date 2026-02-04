@@ -3,7 +3,7 @@
 //! Sets up terminal backend and renders a single frame.
 
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode};
+use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -646,6 +646,8 @@ pub fn run_loop(app: &mut App) -> Result<()> {
     }
     let _guard = TuiGuard;
 
+    try_refresh_providers(app);
+
     loop {
         terminal.draw(|f| {
             render_state(f, app);
@@ -653,6 +655,9 @@ pub fn run_loop(app: &mut App) -> Result<()> {
 
         if event::poll(Duration::from_millis(200))? {
             if let Event::Key(key) = event::read()? {
+                if key.kind != KeyEventKind::Press {
+                    continue;
+                }
                 match key.code {
                     KeyCode::Char('q') | KeyCode::Esc => break,
                     KeyCode::Enter => {

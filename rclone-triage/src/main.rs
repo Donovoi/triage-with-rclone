@@ -178,8 +178,8 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    // Optional TUI loop
-    if args.tui {
+    // Optional TUI loop (default when no explicit CLI action is selected)
+    if should_run_tui(&args) {
         let mut app = TuiApp::new();
         app.set_cleanup(app_guard.cleanup.clone());
         rclone_triage::ui::runner::run_loop(&mut app)?;
@@ -240,6 +240,22 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+fn should_run_tui(args: &Cli) -> bool {
+    if args.tui {
+        return true;
+    }
+
+    let has_cli_action = args.web_gui
+        || args.forensic_ap_start
+        || args.forensic_ap_stop
+        || args.forensic_ap_status
+        || args.onedrive_vault
+        || args.set_oauth_creds.is_some()
+        || args.provider.is_some();
+
+    !has_cli_action
 }
 
 /// Ensures cleanup is run on drop
