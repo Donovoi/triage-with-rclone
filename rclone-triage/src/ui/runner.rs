@@ -20,21 +20,55 @@ use std::time::{Duration, Instant};
 use crate::ui::screens::welcome::WelcomeScreen;
 use crate::ui::{render::render_state, App};
 
-fn apply_discovered_providers(app: &mut App, providers: Vec<crate::providers::ProviderEntry>) {
-    if !providers.is_empty() {
-        app.providers = providers;
+fn format_provider_stats(stats: &crate::providers::discovery::ProviderDiscoveryStats, kept: usize) -> String {
+    let excluded = stats.excluded_total();
+    let mut details = Vec::new();
+    if stats.excluded_bad > 0 {
+        details.push(format!("{} bad", stats.excluded_bad));
+    }
+    if stats.excluded_non_oauth > 0 {
+        details.push(format!("{} non-oauth", stats.excluded_non_oauth));
+    }
+    if stats.excluded_no_prefix > 0 {
+        details.push(format!("{} no-prefix", stats.excluded_no_prefix));
+    }
+    if stats.excluded_duplicates > 0 {
+        details.push(format!("{} duplicate", stats.excluded_duplicates));
+    }
+    let detail_text = if details.is_empty() {
+        "no exclusions".to_string()
+    } else {
+        details.join(", ")
+    };
+    format!(
+        "OAuth-capable: {} of {} ({} excluded: {}).",
+        kept, stats.total, excluded, detail_text
+    )
+}
+
+fn apply_discovered_providers(
+    app: &mut App,
+    discovery: crate::providers::discovery::ProviderDiscoveryResult,
+) {
+    if !discovery.providers.is_empty() {
+        let stats_summary = format_provider_stats(&discovery.stats, discovery.providers.len());
+        app.providers = discovery.providers;
         if app.provider_selected >= app.providers.len() {
             app.provider_selected = 0;
         }
         app.provider_checked = vec![false; app.providers.len()];
-        app.provider_status = format!("Loaded {} providers from rclone.", app.providers.len());
+        app.provider_status = format!("Loaded {} providers from rclone. {}", app.providers.len(), stats_summary);
         record_provider_refresh(app, None);
     } else {
-        app.provider_status = "Provider discovery returned empty list; using defaults.".to_string();
-        app.log_info("Provider discovery returned empty list; using defaults");
+        let stats_summary = format_provider_stats(&discovery.stats, 0);
+        app.provider_status = format!(
+            "No OAuth-capable providers found; using defaults. {}",
+            stats_summary
+        );
+        app.log_info("No OAuth-capable providers found; using defaults");
         record_provider_refresh(
             app,
-            Some("Provider discovery returned empty list.".to_string()),
+            Some("No OAuth-capable providers found.".to_string()),
         );
     }
 }
@@ -45,8 +79,8 @@ fn record_provider_refresh(app: &mut App, error: Option<String>) {
 }
 
 fn refresh_providers_from_json(app: &mut App, json: &str) -> Result<()> {
-    let providers = crate::providers::discovery::providers_from_rclone_json(json)?;
-    apply_discovered_providers(app, providers);
+    let discovery = crate::providers::discovery::providers_from_rclone_json(json)?;
+    apply_discovered_providers(app, discovery);
     Ok(())
 }
 
@@ -1530,10 +1564,10 @@ mod tests {
 
         let json = r#"
         [
-          {"Name":"Amazon S3","Prefix":"s3"},
-          {"Name":"Azure Blob","Prefix":"azureblob"},
-          {"Name":"Backblaze B2","Prefix":"b2"},
-          {"Name":"Google Drive","Prefix":"drive"}
+          {"Name":"Amazon S3","Prefix":"s3","Options":[{"Name":"access_key_id"}]},
+          {"Name":"Azure Blob","Prefix":"azureblob","Options":[{"Name":"client_id"}]},
+          {"Name":"Backblaze B2","Prefix":"b2","Options":[{"Name":"application_key"}]},
+          {"Name":"Google Drive","Prefix":"drive","Options":[{"Name":"client_secret"}]}
         ]
         "#;
 
@@ -1542,7 +1576,7 @@ mod tests {
         assert_ne!(app.providers.len(), original_len);
         assert!(app.providers.iter().any(|p| p.id == "s3"));
         assert!(app.providers.iter().any(|p| p.id == "azureblob"));
-        assert!(app.providers.iter().any(|p| p.id == "b2"));
+        assert!(!app.providers.iter().any(|p| p.id == "b2"));
         assert!(app.providers.iter().any(|p| p.id == "drive"));
     }
 

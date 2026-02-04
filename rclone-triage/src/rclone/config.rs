@@ -230,37 +230,59 @@ pub struct RcloneConfig {
     original_env: Option<String>,
 }
 
+#[cfg(test)]
+static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(test)]
+fn with_env_lock<F, R>(f: F) -> R
+where
+    F: FnOnce() -> R,
+{
+    let _guard = ENV_MUTEX.lock().unwrap();
+    f()
+}
+
+#[cfg(not(test))]
+fn with_env_lock<F, R>(f: F) -> R
+where
+    F: FnOnce() -> R,
+{
+    f()
+}
+
 impl RcloneConfig {
     /// Create a new config manager with a specific config file path
     ///
     /// If the directory doesn't exist, it will be created.
     /// If the file doesn't exist, an empty config file will be created.
     pub fn new(config_path: impl AsRef<Path>) -> Result<Self> {
-        let config_path = config_path.as_ref().to_path_buf();
+        with_env_lock(|| {
+            let config_path = config_path.as_ref().to_path_buf();
 
-        // Save original env var
-        let original_env = std::env::var("RCLONE_CONFIG").ok();
+            // Save original env var
+            let original_env = std::env::var("RCLONE_CONFIG").ok();
 
-        // Create parent directories
-        if let Some(parent) = config_path.parent() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("Failed to create config directory: {:?}", parent))?;
-        }
+            // Create parent directories
+            if let Some(parent) = config_path.parent() {
+                fs::create_dir_all(parent)
+                    .with_context(|| format!("Failed to create config directory: {:?}", parent))?;
+            }
 
-        // Check if we need to create the file
-        let created = !config_path.exists();
-        if created {
-            fs::write(&config_path, "# rclone-triage config\n")
-                .with_context(|| format!("Failed to create config file: {:?}", config_path))?;
-        }
+            // Check if we need to create the file
+            let created = !config_path.exists();
+            if created {
+                fs::write(&config_path, "# rclone-triage config\n")
+                    .with_context(|| format!("Failed to create config file: {:?}", config_path))?;
+            }
 
-        // Set the environment variable
-        std::env::set_var("RCLONE_CONFIG", &config_path);
+            // Set the environment variable
+            std::env::set_var("RCLONE_CONFIG", &config_path);
 
-        Ok(Self {
-            config_path,
-            created,
-            original_env,
+            Ok(Self {
+                config_path,
+                created,
+                original_env,
+            })
         })
     }
 
@@ -426,10 +448,10 @@ impl RcloneConfig {
 
     /// Restore the original RCLONE_CONFIG environment variable
     pub fn restore_env(&self) {
-        match &self.original_env {
+        with_env_lock(|| match &self.original_env {
             Some(val) => std::env::set_var("RCLONE_CONFIG", val),
             None => std::env::remove_var("RCLONE_CONFIG"),
-        }
+        });
     }
 
     /// Clean up - delete the config file if we created it and restore env
