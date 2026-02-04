@@ -40,6 +40,64 @@ pub fn render_state(frame: &mut Frame, app: &App) {
                 .wrap(Wrap { trim: true });
             frame.render_widget(footer, chunks[1]);
         }
+        AppState::AdditionalOptions => {
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Min(3), Constraint::Length(4)])
+                .split(area);
+            let labels = app
+                .additional_menu_items
+                .iter()
+                .map(|item| item.label.to_string())
+                .collect::<Vec<_>>();
+            let mut screen = MainMenuScreen::new(labels);
+            screen.list.selected = app.additional_menu_selected;
+            frame.render_widget(&screen, chunks[0]);
+
+            let description = app
+                .additional_menu_selected_item()
+                .map(|item| item.description)
+                .unwrap_or("Select an option to continue.");
+            let status = if app.menu_status.is_empty() {
+                "Additional options".to_string()
+            } else {
+                app.menu_status.clone()
+            };
+            let controls =
+                "Up/Down select • Click select • Enter choose • Backspace back • q quit".to_string();
+            let footer = Paragraph::new(vec![Line::from(description), Line::from(status), Line::from(controls)])
+                .wrap(Wrap { trim: true });
+            frame.render_widget(footer, chunks[1]);
+        }
+        AppState::OneDriveMenu => {
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Min(3), Constraint::Length(4)])
+                .split(area);
+            let labels = app
+                .onedrive_menu_items
+                .iter()
+                .map(|item| item.label.to_string())
+                .collect::<Vec<_>>();
+            let mut screen = MainMenuScreen::new(labels);
+            screen.list.selected = app.onedrive_menu_selected;
+            frame.render_widget(&screen, chunks[0]);
+
+            let description = app
+                .onedrive_menu_selected_item()
+                .map(|item| item.description)
+                .unwrap_or("Select an option to continue.");
+            let status = if app.menu_status.is_empty() {
+                "OneDrive utilities".to_string()
+            } else {
+                app.menu_status.clone()
+            };
+            let controls =
+                "Up/Down select • Click select • Enter choose • Backspace back • q quit".to_string();
+            let footer = Paragraph::new(vec![Line::from(description), Line::from(status), Line::from(controls)])
+                .wrap(Wrap { trim: true });
+            frame.render_widget(footer, chunks[1]);
+        }
         AppState::CaseSetup => {
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
@@ -128,6 +186,35 @@ pub fn render_state(frame: &mut Frame, app: &App) {
                     .wrap(Wrap { trim: true });
                 frame.render_widget(help, overlay);
             }
+        }
+        AppState::MobileAuthFlow => {
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Min(3), Constraint::Length(4)])
+                .split(area);
+            let labels = app
+                .mobile_flow_items
+                .iter()
+                .map(|item| item.label.to_string())
+                .collect::<Vec<_>>();
+            let mut screen = MainMenuScreen::new(labels);
+            screen.list.selected = app.mobile_flow_selected;
+            frame.render_widget(&screen, chunks[0]);
+
+            let description = app
+                .mobile_flow_selected_item()
+                .map(|item| item.description)
+                .unwrap_or("Select an authentication method.");
+            let status = if app.menu_status.is_empty() {
+                "Mobile device authentication".to_string()
+            } else {
+                app.menu_status.clone()
+            };
+            let controls =
+                "Up/Down select • Click select • Enter choose • Backspace back • q quit".to_string();
+            let footer = Paragraph::new(vec![Line::from(description), Line::from(status), Line::from(controls)])
+                .wrap(Wrap { trim: true });
+            frame.render_widget(footer, chunks[1]);
         }
         AppState::BrowserSelect => {
             let mut names = Vec::new();
