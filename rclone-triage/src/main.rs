@@ -421,3 +421,84 @@ fn default_vault_destination() -> String {
         "./OneDriveVault".to_string()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn default_cli() -> Cli {
+        Cli {
+            name: "".to_string(),
+            output_dir: std::path::PathBuf::from("."),
+            provider: None,
+            tui: false,
+            mobile_auth: false,
+            mobile_auth_port: 53682,
+            device_code: false,
+            set_oauth_creds: None,
+            oauth_config_path: None,
+            web_gui: false,
+            web_gui_port: 5572,
+            web_gui_user: None,
+            web_gui_pass: None,
+            forensic_ap_start: false,
+            forensic_ap_stop: false,
+            forensic_ap_status: false,
+            forensic_ap_ssid: None,
+            forensic_ap_password: None,
+            forensic_ap_timeout_minutes: None,
+            onedrive_vault: false,
+            onedrive_vault_mount: None,
+            onedrive_vault_dest: None,
+            onedrive_vault_no_wait: false,
+        }
+    }
+
+    #[test]
+    fn test_should_run_tui_default_true() {
+        let args = default_cli();
+        assert!(should_run_tui(&args));
+    }
+
+    #[test]
+    fn test_should_run_tui_explicit_flag_true() {
+        let mut args = default_cli();
+        args.tui = true;
+        assert!(should_run_tui(&args));
+    }
+
+    #[test]
+    fn test_should_run_tui_provider_false() {
+        let mut args = default_cli();
+        args.provider = Some("drive".to_string());
+        assert!(!should_run_tui(&args));
+    }
+
+    #[test]
+    fn test_should_run_tui_web_gui_false() {
+        let mut args = default_cli();
+        args.web_gui = true;
+        assert!(!should_run_tui(&args));
+    }
+
+    #[test]
+    fn test_should_run_tui_forensic_ap_false() {
+        let mut args = default_cli();
+        args.forensic_ap_start = true;
+        assert!(!should_run_tui(&args));
+    }
+
+    #[test]
+    fn test_should_run_tui_onedrive_vault_false() {
+        let mut args = default_cli();
+        args.onedrive_vault = true;
+        assert!(!should_run_tui(&args));
+    }
+
+    #[test]
+    fn test_should_run_tui_set_oauth_creds_false() {
+        let mut args = default_cli();
+        args.set_oauth_creds = Some("drive".to_string());
+        assert!(!should_run_tui(&args));
+    }
+}
