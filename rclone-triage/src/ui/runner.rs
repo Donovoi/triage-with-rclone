@@ -2,7 +2,7 @@
 //!
 //! Sets up terminal backend and renders a single frame.
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
     MouseButton, MouseEvent, MouseEventKind,
@@ -17,8 +17,20 @@ use chrono::Local;
 use std::io::stdout;
 use std::time::{Duration, Instant};
 
+use crate::forensics::{
+    generate_password, render_wifi_qr, start_forensic_access_point, stop_forensic_access_point,
+};
+use crate::providers::config::ProviderConfig;
+use crate::providers::credentials::custom_oauth_credentials_for;
+use crate::providers::mobile::{
+    device_code_config, exchange_code_for_token, poll_device_code_for_token, render_qr_code,
+    request_device_code,
+};
+use crate::providers::CloudProvider;
+use crate::rclone::oauth::DEFAULT_OAUTH_PORT;
 use crate::ui::screens::welcome::WelcomeScreen;
 use crate::ui::{render::render_state, App};
+use crate::utils::network::get_local_ip_address;
 
 fn format_provider_stats(stats: &crate::providers::discovery::ProviderDiscoveryStats, kept: usize) -> String {
     let excluded = stats.excluded_total();
@@ -82,6 +94,274 @@ fn refresh_providers_from_json(app: &mut App, json: &str) -> Result<()> {
     let discovery = crate::providers::discovery::providers_from_rclone_json(json)?;
     apply_discovered_providers(app, discovery);
     Ok(())
+}
+
+fn update_auth_status<B: ratatui::backend::Backend>(
+    app: &mut App,
+    terminal: &mut Terminal<B>,
+    lines: Vec<String>,
+) -> Result<()> {
+    app.auth_status = lines.join("\n");
+    terminal.draw(|f| render_state(f, app))?;
+    Ok(())
+}
+
+fn resolve_oauth_credentials(
+    provider: CloudProvider,
+    provider_config: &ProviderConfig,
+) -> (String, Option<String>) {
+    let custom = custom_oauth_credentials_for(provider).ok().flatten();
+    let client_id = custom
+        .as_ref()
+        .map(|c| c.client_id.as_str())
+        .unwrap_or(provider_config.oauth.client_id)
+        .to_string();
+    let client_secret = custom
+        .as_ref()
+        .and_then(|c| c.client_secret.clone())
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| {
+            let secret = provider_config.oauth.client_secret;
+            if secret.trim().is_empty() {
+                None
+            } else {
+                Some(secret.to_string())
+            }
+        });
+
+    (client_id, client_secret)
+}
+
+fn perform_mobile_auth_flow<B: ratatui::backend::Backend>(
+    app: &mut App,
+    terminal: &mut Terminal<B>,
+    provider: CloudProvider,
+    config: &crate::rclone::RcloneConfig,
+    remote_name: &str,
+    flow: crate::ui::MobileAuthFlow,
+) -> Result<crate::providers::auth::AuthResult> {
+    let provider_config = ProviderConfig::for_provider(provider);
+    if !provider_config.uses_oauth() {
+        bail!(
+            "{} does not use OAuth. Mobile authentication is not supported.",
+            provider.display_name()
+        );
+    }
+
+    match flow {
+        crate::ui::MobileAuthFlow::DeviceCode => {
+            update_auth_status(
+                app,
+                terminal,
+                vec![format!(
+                    "Requesting device code for {}...",
+                    provider.display_name()
+                )],
+            )?;
+
+            let device_config = device_code_config(provider)?
+                .ok_or_else(|| anyhow::anyhow!("Device code flow not supported for {}", provider))?;
+            let device_info = request_device_code(&device_config)?;
+
+            let verification = device_info
+                .verification_uri_complete
+                .clone()
+                .unwrap_or_else(|| device_info.verification_uri.clone());
+
+            let mut lines = vec![
+                format!("Device code authentication for {}", provider.display_name()),
+                format!("User code: {}", device_info.user_code),
+                format!("Verify at: {}", device_info.verification_uri),
+            ];
+
+            if let Some(message) = device_info.message.as_ref() {
+                lines.push(message.clone());
+            }
+
+            if let Ok(qr) = render_qr_code(&verification) {
+                lines.push("Scan this QR code:".to_string());
+                lines.push(qr);
+            }
+
+            lines.push("Waiting for authorization...".to_string());
+            update_auth_status(app, terminal, lines)?;
+
+            let token_json = poll_device_code_for_token(
+                &device_config,
+                &device_info.device_code,
+                device_info.interval,
+                device_info.expires_in,
+            )?;
+
+            let token_str = serde_json::to_string(&token_json)?;
+
+            let mut options: Vec<(String, String)> = Vec::new();
+            for (key, value) in provider_config.rclone_options {
+                options.push(((*key).to_string(), (*value).to_string()));
+            }
+            if !device_config.client_id.trim().is_empty() {
+                options.push(("client_id".to_string(), device_config.client_id));
+            }
+            if let Some(secret) = device_config.client_secret {
+                if !secret.trim().is_empty() {
+                    options.push(("client_secret".to_string(), secret));
+                }
+            }
+            options.push(("token".to_string(), token_str));
+
+            let options_ref: Vec<(&str, &str)> = options
+                .iter()
+                .map(|(k, v)| (k.as_str(), v.as_str()))
+                .collect();
+
+            config.set_remote(remote_name, provider.rclone_type(), &options_ref)?;
+            if !config.has_remote(remote_name)? {
+                bail!("Remote {} was not created", remote_name);
+            }
+
+            let user_info = config.get_user_info(remote_name).ok().flatten();
+            let user_identifier = user_info.and_then(|u| u.best_identifier());
+
+            Ok(crate::providers::auth::AuthResult {
+                provider,
+                remote_name: remote_name.to_string(),
+                user_info: user_identifier,
+                browser: None,
+                was_silent: false,
+            })
+        }
+        crate::ui::MobileAuthFlow::Redirect
+        | crate::ui::MobileAuthFlow::RedirectWithAccessPoint => {
+            let (client_id, client_secret) = resolve_oauth_credentials(provider, &provider_config);
+            if client_id.trim().is_empty() {
+                bail!(
+                    "No OAuth client ID available for {}",
+                    provider.display_name()
+                );
+            }
+
+            let local_ip = get_local_ip_address()?
+                .ok_or_else(|| anyhow::anyhow!("Unable to determine local IP address"))?;
+
+            let oauth = crate::rclone::OAuthFlow::new()
+                .with_port(DEFAULT_OAUTH_PORT)
+                .with_timeout(Duration::from_secs(300))
+                .with_bind_host("0.0.0.0")
+                .with_redirect_host(local_ip.clone());
+
+            let auth_url = provider_config.build_auth_url_with_client_id(
+                &client_id,
+                &oauth.redirect_uri(),
+                None,
+            );
+
+            let mut ap_info: Option<crate::forensics::ForensicAccessPointInfo> = None;
+            if flow == crate::ui::MobileAuthFlow::RedirectWithAccessPoint {
+                let password = generate_password();
+                let ssid = format!("FORENSIC-{}", &password[..6]);
+                update_auth_status(
+                    app,
+                    terminal,
+                    vec![format!("Starting forensic access point: {}", ssid)],
+                )?;
+
+                match start_forensic_access_point(&ssid, &password, None) {
+                    Ok(info) => {
+                        ap_info = Some(info);
+                    }
+                    Err(e) => {
+                        update_auth_status(
+                            app,
+                            terminal,
+                            vec![
+                                format!("Access point failed: {}", e),
+                                "Continuing without access point.".to_string(),
+                            ],
+                        )?;
+                    }
+                }
+            }
+
+            let result = (|| {
+                let mut lines = vec![
+                    format!("Mobile redirect authentication for {}", provider.display_name()),
+                    "Phone must be on the same network as this PC.".to_string(),
+                ];
+
+                if let Some(ref info) = ap_info {
+                    lines.push(format!("Access Point SSID: {}", info.ssid));
+                    lines.push(format!("Access Point Password: {}", info.password));
+                    lines.push(format!("Access Point IP: {}", info.ip_address));
+                    if let Ok(wifi_qr) = render_wifi_qr(&info.ssid, &info.password) {
+                        lines.push("WiFi QR:".to_string());
+                        lines.push(wifi_qr);
+                    }
+                }
+
+                lines.push(format!("Open on phone: {}", auth_url));
+                lines.push(format!("Callback: {}", oauth.redirect_uri()));
+
+                if let Ok(qr) = render_qr_code(&auth_url) {
+                    lines.push("Scan this QR code:".to_string());
+                    lines.push(qr);
+                }
+
+                lines.push("Waiting for authorization callback...".to_string());
+                update_auth_status(app, terminal, lines)?;
+
+                let result = oauth.wait_for_redirect()?;
+                let token_json = exchange_code_for_token(
+                    provider_config.oauth.token_url,
+                    &result.code,
+                    &oauth.redirect_uri(),
+                    &client_id,
+                    client_secret.as_deref(),
+                )?;
+                let token_str = serde_json::to_string(&token_json)?;
+
+                let mut options: Vec<(String, String)> = Vec::new();
+                for (key, value) in provider_config.rclone_options {
+                    options.push(((*key).to_string(), (*value).to_string()));
+                }
+                if !client_id.trim().is_empty() {
+                    options.push(("client_id".to_string(), client_id.clone()));
+                }
+                if let Some(secret) = client_secret.as_ref() {
+                    if !secret.trim().is_empty() {
+                        options.push(("client_secret".to_string(), secret.clone()));
+                    }
+                }
+                options.push(("token".to_string(), token_str));
+
+                let options_ref: Vec<(&str, &str)> = options
+                    .iter()
+                    .map(|(k, v)| (k.as_str(), v.as_str()))
+                    .collect();
+
+                config.set_remote(remote_name, provider.rclone_type(), &options_ref)?;
+                if !config.has_remote(remote_name)? {
+                    bail!("Remote {} was not created", remote_name);
+                }
+
+                let user_info = config.get_user_info(remote_name).ok().flatten();
+                let user_identifier = user_info.and_then(|u| u.best_identifier());
+
+                Ok(crate::providers::auth::AuthResult {
+                    provider,
+                    remote_name: remote_name.to_string(),
+                    user_info: user_identifier,
+                    browser: None,
+                    was_silent: false,
+                })
+            })();
+
+            if ap_info.is_some() {
+                let _ = stop_forensic_access_point(true);
+            }
+
+            result
+        }
+    }
 }
 
 fn try_refresh_providers(app: &mut App) {
@@ -211,9 +491,37 @@ fn perform_auth_flow<B: ratatui::backend::Backend>(
             was_silent: bool,
         }
 
+        let mobile_flow = if app.selected_action == Some(crate::ui::MenuAction::MobileAuth) {
+            app.mobile_auth_flow
+                .take()
+                .or(Some(crate::ui::MobileAuthFlow::Redirect))
+        } else {
+            None
+        };
+
         // If user selected a browser, use it; otherwise use smart auth (SSO + interactive)
         let auth_result: Result<AuthOutcome> = if let Some(known) = provider.known {
-            if let Some(ref browser) = app.chosen_browser {
+            if let Some(flow) = mobile_flow {
+                app.auth_status = format!(
+                    "Starting mobile authentication for {}...",
+                    provider.display_name()
+                );
+                terminal.draw(|f| render_state(f, app))?;
+
+                perform_mobile_auth_flow(
+                    app,
+                    terminal,
+                    known,
+                    &config,
+                    provider.short_name(),
+                    flow,
+                )
+                .map(|result| AuthOutcome {
+                    remote_name: result.remote_name,
+                    user_info: result.user_info,
+                    was_silent: result.was_silent,
+                })
+            } else if let Some(ref browser) = app.chosen_browser {
                 app.auth_status = format!(
                     "Authenticating {} via {}...",
                     provider.display_name(),
@@ -264,6 +572,9 @@ fn perform_auth_flow<B: ratatui::backend::Backend>(
                 })
             }
         } else {
+            if mobile_flow.is_some() {
+                bail!("Mobile authentication is only supported for known OAuth providers");
+            }
             app.auth_status = format!("Authenticating {}...", provider.display_name());
             app.log_info(format!(
                 "Using generic rclone auth for {}",
@@ -1130,19 +1441,19 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                                     crate::ui::MenuAction::MobileAuthRedirect => {
                                         app.mobile_auth_flow =
                                             Some(crate::ui::MobileAuthFlow::Redirect);
-                                        app.menu_status = "Mobile auth flow is not yet available in the TUI."
-                                            .to_string();
+                                        app.state = crate::ui::AppState::Authenticating;
+                                        perform_auth_flow(app, &mut terminal)?;
                                     }
                                     crate::ui::MenuAction::MobileAuthRedirectWithAp => {
                                         app.mobile_auth_flow =
                                             Some(crate::ui::MobileAuthFlow::RedirectWithAccessPoint);
-                                        app.menu_status = "Mobile auth flow is not yet available in the TUI."
-                                            .to_string();
+                                        app.state = crate::ui::AppState::Authenticating;
+                                        perform_auth_flow(app, &mut terminal)?;
                                     }
                                     crate::ui::MenuAction::MobileAuthDeviceCode => {
                                         app.mobile_auth_flow = Some(crate::ui::MobileAuthFlow::DeviceCode);
-                                        app.menu_status = "Mobile auth flow is not yet available in the TUI."
-                                            .to_string();
+                                        app.state = crate::ui::AppState::Authenticating;
+                                        perform_auth_flow(app, &mut terminal)?;
                                     }
                                     crate::ui::MenuAction::BackToProviders => {
                                         app.state = crate::ui::AppState::ProviderSelect;
