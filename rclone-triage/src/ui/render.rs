@@ -35,10 +35,21 @@ pub fn render_state(frame: &mut Frame, app: &App) {
                 .menu_selected_item()
                 .map(|item| item.description)
                 .unwrap_or("Select an option to continue.");
+            let status = if app.menu_status.is_empty() {
+                None
+            } else {
+                Some(app.menu_status.clone())
+            };
             let actions = "Actions: Authenticate • Retrieve list • Download CSV/XLSX • Mount • Silent/Smart Auth • Mobile Auth • Additional Options • Exit".to_string();
             let controls =
                 "Up/Down select • Click select • Enter choose • Backspace back • q quit".to_string();
-            let footer = Paragraph::new(vec![Line::from(description), Line::from(actions), Line::from(controls)])
+            let mut footer_lines = vec![Line::from(description)];
+            if let Some(status) = status {
+                footer_lines.push(Line::from(status));
+            }
+            footer_lines.push(Line::from(actions));
+            footer_lines.push(Line::from(controls));
+            let footer = Paragraph::new(footer_lines)
                 .wrap(Wrap { trim: true });
             frame.render_widget(footer, chunks[1]);
         }
@@ -344,10 +355,31 @@ pub fn render_state(frame: &mut Frame, app: &App) {
             screen.tree.selected = app.file_selected;
             frame.render_widget(&screen, chunks[0]);
 
-            let hint =
-                "What happens now: select files (toggle) then press Enter to start download.";
-            let controls =
-                "Up/Down select • Space toggle • Enter download • Backspace back • q quit";
+            let (hint, controls) = match app.selected_action {
+                Some(crate::ui::MenuAction::MountProvider) => {
+                    let mount_hint = app
+                        .mounted_remote
+                        .as_ref()
+                        .map(|m| format!("Mounted at {:?}. Press 'u' to unmount.", m.mount_point()))
+                        .unwrap_or_else(|| "Press 'm' to mount the remote.".to_string());
+                    (
+                        mount_hint,
+                        "m mount • u unmount • Backspace back • q quit".to_string(),
+                    )
+                }
+                Some(crate::ui::MenuAction::RetrieveList) => (
+                    "Listing complete: select files to download or press Backspace to return."
+                        .to_string(),
+                    "Up/Down select • Space toggle • Enter download • Backspace back • q quit"
+                        .to_string(),
+                ),
+                _ => (
+                    "What happens now: select files (toggle) then press Enter to start download."
+                        .to_string(),
+                    "Up/Down select • Space toggle • Enter download • Backspace back • q quit"
+                        .to_string(),
+                ),
+            };
             let footer = Paragraph::new(vec![Line::from(hint), Line::from(controls)])
                 .wrap(Wrap { trim: true });
             frame.render_widget(footer, chunks[1]);
