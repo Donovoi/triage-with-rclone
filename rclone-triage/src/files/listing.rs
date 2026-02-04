@@ -58,9 +58,8 @@ pub fn list_path(rclone: &RcloneRunner, target: &str) -> Result<Vec<FileEntry>> 
         bail!("rclone lsjson failed: {}", output.stderr_string());
     }
 
-    let json = output.stdout_string();
-    let entries: Vec<RcloneLsJsonEntry> =
-        serde_json::from_str(&json).with_context(|| "Failed to parse rclone lsjson output")?;
+    let entries = parse_lsjson_entries(&output.stdout_string())
+        .with_context(|| "Failed to parse rclone lsjson output")?;
 
     Ok(entries.into_iter().map(FileEntry::from).collect())
 }
@@ -94,11 +93,49 @@ where
         on_progress(count);
     }
 
-    let json = output.stdout_string();
-    let entries: Vec<RcloneLsJsonEntry> =
-        serde_json::from_str(&json).with_context(|| "Failed to parse rclone lsjson output")?;
+    let entries = parse_lsjson_entries(&output.stdout_string())
+        .with_context(|| "Failed to parse rclone lsjson output")?;
 
     Ok(entries.into_iter().map(FileEntry::from).collect())
+}
+
+fn parse_lsjson_entries(raw: &str) -> Result<Vec<RcloneLsJsonEntry>> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        bail!("rclone lsjson returned empty output");
+    }
+
+    if let Ok(entries) = serde_json::from_str::<Vec<RcloneLsJsonEntry>>(trimmed) {
+        return Ok(entries);
+    }
+
+    if let Some(payload) = extract_json_payload(trimmed) {
+        if let Ok(entries) = serde_json::from_str::<Vec<RcloneLsJsonEntry>>(payload) {
+            return Ok(entries);
+        }
+    }
+
+    let preview = trimmed.lines().take(3).collect::<Vec<_>>().join(" ");
+    bail!(
+        "Failed to parse rclone lsjson output. Output started with: {}",
+        preview
+    );
+}
+
+fn extract_json_payload(raw: &str) -> Option<&str> {
+    if let (Some(start), Some(end)) = (raw.find('['), raw.rfind(']')) {
+        if end > start {
+            return Some(&raw[start..=end]);
+        }
+    }
+
+    if let (Some(start), Some(end)) = (raw.find('{'), raw.rfind('}')) {
+        if end > start {
+            return Some(&raw[start..=end]);
+        }
+    }
+
+    None
 }
 
 fn select_hash(hashes: Option<&HashMap<String, String>>) -> (Option<String>, Option<String>) {
@@ -156,5 +193,29 @@ mod tests {
         let (hash, hash_type) = select_hash(Some(&hashes));
         assert_eq!(hash, Some("sha1val".to_string()));
         assert_eq!(hash_type, Some("sha1".to_string()));
+    }
+
+    #[test]
+    fn test_parse_lsjson_with_noise_prefix() {
+        let data = r#"2024/01/01 00:00:00 INFO  : some log
+        [
+          {"Path":"file1.txt","Size":12,"ModTime":"2024-01-01T00:00:00Z","IsDir":false}
+        ]"#;
+
+        let entries = parse_lsjson_entries(data).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].path, "file1.txt");
+    }
+
+    #[test]
+    fn test_parse_lsjson_with_noise_suffix() {
+        let data = r#"[
+          {"Path":"file1.txt","Size":12,"ModTime":"2024-01-01T00:00:00Z","IsDir":false}
+        ]
+        2024/01/01 00:00:00 INFO  : done"#;
+
+        let entries = parse_lsjson_entries(data).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].path, "file1.txt");
     }
 }
