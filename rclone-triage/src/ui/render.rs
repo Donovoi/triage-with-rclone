@@ -237,7 +237,7 @@ pub fn render_state(frame: &mut Frame, app: &App) {
                     Line::from("Provider list sources"),
                     Line::from(""),
                     Line::from("Built-in list: ships with the app for offline use."),
-                    Line::from("Refresh: runs `rclone config providers --json`."),
+                    Line::from("Refresh: runs `rclone config providers` (uses JSON output when available)."),
                     Line::from("If refresh fails, the built-in list remains."),
                     Line::from("Set RCLONE_TRIAGE_DYNAMIC_PROVIDERS=0 to disable refresh."),
                     Line::from(""),

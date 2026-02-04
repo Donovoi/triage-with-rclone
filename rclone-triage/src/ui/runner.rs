@@ -403,8 +403,8 @@ fn try_refresh_providers(app: &mut App) {
     }
 
     let runner = crate::rclone::RcloneRunner::new(binary.path());
-    let output = match runner.run(&["config", "providers", "--json"]) {
-        Ok(output) => output,
+    let discovery = match crate::providers::discovery::providers_from_rclone(&runner) {
+        Ok(discovery) => discovery,
         Err(e) => {
             let message = format!("Provider discovery failed: {}", e);
             app.provider_status = format!("Provider discovery failed: {}. Using built-in list.", e);
@@ -414,26 +414,7 @@ fn try_refresh_providers(app: &mut App) {
         }
     };
 
-    if !output.success() {
-        let stderr = output.stderr_string();
-        app.provider_status =
-            format!("Provider discovery failed: {}. Using built-in list.", stderr);
-        app.log_error(format!("Provider discovery failed: {}", stderr));
-        record_provider_refresh(
-            app,
-            Some(format!("Provider discovery failed: {}", stderr)),
-        );
-        return;
-    }
-
-    if let Err(e) = refresh_providers_from_json(app, &output.stdout_string()) {
-        let message = format!("Provider discovery failed: {}", e);
-        app.provider_status = format!("Provider discovery failed: {}. Using built-in list.", e);
-        app.log_error(message.clone());
-        record_provider_refresh(app, Some(message));
-    } else {
-        record_provider_refresh(app, None);
-    }
+    apply_discovered_providers(app, discovery);
 }
 
 fn resolve_provider_remotes(
