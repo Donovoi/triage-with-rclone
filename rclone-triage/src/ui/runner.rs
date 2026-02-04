@@ -3,7 +3,7 @@
 //! Sets up terminal backend and renders a single frame.
 
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode, KeyEventKind};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
 use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -15,6 +15,20 @@ use std::time::Duration;
 
 use crate::ui::screens::welcome::WelcomeScreen;
 use crate::ui::{render::render_state, App};
+
+fn apply_discovered_providers(app: &mut App, providers: Vec<crate::providers::ProviderEntry>) {
+    if !providers.is_empty() {
+        app.providers = providers;
+    } else {
+        app.log_info("Provider discovery returned empty list; using defaults");
+    }
+}
+
+fn refresh_providers_from_json(app: &mut App, json: &str) -> Result<()> {
+    let providers = crate::providers::discovery::providers_from_rclone_json(json)?;
+    apply_discovered_providers(app, providers);
+    Ok(())
+}
 
 fn try_refresh_providers(app: &mut App) {
     let allow = std::env::var("RCLONE_TRIAGE_DYNAMIC_PROVIDERS")
@@ -39,16 +53,24 @@ fn try_refresh_providers(app: &mut App) {
     }
 
     let runner = crate::rclone::RcloneRunner::new(binary.path());
-    match crate::providers::discovery::providers_from_rclone(&runner) {
-        Ok(providers) if !providers.is_empty() => {
-            app.providers = providers;
-        }
-        Ok(_) => {
-            app.log_info("Provider discovery returned empty list; using defaults");
-        }
+    let output = match runner.run(&["config", "providers", "--json"]) {
+        Ok(output) => output,
         Err(e) => {
             app.log_error(format!("Provider discovery failed: {}", e));
+            return;
         }
+    };
+
+    if !output.success() {
+        app.log_error(format!(
+            "Provider discovery failed: {}",
+            output.stderr_string()
+        ));
+        return;
+    }
+
+    if let Err(e) = refresh_providers_from_json(app, &output.stdout_string()) {
+        app.log_error(format!("Provider discovery failed: {}", e));
     }
 }
 
@@ -655,7 +677,7 @@ pub fn run_loop(app: &mut App) -> Result<()> {
 
         if event::poll(Duration::from_millis(200))? {
             if let Event::Key(key) = event::read()? {
-                if key.kind != KeyEventKind::Press {
+                if !should_handle_key(&key) {
                     continue;
                 }
                 match key.code {
@@ -848,6 +870,10 @@ pub fn run_loop(app: &mut App) -> Result<()> {
     Ok(())
 }
 
+fn should_handle_key(key: &KeyEvent) -> bool {
+    key.kind == KeyEventKind::Press
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -863,5 +889,42 @@ mod tests {
         let _ = std::panic::catch_unwind(|| {
             let _ = run_once();
         });
+    }
+
+    #[test]
+    fn test_refresh_providers_from_json_replaces_defaults() {
+        let mut app = App::new();
+        let original_len = app.providers.len();
+
+        let json = r#"
+        [
+          {"Name":"Amazon S3","Prefix":"s3"},
+          {"Name":"Azure Blob","Prefix":"azureblob"},
+          {"Name":"Backblaze B2","Prefix":"b2"},
+          {"Name":"Google Drive","Prefix":"drive"}
+        ]
+        "#;
+
+        refresh_providers_from_json(&mut app, json).unwrap();
+
+        assert_ne!(app.providers.len(), original_len);
+        assert!(app.providers.iter().any(|p| p.id == "s3"));
+        assert!(app.providers.iter().any(|p| p.id == "azureblob"));
+        assert!(app.providers.iter().any(|p| p.id == "b2"));
+        assert!(app.providers.iter().any(|p| p.id == "drive"));
+    }
+
+    #[test]
+    fn test_should_handle_key_ignores_repeats() {
+        let press = KeyEvent::new(KeyCode::Up, event::KeyModifiers::NONE);
+        assert!(should_handle_key(&press));
+
+        let repeat = KeyEvent {
+            code: KeyCode::Down,
+            modifiers: event::KeyModifiers::NONE,
+            kind: KeyEventKind::Repeat,
+            state: event::KeyEventState::NONE,
+        };
+        assert!(!should_handle_key(&repeat));
     }
 }
