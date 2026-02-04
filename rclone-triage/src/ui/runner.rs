@@ -90,12 +90,6 @@ fn record_provider_refresh(app: &mut App, error: Option<String>) {
     app.provider_last_error = error;
 }
 
-fn refresh_providers_from_json(app: &mut App, json: &str) -> Result<()> {
-    let discovery = crate::providers::discovery::providers_from_rclone_json(json)?;
-    apply_discovered_providers(app, discovery);
-    Ok(())
-}
-
 fn update_auth_status<B: ratatui::backend::Backend>(
     app: &mut App,
     terminal: &mut Terminal<B>,
@@ -1863,7 +1857,8 @@ mod tests {
         ]
         "#;
 
-        refresh_providers_from_json(&mut app, json).unwrap();
+        let discovery = crate::providers::discovery::providers_from_rclone_json(json).unwrap();
+        apply_discovered_providers(&mut app, discovery);
 
         assert_ne!(app.providers.len(), original_len);
         assert!(app.providers.iter().any(|p| p.id == "s3"));
