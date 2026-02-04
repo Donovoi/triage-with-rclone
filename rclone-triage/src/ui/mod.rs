@@ -1100,6 +1100,10 @@ mod tests {
     fn test_valid_transition() {
         assert!(App::is_valid_transition(
             AppState::MainMenu,
+            AppState::ModeConfirm
+        ));
+        assert!(App::is_valid_transition(
+            AppState::ModeConfirm,
             AppState::CaseSetup
         ));
         assert!(App::is_valid_transition(
@@ -1133,6 +1137,7 @@ mod tests {
     #[test]
     fn test_transition_validation() {
         let mut app = App::new();
+        app.transition(AppState::ModeConfirm).unwrap();
         app.transition(AppState::CaseSetup).unwrap();
         app.transition(AppState::ProviderSelect).unwrap();
         let result = app.transition(AppState::FileList);
