@@ -13,6 +13,7 @@ use crate::providers::{CloudProvider, ProviderEntry};
 use crate::rclone::MountedRemote;
 use crate::ui::widgets::SessionInputForm;
 use anyhow::{bail, Context, Result};
+use chrono::{DateTime, Local};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -26,6 +27,7 @@ pub mod widgets;
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppState {
+    MainMenu,
     CaseSetup,
     ProviderSelect,
     BrowserSelect,
@@ -40,6 +42,7 @@ impl AppState {
     #[allow(dead_code)]
     pub fn next(self) -> Self {
         match self {
+            AppState::MainMenu => AppState::CaseSetup,
             AppState::CaseSetup => AppState::ProviderSelect,
             AppState::ProviderSelect => AppState::BrowserSelect,
             AppState::BrowserSelect => AppState::Authenticating,
@@ -54,7 +57,8 @@ impl AppState {
     #[allow(dead_code)]
     pub fn previous(self) -> Self {
         match self {
-            AppState::CaseSetup => AppState::CaseSetup,
+            AppState::MainMenu => AppState::MainMenu,
+            AppState::CaseSetup => AppState::MainMenu,
             AppState::ProviderSelect => AppState::CaseSetup,
             AppState::BrowserSelect => AppState::ProviderSelect,
             AppState::Authenticating => AppState::BrowserSelect,
@@ -65,11 +69,37 @@ impl AppState {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MenuAction {
+    Authenticate,
+    RetrieveList,
+    DownloadFromCsv,
+    MountProvider,
+    SmartAuth,
+    MobileAuth,
+    AdditionalOptions,
+    Exit,
+}
+
+#[derive(Debug, Clone)]
+pub struct MenuItem {
+    pub label: &'static str,
+    pub description: &'static str,
+    pub action: MenuAction,
+}
+
 /// Core application state container
 #[allow(dead_code)]
 pub struct App {
     /// Current application state
     pub state: AppState,
+    /// Main menu items
+    pub menu_items: Vec<MenuItem>,
+    /// Selected menu index
+    pub menu_selected: usize,
+    /// Selected menu action (persists across flow)
+    pub selected_action: Option<MenuAction>,
+    pub exit_requested: bool,
     /// Session input form state
     pub session_form: SessionInputForm,
     /// Case metadata
@@ -90,6 +120,12 @@ pub struct App {
     pub provider_selected: usize,
     /// Provider discovery status message
     pub provider_status: String,
+    /// Show help overlay in provider selection
+    pub show_provider_help: bool,
+    /// Timestamp of last provider refresh attempt
+    pub provider_last_updated: Option<DateTime<Local>>,
+    /// Last provider refresh error (if any)
+    pub provider_last_error: Option<String>,
     /// Chosen provider (persisted for auth)
     pub chosen_provider: Option<ProviderEntry>,
     /// Browser list for selection (installed browsers)
@@ -135,6 +171,7 @@ impl App {
         // Capture initial system state before any operations
         let initial_state = SystemStateSnapshot::capture("Initial state before session").ok();
 
+        let menu_items = Self::default_menu_items();
         let providers = CloudProvider::entries();
         let provider_status = format!(
             "Using built-in providers ({}). Press 'r' to refresh.",
@@ -142,7 +179,11 @@ impl App {
         );
 
         Self {
-            state: AppState::CaseSetup,
+            state: AppState::MainMenu,
+            menu_items,
+            menu_selected: 0,
+            selected_action: None,
+            exit_requested: false,
             session_form: SessionInputForm::new(),
             case: None,
             directories: None,
@@ -153,6 +194,9 @@ impl App {
             providers,
             provider_selected: 0,
             provider_status,
+            show_provider_help: false,
+            provider_last_updated: None,
+            provider_last_error: None,
             chosen_provider: None,
             browsers: crate::providers::auth::get_available_browsers(),
             browser_selected: 0,
@@ -172,6 +216,73 @@ impl App {
             sso_status: None,
             mounted_remote: None,
         }
+    }
+
+    fn default_menu_items() -> Vec<MenuItem> {
+        vec![
+            MenuItem {
+                label: "Authenticate (suspect device)",
+                description: "Authenticate with chosen providers and browsers on the suspect device.",
+                action: MenuAction::Authenticate,
+            },
+            MenuItem {
+                label: "Retrieve file list (office)",
+                description: "Authenticate and list remote files for triage/export.",
+                action: MenuAction::RetrieveList,
+            },
+            MenuItem {
+                label: "Download from CSV/xlsx (office)",
+                description: "Use an exported selection file to download specific files.",
+                action: MenuAction::DownloadFromCsv,
+            },
+            MenuItem {
+                label: "Mount provider as a drive",
+                description: "Mount a remote to a drive for GUI file selection.",
+                action: MenuAction::MountProvider,
+            },
+            MenuItem {
+                label: "Silent/Smart auth (SSO)",
+                description: "Attempt SSO auth, fall back to interactive if needed.",
+                action: MenuAction::SmartAuth,
+            },
+            MenuItem {
+                label: "Mobile device auth (QR)",
+                description: "Authenticate using mobile device QR or device code flow.",
+                action: MenuAction::MobileAuth,
+            },
+            MenuItem {
+                label: "Additional options",
+                description: "Update tools, configure OAuth, OneDrive utilities.",
+                action: MenuAction::AdditionalOptions,
+            },
+            MenuItem {
+                label: "Exit",
+                description: "Exit the application.",
+                action: MenuAction::Exit,
+            },
+        ]
+    }
+
+    pub fn menu_selected_item(&self) -> Option<&MenuItem> {
+        self.menu_items.get(self.menu_selected)
+    }
+
+    pub fn menu_up(&mut self) {
+        if self.state != AppState::MainMenu || self.menu_items.is_empty() {
+            return;
+        }
+        if self.menu_selected == 0 {
+            self.menu_selected = self.menu_items.len() - 1;
+        } else {
+            self.menu_selected -= 1;
+        }
+    }
+
+    pub fn menu_down(&mut self) {
+        if self.state != AppState::MainMenu || self.menu_items.is_empty() {
+            return;
+        }
+        self.menu_selected = (self.menu_selected + 1) % self.menu_items.len();
     }
 
     /// Initialize case and directories from session name
@@ -578,6 +689,7 @@ impl App {
     #[allow(dead_code)]
     pub fn is_valid_transition(from: AppState, to: AppState) -> bool {
         match (from, to) {
+            (AppState::MainMenu, AppState::CaseSetup) => true,
             (AppState::CaseSetup, AppState::ProviderSelect) => true,
             (AppState::ProviderSelect, AppState::BrowserSelect) => true,
             (AppState::BrowserSelect, AppState::Authenticating) => true,
@@ -602,7 +714,9 @@ mod tests {
 
     #[test]
     fn test_state_sequence() {
-        let mut state = AppState::CaseSetup;
+        let mut state = AppState::MainMenu;
+        state = state.next();
+        assert_eq!(state, AppState::CaseSetup);
         state = state.next();
         assert_eq!(state, AppState::ProviderSelect);
         state = state.next();
@@ -622,18 +736,19 @@ mod tests {
     #[test]
     fn test_app_transitions() {
         let mut app = App::new();
-        assert_eq!(app.state, AppState::CaseSetup);
+        assert_eq!(app.state, AppState::MainMenu);
 
         app.advance();
-        assert_eq!(app.state, AppState::ProviderSelect);
+        assert_eq!(app.state, AppState::CaseSetup);
 
         app.back();
-        assert_eq!(app.state, AppState::CaseSetup);
+        assert_eq!(app.state, AppState::MainMenu);
     }
 
     #[test]
     fn test_session_input_handling() {
         let mut app = App::new();
+        app.state = AppState::CaseSetup;
         app.input_char('m');
         app.input_char('y');
         app.input_char('-');
@@ -705,6 +820,10 @@ mod tests {
     #[test]
     fn test_valid_transition() {
         assert!(App::is_valid_transition(
+            AppState::MainMenu,
+            AppState::CaseSetup
+        ));
+        assert!(App::is_valid_transition(
             AppState::CaseSetup,
             AppState::ProviderSelect
         ));
@@ -735,6 +854,7 @@ mod tests {
     #[test]
     fn test_transition_validation() {
         let mut app = App::new();
+        app.transition(AppState::CaseSetup).unwrap();
         app.transition(AppState::ProviderSelect).unwrap();
         let result = app.transition(AppState::FileList);
         assert!(result.is_err());

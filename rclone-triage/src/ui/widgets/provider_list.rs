@@ -45,8 +45,13 @@ impl Widget for &ProviderList {
             .map(|p| ListItem::new(p.clone()))
             .collect();
 
+        let title = if self.providers.is_empty() {
+            "Providers".to_string()
+        } else {
+            format!("Providers ({})", self.providers.len())
+        };
         let list = List::new(items)
-            .block(Block::default().title("Providers").borders(Borders::ALL))
+            .block(Block::default().title(title).borders(Borders::ALL))
             .highlight_style(Style::default().add_modifier(Modifier::BOLD));
 
         let mut state = ListState::default();
