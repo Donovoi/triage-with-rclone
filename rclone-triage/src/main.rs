@@ -46,6 +46,14 @@ fn main() -> Result<()> {
     // Verify embedded binary
     embedded::verify_embedded_binary()?;
 
+    // Optional TUI loop (default when no explicit CLI action is selected)
+    if should_run_tui(&args) {
+        let mut app = TuiApp::new();
+        app.set_cleanup(app_guard.cleanup.clone());
+        rclone_triage::ui::runner::run_loop(&mut app)?;
+        return Ok(());
+    }
+
     // Extract embedded rclone
     let binary = embedded::ExtractedBinary::extract()?;
     app_guard.track_file(binary.path());
@@ -175,14 +183,6 @@ fn main() -> Result<()> {
             args.oauth_config_path.map(std::path::PathBuf::from),
         )?;
         println!("Saved OAuth credentials to {:?}", path);
-        return Ok(());
-    }
-
-    // Optional TUI loop (default when no explicit CLI action is selected)
-    if should_run_tui(&args) {
-        let mut app = TuiApp::new();
-        app.set_cleanup(app_guard.cleanup.clone());
-        rclone_triage::ui::runner::run_loop(&mut app)?;
         return Ok(());
     }
 

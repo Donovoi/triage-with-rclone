@@ -753,11 +753,52 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                             if app.menu_selected < app.menu_items.len() {
                                 let action = app.menu_items[app.menu_selected].action;
                                 app.selected_action = Some(action);
+                                app.menu_status.clear();
                                 if action == crate::ui::MenuAction::Exit {
                                     break;
                                 }
+                                if action == crate::ui::MenuAction::AdditionalOptions {
+                                    app.state = crate::ui::AppState::AdditionalOptions;
+                                } else {
+                                    app.state = crate::ui::AppState::CaseSetup;
+                                }
                             }
-                            app.advance();
+                        } else if app.state == crate::ui::AppState::AdditionalOptions {
+                            if let Some(item) = app.additional_menu_selected_item() {
+                                let action = item.action;
+                                app.menu_status.clear();
+                                match action {
+                                    crate::ui::MenuAction::UpdateTools => {
+                                        app.menu_status =
+                                            "Tool update is not yet available in the TUI.".to_string();
+                                    }
+                                    crate::ui::MenuAction::ConfigureOAuth => {
+                                        app.menu_status =
+                                            "OAuth configuration is not yet available in the TUI.".to_string();
+                                    }
+                                    crate::ui::MenuAction::OneDriveMenu => {
+                                        app.state = crate::ui::AppState::OneDriveMenu;
+                                    }
+                                    crate::ui::MenuAction::BackToMainMenu => {
+                                        app.state = crate::ui::AppState::MainMenu;
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        } else if app.state == crate::ui::AppState::OneDriveMenu {
+                            if let Some(item) = app.onedrive_menu_selected_item() {
+                                let action = item.action;
+                                app.menu_status.clear();
+                                match action {
+                                    crate::ui::MenuAction::OpenOneDriveVault => {
+                                        app.menu_status = "OneDrive Vault tooling is not yet available in the TUI.".to_string();
+                                    }
+                                    crate::ui::MenuAction::BackToAdditionalOptions => {
+                                        app.state = crate::ui::AppState::AdditionalOptions;
+                                    }
+                                    _ => {}
+                                }
+                            }
                         } else if app.state == crate::ui::AppState::CaseSetup {
                             // Initialize case directories before moving to provider select
                             let output_dir = std::env::current_dir()
@@ -770,7 +811,9 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                             }
                         } else if app.state == crate::ui::AppState::ProviderSelect {
                             app.confirm_provider();
-                            if app
+                            if app.selected_action == Some(crate::ui::MenuAction::MobileAuth) {
+                                app.state = crate::ui::AppState::MobileAuthFlow;
+                            } else if app
                                 .chosen_provider
                                 .as_ref()
                                 .and_then(|p| p.known)
@@ -782,6 +825,31 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                                 app.chosen_browser = None;
                                 app.state = crate::ui::AppState::Authenticating;
                                 perform_auth_flow(app, &mut terminal)?;
+                            }
+                        } else if app.state == crate::ui::AppState::MobileAuthFlow {
+                            if let Some(item) = app.mobile_flow_selected_item() {
+                                match item.action {
+                                    crate::ui::MenuAction::MobileAuthRedirect => {
+                                        app.mobile_auth_flow = Some(crate::ui::MobileAuthFlow::Redirect);
+                                        app.state = crate::ui::AppState::Authenticating;
+                                        perform_auth_flow(app, &mut terminal)?;
+                                    }
+                                    crate::ui::MenuAction::MobileAuthRedirectWithAp => {
+                                        app.mobile_auth_flow =
+                                            Some(crate::ui::MobileAuthFlow::RedirectWithAccessPoint);
+                                        app.state = crate::ui::AppState::Authenticating;
+                                        perform_auth_flow(app, &mut terminal)?;
+                                    }
+                                    crate::ui::MenuAction::MobileAuthDeviceCode => {
+                                        app.mobile_auth_flow = Some(crate::ui::MobileAuthFlow::DeviceCode);
+                                        app.state = crate::ui::AppState::Authenticating;
+                                        perform_auth_flow(app, &mut terminal)?;
+                                    }
+                                    crate::ui::MenuAction::BackToProviders => {
+                                        app.state = crate::ui::AppState::ProviderSelect;
+                                    }
+                                    _ => {}
+                                }
                             }
                         } else if app.state == crate::ui::AppState::BrowserSelect {
                             app.confirm_browser();
@@ -810,8 +878,14 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                     KeyCode::Up => {
                         if app.state == crate::ui::AppState::MainMenu {
                             app.menu_up();
+                        } else if app.state == crate::ui::AppState::AdditionalOptions {
+                            app.additional_menu_up();
+                        } else if app.state == crate::ui::AppState::OneDriveMenu {
+                            app.onedrive_menu_up();
                         } else if app.state == crate::ui::AppState::ProviderSelect {
                             app.provider_up();
+                        } else if app.state == crate::ui::AppState::MobileAuthFlow {
+                            app.mobile_flow_up();
                         } else if app.state == crate::ui::AppState::BrowserSelect {
                             app.browser_up();
                         } else if app.state == crate::ui::AppState::FileList {
@@ -821,8 +895,14 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                     KeyCode::Down => {
                         if app.state == crate::ui::AppState::MainMenu {
                             app.menu_down();
+                        } else if app.state == crate::ui::AppState::AdditionalOptions {
+                            app.additional_menu_down();
+                        } else if app.state == crate::ui::AppState::OneDriveMenu {
+                            app.onedrive_menu_down();
                         } else if app.state == crate::ui::AppState::ProviderSelect {
                             app.provider_down();
+                        } else if app.state == crate::ui::AppState::MobileAuthFlow {
+                            app.mobile_flow_down();
                         } else if app.state == crate::ui::AppState::BrowserSelect {
                             app.browser_down();
                         } else if app.state == crate::ui::AppState::FileList {
@@ -997,14 +1077,20 @@ fn handle_mouse_event(app: &mut App, area: ratatui::layout::Rect, mouse: MouseEv
     match mouse.kind {
         MouseEventKind::ScrollUp => match app.state {
             crate::ui::AppState::MainMenu => app.menu_up(),
+            crate::ui::AppState::AdditionalOptions => app.additional_menu_up(),
+            crate::ui::AppState::OneDriveMenu => app.onedrive_menu_up(),
             crate::ui::AppState::ProviderSelect => app.provider_up(),
+            crate::ui::AppState::MobileAuthFlow => app.mobile_flow_up(),
             crate::ui::AppState::BrowserSelect => app.browser_up(),
             crate::ui::AppState::FileList => app.file_up(),
             _ => {}
         },
         MouseEventKind::ScrollDown => match app.state {
             crate::ui::AppState::MainMenu => app.menu_down(),
+            crate::ui::AppState::AdditionalOptions => app.additional_menu_down(),
+            crate::ui::AppState::OneDriveMenu => app.onedrive_menu_down(),
             crate::ui::AppState::ProviderSelect => app.provider_down(),
+            crate::ui::AppState::MobileAuthFlow => app.mobile_flow_down(),
             crate::ui::AppState::BrowserSelect => app.browser_down(),
             crate::ui::AppState::FileList => app.file_down(),
             _ => {}
@@ -1025,6 +1111,22 @@ fn handle_mouse_event(app: &mut App, area: ratatui::layout::Rect, mouse: MouseEv
                     }
                 }
             }
+            crate::ui::AppState::AdditionalOptions => {
+                let list_area = main_menu_list_area(area);
+                if let Some(index) = list_index_from_click(list_area, mouse.row) {
+                    if index < app.additional_menu_items.len() {
+                        app.additional_menu_selected = index;
+                    }
+                }
+            }
+            crate::ui::AppState::OneDriveMenu => {
+                let list_area = main_menu_list_area(area);
+                if let Some(index) = list_index_from_click(list_area, mouse.row) {
+                    if index < app.onedrive_menu_items.len() {
+                        app.onedrive_menu_selected = index;
+                    }
+                }
+            }
             crate::ui::AppState::ProviderSelect => {
                 let list_area = provider_list_area(area);
                 if let Some(index) = list_index_from_click(list_area, mouse.row) {
@@ -1037,6 +1139,14 @@ fn handle_mouse_event(app: &mut App, area: ratatui::layout::Rect, mouse: MouseEv
                 if let Some(index) = list_index_from_click(area, mouse.row) {
                     if index < app.browsers.len() + 1 {
                         app.browser_selected = index;
+                    }
+                }
+            }
+            crate::ui::AppState::MobileAuthFlow => {
+                let list_area = main_menu_list_area(area);
+                if let Some(index) = list_index_from_click(list_area, mouse.row) {
+                    if index < app.mobile_flow_items.len() {
+                        app.mobile_flow_selected = index;
                     }
                 }
             }

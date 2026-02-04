@@ -28,8 +28,11 @@ pub mod widgets;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppState {
     MainMenu,
+    AdditionalOptions,
+    OneDriveMenu,
     CaseSetup,
     ProviderSelect,
+    MobileAuthFlow,
     BrowserSelect,
     Authenticating,
     FileList,
@@ -43,8 +46,11 @@ impl AppState {
     pub fn next(self) -> Self {
         match self {
             AppState::MainMenu => AppState::CaseSetup,
+            AppState::AdditionalOptions => AppState::AdditionalOptions,
+            AppState::OneDriveMenu => AppState::OneDriveMenu,
             AppState::CaseSetup => AppState::ProviderSelect,
             AppState::ProviderSelect => AppState::BrowserSelect,
+            AppState::MobileAuthFlow => AppState::Authenticating,
             AppState::BrowserSelect => AppState::Authenticating,
             AppState::Authenticating => AppState::FileList,
             AppState::FileList => AppState::Downloading,
@@ -58,8 +64,11 @@ impl AppState {
     pub fn previous(self) -> Self {
         match self {
             AppState::MainMenu => AppState::MainMenu,
+            AppState::AdditionalOptions => AppState::MainMenu,
+            AppState::OneDriveMenu => AppState::AdditionalOptions,
             AppState::CaseSetup => AppState::MainMenu,
             AppState::ProviderSelect => AppState::CaseSetup,
+            AppState::MobileAuthFlow => AppState::ProviderSelect,
             AppState::BrowserSelect => AppState::ProviderSelect,
             AppState::Authenticating => AppState::BrowserSelect,
             AppState::FileList => AppState::Authenticating,
@@ -67,6 +76,13 @@ impl AppState {
             AppState::Complete => AppState::Downloading,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MobileAuthFlow {
+    Redirect,
+    RedirectWithAccessPoint,
+    DeviceCode,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,6 +94,16 @@ pub enum MenuAction {
     SmartAuth,
     MobileAuth,
     AdditionalOptions,
+    UpdateTools,
+    ConfigureOAuth,
+    OneDriveMenu,
+    OpenOneDriveVault,
+    BackToAdditionalOptions,
+    BackToMainMenu,
+    BackToProviders,
+    MobileAuthRedirect,
+    MobileAuthRedirectWithAp,
+    MobileAuthDeviceCode,
     Exit,
 }
 
@@ -99,6 +125,22 @@ pub struct App {
     pub menu_selected: usize,
     /// Selected menu action (persists across flow)
     pub selected_action: Option<MenuAction>,
+    /// Additional options menu items
+    pub additional_menu_items: Vec<MenuItem>,
+    /// Selected additional menu index
+    pub additional_menu_selected: usize,
+    /// OneDrive menu items
+    pub onedrive_menu_items: Vec<MenuItem>,
+    /// Selected OneDrive menu index
+    pub onedrive_menu_selected: usize,
+    /// Mobile auth flow menu items
+    pub mobile_flow_items: Vec<MenuItem>,
+    /// Selected mobile auth flow index
+    pub mobile_flow_selected: usize,
+    /// Selected mobile auth flow choice
+    pub mobile_auth_flow: Option<MobileAuthFlow>,
+    /// Menu status message (shown in footer)
+    pub menu_status: String,
     pub exit_requested: bool,
     /// Session input form state
     pub session_form: SessionInputForm,
@@ -172,6 +214,9 @@ impl App {
         let initial_state = SystemStateSnapshot::capture("Initial state before session").ok();
 
         let menu_items = Self::default_menu_items();
+        let additional_menu_items = Self::additional_menu_items();
+        let onedrive_menu_items = Self::onedrive_menu_items();
+        let mobile_flow_items = Self::mobile_flow_items();
         let providers = CloudProvider::entries();
         let provider_status = format!(
             "Using built-in providers ({}). Press 'r' to refresh.",
@@ -183,6 +228,14 @@ impl App {
             menu_items,
             menu_selected: 0,
             selected_action: None,
+            additional_menu_items,
+            additional_menu_selected: 0,
+            onedrive_menu_items,
+            onedrive_menu_selected: 0,
+            mobile_flow_items,
+            mobile_flow_selected: 0,
+            mobile_auth_flow: None,
+            menu_status: String::new(),
             exit_requested: false,
             session_form: SessionInputForm::new(),
             case: None,
@@ -221,38 +274,38 @@ impl App {
     fn default_menu_items() -> Vec<MenuItem> {
         vec![
             MenuItem {
-                label: "Authenticate (suspect device)",
-                description: "Authenticate with chosen providers and browsers on the suspect device.",
+                label: "Authenticate with the chosen Browsers & Providers (TO BE RUN ON SUSPECT DEVICE)",
+                description: "Launch browser-based authentication on the suspect device for selected providers.",
                 action: MenuAction::Authenticate,
             },
             MenuItem {
-                label: "Retrieve file list (office)",
-                description: "Authenticate and list remote files for triage/export.",
+                label: "Retrieve a list of Files from an authenticated config (RUN AT OFFICE OR YOUR DEVICE)",
+                description: "List remote files using an authenticated config to prepare exports and triage.",
                 action: MenuAction::RetrieveList,
             },
             MenuItem {
-                label: "Download from CSV/xlsx (office)",
-                description: "Use an exported selection file to download specific files.",
+                label: "Download Files from a CSV/xlsx (RUN AT OFFICE OR YOUR DEVICE)",
+                description: "Download specific files using a CSV/XLSX selection created during triage.",
                 action: MenuAction::DownloadFromCsv,
             },
             MenuItem {
-                label: "Mount provider as a drive",
-                description: "Mount a remote to a drive for GUI file selection.",
+                label: "Mount cloud provider as a Network Share",
+                description: "Mount a remote as a drive to browse files in the OS file manager.",
                 action: MenuAction::MountProvider,
             },
             MenuItem {
-                label: "Silent/Smart auth (SSO)",
-                description: "Attempt SSO auth, fall back to interactive if needed.",
+                label: "Silent/Smart Authentication (SSO)",
+                description: "Attempt SSO auth; fall back to interactive if needed.",
                 action: MenuAction::SmartAuth,
             },
             MenuItem {
-                label: "Mobile device auth (QR)",
-                description: "Authenticate using mobile device QR or device code flow.",
+                label: "Authenticate from Mobile Device (QR Code)",
+                description: "Authenticate via mobile device using QR or device code flows.",
                 action: MenuAction::MobileAuth,
             },
             MenuItem {
-                label: "Additional options",
-                description: "Update tools, configure OAuth, OneDrive utilities.",
+                label: "Additional Options",
+                description: "Update tools, configure OAuth credentials, OneDrive utilities.",
                 action: MenuAction::AdditionalOptions,
             },
             MenuItem {
@@ -263,8 +316,85 @@ impl App {
         ]
     }
 
+    fn additional_menu_items() -> Vec<MenuItem> {
+        vec![
+            MenuItem {
+                label: "Update Tools",
+                description: "Update rclone and bundled dependencies.",
+                action: MenuAction::UpdateTools,
+            },
+            MenuItem {
+                label: "Configure OAuth Client Credentials",
+                description: "Enter custom OAuth credentials for rclone providers.",
+                action: MenuAction::ConfigureOAuth,
+            },
+            MenuItem {
+                label: "OneDrive",
+                description: "OneDrive utilities (vault, recovery).",
+                action: MenuAction::OneDriveMenu,
+            },
+            MenuItem {
+                label: "Back to Main Menu",
+                description: "Return to the main menu.",
+                action: MenuAction::BackToMainMenu,
+            },
+        ]
+    }
+
+    fn onedrive_menu_items() -> Vec<MenuItem> {
+        vec![
+            MenuItem {
+                label: "Open Vault",
+                description: "Locate and open OneDrive personal vault data.",
+                action: MenuAction::OpenOneDriveVault,
+            },
+            MenuItem {
+                label: "Back to Additional Options",
+                description: "Return to additional options.",
+                action: MenuAction::BackToAdditionalOptions,
+            },
+        ]
+    }
+
+    fn mobile_flow_items() -> Vec<MenuItem> {
+        vec![
+            MenuItem {
+                label: "Redirect Flow (Recommended for Forensics)",
+                description: "Phone connects to forensic WiFi; token captured via HTTP redirect.",
+                action: MenuAction::MobileAuthRedirect,
+            },
+            MenuItem {
+                label: "Redirect Flow + Create Access Point",
+                description: "Auto-create WiFi hotspot; requires admin privileges.",
+                action: MenuAction::MobileAuthRedirectWithAp,
+            },
+            MenuItem {
+                label: "Device Code Flow",
+                description: "No local network needed; requires full re-authentication.",
+                action: MenuAction::MobileAuthDeviceCode,
+            },
+            MenuItem {
+                label: "Back to Providers",
+                description: "Return to provider selection.",
+                action: MenuAction::BackToProviders,
+            },
+        ]
+    }
+
     pub fn menu_selected_item(&self) -> Option<&MenuItem> {
         self.menu_items.get(self.menu_selected)
+    }
+
+    pub fn additional_menu_selected_item(&self) -> Option<&MenuItem> {
+        self.additional_menu_items.get(self.additional_menu_selected)
+    }
+
+    pub fn onedrive_menu_selected_item(&self) -> Option<&MenuItem> {
+        self.onedrive_menu_items.get(self.onedrive_menu_selected)
+    }
+
+    pub fn mobile_flow_selected_item(&self) -> Option<&MenuItem> {
+        self.mobile_flow_items.get(self.mobile_flow_selected)
     }
 
     pub fn menu_up(&mut self) {
@@ -283,6 +413,63 @@ impl App {
             return;
         }
         self.menu_selected = (self.menu_selected + 1) % self.menu_items.len();
+    }
+
+    pub fn additional_menu_up(&mut self) {
+        if self.state != AppState::AdditionalOptions || self.additional_menu_items.is_empty() {
+            return;
+        }
+        if self.additional_menu_selected == 0 {
+            self.additional_menu_selected = self.additional_menu_items.len() - 1;
+        } else {
+            self.additional_menu_selected -= 1;
+        }
+    }
+
+    pub fn additional_menu_down(&mut self) {
+        if self.state != AppState::AdditionalOptions || self.additional_menu_items.is_empty() {
+            return;
+        }
+        self.additional_menu_selected =
+            (self.additional_menu_selected + 1) % self.additional_menu_items.len();
+    }
+
+    pub fn onedrive_menu_up(&mut self) {
+        if self.state != AppState::OneDriveMenu || self.onedrive_menu_items.is_empty() {
+            return;
+        }
+        if self.onedrive_menu_selected == 0 {
+            self.onedrive_menu_selected = self.onedrive_menu_items.len() - 1;
+        } else {
+            self.onedrive_menu_selected -= 1;
+        }
+    }
+
+    pub fn onedrive_menu_down(&mut self) {
+        if self.state != AppState::OneDriveMenu || self.onedrive_menu_items.is_empty() {
+            return;
+        }
+        self.onedrive_menu_selected =
+            (self.onedrive_menu_selected + 1) % self.onedrive_menu_items.len();
+    }
+
+    pub fn mobile_flow_up(&mut self) {
+        if self.state != AppState::MobileAuthFlow || self.mobile_flow_items.is_empty() {
+            return;
+        }
+        if self.mobile_flow_selected == 0 {
+            self.mobile_flow_selected = self.mobile_flow_items.len() - 1;
+        } else {
+            self.mobile_flow_selected -= 1;
+        }
+    }
+
+    pub fn mobile_flow_down(&mut self) {
+        if self.state != AppState::MobileAuthFlow || self.mobile_flow_items.is_empty() {
+            return;
+        }
+        self.mobile_flow_selected =
+            (self.mobile_flow_selected + 1) % self.mobile_flow_items.len();
     }
 
     /// Initialize case and directories from session name
