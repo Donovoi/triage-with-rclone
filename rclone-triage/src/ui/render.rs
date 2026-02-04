@@ -1,6 +1,9 @@
 //! Screen rendering based on application state
 
 use ratatui::Frame;
+use ratatui::layout::{Constraint, Direction, Layout};
+use ratatui::text::Line;
+use ratatui::widgets::{Paragraph, Wrap};
 
 use crate::ui::screens::{
     auth::AuthScreen, browser_select::BrowserSelectScreen, case_setup::CaseSetupScreen,
@@ -19,6 +22,10 @@ pub fn render_state(frame: &mut Frame, app: &App) {
             frame.render_widget(&screen, area);
         }
         AppState::ProviderSelect => {
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Min(3), Constraint::Length(4)])
+                .split(area);
             let names = app
                 .providers
                 .iter()
@@ -26,7 +33,18 @@ pub fn render_state(frame: &mut Frame, app: &App) {
                 .collect::<Vec<_>>();
             let mut screen = ProviderSelectScreen::new(names);
             screen.list.selected = app.provider_selected;
-            frame.render_widget(&screen, area);
+            frame.render_widget(&screen, chunks[0]);
+
+            let status = if app.provider_status.is_empty() {
+                "Using built-in providers.".to_string()
+            } else {
+                app.provider_status.clone()
+            };
+            let controls =
+                "Up/Down select • Enter choose • r refresh • Backspace back • q quit".to_string();
+            let footer = Paragraph::new(vec![Line::from(status), Line::from(controls)])
+                .wrap(Wrap { trim: true });
+            frame.render_widget(footer, chunks[1]);
         }
         AppState::BrowserSelect => {
             let mut names = Vec::new();

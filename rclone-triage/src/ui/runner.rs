@@ -19,7 +19,12 @@ use crate::ui::{render::render_state, App};
 fn apply_discovered_providers(app: &mut App, providers: Vec<crate::providers::ProviderEntry>) {
     if !providers.is_empty() {
         app.providers = providers;
+        if app.provider_selected >= app.providers.len() {
+            app.provider_selected = 0;
+        }
+        app.provider_status = format!("Loaded {} providers from rclone.", app.providers.len());
     } else {
+        app.provider_status = "Provider discovery returned empty list; using defaults.".to_string();
         app.log_info("Provider discovery returned empty list; using defaults");
     }
 }
@@ -36,13 +41,21 @@ fn try_refresh_providers(app: &mut App) {
         .unwrap_or(true);
 
     if !allow {
+        app.provider_status = format!(
+            "Provider refresh disabled by RCLONE_TRIAGE_DYNAMIC_PROVIDERS=0. Using built-in providers ({}).",
+            app.providers.len()
+        );
         return;
     }
+
+    app.provider_status = "Refreshing providers...".to_string();
 
     let binary = match crate::embedded::ExtractedBinary::extract() {
         Ok(binary) => binary,
         Err(e) => {
-            app.log_error(format!("Provider discovery failed (extract): {}", e));
+            let message = format!("Provider discovery failed (extract): {}", e);
+            app.provider_status = format!("Provider discovery failed: {}. Using built-in list.", e);
+            app.log_error(message);
             return;
         }
     };
@@ -56,21 +69,25 @@ fn try_refresh_providers(app: &mut App) {
     let output = match runner.run(&["config", "providers", "--json"]) {
         Ok(output) => output,
         Err(e) => {
-            app.log_error(format!("Provider discovery failed: {}", e));
+            let message = format!("Provider discovery failed: {}", e);
+            app.provider_status = format!("Provider discovery failed: {}. Using built-in list.", e);
+            app.log_error(message);
             return;
         }
     };
 
     if !output.success() {
-        app.log_error(format!(
-            "Provider discovery failed: {}",
-            output.stderr_string()
-        ));
+        let stderr = output.stderr_string();
+        app.provider_status =
+            format!("Provider discovery failed: {}. Using built-in list.", stderr);
+        app.log_error(format!("Provider discovery failed: {}", stderr));
         return;
     }
 
     if let Err(e) = refresh_providers_from_json(app, &output.stdout_string()) {
-        app.log_error(format!("Provider discovery failed: {}", e));
+        let message = format!("Provider discovery failed: {}", e);
+        app.provider_status = format!("Provider discovery failed: {}. Using built-in list.", e);
+        app.log_error(message);
     }
 }
 
@@ -748,6 +765,11 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                             app.browser_down();
                         } else if app.state == crate::ui::AppState::FileList {
                             app.file_down();
+                        }
+                    }
+                    KeyCode::Char('r') => {
+                        if app.state == crate::ui::AppState::ProviderSelect {
+                            try_refresh_providers(app);
                         }
                     }
                     KeyCode::Char('m') => {

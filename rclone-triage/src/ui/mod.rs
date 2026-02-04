@@ -88,6 +88,8 @@ pub struct App {
     pub providers: Vec<ProviderEntry>,
     /// Selected provider index
     pub provider_selected: usize,
+    /// Provider discovery status message
+    pub provider_status: String,
     /// Chosen provider (persisted for auth)
     pub chosen_provider: Option<ProviderEntry>,
     /// Browser list for selection (installed browsers)
@@ -133,6 +135,12 @@ impl App {
         // Capture initial system state before any operations
         let initial_state = SystemStateSnapshot::capture("Initial state before session").ok();
 
+        let providers = CloudProvider::entries();
+        let provider_status = format!(
+            "Using built-in providers ({}). Press 'r' to refresh.",
+            providers.len()
+        );
+
         Self {
             state: AppState::CaseSetup,
             session_form: SessionInputForm::new(),
@@ -142,8 +150,9 @@ impl App {
             cleanup: None,
             initial_state,
             change_tracker: Arc::new(Mutex::new(ChangeTracker::new())),
-            providers: CloudProvider::entries(),
+            providers,
             provider_selected: 0,
+            provider_status,
             chosen_provider: None,
             browsers: crate::providers::auth::get_available_browsers(),
             browser_selected: 0,
