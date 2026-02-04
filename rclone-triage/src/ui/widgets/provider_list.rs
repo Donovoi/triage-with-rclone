@@ -9,14 +9,16 @@ use ratatui::widgets::{Block, Borders, List, ListItem, ListState, StatefulWidget
 #[derive(Debug, Clone)]
 pub struct ProviderList {
     pub providers: Vec<String>,
+    pub checked: Vec<bool>,
     pub selected: usize,
 }
 
 impl ProviderList {
-    pub fn new(providers: Vec<String>) -> Self {
+    pub fn new(providers: Vec<String>, checked: Vec<bool>, selected: usize) -> Self {
         Self {
             providers,
-            selected: 0,
+            checked,
+            selected,
         }
     }
 
@@ -42,7 +44,12 @@ impl Widget for &ProviderList {
         let items: Vec<ListItem> = self
             .providers
             .iter()
-            .map(|p| ListItem::new(p.clone()))
+            .enumerate()
+            .map(|(idx, p)| {
+                let checked = self.checked.get(idx).copied().unwrap_or(false);
+                let prefix = if checked { "[x] " } else { "[ ] " };
+                ListItem::new(format!("{prefix}{p}"))
+            })
             .collect();
 
         let title = if self.providers.is_empty() {
@@ -71,7 +78,11 @@ mod tests {
     #[test]
     fn test_provider_list_render() {
         let mut buf = Buffer::empty(Rect::new(0, 0, 40, 10));
-        let list = ProviderList::new(vec!["Google Drive".to_string(), "OneDrive".to_string()]);
+        let list = ProviderList::new(
+            vec!["Google Drive".to_string(), "OneDrive".to_string()],
+            vec![true, false],
+            0,
+        );
 
         (&list).render(Rect::new(0, 0, 40, 10), &mut buf);
     }

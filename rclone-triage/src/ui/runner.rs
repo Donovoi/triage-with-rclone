@@ -26,6 +26,7 @@ fn apply_discovered_providers(app: &mut App, providers: Vec<crate::providers::Pr
         if app.provider_selected >= app.providers.len() {
             app.provider_selected = 0;
         }
+        app.provider_checked = vec![false; app.providers.len()];
         app.provider_status = format!("Loaded {} providers from rclone.", app.providers.len());
         record_provider_refresh(app, None);
     } else {
@@ -715,6 +716,12 @@ pub fn run_loop(app: &mut App) -> Result<()> {
     }
     let _guard = TuiGuard;
 
+    // Always start at the main menu for a consistent entry flow.
+    app.state = crate::ui::AppState::MainMenu;
+    app.menu_selected = 0;
+    app.selected_action = None;
+    app.menu_status.clear();
+
     try_refresh_providers(app);
 
     let mut last_nav: Option<(KeyCode, Instant)> = None;
@@ -760,7 +767,7 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                                 if action == crate::ui::MenuAction::AdditionalOptions {
                                     app.state = crate::ui::AppState::AdditionalOptions;
                                 } else {
-                                    app.state = crate::ui::AppState::CaseSetup;
+                                    app.state = crate::ui::AppState::ModeConfirm;
                                 }
                             }
                         } else if app.state == crate::ui::AppState::AdditionalOptions {
@@ -809,8 +816,13 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                                 app.advance(); // Move to ProviderSelect
                                 try_refresh_providers(app);
                             }
+                        } else if app.state == crate::ui::AppState::ModeConfirm {
+                            app.state = crate::ui::AppState::CaseSetup;
                         } else if app.state == crate::ui::AppState::ProviderSelect {
                             app.confirm_provider();
+                            if app.chosen_provider.is_none() {
+                                continue;
+                            }
                             if app.selected_action == Some(crate::ui::MenuAction::MobileAuth) {
                                 app.state = crate::ui::AppState::MobileAuthFlow;
                             } else if app
@@ -853,6 +865,9 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                             }
                         } else if app.state == crate::ui::AppState::BrowserSelect {
                             app.confirm_browser();
+                            if !app.has_selected_browsers() {
+                                continue;
+                            }
                             app.advance(); // Move to Authenticating
 
                             if app.state == crate::ui::AppState::Authenticating {
@@ -1013,7 +1028,11 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                     }
                     KeyCode::Char(' ') => {
                         // Space toggles file selection
-                        if app.state == crate::ui::AppState::FileList {
+                        if app.state == crate::ui::AppState::ProviderSelect {
+                            app.toggle_provider_selection();
+                        } else if app.state == crate::ui::AppState::BrowserSelect {
+                            app.toggle_browser_selection();
+                        } else if app.state == crate::ui::AppState::FileList {
                             app.toggle_file_download();
                         }
                     }

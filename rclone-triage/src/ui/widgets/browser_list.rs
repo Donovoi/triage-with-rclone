@@ -9,14 +9,16 @@ use ratatui::widgets::{Block, Borders, List, ListItem, ListState, StatefulWidget
 #[derive(Debug, Clone)]
 pub struct BrowserList {
     pub browsers: Vec<String>,
+    pub checked: Vec<bool>,
     pub selected: usize,
 }
 
 impl BrowserList {
-    pub fn new(browsers: Vec<String>) -> Self {
+    pub fn new(browsers: Vec<String>, checked: Vec<bool>, selected: usize) -> Self {
         Self {
             browsers,
-            selected: 0,
+            checked,
+            selected,
         }
     }
 
@@ -42,7 +44,12 @@ impl Widget for &BrowserList {
         let items: Vec<ListItem> = self
             .browsers
             .iter()
-            .map(|b| ListItem::new(b.clone()))
+            .enumerate()
+            .map(|(idx, b)| {
+                let checked = self.checked.get(idx).copied().unwrap_or(false);
+                let prefix = if checked { "[x] " } else { "[ ] " };
+                ListItem::new(format!("{prefix}{b}"))
+            })
             .collect();
 
         let list = List::new(items)
@@ -66,10 +73,11 @@ mod tests {
     #[test]
     fn test_browser_list_render() {
         let mut buf = Buffer::empty(Rect::new(0, 0, 40, 10));
-        let list = BrowserList::new(vec![
-            "System Default".to_string(),
-            "Google Chrome".to_string(),
-        ]);
+        let list = BrowserList::new(
+            vec!["System Default".to_string(), "Google Chrome".to_string()],
+            vec![false, true],
+            0,
+        );
 
         (&list).render(Rect::new(0, 0, 40, 10), &mut buf);
     }

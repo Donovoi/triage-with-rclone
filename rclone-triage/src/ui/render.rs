@@ -8,6 +8,7 @@ use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use crate::ui::screens::{
     auth::AuthScreen, browser_select::BrowserSelectScreen, case_setup::CaseSetupScreen,
     download::DownloadScreen, files::FilesScreen, main_menu::MainMenuScreen,
+    mode_confirm::ModeConfirmScreen,
     provider_select::ProviderSelectScreen, report::ReportScreen,
 };
 use crate::ui::{App, AppState};
@@ -34,9 +35,10 @@ pub fn render_state(frame: &mut Frame, app: &App) {
                 .menu_selected_item()
                 .map(|item| item.description)
                 .unwrap_or("Select an option to continue.");
+            let actions = "Actions: Authenticate • Retrieve list • Download CSV/XLSX • Mount • Silent/Smart Auth • Mobile Auth • Additional Options • Exit".to_string();
             let controls =
                 "Up/Down select • Click select • Enter choose • Backspace back • q quit".to_string();
-            let footer = Paragraph::new(vec![Line::from(description), Line::from(controls)])
+            let footer = Paragraph::new(vec![Line::from(description), Line::from(actions), Line::from(controls)])
                 .wrap(Wrap { trim: true });
             frame.render_widget(footer, chunks[1]);
         }
@@ -98,6 +100,33 @@ pub fn render_state(frame: &mut Frame, app: &App) {
                 .wrap(Wrap { trim: true });
             frame.render_widget(footer, chunks[1]);
         }
+        AppState::ModeConfirm => {
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Min(3), Constraint::Length(3)])
+                .split(area);
+            let (title, description) = app
+                .selected_action
+                .and_then(|action| app.menu_items.iter().find(|item| item.action == action))
+                .map(|item| (item.label.to_string(), item.description.to_string()))
+                .unwrap_or_else(|| {
+                    (
+                        "Authenticate with the chosen Browsers & Providers".to_string(),
+                        "Launch browser-based authentication on the suspect device for selected providers."
+                            .to_string(),
+                    )
+                });
+            let screen = ModeConfirmScreen::new(title, description);
+            screen.render(frame, chunks[0]);
+
+            let why =
+                "Why this step: confirm the selected mode before creating a case and log chain."
+                    .to_string();
+            let controls = "Enter continue • Backspace back • q quit".to_string();
+            let footer = Paragraph::new(vec![Line::from(why), Line::from(controls)])
+                .wrap(Wrap { trim: true });
+            frame.render_widget(footer, chunks[1]);
+        }
         AppState::CaseSetup => {
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
@@ -112,9 +141,10 @@ pub fn render_state(frame: &mut Frame, app: &App) {
                 .and_then(|action| app.menu_items.iter().find(|item| item.action == action))
                 .map(|item| format!("Mode: {}", item.label))
                 .unwrap_or_else(|| "Mode: Authenticate (default)".to_string());
-            let controls =
-                "Enter continue • Backspace back • q quit".to_string();
-            let footer = Paragraph::new(vec![Line::from(mode), Line::from(controls)])
+            let why = "Why this step: create a case folder and logging before contacting providers."
+                .to_string();
+            let controls = "Enter continue • Backspace back • q quit".to_string();
+            let footer = Paragraph::new(vec![Line::from(mode), Line::from(why), Line::from(controls)])
                 .wrap(Wrap { trim: true });
             frame.render_widget(footer, chunks[1]);
         }
@@ -132,12 +162,17 @@ pub fn render_state(frame: &mut Frame, app: &App) {
                 .iter()
                 .map(|p| p.display_name().to_string())
                 .collect::<Vec<_>>();
-            let mut screen = ProviderSelectScreen::new(names);
-            screen.list.selected = app.provider_selected;
+            let screen =
+                ProviderSelectScreen::new(names, app.provider_checked.clone(), app.provider_selected);
             frame.render_widget(&screen, content_chunks[0]);
 
+            let mode = app
+                .selected_action
+                .and_then(|action| app.menu_items.iter().find(|item| item.action == action))
+                .map(|item| format!("Mode: {}", item.label))
+                .unwrap_or_else(|| "Mode: Authenticate (default)".to_string());
             let status = if app.provider_status.is_empty() {
-                "Using built-in providers.".to_string()
+                format!("Providers: built-in ({})", app.providers.len())
             } else {
                 app.provider_status.clone()
             };
@@ -150,23 +185,39 @@ pub fn render_state(frame: &mut Frame, app: &App) {
                 .provider_last_error
                 .as_deref()
                 .unwrap_or("none");
-            let help_lines = vec![
-                Line::from(format!("Providers: {}", app.providers.len())),
-                Line::from(format!("Last update: {}", last_update)),
-                Line::from(format!("Last error: {}", last_error)),
-                Line::from(format!("Status: {}", status)),
-                Line::from("Tip: Press r to refresh from rclone."),
-                Line::from("Tip: Press ? for provider help."),
-                Line::from("Tip: Enter selects provider."),
-            ];
-            let help = Paragraph::new(help_lines)
-                .block(Block::default().title("Status").borders(Borders::ALL))
-                .wrap(Wrap { trim: true });
-            frame.render_widget(help, content_chunks[1]);
+            let show_status_panel = content_chunks[1].width >= 26 && content_chunks[1].height >= 6;
+            if show_status_panel {
+                let help_lines = vec![
+                    Line::from(mode.clone()),
+                    Line::from(format!("Providers: {}", app.providers.len())),
+                    Line::from(format!("Last update: {}", last_update)),
+                    Line::from(format!("Last error: {}", last_error)),
+                    Line::from(format!("Status: {}", status)),
+                    Line::from("Tip: Press r to refresh from rclone."),
+                    Line::from("Tip: Press ? for provider help."),
+                    Line::from("Next: Enter confirms selection → browser/auth flow."),
+                ];
+                let help = Paragraph::new(help_lines)
+                    .block(Block::default().title("Status").borders(Borders::ALL))
+                    .wrap(Wrap { trim: true });
+                frame.render_widget(help, content_chunks[1]);
+            }
 
-            let controls = "Up/Down select • Click select • Enter choose • r refresh • ? help • Backspace back • q quit".to_string();
-            let footer = Paragraph::new(vec![Line::from(controls)])
-                .wrap(Wrap { trim: true });
+            let controls = "Up/Down select • Space toggle • Enter confirm • r refresh • ? help • Backspace back • q quit".to_string();
+            let footer_lines = if show_status_panel {
+                vec![Line::from(mode), Line::from(controls)]
+            } else {
+                vec![
+                    Line::from(mode),
+                    Line::from(format!("Providers: {}", app.providers.len())),
+                    Line::from(format!("Status: {}", status)),
+                    Line::from(format!("Last error: {}", last_error)),
+                    Line::from("Tip: Press r to refresh from rclone if the list looks short."),
+                    Line::from("Next: Enter confirms selection → browser/auth flow."),
+                    Line::from(controls),
+                ]
+            };
+            let footer = Paragraph::new(footer_lines).wrap(Wrap { trim: true });
             frame.render_widget(footer, chunks[1]);
 
             if app.show_provider_help {
@@ -226,9 +277,25 @@ pub fn render_state(frame: &mut Frame, app: &App) {
                     names.push(browser.display_name().to_string());
                 }
             }
-            let mut screen = BrowserSelectScreen::new(names);
-            screen.list.selected = app.browser_selected;
-            frame.render_widget(&screen, area);
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Min(3), Constraint::Length(3)])
+                .split(area);
+            let screen =
+                BrowserSelectScreen::new(names, app.browser_checked.clone(), app.browser_selected);
+            frame.render_widget(&screen, chunks[0]);
+
+            let next = "Next: Enter selects browser → authentication opens.";
+            let status = if app.auth_status.is_empty() {
+                "Select one or more browsers for authentication.".to_string()
+            } else {
+                app.auth_status.clone()
+            };
+            let controls =
+                "Up/Down select • Space toggle • Enter confirm • Backspace back • q quit";
+            let footer = Paragraph::new(vec![Line::from(next), Line::from(status), Line::from(controls)])
+                .wrap(Wrap { trim: true });
+            frame.render_widget(footer, chunks[1]);
         }
         AppState::Authenticating => {
             let name = app
@@ -241,8 +308,17 @@ pub fn render_state(frame: &mut Frame, app: &App) {
             } else {
                 app.auth_status.clone()
             };
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Min(3), Constraint::Length(3)])
+                .split(area);
             let screen = AuthScreen::new(name, status);
-            frame.render_widget(&screen, area);
+            frame.render_widget(&screen, chunks[0]);
+
+            let hint =
+                "What happens now: complete auth in the browser, then return here to continue.";
+            let footer = Paragraph::new(vec![Line::from(hint)]).wrap(Wrap { trim: true });
+            frame.render_widget(footer, chunks[1]);
         }
         AppState::FileList => {
             let entries = if app.file_entries.is_empty() {
@@ -260,11 +336,27 @@ pub fn render_state(frame: &mut Frame, app: &App) {
                     })
                     .collect()
             };
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Min(3), Constraint::Length(3)])
+                .split(area);
             let mut screen = FilesScreen::new(entries);
             screen.tree.selected = app.file_selected;
-            frame.render_widget(&screen, area);
+            frame.render_widget(&screen, chunks[0]);
+
+            let hint =
+                "What happens now: select files (toggle) then press Enter to start download.";
+            let controls =
+                "Up/Down select • Space toggle • Enter download • Backspace back • q quit";
+            let footer = Paragraph::new(vec![Line::from(hint), Line::from(controls)])
+                .wrap(Wrap { trim: true });
+            frame.render_widget(footer, chunks[1]);
         }
         AppState::Downloading => {
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Min(3), Constraint::Length(3)])
+                .split(area);
             let mut screen = DownloadScreen::new();
             if !app.download_status.is_empty() {
                 screen.overall.label = app.download_status.clone();
@@ -290,7 +382,12 @@ pub fn render_state(frame: &mut Frame, app: &App) {
                         format!("Current: {} / {} bytes", done, total);
                 }
             }
-            frame.render_widget(&screen, area);
+            frame.render_widget(&screen, chunks[0]);
+
+            let hint =
+                "What happens now: downloads run sequentially; progress and logs update below.";
+            let footer = Paragraph::new(vec![Line::from(hint)]).wrap(Wrap { trim: true });
+            frame.render_widget(footer, chunks[1]);
         }
         AppState::Complete => {
             let lines = if app.report_lines.is_empty() {
