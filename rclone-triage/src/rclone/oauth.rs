@@ -19,6 +19,10 @@ pub struct OAuthFlow {
     port: u16,
     /// Timeout for waiting for auth
     timeout: Duration,
+    /// Host/interface to bind the local server to
+    bind_host: String,
+    /// Host to use for redirect URIs (defaults to bind_host)
+    redirect_host: Option<String>,
 }
 
 impl OAuthFlow {
@@ -27,6 +31,8 @@ impl OAuthFlow {
         Self {
             port: DEFAULT_OAUTH_PORT,
             timeout: Duration::from_secs(120),
+            bind_host: "127.0.0.1".to_string(),
+            redirect_host: None,
         }
     }
 
@@ -39,6 +45,18 @@ impl OAuthFlow {
     /// Set the timeout for waiting for authentication
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
+        self
+    }
+
+    /// Set the host/interface to bind the local server to.
+    pub fn with_bind_host(mut self, host: impl Into<String>) -> Self {
+        self.bind_host = host.into();
+        self
+    }
+
+    /// Set the host to embed in redirect URIs (e.g., LAN IP).
+    pub fn with_redirect_host(mut self, host: impl Into<String>) -> Self {
+        self.redirect_host = Some(host.into());
         self
     }
 
@@ -66,7 +84,7 @@ impl OAuthFlow {
     /// Useful for mobile/QR flows where the user opens the URL on another device.
     pub fn wait_for_redirect(&self) -> Result<OAuthResult> {
         // Start local server
-        let bind_addr = format!("127.0.0.1:{}", self.port);
+        let bind_addr = format!("{}:{}", self.bind_host, self.port);
         let server = Server::http(&bind_addr)
             .map_err(|e| anyhow::anyhow!("Failed to start OAuth server on {}: {}", bind_addr, e))?;
 
@@ -158,7 +176,7 @@ impl OAuthFlow {
         scope: &str,
         state: Option<&str>,
     ) -> String {
-        let redirect_uri = format!("http://127.0.0.1:{}/", self.port);
+        let redirect_uri = self.redirect_uri();
 
         let mut url = format!(
             "{}?client_id={}&redirect_uri={}&response_type=code&scope={}",
@@ -177,7 +195,11 @@ impl OAuthFlow {
 
     /// Get the redirect URI for this OAuth flow
     pub fn redirect_uri(&self) -> String {
-        format!("http://127.0.0.1:{}/", self.port)
+        let host = self
+            .redirect_host
+            .as_deref()
+            .unwrap_or(self.bind_host.as_str());
+        format!("http://{}:{}/", host, self.port)
     }
 }
 
@@ -298,5 +320,14 @@ mod tests {
     fn test_redirect_uri() {
         let flow = OAuthFlow::new().with_port(12345);
         assert_eq!(flow.redirect_uri(), "http://127.0.0.1:12345/");
+    }
+
+    #[test]
+    fn test_redirect_uri_with_custom_host() {
+        let flow = OAuthFlow::new()
+            .with_port(9999)
+            .with_bind_host("0.0.0.0")
+            .with_redirect_host("192.168.1.5");
+        assert_eq!(flow.redirect_uri(), "http://192.168.1.5:9999/");
     }
 }

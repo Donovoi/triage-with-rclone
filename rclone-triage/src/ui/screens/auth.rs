@@ -22,12 +22,17 @@ impl AuthScreen {
 
 impl Widget for &AuthScreen {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let lines = vec![
-            Line::from(format!("Authenticating: {}", self.provider_name)),
-            Line::from(self.status.clone()),
-            Line::from(""),
-            Line::from("Browser window should open for OAuth."),
-        ];
+        let mut lines = Vec::new();
+        lines.push(Line::from(format!("Authenticating: {}", self.provider_name)));
+        if !self.status.is_empty() {
+            for line in self.status.lines() {
+                lines.push(Line::from(line.to_string()));
+            }
+        }
+        lines.push(Line::from(""));
+        lines.push(Line::from(
+            "Complete the authentication flow and return here.",
+        ));
         let paragraph = Paragraph::new(lines).style(Style::default().add_modifier(Modifier::BOLD));
         paragraph.render(area, buf);
     }
