@@ -1,6 +1,5 @@
 //! Custom TUI widgets
 
-pub mod case_input;
 pub mod browser_list;
 pub mod file_tree;
 pub mod log_viewer;
@@ -10,7 +9,6 @@ pub mod provider_list;
 pub mod simple_list;
 
 pub use browser_list::BrowserList;
-pub use case_input::SessionInputForm;
 pub use file_tree::FileTree;
 pub use log_viewer::LogViewer;
 pub use menu_list::MenuList;

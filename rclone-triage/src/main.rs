@@ -63,7 +63,7 @@ fn main() -> Result<()> {
 
     // Initialize session
     let case = Case::new(&args.name, args.output_dir.clone())?;
-    println!("Session initialized: {}", case.session_id());
+    println!("Case initialized: {}", case.session_id());
 
     if args.web_gui {
         let config = RcloneConfig::for_case(&case.output_dir)?;
@@ -364,7 +364,7 @@ impl Drop for AppGuard {
 #[derive(Parser, Debug)]
 #[command(author, version, about = "Cloud triage tool")]
 struct Cli {
-    /// Session name (folder name for output). Defaults to triage-YYYYMMDD-HHMMSS
+    /// Case name (folder name for output). Defaults to triage-YYYYMMDD-HHMMSS
     #[arg(long, short, default_value = "")]
     name: String,
     /// Output directory

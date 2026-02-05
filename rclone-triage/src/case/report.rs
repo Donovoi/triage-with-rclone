@@ -19,7 +19,7 @@ pub fn generate_report(
     let mut report = String::new();
 
     report.push_str("=== rclone-triage Report ===\n\n");
-    report.push_str(&format!("Session: {}\n", case.session_id()));
+    report.push_str(&format!("Case: {}\n", case.session_id()));
     report.push_str(&format!("Start Time: {}\n", case.start_time));
     report.push_str(&format!(
         "End Time: {}\n\n",

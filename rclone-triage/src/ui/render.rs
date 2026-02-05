@@ -6,9 +6,8 @@ use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
 use crate::ui::screens::{
-    auth::AuthScreen, browser_select::BrowserSelectScreen, case_setup::CaseSetupScreen,
-    download::DownloadScreen, files::FilesScreen, main_menu::MainMenuScreen,
-    mode_confirm::ModeConfirmScreen,
+    auth::AuthScreen, browser_select::BrowserSelectScreen, download::DownloadScreen,
+    files::FilesScreen, main_menu::MainMenuScreen, mode_confirm::ModeConfirmScreen,
     provider_select::ProviderSelectScreen, remote_select::RemoteSelectScreen, report::ReportScreen,
 };
 use crate::ui::{App, AppState};
@@ -135,27 +134,6 @@ pub fn render_state(frame: &mut Frame, app: &App) {
                     .to_string();
             let controls = "Enter continue • Backspace back • q quit".to_string();
             let footer = Paragraph::new(vec![Line::from(why), Line::from(controls)])
-                .wrap(Wrap { trim: true });
-            frame.render_widget(footer, chunks[1]);
-        }
-        AppState::CaseSetup => {
-            let chunks = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([Constraint::Min(3), Constraint::Length(3)])
-                .split(area);
-            let mut screen = CaseSetupScreen::new();
-            screen.form = app.session_form.clone();
-            frame.render_widget(&screen, chunks[0]);
-
-            let mode = app
-                .selected_action
-                .and_then(|action| app.menu_items.iter().find(|item| item.action == action))
-                .map(|item| format!("Mode: {}", item.label))
-                .unwrap_or_else(|| "Mode: Authenticate (default)".to_string());
-            let why = "Why this step: create a case folder and logging before contacting providers."
-                .to_string();
-            let controls = "Enter continue • Backspace back • q quit".to_string();
-            let footer = Paragraph::new(vec![Line::from(mode), Line::from(why), Line::from(controls)])
                 .wrap(Wrap { trim: true });
             frame.render_widget(footer, chunks[1]);
         }
@@ -541,7 +519,6 @@ mod tests {
 
         for state in [
             AppState::MainMenu,
-            AppState::CaseSetup,
             AppState::ProviderSelect,
             AppState::RemoteSelect,
             AppState::BrowserSelect,
