@@ -199,9 +199,16 @@ fn main() -> Result<()> {
         app_guard.track_env_value("RCLONE_CONFIG", config.original_env());
         let runner = RcloneRunner::new(binary.path()).with_config(config.path());
 
-        let remote_name = known
+        let base_remote = known
             .map(|p| p.short_name().to_string())
             .unwrap_or_else(|| provider_name.clone());
+        let remote_name = config.next_available_remote_name(&base_remote)?;
+        if remote_name != base_remote {
+            println!(
+                "Remote '{}' already exists; using '{}'",
+                base_remote, remote_name
+            );
+        }
         if let Some(provider) = known {
             if args.device_code {
                 authenticate_with_device_code(provider, &config, &remote_name)?;

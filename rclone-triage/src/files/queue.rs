@@ -63,7 +63,7 @@ fn read_xlsx_queue(path: &Path) -> Result<Vec<DownloadQueueEntry>> {
         open_workbook_auto(path).with_context(|| format!("Failed to open XLSX queue: {:?}", path))?;
     let sheet_name = workbook
         .sheet_names()
-        .get(0)
+        .first()
         .cloned()
         .ok_or_else(|| anyhow::anyhow!("XLSX queue has no sheets"))?;
     let range = workbook
@@ -145,7 +145,7 @@ fn parse_row(row: &[Data], map: &HeaderMap) -> Option<DownloadQueueEntry> {
         .path
         .and_then(|idx| row.get(idx))
         .map(cell_to_string)
-        .or_else(|| row.get(0).map(cell_to_string))
+        .or_else(|| row.first().map(cell_to_string))
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())?;
 

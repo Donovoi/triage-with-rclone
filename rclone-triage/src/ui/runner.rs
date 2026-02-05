@@ -635,6 +635,9 @@ fn perform_auth_flow<B: ratatui::backend::Backend>(
             was_silent: bool,
         }
 
+        let mut fallback_base: Option<String> = None;
+        let mut fallback_remote: Option<String> = None;
+
         let mobile_flow = if app.selected_action == Some(crate::ui::MenuAction::MobileAuth) {
             app.mobile_auth_flow
                 .take()
@@ -652,12 +655,17 @@ fn perform_auth_flow<B: ratatui::backend::Backend>(
                 );
                 terminal.draw(|f| render_state(f, app))?;
 
+                let base = provider.short_name();
+                let remote_name = config.next_available_remote_name(base)?;
+                fallback_base = Some(base.to_string());
+                fallback_remote = Some(remote_name.clone());
+
                 perform_mobile_auth_flow(
                     app,
                     terminal,
                     known,
                     &config,
-                    provider.short_name(),
+                    &remote_name,
                     flow,
                 )
                 .map(|result| AuthOutcome {
@@ -703,11 +711,16 @@ fn perform_auth_flow<B: ratatui::backend::Backend>(
                 }
                 terminal.draw(|f| render_state(f, app))?;
 
+                let base = provider.short_name();
+                let remote_name = config.next_available_remote_name(base)?;
+                fallback_base = Some(base.to_string());
+                fallback_remote = Some(remote_name.clone());
+
                 crate::providers::auth::smart_authenticate(
                     known,
                     &runner,
                     &config,
-                    provider.short_name(),
+                    &remote_name,
                 )
                 .map(|result| AuthOutcome {
                     remote_name: result.remote_name,
@@ -726,8 +739,12 @@ fn perform_auth_flow<B: ratatui::backend::Backend>(
             ));
             terminal.draw(|f| render_state(f, app))?;
 
-            let remote_name = provider.short_name();
-            let args = ["config", "create", remote_name, provider.short_name()];
+            let base = provider.short_name();
+            let remote_name = config.next_available_remote_name(base)?;
+            fallback_base = Some(base.to_string());
+            fallback_remote = Some(remote_name.clone());
+
+            let args = ["config", "create", remote_name.as_str(), provider.short_name()];
             let output = runner.run(&args)?;
             if !output.success() {
                 anyhow::bail!(
@@ -737,7 +754,7 @@ fn perform_auth_flow<B: ratatui::backend::Backend>(
                 );
             }
 
-            if !config.has_remote(remote_name)? {
+            if !config.has_remote(&remote_name)? {
                 anyhow::bail!("Remote {} was not created", remote_name);
             }
 
@@ -751,6 +768,17 @@ fn perform_auth_flow<B: ratatui::backend::Backend>(
 
         match auth_result {
             Ok(result) => {
+                if let (Some(base), Some(fallback)) =
+                    (fallback_base.as_deref(), fallback_remote.as_deref())
+                {
+                    if base != fallback && result.remote_name == fallback {
+                        app.log_info(format!(
+                            "Remote '{}' already exists; using '{}'",
+                            base, fallback
+                        ));
+                    }
+                }
+
                 let auth_type = if result.was_silent {
                     "SSO"
                 } else {

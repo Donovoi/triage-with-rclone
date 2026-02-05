@@ -3,7 +3,7 @@
 //! Manages rclone config files and environment variables.
 //! Includes parsing of INI format and OAuth token extraction.
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -339,6 +339,28 @@ impl RcloneConfig {
             }
         }
         Ok(remotes)
+    }
+
+    /// Find the next available remote name by appending a numeric suffix if needed.
+    pub fn next_available_remote_name(&self, base: &str) -> Result<String> {
+        let base = base.trim();
+        if base.is_empty() {
+            bail!("Remote base name cannot be empty");
+        }
+
+        let remotes = self.list_remotes()?;
+        if !remotes.iter().any(|r| r == base) {
+            return Ok(base.to_string());
+        }
+
+        let mut suffix = 2;
+        loop {
+            let candidate = format!("{}-{}", base, suffix);
+            if !remotes.iter().any(|r| r == &candidate) {
+                return Ok(candidate);
+            }
+            suffix += 1;
+        }
     }
 
     /// Add or update a remote configuration
