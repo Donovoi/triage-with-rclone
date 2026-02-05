@@ -108,6 +108,21 @@ fn run_rclone_with_browser_env(
     rclone.run(args)
 }
 
+pub fn user_identifier_from_config(
+    provider: CloudProvider,
+    config: &RcloneConfig,
+    remote_name: &str,
+) -> Option<String> {
+    if !provider.supports_token_user_info() {
+        return None;
+    }
+    config
+        .get_user_info(remote_name)
+        .ok()
+        .flatten()
+        .and_then(|u| u.best_identifier())
+}
+
 /// Authenticate to a cloud provider
 pub fn authenticate(
     provider: CloudProvider,
@@ -185,8 +200,7 @@ pub fn authenticate_with_rclone(
     }
 
     // Try to get user info from config
-    let user_info = config.get_user_info(remote_name).ok().flatten();
-    let user_identifier = user_info.and_then(|u| u.best_identifier());
+    let user_identifier = user_identifier_from_config(provider, config, remote_name);
 
     // Also try rclone about for additional info
     let about_info = get_user_info(rclone, remote_name).ok();
@@ -282,8 +296,7 @@ pub fn authenticate_with_mobile(
         bail!("Remote {} was not created", remote_name);
     }
 
-    let user_info = config.get_user_info(remote_name).ok().flatten();
-    let user_identifier = user_info.and_then(|u| u.best_identifier());
+    let user_identifier = user_identifier_from_config(provider, config, remote_name);
 
     Ok(AuthResult {
         provider,
@@ -359,8 +372,7 @@ pub fn authenticate_with_device_code(
         bail!("Remote {} was not created", remote_name);
     }
 
-    let user_info = config.get_user_info(remote_name).ok().flatten();
-    let user_identifier = user_info.and_then(|u| u.best_identifier());
+    let user_identifier = user_identifier_from_config(provider, config, remote_name);
 
     Ok(AuthResult {
         provider,
@@ -413,8 +425,7 @@ pub fn authenticate_with_browser(
     }
 
     // Try to extract user info from the token
-    let user_info = config.get_user_info(&temp_remote_name).ok().flatten();
-    let user_identifier = user_info.and_then(|u| u.best_identifier());
+    let user_identifier = user_identifier_from_config(provider, config, &temp_remote_name);
 
     // If we got a user identifier, rename the remote to include it
     let final_remote_name = if let Some(ref username) = user_identifier {
@@ -638,11 +649,11 @@ pub fn authenticate_with_sso(
         bail!("Remote {} was not created", remote_name);
     }
 
-    // Get user info from config token
-    let user_info = config.get_user_info(&remote_name).ok().flatten();
-    let user_identifier = user_info
-        .and_then(|u| u.best_identifier())
-        .or_else(|| session.user_hint.clone());
+    // Get user info from config token if supported, otherwise fall back to hint.
+    let user_identifier =
+        user_identifier_from_config(provider, config, &remote_name).or_else(|| {
+            session.user_hint.clone()
+        });
 
     Ok(AuthResult {
         provider,

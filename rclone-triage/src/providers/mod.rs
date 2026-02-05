@@ -7,6 +7,7 @@ pub mod browser;
 pub mod config;
 pub mod credentials;
 pub mod discovery;
+pub mod features;
 pub mod mobile;
 pub mod session;
 
@@ -126,6 +127,11 @@ impl CloudProvider {
             CloudProvider::GooglePhotos => &[],
             CloudProvider::PCloud => &["sha1", "md5"],
         }
+    }
+
+    /// Returns true if token-based user info extraction is expected to work.
+    pub fn supports_token_user_info(&self) -> bool {
+        !matches!(self, CloudProvider::ICloud | CloudProvider::PCloud)
     }
 }
 

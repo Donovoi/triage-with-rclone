@@ -47,7 +47,7 @@ pub struct ProviderDiscoveryResult {
     pub stats: ProviderDiscoveryStats,
 }
 
-const BAD_PROVIDER_PREFIXES: &[&str] = &[
+pub(crate) const BAD_PROVIDER_PREFIXES: &[&str] = &[
     "alias", "crypt", "cache", "chunker", "combine", "compress", "ftp", "hasher", "http",
     "local", "memory", "sftp", "smb", "union", "webdav",
 ];
@@ -67,7 +67,7 @@ const OAUTH_PATTERNS: &[&str] = &[
     r"consumer[_-]?secret",
 ];
 
-fn is_bad_provider(prefix: &str, name: Option<&str>) -> bool {
+pub(crate) fn is_bad_provider(prefix: &str, name: Option<&str>) -> bool {
     let prefix = prefix.trim().to_lowercase();
     if BAD_PROVIDER_PREFIXES.contains(&prefix.as_str()) {
         return true;
