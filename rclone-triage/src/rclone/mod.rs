@@ -7,13 +7,17 @@
 //! - Mounting remotes as local filesystems
 
 pub mod config;
+pub mod authorize;
 pub mod connectivity;
 pub mod mount;
 pub mod oauth;
 pub mod process;
 pub mod web;
 
-pub use config::{OAuthToken, ParsedConfig, RcloneConfig, RemoteSection, UserInfo};
+pub use config::{
+    OAuthCredentialStatus, OAuthToken, ParsedConfig, RcloneConfig, RemoteSection, UserInfo,
+};
+pub use authorize::{authorize_fallback, AuthorizeFallbackResult};
 pub use connectivity::{test_connectivity, ConnectivityResult};
 pub use mount::{open_file_explorer, MountManager, MountedRemote};
 pub use oauth::OAuthFlow;

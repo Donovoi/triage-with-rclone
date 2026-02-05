@@ -28,6 +28,7 @@ use crate::providers::mobile::{
     device_code_config, exchange_code_for_token, poll_device_code_for_token, render_qr_code,
     request_device_code,
 };
+use crate::providers::auth::user_identifier_from_config;
 use crate::providers::CloudProvider;
 use crate::rclone::oauth::DEFAULT_OAUTH_PORT;
 use crate::ui::screens::welcome::WelcomeScreen;
@@ -346,8 +347,7 @@ fn perform_mobile_auth_flow<B: ratatui::backend::Backend>(
                 bail!("Remote {} was not created", remote_name);
             }
 
-            let user_info = config.get_user_info(remote_name).ok().flatten();
-            let user_identifier = user_info.and_then(|u| u.best_identifier());
+            let user_identifier = user_identifier_from_config(provider, config, remote_name);
 
             Ok(crate::providers::auth::AuthResult {
                 provider,
@@ -470,8 +470,7 @@ fn perform_mobile_auth_flow<B: ratatui::backend::Backend>(
                     bail!("Remote {} was not created", remote_name);
                 }
 
-                let user_info = config.get_user_info(remote_name).ok().flatten();
-                let user_identifier = user_info.and_then(|u| u.best_identifier());
+                let user_identifier = user_identifier_from_config(provider, config, remote_name);
 
                 Ok(crate::providers::auth::AuthResult {
                     provider,

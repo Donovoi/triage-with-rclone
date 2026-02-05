@@ -106,6 +106,25 @@ impl UserInfo {
     }
 }
 
+/// OAuth credential summary for a configured remote.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OAuthCredentialStatus {
+    /// Remote name (section header)
+    pub remote_name: String,
+    /// Client ID (if present)
+    pub client_id: Option<String>,
+    /// Client secret (masked if present)
+    pub client_secret: Option<String>,
+    /// Whether client ID is present
+    pub has_client_id: bool,
+    /// Whether client secret is present
+    pub has_client_secret: bool,
+    /// True if both client ID and secret are set
+    pub is_using_custom_credentials: bool,
+    /// True if either client ID or secret is missing
+    pub using_default_rclone_credentials: bool,
+}
+
 /// A parsed remote section from rclone config
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RemoteSection {
@@ -468,6 +487,47 @@ impl RcloneConfig {
         Ok(parsed.get_remote(remote_name).and_then(|r| r.user_info()))
     }
 
+    /// Get OAuth credential status for a specific remote.
+    pub fn get_oauth_credentials(&self, remote_name: &str) -> Result<OAuthCredentialStatus> {
+        let parsed = self.parse()?;
+        let remote = parsed
+            .get_remote(remote_name)
+            .ok_or_else(|| anyhow::anyhow!("Remote {} not found", remote_name))?;
+
+        let client_id = remote
+            .options
+            .get("client_id")
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
+        let has_client_id = client_id.is_some();
+
+        let client_secret_value = remote
+            .options
+            .get("client_secret")
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty());
+        let has_client_secret = client_secret_value.is_some();
+        let client_secret = if has_client_secret {
+            Some("***HIDDEN***".to_string())
+        } else {
+            None
+        };
+
+        let is_using_custom_credentials = has_client_id && has_client_secret;
+        let using_default_rclone_credentials = !has_client_id || !has_client_secret;
+
+        Ok(OAuthCredentialStatus {
+            remote_name: remote_name.to_string(),
+            client_id,
+            client_secret,
+            has_client_id,
+            has_client_secret,
+            is_using_custom_credentials,
+            using_default_rclone_credentials,
+        })
+    }
+
     /// Restore the original RCLONE_CONFIG environment variable
     pub fn restore_env(&self) {
         with_env_lock(|| match &self.original_env {
@@ -613,6 +673,39 @@ drive_id = xyz789
         let drive_remotes = parsed.remotes_by_type("drive");
         assert_eq!(drive_remotes.len(), 1);
         assert_eq!(drive_remotes[0].name, "gdrive");
+    }
+
+    #[test]
+    fn test_get_oauth_credentials() {
+        let dir = tempdir().unwrap();
+        let config_path = dir.path().join("rclone.conf");
+        let config = RcloneConfig::new(&config_path).unwrap();
+
+        config
+            .set_remote(
+                "with-secret",
+                "drive",
+                &[("client_id", "abc"), ("client_secret", "def")],
+            )
+            .unwrap();
+        let creds = config.get_oauth_credentials("with-secret").unwrap();
+        assert_eq!(creds.client_id.as_deref(), Some("abc"));
+        assert_eq!(creds.client_secret.as_deref(), Some("***HIDDEN***"));
+        assert!(creds.has_client_id);
+        assert!(creds.has_client_secret);
+        assert!(creds.is_using_custom_credentials);
+        assert!(!creds.using_default_rclone_credentials);
+
+        config
+            .set_remote("id-only", "drive", &[("client_id", "only")])
+            .unwrap();
+        let creds = config.get_oauth_credentials("id-only").unwrap();
+        assert_eq!(creds.client_id.as_deref(), Some("only"));
+        assert_eq!(creds.client_secret, None);
+        assert!(creds.has_client_id);
+        assert!(!creds.has_client_secret);
+        assert!(!creds.is_using_custom_credentials);
+        assert!(creds.using_default_rclone_credentials);
     }
 
     #[test]
