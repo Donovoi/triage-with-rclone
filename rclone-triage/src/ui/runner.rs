@@ -14,8 +14,10 @@ use crossterm::terminal::{
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use chrono::Local;
+use std::collections::HashSet;
 use std::io::stdout;
-use std::time::{Duration, Instant};
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant, SystemTime};
 
 use crate::forensics::{
     generate_password, render_wifi_qr, start_forensic_access_point, stop_forensic_access_point,
@@ -88,6 +90,137 @@ fn apply_discovered_providers(
 fn record_provider_refresh(app: &mut App, error: Option<String>) {
     app.provider_last_updated = Some(Local::now());
     app.provider_last_error = error;
+}
+
+fn resolve_download_queue_path(app: &App) -> Result<PathBuf> {
+    let env_candidates = ["RCLONE_TRIAGE_DOWNLOAD_QUEUE", "RCLONE_TRIAGE_QUEUE_PATH"];
+    for key in env_candidates {
+        if let Ok(value) = std::env::var(key) {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                return Ok(PathBuf::from(trimmed));
+            }
+        }
+    }
+
+    if let Some(dirs) = &app.directories {
+        if let Some(path) = find_queue_candidate(&dirs.listings) {
+            return Ok(path);
+        }
+        let hint = dirs.listings.join("queue.xlsx");
+        bail!(
+            "No CSV/XLSX queue found in {:?}. Place a queue file at {:?} or set RCLONE_TRIAGE_DOWNLOAD_QUEUE.",
+            dirs.listings,
+            hint
+        );
+    }
+
+    bail!("Case directory not initialized; cannot locate download queue file.");
+}
+
+fn find_queue_candidate(dir: &Path) -> Option<PathBuf> {
+    let entries = std::fs::read_dir(dir).ok()?;
+    let mut candidates = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+        if ext != "xlsx" && ext != "csv" {
+            continue;
+        }
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        let score = score_queue_name(name);
+        let modified = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .unwrap_or(SystemTime::UNIX_EPOCH);
+        candidates.push(QueueCandidate {
+            score,
+            modified,
+            path,
+        });
+    }
+
+    candidates.sort_by(|a, b| {
+        b.score
+            .cmp(&a.score)
+            .then_with(|| b.modified.cmp(&a.modified))
+    });
+
+    candidates.first().map(|c| c.path.clone())
+}
+
+struct QueueCandidate {
+    score: i32,
+    modified: SystemTime,
+    path: PathBuf,
+}
+
+fn score_queue_name(name: &str) -> i32 {
+    let lowered = name.to_lowercase();
+    let mut score = 0;
+    if lowered.contains("todownload") || lowered.contains("to_download") {
+        score += 3;
+    }
+    if lowered.contains("queue") {
+        score += 2;
+    }
+    if lowered.contains("selection") {
+        score += 1;
+    }
+    if lowered.ends_with(".xlsx") {
+        score += 1;
+    }
+    score
+}
+
+fn normalize_queue_path(path: &str, remote_name: &str) -> String {
+    let mut candidate = path.trim().to_string();
+    let remote = remote_name.trim_end_matches(':');
+    let prefix = format!("{}:", remote);
+    if candidate.to_lowercase().starts_with(&prefix.to_lowercase()) {
+        candidate = candidate[prefix.len()..].to_string();
+    }
+    candidate.trim_start_matches(['/', '\\']).to_string()
+}
+
+fn apply_queue_entries(
+    app: &mut App,
+    entries: Vec<crate::files::DownloadQueueEntry>,
+    remote_name: &str,
+) -> Result<usize> {
+    let mut seen = HashSet::new();
+    let mut full_entries = Vec::new();
+
+    for entry in entries {
+        let normalized = normalize_queue_path(&entry.path, remote_name);
+        if normalized.is_empty() || !seen.insert(normalized.clone()) {
+            continue;
+        }
+
+        full_entries.push(crate::files::FileEntry {
+            path: normalized,
+            size: entry.size.unwrap_or(0),
+            modified: None,
+            is_dir: false,
+            hash: entry.hash,
+            hash_type: entry.hash_type,
+        });
+    }
+
+    if full_entries.is_empty() {
+        bail!("Queue contained no usable file paths");
+    }
+
+    app.file_entries_full = full_entries.clone();
+    app.file_entries = full_entries.iter().map(|e| e.path.clone()).collect();
+    app.files_to_download = app.file_entries.clone();
+    app.file_selected = 0;
+
+    Ok(app.files_to_download.len())
 }
 
 fn update_auth_status<B: ratatui::backend::Backend>(
@@ -424,6 +557,42 @@ fn resolve_provider_remotes(
     Ok(remotes)
 }
 
+fn choose_remote_or_prompt(
+    app: &mut App,
+    provider: &crate::providers::ProviderEntry,
+    remotes: Vec<String>,
+) -> Result<Option<String>> {
+    if let Some(current) = app.chosen_remote.clone() {
+        if remotes.iter().any(|remote| remote == &current) {
+            return Ok(Some(current));
+        }
+        app.chosen_remote = None;
+    }
+
+    if remotes.len() == 1 {
+        let remote_name = remotes[0].clone();
+        app.chosen_remote = Some(remote_name.clone());
+        return Ok(Some(remote_name));
+    }
+
+    if remotes.is_empty() {
+        return Ok(None);
+    }
+
+    app.remote_options = remotes;
+    app.remote_selected = app
+        .chosen_remote
+        .as_ref()
+        .and_then(|remote| app.remote_options.iter().position(|r| r == remote))
+        .unwrap_or(0);
+    app.provider_status = format!(
+        "Multiple remotes found for {}. Select one to continue.",
+        provider.display_name()
+    );
+    app.state = crate::ui::AppState::RemoteSelect;
+    Ok(None)
+}
+
 /// Perform the authentication flow (extract binary, create config, auth, list files)
 fn perform_auth_flow<B: ratatui::backend::Backend>(
     app: &mut App,
@@ -739,7 +908,7 @@ fn perform_list_flow<B: ratatui::backend::Backend>(
         }
     };
 
-    let Some(remote_name) = remotes.first().cloned() else {
+    if remotes.is_empty() {
         app.provider_status = format!(
             "No authenticated remotes found for {}. Copy a config to {:?} and retry.",
             provider.display_name(),
@@ -750,16 +919,12 @@ fn perform_list_flow<B: ratatui::backend::Backend>(
             provider.display_name()
         ));
         return Ok(());
-    };
-
-    if remotes.len() > 1 {
-        app.log_info(format!(
-            "Multiple remotes found for {}. Using {}.",
-            provider.display_name(),
-            remote_name
-        ));
     }
 
+    let remote_name = match choose_remote_or_prompt(app, &provider, remotes)? {
+        Some(remote_name) => remote_name,
+        None => return Ok(()),
+    };
     app.chosen_remote = Some(remote_name.clone());
     app.files_to_download.clear();
     app.file_entries.clear();
@@ -870,7 +1035,7 @@ fn perform_mount_flow<B: ratatui::backend::Backend>(
         }
     };
 
-    let Some(remote_name) = remotes.first().cloned() else {
+    if remotes.is_empty() {
         app.provider_status = format!(
             "No authenticated remotes found for {}. Copy a config to {:?} and retry.",
             provider.display_name(),
@@ -881,15 +1046,12 @@ fn perform_mount_flow<B: ratatui::backend::Backend>(
             provider.display_name()
         ));
         return Ok(());
-    };
-
-    if remotes.len() > 1 {
-        app.log_info(format!(
-            "Multiple remotes found for {}. Using {}.",
-            provider.display_name(),
-            remote_name
-        ));
     }
+
+    let remote_name = match choose_remote_or_prompt(app, &provider, remotes)? {
+        Some(remote_name) => remote_name,
+        None => return Ok(()),
+    };
 
     let manager = match crate::rclone::MountManager::new(binary.path()) {
         Ok(manager) => manager.with_config(config.path()),
@@ -924,6 +1086,95 @@ fn perform_mount_flow<B: ratatui::backend::Backend>(
     Ok(())
 }
 
+fn perform_csv_download_flow<B: ratatui::backend::Backend>(
+    app: &mut App,
+    terminal: &mut Terminal<B>,
+) -> Result<()> {
+    let Some(provider) = app.chosen_provider.clone() else {
+        app.provider_status = "No provider selected.".to_string();
+        return Ok(());
+    };
+
+    app.provider_status = "Loading CSV/XLSX download queue...".to_string();
+    terminal.draw(|f| render_state(f, app))?;
+
+    let queue_path = match resolve_download_queue_path(app) {
+        Ok(path) => path,
+        Err(e) => {
+            app.provider_status = format!("Queue not found: {}", e);
+            app.log_error(format!("Queue not found: {}", e));
+            return Ok(());
+        }
+    };
+
+    let queue_entries = match crate::files::read_download_queue(&queue_path) {
+        Ok(entries) => entries,
+        Err(e) => {
+            app.provider_status = format!("Queue load failed: {}", e);
+            app.log_error(format!("Queue load failed: {}", e));
+            return Ok(());
+        }
+    };
+
+    let config_dir = app
+        .config_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    app.track_env_var("RCLONE_CONFIG", "Set RCLONE_CONFIG for download queue");
+    let config = match crate::rclone::RcloneConfig::for_case(&config_dir) {
+        Ok(config) => config,
+        Err(e) => {
+            app.provider_status = format!("Queue failed (config): {}", e);
+            app.log_error(format!("Queue failed (config): {}", e));
+            return Ok(());
+        }
+    };
+    app.cleanup_track_env_value("RCLONE_CONFIG", config.original_env());
+
+    let remotes = match resolve_provider_remotes(&config, &provider) {
+        Ok(remotes) => remotes,
+        Err(e) => {
+            app.provider_status = format!("Queue failed (parse config): {}", e);
+            app.log_error(format!("Queue failed (parse config): {}", e));
+            return Ok(());
+        }
+    };
+
+    if remotes.is_empty() {
+        app.provider_status = format!(
+            "No authenticated remotes found for {}. Copy a config to {:?} and retry.",
+            provider.display_name(),
+            config.path()
+        );
+        app.log_error(format!(
+            "No authenticated remotes found for {}",
+            provider.display_name()
+        ));
+        return Ok(());
+    }
+
+    let remote_name = match choose_remote_or_prompt(app, &provider, remotes)? {
+        Some(remote_name) => remote_name,
+        None => return Ok(()),
+    };
+
+    app.chosen_remote = Some(remote_name.clone());
+    let count = match apply_queue_entries(app, queue_entries, &remote_name) {
+        Ok(count) => count,
+        Err(e) => {
+            app.provider_status = format!("Queue parse failed: {}", e);
+            app.log_error(format!("Queue parse failed: {}", e));
+            return Ok(());
+        }
+    };
+
+    app.provider_status = format!("Loaded {} queued files from {:?}", count, queue_path);
+    app.log_info(format!("Loaded {} queued files from {:?}", count, queue_path));
+
+    app.state = crate::ui::AppState::Downloading;
+    perform_download_flow(app, terminal)?;
+    Ok(())
+}
+
 /// Perform the download flow
 fn perform_download_flow<B: ratatui::backend::Backend>(
     app: &mut App,
@@ -932,6 +1183,7 @@ fn perform_download_flow<B: ratatui::backend::Backend>(
     use crate::files::download::{DownloadPhase, DownloadQueue, DownloadRequest};
 
     app.unmount_remote();
+    app.download_failures.clear();
 
     let total_files = app.files_to_download.len();
     app.download_status = format!("Downloading {} files...", total_files);
@@ -1108,6 +1360,7 @@ fn perform_download_flow<B: ratatui::backend::Backend>(
                 }
             } else {
                 let err_msg = result.error.as_deref().unwrap_or("Unknown error");
+                app.download_failures.push(file.clone());
                 app.log_error(format!("Download failed for {}: {}", file, err_msg));
             }
         }
@@ -1116,6 +1369,8 @@ fn perform_download_flow<B: ratatui::backend::Backend>(
         if let Some(ref mut case) = app.case {
             case.finalize();
         }
+
+        let failed_count = app.download_failures.len();
 
         // Summary
         app.log_info(format!(
@@ -1131,10 +1386,16 @@ fn perform_download_flow<B: ratatui::backend::Backend>(
                 hash_mismatch_count
             ));
         }
+        if failed_count > 0 {
+            app.log_error(format!(
+                "Failed downloads: {} files (see log for details)",
+                failed_count
+            ));
+        }
 
         app.download_status = format!(
-            "Downloaded {}/{} files ({} verified)",
-            success_count, total, hash_verified_count
+            "Downloaded {}/{} files ({} verified, {} failed)",
+            success_count, total, hash_verified_count, failed_count
         );
 
         // Generate and write the forensic report
@@ -1202,7 +1463,13 @@ fn perform_download_flow<B: ratatui::backend::Backend>(
         app.report_lines
             .push(format!("Provider: {}", provider.display_name()));
         app.report_lines
-            .push(format!("Files downloaded: {}", total));
+            .push(format!("Files requested: {}", total));
+        app.report_lines
+            .push(format!("Files downloaded: {}", success_count));
+        if failed_count > 0 {
+            app.report_lines
+                .push(format!("Failed downloads: {}", failed_count));
+        }
         app.report_lines
             .push(format!("Destination: {}", dest_display));
         app.report_lines.push(String::new());
@@ -1221,7 +1488,12 @@ fn perform_download_flow<B: ratatui::backend::Backend>(
         }
 
         app.report_lines.push(String::new());
-        app.report_lines.push("Press 'q' to exit.".to_string());
+        if failed_count > 0 {
+            app.report_lines
+                .push("Press 'r' to retry failed downloads or 'q' to exit.".to_string());
+        } else {
+            app.report_lines.push("Press 'q' to exit.".to_string());
+        }
 
         app.advance(); // Move to Complete
     }
@@ -1389,10 +1661,7 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                                     perform_mount_flow(app, &mut terminal)?;
                                 }
                                 Some(crate::ui::MenuAction::DownloadFromCsv) => {
-                                    app.menu_status =
-                                        "CSV/XLSX download queue is not yet available in the TUI."
-                                            .to_string();
-                                    app.state = crate::ui::AppState::MainMenu;
+                                    perform_csv_download_flow(app, &mut terminal)?;
                                 }
                                 _ => {
                                     if app
@@ -1409,6 +1678,11 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                                         perform_auth_flow(app, &mut terminal)?;
                                     }
                                 }
+                            }
+                        } else if app.state == crate::ui::AppState::RemoteSelect {
+                            if let Some(remote_name) = app.confirm_remote() {
+                                app.provider_status = format!("Selected remote: {}", remote_name);
+                                resume_remote_flow(app, &mut terminal)?;
                             }
                         } else if app.state == crate::ui::AppState::MobileAuthFlow {
                             if let Some(item) = app.mobile_flow_selected_item() {
@@ -1459,6 +1733,10 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                     KeyCode::Backspace => {
                         if app.state == crate::ui::AppState::CaseSetup {
                             app.input_backspace();
+                        } else if app.state == crate::ui::AppState::RemoteSelect {
+                            app.remote_options.clear();
+                            app.remote_selected = 0;
+                            app.back();
                         } else if app.state == crate::ui::AppState::FileList {
                             if matches!(
                                 app.selected_action,
@@ -1482,6 +1760,8 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                             app.onedrive_menu_up();
                         } else if app.state == crate::ui::AppState::ProviderSelect {
                             app.provider_up();
+                        } else if app.state == crate::ui::AppState::RemoteSelect {
+                            app.remote_up();
                         } else if app.state == crate::ui::AppState::MobileAuthFlow {
                             app.mobile_flow_up();
                         } else if app.state == crate::ui::AppState::BrowserSelect {
@@ -1499,6 +1779,8 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                             app.onedrive_menu_down();
                         } else if app.state == crate::ui::AppState::ProviderSelect {
                             app.provider_down();
+                        } else if app.state == crate::ui::AppState::RemoteSelect {
+                            app.remote_down();
                         } else if app.state == crate::ui::AppState::MobileAuthFlow {
                             app.mobile_flow_down();
                         } else if app.state == crate::ui::AppState::BrowserSelect {
@@ -1510,6 +1792,14 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                     KeyCode::Char('r') => {
                         if app.state == crate::ui::AppState::ProviderSelect {
                             try_refresh_providers(app);
+                        } else if app.state == crate::ui::AppState::Complete
+                            && !app.download_failures.is_empty()
+                        {
+                            app.files_to_download = app.download_failures.clone();
+                            app.download_failures.clear();
+                            app.download_status = "Retrying failed downloads...".to_string();
+                            app.state = crate::ui::AppState::Downloading;
+                            perform_download_flow(app, &mut terminal)?;
                         }
                     }
                     KeyCode::Char('m') => {
@@ -1669,15 +1959,26 @@ fn handle_main_menu_enter(app: &mut App) -> bool {
             false
         }
         crate::ui::MenuAction::DownloadFromCsv => {
-            app.menu_status =
-                "CSV/XLSX download queue is not yet available in the TUI.".to_string();
-            app.state = crate::ui::AppState::MainMenu;
+            app.state = crate::ui::AppState::ModeConfirm;
             false
         }
         _ => {
             app.state = crate::ui::AppState::ModeConfirm;
             false
         }
+    }
+}
+
+fn resume_remote_flow<B: ratatui::backend::Backend>(
+    app: &mut App,
+    terminal: &mut Terminal<B>,
+) -> Result<()> {
+    app.state = crate::ui::AppState::ProviderSelect;
+    match app.selected_action {
+        Some(crate::ui::MenuAction::RetrieveList) => perform_list_flow(app, terminal),
+        Some(crate::ui::MenuAction::MountProvider) => perform_mount_flow(app, terminal),
+        Some(crate::ui::MenuAction::DownloadFromCsv) => perform_csv_download_flow(app, terminal),
+        _ => Ok(()),
     }
 }
 
@@ -1713,6 +2014,7 @@ fn handle_mouse_event(app: &mut App, area: ratatui::layout::Rect, mouse: MouseEv
             crate::ui::AppState::AdditionalOptions => app.additional_menu_up(),
             crate::ui::AppState::OneDriveMenu => app.onedrive_menu_up(),
             crate::ui::AppState::ProviderSelect => app.provider_up(),
+            crate::ui::AppState::RemoteSelect => app.remote_up(),
             crate::ui::AppState::MobileAuthFlow => app.mobile_flow_up(),
             crate::ui::AppState::BrowserSelect => app.browser_up(),
             crate::ui::AppState::FileList => app.file_up(),
@@ -1723,6 +2025,7 @@ fn handle_mouse_event(app: &mut App, area: ratatui::layout::Rect, mouse: MouseEv
             crate::ui::AppState::AdditionalOptions => app.additional_menu_down(),
             crate::ui::AppState::OneDriveMenu => app.onedrive_menu_down(),
             crate::ui::AppState::ProviderSelect => app.provider_down(),
+            crate::ui::AppState::RemoteSelect => app.remote_down(),
             crate::ui::AppState::MobileAuthFlow => app.mobile_flow_down(),
             crate::ui::AppState::BrowserSelect => app.browser_down(),
             crate::ui::AppState::FileList => app.file_down(),
@@ -1759,6 +2062,14 @@ fn handle_mouse_event(app: &mut App, area: ratatui::layout::Rect, mouse: MouseEv
                 if let Some(index) = list_index_from_click(list_area, mouse.row) {
                     if index < app.providers.len() {
                         app.provider_selected = index;
+                    }
+                }
+            }
+            crate::ui::AppState::RemoteSelect => {
+                let list_area = main_menu_list_area(area);
+                if let Some(index) = list_index_from_click(list_area, mouse.row) {
+                    if index < app.remote_options.len() {
+                        app.remote_selected = index;
                     }
                 }
             }
@@ -1990,11 +2301,11 @@ mod tests {
         let exited = handle_main_menu_enter(&mut app);
 
         assert!(!exited);
-        assert_eq!(app.state, crate::ui::AppState::MainMenu);
+        assert_eq!(app.state, crate::ui::AppState::ModeConfirm);
         assert_eq!(
             app.selected_action,
             Some(crate::ui::MenuAction::DownloadFromCsv)
         );
-        assert!(!app.menu_status.is_empty());
+        assert!(app.menu_status.is_empty());
     }
 }

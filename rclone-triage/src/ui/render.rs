@@ -9,7 +9,7 @@ use crate::ui::screens::{
     auth::AuthScreen, browser_select::BrowserSelectScreen, case_setup::CaseSetupScreen,
     download::DownloadScreen, files::FilesScreen, main_menu::MainMenuScreen,
     mode_confirm::ModeConfirmScreen,
-    provider_select::ProviderSelectScreen, report::ReportScreen,
+    provider_select::ProviderSelectScreen, remote_select::RemoteSelectScreen, report::ReportScreen,
 };
 use crate::ui::{App, AppState};
 
@@ -249,6 +249,35 @@ pub fn render_state(frame: &mut Frame, app: &App) {
                 frame.render_widget(help, overlay);
             }
         }
+        AppState::RemoteSelect => {
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Min(3), Constraint::Length(4)])
+                .split(area);
+            let screen =
+                RemoteSelectScreen::new(app.remote_options.clone(), app.remote_selected);
+            frame.render_widget(&screen, chunks[0]);
+
+            let provider_name = app
+                .chosen_provider
+                .as_ref()
+                .map(|p| p.display_name().to_string())
+                .unwrap_or_else(|| "Provider".to_string());
+            let status = if app.provider_status.is_empty() {
+                format!("Select a remote for {}.", provider_name)
+            } else {
+                app.provider_status.clone()
+            };
+            let controls =
+                "Up/Down select • Click select • Enter confirm • Backspace back • q quit".to_string();
+            let footer = Paragraph::new(vec![
+                Line::from(format!("Provider: {}", provider_name)),
+                Line::from(status),
+                Line::from(controls),
+            ])
+            .wrap(Wrap { trim: true });
+            frame.render_widget(footer, chunks[1]);
+        }
         AppState::MobileAuthFlow => {
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
@@ -471,6 +500,7 @@ mod tests {
             AppState::MainMenu,
             AppState::CaseSetup,
             AppState::ProviderSelect,
+            AppState::RemoteSelect,
             AppState::BrowserSelect,
             AppState::Authenticating,
             AppState::FileList,
@@ -482,6 +512,9 @@ mod tests {
                     let mut app = App::new();
                     app.state = state;
                     app.provider_selected = 0;
+                    if state == AppState::RemoteSelect {
+                        app.remote_options = vec!["Personal".to_string(), "Business".to_string()];
+                    }
                     render_state(f, &app);
                 })
                 .unwrap();
