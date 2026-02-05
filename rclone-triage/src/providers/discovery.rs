@@ -3,7 +3,7 @@
 //! Uses `rclone config providers --json` output to determine which backends
 //! are available, returning both known and unknown providers.
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use regex::RegexSet;
 use serde::Deserialize;
 use std::collections::HashSet;
@@ -193,38 +193,17 @@ pub fn providers_from_rclone_json(json: &str) -> Result<ProviderDiscoveryResult>
 
 /// Ask rclone for providers and return the full list.
 pub fn providers_from_rclone(runner: &RcloneRunner) -> Result<ProviderDiscoveryResult> {
-    let primary = runner.run(&["config", "providers", "--json"]);
-    if let Ok(output) = primary {
-        if output.success() {
-            if let Ok(result) = providers_from_rclone_json(&output.stdout_string()) {
-                return Ok(result);
-            }
-        }
-
-        let stderr = output.stderr_string();
-        let unknown_flag = stderr.contains("unknown flag")
-            || output
-                .stdout_string()
-                .to_lowercase()
-                .contains("unknown flag");
-
-        if !unknown_flag && output.success() {
-            anyhow::bail!(
-                "rclone config providers returned non-JSON output: {}",
-                stderr
-            );
-        }
-    }
-
-    let fallback = runner.run(&["config", "providers"])?;
-    if !fallback.success() {
-        anyhow::bail!(
+    let output = runner.run(&["config", "providers"])?;
+    if !output.success() {
+        bail!(
             "rclone config providers failed: {}",
-            fallback.stderr_string()
+            output.stderr_string()
         );
     }
 
-    providers_from_rclone_json(&fallback.stdout_string())
+    let stdout = output.stdout_string();
+    providers_from_rclone_json(&stdout)
+        .with_context(|| "rclone config providers did not return JSON output")
 }
 
 #[cfg(test)]
