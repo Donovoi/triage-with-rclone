@@ -31,18 +31,20 @@ use crate::providers::mobile::{
 use crate::providers::auth::user_identifier_from_config;
 use crate::providers::CloudProvider;
 use crate::rclone::oauth::DEFAULT_OAUTH_PORT;
+use crate::rclone::RcloneConfig;
 use crate::ui::screens::welcome::WelcomeScreen;
 use crate::ui::{render::render_state, App};
 use crate::utils::network::get_local_ip_address;
+use crate::utils::open_file_dialog;
 
-fn format_provider_stats(stats: &crate::providers::discovery::ProviderDiscoveryStats, kept: usize) -> String {
+fn format_provider_stats(
+    stats: &crate::providers::discovery::ProviderDiscoveryStats,
+    kept: usize,
+) -> String {
     let excluded = stats.excluded_total();
     let mut details = Vec::new();
     if stats.excluded_bad > 0 {
         details.push(format!("{} bad", stats.excluded_bad));
-    }
-    if stats.excluded_non_oauth > 0 {
-        details.push(format!("{} non-oauth", stats.excluded_non_oauth));
     }
     if stats.excluded_no_prefix > 0 {
         details.push(format!("{} no-prefix", stats.excluded_no_prefix));
@@ -51,13 +53,18 @@ fn format_provider_stats(stats: &crate::providers::discovery::ProviderDiscoveryS
         details.push(format!("{} duplicate", stats.excluded_duplicates));
     }
     let detail_text = if details.is_empty() {
-        "no exclusions".to_string()
+        "none".to_string()
     } else {
         details.join(", ")
     };
     format!(
-        "OAuth-capable: {} of {} ({} excluded: {}).",
-        kept, stats.total, excluded, detail_text
+        "Total: {} (shown {}, OAuth {}, non-oauth {}, excluded {}: {}).",
+        stats.total,
+        kept,
+        stats.oauth_capable,
+        stats.non_oauth,
+        excluded,
+        detail_text
     )
 }
 
@@ -67,7 +74,9 @@ fn apply_discovered_providers(
 ) {
     if !discovery.providers.is_empty() {
         let stats_summary = format_provider_stats(&discovery.stats, discovery.providers.len());
-        app.providers = discovery.providers;
+        let mut providers = discovery.providers;
+        crate::providers::ProviderEntry::sort_entries(&mut providers);
+        app.providers = providers;
         if app.provider_selected >= app.providers.len() {
             app.provider_selected = 0;
         }
@@ -1202,6 +1211,104 @@ fn perform_csv_download_flow<B: ratatui::backend::Backend>(
     Ok(())
 }
 
+fn perform_show_oauth_credentials(app: &mut App) -> Result<()> {
+    let mut selected_path: Option<PathBuf> = None;
+
+    if cfg!(windows) {
+        let initial_dir = app
+            .directories
+            .as_ref()
+            .map(|d| d.config.as_path());
+        match open_file_dialog(
+            Some("Select rclone config file"),
+            initial_dir,
+            Some("rclone.conf (*.conf)|*.conf|All Files (*.*)|*.*"),
+        ) {
+            Ok(Some(path)) => selected_path = Some(path),
+            Ok(None) => {
+                app.menu_status = "File selection cancelled.".to_string();
+                return Ok(());
+            }
+            Err(e) => {
+                app.menu_status = format!("File dialog failed: {}", e);
+                return Ok(());
+            }
+        }
+    } else {
+        if let Ok(path) = std::env::var("RCLONE_CONFIG") {
+            if !path.trim().is_empty() {
+                selected_path = Some(PathBuf::from(path));
+            }
+        }
+        if selected_path.is_none() {
+            if let Some(config_dir) = dirs::config_dir() {
+                let default_path = config_dir.join("rclone").join("rclone.conf");
+                if default_path.exists() {
+                    selected_path = Some(default_path);
+                }
+            }
+        }
+    }
+
+    let config_path = match selected_path {
+        Some(path) => path,
+        None => {
+            app.menu_status =
+                "No rclone config selected. Set RCLONE_CONFIG or run on Windows for file picker."
+                    .to_string();
+            return Ok(());
+        }
+    };
+
+    if !config_path.exists() {
+        app.menu_status = format!("Config file not found: {:?}", config_path);
+        return Ok(());
+    }
+
+    let config = RcloneConfig::open_existing(&config_path)?;
+    let parsed = config.parse()?;
+
+    let mut lines = Vec::new();
+    lines.push("OAuth Credentials".to_string());
+    lines.push(format!("Config: {:?}", config_path));
+    lines.push(String::new());
+
+    if parsed.remotes.is_empty() {
+        lines.push("No remotes found in config.".to_string());
+    } else {
+        for remote in parsed.remotes.iter() {
+            let creds = config.get_oauth_credentials(&remote.name)?;
+            lines.push(format!("Remote: {}", creds.remote_name));
+            lines.push(format!(
+                "Client ID: {}",
+                creds.client_id.as_deref().unwrap_or("<none>")
+            ));
+            lines.push(format!(
+                "Client Secret: {}",
+                creds.client_secret.as_deref().unwrap_or("<none>")
+            ));
+            lines.push(format!("Has Client ID: {}", creds.has_client_id));
+            lines.push(format!(
+                "Has Client Secret: {}",
+                creds.has_client_secret
+            ));
+            lines.push(format!(
+                "Custom Credentials: {}",
+                creds.is_using_custom_credentials
+            ));
+            lines.push(format!(
+                "Using Default rclone Credentials: {}",
+                creds.using_default_rclone_credentials
+            ));
+            lines.push(String::new());
+        }
+    }
+
+    app.report_lines = lines;
+    app.state = crate::ui::AppState::OAuthCredentials;
+    Ok(())
+}
+
 /// Perform the download flow
 fn perform_download_flow<B: ratatui::backend::Backend>(
     app: &mut App,
@@ -1631,6 +1738,14 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                                     crate::ui::MenuAction::ConfigureOAuth => {
                                         app.menu_status =
                                             "OAuth configuration is not yet available in the TUI.".to_string();
+                                    }
+                                    crate::ui::MenuAction::ShowOAuthCredentials => {
+                                        if let Err(e) = perform_show_oauth_credentials(app) {
+                                            app.menu_status = format!(
+                                                "Failed to load OAuth credentials: {}",
+                                                e
+                                            );
+                                        }
                                     }
                                     crate::ui::MenuAction::OneDriveMenu => {
                                         app.state = crate::ui::AppState::OneDriveMenu;

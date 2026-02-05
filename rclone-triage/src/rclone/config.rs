@@ -305,6 +305,15 @@ impl RcloneConfig {
         })
     }
 
+    /// Open an existing rclone config without creating a new file.
+    pub fn open_existing(config_path: impl AsRef<Path>) -> Result<Self> {
+        let config_path = config_path.as_ref();
+        if !config_path.exists() {
+            bail!("Config file not found: {:?}", config_path);
+        }
+        Self::new(config_path)
+    }
+
     /// Create a config in the system's rclone config directory
     pub fn in_default_location() -> Result<Self> {
         let config_dir = dirs::config_dir()

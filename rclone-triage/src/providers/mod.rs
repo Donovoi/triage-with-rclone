@@ -19,7 +19,9 @@ use std::str::FromStr;
 pub struct ProviderEntry {
     pub id: String,
     pub name: String,
+    pub description: Option<String>,
     pub known: Option<CloudProvider>,
+    pub oauth_capable: bool,
 }
 
 impl ProviderEntry {
@@ -27,16 +29,36 @@ impl ProviderEntry {
         &self.name
     }
 
+    pub fn description(&self) -> Option<&str> {
+        self.description.as_deref()
+    }
+
+    pub fn oauth_capable(&self) -> bool {
+        self.oauth_capable
+    }
+
     pub fn short_name(&self) -> &str {
         &self.id
     }
 
     pub fn from_known(provider: CloudProvider) -> Self {
+        let oauth_capable =
+            crate::providers::config::ProviderConfig::for_provider(provider).uses_oauth();
         Self {
             id: provider.rclone_type().to_string(),
             name: provider.display_name().to_string(),
+            description: None,
             known: Some(provider),
+            oauth_capable,
         }
+    }
+
+    pub fn sort_entries(entries: &mut Vec<ProviderEntry>) {
+        entries.sort_by(|a, b| {
+            let left = a.display_name().to_ascii_lowercase();
+            let right = b.display_name().to_ascii_lowercase();
+            left.cmp(&right).then_with(|| a.id.cmp(&b.id))
+        });
     }
 }
 
