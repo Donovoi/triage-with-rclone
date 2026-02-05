@@ -12,8 +12,9 @@ use super::mobile::{
 };
 use super::session::{browsers_with_sessions, BrowserSession, SessionExtractor};
 use super::{config::ProviderConfig, CloudProvider};
-use crate::rclone::{OAuthFlow, RcloneConfig, RcloneRunner};
+use crate::rclone::{authorize_fallback, OAuthFlow, RcloneConfig, RcloneRunner};
 use anyhow::{bail, Context, Result};
+use std::time::Duration;
 
 /// Result of authentication
 #[derive(Debug, Clone)]
@@ -123,6 +124,134 @@ pub fn user_identifier_from_config(
         .and_then(|u| u.best_identifier())
 }
 
+fn parse_redirect_host_port(redirect_uri: &str) -> Option<(String, u16)> {
+    let trimmed = redirect_uri.trim();
+    let stripped = trimmed
+        .strip_prefix("http://")
+        .or_else(|| trimmed.strip_prefix("https://"))?;
+    let host_port = stripped.split('/').next().unwrap_or(stripped);
+    if let Some((host, port_str)) = host_port.split_once(':') {
+        if let Ok(port) = port_str.parse::<u16>() {
+            return Some((host.to_string(), port));
+        }
+    }
+    Some((host_port.to_string(), crate::rclone::oauth::DEFAULT_OAUTH_PORT))
+}
+
+fn resolve_fallback_credentials(
+    provider: CloudProvider,
+    provider_config: &ProviderConfig,
+    client_id_from_url: Option<&str>,
+) -> (String, Option<String>) {
+    let custom = resolve_custom_oauth(provider);
+    let client_id = client_id_from_url
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| s.to_string())
+        .or_else(|| custom.as_ref().map(|c| c.client_id.clone()))
+        .unwrap_or_else(|| provider_config.oauth.client_id.to_string());
+
+    let mut client_secret = custom
+        .and_then(|c| {
+            if c.client_id.trim() == client_id {
+                c.client_secret
+            } else {
+                None
+            }
+        })
+        .filter(|s| !s.trim().is_empty());
+
+    if client_secret.is_none() {
+        let secret = provider_config.oauth.client_secret;
+        if !secret.trim().is_empty() {
+            client_secret = Some(secret.to_string());
+        }
+    }
+
+    (client_id, client_secret)
+}
+
+fn authenticate_with_authorize_fallback(
+    provider: CloudProvider,
+    rclone: &RcloneRunner,
+    config: &RcloneConfig,
+    remote_name: &str,
+) -> Result<AuthResult> {
+    let provider_config = ProviderConfig::for_provider(provider);
+    if !provider_config.uses_oauth() {
+        bail!(
+            "{} does not use OAuth. Fallback authorization is not supported.",
+            provider.display_name()
+        );
+    }
+
+    let fallback = authorize_fallback(rclone, provider.rclone_type(), Duration::from_secs(15))?;
+    let auth_url = fallback
+        .auth_url
+        .ok_or_else(|| anyhow::anyhow!("Fallback did not capture an auth URL"))?;
+
+    let redirect_uri = crate::rclone::oauth::extract_param(&auth_url, "redirect_uri")
+        .unwrap_or_else(|| OAuthFlow::new().redirect_uri());
+    let mut oauth = OAuthFlow::new();
+    if let Some((host, port)) = parse_redirect_host_port(&redirect_uri) {
+        oauth = oauth
+            .with_port(port)
+            .with_bind_host(host.clone())
+            .with_redirect_host(host);
+    }
+
+    let result = oauth
+        .run(&auth_url)
+        .with_context(|| format!("Fallback OAuth failed for {}", provider.display_name()))?;
+
+    let client_id_from_url =
+        crate::rclone::oauth::extract_param(&auth_url, "client_id");
+    let (client_id, client_secret) =
+        resolve_fallback_credentials(provider, &provider_config, client_id_from_url.as_deref());
+
+    let token_json = exchange_code_for_token(
+        provider_config.oauth.token_url,
+        &result.code,
+        &redirect_uri,
+        &client_id,
+        client_secret.as_deref(),
+    )?;
+    let token_str = serde_json::to_string(&token_json)?;
+
+    let mut options: Vec<(String, String)> = Vec::new();
+    for (key, value) in provider_config.rclone_options {
+        options.push(((*key).to_string(), (*value).to_string()));
+    }
+    if !client_id.trim().is_empty() {
+        options.push(("client_id".to_string(), client_id));
+    }
+    if let Some(secret) = client_secret {
+        if !secret.trim().is_empty() {
+            options.push(("client_secret".to_string(), secret));
+        }
+    }
+    options.push(("token".to_string(), token_str));
+
+    let options_ref: Vec<(&str, &str)> = options
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
+
+    config.set_remote(remote_name, provider.rclone_type(), &options_ref)?;
+    if !config.has_remote(remote_name)? {
+        bail!("Remote {} was not created", remote_name);
+    }
+
+    let user_identifier = user_identifier_from_config(provider, config, remote_name);
+
+    Ok(AuthResult {
+        provider,
+        remote_name: remote_name.to_string(),
+        user_info: user_identifier,
+        browser: None,
+        was_silent: false,
+    })
+}
+
 /// Authenticate to a cloud provider
 pub fn authenticate(
     provider: CloudProvider,
@@ -187,11 +316,24 @@ pub fn authenticate_with_rclone(
     let output = rclone.run(&args_ref)?;
 
     if !output.success() {
-        bail!(
-            "Failed to authenticate with {}: {}",
-            provider,
-            output.stderr_string()
-        );
+        let primary_error = output.stderr_string();
+        match authenticate_with_authorize_fallback(provider, rclone, config, remote_name) {
+            Ok(result) => {
+                tracing::warn!(
+                    "Interactive rclone auth failed for {}; fallback authorize succeeded",
+                    provider
+                );
+                return Ok(result);
+            }
+            Err(fallback_error) => {
+                bail!(
+                    "Failed to authenticate with {}: {} (fallback failed: {})",
+                    provider,
+                    primary_error,
+                    fallback_error
+                );
+            }
+        }
     }
 
     // Verify the remote was created
@@ -816,5 +958,16 @@ mod tests {
         };
         assert_eq!(status.provider, CloudProvider::GoogleDrive);
         assert!(!status.has_sessions);
+    }
+
+    #[test]
+    fn test_parse_redirect_host_port() {
+        let (host, port) = parse_redirect_host_port("http://127.0.0.1:53682/").unwrap();
+        assert_eq!(host, "127.0.0.1");
+        assert_eq!(port, 53682);
+
+        let (host, port) = parse_redirect_host_port("https://localhost:8888/callback").unwrap();
+        assert_eq!(host, "localhost");
+        assert_eq!(port, 8888);
     }
 }

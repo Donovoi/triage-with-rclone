@@ -39,6 +39,7 @@ pub enum AppState {
     Authenticating,
     FileList,
     Downloading,
+    OAuthCredentials,
     Complete,
 }
 
@@ -59,6 +60,7 @@ impl AppState {
             AppState::Authenticating => AppState::FileList,
             AppState::FileList => AppState::Downloading,
             AppState::Downloading => AppState::Complete,
+            AppState::OAuthCredentials => AppState::OAuthCredentials,
             AppState::Complete => AppState::Complete,
         }
     }
@@ -79,6 +81,7 @@ impl AppState {
             AppState::Authenticating => AppState::BrowserSelect,
             AppState::FileList => AppState::Authenticating,
             AppState::Downloading => AppState::FileList,
+            AppState::OAuthCredentials => AppState::AdditionalOptions,
             AppState::Complete => AppState::Downloading,
         }
     }
@@ -102,6 +105,7 @@ pub enum MenuAction {
     AdditionalOptions,
     UpdateTools,
     ConfigureOAuth,
+    ShowOAuthCredentials,
     OneDriveMenu,
     OpenOneDriveVault,
     BackToAdditionalOptions,
@@ -233,7 +237,8 @@ impl App {
         let additional_menu_items = Self::additional_menu_items();
         let onedrive_menu_items = Self::onedrive_menu_items();
         let mobile_flow_items = Self::mobile_flow_items();
-        let providers = CloudProvider::entries();
+        let mut providers = CloudProvider::entries();
+        ProviderEntry::sort_entries(&mut providers);
         let providers_len = providers.len();
         let provider_status = format!(
             "Using built-in providers ({}). Press 'r' to refresh.",
@@ -350,6 +355,11 @@ impl App {
                 label: "Configure OAuth Client Credentials",
                 description: "Enter custom OAuth credentials for rclone providers.",
                 action: MenuAction::ConfigureOAuth,
+            },
+            MenuItem {
+                label: "Show OAuth Credentials",
+                description: "View client ID/secret status for an existing rclone config.",
+                action: MenuAction::ShowOAuthCredentials,
             },
             MenuItem {
                 label: "OneDrive",

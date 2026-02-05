@@ -19,7 +19,7 @@ use rclone_triage::providers::credentials::upsert_custom_oauth_credentials;
 use rclone_triage::providers::CloudProvider;
 use rclone_triage::rclone::{start_web_gui, RcloneConfig, RcloneRunner};
 use rclone_triage::ui::App as TuiApp;
-use anyhow::Result;
+use anyhow::{bail, Result};
 use clap::Parser;
 use std::sync::{Arc, Mutex};
 
@@ -186,6 +186,34 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    if let Some(remote_name) = args.show_oauth_creds.clone() {
+        let config_path = resolve_rclone_config_path(&args)?;
+        let config = RcloneConfig::open_existing(&config_path)?;
+        let creds = config.get_oauth_credentials(&remote_name)?;
+
+        println!("Remote: {}", creds.remote_name);
+        println!("Config: {:?}", config_path);
+        println!(
+            "Client ID: {}",
+            creds.client_id.as_deref().unwrap_or("<none>")
+        );
+        println!(
+            "Client Secret: {}",
+            creds.client_secret.as_deref().unwrap_or("<none>")
+        );
+        println!("Has Client ID: {}", creds.has_client_id);
+        println!("Has Client Secret: {}", creds.has_client_secret);
+        println!(
+            "Is Using Custom Credentials: {}",
+            creds.is_using_custom_credentials
+        );
+        println!(
+            "Using Default rclone Credentials: {}",
+            creds.using_default_rclone_credentials
+        );
+        return Ok(());
+    }
+
     // Minimal auth + listing wiring (CLI-driven)
     if let Some(provider_name) = args.provider.clone() {
         let parsed: Result<CloudProvider, _> = provider_name.parse();
@@ -260,9 +288,37 @@ fn should_run_tui(args: &Cli) -> bool {
         || args.forensic_ap_status
         || args.onedrive_vault
         || args.set_oauth_creds.is_some()
+        || args.show_oauth_creds.is_some()
         || args.provider.is_some();
 
     !has_cli_action
+}
+
+fn resolve_rclone_config_path(args: &Cli) -> Result<std::path::PathBuf> {
+    if let Some(path) = args.rclone_config_path.as_ref() {
+        return Ok(std::path::PathBuf::from(path));
+    }
+
+    if let Ok(path) = std::env::var("RCLONE_CONFIG") {
+        let trimmed = path.trim();
+        if !trimmed.is_empty() {
+            return Ok(std::path::PathBuf::from(trimmed));
+        }
+    }
+
+    let case_path = args.output_dir.join("config").join("rclone.conf");
+    if case_path.exists() {
+        return Ok(case_path);
+    }
+
+    if let Some(config_dir) = dirs::config_dir() {
+        let default_path = config_dir.join("rclone").join("rclone.conf");
+        if default_path.exists() {
+            return Ok(default_path);
+        }
+    }
+
+    bail!("No rclone config file found. Use --rclone-config or set RCLONE_CONFIG.");
 }
 
 /// Ensures cleanup is run on drop
@@ -342,6 +398,14 @@ struct Cli {
     /// Override custom OAuth config path
     #[arg(long)]
     oauth_config_path: Option<String>,
+
+    /// Show OAuth credentials for a configured remote (no secrets printed)
+    #[arg(long)]
+    show_oauth_creds: Option<String>,
+
+    /// Override rclone config path for credential inspection
+    #[arg(long)]
+    rclone_config_path: Option<String>,
 
     /// Start rclone Web GUI (rcd --rc-web-gui)
     #[arg(long, default_value_t = false)]
@@ -444,6 +508,8 @@ mod tests {
             device_code: false,
             set_oauth_creds: None,
             oauth_config_path: None,
+            show_oauth_creds: None,
+            rclone_config_path: None,
             web_gui: false,
             web_gui_port: 5572,
             web_gui_user: None,
@@ -506,6 +572,13 @@ mod tests {
     fn test_should_run_tui_set_oauth_creds_false() {
         let mut args = default_cli();
         args.set_oauth_creds = Some("drive".to_string());
+        assert!(!should_run_tui(&args));
+    }
+
+    #[test]
+    fn test_should_run_tui_show_oauth_creds_false() {
+        let mut args = default_cli();
+        args.show_oauth_creds = Some("remote".to_string());
         assert!(!should_run_tui(&args));
     }
 }

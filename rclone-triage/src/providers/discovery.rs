@@ -16,6 +16,8 @@ use crate::rclone::RcloneRunner;
 struct RcloneProvider {
     #[serde(rename = "Name")]
     name: Option<String>,
+    #[serde(rename = "Description")]
+    description: Option<String>,
     #[serde(rename = "Prefix")]
     prefix: Option<String>,
     #[serde(rename = "Options")]
@@ -26,18 +28,15 @@ struct RcloneProvider {
 pub struct ProviderDiscoveryStats {
     pub total: usize,
     pub oauth_capable: usize,
+    pub non_oauth: usize,
     pub excluded_bad: usize,
     pub excluded_no_prefix: usize,
-    pub excluded_non_oauth: usize,
     pub excluded_duplicates: usize,
 }
 
 impl ProviderDiscoveryStats {
     pub fn excluded_total(&self) -> usize {
-        self.excluded_bad
-            + self.excluded_no_prefix
-            + self.excluded_non_oauth
-            + self.excluded_duplicates
+        self.excluded_bad + self.excluded_no_prefix + self.excluded_duplicates
     }
 }
 
@@ -138,6 +137,10 @@ pub fn providers_from_rclone_json(json: &str) -> Result<ProviderDiscoveryResult>
             .name
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
+        let description = provider
+            .description
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
 
         let id = match prefix {
             Some(p) => p,
@@ -162,13 +165,17 @@ pub fn providers_from_rclone_json(json: &str) -> Result<ProviderDiscoveryResult>
             continue;
         }
 
-        if !is_oauth_capable(provider.options.as_ref()) {
-            stats.excluded_non_oauth += 1;
-            continue;
+        let oauth_capable = is_oauth_capable(provider.options.as_ref());
+        if oauth_capable {
+            stats.oauth_capable += 1;
+        } else {
+            stats.non_oauth += 1;
         }
 
         let known = CloudProvider::from_str(&id).ok();
-        let display = if let Some(name) = name.clone() {
+        let display = if let Some(desc) = description.clone() {
+            desc
+        } else if let Some(name) = name.clone() {
             name
         } else if let Some(p) = known {
             p.display_name().to_string()
@@ -176,13 +183,15 @@ pub fn providers_from_rclone_json(json: &str) -> Result<ProviderDiscoveryResult>
             id.clone()
         };
 
+        let description = description.filter(|desc| desc.trim() != display);
+
         entries.push(ProviderEntry {
             id,
             name: display,
+            description,
             known,
+            oauth_capable,
         });
-
-        stats.oauth_capable += 1;
     }
 
     Ok(ProviderDiscoveryResult {
@@ -230,11 +239,12 @@ mod tests {
         assert!(entries.iter().any(|p| p.id == "onedrive"));
         assert!(entries.iter().any(|p| p.id == "dropbox"));
         assert!(entries.iter().any(|p| p.id == "box"));
-        assert!(!entries.iter().any(|p| p.id == "iclouddrive"));
+        assert!(entries.iter().any(|p| p.id == "iclouddrive"));
         assert!(entries.iter().any(|p| p.id == "pcloud"));
         assert!(entries.iter().any(|p| p.id == "gphotos"));
         assert_eq!(result.stats.total, 7);
-        assert_eq!(result.stats.oauth_capable, entries.len());
+        assert_eq!(result.stats.oauth_capable, 6);
+        assert_eq!(result.stats.non_oauth, 1);
     }
 
     #[test]
@@ -255,9 +265,9 @@ mod tests {
         assert!(entries.iter().any(|p| p.id == "s3"));
         assert!(!entries.iter().any(|p| p.id == "local"));
         assert!(!entries.iter().any(|p| p.id == "ftp"));
-        assert!(!entries.iter().any(|p| p.id == "mystery"));
+        assert!(entries.iter().any(|p| p.id == "mystery"));
         assert_eq!(result.stats.total, 5);
         assert_eq!(result.stats.excluded_bad, 2);
-        assert_eq!(result.stats.excluded_non_oauth, 1);
+        assert_eq!(result.stats.non_oauth, 1);
     }
 }

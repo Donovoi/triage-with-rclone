@@ -219,7 +219,7 @@ pub struct OAuthResult {
 }
 
 /// Extract a query parameter from a URL
-fn extract_param(url: &str, param: &str) -> Option<String> {
+pub(crate) fn extract_param(url: &str, param: &str) -> Option<String> {
     let query = url.split('?').nth(1)?;
     for part in query.split('&') {
         if let Some((key, value)) = part.split_once('=') {
@@ -251,7 +251,7 @@ fn urlencoded(s: &str) -> String {
 }
 
 /// Simple URL decoding
-fn urldecoded(s: &str) -> String {
+pub(crate) fn urldecoded(s: &str) -> String {
     let mut result = Vec::new();
     let mut chars = s.chars().peekable();
 

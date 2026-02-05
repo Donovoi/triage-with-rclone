@@ -198,16 +198,50 @@ pub fn render_state(frame: &mut Frame, app: &App) {
                 .unwrap_or("none");
             let show_status_panel = content_chunks[1].width >= 26 && content_chunks[1].height >= 6;
             if show_status_panel {
-                let help_lines = vec![
-                    Line::from(mode.clone()),
-                    Line::from(format!("Providers: {}", app.providers.len())),
-                    Line::from(format!("Last update: {}", last_update)),
-                    Line::from(format!("Last error: {}", last_error)),
-                    Line::from(format!("Status: {}", status)),
-                    Line::from("Tip: Press r to refresh from rclone."),
-                    Line::from("Tip: Press ? for provider help."),
-                    Line::from("Next: Enter confirms selection → browser/auth flow."),
-                ];
+                let mut help_lines = Vec::new();
+                help_lines.push(Line::from(mode.clone()));
+                if let Some(provider) = app.providers.get(app.provider_selected) {
+                    help_lines.push(Line::from(format!(
+                        "Selected: {}",
+                        provider.display_name()
+                    )));
+                    help_lines.push(Line::from(format!(
+                        "Backend: {}",
+                        provider.short_name()
+                    )));
+                    if let Some(desc) = provider.description() {
+                        help_lines.push(Line::from(format!("Description: {}", desc)));
+                    }
+                    let oauth = if provider.oauth_capable() {
+                        "Yes"
+                    } else {
+                        "No (manual config)"
+                    };
+                    help_lines.push(Line::from(format!("OAuth: {}", oauth)));
+                    if let Some(known) = provider.known {
+                        let hashes = known.hash_types();
+                        if hashes.is_empty() {
+                            help_lines.push(Line::from("Hashes: none".to_string()));
+                        } else {
+                            help_lines.push(Line::from(format!(
+                                "Hashes: {}",
+                                hashes.join(", ")
+                            )));
+                        }
+                    } else {
+                        help_lines.push(Line::from("Hashes: unknown".to_string()));
+                    }
+                    help_lines.push(Line::from(""));
+                }
+                help_lines.push(Line::from(format!("Providers: {}", app.providers.len())));
+                help_lines.push(Line::from(format!("Last update: {}", last_update)));
+                help_lines.push(Line::from(format!("Last error: {}", last_error)));
+                help_lines.push(Line::from(format!("Status: {}", status)));
+                help_lines.push(Line::from("Tip: Press r to refresh from rclone."));
+                help_lines.push(Line::from("Tip: Press ? for provider help."));
+                help_lines.push(Line::from(
+                    "Next: Enter confirms selection → browser/auth flow.",
+                ));
                 let help = Paragraph::new(help_lines)
                     .block(Block::default().title("Status").borders(Borders::ALL))
                     .wrap(Wrap { trim: true });
@@ -459,6 +493,15 @@ pub fn render_state(frame: &mut Frame, app: &App) {
             let screen = ReportScreen::new(lines);
             frame.render_widget(&screen, area);
         }
+        AppState::OAuthCredentials => {
+            let lines = if app.report_lines.is_empty() {
+                vec!["No OAuth credential data loaded.".to_string()]
+            } else {
+                app.report_lines.clone()
+            };
+            let screen = ReportScreen::new(lines);
+            frame.render_widget(&screen, area);
+        }
     }
 }
 
@@ -505,6 +548,7 @@ mod tests {
             AppState::Authenticating,
             AppState::FileList,
             AppState::Downloading,
+            AppState::OAuthCredentials,
             AppState::Complete,
         ] {
             terminal
