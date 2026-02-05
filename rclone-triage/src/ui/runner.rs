@@ -1582,7 +1582,7 @@ fn perform_download_flow<B: ratatui::backend::Backend>(
         // Add case metadata if available
         if let Some(ref case) = app.case {
             app.report_lines
-                .push(format!("Session: {}", case.session_id()));
+                .push(format!("Case: {}", case.session_id()));
             app.report_lines.push(format!(
                 "Started: {}",
                 case.start_time.format("%Y-%m-%d %H:%M:%S UTC")
@@ -1770,18 +1770,16 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                                     _ => {}
                                 }
                             }
-                        } else if app.state == crate::ui::AppState::CaseSetup {
-                            // Initialize case directories before moving to provider select
+                        } else if app.state == crate::ui::AppState::ModeConfirm {
                             let output_dir = std::env::current_dir()
                                 .unwrap_or_else(|_| std::path::PathBuf::from("."));
                             if let Err(e) = app.init_case(output_dir) {
                                 app.auth_status = format!("Failed to create case: {}", e);
+                                app.menu_status = format!("Failed to create case: {}", e);
                             } else {
-                                app.advance(); // Move to ProviderSelect
+                                app.state = crate::ui::AppState::ProviderSelect;
                                 try_refresh_providers(app);
                             }
-                        } else if app.state == crate::ui::AppState::ModeConfirm {
-                            app.state = crate::ui::AppState::CaseSetup;
                         } else if app.state == crate::ui::AppState::ProviderSelect {
                             app.confirm_provider();
                             if app.chosen_provider.is_none() {
@@ -1873,9 +1871,7 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                         }
                     }
                     KeyCode::Backspace => {
-                        if app.state == crate::ui::AppState::CaseSetup {
-                            app.input_backspace();
-                        } else if app.state == crate::ui::AppState::RemoteSelect {
+                        if app.state == crate::ui::AppState::RemoteSelect {
                             app.remote_options.clear();
                             app.remote_selected = 0;
                             app.back();
@@ -2058,7 +2054,7 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                         }
                     }
                     KeyCode::Tab => app.toggle_file_download(),
-                    KeyCode::Char(ch) => app.input_char(ch),
+                    KeyCode::Char(_ch) => {}
                         _ => {}
                     }
                 }

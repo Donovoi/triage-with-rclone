@@ -11,7 +11,6 @@ use crate::forensics::state::SystemStateSnapshot;
 use crate::providers::browser::Browser;
 use crate::providers::{CloudProvider, ProviderEntry};
 use crate::rclone::MountedRemote;
-use crate::ui::widgets::SessionInputForm;
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Local};
 use std::path::PathBuf;
@@ -31,7 +30,6 @@ pub enum AppState {
     AdditionalOptions,
     OneDriveMenu,
     ModeConfirm,
-    CaseSetup,
     ProviderSelect,
     RemoteSelect,
     MobileAuthFlow,
@@ -51,8 +49,7 @@ impl AppState {
             AppState::MainMenu => AppState::ModeConfirm,
             AppState::AdditionalOptions => AppState::AdditionalOptions,
             AppState::OneDriveMenu => AppState::OneDriveMenu,
-            AppState::ModeConfirm => AppState::CaseSetup,
-            AppState::CaseSetup => AppState::ProviderSelect,
+            AppState::ModeConfirm => AppState::ProviderSelect,
             AppState::ProviderSelect => AppState::BrowserSelect,
             AppState::RemoteSelect => AppState::RemoteSelect,
             AppState::MobileAuthFlow => AppState::Authenticating,
@@ -73,8 +70,7 @@ impl AppState {
             AppState::AdditionalOptions => AppState::MainMenu,
             AppState::OneDriveMenu => AppState::AdditionalOptions,
             AppState::ModeConfirm => AppState::MainMenu,
-            AppState::CaseSetup => AppState::MainMenu,
-            AppState::ProviderSelect => AppState::CaseSetup,
+            AppState::ProviderSelect => AppState::ModeConfirm,
             AppState::RemoteSelect => AppState::ProviderSelect,
             AppState::MobileAuthFlow => AppState::ProviderSelect,
             AppState::BrowserSelect => AppState::ProviderSelect,
@@ -152,8 +148,6 @@ pub struct App {
     /// Menu status message (shown in footer)
     pub menu_status: String,
     pub exit_requested: bool,
-    /// Session input form state
-    pub session_form: SessionInputForm,
     /// Case metadata
     pub case: Option<Case>,
     /// Case directory structure
@@ -260,7 +254,6 @@ impl App {
             mobile_auth_flow: None,
             menu_status: String::new(),
             exit_requested: false,
-            session_form: SessionInputForm::new(),
             case: None,
             directories: None,
             logger: None,
@@ -505,11 +498,13 @@ impl App {
             (self.mobile_flow_selected + 1) % self.mobile_flow_items.len();
     }
 
-    /// Initialize case and directories from session name
+    /// Initialize case and directories with an auto-generated case name.
     #[allow(dead_code)]
     pub fn init_case(&mut self, output_dir: PathBuf) -> Result<()> {
-        let session_name = &self.session_form.session_name;
-        let case = Case::new(session_name.clone(), output_dir)?;
+        if self.case.is_some() {
+            return Ok(());
+        }
+        let case = Case::new("", output_dir)?;
         let directories = crate::case::directory::create_case_directories(&case)?;
 
         // Track created directories
@@ -525,7 +520,7 @@ impl App {
         // Create forensic logger in logs directory
         let log_path = directories.logs.join("rclone-triage.log");
         let logger = ForensicLogger::new(&log_path)?;
-        logger.info(format!("Session started: {}", case.session_id()))?;
+        logger.info(format!("Case started: {}", case.session_id()))?;
 
         // Track log file creation
         self.track_file(&log_path, "Created forensic log file");
@@ -644,27 +639,6 @@ impl App {
     #[allow(dead_code)]
     pub fn back(&mut self) {
         self.state = self.state.previous();
-    }
-
-    /// Handle character input in the current state
-    #[allow(dead_code)]
-    pub fn input_char(&mut self, ch: char) {
-        if self.state != AppState::CaseSetup {
-            return;
-        }
-        // Allow any printable character for session name
-        if ch.is_ascii_graphic() || ch == ' ' {
-            self.session_form.session_name.push(ch);
-        }
-    }
-
-    /// Handle backspace in the current state
-    #[allow(dead_code)]
-    pub fn input_backspace(&mut self) {
-        if self.state != AppState::CaseSetup {
-            return;
-        }
-        self.session_form.session_name.pop();
     }
 
     /// Move provider selection up
@@ -1028,8 +1002,7 @@ impl App {
     pub fn is_valid_transition(from: AppState, to: AppState) -> bool {
         match (from, to) {
             (AppState::MainMenu, AppState::ModeConfirm) => true,
-            (AppState::ModeConfirm, AppState::CaseSetup) => true,
-            (AppState::CaseSetup, AppState::ProviderSelect) => true,
+            (AppState::ModeConfirm, AppState::ProviderSelect) => true,
             (AppState::ProviderSelect, AppState::BrowserSelect) => true,
             (AppState::ProviderSelect, AppState::RemoteSelect) => true,
             (AppState::RemoteSelect, AppState::ProviderSelect) => true,
@@ -1059,8 +1032,6 @@ mod tests {
         state = state.next();
         assert_eq!(state, AppState::ModeConfirm);
         state = state.next();
-        assert_eq!(state, AppState::CaseSetup);
-        state = state.next();
         assert_eq!(state, AppState::ProviderSelect);
         state = state.next();
         assert_eq!(state, AppState::BrowserSelect);
@@ -1086,20 +1057,6 @@ mod tests {
 
         app.back();
         assert_eq!(app.state, AppState::MainMenu);
-    }
-
-    #[test]
-    fn test_session_input_handling() {
-        let mut app = App::new();
-        app.state = AppState::CaseSetup;
-        app.input_char('m');
-        app.input_char('y');
-        app.input_char('-');
-        app.input_char('s');
-        assert_eq!(app.session_form.session_name, "my-s");
-
-        app.input_backspace();
-        assert_eq!(app.session_form.session_name, "my-");
     }
 
     #[test]
@@ -1169,10 +1126,6 @@ mod tests {
         ));
         assert!(App::is_valid_transition(
             AppState::ModeConfirm,
-            AppState::CaseSetup
-        ));
-        assert!(App::is_valid_transition(
-            AppState::CaseSetup,
             AppState::ProviderSelect
         ));
         assert!(App::is_valid_transition(
@@ -1184,7 +1137,7 @@ mod tests {
             AppState::BrowserSelect
         ));
         assert!(!App::is_valid_transition(
-            AppState::CaseSetup,
+            AppState::ModeConfirm,
             AppState::FileList
         ));
     }
@@ -1207,7 +1160,6 @@ mod tests {
     fn test_transition_validation() {
         let mut app = App::new();
         app.transition(AppState::ModeConfirm).unwrap();
-        app.transition(AppState::CaseSetup).unwrap();
         app.transition(AppState::ProviderSelect).unwrap();
         let result = app.transition(AppState::FileList);
         assert!(result.is_err());
@@ -1218,7 +1170,6 @@ mod tests {
         use tempfile::tempdir;
 
         let mut app = App::new();
-        app.session_form.session_name = "test-session".to_string();
 
         let temp_dir = tempdir().unwrap();
         app.init_case(temp_dir.path().to_path_buf()).unwrap();
@@ -1250,7 +1201,6 @@ mod tests {
         use tempfile::tempdir;
 
         let mut app = App::new();
-        app.session_form.session_name = "log-test".to_string();
 
         let temp_dir = tempdir().unwrap();
         app.init_case(temp_dir.path().to_path_buf()).unwrap();
