@@ -33,6 +33,7 @@ pub enum AppState {
     ModeConfirm,
     CaseSetup,
     ProviderSelect,
+    RemoteSelect,
     MobileAuthFlow,
     BrowserSelect,
     Authenticating,
@@ -52,6 +53,7 @@ impl AppState {
             AppState::ModeConfirm => AppState::CaseSetup,
             AppState::CaseSetup => AppState::ProviderSelect,
             AppState::ProviderSelect => AppState::BrowserSelect,
+            AppState::RemoteSelect => AppState::RemoteSelect,
             AppState::MobileAuthFlow => AppState::Authenticating,
             AppState::BrowserSelect => AppState::Authenticating,
             AppState::Authenticating => AppState::FileList,
@@ -71,6 +73,7 @@ impl AppState {
             AppState::ModeConfirm => AppState::MainMenu,
             AppState::CaseSetup => AppState::MainMenu,
             AppState::ProviderSelect => AppState::CaseSetup,
+            AppState::RemoteSelect => AppState::ProviderSelect,
             AppState::MobileAuthFlow => AppState::ProviderSelect,
             AppState::BrowserSelect => AppState::ProviderSelect,
             AppState::Authenticating => AppState::BrowserSelect,
@@ -185,6 +188,10 @@ pub struct App {
     pub chosen_browser: Option<Browser>,
     /// Chosen remote name from auth (may include browser prefix)
     pub chosen_remote: Option<String>,
+    /// Available remotes for selection
+    pub remote_options: Vec<String>,
+    /// Selected remote index
+    pub remote_selected: usize,
     /// Auth status message
     pub auth_status: String,
     /// File listing entries (paths only, for display)
@@ -205,6 +212,8 @@ pub struct App {
     pub download_total_bytes: Option<u64>,
     /// Bytes completed across downloads (if known)
     pub download_done_bytes: u64,
+    /// Files that failed to download (for retry)
+    pub download_failures: Vec<String>,
     /// Final report lines
     pub report_lines: Vec<String>,
     /// SSO status for currently selected provider
@@ -266,6 +275,8 @@ impl App {
             browser_checked: vec![false; browser_list.len() + 1],
             chosen_browser: None,
             chosen_remote: None,
+            remote_options: Vec::new(),
+            remote_selected: 0,
             auth_status: String::new(),
             file_entries: Vec::new(),
             file_entries_full: Vec::new(),
@@ -276,6 +287,7 @@ impl App {
             download_current_bytes: None,
             download_total_bytes: None,
             download_done_bytes: 0,
+            download_failures: Vec::new(),
             report_lines: Vec::new(),
             sso_status: None,
             mounted_remote: None,
@@ -713,6 +725,47 @@ impl App {
         }
         self.chosen_provider = Some(selected[0].clone());
         self.chosen_remote = None;
+        self.remote_options.clear();
+        self.remote_selected = 0;
+    }
+
+    /// Move remote selection up
+    #[allow(dead_code)]
+    pub fn remote_up(&mut self) {
+        if self.state != AppState::RemoteSelect || self.remote_options.is_empty() {
+            return;
+        }
+        if self.remote_selected == 0 {
+            self.remote_selected = self.remote_options.len() - 1;
+        } else {
+            self.remote_selected -= 1;
+        }
+    }
+
+    /// Move remote selection down
+    #[allow(dead_code)]
+    pub fn remote_down(&mut self) {
+        if self.state != AppState::RemoteSelect || self.remote_options.is_empty() {
+            return;
+        }
+        self.remote_selected = (self.remote_selected + 1) % self.remote_options.len();
+    }
+
+    /// Persist the chosen remote selection
+    #[allow(dead_code)]
+    pub fn confirm_remote(&mut self) -> Option<String> {
+        if self.remote_options.is_empty() {
+            self.provider_status = "No remotes available.".to_string();
+            return None;
+        }
+        if self.remote_selected >= self.remote_options.len() {
+            self.remote_selected = 0;
+        }
+        let remote = self.remote_options[self.remote_selected].clone();
+        self.chosen_remote = Some(remote.clone());
+        self.remote_options.clear();
+        self.remote_selected = 0;
+        Some(remote)
     }
 
     /// Refresh browser list and reset selection
@@ -968,6 +1021,8 @@ impl App {
             (AppState::ModeConfirm, AppState::CaseSetup) => true,
             (AppState::CaseSetup, AppState::ProviderSelect) => true,
             (AppState::ProviderSelect, AppState::BrowserSelect) => true,
+            (AppState::ProviderSelect, AppState::RemoteSelect) => true,
+            (AppState::RemoteSelect, AppState::ProviderSelect) => true,
             (AppState::BrowserSelect, AppState::Authenticating) => true,
             (AppState::Authenticating, AppState::FileList) => true,
             (AppState::FileList, AppState::Downloading) => true,
@@ -1109,6 +1164,10 @@ mod tests {
         assert!(App::is_valid_transition(
             AppState::CaseSetup,
             AppState::ProviderSelect
+        ));
+        assert!(App::is_valid_transition(
+            AppState::ProviderSelect,
+            AppState::RemoteSelect
         ));
         assert!(App::is_valid_transition(
             AppState::ProviderSelect,
