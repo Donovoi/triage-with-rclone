@@ -72,27 +72,36 @@ fn apply_discovered_providers(
     app: &mut App,
     discovery: crate::providers::discovery::ProviderDiscoveryResult,
 ) {
-    if !discovery.providers.is_empty() {
-        let stats_summary = format_provider_stats(&discovery.stats, discovery.providers.len());
-        let mut providers = discovery.providers;
+    // Keep:
+    // - known providers (even if OAuth isn't supported; these may be usable via manual config)
+    // - unknown providers only if they look auth-capable (to avoid clutter + flows that can't work)
+    let mut providers = discovery.providers;
+    providers.retain(|p| p.known.is_some() || p.oauth_capable());
+
+    if !providers.is_empty() {
+        let stats_summary = format_provider_stats(&discovery.stats, providers.len());
         crate::providers::ProviderEntry::sort_entries(&mut providers);
         app.providers = providers;
         if app.provider_selected >= app.providers.len() {
             app.provider_selected = 0;
         }
         app.provider_checked = vec![false; app.providers.len()];
-        app.provider_status = format!("Loaded {} providers from rclone. {}", app.providers.len(), stats_summary);
+        app.provider_status = format!(
+            "Loaded {} providers from rclone. {}",
+            app.providers.len(),
+            stats_summary
+        );
         record_provider_refresh(app, None);
     } else {
         let stats_summary = format_provider_stats(&discovery.stats, 0);
         app.provider_status = format!(
-            "No OAuth-capable providers found; using defaults. {}",
+            "No supported providers found; using defaults. {}",
             stats_summary
         );
-        app.log_info("No OAuth-capable providers found; using defaults");
+        app.log_info("No supported providers found; using defaults");
         record_provider_refresh(
             app,
-            Some("No OAuth-capable providers found.".to_string()),
+            Some("No supported providers found.".to_string()),
         );
     }
 }
