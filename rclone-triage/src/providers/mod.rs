@@ -53,7 +53,7 @@ impl ProviderEntry {
         }
     }
 
-    pub fn sort_entries(entries: &mut Vec<ProviderEntry>) {
+    pub fn sort_entries(entries: &mut [ProviderEntry]) {
         entries.sort_by(|a, b| {
             let left = a.display_name().to_ascii_lowercase();
             let right = b.display_name().to_ascii_lowercase();
