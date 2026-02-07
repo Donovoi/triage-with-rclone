@@ -34,6 +34,40 @@ impl From<&FileEntry> for CsvFileEntry {
     }
 }
 
+/// Streaming CSV writer for large listings.
+pub(crate) struct ListingCsvWriter {
+    writer: csv::Writer<std::fs::File>,
+}
+
+impl ListingCsvWriter {
+    pub(crate) fn create(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref();
+        let mut file = OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(path)
+            .with_context(|| format!("Failed to create CSV: {:?}", path))?;
+
+        // Write UTF-8 BOM for Excel
+        file.write_all(&[0xEF, 0xBB, 0xBF])?;
+
+        let writer = WriterBuilder::new().has_headers(true).from_writer(file);
+        Ok(Self { writer })
+    }
+
+    pub(crate) fn write_entry(&mut self, entry: &FileEntry) -> Result<()> {
+        let record = CsvFileEntry::from(entry);
+        self.writer.serialize(record)?;
+        Ok(())
+    }
+
+    pub(crate) fn flush(mut self) -> Result<()> {
+        self.writer.flush()?;
+        Ok(())
+    }
+}
+
 /// Export a listing to CSV with UTF-8 BOM for Excel compatibility
 pub fn export_listing(entries: &[FileEntry], path: impl AsRef<Path>) -> Result<()> {
     let path = path.as_ref();
