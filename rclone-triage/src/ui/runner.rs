@@ -14,6 +14,7 @@ use crossterm::terminal::{
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use chrono::Local;
+use serde::Serialize;
 use std::collections::HashSet;
 use std::io::stdout;
 use std::path::{Path, PathBuf};
@@ -23,10 +24,8 @@ use crate::forensics::{
     generate_password, render_wifi_qr, start_forensic_access_point, stop_forensic_access_point,
 };
 use crate::providers::config::ProviderConfig;
-use crate::providers::credentials::custom_oauth_credentials_for;
 use crate::providers::mobile::{
-    device_code_config, exchange_code_for_token, poll_device_code_for_token, render_qr_code,
-    request_device_code,
+    device_code_config, poll_device_code_for_token, render_qr_code, request_device_code,
 };
 use crate::providers::auth::user_identifier_from_config;
 use crate::providers::CloudProvider;
@@ -34,7 +33,6 @@ use crate::rclone::oauth::DEFAULT_OAUTH_PORT;
 use crate::rclone::RcloneConfig;
 use crate::ui::screens::welcome::WelcomeScreen;
 use crate::ui::{render::render_state, App};
-use crate::utils::network::get_local_ip_address;
 use crate::utils::open_file_dialog;
 
 fn format_provider_stats(
@@ -252,32 +250,6 @@ fn update_auth_status<B: ratatui::backend::Backend>(
     Ok(())
 }
 
-fn resolve_oauth_credentials(
-    provider: CloudProvider,
-    provider_config: &ProviderConfig,
-) -> (String, Option<String>) {
-    let custom = custom_oauth_credentials_for(provider).ok().flatten();
-    let client_id = custom
-        .as_ref()
-        .map(|c| c.client_id.as_str())
-        .unwrap_or(provider_config.oauth.client_id)
-        .to_string();
-    let client_secret = custom
-        .as_ref()
-        .and_then(|c| c.client_secret.clone())
-        .filter(|s| !s.trim().is_empty())
-        .or_else(|| {
-            let secret = provider_config.oauth.client_secret;
-            if secret.trim().is_empty() {
-                None
-            } else {
-                Some(secret.to_string())
-            }
-        });
-
-    (client_id, client_secret)
-}
-
 fn perform_mobile_auth_flow<B: ratatui::backend::Backend>(
     app: &mut App,
     terminal: &mut Terminal<B>,
@@ -377,29 +349,6 @@ fn perform_mobile_auth_flow<B: ratatui::backend::Backend>(
         }
         crate::ui::MobileAuthFlow::Redirect
         | crate::ui::MobileAuthFlow::RedirectWithAccessPoint => {
-            let (client_id, client_secret) = resolve_oauth_credentials(provider, &provider_config);
-            if client_id.trim().is_empty() {
-                bail!(
-                    "No OAuth client ID available for {}",
-                    provider.display_name()
-                );
-            }
-
-            let local_ip = get_local_ip_address()?
-                .ok_or_else(|| anyhow::anyhow!("Unable to determine local IP address"))?;
-
-            let oauth = crate::rclone::OAuthFlow::new()
-                .with_port(DEFAULT_OAUTH_PORT)
-                .with_timeout(Duration::from_secs(300))
-                .with_bind_host("0.0.0.0")
-                .with_redirect_host(local_ip.clone());
-
-            let auth_url = provider_config.build_auth_url_with_client_id(
-                &client_id,
-                &oauth.redirect_uri(),
-                None,
-            );
-
             let mut ap_info: Option<crate::forensics::ForensicAccessPointInfo> = None;
             if flow == crate::ui::MobileAuthFlow::RedirectWithAccessPoint {
                 let password = generate_password();
@@ -427,77 +376,27 @@ fn perform_mobile_auth_flow<B: ratatui::backend::Backend>(
                 }
             }
 
-            let result = (|| {
-                let mut lines = vec![
-                    format!("Mobile redirect authentication for {}", provider.display_name()),
-                    "Phone must be on the same network as this PC.".to_string(),
-                ];
-
+            let result = {
+                let mut prelude_lines: Vec<String> = Vec::new();
                 if let Some(ref info) = ap_info {
-                    lines.push(format!("Access Point SSID: {}", info.ssid));
-                    lines.push(format!("Access Point Password: {}", info.password));
-                    lines.push(format!("Access Point IP: {}", info.ip_address));
+                    prelude_lines.push(format!("Access Point SSID: {}", info.ssid));
+                    prelude_lines.push(format!("Access Point Password: {}", info.password));
+                    prelude_lines.push(format!("Access Point IP: {}", info.ip_address));
                     if let Ok(wifi_qr) = render_wifi_qr(&info.ssid, &info.password) {
-                        lines.push("WiFi QR:".to_string());
-                        lines.push(wifi_qr);
+                        prelude_lines.push("WiFi QR:".to_string());
+                        prelude_lines.push(wifi_qr);
                     }
                 }
 
-                lines.push(format!("Open on phone: {}", auth_url));
-                lines.push(format!("Callback: {}", oauth.redirect_uri()));
-
-                if let Ok(qr) = render_qr_code(&auth_url) {
-                    lines.push("Scan this QR code:".to_string());
-                    lines.push(qr);
-                }
-
-                lines.push("Waiting for authorization callback...".to_string());
-                update_auth_status(app, terminal, lines)?;
-
-                let result = oauth.wait_for_redirect()?;
-                let token_json = exchange_code_for_token(
-                    provider_config.oauth.token_url,
-                    &result.code,
-                    &oauth.redirect_uri(),
-                    &client_id,
-                    client_secret.as_deref(),
-                )?;
-                let token_str = serde_json::to_string(&token_json)?;
-
-                let mut options: Vec<(String, String)> = Vec::new();
-                for (key, value) in provider_config.rclone_options {
-                    options.push(((*key).to_string(), (*value).to_string()));
-                }
-                if !client_id.trim().is_empty() {
-                    options.push(("client_id".to_string(), client_id.clone()));
-                }
-                if let Some(secret) = client_secret.as_ref() {
-                    if !secret.trim().is_empty() {
-                        options.push(("client_secret".to_string(), secret.clone()));
-                    }
-                }
-                options.push(("token".to_string(), token_str));
-
-                let options_ref: Vec<(&str, &str)> = options
-                    .iter()
-                    .map(|(k, v)| (k.as_str(), v.as_str()))
-                    .collect();
-
-                config.set_remote(remote_name, provider.rclone_type(), &options_ref)?;
-                if !config.has_remote(remote_name)? {
-                    bail!("Remote {} was not created", remote_name);
-                }
-
-                let user_identifier = user_identifier_from_config(provider, config, remote_name);
-
-                Ok(crate::providers::auth::AuthResult {
+                crate::providers::auth::authenticate_with_mobile_redirect(
                     provider,
-                    remote_name: remote_name.to_string(),
-                    user_info: user_identifier,
-                    browser: None,
-                    was_silent: false,
-                })
-            })();
+                    config,
+                    remote_name,
+                    DEFAULT_OAUTH_PORT,
+                    prelude_lines,
+                    |lines| update_auth_status(app, terminal, lines),
+                )
+            };
 
             if ap_info.is_some() {
                 let _ = stop_forensic_access_point(true);
@@ -746,40 +645,123 @@ fn perform_auth_flow<B: ratatui::backend::Backend>(
                 })
             }
         } else {
-            if mobile_flow.is_some() {
-                bail!("Mobile authentication is only supported for known OAuth providers");
-            }
-            app.auth_status = format!("Authenticating {}...", provider.display_name());
-            app.log_info(format!(
-                "Using generic rclone auth for {}",
-                provider.display_name()
-            ));
-            terminal.draw(|f| render_state(f, app))?;
-
+            // Unknown provider: best-effort OAuth via `rclone authorize <backend>`.
+            // This supports most rclone OAuth backends without needing provider-specific endpoints.
             let base = provider.short_name();
             let remote_name = config.next_available_remote_name(base)?;
             fallback_base = Some(base.to_string());
             fallback_remote = Some(remote_name.clone());
 
-            let args = ["config", "create", remote_name.as_str(), provider.short_name()];
-            let output = runner.run(&args)?;
-            if !output.success() {
-                anyhow::bail!(
-                    "Failed to authenticate with {}: {}",
-                    provider.display_name(),
-                    output.stderr_string()
+            let backend = provider.short_name().to_string();
+
+            if mobile_flow.is_some() {
+                app.auth_status = format!(
+                    "Mobile auth for {} (rclone authorize)...\n\n1) Open the URL on your phone\n2) After login, copy the redirected URL (it may fail to load)\n3) Paste it back when prompted",
+                    provider.display_name()
                 );
-            }
+                terminal.draw(|f| render_state(f, app))?;
 
-            if !config.has_remote(&remote_name)? {
-                anyhow::bail!("Remote {} was not created", remote_name);
-            }
+                let mut running =
+                    crate::rclone::authorize::spawn_authorize(&runner, &backend, true)?;
+                let auth_url = running
+                    .wait_for_auth_url(Duration::from_secs(20))?
+                    .ok_or_else(|| anyhow::anyhow!("rclone authorize did not produce an auth URL"))?;
 
-            Ok(AuthOutcome {
-                remote_name: remote_name.to_string(),
-                user_info: None,
-                was_silent: false,
-            })
+                let mut lines = Vec::new();
+                lines.push(format!(
+                    "Mobile authorization for {} (backend: {})",
+                    provider.display_name(),
+                    backend
+                ));
+                lines.push(format!("Open on phone: {}", auth_url));
+                if let Ok(qr) = render_qr_code(&auth_url) {
+                    lines.push("Scan this QR code:".to_string());
+                    lines.push(qr);
+                }
+                lines.push(String::new());
+                lines.push(
+                    "After login, copy/paste the final redirect URL here (or paste only the code)."
+                        .to_string(),
+                );
+                update_auth_status(app, terminal, lines)?;
+
+                let pasted = prompt_line_outside_tui(
+                    terminal,
+                    "Paste redirect URL (or code) then press Enter:\n> ",
+                )?;
+                let cb = crate::rclone::authorize::parse_authorize_callback_input(&pasted)?;
+
+                let redirect_uri = running
+                    .redirect_uri()
+                    .ok_or_else(|| anyhow::anyhow!("Missing redirect_uri in authorize output"))?;
+                let state = cb.state.as_deref().or(running.expected_state());
+
+                crate::rclone::authorize::send_local_authorize_callback(
+                    redirect_uri,
+                    &cb.code,
+                    state,
+                )?;
+
+                let finished = running.wait(Some(Duration::from_secs(300)))?;
+                if finished.timed_out {
+                    bail!("rclone authorize timed out waiting for completion");
+                }
+                let token = finished
+                    .token_json
+                    .ok_or_else(|| anyhow::anyhow!("Failed to extract token JSON from rclone output"))?;
+
+                config.set_remote(&remote_name, &finished.backend, &[("token", token.as_str())])?;
+                if !config.has_remote(&remote_name)? {
+                    bail!("Remote {} was not created", remote_name);
+                }
+
+                Ok(AuthOutcome {
+                    remote_name,
+                    user_info: None,
+                    was_silent: false,
+                })
+            } else {
+                app.auth_status = format!(
+                    "Authenticating {} (rclone authorize)...",
+                    provider.display_name()
+                );
+                app.log_info(format!(
+                    "Using rclone authorize for unknown backend {}",
+                    backend
+                ));
+                terminal.draw(|f| render_state(f, app))?;
+
+                let mut running =
+                    crate::rclone::authorize::spawn_authorize(&runner, &backend, false)?;
+                // Best-effort: capture and display the URL if rclone printed it.
+                let _ = running.wait_for_auth_url(Duration::from_secs(10))?;
+
+                let finished = running.wait(Some(Duration::from_secs(300)))?;
+                if finished.timed_out {
+                    bail!("rclone authorize timed out waiting for completion");
+                }
+                if finished.status != 0 {
+                    bail!(
+                        "rclone authorize failed (exit {}): {}",
+                        finished.status,
+                        finished.stderr.join("\n")
+                    );
+                }
+
+                let token = finished
+                    .token_json
+                    .ok_or_else(|| anyhow::anyhow!("Failed to extract token JSON from rclone output"))?;
+                config.set_remote(&remote_name, &finished.backend, &[("token", token.as_str())])?;
+                if !config.has_remote(&remote_name)? {
+                    bail!("Remote {} was not created", remote_name);
+                }
+
+                Ok(AuthOutcome {
+                    remote_name,
+                    user_info: None,
+                    was_silent: false,
+                })
+            }
         };
         terminal.draw(|f| render_state(f, app))?;
 
@@ -1098,7 +1080,7 @@ fn perform_mount_flow<B: ratatui::backend::Backend>(
         None => return Ok(()),
     };
 
-    let manager = match crate::rclone::MountManager::new(binary.path()) {
+    let mut manager = match crate::rclone::MountManager::new(binary.path()) {
         Ok(manager) => manager.with_config(config.path()),
         Err(e) => {
             app.provider_status = format!("Mount failed: {}", e);
@@ -1106,6 +1088,34 @@ fn perform_mount_flow<B: ratatui::backend::Backend>(
             return Ok(());
         }
     };
+
+    // Keep mount points and caches inside the case directory to reduce system footprint.
+    if let Some(ref dirs) = app.directories {
+        let mount_base = dirs.base.join("mounts");
+        let cache_dir = dirs.base.join("cache").join("rclone");
+
+        if let Err(e) = std::fs::create_dir_all(&mount_base) {
+            app.provider_status = format!("Mount failed (mount dir): {}", e);
+            app.log_error(format!(
+                "Mount failed (mount dir {:?}): {}",
+                mount_base, e
+            ));
+            return Ok(());
+        }
+        app.track_file(&mount_base, "Created mount base directory inside case");
+
+        if let Err(e) = std::fs::create_dir_all(&cache_dir) {
+            app.provider_status = format!("Mount failed (cache dir): {}", e);
+            app.log_error(format!(
+                "Mount failed (cache dir {:?}): {}",
+                cache_dir, e
+            ));
+            return Ok(());
+        }
+        app.track_file(&cache_dir, "Created rclone cache directory inside case");
+
+        manager = manager.with_mount_base(&mount_base).with_cache_dir(&cache_dir);
+    }
 
     app.provider_status = format!("Mounting {}...", remote_name);
     terminal.draw(|f| render_state(f, app))?;
@@ -1318,6 +1328,270 @@ fn perform_show_oauth_credentials(app: &mut App) -> Result<()> {
     Ok(())
 }
 
+#[derive(Debug, Serialize)]
+struct ExportedBrowserSessions {
+    tool: &'static str,
+    version: &'static str,
+    captured_at: String,
+    sessions: Vec<ExportedBrowserSession>,
+    errors: Vec<ExportedBrowserSessionError>,
+}
+
+#[derive(Debug, Serialize)]
+struct ExportedBrowserSession {
+    provider_id: String,
+    provider_name: String,
+    browser_type: crate::providers::browser::BrowserType,
+    browser_name: String,
+    browser_profile_path: Option<PathBuf>,
+    browser_executable_path: Option<PathBuf>,
+    browser_is_default: bool,
+    is_valid: bool,
+    user_hint: Option<String>,
+    cookies: Vec<crate::providers::session::Cookie>,
+}
+
+#[derive(Debug, Serialize)]
+struct ExportedBrowserSessionError {
+    provider_id: String,
+    provider_name: String,
+    browser_type: crate::providers::browser::BrowserType,
+    browser_name: String,
+    error: String,
+}
+
+fn perform_export_browser_sessions(app: &mut App) -> Result<()> {
+    if app.case.is_none() || app.directories.is_none() {
+        let output_dir =
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        app.init_case(output_dir)?;
+    }
+
+    let dirs = match app.directories.as_ref() {
+        Some(d) => d,
+        None => bail!("Case directories not initialized"),
+    };
+
+    let ts = Local::now().format("%Y%m%d-%H%M%S").to_string();
+    let out_path = dirs
+        .listings
+        .join(format!("browser_sessions_{}.json", ts));
+
+    let extractor = crate::providers::session::SessionExtractor::new()?;
+    let browsers = crate::providers::browser::BrowserDetector::detect_all();
+
+    let mut sessions = Vec::new();
+    let mut errors = Vec::new();
+
+    for provider in CloudProvider::all() {
+        for browser in &browsers {
+            match extractor.extract_session(browser, *provider) {
+                Ok(session) => {
+                    if session.cookies.is_empty() {
+                        continue;
+                    }
+                    sessions.push(ExportedBrowserSession {
+                        provider_id: provider.rclone_type().to_string(),
+                        provider_name: provider.display_name().to_string(),
+                        browser_type: browser.browser_type,
+                        browser_name: browser.display_name().to_string(),
+                        browser_profile_path: browser.profile_path.clone(),
+                        browser_executable_path: browser.executable_path.clone(),
+                        browser_is_default: browser.is_default,
+                        is_valid: session.is_valid,
+                        user_hint: session.user_hint.clone(),
+                        cookies: session.cookies.clone(),
+                    });
+                }
+                Err(e) => {
+                    errors.push(ExportedBrowserSessionError {
+                        provider_id: provider.rclone_type().to_string(),
+                        provider_name: provider.display_name().to_string(),
+                        browser_type: browser.browser_type,
+                        browser_name: browser.display_name().to_string(),
+                        error: e.to_string(),
+                    });
+                }
+            }
+        }
+    }
+
+    let payload = ExportedBrowserSessions {
+        tool: "rclone-triage",
+        version: env!("CARGO_PKG_VERSION"),
+        captured_at: Local::now().to_rfc3339(),
+        sessions,
+        errors,
+    };
+
+    let json = serde_json::to_string_pretty(&payload)?;
+    std::fs::write(&out_path, json)?;
+
+    app.track_file(&out_path, "Exported browser session cookies");
+    app.log_info(format!("Exported browser sessions to {:?}", out_path));
+    app.menu_status = format!(
+        "Exported {} session(s) to {:?}",
+        payload.sessions.len(),
+        out_path
+    );
+
+    Ok(())
+}
+
+fn prompt_line_outside_tui<B: ratatui::backend::Backend>(
+    terminal: &mut Terminal<B>,
+    prompt: &str,
+) -> Result<String> {
+    disable_raw_mode()?;
+    let mut out = stdout();
+    execute!(out, DisableMouseCapture, LeaveAlternateScreen)?;
+
+    use std::io::{self, Write};
+    out.write_all(prompt.as_bytes())?;
+    out.flush()?;
+
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+    let trimmed = input.trim().to_string();
+
+    execute!(out, EnterAlternateScreen, EnableMouseCapture)?;
+    enable_raw_mode()?;
+    terminal.clear()?;
+
+    Ok(trimmed)
+}
+
+#[derive(Debug, Serialize)]
+struct ExportedDomainCookies {
+    tool: &'static str,
+    version: &'static str,
+    captured_at: String,
+    domain_patterns: Vec<String>,
+    results: Vec<ExportedDomainCookiesBrowser>,
+    errors: Vec<ExportedDomainCookiesError>,
+}
+
+#[derive(Debug, Serialize)]
+struct ExportedDomainCookiesBrowser {
+    browser_type: crate::providers::browser::BrowserType,
+    browser_name: String,
+    browser_profile_path: Option<PathBuf>,
+    browser_executable_path: Option<PathBuf>,
+    browser_is_default: bool,
+    cookies: Vec<crate::providers::session::Cookie>,
+}
+
+#[derive(Debug, Serialize)]
+struct ExportedDomainCookiesError {
+    browser_type: crate::providers::browser::BrowserType,
+    browser_name: String,
+    error: String,
+}
+
+fn parse_domain_patterns(raw: &str) -> Vec<String> {
+    raw.split(',')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .collect()
+}
+
+fn perform_export_domain_cookies<B: ratatui::backend::Backend>(
+    app: &mut App,
+    terminal: &mut Terminal<B>,
+) -> Result<()> {
+    if app.case.is_none() || app.directories.is_none() {
+        let output_dir =
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        app.init_case(output_dir)?;
+    }
+
+    let dirs = match app.directories.as_ref() {
+        Some(d) => d,
+        None => bail!("Case directories not initialized"),
+    };
+
+    let patterns = std::env::var("RCLONE_TRIAGE_COOKIE_DOMAINS")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .map(|s| parse_domain_patterns(&s))
+        .unwrap_or_default();
+
+    let domain_patterns = if !patterns.is_empty() {
+        patterns
+    } else {
+        let raw = prompt_line_outside_tui(
+            terminal,
+            "Enter cookie domain patterns (comma-separated; '*' allowed). Empty to cancel:\n> ",
+        )?;
+        let parsed = parse_domain_patterns(&raw);
+        if parsed.is_empty() {
+            bail!("No domain patterns provided");
+        }
+        parsed
+    };
+
+    let ts = Local::now().format("%Y%m%d-%H%M%S").to_string();
+    let out_path = dirs
+        .listings
+        .join(format!("domain_cookies_{}.json", ts));
+
+    let extractor = crate::providers::session::SessionExtractor::new()?;
+    let browsers = crate::providers::browser::BrowserDetector::detect_all();
+
+    let mut results = Vec::new();
+    let mut errors = Vec::new();
+
+    for browser in &browsers {
+        match extractor.extract_domain_cookies(browser, &domain_patterns) {
+            Ok(cookies) => {
+                if cookies.is_empty() {
+                    continue;
+                }
+                results.push(ExportedDomainCookiesBrowser {
+                    browser_type: browser.browser_type,
+                    browser_name: browser.display_name().to_string(),
+                    browser_profile_path: browser.profile_path.clone(),
+                    browser_executable_path: browser.executable_path.clone(),
+                    browser_is_default: browser.is_default,
+                    cookies,
+                });
+            }
+            Err(e) => {
+                errors.push(ExportedDomainCookiesError {
+                    browser_type: browser.browser_type,
+                    browser_name: browser.display_name().to_string(),
+                    error: e.to_string(),
+                });
+            }
+        }
+    }
+
+    let payload = ExportedDomainCookies {
+        tool: "rclone-triage",
+        version: env!("CARGO_PKG_VERSION"),
+        captured_at: Local::now().to_rfc3339(),
+        domain_patterns: domain_patterns.clone(),
+        results,
+        errors,
+    };
+
+    let json = serde_json::to_string_pretty(&payload)?;
+    std::fs::write(&out_path, json)?;
+
+    app.track_file(&out_path, "Exported domain cookies");
+    app.log_info(format!("Exported domain cookies to {:?}", out_path));
+    app.menu_status = format!(
+        "Exported {} cookie set(s) for {} pattern(s) to {:?}",
+        payload.results.len(),
+        payload.domain_patterns.len(),
+        out_path
+    );
+
+    Ok(())
+}
+
 /// Perform the download flow
 fn perform_download_flow<B: ratatui::backend::Backend>(
     app: &mut App,
@@ -1481,10 +1755,22 @@ fn perform_download_flow<B: ratatui::backend::Backend>(
                         ));
                     }
                     None => {
-                        app.log_info(format!(
-                            "Downloaded: {} ({} bytes) - no hash available",
-                            file, size
-                        ));
+                        if app.get_file_entry(file).and_then(|e| e.hash.clone()).is_some() {
+                            app.log_info(format!(
+                                "Downloaded: {} ({} bytes) - hash verification skipped: {}",
+                                file,
+                                size,
+                                result
+                                    .hash_error
+                                    .as_deref()
+                                    .unwrap_or("unknown reason")
+                            ));
+                        } else {
+                            app.log_info(format!(
+                                "Downloaded: {} ({} bytes) - provider did not supply a hash",
+                                file, size
+                            ));
+                        }
                     }
                 }
 
@@ -1499,6 +1785,8 @@ fn perform_download_flow<B: ratatui::backend::Backend>(
                         size,
                         hash: result.hash.clone(),
                         hash_type: result.hash_type.clone(),
+                        hash_verified: result.hash_verified,
+                        hash_error: result.hash_error.clone(),
                     });
                 }
             } else {
@@ -1756,6 +2044,18 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                                             );
                                         }
                                     }
+                                    crate::ui::MenuAction::ExportBrowserSessions => {
+                                        if let Err(e) = perform_export_browser_sessions(app) {
+                                            app.menu_status =
+                                                format!("Failed to export browser sessions: {}", e);
+                                        }
+                                    }
+                                    crate::ui::MenuAction::ExportDomainCookies => {
+                                        if let Err(e) = perform_export_domain_cookies(app, &mut terminal) {
+                                            app.menu_status =
+                                                format!("Failed to export domain cookies: {}", e);
+                                        }
+                                    }
                                     crate::ui::MenuAction::OneDriveMenu => {
                                         app.state = crate::ui::AppState::OneDriveMenu;
                                     }
@@ -1990,13 +2290,39 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                                 continue;
                             };
 
-                            let manager = match crate::rclone::MountManager::new(binary.path()) {
+                            let mut manager = match crate::rclone::MountManager::new(binary.path()) {
                                 Ok(manager) => manager.with_config(config.path()),
                                 Err(e) => {
                                     app.log_error(format!("Mount failed: {}", e));
                                     continue;
                                 }
                             };
+
+                            // Keep mount points and caches inside the case directory to reduce system footprint.
+                            if let Some(ref dirs) = app.directories {
+                                let mount_base = dirs.base.join("mounts");
+                                let cache_dir = dirs.base.join("cache").join("rclone");
+
+                                if let Err(e) = std::fs::create_dir_all(&mount_base) {
+                                    app.log_error(format!(
+                                        "Mount failed (mount dir {:?}): {}",
+                                        mount_base, e
+                                    ));
+                                    continue;
+                                }
+                                app.track_file(&mount_base, "Created mount base directory inside case");
+
+                                if let Err(e) = std::fs::create_dir_all(&cache_dir) {
+                                    app.log_error(format!(
+                                        "Mount failed (cache dir {:?}): {}",
+                                        cache_dir, e
+                                    ));
+                                    continue;
+                                }
+                                app.track_file(&cache_dir, "Created rclone cache directory inside case");
+
+                                manager = manager.with_mount_base(&mount_base).with_cache_dir(&cache_dir);
+                            }
 
                             match manager.mount_and_explore(&remote_name, None) {
                                 Ok(mounted) => {

@@ -13,6 +13,7 @@ use super::mobile::{
 use super::session::{browsers_with_sessions, BrowserSession, SessionExtractor};
 use super::{config::ProviderConfig, CloudProvider};
 use crate::rclone::{authorize_fallback, OAuthFlow, RcloneConfig, RcloneRunner};
+use crate::utils::network::get_local_ip_address;
 use anyhow::{bail, Context, Result};
 use std::time::Duration;
 
@@ -189,6 +190,8 @@ fn authenticate_with_authorize_fallback(
         .auth_url
         .ok_or_else(|| anyhow::anyhow!("Fallback did not capture an auth URL"))?;
 
+    let auth_url = ensure_oauth_url_has_state(&auth_url);
+
     let redirect_uri = crate::rclone::oauth::extract_param(&auth_url, "redirect_uri")
         .unwrap_or_else(|| OAuthFlow::new().redirect_uri());
     let mut oauth = OAuthFlow::new();
@@ -272,7 +275,8 @@ pub fn authenticate(
     // Run OAuth flow
     let oauth = OAuthFlow::new();
     let redirect_uri = oauth.redirect_uri();
-    let auth_url = provider_config.build_auth_url(&redirect_uri, None);
+    let state = OAuthFlow::generate_state();
+    let auth_url = provider_config.build_auth_url(&redirect_uri, Some(&state));
 
     println!("Opening browser for {} authentication...", provider);
     let _result = oauth
@@ -364,6 +368,26 @@ pub fn authenticate_with_mobile(
     remote_name: &str,
     port: u16,
 ) -> Result<AuthResult> {
+    authenticate_with_mobile_redirect(provider, config, remote_name, port, Vec::new(), |lines| {
+        for line in lines {
+            println!("{}", line);
+        }
+        Ok(())
+    })
+}
+
+/// Authenticate using a mobile device (QR code + LAN callback), with caller-controlled status output.
+pub fn authenticate_with_mobile_redirect<F>(
+    provider: CloudProvider,
+    config: &RcloneConfig,
+    remote_name: &str,
+    port: u16,
+    prelude_lines: Vec<String>,
+    mut status: F,
+) -> Result<AuthResult>
+where
+    F: FnMut(Vec<String>) -> Result<()>,
+{
     let provider_config = ProviderConfig::for_provider(provider);
 
     if !provider_config.uses_oauth() {
@@ -391,20 +415,43 @@ pub fn authenticate_with_mobile(
             }
         });
 
-    let oauth = OAuthFlow::new().with_port(port);
-    let redirect_uri = oauth.redirect_uri();
-    let auth_url = provider_config.build_auth_url_with_client_id(client_id, &redirect_uri, None);
-    let qr = render_qr_code(&auth_url)?;
+    let local_ip = get_local_ip_address()?
+        .ok_or_else(|| anyhow::anyhow!("Unable to determine local IP address"))?;
 
-    println!("Open this URL on your mobile device to authenticate:");
-    println!("{}", auth_url);
-    println!("\nScan this QR code:");
-    println!("{}", qr);
-    println!("Waiting for authorization callback...");
+    let oauth = OAuthFlow::new()
+        .with_port(port)
+        .with_timeout(Duration::from_secs(300))
+        .with_bind_host("0.0.0.0")
+        .with_redirect_host(local_ip.clone());
+
+    let redirect_uri = oauth.redirect_uri();
+    let state = OAuthFlow::generate_state();
+    let auth_url = provider_config.build_auth_url_with_client_id(
+        client_id,
+        &redirect_uri,
+        Some(&state),
+    );
+
+    let mut lines = prelude_lines;
+    lines.push(format!(
+        "Mobile redirect authentication for {}",
+        provider.display_name()
+    ));
+    lines.push("Phone must be on the same network as this PC.".to_string());
+    lines.push(format!("Open on phone: {}", auth_url));
+    lines.push(format!("Callback: {}", redirect_uri));
+    if let Ok(qr) = render_qr_code(&auth_url) {
+        lines.push("Scan this QR code:".to_string());
+        lines.push(qr);
+    }
+    lines.push("Waiting for authorization callback...".to_string());
+    status(lines)?;
 
     let result = oauth
-        .wait_for_redirect()
+        .wait_for_redirect_with_state(Some(&state))
         .with_context(|| format!("OAuth authentication failed for {}", provider))?;
+
+    status(vec!["Authorization received. Exchanging token...".to_string()])?;
 
     let token_json = exchange_code_for_token(
         provider_config.oauth.token_url,
@@ -440,6 +487,8 @@ pub fn authenticate_with_mobile(
 
     let user_identifier = user_identifier_from_config(provider, config, remote_name);
 
+    status(vec![format!("Remote '{}' configured.", remote_name)])?;
+
     Ok(AuthResult {
         provider,
         remote_name: remote_name.to_string(),
@@ -447,6 +496,22 @@ pub fn authenticate_with_mobile(
         browser: None,
         was_silent: false,
     })
+}
+
+fn ensure_oauth_url_has_state(auth_url: &str) -> String {
+    if crate::rclone::oauth::extract_param(auth_url, "state").is_some() {
+        return auth_url.to_string();
+    }
+
+    let state = OAuthFlow::generate_state();
+    let (before_fragment, fragment) = auth_url.split_once('#').unwrap_or((auth_url, ""));
+    let sep = if before_fragment.contains('?') { "&" } else { "?" };
+    let mut out = format!("{}{}state={}", before_fragment, sep, state);
+    if !fragment.is_empty() {
+        out.push('#');
+        out.push_str(fragment);
+    }
+    out
 }
 
 /// Authenticate using device code flow (for providers that support it).

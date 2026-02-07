@@ -18,10 +18,15 @@ use rclone_triage::providers::auth::{
 use rclone_triage::providers::credentials::upsert_custom_oauth_credentials;
 use rclone_triage::providers::CloudProvider;
 use rclone_triage::rclone::{start_web_gui, RcloneConfig, RcloneRunner};
+use rclone_triage::rclone::authorize::{
+    parse_authorize_callback_input, send_local_authorize_callback, spawn_authorize,
+};
+use rclone_triage::providers::mobile::render_qr_code;
 use rclone_triage::ui::App as TuiApp;
 use anyhow::{bail, Result};
 use clap::Parser;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 fn main() -> Result<()> {
     println!("rclone-triage v{}", env!("CARGO_PKG_VERSION"));
@@ -246,16 +251,73 @@ fn main() -> Result<()> {
                 authenticate_with_rclone(provider, &runner, &config, &remote_name)?;
             }
         } else {
-            if args.mobile_auth || args.device_code {
-                anyhow::bail!("Mobile auth only supported for known OAuth providers");
+            if args.device_code {
+                anyhow::bail!("Device code flow is only supported for known OAuth providers");
             }
-            let args = ["config", "create", remote_name.as_str(), provider_name.as_str()];
-            let output = runner.run(&args)?;
-            if !output.success() {
-                anyhow::bail!("Failed to authenticate: {}", output.stderr_string());
-            }
-            if !config.has_remote(&remote_name)? {
-                anyhow::bail!("Remote {} was not created", remote_name);
+
+            // Unknown backend: best-effort OAuth via `rclone authorize <backend>`.
+            if args.mobile_auth {
+                let mut running = spawn_authorize(&runner, provider_name.as_str(), true)?;
+                let auth_url = running
+                    .wait_for_auth_url(Duration::from_secs(20))?
+                    .ok_or_else(|| anyhow::anyhow!("rclone authorize did not produce an auth URL"))?;
+
+                println!("Open on phone: {}", auth_url);
+                if let Ok(qr) = render_qr_code(&auth_url) {
+                    println!("\nScan this QR code:\n{}", qr);
+                }
+                println!();
+                println!("After login, copy/paste the final redirect URL (it may fail to load), or paste only the code value.");
+
+                let pasted = prompt_line("Paste redirect URL (or code): ")?;
+                let cb = parse_authorize_callback_input(&pasted)?;
+
+                let redirect_uri = running
+                    .redirect_uri()
+                    .ok_or_else(|| anyhow::anyhow!("Missing redirect_uri in authorize output"))?;
+                let state = cb.state.as_deref().or(running.expected_state());
+                send_local_authorize_callback(redirect_uri, &cb.code, state)?;
+
+                let finished = running.wait(Some(Duration::from_secs(300)))?;
+                if finished.timed_out {
+                    anyhow::bail!("rclone authorize timed out waiting for completion");
+                }
+                if finished.status != 0 {
+                    anyhow::bail!(
+                        "rclone authorize failed (exit {}): {}",
+                        finished.status,
+                        finished.stderr.join("\n")
+                    );
+                }
+                let token = finished.token_json.ok_or_else(|| {
+                    anyhow::anyhow!("Failed to extract token JSON from rclone output")
+                })?;
+
+                config.set_remote(&remote_name, &finished.backend, &[("token", token.as_str())])?;
+                if !config.has_remote(&remote_name)? {
+                    anyhow::bail!("Remote {} was not created", remote_name);
+                }
+            } else {
+                let running = spawn_authorize(&runner, provider_name.as_str(), false)?;
+                let finished = running.wait(Some(Duration::from_secs(300)))?;
+                if finished.timed_out {
+                    anyhow::bail!("rclone authorize timed out waiting for completion");
+                }
+                if finished.status != 0 {
+                    anyhow::bail!(
+                        "rclone authorize failed (exit {}): {}",
+                        finished.status,
+                        finished.stderr.join("\n")
+                    );
+                }
+                let token = finished.token_json.ok_or_else(|| {
+                    anyhow::anyhow!("Failed to extract token JSON from rclone output")
+                })?;
+
+                config.set_remote(&remote_name, &finished.backend, &[("token", token.as_str())])?;
+                if !config.has_remote(&remote_name)? {
+                    anyhow::bail!("Remote {} was not created", remote_name);
+                }
             }
         }
 

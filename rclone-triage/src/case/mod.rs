@@ -36,6 +36,8 @@ pub struct DownloadedFile {
     pub size: u64,
     pub hash: Option<String>,
     pub hash_type: Option<String>,
+    pub hash_verified: Option<bool>,
+    pub hash_error: Option<String>,
 }
 
 impl Case {

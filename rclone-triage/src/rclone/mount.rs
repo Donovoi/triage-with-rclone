@@ -85,6 +85,8 @@ pub struct MountManager {
     rclone_path: PathBuf,
     /// Path to rclone config file
     config_path: Option<PathBuf>,
+    /// rclone cache directory (for VFS cache, etc.)
+    cache_dir: Option<PathBuf>,
     /// Base directory for mount points
     mount_base: PathBuf,
 }
@@ -94,13 +96,10 @@ impl MountManager {
     pub fn new(rclone_path: impl AsRef<Path>) -> Result<Self> {
         let mount_base = Self::default_mount_base()?;
 
-        // Ensure mount base exists
-        std::fs::create_dir_all(&mount_base)
-            .with_context(|| format!("Failed to create mount directory: {:?}", mount_base))?;
-
         Ok(Self {
             rclone_path: rclone_path.as_ref().to_path_buf(),
             config_path: None,
+            cache_dir: None,
             mount_base,
         })
     }
@@ -108,6 +107,12 @@ impl MountManager {
     /// Set the rclone config file path
     pub fn with_config(mut self, config_path: impl AsRef<Path>) -> Self {
         self.config_path = Some(config_path.as_ref().to_path_buf());
+        self
+    }
+
+    /// Set custom rclone cache directory (e.g., inside a case folder).
+    pub fn with_cache_dir(mut self, cache_dir: impl AsRef<Path>) -> Self {
+        self.cache_dir = Some(cache_dir.as_ref().to_path_buf());
         self
     }
 
@@ -205,6 +210,12 @@ impl MountManager {
 
         if let Some(ref config) = self.config_path {
             cmd.arg("--config").arg(config);
+        }
+
+        if let Some(ref cache_dir) = self.cache_dir {
+            std::fs::create_dir_all(cache_dir)
+                .with_context(|| format!("Failed to create cache directory: {:?}", cache_dir))?;
+            cmd.arg("--cache-dir").arg(cache_dir);
         }
 
         cmd.arg("mount")

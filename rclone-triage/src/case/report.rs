@@ -49,9 +49,22 @@ pub fn generate_report(
         report.push_str("No files downloaded.\n\n");
     } else {
         for f in &case.downloaded_files {
+            let verified = match f.hash_verified {
+                Some(true) => "verified",
+                Some(false) => "mismatch",
+                None => "unverified",
+            };
             report.push_str(&format!(
-                "- {} ({} bytes) {:?} {:?}\n",
-                f.path, f.size, f.hash_type, f.hash
+                "- {} ({} bytes) {:?} {:?} ({}){}\n",
+                f.path,
+                f.size,
+                f.hash_type,
+                f.hash,
+                verified,
+                f.hash_error
+                    .as_deref()
+                    .map(|e| format!(" - {}", e))
+                    .unwrap_or_default()
             ));
         }
         report.push('\n');
