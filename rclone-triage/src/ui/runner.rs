@@ -13,10 +13,8 @@ use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::Terminal;
 use chrono::Local;
-use serde::Serialize;
 use std::collections::HashSet;
 use std::io::stdout;
 use std::path::{Path, PathBuf};
@@ -32,12 +30,9 @@ use crate::providers::mobile::{
 use crate::providers::auth::user_identifier_from_config;
 use crate::providers::CloudProvider;
 use crate::rclone::oauth::DEFAULT_OAUTH_PORT;
-use crate::rclone::RcloneConfig;
 use crate::ui::screens::welcome::WelcomeScreen;
+use crate::ui::prompt::prompt_text_in_tui;
 use crate::ui::{render::render_state, App};
-use crate::utils::open_file_dialog;
-
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
 fn format_provider_stats(
     stats: &crate::providers::discovery::ProviderDiscoveryStats,
@@ -255,121 +250,6 @@ fn update_auth_status<B: ratatui::backend::Backend>(
     Ok(())
 }
 
-fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
-    let popup_layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Percentage((100 - percent_y) / 2),
-            Constraint::Percentage(percent_y),
-            Constraint::Percentage((100 - percent_y) / 2),
-        ])
-        .split(r);
-    Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage((100 - percent_x) / 2),
-            Constraint::Percentage(percent_x),
-            Constraint::Percentage((100 - percent_x) / 2),
-        ])
-        .split(popup_layout[1])[1]
-}
-
-/// Prompt for a single line of input without leaving the TUI.
-///
-/// Returns `Ok(None)` if the user cancels with Esc.
-fn prompt_text_in_tui<B: ratatui::backend::Backend>(
-    app: &mut App,
-    terminal: &mut Terminal<B>,
-    title: &str,
-    hint: &str,
-) -> Result<Option<String>> {
-    let mut input = String::new();
-
-    loop {
-        terminal.draw(|f| {
-            render_state(f, app);
-
-            let area = f.area();
-            let overlay = centered_rect(80, 40, area);
-            let max_display_chars = 512usize;
-            let total_chars = input.chars().count();
-            let display = if input.is_empty() {
-                "<empty>".to_string()
-            } else if total_chars <= max_display_chars {
-                input.clone()
-            } else {
-                let tail: String = input
-                    .chars()
-                    .rev()
-                    .take(max_display_chars)
-                    .collect::<Vec<_>>()
-                    .into_iter()
-                    .rev()
-                    .collect();
-                format!("...{}", tail)
-            };
-
-            let content = format!(
-                "{}\n\n> {}\n\nLen: {} char(s)\n\nEnter submit | Esc cancel | Backspace delete | Ctrl+U clear | Ctrl+W delete word",
-                hint, display, total_chars
-            );
-            let modal = Paragraph::new(content)
-                .block(Block::default().title(title).borders(Borders::ALL))
-                .wrap(Wrap { trim: false });
-            f.render_widget(modal, overlay);
-        })?;
-
-        if !event::poll(Duration::from_millis(200))? {
-            continue;
-        }
-
-        match event::read()? {
-            Event::Key(key) => {
-                if !matches!(key.kind, KeyEventKind::Press) {
-                    continue;
-                }
-                match key.code {
-                    KeyCode::Esc => return Ok(None),
-                    KeyCode::Enter => return Ok(Some(input.trim().to_string())),
-                    KeyCode::Backspace => {
-                        input.pop();
-                    }
-                    KeyCode::Char('u')
-                        if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) =>
-                    {
-                        input.clear();
-                    }
-                    KeyCode::Char('w')
-                        if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) =>
-                    {
-                        // Delete the last "word" (simple ASCII whitespace heuristic).
-                        while matches!(input.chars().last(), Some(c) if c.is_whitespace()) {
-                            input.pop();
-                        }
-                        while matches!(input.chars().last(), Some(c) if !c.is_whitespace()) {
-                            input.pop();
-                        }
-                    }
-                    KeyCode::Char(c) => {
-                        input.push(c);
-                    }
-                    _ => {}
-                }
-            }
-            Event::Paste(paste) => {
-                // Normalize newlines: this is a single-line prompt (callers can split on whitespace).
-                for c in paste.chars() {
-                    match c {
-                        '\r' | '\n' => input.push(' '),
-                        _ => input.push(c),
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-}
-
 fn perform_mobile_auth_flow<B: ratatui::backend::Backend>(
     app: &mut App,
     terminal: &mut Terminal<B>,
@@ -578,55 +458,6 @@ fn try_refresh_providers(app: &mut App) {
     };
 
     apply_discovered_providers(app, discovery);
-}
-
-fn resolve_provider_remotes(
-    config: &crate::rclone::RcloneConfig,
-    provider: &crate::providers::ProviderEntry,
-) -> Result<Vec<String>> {
-    let parsed = config.parse()?;
-    let remotes = parsed
-        .remotes_by_type(provider.short_name())
-        .into_iter()
-        .map(|remote| remote.name.clone())
-        .collect();
-    Ok(remotes)
-}
-
-fn choose_remote_or_prompt(
-    app: &mut App,
-    provider: &crate::providers::ProviderEntry,
-    remotes: Vec<String>,
-) -> Result<Option<String>> {
-    if let Some(current) = app.chosen_remote.clone() {
-        if remotes.iter().any(|remote| remote == &current) {
-            return Ok(Some(current));
-        }
-        app.chosen_remote = None;
-    }
-
-    if remotes.len() == 1 {
-        let remote_name = remotes[0].clone();
-        app.chosen_remote = Some(remote_name.clone());
-        return Ok(Some(remote_name));
-    }
-
-    if remotes.is_empty() {
-        return Ok(None);
-    }
-
-    app.remote_options = remotes;
-    app.remote_selected = app
-        .chosen_remote
-        .as_ref()
-        .and_then(|remote| app.remote_options.iter().position(|r| r == remote))
-        .unwrap_or(0);
-    app.provider_status = format!(
-        "Multiple remotes found for {}. Select one to continue.",
-        provider.display_name()
-    );
-    app.state = crate::ui::AppState::RemoteSelect;
-    Ok(None)
 }
 
 /// Perform the authentication flow (extract binary, create config, auth, list files)
@@ -966,9 +797,33 @@ fn perform_auth_flow<B: ratatui::backend::Backend>(
                 app.auth_status = "Listing files...".to_string();
                 terminal.draw(|f| render_state(f, app))?;
 
+                let include_hashes = provider
+                    .known
+                    .map(|known| !known.hash_types().is_empty())
+                    .unwrap_or_else(|| {
+                        // Best-effort: consult rclone's features table. If we can't confirm support,
+                        // do not request hashes.
+                        match crate::providers::features::provider_supports_hashes(&provider) {
+                            Ok(Some(true)) => true,
+                            Ok(Some(false)) | Ok(None) => false,
+                            Err(e) => {
+                                app.log_info(format!(
+                                    "Skipping remote hashes (hash support lookup failed): {}",
+                                    e
+                                ));
+                                false
+                            }
+                        }
+                    });
+
                 let listing_result = crate::files::listing::list_path_with_progress(
                     &runner,
                     &format!("{}:", result.remote_name),
+                    if include_hashes {
+                        crate::files::listing::ListPathOptions::with_hashes()
+                    } else {
+                        crate::files::listing::ListPathOptions::without_hashes()
+                    },
                     |count| {
                         app.auth_status = format!("Listing files... ({} found)", count);
                         let _ = terminal.draw(|f| render_state(f, app));
@@ -1037,254 +892,6 @@ fn perform_auth_flow<B: ratatui::backend::Backend>(
     Ok(())
 }
 
-/// Perform a listing-only flow using an existing config (no authentication).
-fn perform_list_flow<B: ratatui::backend::Backend>(
-    app: &mut App,
-    terminal: &mut Terminal<B>,
-) -> Result<()> {
-    let Some(provider) = app.chosen_provider.clone() else {
-        app.provider_status = "No provider selected.".to_string();
-        return Ok(());
-    };
-
-    app.provider_status = format!("Preparing listing for {}...", provider.display_name());
-    terminal.draw(|f| render_state(f, app))?;
-
-    let binary = crate::embedded::ExtractedBinary::extract()?;
-    app.cleanup_track_file(binary.path());
-    if let Some(dir) = binary.temp_dir() {
-        app.cleanup_track_dir(dir);
-    }
-
-    let config_dir = app
-        .config_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("."));
-    app.track_env_var("RCLONE_CONFIG", "Set RCLONE_CONFIG for listing");
-    let config = match crate::rclone::RcloneConfig::for_case(&config_dir) {
-        Ok(config) => config,
-        Err(e) => {
-            app.provider_status = format!("Listing failed (config): {}", e);
-            app.log_error(format!("Listing failed (config): {}", e));
-            return Ok(());
-        }
-    };
-    app.cleanup_track_env_value("RCLONE_CONFIG", config.original_env());
-
-    let remotes = match resolve_provider_remotes(&config, &provider) {
-        Ok(remotes) => remotes,
-        Err(e) => {
-            app.provider_status = format!("Listing failed (parse config): {}", e);
-            app.log_error(format!("Listing failed (parse config): {}", e));
-            return Ok(());
-        }
-    };
-
-    if remotes.is_empty() {
-        app.provider_status = format!(
-            "No authenticated remotes found for {}. Copy a config to {:?} and retry.",
-            provider.display_name(),
-            config.path()
-        );
-        app.log_error(format!(
-            "No authenticated remotes found for {}",
-            provider.display_name()
-        ));
-        return Ok(());
-    }
-
-    let remote_name = match choose_remote_or_prompt(app, &provider, remotes)? {
-        Some(remote_name) => remote_name,
-        None => return Ok(()),
-    };
-    app.chosen_remote = Some(remote_name.clone());
-    app.files_to_download.clear();
-    app.file_entries.clear();
-    app.file_entries_full.clear();
-    app.file_selected = 0;
-
-    let runner = crate::rclone::RcloneRunner::new(binary.path()).with_config(config.path());
-
-    app.provider_status = format!("Listing {}...", remote_name);
-    terminal.draw(|f| render_state(f, app))?;
-
-    let listing_result = crate::files::listing::list_path_with_progress(
-        &runner,
-        &format!("{}:", remote_name),
-        |count| {
-            app.provider_status = format!("Listing {}... ({} found)", remote_name, count);
-            let _ = terminal.draw(|f| render_state(f, app));
-        },
-    );
-
-    match listing_result {
-        Ok(entries) => {
-            if let Some(ref dirs) = app.directories {
-                let csv_path = dirs
-                    .listings
-                    .join(format!("{}_files.csv", provider.short_name()));
-                if let Err(e) = crate::files::export::export_listing(&entries, &csv_path) {
-                    app.log_error(format!("CSV export failed: {}", e));
-                } else {
-                    app.log_info(format!("Exported listing to {:?}", csv_path));
-                    app.track_file(&csv_path, "Exported file listing CSV");
-                }
-
-                let xlsx_path = dirs
-                    .listings
-                    .join(format!("{}_files.xlsx", provider.short_name()));
-                if let Err(e) = crate::files::export::export_listing_xlsx(&entries, &xlsx_path) {
-                    app.log_error(format!("Excel export failed: {}", e));
-                } else {
-                    app.log_info(format!("Exported listing to {:?}", xlsx_path));
-                    app.track_file(&xlsx_path, "Exported file listing Excel");
-                }
-            }
-
-            app.file_entries_full = entries.clone();
-            app.file_entries = entries.iter().map(|e| e.path.clone()).collect();
-            app.log_info(format!(
-                "Listed {} files from {}",
-                app.file_entries.len(),
-                provider.display_name()
-            ));
-            app.provider_status = format!("Found {} files", app.file_entries.len());
-            app.state = crate::ui::AppState::FileList;
-        }
-        Err(e) => {
-            app.provider_status = format!("Listing failed: {}", e);
-            app.log_error(format!("Listing failed: {}", e));
-        }
-    }
-
-    Ok(())
-}
-
-/// Perform a mount flow using an existing config (no authentication).
-fn perform_mount_flow<B: ratatui::backend::Backend>(
-    app: &mut App,
-    terminal: &mut Terminal<B>,
-) -> Result<()> {
-    let Some(provider) = app.chosen_provider.clone() else {
-        app.provider_status = "No provider selected.".to_string();
-        return Ok(());
-    };
-
-    if app.mounted_remote.is_some() {
-        app.provider_status = "Remote already mounted.".to_string();
-        return Ok(());
-    }
-
-    app.provider_status = format!("Preparing mount for {}...", provider.display_name());
-    terminal.draw(|f| render_state(f, app))?;
-
-    let binary = crate::embedded::ExtractedBinary::extract()?;
-    app.cleanup_track_file(binary.path());
-    if let Some(dir) = binary.temp_dir() {
-        app.cleanup_track_dir(dir);
-    }
-
-    let config_dir = app
-        .config_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("."));
-    app.track_env_var("RCLONE_CONFIG", "Set RCLONE_CONFIG for mount");
-    let config = match crate::rclone::RcloneConfig::for_case(&config_dir) {
-        Ok(config) => config,
-        Err(e) => {
-            app.provider_status = format!("Mount failed (config): {}", e);
-            app.log_error(format!("Mount failed (config): {}", e));
-            return Ok(());
-        }
-    };
-    app.cleanup_track_env_value("RCLONE_CONFIG", config.original_env());
-
-    let remotes = match resolve_provider_remotes(&config, &provider) {
-        Ok(remotes) => remotes,
-        Err(e) => {
-            app.provider_status = format!("Mount failed (parse config): {}", e);
-            app.log_error(format!("Mount failed (parse config): {}", e));
-            return Ok(());
-        }
-    };
-
-    if remotes.is_empty() {
-        app.provider_status = format!(
-            "No authenticated remotes found for {}. Copy a config to {:?} and retry.",
-            provider.display_name(),
-            config.path()
-        );
-        app.log_error(format!(
-            "No authenticated remotes found for {}",
-            provider.display_name()
-        ));
-        return Ok(());
-    }
-
-    let remote_name = match choose_remote_or_prompt(app, &provider, remotes)? {
-        Some(remote_name) => remote_name,
-        None => return Ok(()),
-    };
-
-    let mut manager = match crate::rclone::MountManager::new(binary.path()) {
-        Ok(manager) => manager.with_config(config.path()),
-        Err(e) => {
-            app.provider_status = format!("Mount failed: {}", e);
-            app.log_error(format!("Mount failed: {}", e));
-            return Ok(());
-        }
-    };
-
-    // Keep mount points and caches inside the case directory to reduce system footprint.
-    if let Some(ref dirs) = app.directories {
-        let mount_base = dirs.base.join("mounts");
-        let cache_dir = dirs.base.join("cache").join("rclone");
-
-        if let Err(e) = std::fs::create_dir_all(&mount_base) {
-            app.provider_status = format!("Mount failed (mount dir): {}", e);
-            app.log_error(format!(
-                "Mount failed (mount dir {:?}): {}",
-                mount_base, e
-            ));
-            return Ok(());
-        }
-        app.track_file(&mount_base, "Created mount base directory inside case");
-
-        if let Err(e) = std::fs::create_dir_all(&cache_dir) {
-            app.provider_status = format!("Mount failed (cache dir): {}", e);
-            app.log_error(format!(
-                "Mount failed (cache dir {:?}): {}",
-                cache_dir, e
-            ));
-            return Ok(());
-        }
-        app.track_file(&cache_dir, "Created rclone cache directory inside case");
-
-        manager = manager.with_mount_base(&mount_base).with_cache_dir(&cache_dir);
-    }
-
-    app.provider_status = format!("Mounting {}...", remote_name);
-    terminal.draw(|f| render_state(f, app))?;
-
-    match manager.mount_and_explore(&remote_name, None) {
-        Ok(mounted) => {
-            let mount_path = mounted.mount_point().to_path_buf();
-            app.mounted_remote = Some(mounted);
-            app.chosen_remote = Some(remote_name);
-            app.file_entries.clear();
-            app.file_entries_full.clear();
-            app.files_to_download.clear();
-            app.file_selected = 0;
-            app.provider_status = format!("Mounted remote at {:?}", mount_path);
-            app.state = crate::ui::AppState::FileList;
-        }
-        Err(e) => {
-            app.provider_status = format!("Mount failed: {}", e);
-            app.log_error(format!("Mount failed: {}", e));
-        }
-    }
-
-    Ok(())
-}
-
 fn perform_csv_download_flow<B: ratatui::backend::Backend>(
     app: &mut App,
     terminal: &mut Terminal<B>,
@@ -1329,7 +936,7 @@ fn perform_csv_download_flow<B: ratatui::backend::Backend>(
     };
     app.cleanup_track_env_value("RCLONE_CONFIG", config.original_env());
 
-    let remotes = match resolve_provider_remotes(&config, &provider) {
+    let remotes = match crate::ui::flows::remotes::resolve_provider_remotes(&config, &provider) {
         Ok(remotes) => remotes,
         Err(e) => {
             app.provider_status = format!("Queue failed (parse config): {}", e);
@@ -1351,7 +958,8 @@ fn perform_csv_download_flow<B: ratatui::backend::Backend>(
         return Ok(());
     }
 
-    let remote_name = match choose_remote_or_prompt(app, &provider, remotes)? {
+    let remote_name =
+        match crate::ui::flows::remotes::choose_remote_or_prompt(app, &provider, remotes)? {
         Some(remote_name) => remote_name,
         None => return Ok(()),
     };
@@ -1371,352 +979,6 @@ fn perform_csv_download_flow<B: ratatui::backend::Backend>(
 
     app.state = crate::ui::AppState::Downloading;
     perform_download_flow(app, terminal)?;
-    Ok(())
-}
-
-fn perform_show_oauth_credentials(app: &mut App) -> Result<()> {
-    let mut selected_path: Option<PathBuf> = None;
-
-    if cfg!(windows) {
-        let initial_dir = app
-            .directories
-            .as_ref()
-            .map(|d| d.config.as_path());
-        match open_file_dialog(
-            Some("Select rclone config file"),
-            initial_dir,
-            Some("rclone.conf (*.conf)|*.conf|All Files (*.*)|*.*"),
-        ) {
-            Ok(Some(path)) => selected_path = Some(path),
-            Ok(None) => {
-                app.menu_status = "File selection cancelled.".to_string();
-                return Ok(());
-            }
-            Err(e) => {
-                app.menu_status = format!("File dialog failed: {}", e);
-                return Ok(());
-            }
-        }
-    } else {
-        if let Ok(path) = std::env::var("RCLONE_CONFIG") {
-            if !path.trim().is_empty() {
-                selected_path = Some(PathBuf::from(path));
-            }
-        }
-        if selected_path.is_none() {
-            if let Some(config_dir) = dirs::config_dir() {
-                let default_path = config_dir.join("rclone").join("rclone.conf");
-                if default_path.exists() {
-                    selected_path = Some(default_path);
-                }
-            }
-        }
-    }
-
-    let config_path = match selected_path {
-        Some(path) => path,
-        None => {
-            app.menu_status =
-                "No rclone config selected. Set RCLONE_CONFIG or run on Windows for file picker."
-                    .to_string();
-            return Ok(());
-        }
-    };
-
-    if !config_path.exists() {
-        app.menu_status = format!("Config file not found: {:?}", config_path);
-        return Ok(());
-    }
-
-    let config = RcloneConfig::open_existing(&config_path)?;
-    let parsed = config.parse()?;
-
-    let mut lines = Vec::new();
-    lines.push("OAuth Credentials".to_string());
-    lines.push(format!("Config: {:?}", config_path));
-    lines.push(String::new());
-
-    if parsed.remotes.is_empty() {
-        lines.push("No remotes found in config.".to_string());
-    } else {
-        for remote in parsed.remotes.iter() {
-            let creds = config.get_oauth_credentials(&remote.name)?;
-            lines.push(format!("Remote: {}", creds.remote_name));
-            lines.push(format!(
-                "Client ID: {}",
-                creds.client_id.as_deref().unwrap_or("<none>")
-            ));
-            lines.push(format!(
-                "Client Secret: {}",
-                creds.client_secret.as_deref().unwrap_or("<none>")
-            ));
-            lines.push(format!("Has Client ID: {}", creds.has_client_id));
-            lines.push(format!(
-                "Has Client Secret: {}",
-                creds.has_client_secret
-            ));
-            lines.push(format!(
-                "Custom Credentials: {}",
-                creds.is_using_custom_credentials
-            ));
-            lines.push(format!(
-                "Using Default rclone Credentials: {}",
-                creds.using_default_rclone_credentials
-            ));
-            lines.push(String::new());
-        }
-    }
-
-    app.report_lines = lines;
-    app.state = crate::ui::AppState::OAuthCredentials;
-    Ok(())
-}
-
-#[derive(Debug, Serialize)]
-struct ExportedBrowserSessions {
-    tool: &'static str,
-    version: &'static str,
-    captured_at: String,
-    sessions: Vec<ExportedBrowserSession>,
-    errors: Vec<ExportedBrowserSessionError>,
-}
-
-#[derive(Debug, Serialize)]
-struct ExportedBrowserSession {
-    provider_id: String,
-    provider_name: String,
-    browser_type: crate::providers::browser::BrowserType,
-    browser_name: String,
-    browser_profile_path: Option<PathBuf>,
-    browser_executable_path: Option<PathBuf>,
-    browser_is_default: bool,
-    is_valid: bool,
-    user_hint: Option<String>,
-    cookies: Vec<crate::providers::session::Cookie>,
-}
-
-#[derive(Debug, Serialize)]
-struct ExportedBrowserSessionError {
-    provider_id: String,
-    provider_name: String,
-    browser_type: crate::providers::browser::BrowserType,
-    browser_name: String,
-    error: String,
-}
-
-fn perform_export_browser_sessions(app: &mut App) -> Result<()> {
-    if app.case.is_none() || app.directories.is_none() {
-        let output_dir =
-            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-        app.init_case(output_dir)?;
-    }
-
-    let dirs = match app.directories.as_ref() {
-        Some(d) => d,
-        None => bail!("Case directories not initialized"),
-    };
-
-    let ts = Local::now().format("%Y%m%d-%H%M%S").to_string();
-    let out_path = dirs
-        .listings
-        .join(format!("browser_sessions_{}.json", ts));
-
-    let extractor = crate::providers::session::SessionExtractor::new()?;
-    let browsers = crate::providers::browser::BrowserDetector::detect_all();
-
-    let mut sessions = Vec::new();
-    let mut errors = Vec::new();
-
-    for provider in CloudProvider::all() {
-        for browser in &browsers {
-            match extractor.extract_session(browser, *provider) {
-                Ok(session) => {
-                    if session.cookies.is_empty() {
-                        continue;
-                    }
-                    sessions.push(ExportedBrowserSession {
-                        provider_id: provider.rclone_type().to_string(),
-                        provider_name: provider.display_name().to_string(),
-                        browser_type: browser.browser_type,
-                        browser_name: browser.display_name().to_string(),
-                        browser_profile_path: browser.profile_path.clone(),
-                        browser_executable_path: browser.executable_path.clone(),
-                        browser_is_default: browser.is_default,
-                        is_valid: session.is_valid,
-                        user_hint: session.user_hint.clone(),
-                        cookies: session.cookies.clone(),
-                    });
-                }
-                Err(e) => {
-                    errors.push(ExportedBrowserSessionError {
-                        provider_id: provider.rclone_type().to_string(),
-                        provider_name: provider.display_name().to_string(),
-                        browser_type: browser.browser_type,
-                        browser_name: browser.display_name().to_string(),
-                        error: e.to_string(),
-                    });
-                }
-            }
-        }
-    }
-
-    let payload = ExportedBrowserSessions {
-        tool: "rclone-triage",
-        version: env!("CARGO_PKG_VERSION"),
-        captured_at: Local::now().to_rfc3339(),
-        sessions,
-        errors,
-    };
-
-    let json = serde_json::to_string_pretty(&payload)?;
-    std::fs::write(&out_path, json)?;
-
-    app.track_file(&out_path, "Exported browser session cookies");
-    app.log_info(format!("Exported browser sessions to {:?}", out_path));
-    app.menu_status = format!(
-        "Exported {} session(s) to {:?}",
-        payload.sessions.len(),
-        out_path
-    );
-
-    Ok(())
-}
-
-#[derive(Debug, Serialize)]
-struct ExportedDomainCookies {
-    tool: &'static str,
-    version: &'static str,
-    captured_at: String,
-    domain_patterns: Vec<String>,
-    results: Vec<ExportedDomainCookiesBrowser>,
-    errors: Vec<ExportedDomainCookiesError>,
-}
-
-#[derive(Debug, Serialize)]
-struct ExportedDomainCookiesBrowser {
-    browser_type: crate::providers::browser::BrowserType,
-    browser_name: String,
-    browser_profile_path: Option<PathBuf>,
-    browser_executable_path: Option<PathBuf>,
-    browser_is_default: bool,
-    cookies: Vec<crate::providers::session::Cookie>,
-}
-
-#[derive(Debug, Serialize)]
-struct ExportedDomainCookiesError {
-    browser_type: crate::providers::browser::BrowserType,
-    browser_name: String,
-    error: String,
-}
-
-fn parse_domain_patterns(raw: &str) -> Vec<String> {
-    raw.split([',', '\n', '\r', ';'])
-        .flat_map(|chunk| chunk.split_whitespace())
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_string())
-        .collect()
-}
-
-fn perform_export_domain_cookies<B: ratatui::backend::Backend>(
-    app: &mut App,
-    terminal: &mut Terminal<B>,
-) -> Result<()> {
-    if app.case.is_none() || app.directories.is_none() {
-        let output_dir =
-            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-        app.init_case(output_dir)?;
-    }
-
-    let patterns = std::env::var("RCLONE_TRIAGE_COOKIE_DOMAINS")
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .map(|s| parse_domain_patterns(&s))
-        .unwrap_or_default();
-
-    let domain_patterns = if !patterns.is_empty() {
-        patterns
-    } else {
-        let Some(raw) = prompt_text_in_tui(
-            app,
-            terminal,
-            "Cookie Domain Patterns",
-            "Enter cookie domain patterns (comma-separated; '*' allowed).",
-        )? else {
-            app.menu_status = "Cancelled domain cookie export.".to_string();
-            return Ok(());
-        };
-        let parsed = parse_domain_patterns(&raw);
-        if parsed.is_empty() {
-            app.menu_status = "Cancelled domain cookie export (no patterns).".to_string();
-            return Ok(());
-        }
-        parsed
-    };
-
-    let listings_dir = app
-        .directories
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("Case directories not initialized"))?
-        .listings
-        .clone();
-
-    let ts = Local::now().format("%Y%m%d-%H%M%S").to_string();
-    let out_path = listings_dir.join(format!("domain_cookies_{}.json", ts));
-
-    let extractor = crate::providers::session::SessionExtractor::new()?;
-    let browsers = crate::providers::browser::BrowserDetector::detect_all();
-
-    let mut results = Vec::new();
-    let mut errors = Vec::new();
-
-    for browser in &browsers {
-        match extractor.extract_domain_cookies(browser, &domain_patterns) {
-            Ok(cookies) => {
-                if cookies.is_empty() {
-                    continue;
-                }
-                results.push(ExportedDomainCookiesBrowser {
-                    browser_type: browser.browser_type,
-                    browser_name: browser.display_name().to_string(),
-                    browser_profile_path: browser.profile_path.clone(),
-                    browser_executable_path: browser.executable_path.clone(),
-                    browser_is_default: browser.is_default,
-                    cookies,
-                });
-            }
-            Err(e) => {
-                errors.push(ExportedDomainCookiesError {
-                    browser_type: browser.browser_type,
-                    browser_name: browser.display_name().to_string(),
-                    error: e.to_string(),
-                });
-            }
-        }
-    }
-
-    let payload = ExportedDomainCookies {
-        tool: "rclone-triage",
-        version: env!("CARGO_PKG_VERSION"),
-        captured_at: Local::now().to_rfc3339(),
-        domain_patterns: domain_patterns.clone(),
-        results,
-        errors,
-    };
-
-    let json = serde_json::to_string_pretty(&payload)?;
-    std::fs::write(&out_path, json)?;
-
-    app.track_file(&out_path, "Exported domain cookies");
-    app.log_info(format!("Exported domain cookies to {:?}", out_path));
-    app.menu_status = format!(
-        "Exported {} cookie set(s) for {} pattern(s) to {:?}",
-        payload.results.len(),
-        payload.domain_patterns.len(),
-        out_path
-    );
-
     Ok(())
 }
 
@@ -2172,7 +1434,7 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                                             "OAuth configuration is not yet available in the TUI.".to_string();
                                     }
                                     crate::ui::MenuAction::ShowOAuthCredentials => {
-                                        if let Err(e) = perform_show_oauth_credentials(app) {
+                                        if let Err(e) = crate::ui::flows::exports::perform_show_oauth_credentials(app) {
                                             app.menu_status = format!(
                                                 "Failed to load OAuth credentials: {}",
                                                 e
@@ -2180,13 +1442,13 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                                         }
                                     }
                                     crate::ui::MenuAction::ExportBrowserSessions => {
-                                        if let Err(e) = perform_export_browser_sessions(app) {
+                                        if let Err(e) = crate::ui::flows::exports::perform_export_browser_sessions(app) {
                                             app.menu_status =
                                                 format!("Failed to export browser sessions: {}", e);
                                         }
                                     }
                                     crate::ui::MenuAction::ExportDomainCookies => {
-                                        if let Err(e) = perform_export_domain_cookies(app, &mut terminal) {
+                                        if let Err(e) = crate::ui::flows::exports::perform_export_domain_cookies(app, &mut terminal) {
                                             app.menu_status =
                                                 format!("Failed to export domain cookies: {}", e);
                                         }
@@ -2274,10 +1536,10 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                                     perform_auth_flow(app, &mut terminal)?;
                                 }
                                 Some(crate::ui::MenuAction::RetrieveList) => {
-                                    perform_list_flow(app, &mut terminal)?;
+                                    crate::ui::flows::list::perform_list_flow(app, &mut terminal)?;
                                 }
                                 Some(crate::ui::MenuAction::MountProvider) => {
-                                    perform_mount_flow(app, &mut terminal)?;
+                                    crate::ui::flows::mount::perform_mount_flow(app, &mut terminal)?;
                                 }
                                 Some(crate::ui::MenuAction::DownloadFromCsv) => {
                                     perform_csv_download_flow(app, &mut terminal)?;
@@ -2618,8 +1880,8 @@ fn resume_remote_flow<B: ratatui::backend::Backend>(
 ) -> Result<()> {
     app.state = crate::ui::AppState::ProviderSelect;
     match app.selected_action {
-        Some(crate::ui::MenuAction::RetrieveList) => perform_list_flow(app, terminal),
-        Some(crate::ui::MenuAction::MountProvider) => perform_mount_flow(app, terminal),
+        Some(crate::ui::MenuAction::RetrieveList) => crate::ui::flows::list::perform_list_flow(app, terminal),
+        Some(crate::ui::MenuAction::MountProvider) => crate::ui::flows::mount::perform_mount_flow(app, terminal),
         Some(crate::ui::MenuAction::DownloadFromCsv) => perform_csv_download_flow(app, terminal),
         _ => Ok(()),
     }

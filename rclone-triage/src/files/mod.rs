@@ -14,6 +14,6 @@ pub use download::{
 pub use export::export_listing;
 pub use export::export_listing_xlsx;
 #[allow(unused_imports)]
-pub use listing::{list_path, FileEntry};
+pub use listing::{list_path, FileEntry, ListPathOptions};
 #[allow(unused_imports)]
 pub use queue::{read_download_queue, DownloadQueueEntry};
