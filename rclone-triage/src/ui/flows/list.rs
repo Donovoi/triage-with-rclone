@@ -74,6 +74,14 @@ pub(crate) fn perform_list_flow<B: ratatui::backend::Backend>(
     app.provider_status = format!("Listing {}...", remote_name);
     terminal.draw(|f| render_state(f, app))?;
 
+    let large_listing = std::env::var("RCLONE_TRIAGE_LARGE_LISTING")
+        .map(|v| v != "0")
+        .unwrap_or(false);
+    let large_in_memory: usize = std::env::var("RCLONE_TRIAGE_LARGE_LISTING_IN_MEMORY")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(50_000);
+
     let include_hashes = provider
         .known
         .map(|known| !known.hash_types().is_empty())
@@ -91,14 +99,66 @@ pub(crate) fn perform_list_flow<B: ratatui::backend::Backend>(
             }
         });
 
+    let list_options = if include_hashes {
+        crate::files::listing::ListPathOptions::with_hashes()
+    } else {
+        crate::files::listing::ListPathOptions::without_hashes()
+    };
+
+    if large_listing {
+        if app.directories.is_none() {
+            app.log_info("Large listing requested, but case directories are unavailable; falling back to in-memory listing.");
+        }
+        if let Some(ref dirs) = app.directories {
+            let csv_path = dirs
+                .listings
+                .join(format!("{}_files.csv", provider.short_name()));
+
+            let listing_result = crate::files::listing::list_path_large_to_csv_with_progress(
+                &runner,
+                &format!("{}:", remote_name),
+                list_options,
+                &csv_path,
+                large_in_memory,
+                |count| {
+                    app.provider_status = format!("Listing {}... ({} found)", remote_name, count);
+                    let _ = terminal.draw(|f| render_state(f, app));
+                },
+            );
+
+            match listing_result {
+                Ok(result) => {
+                    app.log_info(format!("Exported listing to {:?}", csv_path));
+                    app.track_file(&csv_path, "Exported file listing CSV");
+
+                    app.file_entries_full = result.entries.clone();
+                    app.file_entries = result.entries.iter().map(|e| e.path.clone()).collect();
+
+                    let shown = app.file_entries.len();
+                    if result.truncated {
+                        app.provider_status = format!(
+                            "Found {} files (showing first {}). CSV: {:?}",
+                            result.total_entries, shown, csv_path
+                        );
+                    } else {
+                        app.provider_status = format!("Found {} files", result.total_entries);
+                    }
+                    app.state = crate::ui::AppState::FileList;
+                }
+                Err(e) => {
+                    app.provider_status = format!("Listing failed: {}", e);
+                    app.log_error(format!("Listing failed: {}", e));
+                }
+            }
+
+            return Ok(());
+        }
+    }
+
     let listing_result = crate::files::listing::list_path_with_progress(
         &runner,
         &format!("{}:", remote_name),
-        if include_hashes {
-            crate::files::listing::ListPathOptions::with_hashes()
-        } else {
-            crate::files::listing::ListPathOptions::without_hashes()
-        },
+        list_options,
         |count| {
             app.provider_status = format!("Listing {}... ({} found)", remote_name, count);
             let _ = terminal.draw(|f| render_state(f, app));
@@ -147,4 +207,3 @@ pub(crate) fn perform_list_flow<B: ratatui::backend::Backend>(
 
     Ok(())
 }
-

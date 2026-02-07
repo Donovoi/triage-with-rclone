@@ -260,6 +260,15 @@ impl RcloneRunner {
         })
     }
 
+    /// Spawn a rclone command, returning a live child process.
+    ///
+    /// This is useful for streaming large outputs without buffering them in memory.
+    pub fn spawn(&self, args: &[&str]) -> Result<Child> {
+        let mut cmd = self.build_command_with_env(args, None);
+        cmd.spawn()
+            .with_context(|| format!("Failed to spawn rclone: {:?}", self.exe_path))
+    }
+
     /// Get rclone version
     pub fn version(&self) -> Result<String> {
         let output = self.run(&["version"])?;

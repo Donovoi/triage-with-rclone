@@ -2,8 +2,13 @@
 
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
+use serde::de::{self, SeqAccess, Visitor};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fmt;
+use std::io::{self, BufRead, BufReader, Read};
+use std::path::Path;
+use std::thread;
 
 use crate::rclone::RcloneRunner;
 
@@ -36,6 +41,17 @@ pub struct FileEntry {
     pub is_dir: bool,
     pub hash: Option<String>,
     pub hash_type: Option<String>,
+}
+
+/// Result of a large listing, where only a subset may be kept in memory.
+#[derive(Debug, Clone)]
+pub struct LargeListingResult {
+    /// Entries retained in memory for UI usage.
+    pub entries: Vec<FileEntry>,
+    /// Total number of entries seen in the remote listing.
+    pub total_entries: usize,
+    /// True if `entries` is a truncated subset of the full listing.
+    pub truncated: bool,
 }
 
 /// Internal representation of rclone lsjson output
@@ -111,6 +127,51 @@ where
     }
 }
 
+/// List files for a given rclone path, streaming the output to CSV while keeping at most
+/// `max_in_memory` entries in memory (for TUI display).
+///
+/// This is intended for huge remotes where buffering the full JSON output (and/or all entries)
+/// would be too expensive.
+pub fn list_path_large_to_csv_with_progress<F>(
+    rclone: &RcloneRunner,
+    target: &str,
+    options: ListPathOptions,
+    csv_path: impl AsRef<Path>,
+    max_in_memory: usize,
+    mut on_progress: F,
+) -> Result<LargeListingResult>
+where
+    F: FnMut(usize),
+{
+    let csv_path = csv_path.as_ref();
+    match list_path_large_to_csv_inner(
+        rclone,
+        target,
+        options.include_hashes,
+        csv_path,
+        max_in_memory,
+        &mut on_progress,
+    ) {
+        Ok(result) => Ok(result),
+        Err(err) => {
+            // Best-effort fallback: if requesting hashes breaks listing, retry without.
+            if options.include_hashes {
+                if let Ok(result) = list_path_large_to_csv_inner(
+                    rclone,
+                    target,
+                    false,
+                    csv_path,
+                    max_in_memory,
+                    &mut on_progress,
+                ) {
+                    return Ok(result);
+                }
+            }
+            Err(err)
+        }
+    }
+}
+
 fn build_lsjson_args(target: &str, include_hashes: bool) -> Vec<&str> {
     let mut args = vec!["lsjson"];
     if include_hashes {
@@ -122,16 +183,14 @@ fn build_lsjson_args(target: &str, include_hashes: bool) -> Vec<&str> {
 }
 
 fn list_path_inner(rclone: &RcloneRunner, target: &str, include_hashes: bool) -> Result<Vec<FileEntry>> {
-    let args = build_lsjson_args(target, include_hashes);
-    let output = rclone.run(&args)?;
-    if !output.success() {
-        bail!("rclone lsjson failed: {}", output.stderr_string());
-    }
+    let mut entries = Vec::new();
+    let mut on_entry = |raw: RcloneLsJsonEntry| -> Result<()> {
+        entries.push(FileEntry::from(raw));
+        Ok(())
+    };
 
-    let entries = parse_lsjson_entries(&output.stdout_string())
-        .with_context(|| "Failed to parse rclone lsjson output")?;
-
-    Ok(entries.into_iter().map(FileEntry::from).collect())
+    run_lsjson_streaming(rclone, target, include_hashes, &mut on_entry, None)?;
+    Ok(entries)
 }
 
 fn list_path_with_progress_inner<F>(
@@ -143,70 +202,298 @@ fn list_path_with_progress_inner<F>(
 where
     F: FnMut(usize),
 {
-    let mut count = 0usize;
-    let mut last_emit = 0usize;
+    let mut entries = Vec::new();
+    let mut on_entry = |raw: RcloneLsJsonEntry| -> Result<()> {
+        entries.push(FileEntry::from(raw));
+        Ok(())
+    };
+
+    run_lsjson_streaming(
+        rclone,
+        target,
+        include_hashes,
+        &mut on_entry,
+        Some(on_progress),
+    )?;
+
+    Ok(entries)
+}
+
+fn list_path_large_to_csv_inner(
+    rclone: &RcloneRunner,
+    target: &str,
+    include_hashes: bool,
+    csv_path: &Path,
+    max_in_memory: usize,
+    on_progress: &mut dyn FnMut(usize),
+) -> Result<LargeListingResult> {
+    let mut csv = crate::files::export::ListingCsvWriter::create(csv_path)?;
+
+    let mut entries: Vec<FileEntry> = Vec::new();
+    let mut on_entry = |raw: RcloneLsJsonEntry| -> Result<()> {
+        let entry = FileEntry::from(raw);
+        csv.write_entry(&entry)?;
+        if entries.len() < max_in_memory {
+            entries.push(entry);
+        }
+        Ok(())
+    };
+
+    let total_entries = run_lsjson_streaming(
+        rclone,
+        target,
+        include_hashes,
+        &mut on_entry,
+        Some(on_progress),
+    )?;
+
+    csv.flush()?;
+
+    Ok(LargeListingResult {
+        truncated: total_entries > entries.len(),
+        entries,
+        total_entries,
+    })
+}
+
+fn run_lsjson_streaming<'a>(
+    rclone: &RcloneRunner,
+    target: &str,
+    include_hashes: bool,
+    on_entry: &'a mut dyn FnMut(RcloneLsJsonEntry) -> Result<()>,
+    on_progress: Option<&'a mut dyn FnMut(usize)>,
+) -> Result<usize> {
     let args = build_lsjson_args(target, include_hashes);
-    let output = rclone.run_streaming(&args, |line| {
-        if line.contains("\"Path\"") {
-            count += 1;
-            if count - last_emit >= 100 {
-                on_progress(count);
-                last_emit = count;
+    let mut child = rclone.spawn(&args)?;
+
+    let stdout = child.stdout.take().expect("stdout piped");
+    let stderr = child.stderr.take().expect("stderr piped");
+
+    let stderr_handle = thread::spawn(move || {
+        let reader = BufReader::new(stderr);
+        reader.lines().map_while(Result::ok).collect::<Vec<_>>()
+    });
+
+    let stdout_reader = BufReader::new(stdout);
+    let parse_result = stream_lsjson_entries_from_reader(stdout_reader, on_entry, on_progress);
+
+    if parse_result.is_err() {
+        let _ = child.kill();
+    }
+
+    let status = child.wait()?;
+    let stderr_lines = stderr_handle
+        .join()
+        .unwrap_or_else(|_| vec!["<stderr capture panicked>".to_string()]);
+
+    if status.code().unwrap_or(-1) != 0 {
+        bail!("rclone lsjson failed: {}", stderr_lines.join("\n"));
+    }
+
+    parse_result
+}
+
+fn stream_lsjson_entries_from_reader<'a, R: Read>(
+    reader: R,
+    on_entry: &'a mut dyn FnMut(RcloneLsJsonEntry) -> Result<()>,
+    on_progress: Option<&'a mut dyn FnMut(usize)>,
+) -> Result<usize> {
+    let mut json_reader = JsonPayloadReader::new(reader);
+    let count = {
+        let mut de = serde_json::Deserializer::from_reader(&mut json_reader);
+        // Pull in the trait so we can call `deserialize_seq`.
+        use serde::de::Deserializer as _;
+
+        let visitor = LsjsonSeqVisitor {
+            on_entry,
+            on_progress,
+            count: 0,
+            last_emit: 0,
+        };
+        de.deserialize_seq(visitor)
+            .with_context(|| "Failed to parse rclone lsjson JSON payload")?
+    };
+
+    // Drain remaining stdout bytes (e.g., noisy suffix logs) so the child can exit.
+    let _ = json_reader.drain_inner_to_end();
+
+    Ok(count)
+}
+
+struct LsjsonSeqVisitor<'a> {
+    on_entry: &'a mut dyn FnMut(RcloneLsJsonEntry) -> Result<()>,
+    on_progress: Option<&'a mut dyn FnMut(usize)>,
+    count: usize,
+    last_emit: usize,
+}
+
+impl<'de> Visitor<'de> for LsjsonSeqVisitor<'_> {
+    type Value = usize;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str("a JSON array of rclone lsjson entries")
+    }
+
+    fn visit_seq<A>(mut self, mut seq: A) -> std::result::Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        while let Some(entry) = seq.next_element::<RcloneLsJsonEntry>()? {
+            (self.on_entry)(entry).map_err(de::Error::custom)?;
+            self.count += 1;
+
+            if let Some(progress) = self.on_progress.as_mut() {
+                if self.count - self.last_emit >= 100 {
+                    progress(self.count);
+                    self.last_emit = self.count;
+                }
             }
         }
-    })?;
 
-    if !output.success() {
-        bail!("rclone lsjson failed: {}", output.stderr_string());
+        if let Some(progress) = self.on_progress.as_mut() {
+            if self.count != self.last_emit {
+                progress(self.count);
+            }
+        }
+
+        Ok(self.count)
     }
-
-    if count != last_emit {
-        on_progress(count);
-    }
-
-    let entries = parse_lsjson_entries(&output.stdout_string())
-        .with_context(|| "Failed to parse rclone lsjson output")?;
-
-    Ok(entries.into_iter().map(FileEntry::from).collect())
 }
 
-fn parse_lsjson_entries(raw: &str) -> Result<Vec<RcloneLsJsonEntry>> {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        bail!("rclone lsjson returned empty output");
-    }
-
-    if let Ok(entries) = serde_json::from_str::<Vec<RcloneLsJsonEntry>>(trimmed) {
-        return Ok(entries);
-    }
-
-    if let Some(payload) = extract_json_payload(trimmed) {
-        if let Ok(entries) = serde_json::from_str::<Vec<RcloneLsJsonEntry>>(payload) {
-            return Ok(entries);
-        }
-    }
-
-    let preview = trimmed.lines().take(3).collect::<Vec<_>>().join(" ");
-    bail!(
-        "Failed to parse rclone lsjson output. Output started with: {}",
-        preview
-    );
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum JsonPayloadState {
+    Seeking,
+    Streaming,
+    Done,
 }
 
-fn extract_json_payload(raw: &str) -> Option<&str> {
-    if let (Some(start), Some(end)) = (raw.find('['), raw.rfind(']')) {
-        if end > start {
-            return Some(&raw[start..=end]);
+/// Wrap a reader and expose only the first JSON payload (array or object), ignoring any
+/// prefix/suffix noise. This helps when rclone (or the environment) leaks logs to stdout.
+struct JsonPayloadReader<R> {
+    inner: R,
+    state: JsonPayloadState,
+    open: u8,
+    close: u8,
+    depth: i32,
+    in_string: bool,
+    escape: bool,
+    buf: Vec<u8>,
+    buf_pos: usize,
+}
+
+impl<R: Read> JsonPayloadReader<R> {
+    fn new(inner: R) -> Self {
+        Self {
+            inner,
+            state: JsonPayloadState::Seeking,
+            open: b'[',
+            close: b']',
+            depth: 0,
+            in_string: false,
+            escape: false,
+            buf: Vec::new(),
+            buf_pos: 0,
         }
     }
 
-    if let (Some(start), Some(end)) = (raw.find('{'), raw.rfind('}')) {
-        if end > start {
-            return Some(&raw[start..=end]);
-        }
+    fn drain_inner_to_end(&mut self) -> io::Result<()> {
+        let mut tmp = [0u8; 8192];
+        while self.inner.read(&mut tmp)? != 0 {}
+        Ok(())
     }
 
-    None
+    fn push_byte(&mut self, b: u8) {
+        self.buf.push(b);
+    }
+
+    fn start_json(&mut self, open: u8, close: u8, b: u8) {
+        self.state = JsonPayloadState::Streaming;
+        self.open = open;
+        self.close = close;
+        self.depth = 1;
+        self.in_string = false;
+        self.escape = false;
+        self.push_byte(b);
+    }
+
+    fn handle_stream_byte(&mut self, b: u8) {
+        self.push_byte(b);
+
+        if self.in_string {
+            if self.escape {
+                self.escape = false;
+                return;
+            }
+            match b {
+                b'\\' => self.escape = true,
+                b'"' => self.in_string = false,
+                _ => {}
+            }
+            return;
+        }
+
+        match b {
+            b'"' => self.in_string = true,
+            b if b == self.open => self.depth += 1,
+            b if b == self.close => {
+                self.depth -= 1;
+                if self.depth <= 0 {
+                    self.state = JsonPayloadState::Done;
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+impl<R: Read> Read for JsonPayloadReader<R> {
+    fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+        if out.is_empty() {
+            return Ok(0);
+        }
+
+        loop {
+            if self.buf_pos < self.buf.len() {
+                let available = self.buf.len() - self.buf_pos;
+                let n = available.min(out.len());
+                out[..n].copy_from_slice(&self.buf[self.buf_pos..self.buf_pos + n]);
+                self.buf_pos += n;
+                if self.buf_pos == self.buf.len() {
+                    self.buf.clear();
+                    self.buf_pos = 0;
+                }
+                return Ok(n);
+            }
+
+            if self.state == JsonPayloadState::Done {
+                return Ok(0);
+            }
+
+            let mut tmp = [0u8; 8192];
+            let read = self.inner.read(&mut tmp)?;
+            if read == 0 {
+                self.state = JsonPayloadState::Done;
+                return Ok(0);
+            }
+
+            for &b in &tmp[..read] {
+                match self.state {
+                    JsonPayloadState::Seeking => match b {
+                        b'[' => self.start_json(b'[', b']', b),
+                        b'{' => self.start_json(b'{', b'}', b),
+                        _ => {}
+                    },
+                    JsonPayloadState::Streaming => {
+                        self.handle_stream_byte(b);
+                        if self.state == JsonPayloadState::Done {
+                            break;
+                        }
+                    }
+                    JsonPayloadState::Done => break,
+                }
+            }
+        }
+    }
 }
 
 fn select_hash(hashes: Option<&HashMap<String, String>>) -> (Option<String>, Option<String>) {
@@ -237,6 +524,7 @@ fn select_hash(hashes: Option<&HashMap<String, String>>) -> (Option<String>, Opt
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Cursor;
 
     #[test]
     fn test_parse_lsjson() {
@@ -267,26 +555,33 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_lsjson_with_noise_prefix() {
+    fn test_stream_lsjson_entries_handles_noise_and_brackets_in_strings() {
         let data = r#"2024/01/01 00:00:00 INFO  : some log
-        [
-          {"Path":"file1.txt","Size":12,"ModTime":"2024-01-01T00:00:00Z","IsDir":false}
-        ]"#;
+[
+  {"Path":"folder[1]/file].txt","Size":12,"ModTime":"2024-01-01T00:00:00Z","IsDir":false}
+]
+2024/01/01 00:00:00 INFO  : done"#;
 
-        let entries = parse_lsjson_entries(data).unwrap();
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].path, "file1.txt");
-    }
+        let mut paths: Vec<String> = Vec::new();
+        let mut progress: Vec<usize> = Vec::new();
 
-    #[test]
-    fn test_parse_lsjson_with_noise_suffix() {
-        let data = r#"[
-          {"Path":"file1.txt","Size":12,"ModTime":"2024-01-01T00:00:00Z","IsDir":false}
-        ]
-        2024/01/01 00:00:00 INFO  : done"#;
+        let mut on_entry = |entry: RcloneLsJsonEntry| -> Result<()> {
+            paths.push(entry.path);
+            Ok(())
+        };
+        let mut on_progress = |count: usize| {
+            progress.push(count);
+        };
 
-        let entries = parse_lsjson_entries(data).unwrap();
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].path, "file1.txt");
+        let count = stream_lsjson_entries_from_reader(
+            Cursor::new(data.as_bytes()),
+            &mut on_entry,
+            Some(&mut on_progress),
+        )
+        .unwrap();
+
+        assert_eq!(count, 1);
+        assert_eq!(paths, vec!["folder[1]/file].txt".to_string()]);
+        assert_eq!(progress.last().copied(), Some(1));
     }
 }
