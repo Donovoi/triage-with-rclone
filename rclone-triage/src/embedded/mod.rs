@@ -6,8 +6,10 @@
 use anyhow::{bail, Context, Result};
 use rust_embed::RustEmbed;
 use sha2::{Digest, Sha256};
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use tempfile::TempDir;
 
 /// Embedded assets (rclone.exe for Windows)
 #[derive(RustEmbed)]
@@ -26,6 +28,10 @@ pub const RCLONE_VERSION: &str = "1.68.2";
 pub struct ExtractedBinary {
     /// Path to the extracted executable
     pub path: PathBuf,
+    /// Temporary directory holding the extracted executable.
+    ///
+    /// When present, we prefer `TempDir::close()` for cleanup so errors can be detected.
+    temp_dir: Option<TempDir>,
     /// Whether this instance owns the file (should clean up)
     owns_file: bool,
 }
@@ -44,37 +50,38 @@ impl ExtractedBinary {
         let exe_data =
             Assets::get("rclone.exe").context("rclone.exe not found in embedded assets")?;
 
-        // Create unique temp directory for this instance
-        let temp_dir = std::env::temp_dir();
-        let instance_dir = temp_dir.join(format!("rclone-triage-{}", std::process::id()));
+        let exe_bytes = exe_data.data.as_ref();
 
-        fs::create_dir_all(&instance_dir)
-            .with_context(|| format!("Failed to create temp directory: {:?}", instance_dir))?;
-
-        let exe_path = instance_dir.join("rclone.exe");
-
-        // Write the binary
-        fs::write(&exe_path, exe_data.data.as_ref())
-            .with_context(|| format!("Failed to write rclone.exe to {:?}", exe_path))?;
-
-        // Verify hash after writing
-        let written_data = fs::read(&exe_path)
-            .with_context(|| format!("Failed to read back {:?} for verification", exe_path))?;
-
+        // Verify embedded bytes first (avoid writing a corrupted binary to disk).
         let mut hasher = Sha256::new();
-        hasher.update(&written_data);
+        hasher.update(exe_bytes);
         let hash = hex::encode(hasher.finalize());
-
         if hash != RCLONE_EXE_SHA256 {
-            // Clean up the corrupted file
-            let _ = fs::remove_file(&exe_path);
-            let _ = fs::remove_dir(&instance_dir);
             bail!(
-                "SHA256 hash mismatch after extraction!\nExpected: {}\nGot: {}",
+                "Embedded rclone.exe hash mismatch!\nExpected: {}\nGot: {}",
                 RCLONE_EXE_SHA256,
                 hash
             );
         }
+
+        // Create a randomized temp directory (avoid predictable paths in world-writable temp dirs).
+        let instance_dir = tempfile::Builder::new()
+            .prefix("rclone-triage-")
+            .tempdir()
+            .context("Failed to create temp directory for rclone extraction")?;
+
+        let exe_path = instance_dir.path().join("rclone.exe");
+
+        // Write the binary using exclusive create to avoid clobbering existing files.
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&exe_path)
+            .with_context(|| format!("Failed to create {:?}", exe_path))?;
+        file.write_all(exe_bytes)
+            .with_context(|| format!("Failed to write rclone.exe to {:?}", exe_path))?;
+        file.sync_all()
+            .with_context(|| format!("Failed to sync {:?}", exe_path))?;
 
         // Make executable on Unix (no-op on Windows)
         #[cfg(unix)]
@@ -87,6 +94,7 @@ impl ExtractedBinary {
 
         Ok(Self {
             path: exe_path,
+            temp_dir: Some(instance_dir),
             owns_file: true,
         })
     }
@@ -110,6 +118,15 @@ impl ExtractedBinary {
             return Ok(());
         }
 
+        if let Some(temp_dir) = self.temp_dir.take() {
+            let dir_path = temp_dir.path().to_path_buf();
+            temp_dir
+                .close()
+                .with_context(|| format!("Failed to remove temp directory {:?}", dir_path))?;
+            self.owns_file = false;
+            return Ok(());
+        }
+
         // Remove the executable
         if self.path.exists() {
             fs::remove_file(&self.path)
@@ -130,6 +147,10 @@ impl ExtractedBinary {
 
     /// Transfer ownership - the file will not be cleaned up when this instance is dropped
     pub fn release_ownership(&mut self) {
+        if let Some(temp_dir) = self.temp_dir.take() {
+            // Persist the directory on disk.
+            let _ = temp_dir.keep();
+        }
         self.owns_file = false;
     }
 

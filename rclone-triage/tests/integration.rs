@@ -4,7 +4,7 @@ use rclone_triage::case::directory::create_case_directories;
 use rclone_triage::case::report::{generate_report, write_report};
 use rclone_triage::case::{AuthenticatedProvider, Case, DownloadedFile};
 use rclone_triage::files::{
-    export_listing, list_path, DownloadPhase, DownloadQueue, DownloadRequest,
+    export_listing, list_path, DownloadPhase, DownloadQueue, DownloadRequest, ListPathOptions,
 };
 use rclone_triage::rclone::{start_web_gui, RcloneConfig, RcloneRunner};
 use sha2::{Digest, Sha256};
@@ -56,7 +56,8 @@ esac
     let (_dir, mock_path) = write_mock_rclone(script);
     let runner = RcloneRunner::new(&mock_path);
 
-    let entries = list_path(&runner, "mock:").expect("list_path should succeed");
+    let entries = list_path(&runner, "mock:", ListPathOptions::with_hashes())
+        .expect("list_path should succeed");
     assert_eq!(entries.len(), 2);
     assert_eq!(entries[0].path, "file.txt");
     assert_eq!(entries[0].hash.as_deref(), Some("def"));
@@ -310,7 +311,7 @@ esac
     let config = RcloneConfig::for_case(&dirs.config).unwrap();
     let runner = RcloneRunner::new(&mock_path).with_config(config.path());
 
-    let entries = list_path(&runner, "mock:").expect("list_path");
+    let entries = list_path(&runner, "mock:", ListPathOptions::with_hashes()).expect("list_path");
     assert_eq!(entries.len(), 1);
 
     let csv_path = dirs.listings.join("mock_files.csv");
@@ -392,7 +393,8 @@ exit 1
     let (_dir, mock_path) = write_mock_rclone(script);
     let runner = RcloneRunner::new(&mock_path);
 
-    let err = list_path(&runner, "mock:").expect_err("expected failure");
+    let err = list_path(&runner, "mock:", ListPathOptions::with_hashes())
+        .expect_err("expected failure");
     assert!(err.to_string().contains("lsjson failed"));
 }
 

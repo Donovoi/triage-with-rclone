@@ -5,9 +5,11 @@
 
 use anyhow::{anyhow, bail, Context, Result};
 use regex::Regex;
+use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 
 use crate::providers::discovery::is_bad_provider;
-use crate::providers::CloudProvider;
+use crate::providers::{CloudProvider, ProviderEntry};
 
 const DEFAULT_FEATURES_URL: &str = "https://rclone.org/overview/";
 
@@ -16,6 +18,8 @@ pub struct ProviderFeatureRow {
     pub name: String,
     pub hash: String,
 }
+
+static FEATURES_PAGE_CACHE: OnceLock<Arc<String>> = OnceLock::new();
 
 /// Fetch and parse the rclone features table for a provider.
 pub fn get_rclone_features_table(provider: &str) -> Result<Vec<ProviderFeatureRow>> {
@@ -28,7 +32,7 @@ pub fn get_rclone_features_table_with_url(
     url: &str,
 ) -> Result<Vec<ProviderFeatureRow>> {
     let html = fetch_features_page(url)?;
-    get_rclone_features_table_from_html(provider, &html)
+    get_rclone_features_table_from_html(provider, html.as_ref())
 }
 
 /// Parse the rclone features table from HTML (used by tests).
@@ -52,6 +56,27 @@ pub fn get_rclone_features_table_from_html(
     Ok(filtered)
 }
 
+/// Best-effort check whether a provider supports any hashes according to the rclone overview table.
+///
+/// Returns:
+/// - `Ok(Some(true))` when the provider has a row and its Hash column is supported.
+/// - `Ok(Some(false))` when the provider has a row and its Hash column is "Not Supported".
+/// - `Ok(None)` if no matching row exists (unknown display name / table changed / provider excluded).
+pub fn provider_supports_hashes(provider: &ProviderEntry) -> Result<Option<bool>> {
+    if is_bad_provider(&provider.id, Some(&provider.name)) {
+        return Ok(None);
+    }
+
+    let rows = get_rclone_features_table(&provider.name)?;
+    if rows.is_empty() {
+        return Ok(None);
+    }
+
+    Ok(Some(
+        rows.iter().any(|row| row.hash != "Not Supported"),
+    ))
+}
+
 fn resolve_provider_display_name(provider: &str) -> String {
     let trimmed = provider.trim();
     if let Ok(parsed) = trimmed.parse::<CloudProvider>() {
@@ -60,8 +85,29 @@ fn resolve_provider_display_name(provider: &str) -> String {
     trimmed.to_string()
 }
 
-fn fetch_features_page(url: &str) -> Result<String> {
-    let response = match ureq::get(url).call() {
+fn fetch_features_page(url: &str) -> Result<Arc<String>> {
+    if url == DEFAULT_FEATURES_URL {
+        if let Some(html) = FEATURES_PAGE_CACHE.get() {
+            return Ok(html.clone());
+        }
+
+        let html = Arc::new(fetch_features_page_uncached(url)?);
+        let _ = FEATURES_PAGE_CACHE.set(html.clone());
+        return Ok(html);
+    }
+
+    Ok(Arc::new(fetch_features_page_uncached(url)?))
+}
+
+fn fetch_features_page_uncached(url: &str) -> Result<String> {
+    // Best-effort: keep this lookup fast so we don't stall the TUI when offline/restricted.
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(Duration::from_secs(5))
+        .timeout_read(Duration::from_secs(10))
+        .timeout_write(Duration::from_secs(10))
+        .build();
+
+    let response = match agent.get(url).call() {
         Ok(response) => response,
         Err(ureq::Error::Status(code, response)) => {
             let body = response.into_string().unwrap_or_default();

@@ -7,6 +7,26 @@ use std::collections::HashMap;
 
 use crate::rclone::RcloneRunner;
 
+#[derive(Debug, Clone, Copy)]
+pub struct ListPathOptions {
+    /// If true, request hashes from rclone (when the backend supports it).
+    pub include_hashes: bool,
+}
+
+impl ListPathOptions {
+    pub fn with_hashes() -> Self {
+        Self {
+            include_hashes: true,
+        }
+    }
+
+    pub fn without_hashes() -> Self {
+        Self {
+            include_hashes: false,
+        }
+    }
+}
+
 /// File entry returned by rclone listing
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileEntry {
@@ -52,8 +72,58 @@ impl From<RcloneLsJsonEntry> for FileEntry {
 /// Example:
 /// - Remote: "mydrive:" or "mydrive:/folder"
 /// - Local: "/tmp"
-pub fn list_path(rclone: &RcloneRunner, target: &str) -> Result<Vec<FileEntry>> {
-    let output = rclone.run(&["lsjson", "--hash", "--recursive", target])?;
+pub fn list_path(rclone: &RcloneRunner, target: &str, options: ListPathOptions) -> Result<Vec<FileEntry>> {
+    match list_path_inner(rclone, target, options.include_hashes) {
+        Ok(entries) => Ok(entries),
+        Err(err) => {
+            // Best-effort fallback: if requesting hashes breaks listing, retry without.
+            if options.include_hashes {
+                if let Ok(entries) = list_path_inner(rclone, target, false) {
+                    return Ok(entries);
+                }
+            }
+            Err(err)
+        }
+    }
+}
+
+/// List files for a given rclone path, reporting progress as entries are seen.
+pub fn list_path_with_progress<F>(
+    rclone: &RcloneRunner,
+    target: &str,
+    options: ListPathOptions,
+    mut on_progress: F,
+) -> Result<Vec<FileEntry>>
+where
+    F: FnMut(usize),
+{
+    match list_path_with_progress_inner(rclone, target, options.include_hashes, &mut on_progress) {
+        Ok(entries) => Ok(entries),
+        Err(err) => {
+            // Best-effort fallback: if requesting hashes breaks listing, retry without.
+            if options.include_hashes {
+                if let Ok(entries) = list_path_with_progress_inner(rclone, target, false, &mut on_progress) {
+                    return Ok(entries);
+                }
+            }
+            Err(err)
+        }
+    }
+}
+
+fn build_lsjson_args(target: &str, include_hashes: bool) -> Vec<&str> {
+    let mut args = vec!["lsjson"];
+    if include_hashes {
+        args.push("--hash");
+    }
+    args.push("--recursive");
+    args.push(target);
+    args
+}
+
+fn list_path_inner(rclone: &RcloneRunner, target: &str, include_hashes: bool) -> Result<Vec<FileEntry>> {
+    let args = build_lsjson_args(target, include_hashes);
+    let output = rclone.run(&args)?;
     if !output.success() {
         bail!("rclone lsjson failed: {}", output.stderr_string());
     }
@@ -64,18 +134,19 @@ pub fn list_path(rclone: &RcloneRunner, target: &str) -> Result<Vec<FileEntry>> 
     Ok(entries.into_iter().map(FileEntry::from).collect())
 }
 
-/// List files for a given rclone path, reporting progress as entries are seen.
-pub fn list_path_with_progress<F>(
+fn list_path_with_progress_inner<F>(
     rclone: &RcloneRunner,
     target: &str,
-    mut on_progress: F,
+    include_hashes: bool,
+    on_progress: &mut F,
 ) -> Result<Vec<FileEntry>>
 where
     F: FnMut(usize),
 {
     let mut count = 0usize;
     let mut last_emit = 0usize;
-    let output = rclone.run_streaming(&["lsjson", "--hash", "--recursive", target], |line| {
+    let args = build_lsjson_args(target, include_hashes);
+    let output = rclone.run_streaming(&args, |line| {
         if line.contains("\"Path\"") {
             count += 1;
             if count - last_emit >= 100 {

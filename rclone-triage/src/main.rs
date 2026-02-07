@@ -6,7 +6,7 @@
 use rclone_triage::case::Case;
 use rclone_triage::cleanup::Cleanup;
 use rclone_triage::embedded;
-use rclone_triage::files::list_path;
+use rclone_triage::files::{list_path, ListPathOptions};
 use rclone_triage::forensics::{
     generate_password, get_forensic_access_point_status, render_wifi_qr,
     open_onedrive_vault, start_forensic_access_point, stop_forensic_access_point,
@@ -356,7 +356,18 @@ fn main() -> Result<()> {
             }
         }
 
-        let listing = list_path(&runner, &format!("{}:", remote_name))?;
+        let include_hashes = known
+            .map(|provider| !provider.hash_types().is_empty())
+            .unwrap_or(false);
+        let listing = list_path(
+            &runner,
+            &format!("{}:", remote_name),
+            if include_hashes {
+                ListPathOptions::with_hashes()
+            } else {
+                ListPathOptions::without_hashes()
+            },
+        )?;
         println!("Listed {} entries", listing.len());
     }
 
