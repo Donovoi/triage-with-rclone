@@ -15,6 +15,23 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::str::FromStr;
 
+/// Best-effort classification of how a backend is typically authenticated.
+///
+/// This is used to gate UI flows so we don't offer OAuth/mobile auth on backends that
+/// require API keys or other manual configuration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+pub enum ProviderAuthKind {
+    /// Auth mechanism could not be determined from `rclone config providers`.
+    #[default]
+    Unknown,
+    /// OAuth-style interactive authorization (`rclone authorize` / auth URL).
+    OAuth,
+    /// Key-based auth (access keys, API keys, secrets).
+    KeyBased,
+    /// Username/password or similar manual credential entry.
+    UserPass,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderEntry {
     pub id: String,
@@ -22,6 +39,8 @@ pub struct ProviderEntry {
     pub description: Option<String>,
     pub known: Option<CloudProvider>,
     pub oauth_capable: bool,
+    #[serde(default)]
+    pub auth_kind: ProviderAuthKind,
 }
 
 impl ProviderEntry {
@@ -37,19 +56,29 @@ impl ProviderEntry {
         self.oauth_capable
     }
 
+    pub fn auth_kind(&self) -> ProviderAuthKind {
+        self.auth_kind
+    }
+
     pub fn short_name(&self) -> &str {
         &self.id
     }
 
     pub fn from_known(provider: CloudProvider) -> Self {
-        let oauth_capable =
+        let uses_oauth =
             crate::providers::config::ProviderConfig::for_provider(provider).uses_oauth();
+        let auth_kind = if uses_oauth {
+            ProviderAuthKind::OAuth
+        } else {
+            ProviderAuthKind::UserPass
+        };
         Self {
             id: provider.rclone_type().to_string(),
             name: provider.display_name().to_string(),
             description: None,
             known: Some(provider),
-            oauth_capable,
+            oauth_capable: uses_oauth,
+            auth_kind,
         }
     }
 
