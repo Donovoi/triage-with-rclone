@@ -9,7 +9,7 @@ use serde::Deserialize;
 use std::collections::HashSet;
 use std::str::FromStr;
 
-use crate::providers::{CloudProvider, ProviderEntry};
+use crate::providers::{CloudProvider, ProviderAuthKind, ProviderEntry};
 use crate::rclone::RcloneRunner;
 
 #[derive(Debug, Deserialize)]
@@ -60,10 +60,26 @@ const OAUTH_PATTERNS: &[&str] = &[
     r"refresh[_-]?token",
     r"authorization",
     r"app[_-]?id",
-    r"access_key_id",
-    r"private_access_key",
     r"consumer[_-]?key",
     r"consumer[_-]?secret",
+];
+
+const KEY_PATTERNS: &[&str] = &[
+    r"access[_-]?key",
+    r"secret[_-]?key",
+    r"access[_-]?key[_-]?id",
+    r"secret[_-]?access[_-]?key",
+    r"api[_-]?key",
+    r"private[_-]?key",
+    r"service[_-]?account",
+    r"account[_-]?key",
+];
+
+const USERPASS_PATTERNS: &[&str] = &[
+    r"username",
+    r"password",
+    r"\bpass\b",
+    r"passphrase",
 ];
 
 pub(crate) fn is_bad_provider(prefix: &str, name: Option<&str>) -> bool {
@@ -95,14 +111,22 @@ fn collect_strings(value: &serde_json::Value, output: &mut Vec<String>) {
     }
 }
 
-fn is_oauth_capable(options: Option<&Vec<serde_json::Value>>) -> bool {
+fn detect_auth_kind(options: Option<&Vec<serde_json::Value>>) -> ProviderAuthKind {
     let Some(options) = options else {
-        return false;
+        return ProviderAuthKind::Unknown;
     };
 
-    let patterns = match RegexSet::new(OAUTH_PATTERNS) {
+    let oauth_patterns = match RegexSet::new(OAUTH_PATTERNS) {
         Ok(set) => set,
-        Err(_) => return false,
+        Err(_) => return ProviderAuthKind::Unknown,
+    };
+    let key_patterns = match RegexSet::new(KEY_PATTERNS) {
+        Ok(set) => set,
+        Err(_) => return ProviderAuthKind::Unknown,
+    };
+    let userpass_patterns = match RegexSet::new(USERPASS_PATTERNS) {
+        Ok(set) => set,
+        Err(_) => return ProviderAuthKind::Unknown,
     };
 
     let mut tokens = Vec::new();
@@ -110,10 +134,22 @@ fn is_oauth_capable(options: Option<&Vec<serde_json::Value>>) -> bool {
         collect_strings(option, &mut tokens);
     }
 
-    tokens
+    let tokens = tokens
         .into_iter()
         .map(|token| token.to_lowercase())
-        .any(|token| patterns.is_match(&token))
+        .collect::<Vec<_>>();
+
+    if tokens.iter().any(|token| oauth_patterns.is_match(token)) {
+        return ProviderAuthKind::OAuth;
+    }
+    if tokens.iter().any(|token| key_patterns.is_match(token)) {
+        return ProviderAuthKind::KeyBased;
+    }
+    if tokens.iter().any(|token| userpass_patterns.is_match(token)) {
+        return ProviderAuthKind::UserPass;
+    }
+
+    ProviderAuthKind::Unknown
 }
 
 /// Parse rclone providers JSON and return provider entries with discovery stats.
@@ -165,7 +201,8 @@ pub fn providers_from_rclone_json(json: &str) -> Result<ProviderDiscoveryResult>
             continue;
         }
 
-        let oauth_capable = is_oauth_capable(provider.options.as_ref());
+        let auth_kind = detect_auth_kind(provider.options.as_ref());
+        let oauth_capable = auth_kind == ProviderAuthKind::OAuth;
         if oauth_capable {
             stats.oauth_capable += 1;
         } else {
@@ -191,6 +228,7 @@ pub fn providers_from_rclone_json(json: &str) -> Result<ProviderDiscoveryResult>
             description,
             known,
             oauth_capable,
+            auth_kind,
         });
     }
 
@@ -268,6 +306,6 @@ mod tests {
         assert!(entries.iter().any(|p| p.id == "mystery"));
         assert_eq!(result.stats.total, 5);
         assert_eq!(result.stats.excluded_bad, 2);
-        assert_eq!(result.stats.non_oauth, 1);
+        assert_eq!(result.stats.non_oauth, 2);
     }
 }

@@ -190,12 +190,13 @@ pub fn render_state(frame: &mut Frame, app: &App) {
                     if let Some(desc) = provider.description() {
                         help_lines.push(Line::from(format!("Description: {}", desc)));
                     }
-                    let oauth = if provider.oauth_capable() {
-                        "Yes"
-                    } else {
-                        "No (manual config)"
+                    let auth = match provider.auth_kind() {
+                        crate::providers::ProviderAuthKind::OAuth => "OAuth",
+                        crate::providers::ProviderAuthKind::KeyBased => "Key-based",
+                        crate::providers::ProviderAuthKind::UserPass => "User/pass",
+                        crate::providers::ProviderAuthKind::Unknown => "Unknown/manual",
                     };
-                    help_lines.push(Line::from(format!("OAuth: {}", oauth)));
+                    help_lines.push(Line::from(format!("Auth: {}", auth)));
                     if let Some(known) = provider.known {
                         let hashes = known.hash_types();
                         if hashes.is_empty() {

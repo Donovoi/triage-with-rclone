@@ -12,6 +12,7 @@ use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use ratatui::backend::CrosstermBackend;
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::Terminal;
 use chrono::Local;
 use serde::Serialize;
@@ -34,6 +35,8 @@ use crate::rclone::RcloneConfig;
 use crate::ui::screens::welcome::WelcomeScreen;
 use crate::ui::{render::render_state, App};
 use crate::utils::open_file_dialog;
+
+use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
 fn format_provider_stats(
     stats: &crate::providers::discovery::ProviderDiscoveryStats,
@@ -74,7 +77,7 @@ fn apply_discovered_providers(
     // - known providers (even if OAuth isn't supported; these may be usable via manual config)
     // - unknown providers only if they look auth-capable (to avoid clutter + flows that can't work)
     let mut providers = discovery.providers;
-    providers.retain(|p| p.known.is_some() || p.oauth_capable());
+    providers.retain(|p| p.known.is_some() || p.auth_kind() != crate::providers::ProviderAuthKind::Unknown);
 
     if !providers.is_empty() {
         let stats_summary = format_provider_stats(&discovery.stats, providers.len());
@@ -248,6 +251,81 @@ fn update_auth_status<B: ratatui::backend::Backend>(
     app.auth_status = lines.join("\n");
     terminal.draw(|f| render_state(f, app))?;
     Ok(())
+}
+
+fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
+    let popup_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage((100 - percent_y) / 2),
+            Constraint::Percentage(percent_y),
+            Constraint::Percentage((100 - percent_y) / 2),
+        ])
+        .split(r);
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - percent_x) / 2),
+            Constraint::Percentage(percent_x),
+            Constraint::Percentage((100 - percent_x) / 2),
+        ])
+        .split(popup_layout[1])[1]
+}
+
+/// Prompt for a single line of input without leaving the TUI.
+///
+/// Returns `Ok(None)` if the user cancels with Esc.
+fn prompt_text_in_tui<B: ratatui::backend::Backend>(
+    app: &mut App,
+    terminal: &mut Terminal<B>,
+    title: &str,
+    hint: &str,
+) -> Result<Option<String>> {
+    let mut input = String::new();
+
+    loop {
+        terminal.draw(|f| {
+            render_state(f, app);
+
+            let area = f.area();
+            let overlay = centered_rect(80, 40, area);
+            let display = if input.is_empty() {
+                "<empty>".to_string()
+            } else {
+                input.clone()
+            };
+
+            let content = format!(
+                "{}\n\n> {}\n\nEnter submit | Esc cancel | Backspace delete",
+                hint, display
+            );
+            let modal = Paragraph::new(content)
+                .block(Block::default().title(title).borders(Borders::ALL))
+                .wrap(Wrap { trim: false });
+            f.render_widget(modal, overlay);
+        })?;
+
+        if !event::poll(Duration::from_millis(200))? {
+            continue;
+        }
+
+        if let Event::Key(key) = event::read()? {
+            if !matches!(key.kind, KeyEventKind::Press) {
+                continue;
+            }
+            match key.code {
+                KeyCode::Esc => return Ok(None),
+                KeyCode::Enter => return Ok(Some(input.trim().to_string())),
+                KeyCode::Backspace => {
+                    input.pop();
+                }
+                KeyCode::Char(c) => {
+                    input.push(c);
+                }
+                _ => {}
+            }
+        }
+    }
 }
 
 fn perform_mobile_auth_flow<B: ratatui::backend::Backend>(
@@ -647,6 +725,14 @@ fn perform_auth_flow<B: ratatui::backend::Backend>(
         } else {
             // Unknown provider: best-effort OAuth via `rclone authorize <backend>`.
             // This supports most rclone OAuth backends without needing provider-specific endpoints.
+            if provider.auth_kind() != crate::providers::ProviderAuthKind::OAuth {
+                bail!(
+                    "Backend '{}' does not appear to use OAuth (detected: {:?}). rclone-triage cannot auto-authenticate it yet. Configure it in an rclone config and use Retrieve List / Mount / Download from CSV.",
+                    provider.short_name(),
+                    provider.auth_kind()
+                );
+            }
+
             let base = provider.short_name();
             let remote_name = config.next_available_remote_name(base)?;
             fallback_base = Some(base.to_string());
@@ -685,10 +771,16 @@ fn perform_auth_flow<B: ratatui::backend::Backend>(
                 );
                 update_auth_status(app, terminal, lines)?;
 
-                let pasted = prompt_line_outside_tui(
+                let pasted = prompt_text_in_tui(
+                    app,
                     terminal,
-                    "Paste redirect URL (or code) then press Enter:\n> ",
-                )?;
+                    "Paste OAuth Callback",
+                    "Paste redirect URL (or paste only the code value).",
+                )?
+                .ok_or_else(|| anyhow::anyhow!("User cancelled"))?;
+                if pasted.trim().is_empty() {
+                    bail!("No callback input provided");
+                }
                 let cb = crate::rclone::authorize::parse_authorize_callback_input(&pasted)?;
 
                 let redirect_uri = running
@@ -1438,29 +1530,6 @@ fn perform_export_browser_sessions(app: &mut App) -> Result<()> {
     Ok(())
 }
 
-fn prompt_line_outside_tui<B: ratatui::backend::Backend>(
-    terminal: &mut Terminal<B>,
-    prompt: &str,
-) -> Result<String> {
-    disable_raw_mode()?;
-    let mut out = stdout();
-    execute!(out, DisableMouseCapture, LeaveAlternateScreen)?;
-
-    use std::io::{self, Write};
-    out.write_all(prompt.as_bytes())?;
-    out.flush()?;
-
-    let mut input = String::new();
-    io::stdin().read_line(&mut input)?;
-    let trimmed = input.trim().to_string();
-
-    execute!(out, EnterAlternateScreen, EnableMouseCapture)?;
-    enable_raw_mode()?;
-    terminal.clear()?;
-
-    Ok(trimmed)
-}
-
 #[derive(Debug, Serialize)]
 struct ExportedDomainCookies {
     tool: &'static str,
@@ -1506,11 +1575,6 @@ fn perform_export_domain_cookies<B: ratatui::backend::Backend>(
         app.init_case(output_dir)?;
     }
 
-    let dirs = match app.directories.as_ref() {
-        Some(d) => d,
-        None => bail!("Case directories not initialized"),
-    };
-
     let patterns = std::env::var("RCLONE_TRIAGE_COOKIE_DOMAINS")
         .ok()
         .map(|s| s.trim().to_string())
@@ -1521,21 +1585,32 @@ fn perform_export_domain_cookies<B: ratatui::backend::Backend>(
     let domain_patterns = if !patterns.is_empty() {
         patterns
     } else {
-        let raw = prompt_line_outside_tui(
+        let Some(raw) = prompt_text_in_tui(
+            app,
             terminal,
-            "Enter cookie domain patterns (comma-separated; '*' allowed). Empty to cancel:\n> ",
-        )?;
+            "Cookie Domain Patterns",
+            "Enter cookie domain patterns (comma-separated; '*' allowed).",
+        )? else {
+            app.menu_status = "Cancelled domain cookie export.".to_string();
+            return Ok(());
+        };
         let parsed = parse_domain_patterns(&raw);
         if parsed.is_empty() {
-            bail!("No domain patterns provided");
+            app.menu_status = "Cancelled domain cookie export (no patterns).".to_string();
+            return Ok(());
         }
         parsed
     };
 
-    let ts = Local::now().format("%Y%m%d-%H%M%S").to_string();
-    let out_path = dirs
+    let listings_dir = app
+        .directories
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("Case directories not initialized"))?
         .listings
-        .join(format!("domain_cookies_{}.json", ts));
+        .clone();
+
+    let ts = Local::now().format("%Y%m%d-%H%M%S").to_string();
+    let out_path = listings_dir.join(format!("domain_cookies_{}.json", ts));
 
     let extractor = crate::providers::session::SessionExtractor::new()?;
     let browsers = crate::providers::browser::BrowserDetector::detect_all();
@@ -2093,6 +2168,29 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                             app.confirm_provider();
                             if app.chosen_provider.is_none() {
                                 continue;
+                            }
+
+                            if let Some(provider) = app.chosen_provider.as_ref() {
+                                let needs_oauth = matches!(
+                                    app.selected_action,
+                                    Some(crate::ui::MenuAction::Authenticate)
+                                        | Some(crate::ui::MenuAction::SmartAuth)
+                                        | Some(crate::ui::MenuAction::MobileAuth)
+                                );
+                                if needs_oauth && provider.auth_kind() != crate::providers::ProviderAuthKind::OAuth {
+                                    let kind = match provider.auth_kind() {
+                                        crate::providers::ProviderAuthKind::KeyBased => "key-based",
+                                        crate::providers::ProviderAuthKind::UserPass => "user/pass",
+                                        crate::providers::ProviderAuthKind::Unknown => "unknown/manual",
+                                        crate::providers::ProviderAuthKind::OAuth => "oauth",
+                                    };
+                                    app.menu_status = format!(
+                                        "Auth flow requires OAuth, but '{}' is {}. Use an existing rclone config and choose Retrieve List / Mount / Download from CSV.",
+                                        provider.display_name(),
+                                        kind
+                                    );
+                                    continue;
+                                }
                             }
                             match app.selected_action {
                                 Some(crate::ui::MenuAction::MobileAuth) => {
