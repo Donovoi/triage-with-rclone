@@ -1,13 +1,17 @@
 //! Forensic logger with hash chaining
 //!
 //! Provides tamper-evident logging by chaining SHA256 hashes of each entry.
+//!
 //! Each log entry includes:
 //! - Timestamp (ISO 8601)
-//! - Hash of current entry (first 16 chars)
-//! - Hash of previous entry (first 16 chars)
+//! - Hash of current entry (SHA256 hex; 64 chars)
+//! - Hash of previous entry (SHA256 hex; 64 chars)
 //! - Log message
+//!
+//! Backwards compatibility:
+//! - Older logs may store only the first 16 hex chars for current/prev hash.
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use chrono::Utc;
 use sha2::{Digest, Sha256};
 use std::fs::{File, OpenOptions};
@@ -16,7 +20,24 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 /// Genesis hash for the first entry in a log chain
-const GENESIS_HASH: &str = "0000000000000000";
+const GENESIS_HASH: &str =
+    "0000000000000000000000000000000000000000000000000000000000000000";
+
+fn is_hex_hash(s: &str) -> bool {
+    (s.len() == 16 || s.len() == 64) && s.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+fn is_genesis_hash(s: &str) -> bool {
+    (s.len() == 16 || s.len() == 64) && s.chars().all(|c| c == '0')
+}
+
+fn compute_entry_hash(prev_hash: &str, timestamp: &str, message: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(prev_hash.as_bytes());
+    hasher.update(timestamp.as_bytes());
+    hasher.update(message.as_bytes());
+    hex::encode(hasher.finalize())
+}
 
 /// Forensic logger with hash chaining for tamper evidence
 pub struct ForensicLogger {
@@ -116,12 +137,7 @@ impl ForensicLogger {
         let mut last_hash = self.last_hash.lock().unwrap();
 
         // Calculate new hash: SHA256(prev_hash || timestamp || message)
-        let mut hasher = Sha256::new();
-        hasher.update(last_hash.as_bytes());
-        hasher.update(timestamp_str.as_bytes());
-        hasher.update(message.as_bytes());
-        let full_hash = hex::encode(hasher.finalize());
-        let current_hash = &full_hash[..16]; // First 16 chars
+        let current_hash = compute_entry_hash(&last_hash, &timestamp_str, message);
 
         // Format entry
         let entry = format!(
@@ -135,7 +151,7 @@ impl ForensicLogger {
         file.sync_all()?;
 
         // Update last hash
-        *last_hash = current_hash.to_string();
+        *last_hash = current_hash;
 
         Ok(())
     }
@@ -182,7 +198,7 @@ impl ForensicLogger {
         let file = File::open(path)?;
         let reader = BufReader::new(file);
 
-        let mut expected_prev_hash = GENESIS_HASH.to_string();
+        let mut expected_prev_hash: Option<String> = None;
 
         for line in reader.lines() {
             let line = line?;
@@ -203,23 +219,34 @@ impl ForensicLogger {
             let prev_hash = parts[2];
             let message = parts[3];
 
+            if !is_hex_hash(current_hash) || !is_hex_hash(prev_hash) {
+                return Ok(false);
+            }
+
             // Verify prev_hash matches expected
-            if prev_hash != expected_prev_hash {
-                return Ok(false); // Chain broken
+            if let Some(expected) = expected_prev_hash.as_deref() {
+                if prev_hash != expected {
+                    return Ok(false); // Chain broken
+                }
+            } else if !is_genesis_hash(prev_hash) {
+                return Ok(false);
             }
 
-            // Verify current_hash
-            let mut hasher = Sha256::new();
-            hasher.update(prev_hash.as_bytes());
-            hasher.update(timestamp.as_bytes());
-            hasher.update(message.as_bytes());
-            let computed_hash = &hex::encode(hasher.finalize())[..16];
-
-            if computed_hash != current_hash {
-                return Ok(false); // Hash mismatch
+            // Verify current_hash.
+            let computed_full = compute_entry_hash(prev_hash, timestamp, message);
+            if current_hash.len() == 16 {
+                if &computed_full[..16] != current_hash {
+                    return Ok(false);
+                }
+            } else if current_hash.len() == 64 {
+                if computed_full != current_hash {
+                    return Ok(false);
+                }
+            } else {
+                return Ok(false);
             }
 
-            expected_prev_hash = current_hash.to_string();
+            expected_prev_hash = Some(current_hash.to_string());
         }
 
         Ok(true)
