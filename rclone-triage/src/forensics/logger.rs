@@ -11,7 +11,7 @@
 //! Backwards compatibility:
 //! - Older logs may store only the first 16 hex chars for current/prev hash.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use chrono::Utc;
 use sha2::{Digest, Sha256};
 use std::fs::{File, OpenOptions};
