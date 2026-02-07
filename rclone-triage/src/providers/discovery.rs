@@ -69,6 +69,8 @@ const KEY_PATTERNS: &[&str] = &[
     r"secret[_-]?key",
     r"access[_-]?key[_-]?id",
     r"secret[_-]?access[_-]?key",
+    r"application[_-]?key",
+    r"application[_-]?key[_-]?id",
     r"api[_-]?key",
     r"private[_-]?key",
     r"service[_-]?account",

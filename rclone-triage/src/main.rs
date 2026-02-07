@@ -16,7 +16,8 @@ use rclone_triage::providers::auth::{
     authenticate_with_device_code, authenticate_with_mobile, authenticate_with_rclone,
 };
 use rclone_triage::providers::credentials::upsert_custom_oauth_credentials;
-use rclone_triage::providers::CloudProvider;
+use rclone_triage::providers::discovery::providers_from_rclone;
+use rclone_triage::providers::{CloudProvider, ProviderAuthKind};
 use rclone_triage::rclone::{start_web_gui, RcloneConfig, RcloneRunner};
 use rclone_triage::rclone::authorize::{
     parse_authorize_callback_input, send_local_authorize_callback, spawn_authorize,
@@ -253,6 +254,40 @@ fn main() -> Result<()> {
         } else {
             if args.device_code {
                 anyhow::bail!("Device code flow is only supported for known OAuth providers");
+            }
+
+            // Best-effort classification: avoid attempting OAuth flows on backends that are clearly
+            // key-based or user/pass. (Users can still use an existing rclone config for those.)
+            let auth_kind = providers_from_rclone(&runner)
+                .ok()
+                .and_then(|d| {
+                    d.providers
+                        .into_iter()
+                        .find(|p| p.id.eq_ignore_ascii_case(provider_name.as_str()))
+                })
+                .map(|p| p.auth_kind)
+                .unwrap_or(ProviderAuthKind::Unknown);
+
+            match auth_kind {
+                ProviderAuthKind::KeyBased => {
+                    anyhow::bail!(
+                        "Backend '{}' appears key-based. rclone-triage cannot prompt for keys yet. Configure it in an rclone config and retry listing/download.",
+                        provider_name
+                    );
+                }
+                ProviderAuthKind::UserPass => {
+                    anyhow::bail!(
+                        "Backend '{}' appears user/pass. rclone-triage cannot prompt for credentials yet. Configure it in an rclone config and retry listing/download.",
+                        provider_name
+                    );
+                }
+                ProviderAuthKind::Unknown => {
+                    eprintln!(
+                        "Warning: backend '{}' auth type is unknown; attempting OAuth authorize (best effort).",
+                        provider_name
+                    );
+                }
+                ProviderAuthKind::OAuth => {}
             }
 
             // Unknown backend: best-effort OAuth via `rclone authorize <backend>`.

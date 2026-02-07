@@ -4,7 +4,8 @@
 
 use anyhow::{bail, Result};
 use crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
+    self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+    Event, KeyCode, KeyEvent, KeyEventKind,
     MouseButton, MouseEvent, MouseEventKind,
 };
 use crossterm::execute;
@@ -73,11 +74,12 @@ fn apply_discovered_providers(
     app: &mut App,
     discovery: crate::providers::discovery::ProviderDiscoveryResult,
 ) {
-    // Keep:
-    // - known providers (even if OAuth isn't supported; these may be usable via manual config)
-    // - unknown providers only if they look auth-capable (to avoid clutter + flows that can't work)
+    // Keep everything rclone reports (after `providers_from_rclone_json` filtering), so users can
+    // still select key-based/manual backends when they already have an authenticated config.
+    //
+    // Auth flows are gated later by `auth_kind` to avoid offering OAuth/mobile auth on backends
+    // that require API keys or other manual configuration.
     let mut providers = discovery.providers;
-    providers.retain(|p| p.known.is_some() || p.auth_kind() != crate::providers::ProviderAuthKind::Unknown);
 
     if !providers.is_empty() {
         let stats_summary = format_provider_stats(&discovery.stats, providers.len());
@@ -289,15 +291,27 @@ fn prompt_text_in_tui<B: ratatui::backend::Backend>(
 
             let area = f.area();
             let overlay = centered_rect(80, 40, area);
+            let max_display_chars = 512usize;
+            let total_chars = input.chars().count();
             let display = if input.is_empty() {
                 "<empty>".to_string()
-            } else {
+            } else if total_chars <= max_display_chars {
                 input.clone()
+            } else {
+                let tail: String = input
+                    .chars()
+                    .rev()
+                    .take(max_display_chars)
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .collect();
+                format!("...{}", tail)
             };
 
             let content = format!(
-                "{}\n\n> {}\n\nEnter submit | Esc cancel | Backspace delete",
-                hint, display
+                "{}\n\n> {}\n\nLen: {} char(s)\n\nEnter submit | Esc cancel | Backspace delete | Ctrl+U clear | Ctrl+W delete word",
+                hint, display, total_chars
             );
             let modal = Paragraph::new(content)
                 .block(Block::default().title(title).borders(Borders::ALL))
@@ -309,21 +323,49 @@ fn prompt_text_in_tui<B: ratatui::backend::Backend>(
             continue;
         }
 
-        if let Event::Key(key) = event::read()? {
-            if !matches!(key.kind, KeyEventKind::Press) {
-                continue;
-            }
-            match key.code {
-                KeyCode::Esc => return Ok(None),
-                KeyCode::Enter => return Ok(Some(input.trim().to_string())),
-                KeyCode::Backspace => {
-                    input.pop();
+        match event::read()? {
+            Event::Key(key) => {
+                if !matches!(key.kind, KeyEventKind::Press) {
+                    continue;
                 }
-                KeyCode::Char(c) => {
-                    input.push(c);
+                match key.code {
+                    KeyCode::Esc => return Ok(None),
+                    KeyCode::Enter => return Ok(Some(input.trim().to_string())),
+                    KeyCode::Backspace => {
+                        input.pop();
+                    }
+                    KeyCode::Char('u')
+                        if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) =>
+                    {
+                        input.clear();
+                    }
+                    KeyCode::Char('w')
+                        if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) =>
+                    {
+                        // Delete the last "word" (simple ASCII whitespace heuristic).
+                        while matches!(input.chars().last(), Some(c) if c.is_whitespace()) {
+                            input.pop();
+                        }
+                        while matches!(input.chars().last(), Some(c) if !c.is_whitespace()) {
+                            input.pop();
+                        }
+                    }
+                    KeyCode::Char(c) => {
+                        input.push(c);
+                    }
+                    _ => {}
                 }
-                _ => {}
             }
+            Event::Paste(paste) => {
+                // Normalize newlines: this is a single-line prompt (callers can split on whitespace).
+                for c in paste.chars() {
+                    match c {
+                        '\r' | '\n' => input.push(' '),
+                        _ => input.push(c),
+                    }
+                }
+            }
+            _ => {}
         }
     }
 }
@@ -725,12 +767,22 @@ fn perform_auth_flow<B: ratatui::backend::Backend>(
         } else {
             // Unknown provider: best-effort OAuth via `rclone authorize <backend>`.
             // This supports most rclone OAuth backends without needing provider-specific endpoints.
-            if provider.auth_kind() != crate::providers::ProviderAuthKind::OAuth {
-                bail!(
-                    "Backend '{}' does not appear to use OAuth (detected: {:?}). rclone-triage cannot auto-authenticate it yet. Configure it in an rclone config and use Retrieve List / Mount / Download from CSV.",
-                    provider.short_name(),
-                    provider.auth_kind()
-                );
+            match provider.auth_kind() {
+                crate::providers::ProviderAuthKind::KeyBased
+                | crate::providers::ProviderAuthKind::UserPass => {
+                    bail!(
+                        "Backend '{}' does not appear to use OAuth (detected: {:?}). rclone-triage cannot auto-authenticate it yet. Configure it in an rclone config and use Retrieve List / Mount / Download from CSV.",
+                        provider.short_name(),
+                        provider.auth_kind()
+                    );
+                }
+                crate::providers::ProviderAuthKind::Unknown => {
+                    app.log_info(format!(
+                        "Backend '{}' auth type unknown; attempting OAuth via rclone authorize (best effort).",
+                        provider.short_name()
+                    ));
+                }
+                crate::providers::ProviderAuthKind::OAuth => {}
             }
 
             let base = provider.short_name();
@@ -1558,7 +1610,8 @@ struct ExportedDomainCookiesError {
 }
 
 fn parse_domain_patterns(raw: &str) -> Vec<String> {
-    raw.split(',')
+    raw.split([',', '\n', '\r', ';'])
+        .flat_map(|chunk| chunk.split_whitespace())
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string())
@@ -1734,7 +1787,14 @@ fn perform_download_flow<B: ratatui::backend::Backend>(
 
         for file in &app.files_to_download {
             let source = format!("{}:{}", remote_name, file);
-            let dest = dest_dir.join(file);
+            let mapped = crate::utils::safe_join_under(&dest_dir, file);
+            let dest = mapped.path;
+            if mapped.changed {
+                app.log_info(format!(
+                    "Sanitized download destination for '{}' -> {:?}",
+                    file, dest
+                ));
+            }
 
             // Ensure parent directory exists
             if let Some(parent) = dest.parent() {
@@ -1850,7 +1910,7 @@ fn perform_download_flow<B: ratatui::backend::Backend>(
                 }
 
                 // Track downloaded file
-                let dest = dest_dir.join(file);
+                let dest = crate::utils::safe_join_under(&dest_dir, file).path;
                 app.track_file(&dest, format!("Downloaded file: {}", file));
 
                 // Track downloaded file in case
@@ -2038,7 +2098,7 @@ pub fn run_once() -> Result<()> {
 pub fn run_loop(app: &mut App) -> Result<()> {
     enable_raw_mode()?;
     let mut out = stdout();
-    execute!(out, EnterAlternateScreen, EnableMouseCapture)?;
+    execute!(out, EnterAlternateScreen, EnableMouseCapture, EnableBracketedPaste)?;
 
     let backend = CrosstermBackend::new(out);
     let mut terminal = Terminal::new(backend)?;
@@ -2049,7 +2109,7 @@ pub fn run_loop(app: &mut App) -> Result<()> {
         fn drop(&mut self) {
             let _ = disable_raw_mode();
             let mut out = std::io::stdout();
-            let _ = execute!(out, DisableMouseCapture, LeaveAlternateScreen);
+            let _ = execute!(out, DisableBracketedPaste, DisableMouseCapture, LeaveAlternateScreen);
         }
     }
     let _guard = TuiGuard;
@@ -2177,19 +2237,31 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                                         | Some(crate::ui::MenuAction::SmartAuth)
                                         | Some(crate::ui::MenuAction::MobileAuth)
                                 );
-                                if needs_oauth && provider.auth_kind() != crate::providers::ProviderAuthKind::OAuth {
-                                    let kind = match provider.auth_kind() {
-                                        crate::providers::ProviderAuthKind::KeyBased => "key-based",
-                                        crate::providers::ProviderAuthKind::UserPass => "user/pass",
-                                        crate::providers::ProviderAuthKind::Unknown => "unknown/manual",
-                                        crate::providers::ProviderAuthKind::OAuth => "oauth",
-                                    };
-                                    app.menu_status = format!(
-                                        "Auth flow requires OAuth, but '{}' is {}. Use an existing rclone config and choose Retrieve List / Mount / Download from CSV.",
-                                        provider.display_name(),
-                                        kind
-                                    );
-                                    continue;
+                                if needs_oauth {
+                                    match provider.auth_kind() {
+                                        crate::providers::ProviderAuthKind::KeyBased => {
+                                            app.menu_status = format!(
+                                                "Backend '{}' appears key-based. rclone-triage cannot prompt for keys yet. Configure it in an rclone config and use Retrieve List / Mount / Download from CSV.",
+                                                provider.display_name()
+                                            );
+                                            continue;
+                                        }
+                                        crate::providers::ProviderAuthKind::UserPass => {
+                                            app.menu_status = format!(
+                                                "Backend '{}' appears user/pass. rclone-triage cannot prompt for credentials yet. Configure it in an rclone config and use Retrieve List / Mount / Download from CSV.",
+                                                provider.display_name()
+                                            );
+                                            continue;
+                                        }
+                                        crate::providers::ProviderAuthKind::Unknown => {
+                                            // Best-effort: allow trying OAuth even if we can't confidently classify the backend.
+                                            app.menu_status = format!(
+                                                "Backend '{}' auth type is unknown. Attempting OAuth anyway; if it fails, configure it in an rclone config and use Retrieve List / Mount / Download from CSV.",
+                                                provider.display_name()
+                                            );
+                                        }
+                                        crate::providers::ProviderAuthKind::OAuth => {}
+                                    }
                                 }
                             }
                             match app.selected_action {
@@ -2745,7 +2817,11 @@ mod tests {
         assert_ne!(app.providers.len(), original_len);
         assert!(app.providers.iter().any(|p| p.id == "s3"));
         assert!(app.providers.iter().any(|p| p.id == "azureblob"));
-        assert!(!app.providers.iter().any(|p| p.id == "b2"));
+        let b2 = app.providers.iter().find(|p| p.id == "b2").unwrap();
+        assert_eq!(
+            b2.auth_kind(),
+            crate::providers::ProviderAuthKind::KeyBased
+        );
         assert!(app.providers.iter().any(|p| p.id == "drive"));
     }
 
