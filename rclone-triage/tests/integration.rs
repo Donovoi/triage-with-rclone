@@ -352,6 +352,8 @@ esac
         size: results[0].size.unwrap_or(0),
         hash: results[0].hash.clone(),
         hash_type: results[0].hash_type.clone(),
+        hash_verified: results[0].hash_verified,
+        hash_error: results[0].hash_error.clone(),
     });
     case.finalize();
 

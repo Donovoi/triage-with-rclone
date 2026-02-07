@@ -10,6 +10,7 @@
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::browser::{Browser, BrowserType};
 use crate::providers::CloudProvider;
@@ -227,11 +228,62 @@ impl SessionExtractor {
         })
     }
 
+    /// Extract cookies matching a user-provided list of domains/patterns.
+    ///
+    /// This is a triage helper that is not tied to the built-in provider enum.
+    pub fn extract_domain_cookies(&self, browser: &Browser, domains: &[String]) -> Result<Vec<Cookie>> {
+        let profile_path = browser.profile_path.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("Browser {} has no profile path", browser.browser_type)
+        })?;
+
+        let domain_patterns = to_like_patterns(domains.iter());
+        if domain_patterns.is_empty() {
+            bail!("No cookie domain patterns provided");
+        }
+
+        match browser.browser_type {
+            BrowserType::Chrome
+            | BrowserType::ChromeBeta
+            | BrowserType::Chromium
+            | BrowserType::Edge
+            | BrowserType::Brave
+            | BrowserType::Opera
+            | BrowserType::OperaGX
+            | BrowserType::Vivaldi
+            | BrowserType::Yandex => self.extract_chromium_cookies_by_patterns(profile_path, &domain_patterns),
+
+            BrowserType::Firefox | BrowserType::Tor => {
+                self.extract_firefox_cookies_by_patterns(profile_path, &domain_patterns)
+            }
+        }
+    }
+
+    fn unique_temp_db_path(&self, prefix: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        self.temp_dir
+            .join(format!("{}_{}_{}.db", prefix, std::process::id(), nanos))
+    }
+
     /// Extract cookies from Chromium-based browser
     fn extract_chromium_cookies(
         &self,
         profile_path: &Path,
         config: &ProviderCookieConfig,
+    ) -> Result<Vec<Cookie>> {
+        let domain_patterns = to_like_patterns(config.domains.iter().copied());
+        if domain_patterns.is_empty() {
+            bail!("Provider cookie domains were empty");
+        }
+        self.extract_chromium_cookies_by_patterns(profile_path, &domain_patterns)
+    }
+
+    fn extract_chromium_cookies_by_patterns(
+        &self,
+        profile_path: &Path,
+        domain_patterns: &[String],
     ) -> Result<Vec<Cookie>> {
         let cookies_path = profile_path.join("Cookies");
 
@@ -245,20 +297,46 @@ impl SessionExtractor {
                     network_cookies
                 );
             }
-            return self.read_chromium_cookies_db(&network_cookies, config);
+            return self.read_chromium_cookies_db(&network_cookies, domain_patterns);
         }
 
-        self.read_chromium_cookies_db(&cookies_path, config)
+        self.read_chromium_cookies_db(&cookies_path, domain_patterns)
     }
 
     /// Read Chromium cookies database
     fn read_chromium_cookies_db(
         &self,
         cookies_path: &Path,
-        config: &ProviderCookieConfig,
+        domain_patterns: &[String],
     ) -> Result<Vec<Cookie>> {
+        if domain_patterns.is_empty() {
+            bail!("No cookie domain patterns provided");
+        }
+
+        #[cfg(windows)]
+        let local_state_key: Option<Vec<u8>> = {
+            // Derive the profile directory from the cookies DB location.
+            //
+            // Common layouts:
+            // - <profile>/Cookies
+            // - <profile>/Network/Cookies
+            let profile_dir = cookies_path
+                .parent()
+                .ok_or_else(|| anyhow::anyhow!("Invalid cookies path: {:?}", cookies_path))?;
+            let profile_dir = if profile_dir.file_name() == Some(std::ffi::OsStr::new("Network")) {
+                profile_dir.parent().unwrap_or(profile_dir)
+            } else {
+                profile_dir
+            };
+
+            self.get_chromium_local_state_key(profile_dir).ok()
+        };
+
+        #[cfg(not(windows))]
+        let local_state_key: Option<Vec<u8>> = None;
+
         // Copy the database to temp to avoid locking issues
-        let temp_db = self.temp_dir.join("cookies_copy.db");
+        let temp_db = self.unique_temp_db_path("chromium_cookies");
         std::fs::copy(cookies_path, &temp_db)
             .with_context(|| format!("Failed to copy cookies db from {:?}", cookies_path))?;
 
@@ -268,42 +346,23 @@ impl SessionExtractor {
 
         let mut cookies = Vec::new();
 
-        // Build domain filter for SQL
-        let domain_patterns: Vec<String> = config
-            .domains
-            .iter()
-            .map(|d| format!("%{}%", d.trim_start_matches('.')))
-            .collect();
-
         // Query cookies - Chromium uses different schema versions
-        // Try newer schema first (v10+)
-        let query = r#"
+        let where_sql = build_like_where_clause("host_key", domain_patterns.len());
+        let query = format!(
+            r#"
             SELECT name, encrypted_value, host_key, path, 
                    expires_utc, is_secure, is_httponly
             FROM cookies 
-            WHERE host_key LIKE ?1 OR host_key LIKE ?2 OR host_key LIKE ?3 
-                  OR host_key LIKE ?4 OR host_key LIKE ?5
-        "#;
+            WHERE {}
+        "#,
+            where_sql
+        );
 
-        let mut stmt = conn.prepare(query).context("Failed to prepare SQL")?;
-
-        // Use first 5 domain patterns (or pad with empty)
-        let patterns: Vec<&str> = domain_patterns
-            .iter()
-            .map(|s| s.as_str())
-            .chain(std::iter::repeat(""))
-            .take(5)
-            .collect();
+        let mut stmt = conn.prepare(&query).context("Failed to prepare SQL")?;
 
         let rows = stmt
             .query_map(
-                rusqlite::params![
-                    patterns[0],
-                    patterns[1],
-                    patterns[2],
-                    patterns[3],
-                    patterns[4]
-                ],
+                rusqlite::params_from_iter(domain_patterns.iter()),
                 |row| {
                     Ok((
                         row.get::<_, String>(0)?,
@@ -330,7 +389,7 @@ impl SessionExtractor {
         {
             // Decrypt the cookie value
             let value = self
-                .decrypt_chromium_cookie(&encrypted_value)
+                .decrypt_chromium_cookie(&encrypted_value, local_state_key.as_deref())
                 .unwrap_or_default();
 
             // Convert Chrome timestamp (microseconds since 1601) to Unix timestamp
@@ -360,7 +419,14 @@ impl SessionExtractor {
     }
 
     /// Decrypt Chromium cookie value
-    fn decrypt_chromium_cookie(&self, encrypted: &[u8]) -> Result<String> {
+    fn decrypt_chromium_cookie(
+        &self,
+        encrypted: &[u8],
+        local_state_key: Option<&[u8]>,
+    ) -> Result<String> {
+        #[cfg(not(windows))]
+        let _ = local_state_key;
+
         if encrypted.is_empty() {
             return Ok(String::new());
         }
@@ -370,7 +436,7 @@ impl SessionExtractor {
             // AES-256-GCM encrypted with DPAPI-protected key
             #[cfg(windows)]
             {
-                return self.decrypt_chromium_v10_windows(&encrypted[3..]);
+                return self.decrypt_chromium_v10_windows(&encrypted[3..], local_state_key);
             }
 
             #[cfg(target_os = "linux")]
@@ -399,24 +465,50 @@ impl SessionExtractor {
 
     /// Decrypt v10/v11 Chromium cookie on Windows using DPAPI
     #[cfg(windows)]
-    fn decrypt_chromium_v10_windows(&self, encrypted: &[u8]) -> Result<String> {
+    fn decrypt_chromium_v10_windows(
+        &self,
+        encrypted: &[u8],
+        local_state_key: Option<&[u8]>,
+    ) -> Result<String> {
+        use aes_gcm::{
+            aead::{Aead, KeyInit},
+            Aes256Gcm, Nonce,
+        };
+
         // The encrypted data format is: nonce (12 bytes) + ciphertext + tag (16 bytes)
         if encrypted.len() < 28 {
             bail!("Encrypted data too short");
         }
 
-        // Get the encryption key from Local State file
-        // For now, return empty - full implementation would read and decrypt Local State
-        // This requires DPAPI CryptUnprotectData
+        let key = local_state_key.ok_or_else(|| {
+            anyhow::anyhow!("Missing Chromium Local State key (cookie values may be blank)")
+        })?;
 
-        // Placeholder - would need to implement Local State key extraction
-        tracing::debug!("Windows v10 cookie decryption not fully implemented");
-        Ok(String::new())
+        if key.len() != 32 {
+            bail!("Unexpected Chromium Local State key length: {}", key.len());
+        }
+
+        let nonce_bytes = &encrypted[..12];
+        let ciphertext = &encrypted[12..];
+
+        let cipher = Aes256Gcm::new_from_slice(key).context("Failed to create cipher")?;
+        let nonce = Nonce::from_slice(nonce_bytes);
+
+        let plaintext = cipher
+            .decrypt(nonce, ciphertext)
+            .context("Failed to decrypt Chromium cookie")?;
+        Ok(String::from_utf8_lossy(&plaintext).to_string())
     }
 
     /// Decrypt using Windows DPAPI
     #[cfg(windows)]
     fn decrypt_dpapi(&self, encrypted: &[u8]) -> Result<String> {
+        let decrypted = self.dpapi_decrypt_bytes(encrypted)?;
+        Ok(String::from_utf8_lossy(&decrypted).to_string())
+    }
+
+    #[cfg(windows)]
+    fn dpapi_decrypt_bytes(&self, encrypted: &[u8]) -> Result<Vec<u8>> {
         use windows::Win32::Foundation::{LocalFree, HLOCAL};
         use windows::Win32::Security::Cryptography::{
             CryptUnprotectData, CRYPTPROTECT_UI_FORBIDDEN, CRYPT_INTEGER_BLOB,
@@ -443,14 +535,58 @@ impl SessionExtractor {
             );
 
             if result.is_ok() && !output.pbData.is_null() {
-                let decrypted =
-                    std::slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec();
+                let decrypted = std::slice::from_raw_parts(output.pbData, output.cbData as usize)
+                    .to_vec();
                 let _ = LocalFree(Some(HLOCAL(output.pbData as _)));
-                Ok(String::from_utf8_lossy(&decrypted).to_string())
+                Ok(decrypted)
             } else {
                 bail!("DPAPI decryption failed");
             }
         }
+    }
+
+    #[cfg(windows)]
+    fn get_chromium_local_state_key(&self, profile_dir: &Path) -> Result<Vec<u8>> {
+        let mut candidates = Vec::new();
+        candidates.push(profile_dir.join("Local State"));
+        if let Some(parent) = profile_dir.parent() {
+            candidates.push(parent.join("Local State"));
+            if let Some(grand) = parent.parent() {
+                candidates.push(grand.join("Local State"));
+            }
+        }
+
+        let local_state_path = candidates.into_iter().find(|p| p.exists()).ok_or_else(|| {
+            anyhow::anyhow!("Chromium Local State file not found near {:?}", profile_dir)
+        })?;
+
+        let contents = std::fs::read_to_string(&local_state_path)
+            .with_context(|| format!("Failed to read Local State from {:?}", local_state_path))?;
+
+        let json: serde_json::Value = serde_json::from_str(&contents).with_context(|| {
+            format!("Failed to parse Local State JSON at {:?}", local_state_path)
+        })?;
+
+        let enc_key_b64 = json
+            .get("os_crypt")
+            .and_then(|v| v.get("encrypted_key"))
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Local State missing os_crypt.encrypted_key at {:?}",
+                    local_state_path
+                )
+            })?;
+
+        let decoded = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, enc_key_b64)
+            .context("Failed to base64-decode Local State encrypted key")?;
+
+        let dpapi_blob = decoded
+            .strip_prefix(b"DPAPI")
+            .unwrap_or(decoded.as_slice());
+
+        self.dpapi_decrypt_bytes(dpapi_blob)
+            .context("Failed to DPAPI-decrypt Local State key")
     }
 
     /// Decrypt v10/v11 Chromium cookie on Linux
@@ -512,6 +648,18 @@ impl SessionExtractor {
         profile_path: &Path,
         config: &ProviderCookieConfig,
     ) -> Result<Vec<Cookie>> {
+        let domain_patterns = to_like_patterns(config.domains.iter().copied());
+        if domain_patterns.is_empty() {
+            bail!("Provider cookie domains were empty");
+        }
+        self.extract_firefox_cookies_by_patterns(profile_path, &domain_patterns)
+    }
+
+    fn extract_firefox_cookies_by_patterns(
+        &self,
+        profile_path: &Path,
+        domain_patterns: &[String],
+    ) -> Result<Vec<Cookie>> {
         // Firefox stores each profile in a subdirectory with random name
         // profile_path might be the Profiles directory or a specific profile
 
@@ -536,7 +684,7 @@ impl SessionExtractor {
         };
 
         // Copy to temp to avoid locking
-        let temp_db = self.temp_dir.join("ff_cookies_copy.db");
+        let temp_db = self.unique_temp_db_path("firefox_cookies");
         std::fs::copy(&cookies_path, &temp_db)?;
 
         let conn = rusqlite::Connection::open(&temp_db)?;
@@ -544,36 +692,20 @@ impl SessionExtractor {
         let mut cookies = Vec::new();
 
         // Firefox cookies are not encrypted (only the passwords are)
-        let query = r#"
+        let where_sql = build_like_where_clause("host", domain_patterns.len());
+        let query = format!(
+            r#"
             SELECT name, value, host, path, expiry, isSecure, isHttpOnly
             FROM moz_cookies
-            WHERE host LIKE ?1 OR host LIKE ?2 OR host LIKE ?3 
-                  OR host LIKE ?4 OR host LIKE ?5
-        "#;
+            WHERE {}
+        "#,
+            where_sql
+        );
 
-        let domain_patterns: Vec<String> = config
-            .domains
-            .iter()
-            .map(|d| format!("%{}%", d.trim_start_matches('.')))
-            .collect();
-
-        let patterns: Vec<&str> = domain_patterns
-            .iter()
-            .map(|s| s.as_str())
-            .chain(std::iter::repeat(""))
-            .take(5)
-            .collect();
-
-        let mut stmt = conn.prepare(query)?;
+        let mut stmt = conn.prepare(&query)?;
 
         let rows = stmt.query_map(
-            rusqlite::params![
-                patterns[0],
-                patterns[1],
-                patterns[2],
-                patterns[3],
-                patterns[4]
-            ],
+            rusqlite::params_from_iter(domain_patterns.iter()),
             |row| {
                 Ok((
                     row.get::<_, String>(0)?,
@@ -687,6 +819,46 @@ impl SessionExtractor {
 
         sessions
     }
+}
+
+fn domain_to_like_pattern(domain: &str) -> Option<String> {
+    let trimmed = domain.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let mut value = trimmed.trim_start_matches('.').to_string();
+    if value.is_empty() {
+        return None;
+    }
+    if value.contains('*') {
+        value = value.replace('*', "%");
+    }
+
+    // If caller passed an explicit LIKE pattern, use it as-is.
+    if value.contains('%') || value.contains('_') {
+        return Some(value);
+    }
+
+    Some(format!("%{}%", value))
+}
+
+fn to_like_patterns<I, S>(domains: I) -> Vec<String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    domains
+        .into_iter()
+        .filter_map(|d| domain_to_like_pattern(d.as_ref()))
+        .collect()
+}
+
+fn build_like_where_clause(column: &str, count: usize) -> String {
+    let mut parts = Vec::with_capacity(count.max(1));
+    for i in 0..count {
+        parts.push(format!("{} LIKE ?{}", column, i + 1));
+    }
+    parts.join(" OR ")
 }
 
 impl Default for SessionExtractor {

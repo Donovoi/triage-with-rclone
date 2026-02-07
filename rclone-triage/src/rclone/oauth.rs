@@ -7,11 +7,17 @@
 //! 4. Returning the code for token exchange
 
 use anyhow::{bail, Context, Result};
-use std::time::Duration;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine;
+use rand::rngs::OsRng;
+use rand::RngCore;
+use std::time::{Duration, Instant};
 use tiny_http::{Response, Server};
 
 /// Default port for OAuth redirect (same as rclone)
 pub const DEFAULT_OAUTH_PORT: u16 = 53682;
+
+const OAUTH_STATE_LEN_BYTES: usize = 32;
 
 /// OAuth flow handler
 pub struct OAuthFlow {
@@ -76,90 +82,143 @@ impl OAuthFlow {
         open::that(auth_url)
             .with_context(|| format!("Failed to open browser with URL: {}", auth_url))?;
 
-        self.wait_for_redirect()
+        let expected_state = extract_param(auth_url, "state");
+        self.wait_for_redirect_with_state(expected_state.as_deref())
     }
 
     /// Wait for the OAuth redirect without opening a browser.
     ///
     /// Useful for mobile/QR flows where the user opens the URL on another device.
     pub fn wait_for_redirect(&self) -> Result<OAuthResult> {
+        self.wait_for_redirect_with_state(None)
+    }
+
+    /// Wait for the OAuth redirect and optionally validate an expected `state` parameter.
+    ///
+    /// This is the safer variant of `wait_for_redirect()` because it:
+    /// - Ignores non-callback requests (e.g. `/favicon.ico`)
+    /// - Ignores callbacks with mismatched `state` (when provided)
+    ///
+    /// Note: some OAuth providers omit `state` on the callback even if it was provided in the
+    /// authorization URL. In that case, we accept the callback as a best-effort behavior.
+    pub fn wait_for_redirect_with_state(&self, expected_state: Option<&str>) -> Result<OAuthResult> {
         // Start local server
         let bind_addr = format!("{}:{}", self.bind_host, self.port);
         let server = Server::http(&bind_addr)
             .map_err(|e| anyhow::anyhow!("Failed to start OAuth server on {}: {}", bind_addr, e))?;
 
-        // Wait for redirect with timeout
-        let request = server.recv_timeout(self.timeout)?.ok_or_else(|| {
-            anyhow::anyhow!(
-                "OAuth timeout: no response received within {} seconds",
-                self.timeout.as_secs()
-            )
-        })?;
+        let deadline = Instant::now() + self.timeout;
 
-        // Parse the request URL
-        let url = request.url();
+        loop {
+            let now = Instant::now();
+            if now >= deadline {
+                bail!(
+                    "OAuth timeout: no response received within {} seconds",
+                    self.timeout.as_secs()
+                );
+            }
+            let remaining = deadline - now;
 
-        // Check for error
-        if url.contains("error=") {
-            let error = extract_param(url, "error").unwrap_or_else(|| "unknown".to_string());
-            let description = extract_param(url, "error_description")
-                .unwrap_or_else(|| "No description".to_string());
-
-            // Send error response to browser
-            let response = Response::from_string(format!(
-                r#"<html>
-                <head><title>Authentication Failed</title></head>
-                <body>
-                <h1>Authentication Failed</h1>
-                <p>Error: {}</p>
-                <p>{}</p>
-                <p>You can close this window.</p>
-                </body>
-                </html>"#,
-                error, description
-            ))
-            .with_header(
-                tiny_http::Header::from_bytes(
-                    &b"Content-Type"[..],
-                    &b"text/html; charset=utf-8"[..],
+            let request = server.recv_timeout(remaining)?.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "OAuth timeout: no response received within {} seconds",
+                    self.timeout.as_secs()
                 )
-                .unwrap(),
-            );
-            let _ = request.respond(response);
+            })?;
 
-            bail!("OAuth error: {} - {}", error, description);
+            let url = request.url().to_string();
+
+            match parse_oauth_callback_url(&url, expected_state) {
+                CallbackParse::Ignore => {
+                    // Common extra request from browsers.
+                    let response = if url.starts_with("/favicon") {
+                        Response::from_string("").with_header(content_type_header())
+                    } else {
+                        Response::from_string(
+                            r#"<html>
+                            <head><title>rclone-triage OAuth</title></head>
+                            <body>
+                            <h1>rclone-triage OAuth Callback</h1>
+                            <p>Waiting for authentication callback...</p>
+                            <p>You can close this window and return to the application.</p>
+                            </body>
+                            </html>"#,
+                        )
+                        .with_header(content_type_header())
+                    };
+                    let _ = request.respond(response);
+                    continue;
+                }
+                CallbackParse::StateMismatch { got } => {
+                    let expected = expected_state.unwrap_or("<none>");
+                    let got = got.as_deref().unwrap_or("<missing>");
+                    let response = Response::from_string(format!(
+                        r#"<html>
+                        <head><title>Authentication Session Mismatch</title></head>
+                        <body>
+                        <h1>Authentication Session Mismatch</h1>
+                        <p>This callback does not match the current authentication session.</p>
+                        <p>Expected state: <code>{}</code></p>
+                        <p>Received state: <code>{}</code></p>
+                        <p>Please return to the application and try again.</p>
+                        </body>
+                        </html>"#,
+                        escape_html(expected),
+                        escape_html(got)
+                    ))
+                    .with_header(content_type_header());
+                    let _ = request.respond(response);
+                    continue;
+                }
+                CallbackParse::Error { error, description } => {
+                    let response = Response::from_string(format!(
+                        r#"<html>
+                        <head><title>Authentication Failed</title></head>
+                        <body>
+                        <h1>Authentication Failed</h1>
+                        <p>Error: {}</p>
+                        <p>{}</p>
+                        <p>You can close this window.</p>
+                        </body>
+                        </html>"#,
+                        escape_html(&error),
+                        escape_html(&description)
+                    ))
+                    .with_header(content_type_header());
+                    let _ = request.respond(response);
+
+                    bail!("OAuth error: {} - {}", error, description);
+                }
+                CallbackParse::Success { code, state } => {
+                    let response = Response::from_string(
+                        r#"<html>
+                        <head><title>Authentication Successful</title>
+                        <style>
+                            body { font-family: system-ui, sans-serif; text-align: center; padding: 50px; }
+                            h1 { color: #2e7d32; }
+                        </style>
+                        </head>
+                        <body>
+                        <h1>✓ Authentication Successful</h1>
+                        <p>You have been authenticated successfully.</p>
+                        <p>You can close this window and return to the application.</p>
+                        </body>
+                        </html>"#,
+                    )
+                    .with_header(content_type_header());
+                    let _ = request.respond(response);
+
+                    return Ok(OAuthResult { code, state });
+                }
+            }
         }
+    }
 
-        // Extract authorization code
-        let code = extract_param(url, "code")
-            .ok_or_else(|| anyhow::anyhow!("No authorization code in OAuth redirect"))?;
-
-        // Extract state if present
-        let state = extract_param(url, "state");
-
-        // Send success response to browser
-        let response = Response::from_string(
-            r#"<html>
-            <head><title>Authentication Successful</title>
-            <style>
-                body { font-family: system-ui, sans-serif; text-align: center; padding: 50px; }
-                h1 { color: #2e7d32; }
-            </style>
-            </head>
-            <body>
-            <h1>✓ Authentication Successful</h1>
-            <p>You have been authenticated successfully.</p>
-            <p>You can close this window and return to the application.</p>
-            </body>
-            </html>"#,
-        )
-        .with_header(
-            tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..])
-                .unwrap(),
-        );
-        let _ = request.respond(response);
-
-        Ok(OAuthResult { code, state })
+    /// Generate an OAuth `state` parameter value (CSRF protection).
+    pub fn generate_state() -> String {
+        let mut bytes = [0u8; OAUTH_STATE_LEN_BYTES];
+        OsRng.fill_bytes(&mut bytes);
+        URL_SAFE_NO_PAD.encode(bytes)
     }
 
     /// Build an OAuth authorization URL
@@ -216,6 +275,62 @@ pub struct OAuthResult {
     pub code: String,
     /// The state parameter (if provided)
     pub state: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CallbackParse {
+    Ignore,
+    StateMismatch { got: Option<String> },
+    Error { error: String, description: String },
+    Success { code: String, state: Option<String> },
+}
+
+fn parse_oauth_callback_url(url: &str, expected_state: Option<&str>) -> CallbackParse {
+    // Ignore "extra" requests browsers might send.
+    if url.starts_with("/favicon") {
+        return CallbackParse::Ignore;
+    }
+
+    let code = extract_param(url, "code");
+    let error = extract_param(url, "error");
+
+    if code.is_none() && error.is_none() {
+        return CallbackParse::Ignore;
+    }
+
+    let state = extract_param(url, "state");
+
+    if let Some(expected) = expected_state {
+        // Best-effort: accept callbacks that omit `state` even if we expected it.
+        if let Some(ref got) = state {
+            if got != expected {
+                return CallbackParse::StateMismatch { got: state };
+            }
+        }
+    }
+
+    if let Some(error) = error {
+        let description =
+            extract_param(url, "error_description").unwrap_or_else(|| "No description".to_string());
+        return CallbackParse::Error { error, description };
+    }
+
+    CallbackParse::Success {
+        code: code.unwrap_or_default(),
+        state,
+    }
+}
+
+fn content_type_header() -> tiny_http::Header {
+    tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..]).unwrap()
+}
+
+fn escape_html(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#x27;")
 }
 
 /// Extract a query parameter from a URL
@@ -329,5 +444,71 @@ mod tests {
             .with_bind_host("0.0.0.0")
             .with_redirect_host("192.168.1.5");
         assert_eq!(flow.redirect_uri(), "http://192.168.1.5:9999/");
+    }
+
+    #[test]
+    fn test_parse_oauth_callback_success_requires_state_when_expected() {
+        let url = "/?code=test_code&state=test_state";
+        assert_eq!(
+            parse_oauth_callback_url(url, Some("test_state")),
+            CallbackParse::Success {
+                code: "test_code".to_string(),
+                state: Some("test_state".to_string())
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_oauth_callback_state_mismatch() {
+        let url = "/?code=test_code&state=wrong";
+        assert_eq!(
+            parse_oauth_callback_url(url, Some("expected")),
+            CallbackParse::StateMismatch {
+                got: Some("wrong".to_string())
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_oauth_callback_state_missing_is_accepted() {
+        let url = "/?code=test_code";
+        assert_eq!(
+            parse_oauth_callback_url(url, Some("expected")),
+            CallbackParse::Success {
+                code: "test_code".to_string(),
+                state: None
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_oauth_callback_error_requires_state_when_expected() {
+        let url = "/?error=access_denied&error_description=Denied&state=wrong";
+        assert_eq!(
+            parse_oauth_callback_url(url, Some("expected")),
+            CallbackParse::StateMismatch {
+                got: Some("wrong".to_string())
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_oauth_callback_error() {
+        let url = "/?error=access_denied&error_description=Denied";
+        assert_eq!(
+            parse_oauth_callback_url(url, None),
+            CallbackParse::Error {
+                error: "access_denied".to_string(),
+                description: "Denied".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_oauth_callback_ignore_favicon() {
+        assert_eq!(
+            parse_oauth_callback_url("/favicon.ico", Some("expected")),
+            CallbackParse::Ignore
+        );
     }
 }

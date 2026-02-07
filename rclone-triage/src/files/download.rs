@@ -4,7 +4,7 @@ use anyhow::{bail, Result};
 use sha2::{Digest, Sha256};
 use std::collections::VecDeque;
 use std::fs::File;
-use std::io::Read;
+use std::io::{BufReader, Read};
 use std::path::Path;
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
@@ -150,6 +150,8 @@ pub struct DownloadResult {
     pub hash_type: Option<String>,
     /// Whether hash was verified against expected
     pub hash_verified: Option<bool>,
+    /// Hash verification error (best-effort; download still succeeds)
+    pub hash_error: Option<String>,
 }
 
 /// A single download request
@@ -522,22 +524,34 @@ impl DownloadQueue {
                 let size = std::fs::metadata(dest_path).ok().map(|m| m.len());
 
                 // Compute hash if verification enabled and we have an expected hash
-                let (hash, hash_type, hash_verified) =
+                let (hash, hash_type, hash_verified, hash_error) =
                     if self.verify_hashes && request.expected_hash.is_some() {
-                        let hash_type = request.expected_hash_type.as_deref().unwrap_or("sha256");
-                        match compute_file_hash(dest_path, hash_type) {
-                            Ok(computed) => {
-                                let verified = request
-                                    .expected_hash
-                                    .as_ref()
-                                    .map(|expected| expected.eq_ignore_ascii_case(&computed))
-                                    .unwrap_or(false);
-                                (Some(computed), Some(hash_type.to_string()), Some(verified))
-                            }
-                            Err(_) => (None, None, None),
+                        match request.expected_hash_type.as_deref() {
+                            Some(hash_type) => match compute_file_hash_best_effort(rclone, dest_path, hash_type) {
+                                Ok(computed) => {
+                                    let verified = request
+                                        .expected_hash
+                                        .as_ref()
+                                        .map(|expected| expected.eq_ignore_ascii_case(&computed))
+                                        .unwrap_or(false);
+                                    (Some(computed), Some(hash_type.to_string()), Some(verified), None)
+                                }
+                                Err(e) => (
+                                    None,
+                                    Some(hash_type.to_string()),
+                                    None,
+                                    Some(format!("Hash verification skipped: {}", e)),
+                                ),
+                            },
+                            None => (
+                                None,
+                                None,
+                                None,
+                                Some("Expected hash present but no hash type provided".to_string()),
+                            ),
                         }
                     } else {
-                        (None, None, None)
+                        (None, None, None, None)
                     };
 
                 DownloadResult {
@@ -549,6 +563,7 @@ impl DownloadQueue {
                     hash,
                     hash_type,
                     hash_verified,
+                    hash_error,
                 }
             }
             Ok(output) => DownloadResult {
@@ -560,6 +575,7 @@ impl DownloadQueue {
                 hash: None,
                 hash_type: None,
                 hash_verified: None,
+                hash_error: None,
             },
             Err(e) => DownloadResult {
                 source: request.source.clone(),
@@ -570,6 +586,7 @@ impl DownloadQueue {
                 hash: None,
                 hash_type: None,
                 hash_verified: None,
+                hash_error: None,
             },
         }
     }
@@ -595,22 +612,34 @@ impl DownloadQueue {
                 let size = std::fs::metadata(dest_path).ok().map(|m| m.len());
 
                 // Compute hash if verification enabled and we have an expected hash
-                let (hash, hash_type, hash_verified) =
+                let (hash, hash_type, hash_verified, hash_error) =
                     if self.verify_hashes && request.expected_hash.is_some() {
-                        let hash_type = request.expected_hash_type.as_deref().unwrap_or("sha256");
-                        match compute_file_hash(dest_path, hash_type) {
-                            Ok(computed) => {
-                                let verified = request
-                                    .expected_hash
-                                    .as_ref()
-                                    .map(|expected| expected.eq_ignore_ascii_case(&computed))
-                                    .unwrap_or(false);
-                                (Some(computed), Some(hash_type.to_string()), Some(verified))
-                            }
-                            Err(_) => (None, None, None),
+                        match request.expected_hash_type.as_deref() {
+                            Some(hash_type) => match compute_file_hash_best_effort(rclone, dest_path, hash_type) {
+                                Ok(computed) => {
+                                    let verified = request
+                                        .expected_hash
+                                        .as_ref()
+                                        .map(|expected| expected.eq_ignore_ascii_case(&computed))
+                                        .unwrap_or(false);
+                                    (Some(computed), Some(hash_type.to_string()), Some(verified), None)
+                                }
+                                Err(e) => (
+                                    None,
+                                    Some(hash_type.to_string()),
+                                    None,
+                                    Some(format!("Hash verification skipped: {}", e)),
+                                ),
+                            },
+                            None => (
+                                None,
+                                None,
+                                None,
+                                Some("Expected hash present but no hash type provided".to_string()),
+                            ),
                         }
                     } else {
-                        (None, None, None)
+                        (None, None, None, None)
                     };
 
                 DownloadResult {
@@ -622,6 +651,7 @@ impl DownloadQueue {
                     hash,
                     hash_type,
                     hash_verified,
+                    hash_error,
                 }
             }
             Ok(output) => DownloadResult {
@@ -633,6 +663,7 @@ impl DownloadQueue {
                 hash: None,
                 hash_type: None,
                 hash_verified: None,
+                hash_error: None,
             },
             Err(e) => DownloadResult {
                 source: request.source.clone(),
@@ -643,6 +674,7 @@ impl DownloadQueue {
                 hash: None,
                 hash_type: None,
                 hash_verified: None,
+                hash_error: None,
             },
         }
     }
@@ -678,26 +710,75 @@ impl Default for DownloadQueue {
 /// Compute hash of a file
 pub fn compute_file_hash(path: &Path, hash_type: &str) -> Result<String> {
     let mut file = File::open(path)?;
-    let mut buffer = Vec::new();
-    file.read_to_end(&mut buffer)?;
+    let mut reader = BufReader::new(&mut file);
+    let mut buffer = vec![0u8; 1024 * 1024];
 
     match hash_type.to_lowercase().as_str() {
         "sha256" => {
             let mut hasher = Sha256::new();
-            hasher.update(&buffer);
+            loop {
+                let read = reader.read(&mut buffer)?;
+                if read == 0 {
+                    break;
+                }
+                hasher.update(&buffer[..read]);
+            }
             Ok(format!("{:x}", hasher.finalize()))
         }
         "md5" => {
-            let digest = md5::compute(&buffer);
-            Ok(format!("{:x}", digest))
+            let mut context = md5::Context::new();
+            loop {
+                let read = reader.read(&mut buffer)?;
+                if read == 0 {
+                    break;
+                }
+                context.consume(&buffer[..read]);
+            }
+            Ok(format!("{:x}", context.compute()))
         }
         "sha1" => {
             use sha1::{Digest as Sha1Digest, Sha1};
             let mut hasher = Sha1::new();
-            hasher.update(&buffer);
+            loop {
+                let read = reader.read(&mut buffer)?;
+                if read == 0 {
+                    break;
+                }
+                hasher.update(&buffer[..read]);
+            }
             Ok(format!("{:x}", hasher.finalize()))
         }
         _ => bail!("Unsupported hash type: {}", hash_type),
+    }
+}
+
+fn compute_file_hash_with_rclone(rclone: &RcloneRunner, path: &Path, hash_type: &str) -> Result<String> {
+    let path_str = path.to_string_lossy();
+    let args = ["hashsum", hash_type, path_str.as_ref()];
+    let output = rclone.run(&args)?;
+    if !output.success() {
+        bail!("rclone hashsum failed: {}", output.stderr_string());
+    }
+    let first_line = output
+        .stdout
+        .iter()
+        .find(|line| !line.trim().is_empty())
+        .ok_or_else(|| anyhow::anyhow!("rclone hashsum returned no output"))?;
+    let hash = first_line
+        .split_whitespace()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("Failed to parse rclone hashsum output"))?;
+    Ok(hash.to_string())
+}
+
+fn compute_file_hash_best_effort(
+    rclone: &RcloneRunner,
+    path: &Path,
+    hash_type: &str,
+) -> Result<String> {
+    match hash_type.to_lowercase().as_str() {
+        "sha256" | "sha1" | "md5" => compute_file_hash(path, hash_type),
+        _ => compute_file_hash_with_rclone(rclone, path, hash_type),
     }
 }
 

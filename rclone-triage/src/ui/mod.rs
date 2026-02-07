@@ -102,6 +102,8 @@ pub enum MenuAction {
     UpdateTools,
     ConfigureOAuth,
     ShowOAuthCredentials,
+    ExportBrowserSessions,
+    ExportDomainCookies,
     OneDriveMenu,
     OpenOneDriveVault,
     BackToAdditionalOptions,
@@ -353,6 +355,16 @@ impl App {
                 label: "Show OAuth Credentials",
                 description: "View client ID/secret status for an existing rclone config.",
                 action: MenuAction::ShowOAuthCredentials,
+            },
+            MenuItem {
+                label: "Export Browser Sessions (Cookies)",
+                description: "Extract and export provider cookies from local browser profiles (best effort).",
+                action: MenuAction::ExportBrowserSessions,
+            },
+            MenuItem {
+                label: "Export Cookies by Domain Pattern",
+                description: "Export cookies for arbitrary domains (comma-separated). Useful for unsupported providers.",
+                action: MenuAction::ExportDomainCookies,
             },
             MenuItem {
                 label: "OneDrive",
