@@ -231,7 +231,11 @@ impl SessionExtractor {
     /// Extract cookies matching a user-provided list of domains/patterns.
     ///
     /// This is a triage helper that is not tied to the built-in provider enum.
-    pub fn extract_domain_cookies(&self, browser: &Browser, domains: &[String]) -> Result<Vec<Cookie>> {
+    pub fn extract_domain_cookies(
+        &self,
+        browser: &Browser,
+        domains: &[String],
+    ) -> Result<Vec<Cookie>> {
         let profile_path = browser.profile_path.as_ref().ok_or_else(|| {
             anyhow::anyhow!("Browser {} has no profile path", browser.browser_type)
         })?;
@@ -250,7 +254,9 @@ impl SessionExtractor {
             | BrowserType::Opera
             | BrowserType::OperaGX
             | BrowserType::Vivaldi
-            | BrowserType::Yandex => self.extract_chromium_cookies_by_patterns(profile_path, &domain_patterns),
+            | BrowserType::Yandex => {
+                self.extract_chromium_cookies_by_patterns(profile_path, &domain_patterns)
+            }
 
             BrowserType::Firefox | BrowserType::Tor => {
                 self.extract_firefox_cookies_by_patterns(profile_path, &domain_patterns)
@@ -361,31 +367,21 @@ impl SessionExtractor {
         let mut stmt = conn.prepare(&query).context("Failed to prepare SQL")?;
 
         let rows = stmt
-            .query_map(
-                rusqlite::params_from_iter(domain_patterns.iter()),
-                |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, Vec<u8>>(1)?,
-                        row.get::<_, String>(2)?,
-                        row.get::<_, String>(3)?,
-                        row.get::<_, i64>(4)?,
-                        row.get::<_, bool>(5)?,
-                        row.get::<_, bool>(6)?,
-                    ))
-                },
-            )
+            .query_map(rusqlite::params_from_iter(domain_patterns.iter()), |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Vec<u8>>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, bool>(5)?,
+                    row.get::<_, bool>(6)?,
+                ))
+            })
             .context("Failed to query cookies")?;
 
-        for (
-            name,
-            encrypted_value,
-            host_key,
-            path,
-            expires_utc,
-            is_secure,
-            is_httponly,
-        ) in rows.flatten()
+        for (name, encrypted_value, host_key, path, expires_utc, is_secure, is_httponly) in
+            rows.flatten()
         {
             // Decrypt the cookie value
             let value = self
@@ -496,7 +492,7 @@ impl SessionExtractor {
 
         let plaintext = cipher
             .decrypt(nonce, ciphertext)
-            .context("Failed to decrypt Chromium cookie")?;
+            .map_err(|_| anyhow::anyhow!("Failed to decrypt Chromium cookie"))?;
         Ok(String::from_utf8_lossy(&plaintext).to_string())
     }
 
@@ -535,8 +531,8 @@ impl SessionExtractor {
             );
 
             if result.is_ok() && !output.pbData.is_null() {
-                let decrypted = std::slice::from_raw_parts(output.pbData, output.cbData as usize)
-                    .to_vec();
+                let decrypted =
+                    std::slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec();
                 let _ = LocalFree(Some(HLOCAL(output.pbData as _)));
                 Ok(decrypted)
             } else {
@@ -578,12 +574,11 @@ impl SessionExtractor {
                 )
             })?;
 
-        let decoded = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, enc_key_b64)
-            .context("Failed to base64-decode Local State encrypted key")?;
+        let decoded =
+            base64::Engine::decode(&base64::engine::general_purpose::STANDARD, enc_key_b64)
+                .context("Failed to base64-decode Local State encrypted key")?;
 
-        let dpapi_blob = decoded
-            .strip_prefix(b"DPAPI")
-            .unwrap_or(decoded.as_slice());
+        let dpapi_blob = decoded.strip_prefix(b"DPAPI").unwrap_or(decoded.as_slice());
 
         self.dpapi_decrypt_bytes(dpapi_blob)
             .context("Failed to DPAPI-decrypt Local State key")
@@ -704,20 +699,17 @@ impl SessionExtractor {
 
         let mut stmt = conn.prepare(&query)?;
 
-        let rows = stmt.query_map(
-            rusqlite::params_from_iter(domain_patterns.iter()),
-            |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, String>(3)?,
-                    row.get::<_, i64>(4)?,
-                    row.get::<_, i32>(5)?,
-                    row.get::<_, i32>(6)?,
-                ))
-            },
-        )?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(domain_patterns.iter()), |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, i32>(5)?,
+                row.get::<_, i32>(6)?,
+            ))
+        })?;
 
         for row in rows.flatten() {
             let (name, value, host, path, expiry, is_secure, is_http_only) = row;

@@ -20,8 +20,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 /// Genesis hash for the first entry in a log chain
-const GENESIS_HASH: &str =
-    "0000000000000000000000000000000000000000000000000000000000000000";
+const GENESIS_HASH: &str = "0000000000000000000000000000000000000000000000000000000000000000";
 
 fn is_hex_hash(s: &str) -> bool {
     (s.len() == 16 || s.len() == 64) && s.chars().all(|c| c.is_ascii_hexdigit())
@@ -84,7 +83,13 @@ impl ForensicLogger {
         };
 
         // Write header if new file
-        if logger.last_hash.lock().unwrap().as_str() == GENESIS_HASH {
+        if logger
+            .last_hash
+            .lock()
+            .map_err(|e| anyhow::anyhow!("forensic logger mutex poisoned: {e}"))?
+            .as_str()
+            == GENESIS_HASH
+        {
             logger.write_header()?;
         }
 
@@ -93,7 +98,10 @@ impl ForensicLogger {
 
     /// Write the log header
     fn write_header(&self) -> Result<()> {
-        let mut file = self.file.lock().unwrap();
+        let mut file = self
+            .file
+            .lock()
+            .map_err(|e| anyhow::anyhow!("forensic logger mutex poisoned: {e}"))?;
         writeln!(file, "# rclone-triage Forensic Log")?;
         writeln!(file, "# Format: timestamp|current_hash|prev_hash|message")?;
         writeln!(file, "# Hash chain provides tamper evidence")?;
@@ -134,7 +142,10 @@ impl ForensicLogger {
         let timestamp = Utc::now();
         let timestamp_str = timestamp.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
 
-        let mut last_hash = self.last_hash.lock().unwrap();
+        let mut last_hash = self
+            .last_hash
+            .lock()
+            .map_err(|e| anyhow::anyhow!("forensic logger mutex poisoned: {e}"))?;
 
         // Calculate new hash: SHA256(prev_hash || timestamp || message)
         let current_hash = compute_entry_hash(&last_hash, &timestamp_str, message);
@@ -146,7 +157,10 @@ impl ForensicLogger {
         );
 
         // Write to file
-        let mut file = self.file.lock().unwrap();
+        let mut file = self
+            .file
+            .lock()
+            .map_err(|e| anyhow::anyhow!("forensic logger mutex poisoned: {e}"))?;
         file.write_all(entry.as_bytes())?;
         file.sync_all()?;
 
@@ -253,8 +267,12 @@ impl ForensicLogger {
     }
 
     /// Get the final hash of the log file (for including in reports)
-    pub fn final_hash(&self) -> String {
-        self.last_hash.lock().unwrap().clone()
+    pub fn final_hash(&self) -> Result<String> {
+        Ok(self
+            .last_hash
+            .lock()
+            .map_err(|e| anyhow::anyhow!("forensic logger mutex poisoned: {e}"))?
+            .clone())
     }
 }
 

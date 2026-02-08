@@ -3,29 +3,29 @@
 //! A single-file Windows executable that embeds rclone and provides
 //! a TUI interface for cloud data acquisition.
 
+use anyhow::{bail, Result};
+use clap::Parser;
 use rclone_triage::case::Case;
 use rclone_triage::cleanup::Cleanup;
 use rclone_triage::embedded;
 use rclone_triage::files::{list_path, ListPathOptions};
 use rclone_triage::forensics::{
-    generate_password, get_forensic_access_point_status, render_wifi_qr,
-    open_onedrive_vault, start_forensic_access_point, stop_forensic_access_point,
-    SystemStateSnapshot,
+    generate_password, get_forensic_access_point_status, open_onedrive_vault, render_wifi_qr,
+    start_forensic_access_point, stop_forensic_access_point, SystemStateSnapshot,
 };
 use rclone_triage::providers::auth::{
     authenticate_with_device_code, authenticate_with_mobile, authenticate_with_rclone,
 };
 use rclone_triage::providers::credentials::upsert_custom_oauth_credentials;
 use rclone_triage::providers::discovery::providers_from_rclone;
+use rclone_triage::providers::mobile::render_qr_code;
 use rclone_triage::providers::{CloudProvider, ProviderAuthKind};
-use rclone_triage::rclone::{start_web_gui, RcloneConfig, RcloneRunner};
 use rclone_triage::rclone::authorize::{
     parse_authorize_callback_input, send_local_authorize_callback, spawn_authorize,
+    RunningAuthorize,
 };
-use rclone_triage::providers::mobile::render_qr_code;
+use rclone_triage::rclone::{start_web_gui, RcloneConfig, RcloneRunner};
 use rclone_triage::ui::App as TuiApp;
-use anyhow::{bail, Result};
-use clap::Parser;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -102,11 +102,7 @@ fn main() -> Result<()> {
             .clone()
             .unwrap_or_else(generate_password);
 
-        let info = start_forensic_access_point(
-            &ssid,
-            &password,
-            args.forensic_ap_timeout_minutes,
-        )?;
+        let info = start_forensic_access_point(&ssid, &password, args.forensic_ap_timeout_minutes)?;
 
         println!("Forensic Access Point started:");
         println!("  SSID: {}", info.ssid);
@@ -160,8 +156,7 @@ fn main() -> Result<()> {
             .clone()
             .unwrap_or_else(default_vault_destination);
 
-        let result =
-            open_onedrive_vault(&mount_point, &destination, !args.onedrive_vault_no_wait)?;
+        let result = open_onedrive_vault(&mount_point, &destination, !args.onedrive_vault_no_wait)?;
 
         println!("OneDrive Vault processed:");
         println!("  Mount: {:?}", result.mount_point);
@@ -295,7 +290,9 @@ fn main() -> Result<()> {
                 let mut running = spawn_authorize(&runner, provider_name.as_str(), true)?;
                 let auth_url = running
                     .wait_for_auth_url(Duration::from_secs(20))?
-                    .ok_or_else(|| anyhow::anyhow!("rclone authorize did not produce an auth URL"))?;
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("rclone authorize did not produce an auth URL")
+                    })?;
 
                 println!("Open on phone: {}", auth_url);
                 if let Ok(qr) = render_qr_code(&auth_url) {
@@ -313,46 +310,10 @@ fn main() -> Result<()> {
                 let state = cb.state.as_deref().or(running.expected_state());
                 send_local_authorize_callback(redirect_uri, &cb.code, state)?;
 
-                let finished = running.wait(Some(Duration::from_secs(300)))?;
-                if finished.timed_out {
-                    anyhow::bail!("rclone authorize timed out waiting for completion");
-                }
-                if finished.status != 0 {
-                    anyhow::bail!(
-                        "rclone authorize failed (exit {}): {}",
-                        finished.status,
-                        finished.stderr.join("\n")
-                    );
-                }
-                let token = finished.token_json.ok_or_else(|| {
-                    anyhow::anyhow!("Failed to extract token JSON from rclone output")
-                })?;
-
-                config.set_remote(&remote_name, &finished.backend, &[("token", token.as_str())])?;
-                if !config.has_remote(&remote_name)? {
-                    anyhow::bail!("Remote {} was not created", remote_name);
-                }
+                finish_authorize(running, &config, &remote_name)?;
             } else {
                 let running = spawn_authorize(&runner, provider_name.as_str(), false)?;
-                let finished = running.wait(Some(Duration::from_secs(300)))?;
-                if finished.timed_out {
-                    anyhow::bail!("rclone authorize timed out waiting for completion");
-                }
-                if finished.status != 0 {
-                    anyhow::bail!(
-                        "rclone authorize failed (exit {}): {}",
-                        finished.status,
-                        finished.stderr.join("\n")
-                    );
-                }
-                let token = finished.token_json.ok_or_else(|| {
-                    anyhow::anyhow!("Failed to extract token JSON from rclone output")
-                })?;
-
-                config.set_remote(&remote_name, &finished.backend, &[("token", token.as_str())])?;
-                if !config.has_remote(&remote_name)? {
-                    anyhow::bail!("Remote {} was not created", remote_name);
-                }
+                finish_authorize(running, &config, &remote_name)?;
             }
         }
 
@@ -427,6 +388,35 @@ fn resolve_rclone_config_path(args: &Cli) -> Result<std::path::PathBuf> {
     }
 
     bail!("No rclone config file found. Use --rclone-config or set RCLONE_CONFIG.");
+}
+
+/// Wait for a running `rclone authorize` process to finish, extract the token,
+/// and persist the remote in the config.
+fn finish_authorize(
+    running: RunningAuthorize,
+    config: &RcloneConfig,
+    remote_name: &str,
+) -> Result<()> {
+    let finished = running.wait(Some(Duration::from_secs(300)))?;
+    if finished.timed_out {
+        bail!("rclone authorize timed out waiting for completion");
+    }
+    if finished.status != 0 {
+        bail!(
+            "rclone authorize failed (exit {}): {}",
+            finished.status,
+            finished.stderr.join("\n")
+        );
+    }
+    let token = finished
+        .token_json
+        .ok_or_else(|| anyhow::anyhow!("Failed to extract token JSON from rclone output"))?;
+
+    config.set_remote(remote_name, &finished.backend, &[("token", token.as_str())])?;
+    if !config.has_remote(remote_name)? {
+        bail!("Remote {} was not created", remote_name);
+    }
+    Ok(())
 }
 
 /// Ensures cleanup is run on drop

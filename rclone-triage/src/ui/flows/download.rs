@@ -174,15 +174,16 @@ pub(crate) fn perform_download_flow<B: ratatui::backend::Backend>(
                         ));
                     }
                     None => {
-                        if app.get_file_entry(file).and_then(|e| e.hash.clone()).is_some() {
+                        if app
+                            .get_file_entry(file)
+                            .and_then(|e| e.hash.clone())
+                            .is_some()
+                        {
                             app.log_info(format!(
                                 "Downloaded: {} ({} bytes) - hash verification skipped: {}",
                                 file,
                                 size,
-                                result
-                                    .hash_error
-                                    .as_deref()
-                                    .unwrap_or("unknown reason")
+                                result.hash_error.as_deref().unwrap_or("unknown reason")
                             ));
                         } else {
                             app.log_info(format!(
@@ -250,7 +251,7 @@ pub(crate) fn perform_download_flow<B: ratatui::backend::Backend>(
 
         // Generate and write the forensic report
         if let (Some(ref case), Some(ref dirs)) = (&app.case, &app.directories) {
-            let log_hash = app.logger.as_ref().map(|l| l.final_hash());
+            let log_hash = app.logger.as_ref().and_then(|l| l.final_hash().ok());
 
             // Capture final state and compute diff
             let state_diff = app.capture_final_state();
@@ -297,7 +298,8 @@ pub(crate) fn perform_download_flow<B: ratatui::backend::Backend>(
 
         // Add case metadata if available
         if let Some(ref case) = app.case {
-            app.report_lines.push(format!("Case: {}", case.session_id()));
+            app.report_lines
+                .push(format!("Case: {}", case.session_id()));
             app.report_lines.push(format!(
                 "Started: {}",
                 case.start_time.format("%Y-%m-%d %H:%M:%S UTC")
@@ -311,8 +313,7 @@ pub(crate) fn perform_download_flow<B: ratatui::backend::Backend>(
 
         app.report_lines
             .push(format!("Provider: {}", provider.display_name()));
-        app.report_lines
-            .push(format!("Files requested: {}", total));
+        app.report_lines.push(format!("Files requested: {}", total));
         app.report_lines
             .push(format!("Files downloaded: {}", success_count));
         if failed_count > 0 {
