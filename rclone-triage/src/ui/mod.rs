@@ -3,15 +3,15 @@
 //! Defines the core application state and transitions used by the UI.
 
 use crate::case::directory::CaseDirectories;
-use crate::cleanup::Cleanup;
 use crate::case::Case;
+use crate::cleanup::Cleanup;
 use crate::forensics::changes::ChangeTracker;
 use crate::forensics::logger::ForensicLogger;
 use crate::forensics::state::SystemStateSnapshot;
 use crate::providers::browser::Browser;
 use crate::providers::{CloudProvider, ProviderEntry};
 use crate::rclone::MountedRemote;
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use chrono::{DateTime, Local};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -25,7 +25,6 @@ pub mod screens;
 pub mod widgets;
 
 /// Application states for the TUI flow
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppState {
     MainMenu,
@@ -45,7 +44,6 @@ pub enum AppState {
 
 impl AppState {
     /// Get the next logical state in the flow
-    #[allow(dead_code)]
     pub fn next(self) -> Self {
         match self {
             AppState::MainMenu => AppState::ModeConfirm,
@@ -65,7 +63,6 @@ impl AppState {
     }
 
     /// Get the previous logical state in the flow
-    #[allow(dead_code)]
     pub fn previous(self) -> Self {
         match self {
             AppState::MainMenu => AppState::MainMenu,
@@ -124,8 +121,23 @@ pub struct MenuItem {
     pub action: MenuAction,
 }
 
+/// Move a list cursor up with wrapping.
+fn list_navigate_up(selected: &mut usize, len: usize) {
+    if len == 0 {
+        return;
+    }
+    *selected = if *selected == 0 { len - 1 } else { *selected - 1 };
+}
+
+/// Move a list cursor down with wrapping.
+fn list_navigate_down(selected: &mut usize, len: usize) {
+    if len == 0 {
+        return;
+    }
+    *selected = (*selected + 1) % len;
+}
+
 /// Core application state container
-#[allow(dead_code)]
 pub struct App {
     /// Current application state
     pub state: AppState,
@@ -226,7 +238,6 @@ pub struct App {
 
 impl App {
     /// Create a new app with the initial state
-    #[allow(dead_code)]
     pub fn new() -> Self {
         // Capture initial system state before any operations
         let initial_state = SystemStateSnapshot::capture("Initial state before session").ok();
@@ -426,7 +437,8 @@ impl App {
     }
 
     pub fn additional_menu_selected_item(&self) -> Option<&MenuItem> {
-        self.additional_menu_items.get(self.additional_menu_selected)
+        self.additional_menu_items
+            .get(self.additional_menu_selected)
     }
 
     pub fn onedrive_menu_selected_item(&self) -> Option<&MenuItem> {
@@ -438,82 +450,54 @@ impl App {
     }
 
     pub fn menu_up(&mut self) {
-        if self.state != AppState::MainMenu || self.menu_items.is_empty() {
-            return;
-        }
-        if self.menu_selected == 0 {
-            self.menu_selected = self.menu_items.len() - 1;
-        } else {
-            self.menu_selected -= 1;
+        if self.state == AppState::MainMenu {
+            list_navigate_up(&mut self.menu_selected, self.menu_items.len());
         }
     }
 
     pub fn menu_down(&mut self) {
-        if self.state != AppState::MainMenu || self.menu_items.is_empty() {
-            return;
+        if self.state == AppState::MainMenu {
+            list_navigate_down(&mut self.menu_selected, self.menu_items.len());
         }
-        self.menu_selected = (self.menu_selected + 1) % self.menu_items.len();
     }
 
     pub fn additional_menu_up(&mut self) {
-        if self.state != AppState::AdditionalOptions || self.additional_menu_items.is_empty() {
-            return;
-        }
-        if self.additional_menu_selected == 0 {
-            self.additional_menu_selected = self.additional_menu_items.len() - 1;
-        } else {
-            self.additional_menu_selected -= 1;
+        if self.state == AppState::AdditionalOptions {
+            list_navigate_up(&mut self.additional_menu_selected, self.additional_menu_items.len());
         }
     }
 
     pub fn additional_menu_down(&mut self) {
-        if self.state != AppState::AdditionalOptions || self.additional_menu_items.is_empty() {
-            return;
+        if self.state == AppState::AdditionalOptions {
+            list_navigate_down(&mut self.additional_menu_selected, self.additional_menu_items.len());
         }
-        self.additional_menu_selected =
-            (self.additional_menu_selected + 1) % self.additional_menu_items.len();
     }
 
     pub fn onedrive_menu_up(&mut self) {
-        if self.state != AppState::OneDriveMenu || self.onedrive_menu_items.is_empty() {
-            return;
-        }
-        if self.onedrive_menu_selected == 0 {
-            self.onedrive_menu_selected = self.onedrive_menu_items.len() - 1;
-        } else {
-            self.onedrive_menu_selected -= 1;
+        if self.state == AppState::OneDriveMenu {
+            list_navigate_up(&mut self.onedrive_menu_selected, self.onedrive_menu_items.len());
         }
     }
 
     pub fn onedrive_menu_down(&mut self) {
-        if self.state != AppState::OneDriveMenu || self.onedrive_menu_items.is_empty() {
-            return;
+        if self.state == AppState::OneDriveMenu {
+            list_navigate_down(&mut self.onedrive_menu_selected, self.onedrive_menu_items.len());
         }
-        self.onedrive_menu_selected =
-            (self.onedrive_menu_selected + 1) % self.onedrive_menu_items.len();
     }
 
     pub fn mobile_flow_up(&mut self) {
-        if self.state != AppState::MobileAuthFlow || self.mobile_flow_items.is_empty() {
-            return;
-        }
-        if self.mobile_flow_selected == 0 {
-            self.mobile_flow_selected = self.mobile_flow_items.len() - 1;
-        } else {
-            self.mobile_flow_selected -= 1;
+        if self.state == AppState::MobileAuthFlow {
+            list_navigate_up(&mut self.mobile_flow_selected, self.mobile_flow_items.len());
         }
     }
 
     pub fn mobile_flow_down(&mut self) {
-        if self.state != AppState::MobileAuthFlow || self.mobile_flow_items.is_empty() {
-            return;
+        if self.state == AppState::MobileAuthFlow {
+            list_navigate_down(&mut self.mobile_flow_selected, self.mobile_flow_items.len());
         }
-        self.mobile_flow_selected =
-            (self.mobile_flow_selected + 1) % self.mobile_flow_items.len();
     }
 
     /// Initialize case and directories with an auto-generated case name.
-    #[allow(dead_code)]
     pub fn init_case(&mut self, output_dir: PathBuf) -> Result<()> {
         if self.case.is_some() {
             return Ok(());
@@ -546,13 +530,11 @@ impl App {
     }
 
     /// Attach shared cleanup manager
-    #[allow(dead_code)]
     pub fn set_cleanup(&mut self, cleanup: Arc<Mutex<Cleanup>>) {
         self.cleanup = Some(cleanup);
     }
 
     /// Track a temp file for cleanup
-    #[allow(dead_code)]
     pub fn cleanup_track_file(&self, path: impl AsRef<std::path::Path>) {
         if let Some(ref cleanup) = self.cleanup {
             if let Ok(mut cleanup) = cleanup.lock() {
@@ -562,7 +544,6 @@ impl App {
     }
 
     /// Track a temp directory for cleanup
-    #[allow(dead_code)]
     pub fn cleanup_track_dir(&self, path: impl AsRef<std::path::Path>) {
         if let Some(ref cleanup) = self.cleanup {
             if let Ok(mut cleanup) = cleanup.lock() {
@@ -572,7 +553,6 @@ impl App {
     }
 
     /// Track an env var change for cleanup
-    #[allow(dead_code)]
     pub fn cleanup_track_env_value(&self, name: impl Into<String>, old_value: Option<String>) {
         if let Some(ref cleanup) = self.cleanup {
             if let Ok(mut cleanup) = cleanup.lock() {
@@ -582,7 +562,6 @@ impl App {
     }
 
     /// Track a file creation in the change tracker
-    #[allow(dead_code)]
     pub fn track_file(&self, path: impl AsRef<std::path::Path>, description: impl Into<String>) {
         if let Ok(mut tracker) = self.change_tracker.lock() {
             tracker.track_file_created(path, description);
@@ -590,7 +569,6 @@ impl App {
     }
 
     /// Track an environment variable change
-    #[allow(dead_code)]
     pub fn track_env_var(&self, name: impl Into<String>, description: impl Into<String>) {
         if let Ok(mut tracker) = self.change_tracker.lock() {
             tracker.track_env_set(name, description);
@@ -598,7 +576,6 @@ impl App {
     }
 
     /// Capture final state and return the diff from initial state
-    #[allow(dead_code)]
     pub fn capture_final_state(&self) -> Option<crate::forensics::state::StateDiff> {
         let final_state = SystemStateSnapshot::capture("Final state after session").ok()?;
         self.initial_state
@@ -607,7 +584,6 @@ impl App {
     }
 
     /// Get the change tracker report
-    #[allow(dead_code)]
     pub fn change_report(&self) -> String {
         self.change_tracker
             .lock()
@@ -616,7 +592,6 @@ impl App {
     }
 
     /// Log an info message if logger is available
-    #[allow(dead_code)]
     pub fn log_info(&self, message: impl AsRef<str>) {
         if let Some(ref logger) = self.logger {
             let _ = logger.info(message);
@@ -624,7 +599,6 @@ impl App {
     }
 
     /// Log an error message if logger is available
-    #[allow(dead_code)]
     pub fn log_error(&self, message: impl AsRef<str>) {
         if let Some(ref logger) = self.logger {
             let _ = logger.error(message);
@@ -632,53 +606,40 @@ impl App {
     }
 
     /// Get downloads directory path
-    #[allow(dead_code)]
     pub fn downloads_dir(&self) -> Option<PathBuf> {
         self.directories.as_ref().map(|d| d.downloads.clone())
     }
 
     /// Get config directory path
-    #[allow(dead_code)]
     pub fn config_dir(&self) -> Option<PathBuf> {
         self.directories.as_ref().map(|d| d.config.clone())
     }
 
     /// Move to the next state in the flow
-    #[allow(dead_code)]
     pub fn advance(&mut self) {
         self.state = self.state.next();
     }
 
     /// Move to the previous state in the flow
-    #[allow(dead_code)]
     pub fn back(&mut self) {
         self.state = self.state.previous();
     }
 
     /// Move provider selection up
-    #[allow(dead_code)]
     pub fn provider_up(&mut self) {
-        if self.state != AppState::ProviderSelect || self.providers.is_empty() {
-            return;
-        }
-        if self.provider_selected == 0 {
-            self.provider_selected = self.providers.len() - 1;
-        } else {
-            self.provider_selected -= 1;
+        if self.state == AppState::ProviderSelect {
+            list_navigate_up(&mut self.provider_selected, self.providers.len());
         }
     }
 
     /// Move provider selection down
-    #[allow(dead_code)]
     pub fn provider_down(&mut self) {
-        if self.state != AppState::ProviderSelect || self.providers.is_empty() {
-            return;
+        if self.state == AppState::ProviderSelect {
+            list_navigate_down(&mut self.provider_selected, self.providers.len());
         }
-        self.provider_selected = (self.provider_selected + 1) % self.providers.len();
     }
 
     /// Toggle whether the current provider is selected
-    #[allow(dead_code)]
     pub fn toggle_provider_selection(&mut self) {
         if self.state != AppState::ProviderSelect || self.providers.is_empty() {
             return;
@@ -689,7 +650,6 @@ impl App {
     }
 
     /// Get all selected providers
-    #[allow(dead_code)]
     pub fn selected_providers(&self) -> Vec<ProviderEntry> {
         self.providers
             .iter()
@@ -700,19 +660,16 @@ impl App {
     }
 
     /// Check if any provider is selected
-    #[allow(dead_code)]
     pub fn has_selected_providers(&self) -> bool {
         self.provider_checked.iter().any(|checked| *checked)
     }
 
     /// Get the currently selected provider
-    #[allow(dead_code)]
     pub fn selected_provider(&self) -> Option<ProviderEntry> {
         self.providers.get(self.provider_selected).cloned()
     }
 
     /// Persist the current provider selection for authentication
-    #[allow(dead_code)]
     pub fn confirm_provider(&mut self) {
         let selected = self.selected_providers();
         if selected.is_empty() {
@@ -728,29 +685,20 @@ impl App {
     }
 
     /// Move remote selection up
-    #[allow(dead_code)]
     pub fn remote_up(&mut self) {
-        if self.state != AppState::RemoteSelect || self.remote_options.is_empty() {
-            return;
-        }
-        if self.remote_selected == 0 {
-            self.remote_selected = self.remote_options.len() - 1;
-        } else {
-            self.remote_selected -= 1;
+        if self.state == AppState::RemoteSelect {
+            list_navigate_up(&mut self.remote_selected, self.remote_options.len());
         }
     }
 
     /// Move remote selection down
-    #[allow(dead_code)]
     pub fn remote_down(&mut self) {
-        if self.state != AppState::RemoteSelect || self.remote_options.is_empty() {
-            return;
+        if self.state == AppState::RemoteSelect {
+            list_navigate_down(&mut self.remote_selected, self.remote_options.len());
         }
-        self.remote_selected = (self.remote_selected + 1) % self.remote_options.len();
     }
 
     /// Persist the chosen remote selection
-    #[allow(dead_code)]
     pub fn confirm_remote(&mut self) -> Option<String> {
         if self.remote_options.is_empty() {
             self.provider_status = "No remotes available.".to_string();
@@ -767,7 +715,6 @@ impl App {
     }
 
     /// Refresh browser list and reset selection
-    #[allow(dead_code)]
     pub fn refresh_browsers(&mut self) {
         self.browsers = crate::providers::auth::get_available_browsers();
         self.browser_selected = 0;
@@ -776,37 +723,22 @@ impl App {
     }
 
     /// Move browser selection up
-    #[allow(dead_code)]
     pub fn browser_up(&mut self) {
-        if self.state != AppState::BrowserSelect {
-            return;
-        }
-        let total = self.browsers.len() + 1; // +1 for "System Default"
-        if total == 0 {
-            return;
-        }
-        if self.browser_selected == 0 {
-            self.browser_selected = total - 1;
-        } else {
-            self.browser_selected -= 1;
+        if self.state == AppState::BrowserSelect {
+            let total = self.browsers.len() + 1; // +1 for "System Default"
+            list_navigate_up(&mut self.browser_selected, total);
         }
     }
 
     /// Move browser selection down
-    #[allow(dead_code)]
     pub fn browser_down(&mut self) {
-        if self.state != AppState::BrowserSelect {
-            return;
+        if self.state == AppState::BrowserSelect {
+            let total = self.browsers.len() + 1;
+            list_navigate_down(&mut self.browser_selected, total);
         }
-        let total = self.browsers.len() + 1;
-        if total == 0 {
-            return;
-        }
-        self.browser_selected = (self.browser_selected + 1) % total;
     }
 
     /// Get the currently selected browser (None = system default)
-    #[allow(dead_code)]
     pub fn selected_browser(&self) -> Option<Browser> {
         if self.browser_selected == 0 {
             None
@@ -816,7 +748,6 @@ impl App {
     }
 
     /// Toggle whether the current browser is selected
-    #[allow(dead_code)]
     pub fn toggle_browser_selection(&mut self) {
         if self.state != AppState::BrowserSelect {
             return;
@@ -834,13 +765,11 @@ impl App {
     }
 
     /// Check if any browser is selected
-    #[allow(dead_code)]
     pub fn has_selected_browsers(&self) -> bool {
         self.browser_checked.iter().any(|checked| *checked)
     }
 
     /// Persist the current browser selection for authentication
-    #[allow(dead_code)]
     pub fn confirm_browser(&mut self) {
         if !self.has_selected_browsers() {
             self.auth_status = "Select at least one browser (Space toggles selection).".to_string();
@@ -862,65 +791,21 @@ impl App {
         self.chosen_browser = chosen;
     }
 
-    /// Update SSO status for the selected provider
-    #[allow(dead_code)]
-    pub fn update_sso_status(&mut self) {
-        if let Some(provider) = self.selected_provider() {
-            if let Some(known) = provider.known {
-                self.sso_status = Some(crate::providers::auth::detect_sso_sessions(known));
-            } else {
-                self.sso_status = None;
-            }
-        }
-    }
-
-    /// Get SSO summary for display
-    #[allow(dead_code)]
-    pub fn sso_summary(&self) -> String {
-        if let Some(provider) = self.selected_provider() {
-            if let Some(known) = provider.known {
-                crate::providers::auth::get_sso_summary(known)
-            } else {
-                "SSO not available for this provider".to_string()
-            }
-        } else {
-            "No provider selected".to_string()
-        }
-    }
-
-    /// Check if SSO authentication is available for the selected provider
-    #[allow(dead_code)]
-    pub fn has_sso_available(&self) -> bool {
-        self.sso_status
-            .as_ref()
-            .map(|s| s.has_sessions)
-            .unwrap_or(false)
-    }
-
     /// Move file selection up
-    #[allow(dead_code)]
     pub fn file_up(&mut self) {
-        if self.state != AppState::FileList || self.file_entries.is_empty() {
-            return;
-        }
-        if self.file_selected == 0 {
-            self.file_selected = self.file_entries.len() - 1;
-        } else {
-            self.file_selected -= 1;
+        if self.state == AppState::FileList {
+            list_navigate_up(&mut self.file_selected, self.file_entries.len());
         }
     }
 
     /// Move file selection down
-    #[allow(dead_code)]
     pub fn file_down(&mut self) {
-        if self.state != AppState::FileList || self.file_entries.is_empty() {
-            return;
+        if self.state == AppState::FileList {
+            list_navigate_down(&mut self.file_selected, self.file_entries.len());
         }
-        self.file_selected = (self.file_selected + 1) % self.file_entries.len();
     }
 
     /// Toggle whether the current file is selected for download
-    #[allow(dead_code)]
     pub fn toggle_file_download(&mut self) {
         if self.state != AppState::FileList || self.file_entries.is_empty() {
             return;
@@ -935,7 +820,6 @@ impl App {
     }
 
     /// Look up full FileEntry by path (to get hash info for verification)
-    #[allow(dead_code)]
     pub fn get_file_entry(&self, path: &str) -> Option<&crate::files::FileEntry> {
         self.file_entries_full.iter().find(|e| e.path == path)
     }
@@ -967,7 +851,10 @@ impl App {
             let mut candidate = line.to_string();
             if let Some(ref prefix) = mount_prefix {
                 if let Ok(stripped) = PathBuf::from(line).strip_prefix(prefix) {
-                    candidate = stripped.to_string_lossy().trim_start_matches(['/', '\\']).to_string();
+                    candidate = stripped
+                        .to_string_lossy()
+                        .trim_start_matches(['/', '\\'])
+                        .to_string();
                 } else if line.starts_with(prefix.to_string_lossy().as_ref()) {
                     candidate = line[prefix.to_string_lossy().len()..]
                         .trim_start_matches(['/', '\\'])
@@ -992,41 +879,11 @@ impl App {
     }
 
     /// Select all files for download
-    #[allow(dead_code)]
     pub fn select_all_files(&mut self) {
         if self.state != AppState::FileList {
             return;
         }
         self.files_to_download = self.file_entries.clone();
-    }
-
-    /// Attempt an explicit transition with validation
-    #[allow(dead_code)]
-    pub fn transition(&mut self, next: AppState) -> Result<()> {
-        if Self::is_valid_transition(self.state, next) {
-            self.state = next;
-            Ok(())
-        } else {
-            bail!("Invalid transition: {:?} -> {:?}", self.state, next);
-        }
-    }
-
-    /// Check if a transition is valid
-    #[allow(dead_code)]
-    pub fn is_valid_transition(from: AppState, to: AppState) -> bool {
-        match (from, to) {
-            (AppState::MainMenu, AppState::ModeConfirm) => true,
-            (AppState::ModeConfirm, AppState::ProviderSelect) => true,
-            (AppState::ProviderSelect, AppState::BrowserSelect) => true,
-            (AppState::ProviderSelect, AppState::RemoteSelect) => true,
-            (AppState::RemoteSelect, AppState::ProviderSelect) => true,
-            (AppState::BrowserSelect, AppState::Authenticating) => true,
-            (AppState::Authenticating, AppState::FileList) => true,
-            (AppState::FileList, AppState::Downloading) => true,
-            (AppState::Downloading, AppState::Complete) => true,
-            (state, same) if state == same => true,
-            _ => false,
-        }
     }
 }
 
@@ -1133,30 +990,6 @@ mod tests {
     }
 
     #[test]
-    fn test_valid_transition() {
-        assert!(App::is_valid_transition(
-            AppState::MainMenu,
-            AppState::ModeConfirm
-        ));
-        assert!(App::is_valid_transition(
-            AppState::ModeConfirm,
-            AppState::ProviderSelect
-        ));
-        assert!(App::is_valid_transition(
-            AppState::ProviderSelect,
-            AppState::RemoteSelect
-        ));
-        assert!(App::is_valid_transition(
-            AppState::ProviderSelect,
-            AppState::BrowserSelect
-        ));
-        assert!(!App::is_valid_transition(
-            AppState::ModeConfirm,
-            AppState::FileList
-        ));
-    }
-
-    #[test]
     fn test_browser_selection() {
         let mut app = App::new();
         app.state = AppState::BrowserSelect;
@@ -1168,15 +1001,6 @@ mod tests {
         assert_eq!(app.browser_selected, 0);
         app.confirm_browser();
         assert!(app.chosen_browser.is_none());
-    }
-
-    #[test]
-    fn test_transition_validation() {
-        let mut app = App::new();
-        app.transition(AppState::ModeConfirm).unwrap();
-        app.transition(AppState::ProviderSelect).unwrap();
-        let result = app.transition(AppState::FileList);
-        assert!(result.is_err());
     }
 
     #[test]

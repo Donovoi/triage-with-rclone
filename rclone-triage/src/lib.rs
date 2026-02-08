@@ -12,10 +12,12 @@ pub mod rclone;
 pub mod ui;
 pub mod utils;
 
-// Common re-exports for convenience in integration tests or downstream tools.
+// Named re-exports used by the binary crate and integration tests.
 pub use case::Case;
 pub use cleanup::Cleanup;
-pub use files::*;
-pub use forensics::*;
-pub use ui::*;
-pub use utils::*;
+pub use files::{list_path, FileEntry, ListPathOptions};
+pub use forensics::{
+    generate_password, get_forensic_access_point_status, open_onedrive_vault, render_wifi_qr,
+    start_forensic_access_point, stop_forensic_access_point, SystemStateSnapshot,
+};
+pub use ui::App;
