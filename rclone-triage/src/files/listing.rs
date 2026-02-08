@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
 use std::io::{self, BufRead, BufReader, Read};
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::path::Path;
 use std::thread;
 
@@ -53,6 +55,11 @@ pub struct LargeListingResult {
     /// True if `entries` is a truncated subset of the full listing.
     pub truncated: bool,
 }
+
+/// PowerShell module compatibility separator (U+00B6 PILCROW SIGN), matching
+/// `rcloned.psm1`'s `[char]0182`.
+pub const PS_LSF_SEPARATOR: char = '\u{00B6}';
+const PS_LSF_SEPARATOR_STR: &str = "\u{00B6}";
 
 /// Internal representation of rclone lsjson output
 #[derive(Debug, Clone, Deserialize)]
@@ -170,6 +177,117 @@ where
             Err(err)
         }
     }
+}
+
+/// List files using `rclone lsf` and write the raw delimited output to `out_path`.
+///
+/// This mirrors the PowerShell module approach:
+/// `rclone lsf <remote> --format psth -R --files-only [--fast-list] [--hash <type>] --separator <sep>`
+///
+/// Notes:
+/// - Output is a "CSV-like" file using a non-comma delimiter (`PS_LSF_SEPARATOR`).
+/// - The file has no header row (PowerShell adds headers at import time).
+/// - Only files are listed (`--files-only`), not directories.
+pub fn list_path_large_lsf_to_ps_csv_with_progress<F>(
+    rclone: &RcloneRunner,
+    target: &str,
+    hash_type: Option<&str>,
+    onedrive_expose_onenote: bool,
+    out_path: impl AsRef<Path>,
+    max_in_memory: usize,
+    mut on_progress: F,
+) -> Result<LargeListingResult>
+where
+    F: FnMut(usize),
+{
+    let out_path = out_path.as_ref();
+    let mut out_file = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(out_path)
+        .with_context(|| format!("Failed to create listing output: {:?}", out_path))?;
+
+    let mut args: Vec<&str> = vec![
+        "lsf",
+        target,
+        "--format",
+        "psth",
+        "-R",
+        "--files-only",
+        "--separator",
+        PS_LSF_SEPARATOR_STR,
+    ];
+
+    if onedrive_expose_onenote {
+        args.push("--onedrive-expose-onenote-files");
+    } else {
+        args.push("--fast-list");
+    }
+
+    if let Some(hash_type) = hash_type {
+        if !hash_type.trim().is_empty() {
+            args.push("--hash");
+            args.push(hash_type);
+        }
+    }
+
+    let mut child = rclone.spawn(&args)?;
+    let stdout = child.stdout.take().expect("stdout piped");
+    let stderr = child.stderr.take().expect("stderr piped");
+
+    let stderr_handle = thread::spawn(move || {
+        let reader = BufReader::new(stderr);
+        reader.lines().map_while(Result::ok).collect::<Vec<_>>()
+    });
+
+    let stdout_reader = BufReader::new(stdout);
+    let mut entries: Vec<FileEntry> = Vec::new();
+    let mut total_entries: usize = 0;
+    let mut last_emit: usize = 0;
+
+    for line in stdout_reader.lines() {
+        let line = line.unwrap_or_default();
+        if line.trim().is_empty() {
+            continue;
+        }
+
+        // Preserve a PS-compatible raw listing file.
+        writeln!(out_file, "{}", line)?;
+
+        total_entries += 1;
+        if total_entries - last_emit >= 100 {
+            on_progress(total_entries);
+            last_emit = total_entries;
+            // Avoid buffering too much output in OS caches.
+            let _ = out_file.flush();
+        }
+
+        if entries.len() < max_in_memory {
+            if let Some(entry) = parse_lsf_ps_line(&line, hash_type) {
+                entries.push(entry);
+            }
+        }
+    }
+
+    if total_entries != last_emit {
+        on_progress(total_entries);
+    }
+
+    let status = child.wait()?;
+    let stderr_lines = stderr_handle
+        .join()
+        .unwrap_or_else(|_| vec!["<stderr capture panicked>".to_string()]);
+
+    if status.code().unwrap_or(-1) != 0 {
+        bail!("rclone lsf failed: {}", stderr_lines.join("\n"));
+    }
+
+    Ok(LargeListingResult {
+        truncated: total_entries > entries.len(),
+        entries,
+        total_entries,
+    })
 }
 
 fn build_lsjson_args(target: &str, include_hashes: bool) -> Vec<&str> {
@@ -521,6 +639,59 @@ fn select_hash(hashes: Option<&HashMap<String, String>>) -> (Option<String>, Opt
     (None, None)
 }
 
+fn parse_lsf_ps_line(line: &str, hash_type: Option<&str>) -> Option<FileEntry> {
+    let mut parts = line.split(PS_LSF_SEPARATOR);
+    let path = parts.next()?.trim().to_string();
+    if path.is_empty() {
+        return None;
+    }
+
+    let size = parts
+        .next()
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .unwrap_or(0);
+
+    let modified = parts.next().and_then(|s| parse_lsf_modtime(s.trim()));
+
+    let hash = parts
+        .next()
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && *s != "-")
+        .map(|s| s.to_string());
+
+    let hash_type = hash
+        .as_ref()
+        .and_then(|_| hash_type)
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    Some(FileEntry {
+        path,
+        size,
+        modified,
+        is_dir: false,
+        hash,
+        hash_type,
+    })
+}
+
+fn parse_lsf_modtime(value: &str) -> Option<DateTime<Utc>> {
+    if value.is_empty() || value == "-" {
+        return None;
+    }
+
+    if let Ok(dt) = DateTime::parse_from_rfc3339(value) {
+        return Some(dt.with_timezone(&Utc));
+    }
+
+    // Common rclone lsf time output: "2006-01-02 15:04:05"
+    if let Ok(naive) = chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S") {
+        return Some(DateTime::<Utc>::from_naive_utc_and_offset(naive, Utc));
+    }
+
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -583,5 +754,22 @@ mod tests {
         assert_eq!(count, 1);
         assert_eq!(paths, vec!["folder[1]/file].txt".to_string()]);
         assert_eq!(progress.last().copied(), Some(1));
+    }
+
+    #[test]
+    fn test_parse_lsf_ps_line_basic() {
+        let sep = PS_LSF_SEPARATOR;
+        let line = format!(
+            "Documents/report.pdf{sep}1024{sep}2024-01-01T00:00:00Z{sep}abc",
+            sep = sep
+        );
+
+        let entry = parse_lsf_ps_line(&line, Some("MD5")).unwrap();
+        assert_eq!(entry.path, "Documents/report.pdf");
+        assert_eq!(entry.size, 1024);
+        assert_eq!(entry.hash.as_deref(), Some("abc"));
+        assert_eq!(entry.hash_type.as_deref(), Some("MD5"));
+        assert!(!entry.is_dir);
+        assert!(entry.modified.is_some());
     }
 }

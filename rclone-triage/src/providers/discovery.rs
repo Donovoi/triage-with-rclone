@@ -47,8 +47,9 @@ pub struct ProviderDiscoveryResult {
 }
 
 pub(crate) const BAD_PROVIDER_PREFIXES: &[&str] = &[
-    "alias", "crypt", "cache", "chunker", "combine", "compress", "ftp", "hasher", "http",
-    "local", "memory", "sftp", "smb", "union", "webdav",
+    // Wrapper/transform backends which either aren't primary data sources or may
+    // interfere with triage goals (e.g., encryption).
+    "alias", "cache", "chunker", "combine", "compress", "crypt", "hasher", "union",
 ];
 
 const OAUTH_PATTERNS: &[&str] = &[
@@ -292,6 +293,8 @@ mod tests {
         let json = r#"
         [
           {"Name":"Google Drive","Prefix":"drive","Options":[{"Name":"client_id"}]},
+          {"Name":"Crypt","Prefix":"crypt","Options":[{"Name":"remote"}]},
+          {"Name":"Union","Prefix":"union","Options":[{"Name":"upstreams"}]},
           {"Name":"Local","Prefix":"local","Options":[{"Name":"root"}]},
           {"Name":"Amazon S3","Prefix":"s3","Options":[{"Name":"access_key_id"}]},
           {"Name":"FTP","Prefix":"ftp","Options":[{"Name":"host"}]},
@@ -303,11 +306,13 @@ mod tests {
         let entries = result.providers;
         assert!(entries.iter().any(|p| p.id == "drive"));
         assert!(entries.iter().any(|p| p.id == "s3"));
-        assert!(!entries.iter().any(|p| p.id == "local"));
-        assert!(!entries.iter().any(|p| p.id == "ftp"));
+        assert!(entries.iter().any(|p| p.id == "local"));
+        assert!(entries.iter().any(|p| p.id == "ftp"));
+        assert!(!entries.iter().any(|p| p.id == "crypt"));
+        assert!(!entries.iter().any(|p| p.id == "union"));
         assert!(entries.iter().any(|p| p.id == "mystery"));
-        assert_eq!(result.stats.total, 5);
+        assert_eq!(result.stats.total, 7);
         assert_eq!(result.stats.excluded_bad, 2);
-        assert_eq!(result.stats.non_oauth, 2);
+        assert_eq!(result.stats.non_oauth, 4);
     }
 }

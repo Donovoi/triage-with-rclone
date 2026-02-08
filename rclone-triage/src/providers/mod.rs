@@ -9,6 +9,7 @@ pub mod credentials;
 pub mod discovery;
 pub mod features;
 pub mod mobile;
+pub mod schema;
 pub mod session;
 
 use serde::{Deserialize, Serialize};

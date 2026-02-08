@@ -288,6 +288,10 @@ mod tests {
         assert_eq!(drive[0].name, "Google Drive");
 
         let local = get_rclone_features_table_from_html("local", html).unwrap();
-        assert!(local.is_empty());
+        assert_eq!(local.len(), 1);
+        assert_eq!(local[0].name, "Local");
+
+        let crypt = get_rclone_features_table_from_html("crypt", html).unwrap();
+        assert!(crypt.is_empty());
     }
 }
