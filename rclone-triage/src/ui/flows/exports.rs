@@ -14,7 +14,7 @@ pub(crate) fn perform_show_oauth_credentials(app: &mut App) -> Result<()> {
     let mut selected_path: Option<PathBuf> = None;
 
     if cfg!(windows) {
-        let initial_dir = app.directories.as_ref().map(|d| d.config.as_path());
+        let initial_dir = app.forensics.directories.as_ref().map(|d| d.config.as_path());
         match open_file_dialog(
             Some("Select rclone config file"),
             initial_dir,
@@ -97,7 +97,7 @@ pub(crate) fn perform_show_oauth_credentials(app: &mut App) -> Result<()> {
         }
     }
 
-    app.report_lines = lines;
+    app.download.report_lines = lines;
     app.state = crate::ui::AppState::OAuthCredentials;
     Ok(())
 }
@@ -135,12 +135,12 @@ struct ExportedBrowserSessionError {
 }
 
 pub(crate) fn perform_export_browser_sessions(app: &mut App) -> Result<()> {
-    if app.case.is_none() || app.directories.is_none() {
+    if app.forensics.case.is_none() || app.forensics.directories.is_none() {
         let output_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         app.init_case(output_dir)?;
     }
 
-    let dirs = match app.directories.as_ref() {
+    let dirs = match app.forensics.directories.as_ref() {
         Some(d) => d,
         None => bail!("Case directories not initialized"),
     };
@@ -249,7 +249,7 @@ pub(crate) fn perform_export_domain_cookies<B: ratatui::backend::Backend>(
     app: &mut App,
     terminal: &mut Terminal<B>,
 ) -> Result<()> {
-    if app.case.is_none() || app.directories.is_none() {
+    if app.forensics.case.is_none() || app.forensics.directories.is_none() {
         let output_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         app.init_case(output_dir)?;
     }
@@ -283,7 +283,7 @@ pub(crate) fn perform_export_domain_cookies<B: ratatui::backend::Backend>(
     };
 
     let listings_dir = app
-        .directories
+        .forensics.directories
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("Case directories not initialized"))?
         .listings

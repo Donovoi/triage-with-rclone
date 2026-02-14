@@ -76,9 +76,13 @@ impl SystemStateSnapshot {
 
     /// Capture relevant environment variables
     fn capture_env_vars() -> BTreeMap<String, String> {
+        // Security-sensitive variables whose *values* should not appear in forensic
+        // reports are excluded (e.g. RCLONE_CONFIG_PASS contains the config encryption
+        // password).  We still note their *presence* without capturing the value.
+        const SENSITIVE_VARS: &[&str] = &["RCLONE_CONFIG_PASS"];
+
         let relevant_vars = [
             "RCLONE_CONFIG",
-            "RCLONE_CONFIG_PASS",
             "PATH",
             "TEMP",
             "TMP",
@@ -92,6 +96,12 @@ impl SystemStateSnapshot {
         for var in &relevant_vars {
             if let Ok(value) = std::env::var(var) {
                 vars.insert(var.to_string(), value);
+            }
+        }
+        // Record presence of sensitive vars without leaking their values.
+        for var in SENSITIVE_VARS {
+            if std::env::var(var).is_ok() {
+                vars.insert(var.to_string(), "<REDACTED>".to_string());
             }
         }
         vars

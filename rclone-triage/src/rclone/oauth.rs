@@ -301,11 +301,16 @@ fn parse_oauth_callback_url(url: &str, expected_state: Option<&str>) -> Callback
     let state = extract_param(url, "state");
 
     if let Some(expected) = expected_state {
-        // Best-effort: accept callbacks that omit `state` even if we expected it.
-        if let Some(ref got) = state {
-            if got != expected {
+        match state.as_deref() {
+            Some(got) if got != expected => {
                 return CallbackParse::StateMismatch { got: state };
             }
+            None => {
+                // SECURITY: reject callbacks that omit `state` when we expected one.
+                // Accepting a missing state would defeat CSRF protection.
+                return CallbackParse::StateMismatch { got: None };
+            }
+            _ => {} // state matches
         }
     }
 
@@ -470,14 +475,11 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_oauth_callback_state_missing_is_accepted() {
+    fn test_parse_oauth_callback_state_missing_is_rejected() {
         let url = "/?code=test_code";
         assert_eq!(
             parse_oauth_callback_url(url, Some("expected")),
-            CallbackParse::Success {
-                code: "test_code".to_string(),
-                state: None
-            }
+            CallbackParse::StateMismatch { got: None }
         );
     }
 

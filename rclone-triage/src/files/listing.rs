@@ -661,7 +661,7 @@ fn parse_lsf_ps_line(line: &str, hash_type: Option<&str>) -> Option<FileEntry> {
 
     let hash_type = hash
         .as_ref()
-        .and_then(|_| hash_type)
+        .and(hash_type)
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
 

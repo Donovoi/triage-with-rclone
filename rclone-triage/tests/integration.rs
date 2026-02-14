@@ -362,7 +362,7 @@ esac
     write_report(&dirs.report, &report).expect("write report");
 
     let report_contents = fs::read_to_string(&dirs.report).expect("read report");
-    assert!(report_contents.contains("rclone-triage Report"));
+    assert!(report_contents.contains("rclone-triage Forensic Report"));
     assert!(report_contents.contains(case.session_id()));
     assert!(report_contents.contains("file.txt"));
 }

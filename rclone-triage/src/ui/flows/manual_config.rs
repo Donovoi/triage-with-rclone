@@ -101,7 +101,7 @@ pub(crate) fn perform_manual_config_flow<B: ratatui::backend::Backend>(
     app: &mut App,
     terminal: &mut Terminal<B>,
 ) -> Result<()> {
-    let Some(provider) = app.chosen_provider.clone() else {
+    let Some(provider) = app.provider.chosen.clone() else {
         app.auth_status = "No provider selected.".to_string();
         return Ok(());
     };
@@ -365,10 +365,10 @@ pub(crate) fn perform_manual_config_flow<B: ratatui::backend::Backend>(
         return Ok(());
     }
 
-    app.chosen_remote = Some(remote_name.clone());
+    app.remote.chosen = Some(remote_name.clone());
 
     // Track configured provider in case (best-effort: no user info).
-    if let Some(ref mut case) = app.case {
+    if let Some(ref mut case) = app.forensics.case {
         case.add_provider(crate::case::AuthenticatedProvider {
             provider_id: provider.id.clone(),
             provider_name: provider.display_name().to_string(),
@@ -430,10 +430,10 @@ pub(crate) fn perform_manual_config_flow<B: ratatui::backend::Backend>(
     };
 
     if large_listing {
-        if app.directories.is_none() {
+        if app.forensics.directories.is_none() {
             app.log_info("Large listing requested, but case directories are unavailable; falling back to in-memory listing.");
         }
-        if let Some(ref dirs) = app.directories {
+        if let Some(ref dirs) = app.forensics.directories {
             let csv_path = dirs
                 .listings
                 .join(format!("{}_files.csv", provider.short_name()));
@@ -455,12 +455,12 @@ pub(crate) fn perform_manual_config_flow<B: ratatui::backend::Backend>(
                     app.log_info(format!("Exported listing to {:?}", csv_path));
                     app.track_file(&csv_path, "Exported file listing CSV");
 
-                    app.file_entries_full = result.entries.clone();
-                    app.file_entries = result.entries.iter().map(|e| e.path.clone()).collect();
-                    app.files_to_download.clear();
-                    app.file_selected = 0;
+                    app.files.entries_full = result.entries.clone();
+                    app.files.entries = result.entries.iter().map(|e| e.path.clone()).collect();
+                    app.files.to_download.clear();
+                    app.files.selected = 0;
 
-                    let shown = app.file_entries.len();
+                    let shown = app.files.entries.len();
                     if result.truncated {
                         app.auth_status = format!(
                             "Found {} files (showing first {}). CSV: {:?}",
@@ -494,7 +494,7 @@ pub(crate) fn perform_manual_config_flow<B: ratatui::backend::Backend>(
     match listing_result {
         Ok(entries) => {
             // Export file listing to CSV/XLSX (best-effort).
-            if let Some(ref dirs) = app.directories {
+            if let Some(ref dirs) = app.forensics.directories {
                 let csv_path = dirs
                     .listings
                     .join(format!("{}_files.csv", provider.short_name()));
@@ -516,12 +516,12 @@ pub(crate) fn perform_manual_config_flow<B: ratatui::backend::Backend>(
                 }
             }
 
-            app.file_entries_full = entries.clone();
-            app.file_entries = entries.iter().map(|e| e.path.clone()).collect();
-            app.files_to_download.clear();
-            app.file_selected = 0;
+            app.files.entries_full = entries.clone();
+            app.files.entries = entries.iter().map(|e| e.path.clone()).collect();
+            app.files.to_download.clear();
+            app.files.selected = 0;
 
-            app.auth_status = format!("Found {} files", app.file_entries.len());
+            app.auth_status = format!("Found {} files", app.files.entries.len());
             app.advance(); // Move to FileList
         }
         Err(e) => {

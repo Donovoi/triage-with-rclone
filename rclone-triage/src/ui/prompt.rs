@@ -2,31 +2,11 @@
 
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Terminal;
 use std::time::Duration;
 
-use crate::ui::{render::render_state, App};
-
-fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
-    let popup_layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Percentage((100 - percent_y) / 2),
-            Constraint::Percentage(percent_y),
-            Constraint::Percentage((100 - percent_y) / 2),
-        ])
-        .split(r);
-    Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage((100 - percent_x) / 2),
-            Constraint::Percentage(percent_x),
-            Constraint::Percentage((100 - percent_x) / 2),
-        ])
-        .split(popup_layout[1])[1]
-}
+use crate::ui::{layout::centered_rect, render::render_state, App};
 
 /// Prompt for a single line of input without leaving the TUI.
 ///

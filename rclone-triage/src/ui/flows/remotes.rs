@@ -20,16 +20,16 @@ pub(crate) fn choose_remote_or_prompt(
     provider: &crate::providers::ProviderEntry,
     remotes: Vec<String>,
 ) -> Result<Option<String>> {
-    if let Some(current) = app.chosen_remote.clone() {
+    if let Some(current) = app.remote.chosen.clone() {
         if remotes.iter().any(|remote| remote == &current) {
             return Ok(Some(current));
         }
-        app.chosen_remote = None;
+        app.remote.chosen = None;
     }
 
     if remotes.len() == 1 {
         let remote_name = remotes[0].clone();
-        app.chosen_remote = Some(remote_name.clone());
+        app.remote.chosen = Some(remote_name.clone());
         return Ok(Some(remote_name));
     }
 
@@ -37,13 +37,13 @@ pub(crate) fn choose_remote_or_prompt(
         return Ok(None);
     }
 
-    app.remote_options = remotes;
-    app.remote_selected = app
-        .chosen_remote
+    app.remote.options = remotes;
+    app.remote.selected = app
+        .remote.chosen
         .as_ref()
-        .and_then(|remote| app.remote_options.iter().position(|r| r == remote))
+        .and_then(|remote| app.remote.options.iter().position(|r| r == remote))
         .unwrap_or(0);
-    app.provider_status = format!(
+    app.provider.status = format!(
         "Multiple remotes found for {}. Select one to continue.",
         provider.display_name()
     );

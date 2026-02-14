@@ -1,7 +1,7 @@
 //! Screen rendering based on application state
 
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
@@ -147,12 +147,12 @@ pub fn render_state(frame: &mut Frame, app: &App) {
                 .constraints([Constraint::Percentage(65), Constraint::Percentage(35)])
                 .split(chunks[0]);
             let names = app
-                .providers
+                .provider.entries
                 .iter()
                 .map(|p| p.display_name().to_string())
                 .collect::<Vec<_>>();
             let screen =
-                ProviderSelectScreen::new(names, app.provider_checked.clone(), app.provider_selected);
+                ProviderSelectScreen::new(names, app.provider.checked.clone(), app.provider.selected);
             frame.render_widget(&screen, content_chunks[0]);
 
             let mode = app
@@ -160,25 +160,25 @@ pub fn render_state(frame: &mut Frame, app: &App) {
                 .and_then(|action| app.menu_items.iter().find(|item| item.action == action))
                 .map(|item| format!("Mode: {}", item.label))
                 .unwrap_or_else(|| "Mode: Authenticate (default)".to_string());
-            let status = if app.provider_status.is_empty() {
-                format!("Providers: built-in ({})", app.providers.len())
+            let status = if app.provider.status.is_empty() {
+                format!("Providers: built-in ({})", app.provider.entries.len())
             } else {
-                app.provider_status.clone()
+                app.provider.status.clone()
             };
             let last_update = app
-                .provider_last_updated
+                .provider.last_updated
                 .as_ref()
                 .map(|ts| ts.format("%Y-%m-%d %H:%M:%S").to_string())
                 .unwrap_or_else(|| "never".to_string());
             let last_error = app
-                .provider_last_error
+                .provider.last_error
                 .as_deref()
                 .unwrap_or("none");
             let show_status_panel = content_chunks[1].width >= 26 && content_chunks[1].height >= 6;
             if show_status_panel {
                 let mut help_lines = Vec::new();
                 help_lines.push(Line::from(mode.clone()));
-                if let Some(provider) = app.providers.get(app.provider_selected) {
+                if let Some(provider) = app.provider.entries.get(app.provider.selected) {
                     help_lines.push(Line::from(format!(
                         "Selected: {}",
                         provider.display_name()
@@ -212,7 +212,7 @@ pub fn render_state(frame: &mut Frame, app: &App) {
                     }
                     help_lines.push(Line::from(""));
                 }
-                help_lines.push(Line::from(format!("Providers: {}", app.providers.len())));
+                help_lines.push(Line::from(format!("Providers: {}", app.provider.entries.len())));
                 help_lines.push(Line::from(format!("Last update: {}", last_update)));
                 help_lines.push(Line::from(format!("Last error: {}", last_error)));
                 help_lines.push(Line::from(format!("Status: {}", status)));
@@ -233,7 +233,7 @@ pub fn render_state(frame: &mut Frame, app: &App) {
             } else {
                 vec![
                     Line::from(mode),
-                    Line::from(format!("Providers: {}", app.providers.len())),
+                    Line::from(format!("Providers: {}", app.provider.entries.len())),
                     Line::from(format!("Status: {}", status)),
                     Line::from(format!("Last error: {}", last_error)),
                     Line::from("Tip: Press r to refresh from rclone if the list looks short."),
@@ -244,7 +244,7 @@ pub fn render_state(frame: &mut Frame, app: &App) {
             let footer = Paragraph::new(footer_lines).wrap(Wrap { trim: true });
             frame.render_widget(footer, chunks[1]);
 
-            if app.show_provider_help {
+            if app.provider.show_help {
                 let overlay = centered_rect(70, 60, area);
                 let help_lines = vec![
                     Line::from("Provider list sources"),
@@ -268,18 +268,18 @@ pub fn render_state(frame: &mut Frame, app: &App) {
                 .constraints([Constraint::Min(3), Constraint::Length(4)])
                 .split(area);
             let screen =
-                RemoteSelectScreen::new(app.remote_options.clone(), app.remote_selected);
+                RemoteSelectScreen::new(app.remote.options.clone(), app.remote.selected);
             frame.render_widget(&screen, chunks[0]);
 
             let provider_name = app
-                .chosen_provider
+                .provider.chosen
                 .as_ref()
                 .map(|p| p.display_name().to_string())
                 .unwrap_or_else(|| "Provider".to_string());
-            let status = if app.provider_status.is_empty() {
+            let status = if app.provider.status.is_empty() {
                 format!("Select a remote for {}.", provider_name)
             } else {
-                app.provider_status.clone()
+                app.provider.status.clone()
             };
             let controls =
                 "Up/Down select • Click select • Enter confirm • Backspace back • q quit".to_string();
@@ -323,7 +323,7 @@ pub fn render_state(frame: &mut Frame, app: &App) {
         AppState::BrowserSelect => {
             let mut names = Vec::new();
             names.push("System Default".to_string());
-            for browser in &app.browsers {
+            for browser in &app.browser.entries {
                 if browser.is_default {
                     names.push(format!("{} (default)", browser.display_name()));
                 } else {
@@ -335,7 +335,7 @@ pub fn render_state(frame: &mut Frame, app: &App) {
                 .constraints([Constraint::Min(3), Constraint::Length(3)])
                 .split(area);
             let screen =
-                BrowserSelectScreen::new(names, app.browser_checked.clone(), app.browser_selected);
+                BrowserSelectScreen::new(names, app.browser.checked.clone(), app.browser.selected);
             frame.render_widget(&screen, chunks[0]);
 
             let next = "Next: Enter selects browser → authentication opens.";
@@ -352,7 +352,7 @@ pub fn render_state(frame: &mut Frame, app: &App) {
         }
         AppState::Authenticating => {
             let name = app
-                .chosen_provider
+                .provider.chosen
                 .as_ref()
                 .map(|p| p.display_name().to_string())
                 .unwrap_or_else(|| "Provider".to_string());
@@ -374,14 +374,14 @@ pub fn render_state(frame: &mut Frame, app: &App) {
             frame.render_widget(footer, chunks[1]);
         }
         AppState::FileList => {
-            let entries = if app.file_entries.is_empty() {
+            let entries = if app.files.entries.is_empty() {
                 vec!["/".to_string()]
             } else {
                 // Mark files that are selected for download with [x]
-                app.file_entries
+                app.files.entries
                     .iter()
                     .map(|e| {
-                        if app.files_to_download.contains(e) {
+                        if app.files.to_download.contains(e) {
                             format!("[x] {}", e)
                         } else {
                             format!("[ ] {}", e)
@@ -394,7 +394,7 @@ pub fn render_state(frame: &mut Frame, app: &App) {
                 .constraints([Constraint::Min(3), Constraint::Length(3)])
                 .split(area);
             let mut screen = FilesScreen::new(entries);
-            screen.tree.selected = app.file_selected;
+            screen.tree.selected = app.files.selected;
             frame.render_widget(&screen, chunks[0]);
 
             let (hint, controls) = match app.selected_action {
@@ -432,24 +432,24 @@ pub fn render_state(frame: &mut Frame, app: &App) {
                 .constraints([Constraint::Min(3), Constraint::Length(3)])
                 .split(area);
             let mut screen = DownloadScreen::new();
-            if !app.download_status.is_empty() {
-                screen.overall.label = app.download_status.clone();
+            if !app.download.status.is_empty() {
+                screen.overall.label = app.download.status.clone();
             }
-            let overall_ratio = if let Some(total_bytes) = app.download_total_bytes {
+            let overall_ratio = if let Some(total_bytes) = app.download.total_bytes {
                 if total_bytes > 0 {
-                    let done = app.download_done_bytes.min(total_bytes);
+                    let done = app.download.done_bytes.min(total_bytes);
                     done as f64 / total_bytes as f64
                 } else {
                     0.0
                 }
-            } else if app.download_progress.1 > 0 {
-                app.download_progress.0 as f64 / app.download_progress.1 as f64
+            } else if app.download.progress.1 > 0 {
+                app.download.progress.0 as f64 / app.download.progress.1 as f64
             } else {
                 0.0
             };
             screen.overall.set_progress(overall_ratio);
 
-            if let Some((done, total)) = app.download_current_bytes {
+            if let Some((done, total)) = app.download.current_bytes {
                 if total > 0 {
                     screen.current.set_progress(done as f64 / total as f64);
                     screen.current.label =
@@ -464,19 +464,19 @@ pub fn render_state(frame: &mut Frame, app: &App) {
             frame.render_widget(footer, chunks[1]);
         }
         AppState::Complete => {
-            let lines = if app.report_lines.is_empty() {
+            let lines = if app.download.report_lines.is_empty() {
                 vec!["Complete".to_string(), "No errors".to_string()]
             } else {
-                app.report_lines.clone()
+                app.download.report_lines.clone()
             };
             let screen = ReportScreen::new(lines);
             frame.render_widget(&screen, area);
         }
         AppState::OAuthCredentials => {
-            let lines = if app.report_lines.is_empty() {
+            let lines = if app.download.report_lines.is_empty() {
                 vec!["No OAuth credential data loaded.".to_string()]
             } else {
-                app.report_lines.clone()
+                app.download.report_lines.clone()
             };
             let screen = ReportScreen::new(lines);
             frame.render_widget(&screen, area);
@@ -484,28 +484,7 @@ pub fn render_state(frame: &mut Frame, app: &App) {
     }
 }
 
-fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
-    let popup_layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Percentage((100 - percent_y) / 2),
-            Constraint::Percentage(percent_y),
-            Constraint::Percentage((100 - percent_y) / 2),
-        ])
-        .split(area);
-
-    let vertical = popup_layout[1];
-    let horizontal_layout = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage((100 - percent_x) / 2),
-            Constraint::Percentage(percent_x),
-            Constraint::Percentage((100 - percent_x) / 2),
-        ])
-        .split(vertical);
-
-    horizontal_layout[1]
-}
+use super::layout::centered_rect;
 
 #[cfg(test)]
 mod tests {
@@ -533,9 +512,9 @@ mod tests {
                 .draw(|f| {
                     let mut app = App::new();
                     app.state = state;
-                    app.provider_selected = 0;
+                    app.provider.selected = 0;
                     if state == AppState::RemoteSelect {
-                        app.remote_options = vec!["Personal".to_string(), "Business".to_string()];
+                        app.remote.options = vec!["Personal".to_string(), "Business".to_string()];
                     }
                     render_state(f, &app);
                 })

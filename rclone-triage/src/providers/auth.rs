@@ -421,7 +421,7 @@ where
     let oauth = OAuthFlow::new()
         .with_port(port)
         .with_timeout(Duration::from_secs(300))
-        .with_bind_host("0.0.0.0")
+        .with_bind_host(&local_ip)
         .with_redirect_host(local_ip.clone());
 
     let redirect_uri = oauth.redirect_uri();

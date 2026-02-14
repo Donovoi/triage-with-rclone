@@ -68,20 +68,20 @@ fn apply_discovered_providers(
     if !providers.is_empty() {
         let stats_summary = format_provider_stats(&discovery.stats, providers.len());
         crate::providers::ProviderEntry::sort_entries(&mut providers);
-        app.providers = providers;
-        if app.provider_selected >= app.providers.len() {
-            app.provider_selected = 0;
+        app.provider.entries = providers;
+        if app.provider.selected >= app.provider.entries.len() {
+            app.provider.selected = 0;
         }
-        app.provider_checked = vec![false; app.providers.len()];
-        app.provider_status = format!(
+        app.provider.checked = vec![false; app.provider.entries.len()];
+        app.provider.status = format!(
             "Loaded {} providers from rclone. {}",
-            app.providers.len(),
+            app.provider.entries.len(),
             stats_summary
         );
         record_provider_refresh(app, None);
     } else {
         let stats_summary = format_provider_stats(&discovery.stats, 0);
-        app.provider_status = format!(
+        app.provider.status = format!(
             "No supported providers found; using defaults. {}",
             stats_summary
         );
@@ -94,8 +94,8 @@ fn apply_discovered_providers(
 }
 
 fn record_provider_refresh(app: &mut App, error: Option<String>) {
-    app.provider_last_updated = Some(Local::now());
-    app.provider_last_error = error;
+    app.provider.last_updated = Some(Local::now());
+    app.provider.last_error = error;
 }
 
 fn resolve_download_queue_path(app: &App) -> Result<PathBuf> {
@@ -109,7 +109,7 @@ fn resolve_download_queue_path(app: &App) -> Result<PathBuf> {
         }
     }
 
-    if let Some(dirs) = &app.directories {
+    if let Some(dirs) = &app.forensics.directories {
         if let Some(path) = find_queue_candidate(&dirs.listings) {
             return Ok(path);
         }
@@ -221,12 +221,12 @@ fn apply_queue_entries(
         bail!("Queue contained no usable file paths");
     }
 
-    app.file_entries_full = full_entries.clone();
-    app.file_entries = full_entries.iter().map(|e| e.path.clone()).collect();
-    app.files_to_download = app.file_entries.clone();
-    app.file_selected = 0;
+    app.files.entries_full = full_entries.clone();
+    app.files.entries = full_entries.iter().map(|e| e.path.clone()).collect();
+    app.files.to_download = app.files.entries.clone();
+    app.files.selected = 0;
 
-    Ok(app.files_to_download.len())
+    Ok(app.files.to_download.len())
 }
 
 fn try_refresh_providers(app: &mut App) {
@@ -235,9 +235,9 @@ fn try_refresh_providers(app: &mut App) {
         .unwrap_or(true);
 
     if !allow {
-        app.provider_status = format!(
+        app.provider.status = format!(
             "Provider refresh disabled by RCLONE_TRIAGE_DYNAMIC_PROVIDERS=0. Using built-in providers ({}).",
-            app.providers.len()
+            app.provider.entries.len()
         );
         record_provider_refresh(
             app,
@@ -246,13 +246,13 @@ fn try_refresh_providers(app: &mut App) {
         return;
     }
 
-    app.provider_status = "Refreshing providers...".to_string();
+    app.provider.status = "Refreshing providers...".to_string();
 
     let binary = match crate::embedded::ExtractedBinary::extract() {
         Ok(binary) => binary,
         Err(e) => {
             let message = format!("Provider discovery failed (extract): {}", e);
-            app.provider_status = format!("Provider discovery failed: {}. Using built-in list.", e);
+            app.provider.status = format!("Provider discovery failed: {}. Using built-in list.", e);
             app.log_error(message);
             record_provider_refresh(
                 app,
@@ -272,7 +272,7 @@ fn try_refresh_providers(app: &mut App) {
         Ok(discovery) => discovery,
         Err(e) => {
             let message = format!("Provider discovery failed: {}", e);
-            app.provider_status = format!("Provider discovery failed: {}. Using built-in list.", e);
+            app.provider.status = format!("Provider discovery failed: {}. Using built-in list.", e);
             app.log_error(message.clone());
             record_provider_refresh(app, Some(message));
             return;
@@ -287,18 +287,18 @@ fn perform_csv_download_flow<B: ratatui::backend::Backend>(
     app: &mut App,
     terminal: &mut Terminal<B>,
 ) -> Result<()> {
-    let Some(provider) = app.chosen_provider.clone() else {
-        app.provider_status = "No provider selected.".to_string();
+    let Some(provider) = app.provider.chosen.clone() else {
+        app.provider.status = "No provider selected.".to_string();
         return Ok(());
     };
 
-    app.provider_status = "Loading CSV/XLSX download queue...".to_string();
+    app.provider.status = "Loading CSV/XLSX download queue...".to_string();
     terminal.draw(|f| render_state(f, app))?;
 
     let queue_path = match resolve_download_queue_path(app) {
         Ok(path) => path,
         Err(e) => {
-            app.provider_status = format!("Queue not found: {}", e);
+            app.provider.status = format!("Queue not found: {}", e);
             app.log_error(format!("Queue not found: {}", e));
             return Ok(());
         }
@@ -307,7 +307,7 @@ fn perform_csv_download_flow<B: ratatui::backend::Backend>(
     let queue_entries = match crate::files::read_download_queue(&queue_path) {
         Ok(entries) => entries,
         Err(e) => {
-            app.provider_status = format!("Queue load failed: {}", e);
+            app.provider.status = format!("Queue load failed: {}", e);
             app.log_error(format!("Queue load failed: {}", e));
             return Ok(());
         }
@@ -320,7 +320,7 @@ fn perform_csv_download_flow<B: ratatui::backend::Backend>(
     let config = match crate::rclone::RcloneConfig::for_case(&config_dir) {
         Ok(config) => config,
         Err(e) => {
-            app.provider_status = format!("Queue failed (config): {}", e);
+            app.provider.status = format!("Queue failed (config): {}", e);
             app.log_error(format!("Queue failed (config): {}", e));
             return Ok(());
         }
@@ -330,14 +330,14 @@ fn perform_csv_download_flow<B: ratatui::backend::Backend>(
     let remotes = match crate::ui::flows::remotes::resolve_provider_remotes(&config, &provider) {
         Ok(remotes) => remotes,
         Err(e) => {
-            app.provider_status = format!("Queue failed (parse config): {}", e);
+            app.provider.status = format!("Queue failed (parse config): {}", e);
             app.log_error(format!("Queue failed (parse config): {}", e));
             return Ok(());
         }
     };
 
     if remotes.is_empty() {
-        app.provider_status = format!(
+        app.provider.status = format!(
             "No authenticated remotes found for {}. Copy a config to {:?} and retry.",
             provider.display_name(),
             config.path()
@@ -355,17 +355,17 @@ fn perform_csv_download_flow<B: ratatui::backend::Backend>(
         None => return Ok(()),
     };
 
-    app.chosen_remote = Some(remote_name.clone());
+    app.remote.chosen = Some(remote_name.clone());
     let count = match apply_queue_entries(app, queue_entries, &remote_name) {
         Ok(count) => count,
         Err(e) => {
-            app.provider_status = format!("Queue parse failed: {}", e);
+            app.provider.status = format!("Queue parse failed: {}", e);
             app.log_error(format!("Queue parse failed: {}", e));
             return Ok(());
         }
     };
 
-    app.provider_status = format!("Loaded {} queued files from {:?}", count, queue_path);
+    app.provider.status = format!("Loaded {} queued files from {:?}", count, queue_path);
     app.log_info(format!("Loaded {} queued files from {:?}", count, queue_path));
 
     app.state = crate::ui::AppState::Downloading;
@@ -532,7 +532,7 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                             }
                         } else if app.state == crate::ui::AppState::ProviderSelect {
                             app.confirm_provider();
-                            if app.chosen_provider.is_none() {
+                            if app.provider.chosen.is_none() {
                                 continue;
                             }
 
@@ -542,13 +542,13 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                                     | Some(crate::ui::MenuAction::SmartAuth)
                                     | Some(crate::ui::MenuAction::MobileAuth)
                             );
-                            let auth_kind = app.chosen_provider.as_ref().map(|p| p.auth_kind());
+                            let auth_kind = app.provider.chosen.as_ref().map(|p| p.auth_kind());
                             if needs_oauth {
                                 match auth_kind {
                                     Some(crate::providers::ProviderAuthKind::KeyBased)
                                     | Some(crate::providers::ProviderAuthKind::UserPass) => {
                                         app.menu_status.clear();
-                                        app.chosen_browser = None;
+                                        app.browser.chosen = None;
                                         app.state = crate::ui::AppState::Authenticating;
                                         crate::ui::flows::manual_config::perform_manual_config_flow(
                                             app,
@@ -557,7 +557,7 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                                         continue;
                                     }
                                     Some(crate::providers::ProviderAuthKind::Unknown) => {
-                                        if let Some(provider) = app.chosen_provider.as_ref() {
+                                        if let Some(provider) = app.provider.chosen.as_ref() {
                                             // Best-effort: allow trying OAuth even if we can't confidently classify the backend.
                                             app.menu_status = format!(
                                                 "Backend '{}' auth type is unknown. Attempting OAuth anyway; if it fails, configure it in an rclone config and use Retrieve List / Mount / Download from CSV.",
@@ -573,7 +573,7 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                                     app.state = crate::ui::AppState::MobileAuthFlow;
                                 }
                                 Some(crate::ui::MenuAction::SmartAuth) => {
-                                    app.chosen_browser = None;
+                                    app.browser.chosen = None;
                                     app.state = crate::ui::AppState::Authenticating;
                                     crate::ui::flows::auth::perform_auth_flow(app, &mut terminal)?;
                                 }
@@ -588,7 +588,7 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                                 }
                                 _ => {
                                     if app
-                                        .chosen_provider
+                                        .provider.chosen
                                         .as_ref()
                                         .and_then(|p| p.known)
                                         .is_some()
@@ -596,7 +596,7 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                                         app.refresh_browsers();
                                         app.advance(); // Move to BrowserSelect
                                     } else {
-                                        app.chosen_browser = None;
+                                        app.browser.chosen = None;
                                         app.state = crate::ui::AppState::Authenticating;
                                         crate::ui::flows::auth::perform_auth_flow(app, &mut terminal)?;
                                     }
@@ -604,7 +604,7 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                             }
                         } else if app.state == crate::ui::AppState::RemoteSelect {
                             if let Some(remote_name) = app.confirm_remote() {
-                                app.provider_status = format!("Selected remote: {}", remote_name);
+                                app.provider.status = format!("Selected remote: {}", remote_name);
                                 resume_remote_flow(app, &mut terminal)?;
                             }
                         } else if app.state == crate::ui::AppState::MobileAuthFlow {
@@ -645,7 +645,7 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                             }
                         } else if app.state == crate::ui::AppState::FileList {
                             // Start download if files are selected
-                            if !app.files_to_download.is_empty() {
+                            if !app.files.to_download.is_empty() {
                                 app.advance(); // Move to Downloading
                                 crate::ui::flows::download::perform_download_flow(app, &mut terminal)?;
                             }
@@ -655,8 +655,8 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                     }
                     KeyCode::Backspace => {
                         if app.state == crate::ui::AppState::RemoteSelect {
-                            app.remote_options.clear();
-                            app.remote_selected = 0;
+                            app.remote.options.clear();
+                            app.remote.selected = 0;
                             app.back();
                         } else if app.state == crate::ui::AppState::FileList {
                             if matches!(
@@ -714,11 +714,11 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                         if app.state == crate::ui::AppState::ProviderSelect {
                             try_refresh_providers(app);
                         } else if app.state == crate::ui::AppState::Complete
-                            && !app.download_failures.is_empty()
+                            && !app.download.failures.is_empty()
                         {
-                            app.files_to_download = app.download_failures.clone();
-                            app.download_failures.clear();
-                            app.download_status = "Retrying failed downloads...".to_string();
+                            app.files.to_download = app.download.failures.clone();
+                            app.download.failures.clear();
+                            app.download.status = "Retrying failed downloads...".to_string();
                             app.state = crate::ui::AppState::Downloading;
                             crate::ui::flows::download::perform_download_flow(app, &mut terminal)?;
                         }
@@ -756,9 +756,9 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                             app.cleanup_track_env_value("RCLONE_CONFIG", config.original_env());
 
                             let remote_name = app
-                                .chosen_remote
+                                .remote.chosen
                                 .clone()
-                                .or_else(|| app.chosen_provider.as_ref().map(|p| p.short_name().to_string()));
+                                .or_else(|| app.provider.chosen.as_ref().map(|p| p.short_name().to_string()));
                             let Some(remote_name) = remote_name else {
                                 app.log_error("Mount failed: no remote selected");
                                 continue;
@@ -773,7 +773,7 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                             };
 
                             // Keep mount points and caches inside the case directory to reduce system footprint.
-                            if let Some(ref dirs) = app.directories {
+                            if let Some(ref dirs) = app.forensics.directories {
                                 let mount_base = dirs.base.join("mounts");
                                 let cache_dir = dirs.base.join("cache").join("rclone");
 
@@ -934,11 +934,11 @@ fn handle_provider_help_key(app: &mut App, key: &KeyEvent) -> bool {
         return false;
     }
 
-    if app.show_provider_help {
+    if app.provider.show_help {
         match key.code {
             KeyCode::Char('q') => false,
             KeyCode::Char('?') | KeyCode::Char('h') | KeyCode::Esc => {
-                app.show_provider_help = false;
+                app.provider.show_help = false;
                 true
             }
             _ => true,
@@ -946,7 +946,7 @@ fn handle_provider_help_key(app: &mut App, key: &KeyEvent) -> bool {
     } else {
         match key.code {
             KeyCode::Char('?') | KeyCode::Char('h') => {
-                app.show_provider_help = true;
+                app.provider.show_help = true;
                 true
             }
             _ => false,
@@ -1007,23 +1007,23 @@ fn handle_mouse_event(app: &mut App, area: ratatui::layout::Rect, mouse: MouseEv
             crate::ui::AppState::ProviderSelect => {
                 let list_area = provider_list_area(area);
                 if let Some(index) = list_index_from_click(list_area, mouse.row) {
-                    if index < app.providers.len() {
-                        app.provider_selected = index;
+                    if index < app.provider.entries.len() {
+                        app.provider.selected = index;
                     }
                 }
             }
             crate::ui::AppState::RemoteSelect => {
                 let list_area = main_menu_list_area(area);
                 if let Some(index) = list_index_from_click(list_area, mouse.row) {
-                    if index < app.remote_options.len() {
-                        app.remote_selected = index;
+                    if index < app.remote.options.len() {
+                        app.remote.selected = index;
                     }
                 }
             }
             crate::ui::AppState::BrowserSelect => {
                 if let Some(index) = list_index_from_click(area, mouse.row) {
-                    if index < app.browsers.len() + 1 {
-                        app.browser_selected = index;
+                    if index < app.browser.entries.len() + 1 {
+                        app.browser.selected = index;
                     }
                 }
             }
@@ -1037,8 +1037,8 @@ fn handle_mouse_event(app: &mut App, area: ratatui::layout::Rect, mouse: MouseEv
             }
             crate::ui::AppState::FileList => {
                 if let Some(index) = list_index_from_click(area, mouse.row) {
-                    if index < app.file_entries.len() {
-                        app.file_selected = index;
+                    if index < app.files.entries.len() {
+                        app.files.selected = index;
                     }
                 }
             }
@@ -1104,7 +1104,7 @@ mod tests {
     #[test]
     fn test_refresh_providers_from_json_replaces_defaults() {
         let mut app = App::new();
-        let original_len = app.providers.len();
+        let original_len = app.provider.entries.len();
 
         let json = r#"
         [
@@ -1118,15 +1118,15 @@ mod tests {
         let discovery = crate::providers::discovery::providers_from_rclone_json(json).unwrap();
         apply_discovered_providers(&mut app, discovery);
 
-        assert_ne!(app.providers.len(), original_len);
-        assert!(app.providers.iter().any(|p| p.id == "s3"));
-        assert!(app.providers.iter().any(|p| p.id == "azureblob"));
-        let b2 = app.providers.iter().find(|p| p.id == "b2").unwrap();
+        assert_ne!(app.provider.entries.len(), original_len);
+        assert!(app.provider.entries.iter().any(|p| p.id == "s3"));
+        assert!(app.provider.entries.iter().any(|p| p.id == "azureblob"));
+        let b2 = app.provider.entries.iter().find(|p| p.id == "b2").unwrap();
         assert_eq!(
             b2.auth_kind(),
             crate::providers::ProviderAuthKind::KeyBased
         );
-        assert!(app.providers.iter().any(|p| p.id == "drive"));
+        assert!(app.provider.entries.iter().any(|p| p.id == "drive"));
     }
 
     #[test]
@@ -1197,26 +1197,26 @@ mod tests {
 
         let open = KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE);
         assert!(handle_provider_help_key(&mut app, &open));
-        assert!(app.show_provider_help);
+        assert!(app.provider.show_help);
 
         let up = KeyEvent::new(KeyCode::Up, KeyModifiers::NONE);
         assert!(handle_provider_help_key(&mut app, &up));
-        assert!(app.show_provider_help);
+        assert!(app.provider.show_help);
 
         let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
         assert!(handle_provider_help_key(&mut app, &esc));
-        assert!(!app.show_provider_help);
+        assert!(!app.provider.show_help);
     }
 
     #[test]
     fn test_provider_help_does_not_consume_quit() {
         let mut app = App::new();
         app.state = crate::ui::AppState::ProviderSelect;
-        app.show_provider_help = true;
+        app.provider.show_help = true;
 
         let quit = KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE);
         assert!(!handle_provider_help_key(&mut app, &quit));
-        assert!(app.show_provider_help);
+        assert!(app.provider.show_help);
     }
 
     #[test]
