@@ -139,6 +139,13 @@ pub fn write_custom_oauth_config(path: &Path, config: &CustomOAuthConfig) -> Res
     }
     let json = serde_json::to_string_pretty(config).context("Failed to serialize OAuth config")?;
     fs::write(path, json).with_context(|| format!("Failed to write {:?}", path))?;
+    // Restrict permissions so other users cannot read client secrets.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = std::fs::Permissions::from_mode(0o600);
+        std::fs::set_permissions(path, perms).ok();
+    }
     Ok(())
 }
 

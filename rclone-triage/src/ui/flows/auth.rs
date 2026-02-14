@@ -218,7 +218,7 @@ pub(crate) fn perform_auth_flow<B: ratatui::backend::Backend>(
 
     let runner = crate::rclone::RcloneRunner::new(binary.path()).with_config(config.path());
 
-    if let Some(provider) = app.chosen_provider.clone() {
+    if let Some(provider) = app.provider.chosen.clone() {
         struct AuthOutcome {
             remote_name: String,
             user_info: Option<String>,
@@ -257,7 +257,7 @@ pub(crate) fn perform_auth_flow<B: ratatui::backend::Backend>(
                         was_silent: result.was_silent,
                     },
                 )
-            } else if let Some(ref browser) = app.chosen_browser {
+            } else if let Some(ref browser) = app.browser.chosen {
                 app.auth_status = format!(
                     "Authenticating {} via {}...",
                     provider.display_name(),
@@ -473,7 +473,7 @@ pub(crate) fn perform_auth_flow<B: ratatui::backend::Backend>(
                 ));
 
                 // Track authenticated provider in case
-                if let Some(ref mut case) = app.case {
+                if let Some(ref mut case) = app.forensics.case {
                     case.add_provider(crate::case::AuthenticatedProvider {
                         provider_id: provider.id.clone(),
                         provider_name: provider.display_name().to_string(),
@@ -483,7 +483,7 @@ pub(crate) fn perform_auth_flow<B: ratatui::backend::Backend>(
                 }
 
                 // Persist remote name for later listing/download
-                app.chosen_remote = Some(result.remote_name.clone());
+                app.remote.chosen = Some(result.remote_name.clone());
 
                 app.auth_status = "Testing connectivity...".to_string();
                 terminal.draw(|f| render_state(f, app))?;
@@ -542,10 +542,10 @@ pub(crate) fn perform_auth_flow<B: ratatui::backend::Backend>(
                 };
 
                 if large_listing {
-                    if app.directories.is_none() {
+                    if app.forensics.directories.is_none() {
                         app.log_info("Large listing requested, but case directories are unavailable; falling back to in-memory listing.");
                     }
-                    if let Some(ref dirs) = app.directories {
+                    if let Some(ref dirs) = app.forensics.directories {
                         let csv_path = dirs
                             .listings
                             .join(format!("{}_files.csv", provider.short_name()));
@@ -570,11 +570,11 @@ pub(crate) fn perform_auth_flow<B: ratatui::backend::Backend>(
                                 app.track_file(&csv_path, "Exported file listing CSV");
 
                                 // Store (possibly truncated) entries for UI usage.
-                                app.file_entries_full = result.entries.clone();
-                                app.file_entries =
+                                app.files.entries_full = result.entries.clone();
+                                app.files.entries =
                                     result.entries.iter().map(|e| e.path.clone()).collect();
 
-                                let shown = app.file_entries.len();
+                                let shown = app.files.entries.len();
                                 if result.truncated {
                                     app.auth_status = format!(
                                         "Found {} files (showing first {}). CSV: {:?}",
@@ -608,7 +608,7 @@ pub(crate) fn perform_auth_flow<B: ratatui::backend::Backend>(
                 match listing_result {
                     Ok(entries) => {
                         // Export file listing to CSV
-                        if let Some(ref dirs) = app.directories {
+                        if let Some(ref dirs) = app.forensics.directories {
                             let csv_path = dirs
                                 .listings
                                 .join(format!("{}_files.csv", provider.short_name()));
@@ -635,14 +635,14 @@ pub(crate) fn perform_auth_flow<B: ratatui::backend::Backend>(
                         }
 
                         // Store full entries for hash verification during download
-                        app.file_entries_full = entries.clone();
-                        app.file_entries = entries.iter().map(|e| e.path.clone()).collect();
+                        app.files.entries_full = entries.clone();
+                        app.files.entries = entries.iter().map(|e| e.path.clone()).collect();
                         app.log_info(format!(
                             "Listed {} files from {}",
-                            app.file_entries.len(),
+                            app.files.entries.len(),
                             provider.display_name()
                         ));
-                        app.auth_status = format!("Found {} files", app.file_entries.len());
+                        app.auth_status = format!("Found {} files", app.files.entries.len());
                         app.advance(); // Move to FileList
                     }
                     Err(e) => {

@@ -8,17 +8,17 @@ pub(crate) fn perform_mount_flow<B: ratatui::backend::Backend>(
     app: &mut App,
     terminal: &mut Terminal<B>,
 ) -> Result<()> {
-    let Some(provider) = app.chosen_provider.clone() else {
-        app.provider_status = "No provider selected.".to_string();
+    let Some(provider) = app.provider.chosen.clone() else {
+        app.provider.status = "No provider selected.".to_string();
         return Ok(());
     };
 
     if app.mounted_remote.is_some() {
-        app.provider_status = "Remote already mounted.".to_string();
+        app.provider.status = "Remote already mounted.".to_string();
         return Ok(());
     }
 
-    app.provider_status = format!("Preparing mount for {}...", provider.display_name());
+    app.provider.status = format!("Preparing mount for {}...", provider.display_name());
     terminal.draw(|f| render_state(f, app))?;
 
     let binary = crate::embedded::ExtractedBinary::extract()?;
@@ -34,7 +34,7 @@ pub(crate) fn perform_mount_flow<B: ratatui::backend::Backend>(
     let config = match crate::rclone::RcloneConfig::for_case(&config_dir) {
         Ok(config) => config,
         Err(e) => {
-            app.provider_status = format!("Mount failed (config): {}", e);
+            app.provider.status = format!("Mount failed (config): {}", e);
             app.log_error(format!("Mount failed (config): {}", e));
             return Ok(());
         }
@@ -44,14 +44,14 @@ pub(crate) fn perform_mount_flow<B: ratatui::backend::Backend>(
     let remotes = match crate::ui::flows::remotes::resolve_provider_remotes(&config, &provider) {
         Ok(remotes) => remotes,
         Err(e) => {
-            app.provider_status = format!("Mount failed (parse config): {}", e);
+            app.provider.status = format!("Mount failed (parse config): {}", e);
             app.log_error(format!("Mount failed (parse config): {}", e));
             return Ok(());
         }
     };
 
     if remotes.is_empty() {
-        app.provider_status = format!(
+        app.provider.status = format!(
             "No authenticated remotes found for {}. Copy a config to {:?} and retry.",
             provider.display_name(),
             config.path()
@@ -72,19 +72,19 @@ pub(crate) fn perform_mount_flow<B: ratatui::backend::Backend>(
     let mut manager = match crate::rclone::MountManager::new(binary.path()) {
         Ok(manager) => manager.with_config(config.path()),
         Err(e) => {
-            app.provider_status = format!("Mount failed: {}", e);
+            app.provider.status = format!("Mount failed: {}", e);
             app.log_error(format!("Mount failed: {}", e));
             return Ok(());
         }
     };
 
     // Keep mount points and caches inside the case directory to reduce system footprint.
-    if let Some(ref dirs) = app.directories {
+    if let Some(ref dirs) = app.forensics.directories {
         let mount_base = dirs.base.join("mounts");
         let cache_dir = dirs.base.join("cache").join("rclone");
 
         if let Err(e) = std::fs::create_dir_all(&mount_base) {
-            app.provider_status = format!("Mount failed (mount dir): {}", e);
+            app.provider.status = format!("Mount failed (mount dir): {}", e);
             app.log_error(format!(
                 "Mount failed (mount dir {:?}): {}",
                 mount_base, e
@@ -94,7 +94,7 @@ pub(crate) fn perform_mount_flow<B: ratatui::backend::Backend>(
         app.track_file(&mount_base, "Created mount base directory inside case");
 
         if let Err(e) = std::fs::create_dir_all(&cache_dir) {
-            app.provider_status = format!("Mount failed (cache dir): {}", e);
+            app.provider.status = format!("Mount failed (cache dir): {}", e);
             app.log_error(format!(
                 "Mount failed (cache dir {:?}): {}",
                 cache_dir, e
@@ -110,16 +110,16 @@ pub(crate) fn perform_mount_flow<B: ratatui::backend::Backend>(
         Ok(mounted) => {
             let mount_path = mounted.mount_point().to_path_buf();
             app.mounted_remote = Some(mounted);
-            app.chosen_remote = Some(remote_name);
-            app.file_entries.clear();
-            app.file_entries_full.clear();
-            app.files_to_download.clear();
-            app.file_selected = 0;
-            app.provider_status = format!("Mounted remote at {:?}", mount_path);
+            app.remote.chosen = Some(remote_name);
+            app.files.entries.clear();
+            app.files.entries_full.clear();
+            app.files.to_download.clear();
+            app.files.selected = 0;
+            app.provider.status = format!("Mounted remote at {:?}", mount_path);
             app.state = crate::ui::AppState::FileList;
         }
         Err(e) => {
-            app.provider_status = format!("Mount failed: {}", e);
+            app.provider.status = format!("Mount failed: {}", e);
             app.log_error(format!("Mount failed: {}", e));
         }
     }

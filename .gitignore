@@ -21,3 +21,4 @@ target
 #.idea/
 rcloned/rcloned.psd1
 rcloned/rcloned.psm1
+.vscode/settings.json

@@ -34,7 +34,7 @@ impl OAuthToken {
     /// Extract user info from the ID token (JWT)
     pub fn extract_user_info(&self) -> Option<UserInfo> {
         let id_token = self.id_token.as_ref()?;
-        UserInfo::from_jwt(id_token)
+        UserInfo::from_jwt_unverified(id_token)
     }
 }
 
@@ -56,20 +56,32 @@ pub struct UserInfo {
 }
 
 impl UserInfo {
-    /// Extract user info from a JWT token
-    pub fn from_jwt(jwt: &str) -> Option<Self> {
+    /// Extract user info claims from a JWT token payload.
+    ///
+    /// # Security Warning
+    ///
+    /// This function **does not validate the JWT signature** and MUST NOT be used for
+    /// authorization or access-control decisions.  It only extracts claims for
+    /// *display purposes* (e.g. showing the authenticated user's email in the TUI
+    /// and forensic report).  The token's authenticity is implicitly trusted because
+    /// it was obtained directly from the OAuth provider over TLS.
+    ///
+    /// If stronger guarantees are needed in the future (e.g. accepting tokens from
+    /// untrusted sources), implement proper signature verification with the
+    /// provider's JWKS endpoint.
+    pub fn from_jwt_unverified(jwt: &str) -> Option<Self> {
         // JWT format: header.payload.signature
         let parts: Vec<&str> = jwt.split('.').collect();
         if parts.len() < 2 {
             return None;
         }
 
-        // Decode the payload (second part)
+        // Decode the payload (second part) — signature is NOT verified.
         let payload = parts[1];
         let decoded = URL_SAFE_NO_PAD.decode(payload).ok()?;
         let json_str = String::from_utf8(decoded).ok()?;
 
-        // Parse as JSON and extract claims
+        // Parse as JSON and extract claims (display use only)
         let claims: serde_json::Value = serde_json::from_str(&json_str).ok()?;
 
         Some(UserInfo {
@@ -292,6 +304,13 @@ impl RcloneConfig {
             if created {
                 fs::write(&config_path, "# rclone-triage config\n")
                     .with_context(|| format!("Failed to create config file: {:?}", config_path))?;
+                // Restrict permissions so other users cannot read OAuth tokens.
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let perms = std::fs::Permissions::from_mode(0o600);
+                    std::fs::set_permissions(&config_path, perms).ok();
+                }
             }
 
             // Set the environment variable
@@ -742,7 +761,7 @@ token = {"access_token":"ya29.xxx","token_type":"Bearer","refresh_token":"1//xxx
         // Note: we only decode the payload, not validate the signature
         let jwt = "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJlbWFpbCI6InRlc3RAZXhhbXBsZS5jb20iLCJuYW1lIjoiVGVzdCBVc2VyIiwic3ViIjoiMTIzNDU2In0.signature";
 
-        let user_info = UserInfo::from_jwt(jwt);
+        let user_info = UserInfo::from_jwt_unverified(jwt);
         assert!(user_info.is_some());
 
         let user = user_info.unwrap();
