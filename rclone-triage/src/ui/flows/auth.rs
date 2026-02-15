@@ -53,8 +53,9 @@ fn perform_mobile_auth_flow<B: ratatui::backend::Backend>(
                 )],
             )?;
 
-            let device_config = device_code_config(provider)?
-                .ok_or_else(|| anyhow::anyhow!("Device code flow not supported for {}", provider))?;
+            let device_config = device_code_config(provider)?.ok_or_else(|| {
+                anyhow::anyhow!("Device code flow not supported for {}", provider)
+            })?;
             let device_info = request_device_code(&device_config)?;
 
             let verification = device_info
@@ -346,7 +347,9 @@ pub(crate) fn perform_auth_flow<B: ratatui::backend::Backend>(
                     crate::rclone::authorize::spawn_authorize(&runner, &backend, true)?;
                 let auth_url = running
                     .wait_for_auth_url(Duration::from_secs(20))?
-                    .ok_or_else(|| anyhow::anyhow!("rclone authorize did not produce an auth URL"))?;
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("rclone authorize did not produce an auth URL")
+                    })?;
 
                 let mut lines = Vec::new();
                 lines.push(format!(
@@ -397,7 +400,11 @@ pub(crate) fn perform_auth_flow<B: ratatui::backend::Backend>(
                     anyhow::anyhow!("Failed to extract token JSON from rclone output")
                 })?;
 
-                config.set_remote(&remote_name, &finished.backend, &[("token", token.as_str())])?;
+                config.set_remote(
+                    &remote_name,
+                    &finished.backend,
+                    &[("token", token.as_str())],
+                )?;
                 if !config.has_remote(&remote_name)? {
                     bail!("Remote {} was not created", remote_name);
                 }
@@ -438,7 +445,11 @@ pub(crate) fn perform_auth_flow<B: ratatui::backend::Backend>(
                 let token = finished.token_json.ok_or_else(|| {
                     anyhow::anyhow!("Failed to extract token JSON from rclone output")
                 })?;
-                config.set_remote(&remote_name, &finished.backend, &[("token", token.as_str())])?;
+                config.set_remote(
+                    &remote_name,
+                    &finished.backend,
+                    &[("token", token.as_str())],
+                )?;
                 if !config.has_remote(&remote_name)? {
                     bail!("Remote {} was not created", remote_name);
                 }
@@ -465,7 +476,11 @@ pub(crate) fn perform_auth_flow<B: ratatui::backend::Backend>(
                     }
                 }
 
-                let auth_type = if result.was_silent { "SSO" } else { "interactive" };
+                let auth_type = if result.was_silent {
+                    "SSO"
+                } else {
+                    "interactive"
+                };
                 app.log_info(format!(
                     "Authentication successful for {} ({})",
                     provider.display_name(),
@@ -488,20 +503,19 @@ pub(crate) fn perform_auth_flow<B: ratatui::backend::Backend>(
                 app.auth_status = "Testing connectivity...".to_string();
                 terminal.draw(|f| render_state(f, app))?;
 
-                let connectivity =
-                    crate::rclone::test_connectivity(&runner, &result.remote_name)?;
+                let connectivity = crate::rclone::test_connectivity(&runner, &result.remote_name)?;
                 if connectivity.ok {
                     app.log_info(format!(
                         "Connectivity OK ({} ms)",
                         connectivity.duration.as_millis()
                     ));
                 } else {
-                    app.log_error(format!(
-                        "Connectivity failed: {}",
-                        connectivity
-                            .error
-                            .unwrap_or_else(|| "Unknown error".to_string())
-                    ));
+                    let err_msg = connectivity
+                        .error
+                        .unwrap_or_else(|| "Unknown error".to_string());
+                    app.log_error(format!("Connectivity failed: {}", err_msg));
+                    app.auth_status = format!("Listing failed: {}", err_msg);
+                    return Ok(());
                 }
 
                 app.auth_status = "Listing files...".to_string();
@@ -510,11 +524,10 @@ pub(crate) fn perform_auth_flow<B: ratatui::backend::Backend>(
                 let large_listing = std::env::var("RCLONE_TRIAGE_LARGE_LISTING")
                     .map(|v| v != "0")
                     .unwrap_or(false);
-                let large_in_memory: usize =
-                    std::env::var("RCLONE_TRIAGE_LARGE_LISTING_IN_MEMORY")
-                        .ok()
-                        .and_then(|v| v.parse().ok())
-                        .unwrap_or(50_000);
+                let large_in_memory: usize = std::env::var("RCLONE_TRIAGE_LARGE_LISTING_IN_MEMORY")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(50_000);
 
                 let include_hashes = provider
                     .known
@@ -558,8 +571,7 @@ pub(crate) fn perform_auth_flow<B: ratatui::backend::Backend>(
                                 &csv_path,
                                 large_in_memory,
                                 |count| {
-                                    app.auth_status =
-                                        format!("Listing files... ({} found)", count);
+                                    app.auth_status = format!("Listing files... ({} found)", count);
                                     let _ = terminal.draw(|f| render_state(f, app));
                                 },
                             );
@@ -624,9 +636,9 @@ pub(crate) fn perform_auth_flow<B: ratatui::backend::Backend>(
                             let xlsx_path = dirs
                                 .listings
                                 .join(format!("{}_files.xlsx", provider.short_name()));
-                            if let Err(e) = crate::files::export::export_listing_xlsx(
-                                &entries, &xlsx_path,
-                            ) {
+                            if let Err(e) =
+                                crate::files::export::export_listing_xlsx(&entries, &xlsx_path)
+                            {
                                 app.log_error(format!("Excel export failed: {}", e));
                             } else {
                                 app.log_info(format!("Exported listing to {:?}", xlsx_path));
