@@ -136,7 +136,10 @@ fn parse_redirect_host_port(redirect_uri: &str) -> Option<(String, u16)> {
             return Some((host.to_string(), port));
         }
     }
-    Some((host_port.to_string(), crate::rclone::oauth::DEFAULT_OAUTH_PORT))
+    Some((
+        host_port.to_string(),
+        crate::rclone::oauth::DEFAULT_OAUTH_PORT,
+    ))
 }
 
 fn resolve_fallback_credentials(
@@ -206,8 +209,7 @@ fn authenticate_with_authorize_fallback(
         .run(&auth_url)
         .with_context(|| format!("Fallback OAuth failed for {}", provider.display_name()))?;
 
-    let client_id_from_url =
-        crate::rclone::oauth::extract_param(&auth_url, "client_id");
+    let client_id_from_url = crate::rclone::oauth::extract_param(&auth_url, "client_id");
     let (client_id, client_secret) =
         resolve_fallback_credentials(provider, &provider_config, client_id_from_url.as_deref());
 
@@ -314,10 +316,21 @@ pub fn authenticate_with_rclone(
     config: &RcloneConfig,
     remote_name: &str,
 ) -> Result<AuthResult> {
-    // Use rclone config create with interactive OAuth
+    // Use rclone config create with a timeout. Without --non-interactive, rclone may
+    // hang on post-OAuth interactive prompts when stdin is /dev/null.
     let args = build_rclone_auth_args(provider, remote_name, false);
     let args_ref: Vec<&str> = args.iter().map(String::as_str).collect();
-    let output = rclone.run(&args_ref)?;
+    let output = rclone.run_with_timeout(&args_ref, Some(Duration::from_secs(120)))?;
+
+    // If rclone hung (e.g., waiting for interactive prompts with stdin piped to null),
+    // fall through to the authorize fallback.
+    if output.timed_out {
+        tracing::warn!(
+            "rclone config create timed out for {}; trying fallback",
+            provider
+        );
+        return authenticate_with_authorize_fallback(provider, rclone, config, remote_name);
+    }
 
     if !output.success() {
         let primary_error = output.stderr_string();
@@ -426,11 +439,8 @@ where
 
     let redirect_uri = oauth.redirect_uri();
     let state = OAuthFlow::generate_state();
-    let auth_url = provider_config.build_auth_url_with_client_id(
-        client_id,
-        &redirect_uri,
-        Some(&state),
-    );
+    let auth_url =
+        provider_config.build_auth_url_with_client_id(client_id, &redirect_uri, Some(&state));
 
     let mut lines = prelude_lines;
     lines.push(format!(
@@ -451,7 +461,9 @@ where
         .wait_for_redirect_with_state(Some(&state))
         .with_context(|| format!("OAuth authentication failed for {}", provider))?;
 
-    status(vec!["Authorization received. Exchanging token...".to_string()])?;
+    status(vec![
+        "Authorization received. Exchanging token...".to_string()
+    ])?;
 
     let token_json = exchange_code_for_token(
         provider_config.oauth.token_url,
@@ -505,7 +517,11 @@ fn ensure_oauth_url_has_state(auth_url: &str) -> String {
 
     let state = OAuthFlow::generate_state();
     let (before_fragment, fragment) = auth_url.split_once('#').unwrap_or((auth_url, ""));
-    let sep = if before_fragment.contains('?') { "&" } else { "?" };
+    let sep = if before_fragment.contains('?') {
+        "&"
+    } else {
+        "?"
+    };
     let mut out = format!("{}{}state={}", before_fragment, sep, state);
     if !fragment.is_empty() {
         out.push('#');
@@ -598,7 +614,7 @@ pub fn authenticate_with_device_code(
 pub fn authenticate_with_browser(
     provider: CloudProvider,
     browser: &Browser,
-    rclone: &RcloneRunner,
+    _rclone: &RcloneRunner,
     config: &RcloneConfig,
 ) -> Result<AuthResult> {
     if !browser.is_installed {
@@ -611,22 +627,97 @@ pub fn authenticate_with_browser(
     // We'll get the actual username after authentication
     let temp_remote_name = session.remote_name(None);
 
-    // Authenticate using rclone's flow
-    // The default browser will be used by rclone - we track which browser was intended
-    let args = build_rclone_auth_args(provider, &temp_remote_name, false);
-    let args_ref: Vec<&str> = args.iter().map(String::as_str).collect();
-    let output = run_rclone_with_browser_env(browser, rclone, &args_ref)?;
+    // Use the app's own OAuth flow instead of rclone config create.
+    // rclone config create hangs when stdin is /dev/null because it waits
+    // for interactive prompts after the OAuth callback.
+    let provider_config = ProviderConfig::for_provider(provider);
 
-    if !output.success() {
+    if !provider_config.uses_oauth() {
         bail!(
-            "Failed to authenticate {} with {}: {}",
-            provider,
-            browser.display_name(),
-            output.stderr_string()
+            "{} does not use OAuth. Manual configuration required.",
+            provider.display_name()
         );
     }
 
-    // Verify the remote was created
+    let custom = resolve_custom_oauth(provider);
+    let client_id = custom
+        .as_ref()
+        .map(|c| c.client_id.as_str())
+        .unwrap_or(provider_config.oauth.client_id);
+    let client_secret = custom
+        .as_ref()
+        .and_then(|c| c.client_secret.as_deref())
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| {
+            let s = provider_config.oauth.client_secret;
+            if s.trim().is_empty() {
+                None
+            } else {
+                Some(s)
+            }
+        });
+
+    let oauth = OAuthFlow::new();
+    let redirect_uri = oauth.redirect_uri();
+    let state = OAuthFlow::generate_state();
+    let auth_url =
+        provider_config.build_auth_url_with_client_id(client_id, &redirect_uri, Some(&state));
+
+    // Open the auth URL in the selected browser
+    if let Some(ref path) = browser.executable_path {
+        std::process::Command::new(path)
+            .arg(&auth_url)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .with_context(|| format!("Failed to open browser: {}", path.display()))?;
+    } else {
+        open::that(&auth_url).with_context(|| "Failed to open system default browser")?;
+    }
+
+    // Wait for the OAuth callback
+    let result = oauth
+        .wait_for_redirect_with_state(Some(&state))
+        .with_context(|| {
+            format!(
+                "OAuth authentication failed for {}",
+                provider.display_name()
+            )
+        })?;
+
+    // Exchange code for token
+    let token_json = exchange_code_for_token(
+        provider_config.oauth.token_url,
+        &result.code,
+        &redirect_uri,
+        client_id,
+        client_secret,
+    )?;
+    let token_str = serde_json::to_string(&token_json)?;
+
+    // Build config options
+    let mut options: Vec<(String, String)> = Vec::new();
+    for (key, value) in provider_config.rclone_options {
+        options.push(((*key).to_string(), (*value).to_string()));
+    }
+    if !client_id.trim().is_empty() {
+        options.push(("client_id".to_string(), client_id.to_string()));
+    }
+    if let Some(secret) = client_secret {
+        if !secret.trim().is_empty() {
+            options.push(("client_secret".to_string(), secret.to_string()));
+        }
+    }
+    options.push(("token".to_string(), token_str));
+
+    let options_ref: Vec<(&str, &str)> = options
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
+
+    config.set_remote(&temp_remote_name, provider.rclone_type(), &options_ref)?;
+
     if !config.has_remote(&temp_remote_name)? {
         bail!("Remote {} was not created", temp_remote_name);
     }
@@ -857,10 +948,8 @@ pub fn authenticate_with_sso(
     }
 
     // Get user info from config token if supported, otherwise fall back to hint.
-    let user_identifier =
-        user_identifier_from_config(provider, config, &remote_name).or_else(|| {
-            session.user_hint.clone()
-        });
+    let user_identifier = user_identifier_from_config(provider, config, &remote_name)
+        .or_else(|| session.user_hint.clone());
 
     Ok(AuthResult {
         provider,
