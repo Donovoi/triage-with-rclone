@@ -27,10 +27,19 @@ pub fn test_connectivity(rclone: &RcloneRunner, remote_name: &str) -> Result<Con
             error: None,
         })
     } else {
+        let error = if output.stderr_string().trim().is_empty() {
+            if output.stdout_string().trim().is_empty() {
+                format!("rclone lsjson failed (exit code {})", output.status)
+            } else {
+                output.stdout_string()
+            }
+        } else {
+            output.stderr_string()
+        };
         Ok(ConnectivityResult {
             ok: false,
             duration,
-            error: Some(output.stderr_string()),
+            error: Some(error),
         })
     }
 }

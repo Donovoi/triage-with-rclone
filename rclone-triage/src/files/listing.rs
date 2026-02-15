@@ -6,9 +6,9 @@ use serde::de::{self, SeqAccess, Visitor};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
-use std::io::{self, BufRead, BufReader, Read};
 use std::fs::OpenOptions;
 use std::io::Write;
+use std::io::{self, BufRead, BufReader, Read};
 use std::path::Path;
 use std::thread;
 
@@ -95,7 +95,11 @@ impl From<RcloneLsJsonEntry> for FileEntry {
 /// Example:
 /// - Remote: "mydrive:" or "mydrive:/folder"
 /// - Local: "/tmp"
-pub fn list_path(rclone: &RcloneRunner, target: &str, options: ListPathOptions) -> Result<Vec<FileEntry>> {
+pub fn list_path(
+    rclone: &RcloneRunner,
+    target: &str,
+    options: ListPathOptions,
+) -> Result<Vec<FileEntry>> {
     match list_path_inner(rclone, target, options.include_hashes) {
         Ok(entries) => Ok(entries),
         Err(err) => {
@@ -125,7 +129,9 @@ where
         Err(err) => {
             // Best-effort fallback: if requesting hashes breaks listing, retry without.
             if options.include_hashes {
-                if let Ok(entries) = list_path_with_progress_inner(rclone, target, false, &mut on_progress) {
+                if let Ok(entries) =
+                    list_path_with_progress_inner(rclone, target, false, &mut on_progress)
+                {
                     return Ok(entries);
                 }
             }
@@ -300,7 +306,11 @@ fn build_lsjson_args(target: &str, include_hashes: bool) -> Vec<&str> {
     args
 }
 
-fn list_path_inner(rclone: &RcloneRunner, target: &str, include_hashes: bool) -> Result<Vec<FileEntry>> {
+fn list_path_inner(
+    rclone: &RcloneRunner,
+    target: &str,
+    include_hashes: bool,
+) -> Result<Vec<FileEntry>> {
     let mut entries = Vec::new();
     let mut on_entry = |raw: RcloneLsJsonEntry| -> Result<()> {
         entries.push(FileEntry::from(raw));
@@ -405,7 +415,15 @@ fn run_lsjson_streaming<'a>(
         .unwrap_or_else(|_| vec!["<stderr capture panicked>".to_string()]);
 
     if status.code().unwrap_or(-1) != 0 {
-        bail!("rclone lsjson failed: {}", stderr_lines.join("\n"));
+        let stderr_msg = stderr_lines.join("\n");
+        if stderr_msg.trim().is_empty() {
+            bail!(
+                "rclone lsjson failed (exit code {}). Check that the remote is properly configured and the token is valid.",
+                status.code().unwrap_or(-1)
+            );
+        } else {
+            bail!("rclone lsjson failed: {}", stderr_msg);
+        }
     }
 
     parse_result
