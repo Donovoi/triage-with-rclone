@@ -2,7 +2,7 @@
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, StatefulWidget, Widget};
 
 /// Main menu list widget
@@ -28,7 +28,14 @@ impl Widget for &MenuList {
 
         let list = List::new(list_items)
             .block(Block::default().title("rcloned Menu").borders(Borders::ALL))
-            .highlight_style(Style::default().add_modifier(Modifier::BOLD));
+            .style(Style::default().fg(Color::Black).bg(Color::Gray))
+            .highlight_style(
+                Style::default()
+                    .fg(Color::White)
+                    .bg(Color::DarkGray)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .highlight_symbol("▶ ");
 
         let mut state = ListState::default();
         if !self.items.is_empty() {
