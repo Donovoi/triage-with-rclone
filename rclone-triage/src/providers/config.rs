@@ -71,7 +71,13 @@ impl ProviderConfig {
                 client_secret: "",
                 auth_url: "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
                 token_url: "https://login.microsoftonline.com/common/oauth2/v2.0/token",
-                scopes: &["Files.Read", "Files.ReadWrite", "Files.Read.All", "Files.ReadWrite.All", "offline_access"],
+                scopes: &[
+                    "Files.Read",
+                    "Files.ReadWrite",
+                    "Files.Read.All",
+                    "Files.ReadWrite.All",
+                    "offline_access",
+                ],
             },
             rclone_options: &[],
         }
@@ -252,7 +258,7 @@ mod tests {
     fn test_build_auth_url() {
         let config = ProviderConfig::for_provider(CloudProvider::GoogleDrive);
         let url = config.build_auth_url("http://localhost:53682/", Some("test_state"));
-        
+
         assert!(url.contains("accounts.google.com"));
         assert!(url.contains("client_id="));
         assert!(url.contains("redirect_uri="));
