@@ -17,7 +17,7 @@ pub struct ConnectivityResult {
 pub fn test_connectivity(rclone: &RcloneRunner, remote_name: &str) -> Result<ConnectivityResult> {
     let target = format!("{}:", remote_name);
     let start = Instant::now();
-    let output = rclone.run(&["lsjson", "--max-depth", "1", &target])?;
+    let output = rclone.run(&["lsjson", "--max-depth", "1", "-v", &target])?;
     let duration = start.elapsed();
 
     if output.success() {
