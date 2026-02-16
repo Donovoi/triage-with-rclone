@@ -56,7 +56,8 @@ impl ProviderConfig {
                 token_url: "https://oauth2.googleapis.com/token",
                 scopes: &["https://www.googleapis.com/auth/drive"],
             },
-            rclone_options: &[],
+            // rclone requires 'scope' in config to know which Drive API scope to use
+            rclone_options: &[("scope", "drive")],
         }
     }
 
@@ -190,8 +191,15 @@ impl ProviderConfig {
         }
 
         // Provider-specific params
-        if self.provider == CloudProvider::Dropbox {
-            url.push_str("&token_access_type=offline");
+        match self.provider {
+            CloudProvider::Dropbox => {
+                url.push_str("&token_access_type=offline");
+            }
+            CloudProvider::GoogleDrive | CloudProvider::GooglePhotos => {
+                // Required for Google to return a refresh_token
+                url.push_str("&access_type=offline&prompt=consent");
+            }
+            _ => {}
         }
 
         url
