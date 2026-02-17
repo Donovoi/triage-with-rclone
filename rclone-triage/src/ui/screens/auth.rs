@@ -2,9 +2,21 @@
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
-use ratatui::text::Line;
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Widget};
+
+/// Bright green style for dynamic/working status messages.
+fn status_style() -> Style {
+    Style::default()
+        .fg(Color::LightGreen)
+        .add_modifier(Modifier::BOLD)
+}
+
+/// Default style for static instruction text.
+fn static_style() -> Style {
+    Style::default().add_modifier(Modifier::BOLD)
+}
 
 pub struct AuthScreen {
     pub provider_name: String,
@@ -23,17 +35,21 @@ impl AuthScreen {
 impl Widget for &AuthScreen {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let mut lines = Vec::new();
-        lines.push(Line::from(format!("Authenticating: {}", self.provider_name)));
+        lines.push(Line::from(vec![
+            Span::styled("Authenticating: ", static_style()),
+            Span::styled(&self.provider_name, status_style()),
+        ]));
         if !self.status.is_empty() {
             for line in self.status.lines() {
-                lines.push(Line::from(line.to_string()));
+                lines.push(Line::from(Span::styled(line.to_string(), status_style())));
             }
         }
         lines.push(Line::from(""));
-        lines.push(Line::from(
+        lines.push(Line::from(Span::styled(
             "Complete the authentication flow and return here.",
-        ));
-        let paragraph = Paragraph::new(lines).style(Style::default().add_modifier(Modifier::BOLD));
+            static_style(),
+        )));
+        let paragraph = Paragraph::new(lines);
         paragraph.render(area, buf);
     }
 }

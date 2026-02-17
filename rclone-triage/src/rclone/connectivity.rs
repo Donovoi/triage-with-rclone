@@ -11,9 +11,11 @@ pub struct ConnectivityResult {
     pub ok: bool,
     pub duration: Duration,
     pub error: Option<String>,
+    /// Number of attempts made before success or final failure
+    pub attempts: u32,
 }
 
-/// Test connectivity to a remote by running a shallow lsjson
+/// Test connectivity to a remote by running a shallow lsjson (single attempt).
 pub fn test_connectivity(rclone: &RcloneRunner, remote_name: &str) -> Result<ConnectivityResult> {
     let target = format!("{}:", remote_name);
     let start = Instant::now();
@@ -25,11 +27,15 @@ pub fn test_connectivity(rclone: &RcloneRunner, remote_name: &str) -> Result<Con
             ok: true,
             duration,
             error: None,
+            attempts: 1,
         })
     } else {
         let error = if output.stderr_string().trim().is_empty() {
             if output.stdout_string().trim().is_empty() {
-                format!("rclone lsjson failed (exit code {})", output.status)
+                format!(
+                    "rclone lsjson failed (exit code {}). Check that the remote is properly configured and the token is valid.",
+                    output.status
+                )
             } else {
                 output.stdout_string()
             }
@@ -40,6 +46,12 @@ pub fn test_connectivity(rclone: &RcloneRunner, remote_name: &str) -> Result<Con
             ok: false,
             duration,
             error: Some(error),
+            attempts: 1,
         })
     }
+}
+
+/// Compute the retry delay for a given attempt (exponential backoff: 1s, 2s, 4s, …).
+pub fn retry_delay(attempt: u32) -> Duration {
+    Duration::from_secs(1u64 << attempt.min(4))
 }

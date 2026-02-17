@@ -503,18 +503,50 @@ pub(crate) fn perform_auth_flow<B: ratatui::backend::Backend>(
                 app.auth_status = "Testing connectivity...".to_string();
                 terminal.draw(|f| render_state(f, app))?;
 
-                let connectivity = crate::rclone::test_connectivity(&runner, &result.remote_name)?;
+                // Retry connectivity up to 3 times with exponential backoff —
+                // OAuth tokens may not propagate instantly after the browser flow.
+                let max_retries: u32 = 3;
+                let mut connectivity = crate::rclone::test_connectivity(&runner, &result.remote_name)?;
+                let mut attempt: u32 = 1;
+                while !connectivity.ok && attempt <= max_retries {
+                    let delay = crate::rclone::retry_delay(attempt - 1);
+                    let msg = format!(
+                        "Connectivity check failed (attempt {}/{}), retrying in {}s...",
+                        attempt,
+                        max_retries + 1,
+                        delay.as_secs()
+                    );
+                    app.log_info(&msg);
+                    app.auth_status = msg;
+                    terminal.draw(|f| render_state(f, app))?;
+                    std::thread::sleep(delay);
+                    connectivity = crate::rclone::test_connectivity(&runner, &result.remote_name)?;
+                    attempt += 1;
+                }
+
                 if connectivity.ok {
+                    let extra = if attempt > 1 {
+                        format!(" (succeeded on attempt {})", attempt)
+                    } else {
+                        String::new()
+                    };
                     app.log_info(format!(
-                        "Connectivity OK ({} ms)",
-                        connectivity.duration.as_millis()
+                        "Connectivity OK ({} ms){}",
+                        connectivity.duration.as_millis(),
+                        extra
                     ));
                 } else {
                     let err_msg = connectivity
                         .error
                         .unwrap_or_else(|| "Unknown error".to_string());
-                    app.log_error(format!("Connectivity failed: {}", err_msg));
-                    app.auth_status = format!("Listing failed: {}", err_msg);
+                    app.log_error(format!(
+                        "Connectivity failed after {} attempts: {}",
+                        attempt, err_msg
+                    ));
+                    app.auth_status = format!(
+                        "Connectivity failed after {} attempts: {}",
+                        attempt, err_msg
+                    );
                     return Ok(());
                 }
 
