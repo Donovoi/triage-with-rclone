@@ -1,9 +1,15 @@
 //! Screen rendering based on application state
 
-use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout};
-use ratatui::text::Line;
+use ratatui::style::{Color, Style};
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::Frame;
+
+/// Style for dynamic/working/thinking hints.
+fn hint_style() -> Style {
+    Style::default().fg(Color::LightGreen)
+}
 
 use crate::ui::screens::{
     auth::AuthScreen, browser_select::BrowserSelectScreen, download::DownloadScreen,
@@ -40,16 +46,15 @@ pub fn render_state(frame: &mut Frame, app: &App) {
                 Some(app.menu_status.clone())
             };
             let actions = "Actions: Authenticate • Retrieve list • Download CSV/XLSX • Mount • Silent/Smart Auth • Mobile Auth • Additional Options • Exit".to_string();
-            let controls =
-                "Up/Down select • Click select • Enter choose • Backspace back • q quit".to_string();
+            let controls = "Up/Down select • Click select • Enter choose • Backspace back • q quit"
+                .to_string();
             let mut footer_lines = vec![Line::from(description)];
             if let Some(status) = status {
                 footer_lines.push(Line::from(status));
             }
             footer_lines.push(Line::from(actions));
             footer_lines.push(Line::from(controls));
-            let footer = Paragraph::new(footer_lines)
-                .wrap(Wrap { trim: true });
+            let footer = Paragraph::new(footer_lines).wrap(Wrap { trim: true });
             frame.render_widget(footer, chunks[1]);
         }
         AppState::AdditionalOptions => {
@@ -75,10 +80,14 @@ pub fn render_state(frame: &mut Frame, app: &App) {
             } else {
                 app.menu_status.clone()
             };
-            let controls =
-                "Up/Down select • Click select • Enter choose • Backspace back • q quit".to_string();
-            let footer = Paragraph::new(vec![Line::from(description), Line::from(status), Line::from(controls)])
-                .wrap(Wrap { trim: true });
+            let controls = "Up/Down select • Click select • Enter choose • Backspace back • q quit"
+                .to_string();
+            let footer = Paragraph::new(vec![
+                Line::from(description),
+                Line::from(status),
+                Line::from(controls),
+            ])
+            .wrap(Wrap { trim: true });
             frame.render_widget(footer, chunks[1]);
         }
         AppState::OneDriveMenu => {
@@ -104,10 +113,14 @@ pub fn render_state(frame: &mut Frame, app: &App) {
             } else {
                 app.menu_status.clone()
             };
-            let controls =
-                "Up/Down select • Click select • Enter choose • Backspace back • q quit".to_string();
-            let footer = Paragraph::new(vec![Line::from(description), Line::from(status), Line::from(controls)])
-                .wrap(Wrap { trim: true });
+            let controls = "Up/Down select • Click select • Enter choose • Backspace back • q quit"
+                .to_string();
+            let footer = Paragraph::new(vec![
+                Line::from(description),
+                Line::from(status),
+                Line::from(controls),
+            ])
+            .wrap(Wrap { trim: true });
             frame.render_widget(footer, chunks[1]);
         }
         AppState::ModeConfirm => {
@@ -147,12 +160,16 @@ pub fn render_state(frame: &mut Frame, app: &App) {
                 .constraints([Constraint::Percentage(65), Constraint::Percentage(35)])
                 .split(chunks[0]);
             let names = app
-                .provider.entries
+                .provider
+                .entries
                 .iter()
                 .map(|p| p.display_name().to_string())
                 .collect::<Vec<_>>();
-            let screen =
-                ProviderSelectScreen::new(names, app.provider.checked.clone(), app.provider.selected);
+            let screen = ProviderSelectScreen::new(
+                names,
+                app.provider.checked.clone(),
+                app.provider.selected,
+            );
             frame.render_widget(&screen, content_chunks[0]);
 
             let mode = app
@@ -166,27 +183,19 @@ pub fn render_state(frame: &mut Frame, app: &App) {
                 app.provider.status.clone()
             };
             let last_update = app
-                .provider.last_updated
+                .provider
+                .last_updated
                 .as_ref()
                 .map(|ts| ts.format("%Y-%m-%d %H:%M:%S").to_string())
                 .unwrap_or_else(|| "never".to_string());
-            let last_error = app
-                .provider.last_error
-                .as_deref()
-                .unwrap_or("none");
+            let last_error = app.provider.last_error.as_deref().unwrap_or("none");
             let show_status_panel = content_chunks[1].width >= 26 && content_chunks[1].height >= 6;
             if show_status_panel {
                 let mut help_lines = Vec::new();
                 help_lines.push(Line::from(mode.clone()));
                 if let Some(provider) = app.provider.entries.get(app.provider.selected) {
-                    help_lines.push(Line::from(format!(
-                        "Selected: {}",
-                        provider.display_name()
-                    )));
-                    help_lines.push(Line::from(format!(
-                        "Backend: {}",
-                        provider.short_name()
-                    )));
+                    help_lines.push(Line::from(format!("Selected: {}", provider.display_name())));
+                    help_lines.push(Line::from(format!("Backend: {}", provider.short_name())));
                     if let Some(desc) = provider.description() {
                         help_lines.push(Line::from(format!("Description: {}", desc)));
                     }
@@ -202,17 +211,17 @@ pub fn render_state(frame: &mut Frame, app: &App) {
                         if hashes.is_empty() {
                             help_lines.push(Line::from("Hashes: none".to_string()));
                         } else {
-                            help_lines.push(Line::from(format!(
-                                "Hashes: {}",
-                                hashes.join(", ")
-                            )));
+                            help_lines.push(Line::from(format!("Hashes: {}", hashes.join(", "))));
                         }
                     } else {
                         help_lines.push(Line::from("Hashes: unknown".to_string()));
                     }
                     help_lines.push(Line::from(""));
                 }
-                help_lines.push(Line::from(format!("Providers: {}", app.provider.entries.len())));
+                help_lines.push(Line::from(format!(
+                    "Providers: {}",
+                    app.provider.entries.len()
+                )));
                 help_lines.push(Line::from(format!("Last update: {}", last_update)));
                 help_lines.push(Line::from(format!("Last error: {}", last_error)));
                 help_lines.push(Line::from(format!("Status: {}", status)));
@@ -257,7 +266,11 @@ pub fn render_state(frame: &mut Frame, app: &App) {
                     Line::from("Press ? or Esc to close."),
                 ];
                 let help = Paragraph::new(help_lines)
-                    .block(Block::default().title("Provider Help").borders(Borders::ALL))
+                    .block(
+                        Block::default()
+                            .title("Provider Help")
+                            .borders(Borders::ALL),
+                    )
                     .wrap(Wrap { trim: true });
                 frame.render_widget(help, overlay);
             }
@@ -267,12 +280,12 @@ pub fn render_state(frame: &mut Frame, app: &App) {
                 .direction(Direction::Vertical)
                 .constraints([Constraint::Min(3), Constraint::Length(4)])
                 .split(area);
-            let screen =
-                RemoteSelectScreen::new(app.remote.options.clone(), app.remote.selected);
+            let screen = RemoteSelectScreen::new(app.remote.options.clone(), app.remote.selected);
             frame.render_widget(&screen, chunks[0]);
 
             let provider_name = app
-                .provider.chosen
+                .provider
+                .chosen
                 .as_ref()
                 .map(|p| p.display_name().to_string())
                 .unwrap_or_else(|| "Provider".to_string());
@@ -282,7 +295,8 @@ pub fn render_state(frame: &mut Frame, app: &App) {
                 app.provider.status.clone()
             };
             let controls =
-                "Up/Down select • Click select • Enter confirm • Backspace back • q quit".to_string();
+                "Up/Down select • Click select • Enter confirm • Backspace back • q quit"
+                    .to_string();
             let footer = Paragraph::new(vec![
                 Line::from(format!("Provider: {}", provider_name)),
                 Line::from(status),
@@ -314,10 +328,14 @@ pub fn render_state(frame: &mut Frame, app: &App) {
             } else {
                 app.menu_status.clone()
             };
-            let controls =
-                "Up/Down select • Click select • Enter choose • Backspace back • q quit".to_string();
-            let footer = Paragraph::new(vec![Line::from(description), Line::from(status), Line::from(controls)])
-                .wrap(Wrap { trim: true });
+            let controls = "Up/Down select • Click select • Enter choose • Backspace back • q quit"
+                .to_string();
+            let footer = Paragraph::new(vec![
+                Line::from(description),
+                Line::from(status),
+                Line::from(controls),
+            ])
+            .wrap(Wrap { trim: true });
             frame.render_widget(footer, chunks[1]);
         }
         AppState::BrowserSelect => {
@@ -346,13 +364,18 @@ pub fn render_state(frame: &mut Frame, app: &App) {
             };
             let controls =
                 "Up/Down select • Space toggle • Enter confirm • Backspace back • q quit";
-            let footer = Paragraph::new(vec![Line::from(next), Line::from(status), Line::from(controls)])
-                .wrap(Wrap { trim: true });
+            let footer = Paragraph::new(vec![
+                Line::from(next),
+                Line::from(status),
+                Line::from(controls),
+            ])
+            .wrap(Wrap { trim: true });
             frame.render_widget(footer, chunks[1]);
         }
         AppState::Authenticating => {
             let name = app
-                .provider.chosen
+                .provider
+                .chosen
                 .as_ref()
                 .map(|p| p.display_name().to_string())
                 .unwrap_or_else(|| "Provider".to_string());
@@ -370,7 +393,8 @@ pub fn render_state(frame: &mut Frame, app: &App) {
 
             let hint =
                 "What happens now: complete auth in the browser, then return here to continue.";
-            let footer = Paragraph::new(vec![Line::from(hint)]).wrap(Wrap { trim: true });
+            let footer = Paragraph::new(vec![Line::from(Span::styled(hint, hint_style()))])
+                .wrap(Wrap { trim: true });
             frame.render_widget(footer, chunks[1]);
         }
         AppState::FileList => {
@@ -378,7 +402,8 @@ pub fn render_state(frame: &mut Frame, app: &App) {
                 vec!["/".to_string()]
             } else {
                 // Mark files that are selected for download with [x]
-                app.files.entries
+                app.files
+                    .entries
                     .iter()
                     .map(|e| {
                         if app.files.to_download.contains(e) {
@@ -422,8 +447,11 @@ pub fn render_state(frame: &mut Frame, app: &App) {
                         .to_string(),
                 ),
             };
-            let footer = Paragraph::new(vec![Line::from(hint), Line::from(controls)])
-                .wrap(Wrap { trim: true });
+            let footer = Paragraph::new(vec![
+                Line::from(Span::styled(&*hint, hint_style())),
+                Line::from(controls),
+            ])
+            .wrap(Wrap { trim: true });
             frame.render_widget(footer, chunks[1]);
         }
         AppState::Downloading => {
@@ -452,15 +480,15 @@ pub fn render_state(frame: &mut Frame, app: &App) {
             if let Some((done, total)) = app.download.current_bytes {
                 if total > 0 {
                     screen.current.set_progress(done as f64 / total as f64);
-                    screen.current.label =
-                        format!("Current: {} / {} bytes", done, total);
+                    screen.current.label = format!("Current: {} / {} bytes", done, total);
                 }
             }
             frame.render_widget(&screen, chunks[0]);
 
             let hint =
                 "What happens now: downloads run sequentially; progress and logs update below.";
-            let footer = Paragraph::new(vec![Line::from(hint)]).wrap(Wrap { trim: true });
+            let footer = Paragraph::new(vec![Line::from(Span::styled(hint, hint_style()))])
+                .wrap(Wrap { trim: true });
             frame.render_widget(footer, chunks[1]);
         }
         AppState::Complete => {

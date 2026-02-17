@@ -60,6 +60,11 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    // Collect debug logs for troubleshooting
+    if args.collect_logs {
+        return collect_debug_logs(&args);
+    }
+
     // Extract embedded rclone
     let binary = embedded::ExtractedBinary::extract()?;
     app_guard.track_file(binary.path());
@@ -358,7 +363,8 @@ fn should_run_tui(args: &Cli) -> bool {
         || args.onedrive_vault
         || args.set_oauth_creds.is_some()
         || args.show_oauth_creds.is_some()
-        || args.provider.is_some();
+        || args.provider.is_some()
+        || args.collect_logs;
 
     !has_cli_action
 }
@@ -456,6 +462,279 @@ impl Drop for AppGuard {
             let _ = cleanup.execute();
         }
     }
+}
+
+/// Collect debug logs, compress into a tarball, and optionally share via Tailscale.
+fn collect_debug_logs(args: &Cli) -> Result<()> {
+    use std::io::Write;
+
+    let timestamp = chrono::Utc::now().format("%Y%m%d-%H%M%S").to_string();
+    let staging = std::path::PathBuf::from(format!("/tmp/rclone-triage-logs-{}", timestamp));
+    std::fs::create_dir_all(&staging)?;
+
+    println!("Collecting debug logs...");
+
+    // 1. System info
+    let mut sys_info = String::new();
+    sys_info.push_str(&format!("Date: {}\n", chrono::Utc::now()));
+    sys_info.push_str(&format!(
+        "OS: {} {}\n",
+        std::env::consts::OS,
+        std::env::consts::ARCH
+    ));
+    if let Ok(hostname) = std::fs::read_to_string("/etc/hostname") {
+        sys_info.push_str(&format!("Hostname: {}\n", hostname.trim()));
+    }
+    if let Ok(user) = std::env::var("USER") {
+        sys_info.push_str(&format!("User: {}\n", user));
+    }
+    // Filtered env vars
+    sys_info.push_str("\nRelevant environment:\n");
+    for (key, val) in std::env::vars() {
+        if key.starts_with("RCLONE_") || key == "PATH" || key == "HOME" || key == "SHELL" {
+            sys_info.push_str(&format!("  {}={}\n", key, val));
+        }
+    }
+    std::fs::write(staging.join("system-info.txt"), &sys_info)?;
+    println!("  [+] System info");
+
+    // 2. rclone-triage version
+    let triage_info = format!(
+        "rclone-triage v{}\nOS: {} {}\n",
+        env!("CARGO_PKG_VERSION"),
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+    );
+    std::fs::write(staging.join("triage-info.txt"), &triage_info)?;
+    println!("  [+] Tool version");
+
+    // 3. Find and collect case directory
+    let case_dir = find_latest_case_dir(&args.output_dir);
+    if let Some(ref case) = case_dir {
+        println!("  [+] Found case: {}", case.display());
+
+        // Copy logs
+        let logs_src = case.join("logs");
+        if logs_src.is_dir() {
+            let logs_dst = staging.join("logs");
+            std::fs::create_dir_all(&logs_dst)?;
+            copy_dir_contents(&logs_src, &logs_dst)?;
+            println!("  [+] Forensic logs");
+        }
+
+        // Copy config (redacted)
+        let config_src = case.join("config");
+        if config_src.is_dir() {
+            let config_dst = staging.join("config");
+            std::fs::create_dir_all(&config_dst)?;
+            for entry in std::fs::read_dir(&config_src)? {
+                let entry = entry?;
+                if entry.file_type()?.is_file() {
+                    let content = std::fs::read_to_string(entry.path()).unwrap_or_default();
+                    let redacted = redact_secrets(&content);
+                    std::fs::write(config_dst.join(entry.file_name()), redacted)?;
+                }
+            }
+            println!("  [+] Config (secrets redacted)");
+        }
+
+        // Copy forensic report
+        let report = case.join("forensic_report.txt");
+        if report.is_file() {
+            std::fs::copy(&report, staging.join("forensic_report.txt"))?;
+            println!("  [+] Forensic report");
+        }
+
+        // Listing samples (first 50 lines)
+        let listings_src = case.join("listings");
+        if listings_src.is_dir() {
+            let listings_dst = staging.join("listings");
+            std::fs::create_dir_all(&listings_dst)?;
+            for entry in std::fs::read_dir(&listings_src)? {
+                let entry = entry?;
+                let name = entry.file_name();
+                if entry.file_type()?.is_file() {
+                    let content = std::fs::read_to_string(entry.path()).unwrap_or_default();
+                    let sample: String = content.lines().take(51).collect::<Vec<_>>().join("\n");
+                    std::fs::write(listings_dst.join(name), sample)?;
+                }
+            }
+            println!("  [+] Listing samples");
+        }
+    } else {
+        println!(
+            "  [!] No case directory found (searched {})",
+            args.output_dir.display()
+        );
+    }
+
+    // 4. README for LLM context
+    let mut readme = String::new();
+    readme.push_str("# rclone-triage Debug Log Bundle\n\n");
+    readme.push_str(&format!("Generated: {}\n\n", chrono::Utc::now()));
+    readme.push_str("## Files\n\n");
+    readme.push_str("- system-info.txt   — OS, env vars\n");
+    readme.push_str("- triage-info.txt   — Tool version\n");
+    readme.push_str("- logs/             — Hash-chained forensic logs\n");
+    readme.push_str("- config/           — rclone config (secrets redacted)\n");
+    readme.push_str("- listings/         — First 50 lines of listing CSVs\n");
+    readme.push_str("- forensic_report.txt — Session report\n\n");
+    readme.push_str("## Instructions\n\n");
+    readme.push_str("Share the .tar.gz with an LLM for debugging.\n");
+    readme.push_str("All secrets/tokens have been redacted.\n");
+    std::fs::write(staging.join("README.md"), &readme)?;
+
+    // 5. Create .tar.gz
+    let archive_path = format!("/tmp/rclone-triage-logs-{}.tar.gz", timestamp);
+    let tar_gz = std::fs::File::create(&archive_path)?;
+    let enc = flate2::write::GzEncoder::new(tar_gz, flate2::Compression::default());
+    let mut tar = tar::Builder::new(enc);
+    tar.append_dir_all(format!("rclone-triage-logs-{}", timestamp), &staging)?;
+    tar.finish()?;
+
+    let size = std::fs::metadata(&archive_path)?.len();
+    println!("\nLog bundle: {} ({} bytes)", archive_path, size);
+
+    // 6. Tailscale sharing
+    if which_exists("tailscale") {
+        println!("\nTailscale detected. Checking peers...");
+        let output = std::process::Command::new("tailscale")
+            .args(["status", "--json"])
+            .output();
+        if let Ok(output) = output {
+            if output.status.success() {
+                if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&output.stdout) {
+                    let mut peers = Vec::new();
+                    if let Some(peer_map) = json.get("Peer").and_then(|p| p.as_object()) {
+                        for (_key, peer) in peer_map {
+                            let online = peer
+                                .get("Online")
+                                .and_then(|v| v.as_bool())
+                                .unwrap_or(false);
+                            if online {
+                                let name = peer
+                                    .get("HostName")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("unknown");
+                                let ip = peer
+                                    .get("TailscaleIPs")
+                                    .and_then(|v| v.as_array())
+                                    .and_then(|a| a.first())
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("");
+                                peers.push((name.to_string(), ip.to_string()));
+                            }
+                        }
+                    }
+                    if !peers.is_empty() {
+                        println!("Online peers:");
+                        for (name, ip) in &peers {
+                            println!("  {} ({})", name, ip);
+                        }
+                        print!("\nSend to peer (hostname, or Enter to skip): ");
+                        std::io::stdout().flush()?;
+                        let target = prompt_line("")?;
+                        if !target.is_empty() {
+                            println!("Sending to {}...", target);
+                            let send = std::process::Command::new("tailscale")
+                                .args(["file", "cp", &archive_path, &format!("{}:", target)])
+                                .status();
+                            match send {
+                                Ok(s) if s.success() => {
+                                    println!("Sent! Peer can accept with: tailscale file get .");
+                                }
+                                _ => {
+                                    println!(
+                                        "Send failed. Manual: tailscale file cp {} {}:",
+                                        archive_path, target
+                                    );
+                                }
+                            }
+                        }
+                    } else {
+                        println!("No online peers found.");
+                    }
+                }
+            }
+        }
+    }
+
+    println!("\nManual share options:");
+    println!("  tailscale file cp {} <peer>:", archive_path);
+    println!("  scp {} user@host:/path/", archive_path);
+
+    Ok(())
+}
+
+fn find_latest_case_dir(base: &std::path::Path) -> Option<std::path::PathBuf> {
+    let mut candidates: Vec<_> = std::fs::read_dir(base)
+        .ok()?
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            e.file_type().map(|t| t.is_dir()).unwrap_or(false)
+                && e.file_name().to_string_lossy().starts_with("triage-")
+        })
+        .collect();
+    candidates.sort_by(|a, b| {
+        b.metadata()
+            .and_then(|m| m.modified())
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
+            .cmp(
+                &a.metadata()
+                    .and_then(|m| m.modified())
+                    .unwrap_or(std::time::SystemTime::UNIX_EPOCH),
+            )
+    });
+    candidates.first().map(|e| e.path())
+}
+
+fn copy_dir_contents(src: &std::path::Path, dst: &std::path::Path) -> Result<()> {
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let dest_path = dst.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            std::fs::create_dir_all(&dest_path)?;
+            copy_dir_contents(&entry.path(), &dest_path)?;
+        } else {
+            std::fs::copy(entry.path(), &dest_path)?;
+        }
+    }
+    Ok(())
+}
+
+fn redact_secrets(content: &str) -> String {
+    let mut output = String::with_capacity(content.len());
+    for line in content.lines() {
+        let lower = line.to_lowercase();
+        if lower.contains("token")
+            || lower.contains("secret")
+            || lower.contains("password")
+            || lower.contains("pass =")
+            || lower.contains("access_token")
+            || lower.contains("refresh_token")
+        {
+            if let Some(eq_pos) = line.find('=') {
+                output.push_str(&line[..=eq_pos]);
+                output.push_str(" <REDACTED>");
+            } else {
+                output.push_str(line);
+            }
+        } else {
+            output.push_str(line);
+        }
+        output.push('\n');
+    }
+    output
+}
+
+fn which_exists(cmd: &str) -> bool {
+    std::process::Command::new("which")
+        .arg(cmd)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
 /// CLI arguments
@@ -560,6 +839,10 @@ struct Cli {
     /// Skip waiting for user confirmation after Windows Hello
     #[arg(long, default_value_t = false)]
     onedrive_vault_no_wait: bool,
+
+    /// Collect debug logs, compress, and optionally share via Tailscale
+    #[arg(long, default_value_t = false)]
+    collect_logs: bool,
 }
 
 fn prompt_line(prompt: &str) -> Result<String> {
@@ -622,6 +905,7 @@ mod tests {
             onedrive_vault_mount: None,
             onedrive_vault_dest: None,
             onedrive_vault_no_wait: false,
+            collect_logs: false,
         }
     }
 
