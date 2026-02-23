@@ -14,7 +14,7 @@ use rclone_triage::forensics::{
     start_forensic_access_point, stop_forensic_access_point, SystemStateSnapshot,
 };
 use rclone_triage::providers::auth::{
-    authenticate_with_device_code, authenticate_with_mobile, authenticate_with_rclone,
+    authenticate_with_device_code, authenticate_with_mobile, smart_authenticate,
 };
 use rclone_triage::providers::credentials::upsert_custom_oauth_credentials;
 use rclone_triage::providers::discovery::providers_from_rclone;
@@ -260,7 +260,17 @@ fn main() -> Result<()> {
             } else if args.mobile_auth {
                 authenticate_with_mobile(provider, &config, &remote_name, args.mobile_auth_port)?;
             } else {
-                authenticate_with_rclone(provider, &runner, &config, &remote_name)?;
+                // Use smart auth: tries SSO first, falls back to interactive
+                println!("Attempting SSO authentication first...");
+                let result = smart_authenticate(provider, &runner, &config, &remote_name)?;
+                if result.was_silent {
+                    println!("SSO authentication succeeded (silent).");
+                } else {
+                    println!("Interactive authentication completed.");
+                }
+                if let Some(ref user) = result.user_info {
+                    println!("User: {}", user);
+                }
             }
         } else {
             if args.device_code {
@@ -337,16 +347,53 @@ fn main() -> Result<()> {
         let include_hashes = known
             .map(|provider| !provider.hash_types().is_empty())
             .unwrap_or(false);
-        let listing = list_path(
-            &runner,
-            &format!("{}:", remote_name),
-            if include_hashes {
-                ListPathOptions::with_hashes()
+
+        if args.ps_csv {
+            // PowerShell-compatible pilcrow-separated listing to file
+            let out_path = args
+                .output_listing
+                .clone()
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| {
+                    case.output_dir
+                        .join(&case.name)
+                        .join("listings")
+                        .join(format!("{}_files.ps.csv", remote_name))
+                });
+            if let Some(parent) = out_path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            let hash_type = if include_hashes {
+                known.and_then(|p| p.hash_types().first().copied())
             } else {
-                ListPathOptions::without_hashes()
-            },
-        )?;
-        println!("Listed {} entries", listing.len());
+                None
+            };
+            let result = rclone_triage::files::listing::list_path_large_lsf_to_ps_csv_with_progress(
+                &runner,
+                &format!("{}:", remote_name),
+                hash_type,
+                known.map(|p| p == CloudProvider::OneDrive).unwrap_or(false),
+                &out_path,
+                50_000,
+                |count| {
+                    if count % 500 == 0 {
+                        eprint!("\rListing files... ({} found)", count);
+                    }
+                },
+            )?;
+            eprintln!("\rListed {} entries -> {:?}", result.total_entries, out_path);
+        } else {
+            let listing = list_path(
+                &runner,
+                &format!("{}:", remote_name),
+                if include_hashes {
+                    ListPathOptions::with_hashes()
+                } else {
+                    ListPathOptions::without_hashes()
+                },
+            )?;
+            println!("Listed {} entries", listing.len());
+        }
     }
 
     // Capture final state and report if verbose
@@ -469,6 +516,22 @@ fn cli_download_from_queue(
 
     // Determine remote name
     let remote_name = if let Some(name) = remote_override {
+        // Validate that the specified remote exists in the config
+        let parsed = config.parse()?;
+        let exists = parsed.remotes.iter().any(|r| r.name == name);
+        if !exists {
+            let available: Vec<&str> = parsed.remotes.iter().map(|r| r.name.as_str()).collect();
+            bail!(
+                "Remote '{}' not found in config {:?}. Available remotes: {}",
+                name,
+                config.path(),
+                if available.is_empty() {
+                    "(none)".to_string()
+                } else {
+                    available.join(", ")
+                }
+            );
+        }
         name.to_string()
     } else {
         // Try to find a remote in the config
@@ -1024,6 +1087,14 @@ struct Cli {
     #[arg(long)]
     remote: Option<String>,
 
+    /// Use PowerShell-compatible listing format (pilcrow-separated, for Import-Csv)
+    #[arg(long, default_value_t = false)]
+    ps_csv: bool,
+
+    /// Output path for the file listing (used with --ps-csv)
+    #[arg(long)]
+    output_listing: Option<String>,
+
     /// Set custom OAuth credentials for a provider/backend (interactive)
     #[arg(long)]
     set_oauth_creds: Option<String>,
@@ -1145,6 +1216,8 @@ mod tests {
             device_code: false,
             download: None,
             remote: None,
+            ps_csv: false,
+            output_listing: None,
             set_oauth_creds: None,
             oauth_config_path: None,
             show_oauth_creds: None,

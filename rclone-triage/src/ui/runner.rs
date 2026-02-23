@@ -408,15 +408,14 @@ fn perform_web_gui_flow<B: ratatui::backend::Backend>(
 
     let port = 5572u16;
     match crate::rclone::start_web_gui(binary.path(), Some(config.path()), port, None, None) {
-        Ok(_web) => {
+        Ok(web) => {
             let addr = format!("http://127.0.0.1:{}/", port);
+            app.web_gui_process = Some(web);
             app.menu_status = format!(
-                "rclone Web GUI started at {}\n\nOpen in your browser. The GUI will stop when you leave this menu.",
+                "rclone Web GUI started at {}\n\nOpen in your browser. It will run until you exit.",
                 addr
             );
             app.log_info(format!("Started rclone Web GUI at {}", addr));
-            // The WebGuiProcess will be dropped (and killed) when leaving this scope.
-            // In a real implementation we'd keep it alive, but for now inform the user.
         }
         Err(e) => {
             app.menu_status = format!("Web GUI failed: {}", e);
@@ -1529,5 +1528,46 @@ mod tests {
             Some(crate::ui::MenuAction::DownloadFromCsv)
         );
         assert!(app.menu_status.is_empty());
+    }
+
+    #[test]
+    fn test_web_gui_field_default_none() {
+        let app = App::new();
+        assert!(app.web_gui_process.is_none());
+    }
+
+    #[test]
+    fn test_normalize_queue_path_strips_remote_prefix() {
+        assert_eq!(normalize_queue_path("drive:Documents/file.txt", "drive"), "Documents/file.txt");
+        assert_eq!(normalize_queue_path("drive:Documents/file.txt", "drive:"), "Documents/file.txt");
+        assert_eq!(normalize_queue_path("/Documents/file.txt", "drive"), "Documents/file.txt");
+        assert_eq!(normalize_queue_path("Documents/file.txt", "drive"), "Documents/file.txt");
+        assert_eq!(normalize_queue_path("  drive:file.txt  ", "drive"), "file.txt");
+    }
+
+    #[test]
+    fn test_normalize_queue_path_empty() {
+        assert_eq!(normalize_queue_path("", "drive"), "");
+        assert_eq!(normalize_queue_path("   ", "drive"), "");
+    }
+
+    #[test]
+    fn test_score_queue_name_ranking() {
+        // "todownload" keyword should rank highest
+        assert!(score_queue_name("todownload.xlsx") > score_queue_name("queue.csv"));
+        assert!(score_queue_name("queue.xlsx") > score_queue_name("selection.csv"));
+        assert!(score_queue_name("queue.xlsx") > score_queue_name("queue.csv"));
+        // .xlsx gets +1 bonus
+        assert!(score_queue_name("files.xlsx") > score_queue_name("files.csv"));
+    }
+
+    #[test]
+    fn test_additional_menu_has_web_gui() {
+        let app = App::new();
+        let has_web_gui = app
+            .additional_menu_items
+            .iter()
+            .any(|item| item.action == crate::ui::MenuAction::StartWebGui);
+        assert!(has_web_gui, "Additional Options menu should include Start Web GUI");
     }
 }
