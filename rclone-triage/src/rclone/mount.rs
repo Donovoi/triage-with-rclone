@@ -178,15 +178,100 @@ impl MountManager {
         }
     }
 
+    /// Attempt to install FUSE/WinFSP automatically and return whether installation succeeded.
+    pub fn install_fuse(&self) -> Result<bool> {
+        #[cfg(windows)]
+        {
+            // Try winget first (available on Win 10 1709+), then fall back to chocolatey.
+            let strategies: &[(&str, &[&str])] = &[
+                ("winget", &["install", "--id", "WinFsp.WinFsp", "-e", "--accept-source-agreements", "--accept-package-agreements"]),
+                ("choco", &["install", "winfsp", "-y"]),
+            ];
+
+            for (cmd, args) in strategies {
+                let installed = Command::new(cmd)
+                    .args(*args)
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .stdin(Stdio::null())
+                    .output()
+                    .is_ok_and(|o| o.status.success());
+
+                if installed {
+                    // Give Windows a moment to register the DLL.
+                    std::thread::sleep(Duration::from_secs(2));
+                    if self.check_fuse_available().unwrap_or(false) {
+                        return Ok(true);
+                    }
+                }
+            }
+
+            Ok(false)
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            // Try installing fuse3 (Debian/Ubuntu/Fedora/Arch).
+            let strategies: &[(&str, &[&str])] = &[
+                ("sudo", &["apt-get", "install", "-y", "fuse3"]),
+                ("pkexec", &["apt-get", "install", "-y", "fuse3"]),
+                ("sudo", &["dnf", "install", "-y", "fuse3"]),
+                ("sudo", &["pacman", "-S", "--noconfirm", "fuse3"]),
+            ];
+
+            for (cmd, args) in strategies {
+                let installed = Command::new(cmd)
+                    .args(*args)
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .stdin(Stdio::null())
+                    .output()
+                    .is_ok_and(|o| o.status.success());
+
+                if installed && self.check_fuse_available().unwrap_or(false) {
+                    return Ok(true);
+                }
+            }
+
+            Ok(false)
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            // Try Homebrew.
+            let installed = Command::new("brew")
+                .args(["install", "--cask", "macfuse"])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .stdin(Stdio::null())
+                .output()
+                .is_ok_and(|o| o.status.success());
+
+            if installed && self.check_fuse_available().unwrap_or(false) {
+                return Ok(true);
+            }
+
+            Ok(false)
+        }
+    }
+
+    /// Check for FUSE and auto-install if missing. Returns true if FUSE is available.
+    pub fn ensure_fuse_available(&self) -> Result<bool> {
+        if self.check_fuse_available()? {
+            return Ok(true);
+        }
+        self.install_fuse()
+    }
+
     /// Mount a remote and return the mount handle
     pub fn mount(&self, remote: &str, subfolder: Option<&str>) -> Result<MountedRemote> {
-        // Check FUSE availability
-        if !self.check_fuse_available()? {
+        // Check FUSE availability, auto-install if missing
+        if !self.ensure_fuse_available()? {
             bail!(
-                "FUSE is not available. Please install:\n\
-                - Windows: WinFsp (https://winfsp.dev/)\n\
-                - Linux: fuse or fuse3\n\
-                - macOS: macFUSE (https://osxfuse.github.io/)"
+                "FUSE is not available and auto-install failed. Please install manually:\n\
+                - Windows: winget install WinFsp.WinFsp\n\
+                - Linux: sudo apt install fuse3\n\
+                - macOS: brew install --cask macfuse"
             );
         }
 

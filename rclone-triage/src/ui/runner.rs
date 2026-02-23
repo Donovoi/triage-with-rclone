@@ -1559,26 +1559,31 @@ fn perform_post_auth_mount<B: ratatui::backend::Backend>(
         }
     };
 
-    // Check FUSE/WinFSP availability
+    // Check FUSE/WinFSP availability and auto-install if missing
     match manager.check_fuse_available() {
         Ok(true) => {}
         Ok(false) => {
-            let install_hint = if cfg!(windows) {
-                "Install WinFSP from https://winfsp.dev/ and restart."
-            } else if cfg!(target_os = "linux") {
-                "Install fuse: sudo apt install fuse3 (or fuse)"
-            } else if cfg!(target_os = "macos") {
-                "Install macFUSE from https://osxfuse.github.io/"
-            } else {
-                "Install a FUSE filesystem driver for your OS."
-            };
-            app.auth_status = format!(
-                "FUSE/WinFSP is NOT installed. Mount unavailable.\n{}",
-                install_hint
-            );
-            app.log_error("Mount failed: FUSE/WinFSP not installed");
-            // Don't advance — let user pick another option.
-            return Ok(());
+            app.auth_status = "FUSE/WinFSP not found. Installing automatically...".to_string();
+            app.log_info("FUSE/WinFSP not detected — attempting auto-install");
+            terminal.draw(|f| crate::ui::render::render_state(f, app))?;
+
+            match manager.install_fuse() {
+                Ok(true) => {
+                    app.auth_status = "FUSE/WinFSP installed successfully.".to_string();
+                    app.log_info("FUSE/WinFSP installed successfully");
+                    terminal.draw(|f| crate::ui::render::render_state(f, app))?;
+                }
+                Ok(false) | Err(_) => {
+                    app.auth_status = "FUSE/WinFSP auto-install failed. Install manually and retry:\n\
+                        Windows: winget install WinFsp.WinFsp\n\
+                        Linux: sudo apt install fuse3\n\
+                        macOS: brew install --cask macfuse"
+                        .to_string();
+                    app.log_error("FUSE/WinFSP auto-install failed");
+                    // Don't advance — let user pick another option.
+                    return Ok(());
+                }
+            }
         }
         Err(e) => {
             app.log_info(format!("FUSE check failed: {}", e));
