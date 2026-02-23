@@ -30,7 +30,6 @@ pub enum AppState {
     MainMenu,
     AdditionalOptions,
     OneDriveMenu,
-    ModeConfirm,
     ProviderSelect,
     RemoteSelect,
     MobileAuthFlow,
@@ -47,10 +46,9 @@ impl AppState {
     /// Get the next logical state in the flow
     pub fn next(self) -> Self {
         match self {
-            AppState::MainMenu => AppState::ModeConfirm,
+            AppState::MainMenu => AppState::ProviderSelect,
             AppState::AdditionalOptions => AppState::AdditionalOptions,
             AppState::OneDriveMenu => AppState::OneDriveMenu,
-            AppState::ModeConfirm => AppState::ProviderSelect,
             AppState::ProviderSelect => AppState::BrowserSelect,
             AppState::RemoteSelect => AppState::RemoteSelect,
             AppState::MobileAuthFlow => AppState::Authenticating,
@@ -70,8 +68,7 @@ impl AppState {
             AppState::MainMenu => AppState::MainMenu,
             AppState::AdditionalOptions => AppState::MainMenu,
             AppState::OneDriveMenu => AppState::AdditionalOptions,
-            AppState::ModeConfirm => AppState::MainMenu,
-            AppState::ProviderSelect => AppState::ModeConfirm,
+            AppState::ProviderSelect => AppState::MainMenu,
             AppState::RemoteSelect => AppState::ProviderSelect,
             AppState::MobileAuthFlow => AppState::ProviderSelect,
             AppState::BrowserSelect => AppState::ProviderSelect,
@@ -987,8 +984,6 @@ mod tests {
     fn test_state_sequence() {
         let mut state = AppState::MainMenu;
         state = state.next();
-        assert_eq!(state, AppState::ModeConfirm);
-        state = state.next();
         assert_eq!(state, AppState::ProviderSelect);
         state = state.next();
         assert_eq!(state, AppState::BrowserSelect);
@@ -1012,7 +1007,7 @@ mod tests {
         assert_eq!(app.state, AppState::MainMenu);
 
         app.advance();
-        assert_eq!(app.state, AppState::ModeConfirm);
+        assert_eq!(app.state, AppState::ProviderSelect);
 
         app.back();
         assert_eq!(app.state, AppState::MainMenu);
