@@ -790,16 +790,6 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                                     _ => {}
                                 }
                             }
-                        } else if app.state == crate::ui::AppState::ModeConfirm {
-                            let output_dir = std::env::current_dir()
-                                .unwrap_or_else(|_| std::path::PathBuf::from("."));
-                            if let Err(e) = app.init_case(output_dir) {
-                                app.auth_status = format!("Failed to create case: {}", e);
-                                app.menu_status = format!("Failed to create case: {}", e);
-                            } else {
-                                app.state = crate::ui::AppState::ProviderSelect;
-                                try_refresh_providers(app);
-                            }
                         } else if app.state == crate::ui::AppState::ProviderSelect {
                             app.confirm_provider();
                             if app.provider.chosen.is_none() {
@@ -1201,12 +1191,17 @@ fn handle_main_menu_enter(app: &mut App) -> bool {
             app.state = crate::ui::AppState::AdditionalOptions;
             false
         }
-        crate::ui::MenuAction::DownloadFromCsv => {
-            app.state = crate::ui::AppState::ModeConfirm;
-            false
-        }
         _ => {
-            app.state = crate::ui::AppState::ModeConfirm;
+            // Initialize case and go directly to provider selection.
+            let output_dir = std::env::current_dir()
+                .unwrap_or_else(|_| std::path::PathBuf::from("."));
+            if let Err(e) = app.init_case(output_dir) {
+                app.auth_status = format!("Failed to create case: {}", e);
+                app.menu_status = format!("Failed to create case: {}", e);
+            } else {
+                app.state = crate::ui::AppState::ProviderSelect;
+                try_refresh_providers(app);
+            }
             false
         }
     }
@@ -1701,7 +1696,7 @@ mod tests {
 
         handle_mouse_event(&mut app, area, click);
 
-        assert_eq!(app.state, crate::ui::AppState::ModeConfirm);
+        assert_eq!(app.state, crate::ui::AppState::ProviderSelect);
         assert_eq!(app.selected_action, Some(crate::ui::MenuAction::Authenticate));
     }
 
@@ -1795,7 +1790,7 @@ mod tests {
         let exited = handle_main_menu_enter(&mut app);
 
         assert!(!exited);
-        assert_eq!(app.state, crate::ui::AppState::ModeConfirm);
+        assert_eq!(app.state, crate::ui::AppState::ProviderSelect);
         assert_eq!(
             app.selected_action,
             Some(crate::ui::MenuAction::DownloadFromCsv)

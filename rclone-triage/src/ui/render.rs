@@ -13,7 +13,7 @@ fn hint_style() -> Style {
 
 use crate::ui::screens::{
     auth::AuthScreen, browser_select::BrowserSelectScreen, download::DownloadScreen,
-    files::FilesScreen, main_menu::MainMenuScreen, mode_confirm::ModeConfirmScreen,
+    files::FilesScreen, main_menu::MainMenuScreen,
     provider_select::ProviderSelectScreen, remote_select::RemoteSelectScreen, report::ReportScreen,
 };
 use crate::ui::{App, AppState};
@@ -121,33 +121,6 @@ pub fn render_state(frame: &mut Frame, app: &App) {
                 Line::from(controls),
             ])
             .wrap(Wrap { trim: true });
-            frame.render_widget(footer, chunks[1]);
-        }
-        AppState::ModeConfirm => {
-            let chunks = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([Constraint::Min(3), Constraint::Length(3)])
-                .split(area);
-            let (title, description) = app
-                .selected_action
-                .and_then(|action| app.menu_items.iter().find(|item| item.action == action))
-                .map(|item| (item.label.to_string(), item.description.to_string()))
-                .unwrap_or_else(|| {
-                    (
-                        "Authenticate with the chosen Browsers & Providers".to_string(),
-                        "Launch browser-based authentication on the suspect device for selected providers."
-                            .to_string(),
-                    )
-                });
-            let screen = ModeConfirmScreen::new(title, description);
-            screen.render(frame, chunks[0]);
-
-            let why =
-                "Why this step: confirm the selected mode before creating a case and log chain."
-                    .to_string();
-            let controls = "Enter continue • Backspace back • q quit".to_string();
-            let footer = Paragraph::new(vec![Line::from(why), Line::from(controls)])
-                .wrap(Wrap { trim: true });
             frame.render_widget(footer, chunks[1]);
         }
         AppState::ProviderSelect => {
