@@ -552,158 +552,27 @@ pub(crate) fn perform_auth_flow<B: ratatui::backend::Backend>(
                     return Ok(());
                 }
 
-                app.auth_status = "Listing files...".to_string();
-                terminal.draw(|f| render_state(f, app))?;
-
-                let large_listing = std::env::var("RCLONE_TRIAGE_LARGE_LISTING")
-                    .map(|v| v != "0")
-                    .unwrap_or(false);
-                let large_in_memory: usize = std::env::var("RCLONE_TRIAGE_LARGE_LISTING_IN_MEMORY")
-                    .ok()
-                    .and_then(|v| v.parse().ok())
-                    .unwrap_or(50_000);
-
-                let include_hashes = provider
-                    .known
-                    .map(|known| !known.hash_types().is_empty())
-                    .unwrap_or_else(|| {
-                        // Best-effort: consult rclone's features table. If we can't confirm support,
-                        // do not request hashes.
-                        match crate::providers::features::provider_supports_hashes(&provider) {
-                            Ok(Some(true)) => true,
-                            Ok(Some(false)) | Ok(None) => false,
-                            Err(e) => {
-                                app.log_info(format!(
-                                    "Skipping remote hashes (hash support lookup failed): {}",
-                                    e
-                                ));
-                                false
-                            }
-                        }
-                    });
-
-                let list_options = if include_hashes {
-                    crate::files::listing::ListPathOptions::with_hashes()
-                } else {
-                    crate::files::listing::ListPathOptions::without_hashes()
-                };
-
-                if large_listing {
-                    if app.forensics.directories.is_none() {
-                        app.log_info("Large listing requested, but case directories are unavailable; falling back to in-memory listing.");
-                    }
-                    if let Some(ref dirs) = app.forensics.directories {
-                        let csv_path = dirs
-                            .listings
-                            .join(format!("{}_files.csv", provider.short_name()));
-
-                        let listing_result =
-                            crate::files::listing::list_path_large_to_csv_with_progress(
-                                &runner,
-                                &format!("{}:", result.remote_name),
-                                list_options,
-                                &csv_path,
-                                large_in_memory,
-                                |count| {
-                                    app.auth_status = format!("Listing files... ({} found)", count);
-                                    let _ = terminal.draw(|f| render_state(f, app));
-                                },
-                            );
-
-                        match listing_result {
-                            Ok(result) => {
-                                app.log_info(format!("Exported listing to {:?}", csv_path));
-                                app.track_file(&csv_path, "Exported file listing CSV");
-
-                                // Store (possibly truncated) entries for UI usage.
-                                app.files.entries_full = result.entries.clone();
-                                app.files.entries =
-                                    result.entries.iter().map(|e| e.path.clone()).collect();
-
-                                let shown = app.files.entries.len();
-                                if result.truncated {
-                                    app.auth_status = format!(
-                                        "Found {} files (showing first {}). CSV: {:?}",
-                                        result.total_entries, shown, csv_path
-                                    );
-                                } else {
-                                    app.auth_status =
-                                        format!("Found {} files", result.total_entries);
-                                }
-                            }
-                            Err(e) => {
-                                app.log_error(format!("File listing failed: {}", e));
-                                app.auth_status = format!(
-                                    "Authentication succeeded, but listing failed: {}\n\nYou can retry listing from the file list screen.",
-                                    e
-                                );
-                            }
-                        }
-                        // Always advance to FileList (even on listing error).
-                        app.advance();
-                        return Ok(());
-                    }
-                }
-
-                let listing_result = crate::files::listing::list_path_with_progress(
-                    &runner,
-                    &format!("{}:", result.remote_name),
-                    list_options,
-                    |count| {
-                        app.auth_status = format!("Listing files... ({} found)", count);
-                        let _ = terminal.draw(|f| render_state(f, app));
+                // Authentication and connectivity verified — let the user choose
+                // what to do next (list to CSV, mount as drive, or skip).
+                let provider_name = provider.display_name().to_string();
+                let user_line = result
+                    .user_info
+                    .as_ref()
+                    .map(|u| format!("  User: {}\n", u))
+                    .unwrap_or_default();
+                app.auth_status = format!(
+                    "Authenticated {} successfully ({}){}\n\nChoose how to access the remote files.",
+                    provider_name,
+                    if result.was_silent { "SSO" } else { "interactive" },
+                    if user_line.is_empty() {
+                        String::new()
+                    } else {
+                        format!("\n{}", user_line)
                     },
                 );
-
-                match listing_result {
-                    Ok(entries) => {
-                        // Export file listing to CSV
-                        if let Some(ref dirs) = app.forensics.directories {
-                            let csv_path = dirs
-                                .listings
-                                .join(format!("{}_files.csv", provider.short_name()));
-                            if let Err(e) =
-                                crate::files::export::export_listing(&entries, &csv_path)
-                            {
-                                app.log_error(format!("CSV export failed: {}", e));
-                            } else {
-                                app.log_info(format!("Exported listing to {:?}", csv_path));
-                                app.track_file(&csv_path, "Exported file listing CSV");
-                            }
-
-                            let xlsx_path = dirs
-                                .listings
-                                .join(format!("{}_files.xlsx", provider.short_name()));
-                            if let Err(e) =
-                                crate::files::export::export_listing_xlsx(&entries, &xlsx_path)
-                            {
-                                app.log_error(format!("Excel export failed: {}", e));
-                            } else {
-                                app.log_info(format!("Exported listing to {:?}", xlsx_path));
-                                app.track_file(&xlsx_path, "Exported file listing Excel");
-                            }
-                        }
-
-                        // Store full entries for hash verification during download
-                        app.files.entries_full = entries.clone();
-                        app.files.entries = entries.iter().map(|e| e.path.clone()).collect();
-                        app.log_info(format!(
-                            "Listed {} files from {}",
-                            app.files.entries.len(),
-                            provider.display_name()
-                        ));
-                        app.auth_status = format!("Found {} files", app.files.entries.len());
-                    }
-                    Err(e) => {
-                        app.log_error(format!("File listing failed: {}", e));
-                        app.auth_status = format!(
-                            "Authentication succeeded, but listing failed: {}\n\nYou can retry listing from the file list screen.",
-                            e
-                        );
-                    }
-                }
-                // Always advance to FileList (even on listing error).
-                app.advance();
+                app.post_auth_selected = 0;
+                app.post_auth_action = None;
+                app.advance(); // → PostAuthChoice
             }
             Err(e) => {
                 app.log_error(format!(

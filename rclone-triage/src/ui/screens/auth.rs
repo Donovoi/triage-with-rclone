@@ -40,6 +40,7 @@ impl Widget for &AuthScreen {
         let auth_done = self.status.starts_with("Testing connectivity")
             || self.status.starts_with("Listing files")
             || self.status.starts_with("Connectivity")
+            || self.status.starts_with("Authenticated")
             || self.status.starts_with("Authentication succeeded")
             || self.status.starts_with("Found ")
             || self.status.starts_with("Exported ");
