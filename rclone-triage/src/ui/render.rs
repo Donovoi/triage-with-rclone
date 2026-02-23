@@ -391,8 +391,17 @@ pub fn render_state(frame: &mut Frame, app: &App) {
             let screen = AuthScreen::new(name, status);
             frame.render_widget(&screen, chunks[0]);
 
-            let hint =
-                "What happens now: complete auth in the browser, then return here to continue.";
+            let auth_done = app.auth_status.starts_with("Testing connectivity")
+                || app.auth_status.starts_with("Listing files")
+                || app.auth_status.starts_with("Connectivity")
+                || app.auth_status.starts_with("Authentication succeeded")
+                || app.auth_status.starts_with("Found ")
+                || app.auth_status.starts_with("Exported ");
+            let hint = if auth_done {
+                "Authentication complete. Processing..."
+            } else {
+                "What happens now: complete auth in the browser, then return here to continue."
+            };
             let footer = Paragraph::new(vec![Line::from(Span::styled(hint, hint_style()))])
                 .wrap(Wrap { trim: true });
             frame.render_widget(footer, chunks[1]);
