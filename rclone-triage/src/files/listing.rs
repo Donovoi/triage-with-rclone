@@ -302,6 +302,7 @@ fn build_lsjson_args(target: &str, include_hashes: bool) -> Vec<&str> {
         args.push("--hash");
     }
     args.push("--recursive");
+    args.push("--fast-list");
     args.push(target);
     args
 }

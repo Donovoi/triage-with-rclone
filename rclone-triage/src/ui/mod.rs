@@ -36,6 +36,7 @@ pub enum AppState {
     MobileAuthFlow,
     BrowserSelect,
     Authenticating,
+    PostAuthChoice,
     FileList,
     Downloading,
     OAuthCredentials,
@@ -54,7 +55,8 @@ impl AppState {
             AppState::RemoteSelect => AppState::RemoteSelect,
             AppState::MobileAuthFlow => AppState::Authenticating,
             AppState::BrowserSelect => AppState::Authenticating,
-            AppState::Authenticating => AppState::FileList,
+            AppState::Authenticating => AppState::PostAuthChoice,
+            AppState::PostAuthChoice => AppState::FileList,
             AppState::FileList => AppState::Downloading,
             AppState::Downloading => AppState::Complete,
             AppState::OAuthCredentials => AppState::OAuthCredentials,
@@ -74,7 +76,8 @@ impl AppState {
             AppState::MobileAuthFlow => AppState::ProviderSelect,
             AppState::BrowserSelect => AppState::ProviderSelect,
             AppState::Authenticating => AppState::BrowserSelect,
-            AppState::FileList => AppState::Authenticating,
+            AppState::PostAuthChoice => AppState::Authenticating,
+            AppState::FileList => AppState::PostAuthChoice,
             AppState::Downloading => AppState::FileList,
             AppState::OAuthCredentials => AppState::AdditionalOptions,
             AppState::Complete => AppState::Downloading,
@@ -87,6 +90,17 @@ pub enum MobileAuthFlow {
     Redirect,
     RedirectWithAccessPoint,
     DeviceCode,
+}
+
+/// What to do after successful authentication.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PostAuthAction {
+    /// List all files recursively to CSV, then show in TUI.
+    ListToCsv,
+    /// Mount the remote as a drive and open file explorer.
+    MountAndBrowse,
+    /// Skip listing entirely and go to the file list (empty).
+    SkipToFileList,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -257,6 +271,9 @@ pub struct App {
     pub auth_status: String,
     /// SSO status for currently selected provider
     pub sso_status: Option<crate::providers::auth::SsoStatus>,
+    /// Post-auth action choice (persisted across state transitions)
+    pub post_auth_selected: usize,
+    pub post_auth_action: Option<PostAuthAction>,
     /// Mounted remote for GUI selection
     pub mounted_remote: Option<MountedRemote>,
     /// Running Web GUI process (kept alive while TUI is open)
@@ -310,6 +327,8 @@ impl App {
             exit_requested: false,
             auth_status: String::new(),
             sso_status: None,
+            post_auth_selected: 0,
+            post_auth_action: None,
             mounted_remote: None,
             web_gui_process: None,
             provider: ProviderSelection {
@@ -975,6 +994,8 @@ mod tests {
         assert_eq!(state, AppState::BrowserSelect);
         state = state.next();
         assert_eq!(state, AppState::Authenticating);
+        state = state.next();
+        assert_eq!(state, AppState::PostAuthChoice);
         state = state.next();
         assert_eq!(state, AppState::FileList);
         state = state.next();

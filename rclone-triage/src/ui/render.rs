@@ -406,6 +406,70 @@ pub fn render_state(frame: &mut Frame, app: &App) {
                 .wrap(Wrap { trim: true });
             frame.render_widget(footer, chunks[1]);
         }
+        AppState::PostAuthChoice => {
+            let provider_name = app
+                .provider
+                .chosen
+                .as_ref()
+                .map(|p| p.display_name().to_string())
+                .unwrap_or_else(|| "Remote".to_string());
+
+            let choices = [
+                ("List all files to CSV/XLSX", "Recursively list every file in the remote and export to CSV. Best for triage and selective download."),
+                ("Mount as drive (File Explorer)", "Mount the remote as a local drive letter / mount point and browse files in your OS file manager."),
+                ("Skip to file list (empty)", "Go to the file list screen without listing. You can list or mount later from the main menu."),
+            ];
+
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Min(3), Constraint::Length(3)])
+                .split(area);
+
+            let mut lines: Vec<Line> = Vec::new();
+            lines.push(Line::from(vec![
+                Span::styled("Authenticated: ", ratatui::style::Style::default().add_modifier(ratatui::style::Modifier::BOLD)),
+                Span::styled(&provider_name, ratatui::style::Style::default().fg(Color::LightGreen).add_modifier(ratatui::style::Modifier::BOLD)),
+            ]));
+
+            if !app.auth_status.is_empty() {
+                for line in app.auth_status.lines().take(3) {
+                    lines.push(Line::from(Span::styled(
+                        line.to_string(),
+                        ratatui::style::Style::default().fg(Color::LightGreen),
+                    )));
+                }
+            }
+
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                "What would you like to do with this remote?",
+                ratatui::style::Style::default().add_modifier(ratatui::style::Modifier::BOLD),
+            )));
+            lines.push(Line::from(""));
+
+            for (i, (label, desc)) in choices.iter().enumerate() {
+                let marker = if i == app.post_auth_selected { "▶ " } else { "  " };
+                let style = if i == app.post_auth_selected {
+                    ratatui::style::Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(ratatui::style::Modifier::BOLD)
+                } else {
+                    ratatui::style::Style::default()
+                };
+                lines.push(Line::from(Span::styled(format!("{}  {}", marker, label), style)));
+                let desc_style = ratatui::style::Style::default().fg(Color::DarkGray);
+                lines.push(Line::from(Span::styled(format!("     {}", desc), desc_style)));
+                lines.push(Line::from(""));
+            }
+
+            let paragraph = Paragraph::new(lines);
+            frame.render_widget(paragraph, chunks[0]);
+
+            let hint = "↑/↓ Navigate   Enter: Confirm   Backspace: Back";
+            let footer = Paragraph::new(vec![Line::from(Span::styled(hint, hint_style()))])
+                .wrap(Wrap { trim: true });
+            frame.render_widget(footer, chunks[1]);
+        }
         AppState::FileList => {
             let entries = if app.files.entries.is_empty() {
                 vec!["/".to_string()]
@@ -540,6 +604,7 @@ mod tests {
             AppState::RemoteSelect,
             AppState::BrowserSelect,
             AppState::Authenticating,
+            AppState::PostAuthChoice,
             AppState::FileList,
             AppState::Downloading,
             AppState::OAuthCredentials,
