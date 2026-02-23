@@ -544,9 +544,11 @@ pub(crate) fn perform_auth_flow<B: ratatui::backend::Backend>(
                         attempt, err_msg
                     ));
                     app.auth_status = format!(
-                        "Connectivity failed after {} attempts: {}",
+                        "Authentication succeeded, but connectivity check failed after {} attempts: {}\n\nYou can retry listing from the file list screen.",
                         attempt, err_msg
                     );
+                    // Advance to FileList instead of staying stuck in Authenticating.
+                    app.advance();
                     return Ok(());
                 }
 
@@ -628,13 +630,17 @@ pub(crate) fn perform_auth_flow<B: ratatui::backend::Backend>(
                                     app.auth_status =
                                         format!("Found {} files", result.total_entries);
                                 }
-                                app.advance(); // Move to FileList
                             }
                             Err(e) => {
                                 app.log_error(format!("File listing failed: {}", e));
-                                app.auth_status = format!("Listing failed: {}", e);
+                                app.auth_status = format!(
+                                    "Authentication succeeded, but listing failed: {}\n\nYou can retry listing from the file list screen.",
+                                    e
+                                );
                             }
                         }
+                        // Always advance to FileList (even on listing error).
+                        app.advance();
                         return Ok(());
                     }
                 }
@@ -687,13 +693,17 @@ pub(crate) fn perform_auth_flow<B: ratatui::backend::Backend>(
                             provider.display_name()
                         ));
                         app.auth_status = format!("Found {} files", app.files.entries.len());
-                        app.advance(); // Move to FileList
                     }
                     Err(e) => {
                         app.log_error(format!("File listing failed: {}", e));
-                        app.auth_status = format!("Listing failed: {}", e);
+                        app.auth_status = format!(
+                            "Authentication succeeded, but listing failed: {}\n\nYou can retry listing from the file list screen.",
+                            e
+                        );
                     }
                 }
+                // Always advance to FileList (even on listing error).
+                app.advance();
             }
             Err(e) => {
                 app.log_error(format!(
