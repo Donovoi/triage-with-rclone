@@ -618,7 +618,7 @@ fn perform_onedrive_vault_flow<B: ratatui::backend::Backend>(
     match crate::forensics::open_onedrive_vault(&mount_point, &destination, true) {
         Ok(result) => {
             let mut lines = Vec::new();
-            lines.push(format!("OneDrive Vault processed:"));
+            lines.push("OneDrive Vault processed:".to_string());
             lines.push(format!("  Mount: {:?}", result.mount_point));
             lines.push(format!("  Destination: {:?}", result.destination));
             lines.push(format!("  Files copied: {}", result.copied_files.len()));
