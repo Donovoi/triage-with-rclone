@@ -78,6 +78,32 @@ pub(crate) fn perform_mount_flow<B: ratatui::backend::Backend>(
         }
     };
 
+    // Early FUSE/WinFSP check with helpful instructions
+    match manager.check_fuse_available() {
+        Ok(true) => {}
+        Ok(false) => {
+            let install_hint = if cfg!(windows) {
+                "Install WinFSP from https://winfsp.dev/ and restart."
+            } else if cfg!(target_os = "linux") {
+                "Install fuse: sudo apt install fuse3 (or fuse)"
+            } else if cfg!(target_os = "macos") {
+                "Install macFUSE from https://osxfuse.github.io/"
+            } else {
+                "Install a FUSE filesystem driver for your OS."
+            };
+            app.provider.status = format!(
+                "FUSE/WinFSP is NOT installed. Mount is unavailable.\n{}",
+                install_hint
+            );
+            app.log_error("Mount failed: FUSE/WinFSP not installed");
+            return Ok(());
+        }
+        Err(e) => {
+            app.provider.status = format!("FUSE check failed: {}. Attempting mount anyway.", e);
+            app.log_info(format!("FUSE check failed: {}", e));
+        }
+    }
+
     // Keep mount points and caches inside the case directory to reduce system footprint.
     if let Some(ref dirs) = app.forensics.directories {
         let mount_base = dirs.base.join("mounts");

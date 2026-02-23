@@ -103,6 +103,7 @@ pub enum MenuAction {
     ShowOAuthCredentials,
     ExportBrowserSessions,
     ExportDomainCookies,
+    StartWebGui,
     OneDriveMenu,
     OpenOneDriveVault,
     BackToAdditionalOptions,
@@ -431,6 +432,11 @@ impl App {
                 label: "OneDrive",
                 description: "OneDrive utilities (vault, recovery).",
                 action: MenuAction::OneDriveMenu,
+            },
+            MenuItem {
+                label: "Start rclone Web GUI",
+                description: "Launch the rclone web interface for browsing and configuring remotes.",
+                action: MenuAction::StartWebGui,
             },
             MenuItem {
                 label: "Back to Main Menu",
