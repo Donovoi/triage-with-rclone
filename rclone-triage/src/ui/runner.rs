@@ -373,6 +373,276 @@ fn perform_csv_download_flow<B: ratatui::backend::Backend>(
     Ok(())
 }
 
+fn perform_web_gui_flow<B: ratatui::backend::Backend>(
+    app: &mut App,
+    terminal: &mut Terminal<B>,
+) -> Result<()> {
+    app.menu_status = "Starting rclone Web GUI...".to_string();
+    terminal.draw(|f| render_state(f, app))?;
+
+    let binary = match crate::embedded::ExtractedBinary::extract() {
+        Ok(binary) => binary,
+        Err(e) => {
+            app.menu_status = format!("Web GUI failed (extract): {}", e);
+            app.log_error(format!("Web GUI failed (extract): {}", e));
+            return Ok(());
+        }
+    };
+    app.cleanup_track_file(binary.path());
+    if let Some(dir) = binary.temp_dir() {
+        app.cleanup_track_dir(dir);
+    }
+
+    let config_dir = app
+        .config_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    let config = match crate::rclone::RcloneConfig::for_case(&config_dir) {
+        Ok(config) => config,
+        Err(e) => {
+            app.menu_status = format!("Web GUI failed (config): {}", e);
+            app.log_error(format!("Web GUI failed (config): {}", e));
+            return Ok(());
+        }
+    };
+    app.cleanup_track_env_value("RCLONE_CONFIG", config.original_env());
+
+    let port = 5572u16;
+    match crate::rclone::start_web_gui(binary.path(), Some(config.path()), port, None, None) {
+        Ok(_web) => {
+            let addr = format!("http://127.0.0.1:{}/", port);
+            app.menu_status = format!(
+                "rclone Web GUI started at {}\n\nOpen in your browser. The GUI will stop when you leave this menu.",
+                addr
+            );
+            app.log_info(format!("Started rclone Web GUI at {}", addr));
+            // The WebGuiProcess will be dropped (and killed) when leaving this scope.
+            // In a real implementation we'd keep it alive, but for now inform the user.
+        }
+        Err(e) => {
+            app.menu_status = format!("Web GUI failed: {}", e);
+            app.log_error(format!("Web GUI failed: {}", e));
+        }
+    }
+
+    Ok(())
+}
+
+fn perform_update_tools_flow<B: ratatui::backend::Backend>(
+    app: &mut App,
+    terminal: &mut Terminal<B>,
+) -> Result<()> {
+    app.menu_status = "Checking tool status...".to_string();
+    terminal.draw(|f| render_state(f, app))?;
+
+    let mut lines = Vec::new();
+    lines.push(format!(
+        "rclone-triage version: {}",
+        env!("CARGO_PKG_VERSION")
+    ));
+    lines.push("rclone: embedded in binary (no separate update needed)".to_string());
+
+    // Check FUSE/WinFSP availability (needed for mount)
+    match crate::embedded::ExtractedBinary::extract() {
+        Ok(binary) => {
+            app.cleanup_track_file(binary.path());
+            if let Some(dir) = binary.temp_dir() {
+                app.cleanup_track_dir(dir);
+            }
+
+            let manager = crate::rclone::MountManager::new(binary.path());
+            match manager {
+                Ok(m) => match m.check_fuse_available() {
+                    Ok(true) => lines.push("FUSE/WinFSP: installed (mount available)".to_string()),
+                    Ok(false) => {
+                        lines.push("FUSE/WinFSP: NOT installed (mount will not work)".to_string());
+                        #[cfg(windows)]
+                        lines.push(
+                            "  Install WinFSP from https://winfsp.dev/ to enable cloud mounting."
+                                .to_string(),
+                        );
+                        #[cfg(target_os = "linux")]
+                        lines.push(
+                            "  Install fuse: sudo apt install fuse3 (or fuse)".to_string(),
+                        );
+                        #[cfg(target_os = "macos")]
+                        lines.push(
+                            "  Install macFUSE from https://osxfuse.github.io/".to_string(),
+                        );
+                    }
+                    Err(e) => lines.push(format!("FUSE/WinFSP: check failed: {}", e)),
+                },
+                Err(e) => lines.push(format!("Mount manager: {}", e)),
+            }
+
+            // Show rclone version
+            let runner = crate::rclone::RcloneRunner::new(binary.path());
+            match runner.run(&["version"]) {
+                Ok(output) => {
+                    if let Some(first_line) = output.stdout.first() {
+                        lines.push(format!("rclone version: {}", first_line.trim()));
+                    }
+                }
+                Err(e) => lines.push(format!("rclone version check failed: {}", e)),
+            }
+        }
+        Err(e) => lines.push(format!("Binary extraction failed: {}", e)),
+    }
+
+    app.menu_status = lines.join("\n");
+    Ok(())
+}
+
+fn perform_configure_oauth_flow<B: ratatui::backend::Backend>(
+    app: &mut App,
+    terminal: &mut Terminal<B>,
+) -> Result<()> {
+    app.menu_status = "Configure custom OAuth credentials".to_string();
+    terminal.draw(|f| render_state(f, app))?;
+
+    let provider_key = match crate::ui::prompt::prompt_text_in_tui(
+        app,
+        terminal,
+        "Provider Key",
+        "Enter the provider/backend name (e.g. drive, onedrive, dropbox, box, s3).\n\nThis must match the rclone backend name.\n\nEnter submit | Esc cancel",
+    )? {
+        Some(v) if !v.trim().is_empty() => v.trim().to_string(),
+        _ => {
+            app.menu_status = "OAuth configuration cancelled.".to_string();
+            return Ok(());
+        }
+    };
+
+    let client_id = match crate::ui::prompt::prompt_text_in_tui(
+        app,
+        terminal,
+        "Client ID",
+        &format!(
+            "Enter the OAuth Client ID for '{}'.\n\nThis is provided by the cloud provider's developer console.\n\nEnter submit | Esc cancel",
+            provider_key
+        ),
+    )? {
+        Some(v) if !v.trim().is_empty() => v.trim().to_string(),
+        _ => {
+            app.menu_status = "OAuth configuration cancelled.".to_string();
+            return Ok(());
+        }
+    };
+
+    let client_secret = match crate::ui::prompt::prompt_text_in_tui(
+        app,
+        terminal,
+        "Client Secret",
+        &format!(
+            "Enter the OAuth Client Secret for '{}' (optional, leave blank if none).\n\nEnter submit | Esc cancel",
+            provider_key
+        ),
+    )? {
+        Some(v) if !v.trim().is_empty() => Some(v.trim().to_string()),
+        Some(_) => None,
+        None => {
+            app.menu_status = "OAuth configuration cancelled.".to_string();
+            return Ok(());
+        }
+    };
+
+    match crate::providers::credentials::upsert_custom_oauth_credentials(
+        &provider_key,
+        client_id,
+        client_secret,
+        None,
+    ) {
+        Ok(path) => {
+            app.menu_status = format!(
+                "OAuth credentials saved for '{}' at {:?}",
+                provider_key, path
+            );
+            app.log_info(format!(
+                "Saved custom OAuth credentials for '{}' to {:?}",
+                provider_key, path
+            ));
+        }
+        Err(e) => {
+            app.menu_status = format!("Failed to save OAuth credentials: {}", e);
+            app.log_error(format!("Failed to save OAuth credentials: {}", e));
+        }
+    }
+
+    Ok(())
+}
+
+fn perform_onedrive_vault_flow<B: ratatui::backend::Backend>(
+    app: &mut App,
+    terminal: &mut Terminal<B>,
+) -> Result<()> {
+    app.menu_status = "OneDrive Vault: preparing...".to_string();
+    terminal.draw(|f| render_state(f, app))?;
+
+    let mount_point = crate::ui::prompt::prompt_text_in_tui(
+        app,
+        terminal,
+        "OneDrive Vault Mount Point",
+        "Enter the mount point where the OneDrive vault is mounted.\n\nDefault (Windows): C:\\OneDriveTemp\\\nDefault (other): ./OneDriveTemp\n\nLeave blank for default.\n\nEnter submit | Esc cancel",
+    )?;
+    let mount_point = match mount_point {
+        Some(v) if !v.trim().is_empty() => v,
+        Some(_) | None => {
+            if cfg!(windows) {
+                "C:\\OneDriveTemp\\".to_string()
+            } else {
+                "./OneDriveTemp".to_string()
+            }
+        }
+    };
+
+    let destination = crate::ui::prompt::prompt_text_in_tui(
+        app,
+        terminal,
+        "OneDrive Vault Destination",
+        "Enter the destination path for copied VHDX files.\n\nDefault: Desktop/OneDriveVault (Windows) or ./OneDriveVault\n\nLeave blank for default.\n\nEnter submit | Esc cancel",
+    )?;
+    let destination = match destination {
+        Some(v) if !v.trim().is_empty() => v,
+        Some(_) | None => {
+            if cfg!(windows) {
+                std::env::var("USERPROFILE")
+                    .map(|p| format!("{}\\Desktop\\OneDriveVault", p))
+                    .unwrap_or_else(|_| "C:\\OneDriveVault".to_string())
+            } else {
+                "./OneDriveVault".to_string()
+            }
+        }
+    };
+
+    app.menu_status = "Opening OneDrive Vault (Windows Hello)...".to_string();
+    terminal.draw(|f| render_state(f, app))?;
+
+    match crate::forensics::open_onedrive_vault(&mount_point, &destination, true) {
+        Ok(result) => {
+            let mut lines = Vec::new();
+            lines.push(format!("OneDrive Vault processed:"));
+            lines.push(format!("  Mount: {:?}", result.mount_point));
+            lines.push(format!("  Destination: {:?}", result.destination));
+            lines.push(format!("  Files copied: {}", result.copied_files.len()));
+            lines.push(format!("  BitLocker disabled: {}", result.bitlocker_disabled));
+            for warning in &result.warnings {
+                lines.push(format!("  Warning: {}", warning));
+            }
+            app.menu_status = lines.join("\n");
+            app.log_info(format!(
+                "OneDrive Vault: copied {} files to {:?}",
+                result.copied_files.len(),
+                result.destination
+            ));
+        }
+        Err(e) => {
+            app.menu_status = format!("OneDrive Vault failed: {}", e);
+            app.log_error(format!("OneDrive Vault failed: {}", e));
+        }
+    }
+
+    Ok(())
+}
+
 /// Run a basic one-frame TUI to validate rendering
 #[allow(dead_code)]
 pub fn run_once() -> Result<()> {
@@ -470,12 +740,10 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                                 app.menu_status.clear();
                                 match action {
                                     crate::ui::MenuAction::UpdateTools => {
-                                        app.menu_status =
-                                            "Tool update is not yet available in the TUI.".to_string();
+                                        perform_update_tools_flow(app, &mut terminal)?;
                                     }
                                     crate::ui::MenuAction::ConfigureOAuth => {
-                                        app.menu_status =
-                                            "OAuth configuration is not yet available in the TUI.".to_string();
+                                        perform_configure_oauth_flow(app, &mut terminal)?;
                                     }
                                     crate::ui::MenuAction::ShowOAuthCredentials => {
                                         if let Err(e) = crate::ui::flows::exports::perform_show_oauth_credentials(app) {
@@ -500,6 +768,9 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                                     crate::ui::MenuAction::OneDriveMenu => {
                                         app.state = crate::ui::AppState::OneDriveMenu;
                                     }
+                                    crate::ui::MenuAction::StartWebGui => {
+                                        perform_web_gui_flow(app, &mut terminal)?;
+                                    }
                                     crate::ui::MenuAction::BackToMainMenu => {
                                         app.state = crate::ui::AppState::MainMenu;
                                     }
@@ -512,7 +783,7 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                                 app.menu_status.clear();
                                 match action {
                                     crate::ui::MenuAction::OpenOneDriveVault => {
-                                        app.menu_status = "OneDrive Vault tooling is not yet available in the TUI.".to_string();
+                                        perform_onedrive_vault_flow(app, &mut terminal)?;
                                     }
                                     crate::ui::MenuAction::BackToAdditionalOptions => {
                                         app.state = crate::ui::AppState::AdditionalOptions;

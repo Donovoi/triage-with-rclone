@@ -55,10 +55,23 @@ pub fn start_forensic_access_point(
 ) -> Result<ForensicAccessPointInfo> {
     let native = test_native_ap_support()?;
     if !native.supported {
-        if let Some(reason) = native.reason {
-            bail!("Access Point not supported: {}", reason);
-        } else {
-            bail!("Access Point not supported on this adapter");
+        // If native AP isn't supported, wait for USB WiFi adapter
+        let wait_result = wait_for_usb_wifi_adapter(120)?;
+        if !wait_result {
+            if let Some(reason) = native.reason {
+                bail!("Access Point not supported: {}. No USB WiFi adapter detected after waiting.", reason);
+            } else {
+                bail!("Access Point not supported on this adapter. No USB WiFi adapter detected.");
+            }
+        }
+        // Re-check after adapter is plugged in
+        let native2 = test_native_ap_support()?;
+        if !native2.supported {
+            if let Some(reason) = native2.reason {
+                bail!("Access Point still not supported after adapter detected: {}", reason);
+            } else {
+                bail!("Access Point still not supported after adapter detected");
+            }
         }
     }
 
@@ -135,6 +148,62 @@ pub fn get_forensic_access_point_status() -> Result<ForensicAccessPointStatus> {
 #[cfg(not(windows))]
 pub fn get_forensic_access_point_status() -> Result<ForensicAccessPointStatus> {
     bail!("Forensic Access Point is only supported on Windows");
+}
+
+/// Wait for a USB WiFi adapter to be connected (Windows only).
+/// Polls every 2 seconds for up to `timeout_secs`.
+/// Returns true if an adapter was detected.
+#[cfg(windows)]
+pub fn wait_for_usb_wifi_adapter(timeout_secs: u64) -> Result<bool> {
+    let script = r#"
+$adapters = Get-NetAdapter | Where-Object {
+  ($_.PhysicalMediaType -eq 'Native 802.11' -or
+   $_.InterfaceDescription -like '*Wireless*' -or
+   $_.InterfaceDescription -like '*Wi-Fi*' -or
+   $_.InterfaceDescription -like '*WLAN*') -and
+  $_.Status -eq 'Up'
+}
+if ($adapters) { Write-Output "FOUND" } else { Write-Output "NONE" }
+"#;
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
+    println!("Waiting for WiFi adapter (up to {}s)...", timeout_secs);
+
+    while std::time::Instant::now() < deadline {
+        if let Ok(out) = run_powershell(script) {
+            if out.trim() == "FOUND" {
+                println!("WiFi adapter detected.");
+                return Ok(true);
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_secs(2));
+    }
+
+    Ok(false)
+}
+
+/// On non-Windows, USB WiFi adapter detection is not supported.
+#[cfg(not(windows))]
+pub fn wait_for_usb_wifi_adapter(_timeout_secs: u64) -> Result<bool> {
+    bail!("USB WiFi adapter detection is only supported on Windows");
+}
+
+/// Start a background timer that will auto-shutdown the forensic access point.
+///
+/// This allows starting the AP first and adding the timer separately.
+/// Equivalent to the PowerShell `Start-ForensicAPTimer`.
+pub fn start_forensic_ap_timer(minutes: u64) {
+    if minutes == 0 {
+        return;
+    }
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(minutes * 60));
+        eprintln!(
+            "Forensic Access Point auto-shutdown triggered after {} minute(s).",
+            minutes
+        );
+        let _ = stop_forensic_access_point(true);
+    });
 }
 
 #[cfg(windows)]

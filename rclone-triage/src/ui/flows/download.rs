@@ -287,6 +287,19 @@ pub(crate) fn perform_download_flow<B: ratatui::backend::Backend>(
             } else {
                 app.log_info(format!("Report written to {:?}", dirs.report));
             }
+
+            // Also generate XLSX report
+            let xlsx_report_path = dirs.base.join("forensic_report.xlsx");
+            if let Err(e) = crate::case::report::write_report_xlsx(
+                &xlsx_report_path,
+                case,
+                state_diff.as_ref(),
+                Some(&crate::case::report::ReportMetadata::from_environment()),
+            ) {
+                app.log_error(format!("Failed to write XLSX report: {}", e));
+            } else {
+                app.log_info(format!("XLSX report written to {:?}", xlsx_report_path));
+            }
         }
 
         // Generate report lines for TUI display

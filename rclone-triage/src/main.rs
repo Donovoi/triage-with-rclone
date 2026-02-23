@@ -221,6 +221,17 @@ fn main() -> Result<()> {
     }
 
     // Minimal auth + listing wiring (CLI-driven)
+    // CLI download from CSV/XLSX queue
+    if let Some(ref queue_path_str) = args.download {
+        return cli_download_from_queue(
+            &binary,
+            &case,
+            queue_path_str,
+            args.remote.as_deref(),
+            &app_guard,
+        );
+    }
+
     if let Some(provider_name) = args.provider.clone() {
         let parsed: Result<CloudProvider, _> = provider_name.parse();
         let known = parsed.ok();
@@ -269,17 +280,18 @@ fn main() -> Result<()> {
                 .unwrap_or(ProviderAuthKind::Unknown);
 
             match auth_kind {
-                ProviderAuthKind::KeyBased => {
-                    anyhow::bail!(
-                        "Backend '{}' appears key-based. rclone-triage cannot prompt for keys yet. Configure it in an rclone config and retry listing/download.",
-                        provider_name
+                ProviderAuthKind::KeyBased | ProviderAuthKind::UserPass => {
+                    println!(
+                        "Backend '{}' uses {:?} authentication. Entering manual configuration.",
+                        provider_name, auth_kind
                     );
-                }
-                ProviderAuthKind::UserPass => {
-                    anyhow::bail!(
-                        "Backend '{}' appears user/pass. rclone-triage cannot prompt for credentials yet. Configure it in an rclone config and retry listing/download.",
-                        provider_name
-                    );
+                    cli_manual_config(
+                        &runner,
+                        &config,
+                        &provider_name,
+                        &remote_name,
+                        &binary,
+                    )?;
                 }
                 ProviderAuthKind::Unknown => {
                     eprintln!(
@@ -364,6 +376,7 @@ fn should_run_tui(args: &Cli) -> bool {
         || args.set_oauth_creds.is_some()
         || args.show_oauth_creds.is_some()
         || args.provider.is_some()
+        || args.download.is_some()
         || args.collect_logs;
 
     !has_cli_action
@@ -423,6 +436,241 @@ fn finish_authorize(
         bail!("Remote {} was not created", remote_name);
     }
     Ok(())
+}
+
+/// Download files from a CSV/XLSX queue via CLI (no TUI needed).
+fn cli_download_from_queue(
+    binary: &rclone_triage::embedded::ExtractedBinary,
+    case: &Case,
+    queue_path_str: &str,
+    remote_override: Option<&str>,
+    app_guard: &AppGuard,
+) -> Result<()> {
+    use rclone_triage::files::{
+        read_download_queue, DownloadMode, DownloadQueue, DownloadRequest,
+    };
+
+    let queue_path = std::path::PathBuf::from(queue_path_str);
+    if !queue_path.exists() {
+        bail!("Queue file not found: {:?}", queue_path);
+    }
+
+    println!("Loading download queue from {:?}...", queue_path);
+    let entries = read_download_queue(&queue_path)?;
+    if entries.is_empty() {
+        bail!("Queue file is empty or has no usable entries");
+    }
+    println!("Found {} files in queue", entries.len());
+
+    // Set up config
+    let config = RcloneConfig::for_case(&case.output_dir)?;
+    app_guard.track_env_value("RCLONE_CONFIG", config.original_env());
+    let runner = RcloneRunner::new(binary.path()).with_config(config.path());
+
+    // Determine remote name
+    let remote_name = if let Some(name) = remote_override {
+        name.to_string()
+    } else {
+        // Try to find a remote in the config
+        let parsed = config.parse()?;
+        let remotes: Vec<String> = parsed.remotes.iter().map(|s| s.name.clone()).collect();
+        if remotes.is_empty() {
+            bail!(
+                "No remotes found in config {:?}. Authenticate first with --provider, or specify --remote.",
+                config.path()
+            );
+        }
+        if remotes.len() == 1 {
+            println!("Using remote: {}", remotes[0]);
+            remotes[0].clone()
+        } else {
+            println!("Available remotes:");
+            for (i, r) in remotes.iter().enumerate() {
+                println!("  {}. {}", i + 1, r);
+            }
+            let choice = prompt_line("Select remote number: ")?;
+            let idx: usize = choice
+                .trim()
+                .parse::<usize>()
+                .map_err(|_| anyhow::anyhow!("Invalid number"))?;
+            if idx == 0 || idx > remotes.len() {
+                bail!("Invalid remote number");
+            }
+            remotes[idx - 1].clone()
+        }
+    };
+
+    // Build downloads directory
+    let downloads_dir = case.output_dir.join(&case.name).join("downloads");
+    std::fs::create_dir_all(&downloads_dir)?;
+
+    // Build download queue
+    let mut queue = DownloadQueue::new();
+    queue.set_verify_hashes(true);
+    for entry in &entries {
+        let normalized = entry
+            .path
+            .trim()
+            .trim_start_matches(&format!("{}:", remote_name.trim_end_matches(':')))
+            .trim_start_matches(['/', '\\'])
+            .to_string();
+        if normalized.is_empty() {
+            continue;
+        }
+        let source = format!("{}:{}", remote_name.trim_end_matches(':'), normalized);
+        let dest_path = downloads_dir.join(&normalized);
+        if let Some(parent) = dest_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        queue.add(DownloadRequest {
+            source,
+            destination: dest_path.to_string_lossy().to_string(),
+            mode: DownloadMode::CopyTo,
+            expected_hash: entry.hash.clone(),
+            expected_hash_type: entry.hash_type.clone(),
+            expected_size: entry.size,
+        });
+    }
+
+    let total = queue.requests.len();
+    println!("Downloading {} files to {:?}...", total, downloads_dir);
+
+    let results = queue.download_all_with_progress(&runner, |progress| {
+        println!("{}", progress.status);
+    });
+
+    let mut successes = 0;
+    let mut failures = Vec::new();
+    for result in &results {
+        if result.success {
+            successes += 1;
+        } else {
+            failures.push(format!(
+                "  {} - {}",
+                result.source,
+                result.error.as_deref().unwrap_or("unknown error")
+            ));
+        }
+    }
+
+    println!("\nDownload complete: {}/{} succeeded", successes, total);
+    if !failures.is_empty() {
+        println!("Failed downloads:");
+        for f in &failures {
+            println!("{}", f);
+        }
+    }
+
+    Ok(())
+}
+
+/// Interactive CLI manual configuration for non-OAuth backends.
+fn cli_manual_config(
+    runner: &RcloneRunner,
+    config: &RcloneConfig,
+    backend: &str,
+    remote_name: &str,
+    binary: &rclone_triage::embedded::ExtractedBinary,
+) -> Result<()> {
+    use rclone_triage::providers::schema::provider_schema_from_rclone;
+
+    let rclone_runner = RcloneRunner::new(binary.path());
+    let schema = provider_schema_from_rclone(&rclone_runner, backend).ok().flatten();
+
+    let mut options: Vec<(String, String)> = Vec::new();
+
+    // Prompt required options from schema (if available)
+    if let Some(ref schema) = schema {
+        let required: Vec<_> = schema.options.iter().filter(|o| o.required).collect();
+        for opt in &required {
+            let default = opt.default_string();
+            let default_hint = default
+                .as_deref()
+                .filter(|d| !d.is_empty())
+                .map(|d| format!(" [default: {}]", d))
+                .unwrap_or_default();
+            let help = opt.help_text();
+            if !help.is_empty() {
+                println!("  {}: {}", opt.name, help);
+            }
+            let value = prompt_line(&format!("{}{}: ", opt.name, default_hint))?;
+            let value = if value.trim().is_empty() {
+                default.unwrap_or_default()
+            } else {
+                value
+            };
+            if value.trim().is_empty() && opt.required {
+                bail!("Required option '{}' cannot be empty", opt.name);
+            }
+            // Obscure passwords
+            let final_value = if opt.is_password || is_password_key(&opt.name) {
+                obscure_value_with_rclone(runner, &value)?
+            } else {
+                value
+            };
+            options.push((opt.name.clone(), final_value));
+        }
+    }
+
+    // Allow additional free-form options
+    println!("Enter additional options (key=value). Blank key to finish.");
+    loop {
+        let key = prompt_line("Option key (blank to finish): ")?;
+        if key.trim().is_empty() {
+            break;
+        }
+        let value = prompt_line(&format!("{}: ", key.trim()))?;
+        let schema_opt = schema.as_ref().and_then(|s| {
+            s.options
+                .iter()
+                .find(|o| o.name.eq_ignore_ascii_case(key.trim()))
+        });
+        let needs_obscure = schema_opt.map(|o| o.is_password).unwrap_or(false)
+            || is_password_key(key.trim());
+        let final_value = if needs_obscure {
+            obscure_value_with_rclone(runner, &value)?
+        } else {
+            value
+        };
+        options.push((key.trim().to_string(), final_value));
+    }
+
+    let options_ref: Vec<(&str, &str)> = options
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
+    config.set_remote(remote_name, backend, &options_ref)?;
+    if !config.has_remote(remote_name)? {
+        bail!("Remote {} was not created", remote_name);
+    }
+    println!("Remote '{}' configured for backend '{}'.", remote_name, backend);
+    Ok(())
+}
+
+fn is_password_key(key: &str) -> bool {
+    let k = key.trim().to_ascii_lowercase();
+    matches!(k.as_str(), "pass" | "password")
+        || k.ends_with("_pass")
+        || k.ends_with("_password")
+}
+
+fn obscure_value_with_rclone(runner: &RcloneRunner, value: &str) -> Result<String> {
+    let output = runner.run(&["obscure", value])?;
+    if !output.success() {
+        bail!("rclone obscure failed: {}", output.stderr_string());
+    }
+    output
+        .stdout
+        .iter()
+        .find_map(|line| {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        })
+        .ok_or_else(|| anyhow::anyhow!("rclone obscure returned no output"))
 }
 
 /// Ensures cleanup is run on drop
@@ -768,6 +1016,14 @@ struct Cli {
     #[arg(long, default_value_t = false)]
     device_code: bool,
 
+    /// Download files from a CSV/XLSX queue file (requires --provider and existing config)
+    #[arg(long)]
+    download: Option<String>,
+
+    /// Remote name to use for download (if multiple remotes exist)
+    #[arg(long)]
+    remote: Option<String>,
+
     /// Set custom OAuth credentials for a provider/backend (interactive)
     #[arg(long)]
     set_oauth_creds: Option<String>,
@@ -887,6 +1143,8 @@ mod tests {
             mobile_auth: false,
             mobile_auth_port: 53682,
             device_code: false,
+            download: None,
+            remote: None,
             set_oauth_creds: None,
             oauth_config_path: None,
             show_oauth_creds: None,
