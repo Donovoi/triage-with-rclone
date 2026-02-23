@@ -259,6 +259,8 @@ pub struct App {
     pub sso_status: Option<crate::providers::auth::SsoStatus>,
     /// Mounted remote for GUI selection
     pub mounted_remote: Option<MountedRemote>,
+    /// Running Web GUI process (kept alive while TUI is open)
+    pub web_gui_process: Option<crate::rclone::WebGuiProcess>,
     /// Provider selection state
     pub provider: ProviderSelection,
     /// Browser selection state
@@ -309,6 +311,7 @@ impl App {
             auth_status: String::new(),
             sso_status: None,
             mounted_remote: None,
+            web_gui_process: None,
             provider: ProviderSelection {
                 entries: providers,
                 selected: 0,
