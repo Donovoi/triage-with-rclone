@@ -78,25 +78,30 @@ pub(crate) fn perform_mount_flow<B: ratatui::backend::Backend>(
         }
     };
 
-    // Early FUSE/WinFSP check with helpful instructions
+    // Check for FUSE/WinFSP and auto-install if missing
     match manager.check_fuse_available() {
         Ok(true) => {}
         Ok(false) => {
-            let install_hint = if cfg!(windows) {
-                "Install WinFSP from https://winfsp.dev/ and restart."
-            } else if cfg!(target_os = "linux") {
-                "Install fuse: sudo apt install fuse3 (or fuse)"
-            } else if cfg!(target_os = "macos") {
-                "Install macFUSE from https://osxfuse.github.io/"
-            } else {
-                "Install a FUSE filesystem driver for your OS."
-            };
-            app.provider.status = format!(
-                "FUSE/WinFSP is NOT installed. Mount is unavailable.\n{}",
-                install_hint
-            );
-            app.log_error("Mount failed: FUSE/WinFSP not installed");
-            return Ok(());
+            app.provider.status = "FUSE/WinFSP not found. Installing automatically...".to_string();
+            app.log_info("FUSE/WinFSP not detected — attempting auto-install");
+            terminal.draw(|f| render_state(f, app))?;
+
+            match manager.install_fuse() {
+                Ok(true) => {
+                    app.provider.status = "FUSE/WinFSP installed successfully.".to_string();
+                    app.log_info("FUSE/WinFSP installed successfully");
+                    terminal.draw(|f| render_state(f, app))?;
+                }
+                Ok(false) | Err(_) => {
+                    app.provider.status = "FUSE/WinFSP auto-install failed. Install manually and retry:\n\
+                        Windows: winget install WinFsp.WinFsp\n\
+                        Linux: sudo apt install fuse3\n\
+                        macOS: brew install --cask macfuse"
+                        .to_string();
+                    app.log_error("FUSE/WinFSP auto-install failed");
+                    return Ok(());
+                }
+            }
         }
         Err(e) => {
             app.provider.status = format!("FUSE check failed: {}. Attempting mount anyway.", e);
