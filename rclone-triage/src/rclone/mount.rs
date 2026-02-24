@@ -182,27 +182,48 @@ impl MountManager {
     pub fn install_fuse(&self) -> Result<bool> {
         #[cfg(windows)]
         {
-            // Try winget first (available on Win 10 1709+), then fall back to chocolatey.
-            let strategies: &[(&str, &[&str])] = &[
-                ("winget", &["install", "--id", "WinFsp.WinFsp", "-e", "--accept-source-agreements", "--accept-package-agreements"]),
-                ("choco", &["install", "winfsp", "-y"]),
-            ];
+            // Strategy 1: winget (built into Windows 10 1709+ / Windows 11).
+            let winget_ok = Command::new("winget")
+                .args(["install", "--id", "WinFsp.WinFsp", "-e",
+                       "--accept-source-agreements", "--accept-package-agreements"])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .stdin(Stdio::null())
+                .output()
+                .is_ok_and(|o| o.status.success());
 
-            for (cmd, args) in strategies {
-                let installed = Command::new(cmd)
-                    .args(*args)
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::piped())
-                    .stdin(Stdio::null())
-                    .output()
-                    .is_ok_and(|o| o.status.success());
+            if winget_ok {
+                std::thread::sleep(Duration::from_secs(2));
+                if self.check_fuse_available().unwrap_or(false) {
+                    return Ok(true);
+                }
+            }
 
-                if installed {
-                    // Give Windows a moment to register the DLL.
-                    std::thread::sleep(Duration::from_secs(2));
-                    if self.check_fuse_available().unwrap_or(false) {
-                        return Ok(true);
-                    }
+            // Strategy 2: Download MSI directly from GitHub via PowerShell + msiexec.
+            // No third-party package managers needed — uses only built-in Windows tools.
+            let ps_script = r#"
+$ErrorActionPreference = 'Stop'
+$releases = 'https://api.github.com/repos/winfsp/winfsp/releases/latest'
+$tag = (Invoke-RestMethod -Uri $releases).tag_name
+$version = $tag -replace '^v',''
+$msiUrl = "https://github.com/winfsp/winfsp/releases/download/$tag/winfsp-$version.msi"
+$msiPath = Join-Path $env:TEMP "winfsp-$version.msi"
+Invoke-WebRequest -Uri $msiUrl -OutFile $msiPath -UseBasicParsing
+Start-Process msiexec.exe -ArgumentList "/i `"$msiPath`" /qn /norestart" -Wait -NoNewWindow
+Remove-Item $msiPath -ErrorAction SilentlyContinue
+"#;
+            let msi_ok = Command::new("powershell")
+                .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", ps_script])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .stdin(Stdio::null())
+                .output()
+                .is_ok_and(|o| o.status.success());
+
+            if msi_ok {
+                std::thread::sleep(Duration::from_secs(2));
+                if self.check_fuse_available().unwrap_or(false) {
+                    return Ok(true);
                 }
             }
 
