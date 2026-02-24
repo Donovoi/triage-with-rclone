@@ -141,12 +141,98 @@ pub(crate) fn perform_mount_flow<B: ratatui::backend::Backend>(
         Ok(mounted) => {
             let mount_path = mounted.mount_point().to_path_buf();
             app.mounted_remote = Some(mounted);
-            app.remote.chosen = Some(remote_name);
+            app.remote.chosen = Some(remote_name.clone());
             app.files.entries.clear();
             app.files.entries_full.clear();
             app.files.to_download.clear();
             app.files.selected = 0;
-            app.provider.status = format!("Mounted remote at {:?}", mount_path);
+            app.provider.status = format!("Mounted at {:?} — listing files...", mount_path);
+            terminal.draw(|f| render_state(f, app))?;
+
+            // Run a file listing so the TUI file list is populated.
+            let runner = crate::rclone::RcloneRunner::new(binary.path()).with_config(config.path());
+            let include_hashes = provider
+                .known
+                .map(|known| !known.hash_types().is_empty())
+                .unwrap_or(false);
+            let list_options = if include_hashes {
+                crate::files::listing::ListPathOptions::with_hashes()
+            } else {
+                crate::files::listing::ListPathOptions::without_hashes()
+            };
+            let target = format!("{}:", remote_name);
+            let short = provider.short_name().to_string();
+            let max_in_memory: usize = std::env::var("RCLONE_TRIAGE_LARGE_LISTING_IN_MEMORY")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(50_000);
+
+            if let Some(ref dirs) = app.forensics.directories {
+                let csv_path = dirs.listings.join(format!("{}_files.csv", short));
+                let listing_result = crate::files::listing::list_path_large_to_csv_with_progress(
+                    &runner,
+                    &target,
+                    list_options,
+                    &csv_path,
+                    max_in_memory,
+                    |count| {
+                        app.provider.status = format!("Mounted at {:?} — listing files... ({} found)", mount_path, count);
+                        let _ = terminal.draw(|f| render_state(f, app));
+                    },
+                );
+                match listing_result {
+                    Ok(result) => {
+                        app.log_info(format!("Exported listing to {:?}", csv_path));
+                        app.track_file(&csv_path, "Exported file listing CSV");
+                        app.files.entries_full = result.entries.clone();
+                        app.files.entries = result.entries.iter().map(|e| e.path.clone()).collect();
+                        let shown = app.files.entries.len();
+                        if result.truncated {
+                            app.provider.status = format!(
+                                "Mounted at {:?}. Found {} files (showing first {}). CSV: {:?}",
+                                mount_path, result.total_entries, shown, csv_path
+                            );
+                        } else {
+                            app.provider.status = format!(
+                                "Mounted at {:?}. Found {} files.",
+                                mount_path, result.total_entries
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        app.log_error(format!("File listing after mount failed: {}", e));
+                        app.provider.status = format!(
+                            "Mounted at {:?}. Listing failed: {}",
+                            mount_path, e
+                        );
+                    }
+                }
+            } else {
+                let listing_result = crate::files::listing::list_path_with_progress(
+                    &runner,
+                    &target,
+                    list_options,
+                    |count| {
+                        app.provider.status = format!("Mounted at {:?} — listing files... ({} found)", mount_path, count);
+                        let _ = terminal.draw(|f| render_state(f, app));
+                    },
+                );
+                match listing_result {
+                    Ok(entries) => {
+                        app.files.entries_full = entries.clone();
+                        app.files.entries = entries.iter().map(|e| e.path.clone()).collect();
+                        app.provider.status = format!("Mounted at {:?}. Found {} files.", mount_path, app.files.entries.len());
+                    }
+                    Err(e) => {
+                        app.log_error(format!("File listing after mount failed: {}", e));
+                        app.provider.status = format!(
+                            "Mounted at {:?}. Listing failed: {}",
+                            mount_path, e
+                        );
+                    }
+                }
+            }
+
             app.state = crate::ui::AppState::FileList;
         }
         Err(e) => {
