@@ -160,6 +160,27 @@ impl ProviderCookieConfig {
                 auth_cookies: vec!["pcauth", "pcloud_auth", "pcid"],
                 identity_cookies: vec![],
             },
+            CloudProvider::Mega => Self {
+                domains: vec![".mega.nz", "mega.nz", ".mega.co.nz"],
+                auth_cookies: vec!["sid"],
+                identity_cookies: vec![],
+            },
+            CloudProvider::YandexDisk => Self {
+                domains: vec![".yandex.com", ".yandex.ru", "disk.yandex.com"],
+                auth_cookies: vec!["Session_id", "yandexuid"],
+                identity_cookies: vec![],
+            },
+            CloudProvider::Mailru => Self {
+                domains: vec![".mail.ru", "cloud.mail.ru", "o2.mail.ru"],
+                auth_cookies: vec!["Mpop", "t"],
+                identity_cookies: vec![],
+            },
+            // All other providers use generic empty cookie config
+            _ => Self {
+                domains: vec![],
+                auth_cookies: vec![],
+                identity_cookies: vec![],
+            },
         }
     }
 }

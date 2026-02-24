@@ -1,5 +1,0 @@
-# rclone-triage Forensic Log
-# Format: timestamp|current_hash|prev_hash|message
-# Hash chain provides tamper evidence
-#
-2026-02-23T20:29:11.806Z|d793714e5bfe05be144eae887b062125fbdccd8635a06e181356cd05606a8b69|0000000000000000000000000000000000000000000000000000000000000000|[INFO] Case started: triage-20260223-202911
