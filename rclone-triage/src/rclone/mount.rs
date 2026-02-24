@@ -79,6 +79,75 @@ impl Drop for MountedRemote {
     }
 }
 
+/// Download the latest WinFSP MSI from GitHub and install it silently.
+/// Uses `ureq` (already a project dependency) for HTTP and `msiexec` for installation.
+/// Returns `Ok(true)` if the MSI was downloaded and msiexec exited successfully.
+#[cfg(windows)]
+fn download_and_install_winfsp() -> Result<bool> {
+    use std::io::Write;
+
+    // 1. Query the GitHub releases API for the latest tag.
+    let api_url = "https://api.github.com/repos/winfsp/winfsp/releases/latest";
+    let response = ureq::get(api_url)
+        .set("User-Agent", "rclone-triage")
+        .set("Accept", "application/vnd.github+json")
+        .call()?;
+    let release: serde_json::Value = response.into_json()?;
+
+    // 2. Find the .msi asset URL from the release assets.
+    let msi_url = release["assets"]
+        .as_array()
+        .and_then(|assets| {
+            assets.iter().find_map(|asset| {
+                let name = asset["name"].as_str().unwrap_or("");
+                if name.ends_with(".msi") {
+                    asset["browser_download_url"].as_str().map(String::from)
+                } else {
+                    None
+                }
+            })
+        })
+        .or_else(|| {
+            // Fallback: construct URL from tag name.
+            let tag = release["tag_name"].as_str()?;
+            let version = tag.strip_prefix('v').unwrap_or(tag);
+            Some(format!(
+                "https://github.com/winfsp/winfsp/releases/download/{}/winfsp-{}.msi",
+                tag, version
+            ))
+        });
+
+    let Some(msi_url) = msi_url else {
+        bail!("Could not determine WinFSP MSI download URL from GitHub releases");
+    };
+
+    // 3. Download the MSI to a temp file.
+    let tmp_dir = std::env::temp_dir();
+    let msi_path = tmp_dir.join("winfsp-latest.msi");
+
+    let dl_response = ureq::get(&msi_url)
+        .set("User-Agent", "rclone-triage")
+        .call()?;
+    let mut body = dl_response.into_reader();
+    let mut file = std::fs::File::create(&msi_path)?;
+    std::io::copy(&mut body, &mut file)?;
+    file.flush()?;
+    drop(file);
+
+    // 4. Run msiexec silently.
+    let status = Command::new("msiexec")
+        .args(["/i", &msi_path.to_string_lossy(), "/qn", "/norestart"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .stdin(Stdio::null())
+        .status();
+
+    // 5. Clean up the MSI.
+    let _ = std::fs::remove_file(&msi_path);
+
+    Ok(status.is_ok_and(|s| s.success()))
+}
+
 /// Mount manager for handling multiple mounts
 pub struct MountManager {
     /// Path to rclone executable
@@ -199,28 +268,9 @@ impl MountManager {
                 }
             }
 
-            // Strategy 2: Download MSI directly from GitHub via PowerShell + msiexec.
-            // No third-party package managers needed — uses only built-in Windows tools.
-            let ps_script = r#"
-$ErrorActionPreference = 'Stop'
-$releases = 'https://api.github.com/repos/winfsp/winfsp/releases/latest'
-$tag = (Invoke-RestMethod -Uri $releases).tag_name
-$version = $tag -replace '^v',''
-$msiUrl = "https://github.com/winfsp/winfsp/releases/download/$tag/winfsp-$version.msi"
-$msiPath = Join-Path $env:TEMP "winfsp-$version.msi"
-Invoke-WebRequest -Uri $msiUrl -OutFile $msiPath -UseBasicParsing
-Start-Process msiexec.exe -ArgumentList "/i `"$msiPath`" /qn /norestart" -Wait -NoNewWindow
-Remove-Item $msiPath -ErrorAction SilentlyContinue
-"#;
-            let msi_ok = Command::new("powershell")
-                .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", ps_script])
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .stdin(Stdio::null())
-                .output()
-                .is_ok_and(|o| o.status.success());
-
-            if msi_ok {
+            // Strategy 2: Pure Rust — download the MSI from GitHub releases via ureq,
+            // write to a temp file, and run msiexec silently.
+            if let Ok(true) = download_and_install_winfsp() {
                 std::thread::sleep(Duration::from_secs(2));
                 if self.check_fuse_available().unwrap_or(false) {
                     return Ok(true);
