@@ -41,6 +41,57 @@ impl ProviderConfig {
             CloudProvider::ICloud => Self::icloud(),
             CloudProvider::GooglePhotos => Self::google_photos(),
             CloudProvider::PCloud => Self::pcloud(),
+            CloudProvider::AzureBlob => Self::no_oauth(provider),
+            CloudProvider::AzureFiles => Self::no_oauth(provider),
+            CloudProvider::B2 => Self::no_oauth(provider),
+            CloudProvider::Cloudinary => Self::no_oauth(provider),
+            CloudProvider::Doi => Self::no_oauth(provider),
+            CloudProvider::Drime => Self::no_oauth(provider),
+            CloudProvider::Fichier => Self::no_oauth(provider),
+            CloudProvider::FileFabric => Self::no_oauth(provider),
+            CloudProvider::Filelu => Self::no_oauth(provider),
+            CloudProvider::Filen => Self::no_oauth(provider),
+            CloudProvider::FilesCom => Self::no_oauth(provider),
+            CloudProvider::Ftp => Self::no_oauth(provider),
+            CloudProvider::Gofile => Self::no_oauth(provider),
+            CloudProvider::GoogleCloudStorage => Self::no_oauth(provider),
+            CloudProvider::Hdfs => Self::no_oauth(provider),
+            CloudProvider::HiDrive => Self::hidrive(),
+            CloudProvider::Http => Self::no_oauth(provider),
+            CloudProvider::ImageKit => Self::no_oauth(provider),
+            CloudProvider::InternetArchive => Self::no_oauth(provider),
+            CloudProvider::Internxt => Self::no_oauth(provider),
+            CloudProvider::Jottacloud => Self::jottacloud(),
+            CloudProvider::Koofr => Self::no_oauth(provider),
+            CloudProvider::Linkbox => Self::no_oauth(provider),
+            CloudProvider::Local => Self::no_oauth(provider),
+            CloudProvider::Mailru => Self::mailru(),
+            CloudProvider::Mega => Self::no_oauth(provider),
+            CloudProvider::Memory => Self::no_oauth(provider),
+            CloudProvider::NetStorage => Self::no_oauth(provider),
+            CloudProvider::OpenDrive => Self::no_oauth(provider),
+            CloudProvider::OracleObjectStorage => Self::no_oauth(provider),
+            CloudProvider::PikPak => Self::pikpak(),
+            CloudProvider::Pixeldrain => Self::no_oauth(provider),
+            CloudProvider::PremiumizeMe => Self::premiumizeme(),
+            CloudProvider::ProtonDrive => Self::no_oauth(provider),
+            CloudProvider::Putio => Self::putio(),
+            CloudProvider::QingStor => Self::no_oauth(provider),
+            CloudProvider::Quatrix => Self::no_oauth(provider),
+            CloudProvider::S3 => Self::no_oauth(provider),
+            CloudProvider::Seafile => Self::no_oauth(provider),
+            CloudProvider::Sftp => Self::no_oauth(provider),
+            CloudProvider::Shade => Self::no_oauth(provider),
+            CloudProvider::ShareFile => Self::sharefile(),
+            CloudProvider::Sia => Self::no_oauth(provider),
+            CloudProvider::Smb => Self::no_oauth(provider),
+            CloudProvider::Storj => Self::no_oauth(provider),
+            CloudProvider::SugarSync => Self::sugarsync(),
+            CloudProvider::Swift => Self::no_oauth(provider),
+            CloudProvider::Ulozto => Self::no_oauth(provider),
+            CloudProvider::WebDav => Self::no_oauth(provider),
+            CloudProvider::YandexDisk => Self::yandex(),
+            CloudProvider::Zoho => Self::zoho(),
         }
     }
 
@@ -158,6 +209,176 @@ impl ProviderConfig {
                 auth_url: "https://my.pcloud.com/oauth2/authorize",
                 token_url: "https://api.pcloud.com/oauth2_token",
                 scopes: &[],
+            },
+            rclone_options: &[],
+        }
+    }
+
+    /// Provider that does not use OAuth (key-based, user/pass, or manual config)
+    fn no_oauth(provider: CloudProvider) -> Self {
+        Self {
+            provider,
+            oauth: OAuthConfig {
+                client_id: "",
+                client_secret: "",
+                auth_url: "",
+                token_url: "",
+                scopes: &[],
+            },
+            rclone_options: &[],
+        }
+    }
+
+    /// HiDrive configuration (OAuth)
+    fn hidrive() -> Self {
+        Self {
+            provider: CloudProvider::HiDrive,
+            oauth: OAuthConfig {
+                client_id: "f3a5e856480f4c75b024e4a1aa18f899",
+                client_secret: "",
+                auth_url: "https://my.hidrive.com/client/authorize",
+                token_url: "https://my.hidrive.com/oauth2/token",
+                scopes: &["admin.rw"],
+            },
+            rclone_options: &[],
+        }
+    }
+
+    /// Jottacloud configuration (OAuth)
+    fn jottacloud() -> Self {
+        Self {
+            provider: CloudProvider::Jottacloud,
+            oauth: OAuthConfig {
+                client_id: "jottacli",
+                client_secret: "",
+                auth_url: "https://id.jottacloud.com/auth/authorize",
+                token_url: "https://id.jottacloud.com/auth/token",
+                scopes: &["openid", "offline_access"],
+            },
+            rclone_options: &[],
+        }
+    }
+
+    /// Mail.ru Cloud configuration (OAuth)
+    fn mailru() -> Self {
+        Self {
+            provider: CloudProvider::Mailru,
+            oauth: OAuthConfig {
+                client_id: "cOBJ0MlEMnKlhFAdIy0edANnGeVjjgWl",
+                client_secret: "",
+                auth_url: "https://o2.mail.ru/login",
+                token_url: "https://o2.mail.ru/token",
+                scopes: &[],
+            },
+            rclone_options: &[],
+        }
+    }
+
+    /// PikPak configuration (OAuth)
+    fn pikpak() -> Self {
+        Self {
+            provider: CloudProvider::PikPak,
+            oauth: OAuthConfig {
+                client_id: "YNxT9w7GMdWvEOKa",
+                client_secret: "dbw2OtmVEeuUvIptb1Coyg",
+                auth_url: "https://user.mypikpak.com/v1/auth/signin",
+                token_url: "https://user.mypikpak.com/v1/auth/token",
+                scopes: &[],
+            },
+            rclone_options: &[],
+        }
+    }
+
+    /// Premiumize.me configuration (OAuth)
+    fn premiumizeme() -> Self {
+        Self {
+            provider: CloudProvider::PremiumizeMe,
+            oauth: OAuthConfig {
+                client_id: "GV1OAR2DOtY6YoI",
+                client_secret: "",
+                auth_url: "https://www.premiumize.me/authorize",
+                token_url: "https://www.premiumize.me/token",
+                scopes: &[],
+            },
+            rclone_options: &[],
+        }
+    }
+
+    /// put.io configuration (OAuth)
+    fn putio() -> Self {
+        Self {
+            provider: CloudProvider::Putio,
+            oauth: OAuthConfig {
+                client_id: "4575",
+                client_secret: "",
+                auth_url: "https://app.put.io/v2/oauth2/authenticate",
+                token_url: "https://api.put.io/v2/oauth2/access_token",
+                scopes: &[],
+            },
+            rclone_options: &[],
+        }
+    }
+
+    /// Citrix ShareFile configuration (OAuth)
+    fn sharefile() -> Self {
+        Self {
+            provider: CloudProvider::ShareFile,
+            oauth: OAuthConfig {
+                client_id: "djhjUbBz4zCyjFnS",
+                client_secret: "",
+                auth_url: "https://secure.sharefile.com/oauth/authorize",
+                token_url: "https://secure.sharefile.com/oauth/token",
+                scopes: &[],
+            },
+            rclone_options: &[],
+        }
+    }
+
+    /// SugarSync configuration (OAuth)
+    fn sugarsync() -> Self {
+        Self {
+            provider: CloudProvider::SugarSync,
+            oauth: OAuthConfig {
+                client_id: "/sc/569344/49_3OoFnJKO4Mh0",
+                client_secret: "",
+                auth_url: "https://api.sugarsync.com/authorization",
+                token_url: "https://api.sugarsync.com/app-authorization",
+                scopes: &[],
+            },
+            rclone_options: &[],
+        }
+    }
+
+    /// Yandex Disk configuration (OAuth)
+    fn yandex() -> Self {
+        Self {
+            provider: CloudProvider::YandexDisk,
+            oauth: OAuthConfig {
+                client_id: "2018091340eb45cf8a0c735fc8e82ccf",
+                client_secret: "3ea4a9a4e7014858b54e46e96cd07b41",
+                auth_url: "https://oauth.yandex.com/authorize",
+                token_url: "https://oauth.yandex.com/token",
+                scopes: &[],
+            },
+            rclone_options: &[],
+        }
+    }
+
+    /// Zoho WorkDrive configuration (OAuth)
+    fn zoho() -> Self {
+        Self {
+            provider: CloudProvider::Zoho,
+            oauth: OAuthConfig {
+                client_id: "1000.46TVW3B5RBBRJKR2AF574CC41SKWWM",
+                client_secret: "",
+                auth_url: "https://accounts.zoho.com/oauth/v2/auth",
+                token_url: "https://accounts.zoho.com/oauth/v2/token",
+                scopes: &[
+                    "aaaserver.profile.read",
+                    "WorkDrive.team.READ",
+                    "WorkDrive.workspace.READ",
+                    "WorkDrive.files.ALL",
+                ],
             },
             rclone_options: &[],
         }
