@@ -53,10 +53,6 @@ impl ProviderEntry {
         self.description.as_deref()
     }
 
-    pub fn oauth_capable(&self) -> bool {
-        self.oauth_capable
-    }
-
     pub fn auth_kind(&self) -> ProviderAuthKind {
         self.auth_kind
     }

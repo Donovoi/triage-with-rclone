@@ -365,6 +365,14 @@ pub fn authenticate_with_rclone(
     let about_info = get_user_info(rclone, remote_name).ok();
     let final_user_info = user_identifier.or(about_info);
 
+    if final_user_info.is_none() {
+        tracing::info!(
+            provider = %provider.display_name(),
+            remote = %remote_name,
+            "Could not extract user identity (opaque token). Authentication succeeded but user is unknown."
+        );
+    }
+
     Ok(AuthResult {
         provider,
         remote_name: remote_name.to_string(),
