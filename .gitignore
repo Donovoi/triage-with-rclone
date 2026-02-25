@@ -26,3 +26,4 @@ rcloned/rcloned.psm1
 # Triage case output directories (contain logs/downloads)
 triage-*/
 rclone-triage/triage-*/
+.idea/
