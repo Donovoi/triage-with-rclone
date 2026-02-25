@@ -109,12 +109,13 @@ impl UserInfo {
     /// Get the best available identifier (email preferred)
     pub fn best_identifier(&self) -> Option<String> {
         self.email
-            .clone()
-            .or_else(|| self.preferred_username.clone())
-            .or_else(|| self.upn.clone())
-            .or_else(|| self.unique_name.clone())
-            .or_else(|| self.name.clone())
-            .or_else(|| self.sub.clone())
+            .as_deref()
+            .or(self.preferred_username.as_deref())
+            .or(self.upn.as_deref())
+            .or(self.unique_name.as_deref())
+            .or(self.name.as_deref())
+            .or(self.sub.as_deref())
+            .map(String::from)
     }
 }
 

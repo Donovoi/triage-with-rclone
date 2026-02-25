@@ -53,9 +53,24 @@ pub fn start_forensic_access_point(
     password: &str,
     timeout_minutes: Option<u64>,
 ) -> Result<ForensicAccessPointInfo> {
+    start_forensic_access_point_with_status(ssid, password, timeout_minutes, |_| {})
+}
+
+/// Start access point with a status callback for TUI updates.
+///
+/// The callback receives status messages like "Checking WiFi adapter...",
+/// "Waiting for USB WiFi adapter...", "Configuring hosted network...", etc.
+#[cfg(windows)]
+pub fn start_forensic_access_point_with_status(
+    ssid: &str,
+    password: &str,
+    timeout_minutes: Option<u64>,
+    mut on_status: impl FnMut(&str),
+) -> Result<ForensicAccessPointInfo> {
+    on_status("Checking WiFi adapter support...");
     let native = test_native_ap_support()?;
     if !native.supported {
-        // If native AP isn't supported, wait for USB WiFi adapter
+        on_status("Native AP not supported — waiting for USB WiFi adapter (up to 120s)...");
         let wait_result = wait_for_usb_wifi_adapter(120)?;
         if !wait_result {
             if let Some(reason) = native.reason {
@@ -64,7 +79,7 @@ pub fn start_forensic_access_point(
                 bail!("Access Point not supported on this adapter. No USB WiFi adapter detected.");
             }
         }
-        // Re-check after adapter is plugged in
+        on_status("USB WiFi adapter detected — rechecking AP support...");
         let native2 = test_native_ap_support()?;
         if !native2.supported {
             if let Some(reason) = native2.reason {
@@ -75,13 +90,18 @@ pub fn start_forensic_access_point(
         }
     }
 
+    on_status("Configuring hosted network...");
     set_hostednetwork_config(ssid, password)?;
+    on_status("Adding firewall rules...");
     ensure_firewall_rules(ssid)?;
+    on_status("Starting hosted network...");
     start_hostednetwork()?;
 
+    on_status("Retrieving adapter info...");
     let adapter = get_ap_adapter_name().ok().flatten();
     let ip_address = get_ap_ip_address(adapter.as_deref()).unwrap_or_else(|_| "192.168.137.1".to_string());
 
+    on_status("Configuring AdGuard DNS...");
     let mut dns_configured = false;
     let mut dns_error = None;
     if let Some(ref name) = adapter {
@@ -100,6 +120,7 @@ pub fn start_forensic_access_point(
         }
     }
 
+    on_status("Access point ready.");
     Ok(ForensicAccessPointInfo {
         ssid: ssid.to_string(),
         password: password.to_string(),
@@ -116,6 +137,16 @@ pub fn start_forensic_access_point(
     _ssid: &str,
     _password: &str,
     _timeout_minutes: Option<u64>,
+) -> Result<ForensicAccessPointInfo> {
+    bail!("Forensic Access Point is only supported on Windows");
+}
+
+#[cfg(not(windows))]
+pub fn start_forensic_access_point_with_status(
+    _ssid: &str,
+    _password: &str,
+    _timeout_minutes: Option<u64>,
+    _on_status: impl FnMut(&str),
 ) -> Result<ForensicAccessPointInfo> {
     bail!("Forensic Access Point is only supported on Windows");
 }

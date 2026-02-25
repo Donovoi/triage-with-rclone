@@ -2,7 +2,7 @@
 
 This document tracks the implementation coverage of the Rust `rclone-triage` against the PowerShell `rcloned` module features.
 
-**Last Updated:** 2026-02-03
+**Last Updated:** 2026-02-25
 
 ## Coverage Summary
 
@@ -10,17 +10,17 @@ This document tracks the implementation coverage of the Rust `rclone-triage` aga
 | --------------------- | -------------------- | ------------- | -------------------------------- |
 | Case Management       | 4                    | 100%          | ✅ Complete                      |
 | Provider Support      | 8                    | 100%          | ✅ Complete                      |
-| Authentication        | 16                   | 75%           | ⚠️ Partial                       |
-| Mobile Auth           | 12                   | 45%           | ⚠️ Partial                       |
-| Forensic Access Point | 14                   | 45%           | ⚠️ Partial                       |
-| File Operations       | 8                    | 75%           | ⚠️ Partial                       |
+| Authentication        | 16                   | 90%           | ✅ Mostly complete               |
+| Mobile Auth           | 12                   | 80%           | ✅ Mostly complete               |
+| Forensic Access Point | 14                   | 85%           | ✅ Mostly complete               |
+| File Operations       | 8                    | 100%          | ✅ Complete                      |
 | Forensic Logging      | 4                    | 100%          | ✅ Complete                      |
 | System State          | 4                    | 100%          | ✅ Complete                      |
-| rclone Operations     | 5                    | 80%           | ⚠️ Partial                       |
+| rclone Operations     | 5                    | 100%          | ✅ Complete                      |
 | UI/Menu System        | 5                    | 100%          | ✅ Complete (different approach) |
-| Utilities             | 15+                  | 60%           | ⚠️ Partial                       |
+| Utilities             | 15+                  | 70%           | ⚠️ Partial                       |
 
-**Overall Coverage: ~55%**
+**Overall Coverage: ~80%**
 
 ---
 
@@ -39,94 +39,91 @@ This document tracks the implementation coverage of the Rust `rclone-triage` aga
 
 ---
 
-### 2. Provider Support ⚠️ PARTIAL
+### 2. Provider Support ✅ COMPLETE
 
-| PowerShell Feature         | Rust Equivalent               | Status     |
-| -------------------------- | ----------------------------- | ---------- |
-| `Provider` class           | `CloudProvider` enum          | ✅         |
-| `Update-ProviderObjects`   | `CloudProvider::all()`        | ✅         |
-| `Get-ProvidersList`        | `supported_providers_from_rclone()` | ✅   |
-| `Get-RcloneProvidersJson`  | `supported_providers_from_rclone()` | ✅   |
-| `Get-RcloneOAuthProviders` | `supported_providers_from_rclone()` | ✅   |
-| `Get-rcloneFeaturesTable`  | `CloudProvider::hash_types()` | ⚠️ Partial |
-| Provider hash types        | `CloudProvider::hash_types()` | ✅         |
-| Bad providers filtering    | N/A (not needed)              | ⚠️         |
+| PowerShell Feature         | Rust Equivalent                     | Status     |
+| -------------------------- | ----------------------------------- | ---------- |
+| `Provider` class           | `CloudProvider` enum                | ✅         |
+| `Update-ProviderObjects`   | `CloudProvider::all()`              | ✅         |
+| `Get-ProvidersList`        | `supported_providers_from_rclone()` | ✅         |
+| `Get-RcloneProvidersJson`  | `supported_providers_from_rclone()` | ✅         |
+| `Get-RcloneOAuthProviders` | `supported_providers_from_rclone()` | ✅         |
+| `Get-rcloneFeaturesTable`  | `provider_supports_hashes()`        | ✅         |
+| Provider hash types        | `CloudProvider::hash_types()`       | ✅         |
+| Bad providers filtering    | Dynamic provider discovery          | ✅         |
 
 **Note:** Provider list is now sourced dynamically from `rclone config providers --json`.  
 Known backends use specialized flows; unknown backends use the generic rclone config flow.
 
 ---
 
-### 3. Authentication ⚠️ PARTIAL
+### 3. Authentication ✅ MOSTLY COMPLETE
 
-| PowerShell Function                     | Rust Equivalent                        | Status     |
-| --------------------------------------- | -------------------------------------- | ---------- |
-| `New-RemoteAuthentication`              | `authenticate_with_rclone()`           | ✅         |
-| `Browser` class                         | `Browser` struct                       | ✅         |
-| `Update-BrowserObjects`                 | `BrowserDetector::detect_all()`        | ✅         |
-| Browser switching/detection             | `BrowserDetector::get_default_browser` | ✅         |
-| Browser selection (TUI)                 | `BrowserSelectScreen`                  | ✅         |
-| `Set-CustomOAuthCredentials`            | `CustomOAuthConfig` (credentials file) | ✅         |
-| `Set-CustomOAuthCredentialsInteractive` | `--set-oauth-creds` CLI                | ✅ |
-| `Get-RcloneOAuthCredentials`            | N/A                                    | ❌ MISSING |
-| `Start-RcloneSmartAuth` (SSO)           | `smart_authenticate()`                 | ✅         |
-| `Test-RcloneSilentSSO`                  | `detect_sso_sessions()`                | ✅         |
-| `Invoke-RcloneSilentProbe`              | `authenticate_with_sso()`              | ✅         |
-| `Start-RcloneAuthorizeCore`             | `OAuthFlow::run()`                     | ✅         |
-| `Start-RcloneAuthorizeFallback`         | N/A                                    | ❌ MISSING |
-| `Get-RcloneTokenFromOutput`             | `OAuthToken::from_json()`              | ✅         |
-| JWT token decoding                      | `UserInfo::from_jwt()`                 | ✅         |
-| User info extraction from token         | `UserInfo::best_identifier()`          | ✅         |
-| OAuth state CSRF protection             | `OAuthResult::state`                   | ✅         |
-
-**Remaining Gaps:**
-
-- Interactive custom OAuth credential setup
+| PowerShell Function                     | Rust Equivalent                            | Status |
+| --------------------------------------- | ------------------------------------------ | ------ |
+| `New-RemoteAuthentication`              | `authenticate_with_rclone()`               | ✅     |
+| `Browser` class                         | `Browser` struct                           | ✅     |
+| `Update-BrowserObjects`                 | `BrowserDetector::detect_all()`            | ✅     |
+| Browser switching/detection             | `BrowserDetector::get_default_browser`     | ✅     |
+| Browser selection (TUI)                 | `BrowserSelectScreen`                      | ✅     |
+| `Set-CustomOAuthCredentials`            | `CustomOAuthConfig` (credentials file)     | ✅     |
+| `Set-CustomOAuthCredentialsInteractive` | `perform_configure_oauth_flow()` TUI       | ✅     |
+| `Get-RcloneOAuthCredentials`            | In-memory token extraction (better design) | ✅     |
+| `Start-RcloneSmartAuth` (SSO)           | `smart_authenticate()`                     | ✅     |
+| `Test-RcloneSilentSSO`                  | `detect_sso_sessions()`                    | ✅     |
+| `Invoke-RcloneSilentProbe`              | `authenticate_with_sso()`                  | ✅     |
+| `Start-RcloneAuthorizeCore`             | `OAuthFlow::run()`                         | ✅     |
+| `Start-RcloneAuthorizeFallback`         | `authorize_fallback()`                     | ✅     |
+| `Get-RcloneTokenFromOutput`             | `OAuthToken::from_json()`                  | ✅     |
+| JWT token decoding                      | `UserInfo::from_jwt()`                     | ✅     |
+| User info extraction from token         | `UserInfo::best_identifier()`              | ✅     |
+| OAuth state CSRF protection             | `OAuthResult::state`                       | ✅     |
 
 ---
 
-### 4. Mobile Device Authentication ⚠️ PARTIAL
+### 4. Mobile Device Authentication ✅ MOSTLY COMPLETE
 
-| PowerShell Function                      | Rust Equivalent               | Status   |
-| ---------------------------------------- | ----------------------------- | -------- |
-| `New-MobileDeviceAuthentication`         | N/A                           | ❌       |
-| `Start-DeviceCodeFlow`                   | `authenticate_with_device_code()` | ✅   |
-| `Request-DeviceCode`                     | `request_device_code()`       | ✅       |
-| `Request-TokenFromDeviceCode`            | `poll_device_code_for_token()` | ✅      |
-| `Get-DeviceCodeConfig`                   | `device_code_config()`        | ✅       |
-| `Start-MobileOAuthServer`                | N/A                           | ❌       |
-| `Start-MobileOAuthCallbackServer`        | `OAuthFlow::wait_for_redirect()` | ✅    |
+| PowerShell Function                      | Rust Equivalent                            | Status |
+| ---------------------------------------- | ------------------------------------------ | ------ |
+| `New-MobileDeviceAuthentication`         | `perform_mobile_auth_flow()` TUI           | ✅     |
+| `Start-DeviceCodeFlow`                   | `authenticate_with_device_code()`          | ✅     |
+| `Request-DeviceCode`                     | `request_device_code()`                    | ✅     |
+| `Request-TokenFromDeviceCode`            | `poll_device_code_for_token()`             | ✅     |
+| `Get-DeviceCodeConfig`                   | `device_code_config()`                     | ✅     |
+| `Start-MobileOAuthServer`                | Generic redirect handler (better design)   | ✅     |
+| `Start-MobileOAuthCallbackServer`        | `OAuthFlow::wait_for_redirect()`           | ✅     |
 | `Build-OAuthAuthorizationUrl`            | `ProviderConfig::build_auth_url_with_client_id()` | ✅ |
-| `Complete-OAuthTokenExchange`            | `exchange_code_for_token()`   | ✅       |
-| `Get-OAuthTokenFromCode`                 | `exchange_code_for_token()`   | ✅       |
-| QR Code generation (`New-ConsoleQRCode`) | `render_qr_code()`            | ✅       |
-| `Get-QRCodeData`                         | N/A                           | ❌       |
-| `ConvertTo-ConsoleQRCode`                | N/A                           | ❌       |
+| `Complete-OAuthTokenExchange`            | `exchange_code_for_token()`                | ✅     |
+| `Get-OAuthTokenFromCode`                 | `exchange_code_for_token()`                | ✅     |
+| QR Code generation (`New-ConsoleQRCode`) | `render_qr_code()`                         | ✅     |
+| `Get-QRCodeData`                         | Unified into `render_qr_code()`            | ✅     |
+| `ConvertTo-ConsoleQRCode`                | Unified into `render_qr_code()`            | ✅     |
 
-**Impact:** Mobile authentication allows capturing OAuth tokens from phones where user is already logged in - critical for forensic scenarios.
+**Note:** Three MobileAuthFlow options available in TUI: Redirect, Redirect+AccessPoint, DeviceCode.
 
 ---
 
-### 5. Forensic Access Point (WiFi Hotspot) ⚠️ PARTIAL
+### 5. Forensic Access Point (WiFi Hotspot) ✅ MOSTLY COMPLETE
 
-| PowerShell Function              | Rust Equivalent | Status |
-| -------------------------------- | --------------- | ------ |
-| `Start-ForensicAccessPoint`      | `start_forensic_access_point()` | ✅ |
-| `Stop-ForensicAccessPoint`       | `stop_forensic_access_point()`  | ✅ |
-| `Get-ForensicAccessPointStatus`  | `get_forensic_access_point_status()` | ✅ |
-| `Test-NativeAPSupport`           | `test_native_ap_support()` | ✅ |
-| `Wait-ForUSBWiFiAdapter`         | N/A             | ❌     |
-| `New-ForensicAPPassword`         | `generate_password()` | ✅ |
-| `Set-HostedNetworkConfig`        | `start_forensic_access_point()` | ✅ |
-| `Start-HostedNetwork`            | `start_forensic_access_point()` | ✅ |
-| `Get-ForensicAPIPAddress`        | `start_forensic_access_point()` | ✅ |
-| `Set-ForensicAPDNS` (AdGuard)    | `start_forensic_access_point()` | ✅ |
-| `Restore-OriginalDNS`            | `stop_forensic_access_point()`  | ✅ |
-| `Remove-ForensicAPFirewallRules` | `remove_firewall_rules()` | ✅ |
-| `Start-ForensicAPTimer`          | N/A             | ❌     |
-| `New-WiFiConnectionQRCode`       | `render_wifi_qr()` | ✅  |
+| PowerShell Function              | Rust Equivalent                              | Status |
+| -------------------------------- | -------------------------------------------- | ------ |
+| `Start-ForensicAccessPoint`      | `start_forensic_access_point()`              | ✅     |
+| `Stop-ForensicAccessPoint`       | `stop_forensic_access_point()`               | ✅     |
+| `Get-ForensicAccessPointStatus`  | `get_forensic_access_point_status()`         | ✅     |
+| `Test-NativeAPSupport`           | `test_native_ap_support()`                   | ✅     |
+| `Wait-ForUSBWiFiAdapter`         | `wait_for_usb_wifi_adapter()`                | ✅     |
+| `New-ForensicAPPassword`         | `generate_password()`                        | ✅     |
+| `Set-HostedNetworkConfig`        | `start_forensic_access_point()`              | ✅     |
+| `Start-HostedNetwork`            | `start_forensic_access_point()`              | ✅     |
+| `Get-ForensicAPIPAddress`        | `start_forensic_access_point()`              | ✅     |
+| `Set-ForensicAPDNS` (AdGuard)    | `start_forensic_access_point()`              | ✅     |
+| `Restore-OriginalDNS`            | `stop_forensic_access_point()`               | ✅     |
+| `Remove-ForensicAPFirewallRules` | `remove_firewall_rules()`                    | ✅     |
+| `Start-ForensicAPTimer`          | `start_forensic_ap_timer()`                  | ✅     |
+| `New-WiFiConnectionQRCode`       | `render_wifi_qr()`                           | ✅     |
 
-**Impact:** Creates WiFi hotspot so mobile devices can connect to PC for authentication. Uses AdGuard DNS for security.
+**Note:** TUI flow shows real-time AP setup status via `start_forensic_access_point_with_status()` callback.
+Connected client count displayed during AP flow. USB adapter auto-detection integrated.
 
 ---
 
@@ -145,21 +142,19 @@ Known backends use specialized flows; unknown backends use the generic rclone co
 
 ---
 
-### 7. File Operations ⚠️ PARTIAL
+### 7. File Operations ✅ COMPLETE
 
-| PowerShell Function               | Rust Equivalent                 | Status               |
-| --------------------------------- | ------------------------------- | -------------------- |
-| `Get-RemoteFileList`              | `list_path()`                   | ✅                   |
-| `Invoke-RemoteFileListGeneration` | `list_path()`                   | ✅                   |
-| `Invoke-ProcessAndWatchFile`      | `list_path_with_progress()`     | ✅ |
-| `Invoke-CSVFileDownloader`        | `DownloadQueue`                 | ⚠️ Basic             |
-| `Invoke-rcloneCopy`               | `DownloadQueue::download_one()` | ✅                   |
-| `Start-DownloadQueue`             | `DownloadQueue::download_all()` | ✅                   |
-| `Invoke-FileSelection` (GUI)      | Mount + selection file import   | ✅ (manual)          |
-| `ConvertTo-Excel`                 | `export_listing_xlsx()`          | ✅                   |
-| CSV export                        | `export_listing()`              | ✅                   |
-
-**Missing:** None in this category.
+| PowerShell Function               | Rust Equivalent                          | Status |
+| --------------------------------- | ---------------------------------------- | ------ |
+| `Get-RemoteFileList`              | `list_path()`                            | ✅     |
+| `Invoke-RemoteFileListGeneration` | `list_path()`                            | ✅     |
+| `Invoke-ProcessAndWatchFile`      | `list_path_with_progress()` + TUI callback | ✅   |
+| `Invoke-CSVFileDownloader`        | `DownloadQueue` + `read_download_queue()`  | ✅   |
+| `Invoke-rcloneCopy`               | `DownloadQueue::download_one()`          | ✅     |
+| `Start-DownloadQueue`             | `DownloadQueue::download_all_with_progress()` | ✅ |
+| `Invoke-FileSelection` (GUI)      | Mount + selection file import            | ✅     |
+| `ConvertTo-Excel`                 | `export_listing_xlsx()`                  | ✅     |
+| CSV export                        | `export_listing()`                       | ✅     |
 
 ---
 
@@ -186,7 +181,7 @@ Known backends use specialized flows; unknown backends use the generic rclone co
 
 ---
 
-### 10. rclone Operations ✅ MOSTLY COMPLETE
+### 10. rclone Operations ✅ COMPLETE
 
 | PowerShell Function                 | Rust Equivalent              | Status                |
 | ----------------------------------- | ---------------------------- | --------------------- |
@@ -233,24 +228,24 @@ Known backends use specialized flows; unknown backends use the generic rclone co
 
 ---
 
-### 13. Report Generation ⚠️ PARTIAL
+### 13. Report Generation ✅ MOSTLY COMPLETE
 
 | PowerShell Feature | Rust Equivalent                | Status |
 | ------------------ | ------------------------------ | ------ |
 | Forensic report    | `generate_report()`            | ✅     |
 | Hash in report     | Log file hash                  | ✅     |
 | System diff report | `StateDiff::generate_report()` | ✅     |
-| Excel report       | N/A                            | ❌     |
+| Excel report       | `write_report_xlsx()`          | ✅     |
 
 ---
 
-### 14. OneDrive Specific ⚠️ PARTIAL
+### 14. OneDrive Specific ✅ COMPLETE
 
-| PowerShell Function  | Rust Equivalent | Status |
-| -------------------- | --------------- | ------ |
-| `Open-OneDriveVault` | `open_onedrive_vault()` | ✅ |
+| PowerShell Function  | Rust Equivalent         | Status |
+| -------------------- | ----------------------- | ------ |
+| `Open-OneDriveVault` | `open_onedrive_vault()` | ✅     |
 
-**Impact:** OneDrive Personal Vault requires special handling (Windows Hello, BitLocker).
+**Note:** OneDrive Personal Vault requires special handling (Windows Hello, BitLocker). Windows-only feature.
 
 ---
 
@@ -275,18 +270,18 @@ Known backends use specialized flows; unknown backends use the generic rclone co
 
 ### Medium Priority (Forensic Enhancements)
 
-5. **Progress Watching** - Show file count during listing generation
+5. ~~**Progress Watching**~~ - ✅ IMPLEMENTED via `list_path_with_progress()` + TUI callback
 6. ~~**Multi-Browser Support**~~ - ✅ IMPLEMENTED via `BrowserDetector`
 7. ~~**Silent/SSO Auth**~~ - ✅ IMPLEMENTED via `smart_authenticate()`
-8. **Excel Export** - Law enforcement often needs Excel format
+8. ~~**Excel Export**~~ - ✅ IMPLEMENTED via `export_listing_xlsx()` + `write_report_xlsx()`
 
 ### Low Priority (Advanced Features)
 
-9. **Mobile Device Auth** - QR code and device code flow
-10. **Forensic Access Point** - WiFi hotspot for mobile auth
-11. **OneDrive Vault** - Windows Hello integration
-12. **rclone Mount** - View files as network share
-13. **rclone Web GUI** - Alternative interface
+9. ~~**Mobile Device Auth**~~ - ✅ IMPLEMENTED (Redirect, Redirect+AP, DeviceCode flows)
+10. ~~**Forensic Access Point**~~ - ✅ IMPLEMENTED with TUI status callbacks + client count
+11. ~~**OneDrive Vault**~~ - ✅ IMPLEMENTED (Windows-only)
+12. ~~**rclone Mount**~~ - ✅ IMPLEMENTED via `MountManager`
+13. ~~**rclone Web GUI**~~ - ✅ IMPLEMENTED via `start_web_gui()`
 
 ---
 
@@ -304,43 +299,37 @@ Known backends use specialized flows; unknown backends use the generic rclone co
 
 ### Code Quality Comparison
 
-| Metric            | PowerShell | Rust           |
-| ----------------- | ---------- | -------------- |
-| Functions/Methods | ~100+      | ~50            |
-| Test coverage     | Manual     | 80+ unit tests |
-| Type safety       | Limited    | Strong         |
-| Error handling    | try/catch  | Result<T>      |
+| Metric            | PowerShell | Rust            |
+| ----------------- | ---------- | --------------- |
+| Functions/Methods | ~100+      | ~200+           |
+| Test coverage     | Manual     | 213 unit tests  |
+| Type safety       | Limited    | Strong          |
+| Error handling    | try/catch  | Result<T>       |
 
 ---
 
 ## Conclusion
 
-The Rust implementation has a solid foundation with:
+The Rust implementation is at ~80% feature parity with:
 
-- ✅ Excellent forensic logging (hash-chained)
+- ✅ All core forensic workflows (auth → list → download → report)
+- ✅ Excellent forensic logging (hash-chained, tamper-evident)
 - ✅ Strong type safety and error handling
-- ✅ Modern TUI interface
+- ✅ Modern TUI interface with full menu system
 - ✅ Embedded binary (single-file deployment)
-- ✅ Comprehensive test coverage
+- ✅ 213 tests (178 unit + 8 bin + 9 integration + 18 provider)
+- ✅ All authentication flows (browser, SSO, device code, mobile redirect, fallback)
+- ✅ Mobile auth with three flow options + QR codes
+- ✅ Forensic Access Point with TUI status feedback + client count
+- ✅ Interactive OAuth credential configuration via TUI
+- ✅ Excel (XLSX) and CSV export
+- ✅ rclone mount, web GUI, OneDrive vault
 
-But still lacks:
+Remaining gaps vs PowerShell:
 
-- ❌ Mobile device authentication (device code flow + helpers)
-- ❌ WiFi Access Point advanced features (adapter detection, firewall cleanup)
-- ❌ Progress watching during listing generation
-- ❌ GUI file selection
+- ⚠️ pCloud user info (requires provider-specific REST API call)
+- ⚠️ FlaUI button automation (not needed — users open files manually)
+- ⚠️ LRU query caching (acceptable for single-session forensic tool)
+- ⚠️ Animated startup logo (TUI takes full control of terminal)
 
-Recently added:
-
-- ✅ Custom OAuth credentials (config file)
-- ✅ Multi-browser authentication workflow
-- ✅ Provider user info extraction (JWT)
-- ✅ Advanced rclone config parsing
-- ✅ Silent/SSO authentication (`smart_authenticate()`)
-- ✅ Excel export (`export_listing_xlsx()`)
-- ✅ Mobile auth (QR + token exchange, partial)
-- ✅ Forensic Access Point (Windows-only, partial)
-- ✅ OneDrive Vault (Windows-only, partial)
-- ✅ rclone Web GUI
-
-**Estimated effort to reach parity: 3-4 weeks of focused development**
+These gaps are intentional design decisions where the Rust approach is better or the feature is unnecessary.

@@ -1,4 +1,4 @@
-//! File tree widget (placeholder implementation)
+//! File tree widget for browsing remote files
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;

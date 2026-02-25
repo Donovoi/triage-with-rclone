@@ -13,7 +13,6 @@ use std::time::Duration;
 use crate::rclone::{RcloneOutput, RcloneRunner};
 
 /// Download mode
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DownloadMode {
     /// Copy directory or remote path
@@ -168,7 +167,6 @@ pub struct DownloadRequest {
     pub expected_size: Option<u64>,
 }
 
-#[allow(dead_code)]
 impl DownloadRequest {
     pub fn new_copy(source: impl Into<String>, destination: impl Into<String>) -> Self {
         Self {
@@ -217,7 +215,6 @@ pub struct DownloadQueue {
     pub verify_hashes: bool,
 }
 
-#[allow(dead_code)]
 impl DownloadQueue {
     pub fn new() -> Self {
         Self {

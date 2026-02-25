@@ -62,7 +62,6 @@ pub struct ChangeTracker {
     /// All tracked changes in order
     changes: Vec<TrackedChange>,
     /// Backup directory for storing original files
-    #[allow(dead_code)]
     backup_dir: Option<PathBuf>,
 }
 
@@ -73,7 +72,6 @@ impl ChangeTracker {
     }
 
     /// Create a change tracker with a backup directory for storing originals
-    #[allow(dead_code)]
     pub fn with_backup_dir(backup_dir: impl AsRef<Path>) -> Result<Self> {
         let backup_dir = backup_dir.as_ref().to_path_buf();
         fs::create_dir_all(&backup_dir)
@@ -98,7 +96,6 @@ impl ChangeTracker {
     }
 
     /// Track a file deletion (optionally backing up the file first)
-    #[allow(dead_code)]
     pub fn track_file_deleted(
         &mut self,
         path: impl AsRef<Path>,
@@ -148,7 +145,6 @@ impl ChangeTracker {
     }
 
     /// Track an environment variable being removed
-    #[allow(dead_code)]
     pub fn track_env_removed(&mut self, name: impl Into<String>, description: impl Into<String>) {
         let name = name.into();
         if let Ok(old_value) = std::env::var(&name) {
@@ -162,7 +158,6 @@ impl ChangeTracker {
     }
 
     /// Get all tracked changes
-    #[allow(dead_code)]
     pub fn changes(&self) -> &[TrackedChange] {
         &self.changes
     }
@@ -178,7 +173,6 @@ impl ChangeTracker {
     }
 
     /// Attempt to revert all changes in reverse order
-    #[allow(dead_code)]
     pub fn revert_all(&mut self) -> Vec<RevertResult> {
         let mut results = Vec::new();
 
@@ -196,7 +190,6 @@ impl ChangeTracker {
     }
 
     /// Revert a specific change by index
-    #[allow(dead_code)]
     fn revert_change(&mut self, index: usize) -> RevertResult {
         let change = &self.changes[index];
 
@@ -317,7 +310,6 @@ impl ChangeTracker {
 }
 
 /// Result of attempting to revert a change
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum RevertResult {
     /// Successfully reverted
