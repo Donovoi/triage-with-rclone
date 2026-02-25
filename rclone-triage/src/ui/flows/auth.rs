@@ -3,7 +3,8 @@ use ratatui::Terminal;
 use std::time::Duration;
 
 use crate::forensics::{
-    generate_password, render_wifi_qr, start_forensic_access_point, stop_forensic_access_point,
+    generate_password, get_forensic_access_point_status, render_wifi_qr,
+    start_forensic_access_point_with_status, stop_forensic_access_point,
 };
 use crate::providers::auth::user_identifier_from_config;
 use crate::providers::config::ProviderConfig;
@@ -136,8 +137,26 @@ fn perform_mobile_auth_flow<B: ratatui::backend::Backend>(
                     vec![format!("Starting forensic access point: {}", ssid)],
                 )?;
 
-                match start_forensic_access_point(&ssid, &password, None) {
+                match start_forensic_access_point_with_status(&ssid, &password, None, |msg| {
+                    app.auth_status = msg.to_string();
+                    // Best-effort redraw; ignore errors since terminal is borrowed.
+                    let _ = terminal.draw(|f| render_state(f, app));
+                }) {
                     Ok(info) => {
+                        // Show AP status with connected client count
+                        let mut status_lines = vec![
+                            format!("Access point '{}' is running.", info.ssid),
+                            format!("  IP: {}", info.ip_address),
+                        ];
+                        if let Ok(status) = get_forensic_access_point_status() {
+                            status_lines.push(format!(
+                                "  Connected clients: {}",
+                                status.connected_clients
+                            ));
+                        }
+                        status_lines.push("Connect your mobile device to the WiFi network above.".to_string());
+                        update_auth_status(app, terminal, status_lines)?;
+
                         ap_info = Some(info);
                     }
                     Err(e) => {
@@ -159,6 +178,12 @@ fn perform_mobile_auth_flow<B: ratatui::backend::Backend>(
                     prelude_lines.push(format!("Access Point SSID: {}", info.ssid));
                     prelude_lines.push(format!("Access Point Password: {}", info.password));
                     prelude_lines.push(format!("Access Point IP: {}", info.ip_address));
+                    if let Ok(status) = get_forensic_access_point_status() {
+                        prelude_lines.push(format!(
+                            "Connected clients: {}",
+                            status.connected_clients
+                        ));
+                    }
                     if let Ok(wifi_qr) = render_wifi_qr(&info.ssid, &info.password) {
                         prelude_lines.push("WiFi QR:".to_string());
                         prelude_lines.push(wifi_qr);

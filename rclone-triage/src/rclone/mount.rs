@@ -518,7 +518,6 @@ pub fn open_file_explorer(path: &Path) -> Result<()> {
 }
 
 /// Open a file explorer window with a specific file selected
-#[allow(dead_code)]
 pub fn open_file_explorer_select(path: &Path) -> Result<()> {
     #[cfg(windows)]
     {

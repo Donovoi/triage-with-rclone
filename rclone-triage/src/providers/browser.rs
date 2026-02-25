@@ -138,7 +138,6 @@ impl Browser {
     }
 
     /// Open a URL in this browser
-    #[allow(dead_code)]
     pub fn open_url(&self, url: &str) -> Result<()> {
         if !self.is_installed {
             bail!("Browser {} is not installed", self.browser_type);
