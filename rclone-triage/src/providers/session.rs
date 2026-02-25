@@ -797,41 +797,6 @@ impl SessionExtractor {
         Self::extract_email_from_value(value)
     }
 
-    /// Extract sessions from all installed browsers for a provider
-    pub fn extract_all_sessions(&self, provider: CloudProvider) -> Vec<BrowserSession> {
-        let browsers = super::browser::BrowserDetector::detect_all();
-        let mut sessions = Vec::new();
-
-        for browser in browsers {
-            match self.extract_session(&browser, provider) {
-                Ok(session) if session.is_valid => {
-                    tracing::info!(
-                        "Found valid {} session in {}",
-                        provider,
-                        browser.display_name()
-                    );
-                    sessions.push(session);
-                }
-                Ok(_) => {
-                    tracing::debug!(
-                        "No valid {} session in {}",
-                        provider,
-                        browser.display_name()
-                    );
-                }
-                Err(e) => {
-                    tracing::debug!(
-                        "Failed to extract {} session from {}: {}",
-                        provider,
-                        browser.display_name(),
-                        e
-                    );
-                }
-            }
-        }
-
-        sessions
-    }
 }
 
 fn domain_to_like_pattern(domain: &str) -> Option<String> {
@@ -880,15 +845,7 @@ impl Default for SessionExtractor {
     }
 }
 
-/// Check if a browser has a valid session for a provider
-pub fn has_valid_session(browser: &Browser, provider: CloudProvider) -> bool {
-    if let Ok(extractor) = SessionExtractor::new() {
-        if let Ok(session) = extractor.extract_session(browser, provider) {
-            return session.is_valid;
-        }
-    }
-    false
-}
+
 
 /// Get browsers with valid sessions for a provider
 pub fn browsers_with_sessions(provider: CloudProvider) -> Vec<(Browser, BrowserSession)> {

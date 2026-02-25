@@ -20,7 +20,6 @@ use std::io::stdout;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
-use crate::ui::screens::welcome::WelcomeScreen;
 use crate::ui::{render::render_state, App};
 
 fn format_provider_stats(
@@ -638,28 +637,6 @@ fn perform_onedrive_vault_flow<B: ratatui::backend::Backend>(
             app.log_error(format!("OneDrive Vault failed: {}", e));
         }
     }
-
-    Ok(())
-}
-
-/// Run a basic one-frame TUI to validate rendering
-#[allow(dead_code)]
-pub fn run_once() -> Result<()> {
-    enable_raw_mode()?;
-    let mut out = stdout();
-    execute!(out, EnterAlternateScreen, EnableMouseCapture)?;
-
-    let backend = CrosstermBackend::new(out);
-    let mut terminal = Terminal::new(backend)?;
-
-    terminal.draw(|f| {
-        let size = f.area();
-        let screen = WelcomeScreen;
-        f.render_widget(screen, size);
-    })?;
-
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
-    disable_raw_mode()?;
 
     Ok(())
 }
@@ -1729,8 +1706,30 @@ fn perform_post_auth_mount<B: ratatui::backend::Backend>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::screens::welcome::WelcomeScreen;
     use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
     use std::io::IsTerminal;
+
+    /// Run a basic one-frame TUI to validate rendering
+    fn run_once() -> Result<()> {
+        enable_raw_mode()?;
+        let mut out = stdout();
+        execute!(out, EnterAlternateScreen, EnableMouseCapture)?;
+
+        let backend = CrosstermBackend::new(out);
+        let mut terminal = Terminal::new(backend)?;
+
+        terminal.draw(|f| {
+            let size = f.area();
+            let screen = WelcomeScreen;
+            f.render_widget(screen, size);
+        })?;
+
+        execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+        disable_raw_mode()?;
+
+        Ok(())
+    }
 
     #[test]
     fn test_run_once() {

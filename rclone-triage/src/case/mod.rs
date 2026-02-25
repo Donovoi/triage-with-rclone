@@ -208,4 +208,5 @@ mod tests {
         let json = serde_json::to_string(&case).unwrap();
         assert!(json.contains("name"));
     }
+
 }
