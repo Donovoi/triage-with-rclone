@@ -1502,6 +1502,9 @@ fn perform_post_auth_list<B: ratatui::backend::Backend>(
 }
 
 /// Execute the "Mount as drive" post-auth action using the already-authenticated remote.
+///
+/// Runs the file listing FIRST (to avoid API contention with the mount process),
+/// then mounts the remote for file explorer access.
 fn perform_post_auth_mount<B: ratatui::backend::Backend>(
     app: &mut App,
     terminal: &mut Terminal<B>,
@@ -1526,12 +1529,149 @@ fn perform_post_auth_mount<B: ratatui::backend::Backend>(
         .unwrap_or_else(|| std::path::PathBuf::from("."));
     let config = crate::rclone::RcloneConfig::for_case(&config_dir)?;
 
+    // --- Phase 1: Run file listing BEFORE mounting ---
+    // This avoids API contention between the mount process and lsjson, which can
+    // cause empty results on providers like Google Drive.
+    let runner = crate::rclone::RcloneRunner::new(binary.path()).with_config(config.path());
+    let provider = app.provider.chosen.clone();
+    let include_hashes = provider
+        .as_ref()
+        .and_then(|p| p.known)
+        .map(|known| !known.hash_types().is_empty())
+        .unwrap_or(false);
+    let list_options = if include_hashes {
+        crate::files::listing::ListPathOptions::with_hashes()
+    } else {
+        crate::files::listing::ListPathOptions::without_hashes()
+    };
+    let target = format!("{}:", remote_name);
+    let short = provider
+        .as_ref()
+        .map(|p| p.short_name().to_string())
+        .unwrap_or_else(|| remote_name.clone());
+    let max_in_memory: usize = std::env::var("RCLONE_TRIAGE_LARGE_LISTING_IN_MEMORY")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(50_000);
+
+    app.files.entries.clear();
+    app.files.entries_full.clear();
+    app.files.to_download.clear();
+    app.files.selected = 0;
+
+    app.auth_status = "Listing files... (0 found)".to_string();
+    terminal.draw(|f| crate::ui::render::render_state(f, app))?;
+
+    if let Some(ref dirs) = app.forensics.directories {
+        let csv_path = dirs.listings.join(format!("{}_files.csv", short));
+        let listing_result = crate::files::listing::list_path_large_to_csv_with_progress(
+            &runner,
+            &target,
+            list_options,
+            &csv_path,
+            max_in_memory,
+            |count| {
+                app.auth_status = format!("Listing files... ({} found)", count);
+                let _ = terminal.draw(|f| crate::ui::render::render_state(f, app));
+            },
+        );
+        match listing_result {
+            Ok(result) => {
+                // If fast-list returned 0 entries, retry without it — some providers
+                // (notably Google Drive) may return empty results with --fast-list.
+                if result.total_entries == 0 && list_options.fast_list {
+                    tracing::warn!("Listing returned 0 entries with --fast-list, retrying without");
+                    app.auth_status = "Retrying listing without fast-list...".to_string();
+                    let _ = terminal.draw(|f| crate::ui::render::render_state(f, app));
+
+                    let retry_options = list_options.without_fast_list();
+                    let retry_result = crate::files::listing::list_path_large_to_csv_with_progress(
+                        &runner,
+                        &target,
+                        retry_options,
+                        &csv_path,
+                        max_in_memory,
+                        |count| {
+                            app.auth_status = format!("Listing files... ({} found)", count);
+                            let _ = terminal.draw(|f| crate::ui::render::render_state(f, app));
+                        },
+                    );
+                    match retry_result {
+                        Ok(retry) => {
+                            populate_listing_results(app, &retry, &csv_path, &short);
+                        }
+                        Err(e) => {
+                            app.log_error(format!("File listing retry failed: {}", e));
+                            app.auth_status = format!("Listing failed: {}", e);
+                        }
+                    }
+                } else {
+                    populate_listing_results(app, &result, &csv_path, &short);
+                }
+            }
+            Err(e) => {
+                app.log_error(format!("File listing failed: {}", e));
+                app.auth_status = format!("Listing failed: {}", e);
+            }
+        }
+    } else {
+        // No case directories — fall back to in-memory listing.
+        let listing_result = crate::files::listing::list_path_with_progress(
+            &runner,
+            &target,
+            list_options,
+            |count| {
+                app.auth_status = format!("Listing files... ({} found)", count);
+                let _ = terminal.draw(|f| crate::ui::render::render_state(f, app));
+            },
+        );
+        match listing_result {
+            Ok(entries) => {
+                if entries.is_empty() && list_options.fast_list {
+                    tracing::warn!("Listing returned 0 entries with --fast-list, retrying without");
+                    app.auth_status = "Retrying listing without fast-list...".to_string();
+                    let _ = terminal.draw(|f| crate::ui::render::render_state(f, app));
+
+                    let retry_options = list_options.without_fast_list();
+                    match crate::files::listing::list_path_with_progress(
+                        &runner,
+                        &target,
+                        retry_options,
+                        |count| {
+                            app.auth_status = format!("Listing files... ({} found)", count);
+                            let _ = terminal.draw(|f| crate::ui::render::render_state(f, app));
+                        },
+                    ) {
+                        Ok(retry_entries) => {
+                            app.files.entries_full = retry_entries.clone();
+                            app.files.entries = retry_entries.iter().map(|e| e.path.clone()).collect();
+                            app.auth_status = format!("Found {} files", app.files.entries.len());
+                        }
+                        Err(e) => {
+                            app.log_error(format!("File listing retry failed: {}", e));
+                            app.auth_status = format!("Listing failed: {}", e);
+                        }
+                    }
+                } else {
+                    app.files.entries_full = entries.clone();
+                    app.files.entries = entries.iter().map(|e| e.path.clone()).collect();
+                    app.auth_status = format!("Found {} files", app.files.entries.len());
+                }
+            }
+            Err(e) => {
+                app.log_error(format!("File listing failed: {}", e));
+                app.auth_status = format!("Listing failed: {}", e);
+            }
+        }
+    }
+
+    // --- Phase 2: Mount the remote for file explorer access ---
     let mut manager = match crate::rclone::MountManager::new(binary.path()) {
         Ok(manager) => manager.with_config(config.path()),
         Err(e) => {
-            app.auth_status = format!("Mount failed: {}", e);
+            app.auth_status = format!("Found {} files. Mount failed: {}", app.files.entries.len(), e);
             app.log_error(format!("Mount failed: {}", e));
-            app.advance();
+            app.advance(); // → FileList (listing results are still available)
             return Ok(());
         }
     };
@@ -1540,24 +1680,24 @@ fn perform_post_auth_mount<B: ratatui::backend::Backend>(
     match manager.check_fuse_available() {
         Ok(true) => {}
         Ok(false) => {
-            app.auth_status = "FUSE/WinFSP not found. Installing automatically...".to_string();
-            app.log_info("FUSE/WinFSP not detected — attempting auto-install");
+            app.auth_status = format!(
+                "Found {} files. Mounting...",
+                app.files.entries.len()
+            );
             terminal.draw(|f| crate::ui::render::render_state(f, app))?;
+            app.log_info("FUSE/WinFSP not detected — attempting auto-install");
 
             match manager.install_fuse() {
                 Ok(true) => {
-                    app.auth_status = "FUSE/WinFSP installed successfully.".to_string();
                     app.log_info("FUSE/WinFSP installed successfully");
-                    terminal.draw(|f| crate::ui::render::render_state(f, app))?;
                 }
                 Ok(false) | Err(_) => {
-                    app.auth_status = "FUSE/WinFSP auto-install failed. Install manually and retry:\n\
-                        Windows: winget install WinFsp.WinFsp\n\
-                        Linux: sudo apt install fuse3\n\
-                        macOS: brew install --cask macfuse"
-                        .to_string();
                     app.log_error("FUSE/WinFSP auto-install failed");
-                    // Don't advance — let user pick another option.
+                    app.auth_status = format!(
+                        "Found {} files. Mount skipped (FUSE/WinFSP not available).",
+                        app.files.entries.len()
+                    );
+                    app.advance(); // → FileList (listing results are still available)
                     return Ok(());
                 }
             }
@@ -1578,129 +1718,77 @@ fn perform_post_auth_mount<B: ratatui::backend::Backend>(
         manager = manager.with_mount_base(&mount_base).with_cache_dir(&cache_dir);
     }
 
+    app.auth_status = format!(
+        "Found {} files. Mounting {}...",
+        app.files.entries.len(),
+        remote_name
+    );
+    terminal.draw(|f| crate::ui::render::render_state(f, app))?;
+
     match manager.mount_and_explore(&remote_name, None) {
         Ok(mounted) => {
             let mount_path = mounted.mount_point().to_path_buf();
             app.mounted_remote = Some(mounted);
-            app.files.entries.clear();
-            app.files.entries_full.clear();
-            app.files.to_download.clear();
-            app.files.selected = 0;
-            app.auth_status = format!(
-                "Mounted at {:?} — listing files...",
-                mount_path
-            );
             app.log_info(format!("Mounted {} at {:?}", remote_name, mount_path));
-            terminal.draw(|f| crate::ui::render::render_state(f, app))?;
-
-            // Run a file listing so the TUI file list is populated.
-            let runner = crate::rclone::RcloneRunner::new(binary.path()).with_config(config.path());
-            let provider = app.provider.chosen.clone();
-            let include_hashes = provider
-                .as_ref()
-                .and_then(|p| p.known)
-                .map(|known| !known.hash_types().is_empty())
-                .unwrap_or(false);
-            let list_options = if include_hashes {
-                crate::files::listing::ListPathOptions::with_hashes()
-            } else {
-                crate::files::listing::ListPathOptions::without_hashes()
-            };
-            let target = format!("{}:", remote_name);
-            let short = provider
-                .as_ref()
-                .map(|p| p.short_name().to_string())
-                .unwrap_or_else(|| remote_name.clone());
-            let max_in_memory: usize = std::env::var("RCLONE_TRIAGE_LARGE_LISTING_IN_MEMORY")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(50_000);
-
-            if let Some(ref dirs) = app.forensics.directories {
-                let csv_path = dirs.listings.join(format!("{}_files.csv", short));
-                let listing_result = crate::files::listing::list_path_large_to_csv_with_progress(
-                    &runner,
-                    &target,
-                    list_options,
-                    &csv_path,
-                    max_in_memory,
-                    |count| {
-                        app.auth_status = format!("Mounted at {:?} — listing files... ({} found)", mount_path, count);
-                        let _ = terminal.draw(|f| crate::ui::render::render_state(f, app));
-                    },
+            if app.files.entries.is_empty() {
+                app.auth_status = format!(
+                    "Mounted at {:?}. Listing returned 0 files — check logs.",
+                    mount_path
                 );
-                match listing_result {
-                    Ok(result) => {
-                        app.log_info(format!("Exported listing to {:?}", csv_path));
-                        app.track_file(&csv_path, "Exported file listing CSV");
-                        app.files.entries_full = result.entries.clone();
-                        app.files.entries = result.entries.iter().map(|e| e.path.clone()).collect();
-                        if let Some(ref dirs) = app.forensics.directories {
-                            let xlsx_path = dirs.listings.join(format!("{}_files.xlsx", short));
-                            if let Err(e) = crate::files::export::export_listing_xlsx(&result.entries, &xlsx_path) {
-                                app.log_error(format!("Excel export failed: {}", e));
-                            } else {
-                                app.log_info(format!("Exported listing to {:?}", xlsx_path));
-                                app.track_file(&xlsx_path, "Exported file listing Excel");
-                            }
-                        }
-                        let shown = app.files.entries.len();
-                        if result.truncated {
-                            app.auth_status = format!(
-                                "Mounted at {:?}. Found {} files (showing first {}). CSV: {:?}",
-                                mount_path, result.total_entries, shown, csv_path
-                            );
-                        } else {
-                            app.auth_status = format!(
-                                "Mounted at {:?}. Found {} files. CSV: {:?}",
-                                mount_path, result.total_entries, csv_path
-                            );
-                        }
-                    }
-                    Err(e) => {
-                        app.log_error(format!("File listing after mount failed: {}", e));
-                        app.auth_status = format!(
-                            "Mounted at {:?}. Listing failed: {}\n\nBrowse files in your file explorer.",
-                            mount_path, e
-                        );
-                    }
-                }
             } else {
-                let listing_result = crate::files::listing::list_path_with_progress(
-                    &runner,
-                    &target,
-                    list_options,
-                    |count| {
-                        app.auth_status = format!("Mounted at {:?} — listing files... ({} found)", mount_path, count);
-                        let _ = terminal.draw(|f| crate::ui::render::render_state(f, app));
-                    },
+                app.auth_status = format!(
+                    "Mounted at {:?}. {} files listed.",
+                    mount_path,
+                    app.files.entries.len()
                 );
-                match listing_result {
-                    Ok(entries) => {
-                        app.files.entries_full = entries.clone();
-                        app.files.entries = entries.iter().map(|e| e.path.clone()).collect();
-                        app.auth_status = format!("Mounted at {:?}. Found {} files.", mount_path, app.files.entries.len());
-                    }
-                    Err(e) => {
-                        app.log_error(format!("File listing after mount failed: {}", e));
-                        app.auth_status = format!(
-                            "Mounted at {:?}. Listing failed: {}\n\nBrowse files in your file explorer.",
-                            mount_path, e
-                        );
-                    }
-                }
             }
-
-            app.advance(); // PostAuthChoice → FileList
         }
         Err(e) => {
-            app.auth_status = format!("Mount failed: {}", e);
             app.log_error(format!("Mount failed: {}", e));
-            // Don't advance — let user pick another option.
+            app.auth_status = format!(
+                "Found {} files. Mount failed: {}",
+                app.files.entries.len(),
+                e
+            );
+            // Still advance — listing results are available for download.
         }
     }
 
+    app.advance(); // PostAuthChoice → FileList
     Ok(())
+}
+
+/// Populate app state from a large listing result, including CSV/XLSX export tracking.
+fn populate_listing_results(
+    app: &mut App,
+    result: &crate::files::listing::LargeListingResult,
+    csv_path: &std::path::Path,
+    short: &str,
+) {
+    app.log_info(format!("Exported listing to {:?}", csv_path));
+    app.track_file(csv_path, "Exported file listing CSV");
+    app.files.entries_full = result.entries.clone();
+    app.files.entries = result.entries.iter().map(|e| e.path.clone()).collect();
+
+    if let Some(ref dirs) = app.forensics.directories {
+        let xlsx_path = dirs.listings.join(format!("{}_files.xlsx", short));
+        if let Err(e) = crate::files::export::export_listing_xlsx(&result.entries, &xlsx_path) {
+            app.log_error(format!("Excel export failed: {}", e));
+        } else {
+            app.log_info(format!("Exported listing to {:?}", xlsx_path));
+            app.track_file(&xlsx_path, "Exported file listing Excel");
+        }
+    }
+
+    let shown = app.files.entries.len();
+    if result.truncated {
+        app.auth_status = format!(
+            "Found {} files (showing first {}). CSV: {:?}",
+            result.total_entries, shown, csv_path
+        );
+    } else {
+        app.auth_status = format!("Found {} files. CSV: {:?}", result.total_entries, csv_path);
+    }
 }
 
 #[cfg(test)]
