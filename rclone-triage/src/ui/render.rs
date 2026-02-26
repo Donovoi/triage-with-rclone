@@ -445,7 +445,15 @@ pub fn render_state(frame: &mut Frame, app: &App) {
         }
         AppState::FileList => {
             let entries = if app.files.entries.is_empty() {
-                vec!["/".to_string()]
+                // Show status/error message so the user understands why the list is empty.
+                let status = if !app.auth_status.is_empty() {
+                    app.auth_status.clone()
+                } else if !app.provider.status.is_empty() {
+                    app.provider.status.clone()
+                } else {
+                    "No files found. The listing may have failed — check logs.".to_string()
+                };
+                vec![status]
             } else {
                 // Mark files that are selected for download with [x]
                 app.files

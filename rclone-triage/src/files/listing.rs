@@ -18,19 +18,31 @@ use crate::rclone::RcloneRunner;
 pub struct ListPathOptions {
     /// If true, request hashes from rclone (when the backend supports it).
     pub include_hashes: bool,
+    /// If true, pass `--fast-list` to rclone (batch directory listing).
+    /// Some providers (e.g. Google Drive) may return 0 results with fast-list
+    /// in certain configurations, so callers can retry with this set to false.
+    pub fast_list: bool,
 }
 
 impl ListPathOptions {
     pub fn with_hashes() -> Self {
         Self {
             include_hashes: true,
+            fast_list: true,
         }
     }
 
     pub fn without_hashes() -> Self {
         Self {
             include_hashes: false,
+            fast_list: true,
         }
+    }
+
+    /// Return a copy with `fast_list` disabled.
+    pub fn without_fast_list(mut self) -> Self {
+        self.fast_list = false;
+        self
     }
 }
 
@@ -100,12 +112,12 @@ pub fn list_path(
     target: &str,
     options: ListPathOptions,
 ) -> Result<Vec<FileEntry>> {
-    match list_path_inner(rclone, target, options.include_hashes) {
+    match list_path_inner(rclone, target, options.include_hashes, options.fast_list) {
         Ok(entries) => Ok(entries),
         Err(err) => {
             // Best-effort fallback: if requesting hashes breaks listing, retry without.
             if options.include_hashes {
-                if let Ok(entries) = list_path_inner(rclone, target, false) {
+                if let Ok(entries) = list_path_inner(rclone, target, false, options.fast_list) {
                     return Ok(entries);
                 }
             }
@@ -124,13 +136,13 @@ pub fn list_path_with_progress<F>(
 where
     F: FnMut(usize),
 {
-    match list_path_with_progress_inner(rclone, target, options.include_hashes, &mut on_progress) {
+    match list_path_with_progress_inner(rclone, target, options.include_hashes, options.fast_list, &mut on_progress) {
         Ok(entries) => Ok(entries),
         Err(err) => {
             // Best-effort fallback: if requesting hashes breaks listing, retry without.
             if options.include_hashes {
                 if let Ok(entries) =
-                    list_path_with_progress_inner(rclone, target, false, &mut on_progress)
+                    list_path_with_progress_inner(rclone, target, false, options.fast_list, &mut on_progress)
                 {
                     return Ok(entries);
                 }
@@ -161,6 +173,7 @@ where
         rclone,
         target,
         options.include_hashes,
+        options.fast_list,
         csv_path,
         max_in_memory,
         &mut on_progress,
@@ -173,6 +186,7 @@ where
                     rclone,
                     target,
                     false,
+                    options.fast_list,
                     csv_path,
                     max_in_memory,
                     &mut on_progress,
@@ -296,13 +310,15 @@ where
     })
 }
 
-fn build_lsjson_args(target: &str, include_hashes: bool) -> Vec<&str> {
+fn build_lsjson_args(target: &str, include_hashes: bool, fast_list: bool) -> Vec<&str> {
     let mut args = vec!["lsjson"];
     if include_hashes {
         args.push("--hash");
     }
     args.push("--recursive");
-    args.push("--fast-list");
+    if fast_list {
+        args.push("--fast-list");
+    }
     args.push(target);
     args
 }
@@ -311,6 +327,7 @@ fn list_path_inner(
     rclone: &RcloneRunner,
     target: &str,
     include_hashes: bool,
+    fast_list: bool,
 ) -> Result<Vec<FileEntry>> {
     let mut entries = Vec::new();
     let mut on_entry = |raw: RcloneLsJsonEntry| -> Result<()> {
@@ -318,7 +335,7 @@ fn list_path_inner(
         Ok(())
     };
 
-    run_lsjson_streaming(rclone, target, include_hashes, &mut on_entry, None)?;
+    run_lsjson_streaming(rclone, target, include_hashes, fast_list, &mut on_entry, None)?;
     Ok(entries)
 }
 
@@ -326,6 +343,7 @@ fn list_path_with_progress_inner<F>(
     rclone: &RcloneRunner,
     target: &str,
     include_hashes: bool,
+    fast_list: bool,
     on_progress: &mut F,
 ) -> Result<Vec<FileEntry>>
 where
@@ -341,6 +359,7 @@ where
         rclone,
         target,
         include_hashes,
+        fast_list,
         &mut on_entry,
         Some(on_progress),
     )?;
@@ -352,6 +371,7 @@ fn list_path_large_to_csv_inner(
     rclone: &RcloneRunner,
     target: &str,
     include_hashes: bool,
+    fast_list: bool,
     csv_path: &Path,
     max_in_memory: usize,
     on_progress: &mut dyn FnMut(usize),
@@ -372,6 +392,7 @@ fn list_path_large_to_csv_inner(
         rclone,
         target,
         include_hashes,
+        fast_list,
         &mut on_entry,
         Some(on_progress),
     )?;
@@ -389,10 +410,12 @@ fn run_lsjson_streaming<'a>(
     rclone: &RcloneRunner,
     target: &str,
     include_hashes: bool,
+    fast_list: bool,
     on_entry: &'a mut dyn FnMut(RcloneLsJsonEntry) -> Result<()>,
     on_progress: Option<&'a mut dyn FnMut(usize)>,
 ) -> Result<usize> {
-    let args = build_lsjson_args(target, include_hashes);
+    let args = build_lsjson_args(target, include_hashes, fast_list);
+    tracing::info!(target = target, fast_list = fast_list, include_hashes = include_hashes, "Starting rclone lsjson");
     let mut child = rclone.spawn(&args)?;
 
     let stdout = child.stdout.take().expect("stdout piped");
@@ -415,19 +438,26 @@ fn run_lsjson_streaming<'a>(
         .join()
         .unwrap_or_else(|_| vec!["<stderr capture panicked>".to_string()]);
 
-    if status.code().unwrap_or(-1) != 0 {
+    let exit_code = status.code().unwrap_or(-1);
+    if !stderr_lines.is_empty() {
+        tracing::warn!(exit_code = exit_code, stderr = %stderr_lines.join("\n"), "rclone lsjson stderr output");
+    }
+
+    if exit_code != 0 {
         let stderr_msg = stderr_lines.join("\n");
         if stderr_msg.trim().is_empty() {
             bail!(
                 "rclone lsjson failed (exit code {}). Check that the remote is properly configured and the token is valid.",
-                status.code().unwrap_or(-1)
+                exit_code
             );
         } else {
             bail!("rclone lsjson failed: {}", stderr_msg);
         }
     }
 
-    parse_result
+    let count = parse_result?;
+    tracing::info!(target = target, entries = count, "rclone lsjson completed");
+    Ok(count)
 }
 
 fn stream_lsjson_entries_from_reader<'a, R: Read>(
