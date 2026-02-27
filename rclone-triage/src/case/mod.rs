@@ -3,7 +3,7 @@
 //! Defines session metadata and tracking of downloads.
 
 use anyhow::Result;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Local, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -88,8 +88,8 @@ impl Case {
     pub fn new(name: impl Into<String>, output_dir: PathBuf) -> Result<Self> {
         let name = sanitize_session_id(&name.into());
         let name = if name.is_empty() {
-            // Default name: triage-YYYYMMDD-HHMMSS
-            Utc::now().format("triage-%Y%m%d-%H%M%S").to_string()
+            // Default name: triage-YYYYMMDD-HHMMSS (local time for user-facing paths)
+            Local::now().format("triage-%Y%m%d-%H%M%S").to_string()
         } else {
             name
         };

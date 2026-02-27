@@ -115,9 +115,16 @@ pub fn list_path(
     match list_path_inner(rclone, target, options.include_hashes, options.fast_list) {
         Ok(entries) => Ok(entries),
         Err(err) => {
-            // Best-effort fallback: if requesting hashes breaks listing, retry without.
+            tracing::warn!(error = %err, "lsjson failed, attempting fallback");
+            // Fallback 1: retry without hashes
             if options.include_hashes {
                 if let Ok(entries) = list_path_inner(rclone, target, false, options.fast_list) {
+                    return Ok(entries);
+                }
+            }
+            // Fallback 2: retry without fast-list (and without hashes)
+            if options.fast_list {
+                if let Ok(entries) = list_path_inner(rclone, target, false, false) {
                     return Ok(entries);
                 }
             }
@@ -139,10 +146,19 @@ where
     match list_path_with_progress_inner(rclone, target, options.include_hashes, options.fast_list, &mut on_progress) {
         Ok(entries) => Ok(entries),
         Err(err) => {
-            // Best-effort fallback: if requesting hashes breaks listing, retry without.
+            tracing::warn!(error = %err, "lsjson failed, attempting fallback");
+            // Fallback 1: retry without hashes
             if options.include_hashes {
                 if let Ok(entries) =
                     list_path_with_progress_inner(rclone, target, false, options.fast_list, &mut on_progress)
+                {
+                    return Ok(entries);
+                }
+            }
+            // Fallback 2: retry without fast-list (and without hashes)
+            if options.fast_list {
+                if let Ok(entries) =
+                    list_path_with_progress_inner(rclone, target, false, false, &mut on_progress)
                 {
                     return Ok(entries);
                 }
@@ -180,13 +196,28 @@ where
     ) {
         Ok(result) => Ok(result),
         Err(err) => {
-            // Best-effort fallback: if requesting hashes breaks listing, retry without.
+            tracing::warn!(error = %err, "lsjson failed, attempting fallback");
+            // Fallback 1: retry without hashes
             if options.include_hashes {
                 if let Ok(result) = list_path_large_to_csv_inner(
                     rclone,
                     target,
                     false,
                     options.fast_list,
+                    csv_path,
+                    max_in_memory,
+                    &mut on_progress,
+                ) {
+                    return Ok(result);
+                }
+            }
+            // Fallback 2: retry without fast-list (and without hashes)
+            if options.fast_list {
+                if let Ok(result) = list_path_large_to_csv_inner(
+                    rclone,
+                    target,
+                    false,
+                    false,
                     csv_path,
                     max_in_memory,
                     &mut on_progress,
@@ -429,7 +460,8 @@ fn run_lsjson_streaming<'a>(
     let stdout_reader = BufReader::new(stdout);
     let parse_result = stream_lsjson_entries_from_reader(stdout_reader, on_entry, on_progress);
 
-    if parse_result.is_err() {
+    let was_killed = parse_result.is_err();
+    if was_killed {
         let _ = child.kill();
     }
 
@@ -441,6 +473,24 @@ fn run_lsjson_streaming<'a>(
     let exit_code = status.code().unwrap_or(-1);
     if !stderr_lines.is_empty() {
         tracing::warn!(exit_code = exit_code, stderr = %stderr_lines.join("\n"), "rclone lsjson stderr output");
+    }
+
+    // If we killed the child due to a parse error, report the parse error
+    // rather than the misleading "rclone lsjson failed" exit-code message.
+    if was_killed {
+        let parse_err = parse_result.unwrap_err();
+        let stderr_msg = stderr_lines.join("\n");
+        if stderr_msg.trim().is_empty() {
+            return Err(parse_err.context(format!(
+                "rclone lsjson output could not be parsed (exit code {})",
+                exit_code
+            )));
+        } else {
+            return Err(parse_err.context(format!(
+                "rclone lsjson output could not be parsed: {}",
+                stderr_msg
+            )));
+        }
     }
 
     if exit_code != 0 {
