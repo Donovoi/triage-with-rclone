@@ -12,16 +12,6 @@ use std::path::{Path, PathBuf};
 pub enum ChangeType {
     /// File was created
     FileCreated { path: PathBuf },
-    /// File was modified
-    FileModified {
-        path: PathBuf,
-        backup_path: Option<PathBuf>,
-    },
-    /// File was deleted
-    FileDeleted {
-        path: PathBuf,
-        backup_path: Option<PathBuf>,
-    },
     /// Environment variable was set
     EnvVarSet {
         name: String,
@@ -86,11 +76,6 @@ impl ChangeTracker {
         });
     }
 
-    /// Get all tracked changes
-    pub fn changes(&self) -> &[TrackedChange] {
-        &self.changes
-    }
-
     /// Get count of changes
     pub fn change_count(&self) -> usize {
         self.changes.len()
@@ -127,12 +112,6 @@ fn format_change_type(change: &ChangeType) -> String {
     match change {
         ChangeType::FileCreated { path } => {
             format!("Created file: {:?}", path)
-        }
-        ChangeType::FileModified { path, .. } => {
-            format!("Modified file: {:?}", path)
-        }
-        ChangeType::FileDeleted { path, .. } => {
-            format!("Deleted file: {:?}", path)
         }
         ChangeType::EnvVarSet { name, old_value } => match old_value {
             Some(old) => format!("Set env var: {} (was: {})", name, old),

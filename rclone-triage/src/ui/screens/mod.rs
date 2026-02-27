@@ -8,4 +8,3 @@ pub mod main_menu;
 pub mod provider_select;
 pub mod remote_select;
 pub mod report;
-pub mod welcome;
