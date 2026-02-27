@@ -168,6 +168,7 @@ pub struct DownloadRequest {
 }
 
 impl DownloadRequest {
+    #[cfg(test)]
     pub fn new_copy(source: impl Into<String>, destination: impl Into<String>) -> Self {
         Self {
             source: source.into(),
@@ -230,14 +231,7 @@ impl DownloadQueue {
         self.requests.push(request);
     }
 
-    pub fn set_parallel(&mut self, parallel: usize) {
-        self.parallel = parallel.max(1);
-    }
-
-    pub fn set_timeout(&mut self, timeout: Duration) {
-        self.timeout = Some(timeout);
-    }
-
+    #[cfg(test)]
     pub fn set_dry_run(&mut self, dry_run: bool) {
         self.dry_run = dry_run;
     }

@@ -219,24 +219,6 @@ pub fn wait_for_usb_wifi_adapter(_timeout_secs: u64) -> Result<bool> {
     bail!("USB WiFi adapter detection is only supported on Windows");
 }
 
-/// Start a background timer that will auto-shutdown the forensic access point.
-///
-/// This allows starting the AP first and adding the timer separately.
-/// Equivalent to the PowerShell `Start-ForensicAPTimer`.
-pub fn start_forensic_ap_timer(minutes: u64) {
-    if minutes == 0 {
-        return;
-    }
-    std::thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_secs(minutes * 60));
-        eprintln!(
-            "Forensic Access Point auto-shutdown triggered after {} minute(s).",
-            minutes
-        );
-        let _ = stop_forensic_access_point(true);
-    });
-}
-
 #[cfg(windows)]
 fn run_netsh(args: &[&str]) -> Result<String> {
     use std::process::Command;

@@ -1794,42 +1794,7 @@ fn populate_listing_results(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::screens::welcome::WelcomeScreen;
     use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
-    use std::io::IsTerminal;
-
-    /// Run a basic one-frame TUI to validate rendering
-    fn run_once() -> Result<()> {
-        enable_raw_mode()?;
-        let mut out = stdout();
-        execute!(out, EnterAlternateScreen, EnableMouseCapture)?;
-
-        let backend = CrosstermBackend::new(out);
-        let mut terminal = Terminal::new(backend)?;
-
-        terminal.draw(|f| {
-            let size = f.area();
-            let screen = WelcomeScreen;
-            f.render_widget(screen, size);
-        })?;
-
-        execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
-        disable_raw_mode()?;
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_run_once() {
-        // We only test that the function builds and can be called without panicking.
-        // In CI/headless environments, this may fail if no TTY is available.
-        if !std::io::stdout().is_terminal() {
-            return;
-        }
-        let _ = std::panic::catch_unwind(|| {
-            let _ = run_once();
-        });
-    }
 
     #[test]
     fn test_refresh_providers_from_json_replaces_defaults() {
