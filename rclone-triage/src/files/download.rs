@@ -942,9 +942,8 @@ mod tests {
         queue.add(request.clone());
 
         let output = queue
-            .download_one_verified(&runner, &request)
-            .expect("Download failed");
-        assert!(output.success());
+            .download_one_verified(&runner, &request);
+        assert!(output.success);
     }
 
     #[cfg(windows)]
