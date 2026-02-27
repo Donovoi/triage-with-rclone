@@ -657,15 +657,6 @@ impl App {
             .map(|initial| initial.diff(&final_state))
     }
 
-    /// Get the change tracker report
-    pub fn change_report(&self) -> String {
-        self.forensics
-            .change_tracker
-            .lock()
-            .map(|tracker| tracker.generate_report())
-            .unwrap_or_else(|_| "Failed to generate change report".to_string())
-    }
-
     /// Log an info message if logger is available
     pub fn log_info(&self, message: impl AsRef<str>) {
         if let Some(ref logger) = self.forensics.logger {
@@ -741,16 +732,6 @@ impl App {
             .collect()
     }
 
-    /// Check if any provider is selected
-    pub fn has_selected_providers(&self) -> bool {
-        self.provider.checked.iter().any(|checked| *checked)
-    }
-
-    /// Get the currently selected provider
-    pub fn selected_provider(&self) -> Option<ProviderEntry> {
-        self.provider.entries.get(self.provider.selected).cloned()
-    }
-
     /// Persist the current provider selection for authentication
     pub fn confirm_provider(&mut self) {
         let selected = self.selected_providers();
@@ -817,15 +798,6 @@ impl App {
         if self.state == AppState::BrowserSelect {
             let total = self.browser.entries.len() + 1;
             list_navigate_down(&mut self.browser.selected, total);
-        }
-    }
-
-    /// Get the currently selected browser (None = system default)
-    pub fn selected_browser(&self) -> Option<Browser> {
-        if self.browser.selected == 0 {
-            None
-        } else {
-            self.browser.entries.get(self.browser.selected - 1).cloned()
         }
     }
 

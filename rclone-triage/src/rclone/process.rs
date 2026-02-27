@@ -401,7 +401,7 @@ fn stream_lines<R: Read, F: FnMut(&str)>(mut reader: R, mut on_line: F) -> std::
 }
 
 /// Wait for a child process with timeout
-fn wait_with_timeout(child: &mut Child, timeout: Duration) -> Result<(ExitStatus, bool)> {
+pub(crate) fn wait_with_timeout(child: &mut Child, timeout: Duration) -> Result<(ExitStatus, bool)> {
     let start = std::time::Instant::now();
     loop {
         match child.try_wait()? {

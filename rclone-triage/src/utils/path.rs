@@ -24,7 +24,7 @@ fn hash8(input: &str) -> String {
     full.chars().take(8).collect()
 }
 
-fn is_windows_reserved_name(name: &str) -> bool {
+pub(crate) fn is_windows_reserved_name(name: &str) -> bool {
     // Windows device names are reserved (case-insensitive), even with extensions (e.g. CON.txt).
     // See: https://learn.microsoft.com/windows/win32/fileio/naming-a-file
     let upper = name.to_ascii_uppercase();

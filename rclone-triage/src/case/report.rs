@@ -3,7 +3,6 @@
 use anyhow::{Context, Result};
 use chrono::Utc;
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
@@ -373,64 +372,6 @@ pub fn write_report_xlsx(
     Ok(())
 }
 
-/// Generate an export manifest: list every file under `case_dir` with its SHA-256 hash.
-///
-/// Returns a formatted string suitable for appending to a forensic report.
-pub fn generate_export_manifest(case_dir: &Path) -> Result<String> {
-    let mut manifest = String::new();
-    manifest.push_str("--- Export Manifest ---\n");
-    manifest.push_str(&format!("Case directory: {}\n\n", case_dir.display()));
-
-    let mut entries: BTreeMap<String, String> = BTreeMap::new();
-    collect_file_hashes(case_dir, case_dir, &mut entries)?;
-
-    if entries.is_empty() {
-        manifest.push_str("(no files)\n");
-    } else {
-        for (rel_path, hash) in &entries {
-            manifest.push_str(&format!("{}  {}\n", hash, rel_path));
-        }
-    }
-
-    manifest.push('\n');
-    Ok(manifest)
-}
-
-fn collect_file_hashes(
-    base: &Path,
-    dir: &Path,
-    out: &mut BTreeMap<String, String>,
-) -> Result<()> {
-    if !dir.is_dir() {
-        return Ok(());
-    }
-    let entries = fs::read_dir(dir)
-        .with_context(|| format!("Failed to read directory {:?}", dir))?;
-
-    for entry in entries {
-        let entry = entry?;
-        let path = entry.path();
-        if path.is_dir() {
-            collect_file_hashes(base, &path, out)?;
-        } else if path.is_file() {
-            let rel = path
-                .strip_prefix(base)
-                .unwrap_or(&path)
-                .to_string_lossy()
-                .to_string();
-            let data = fs::read(&path)
-                .with_context(|| format!("Failed to read {:?}", path))?;
-            let hash = {
-                let mut hasher = Sha256::new();
-                hasher.update(&data);
-                hex::encode(hasher.finalize())
-            };
-            out.insert(rel, hash);
-        }
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -475,20 +416,6 @@ mod tests {
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("SHA-256:"));
         assert!(content.contains("Report Integrity"));
-    }
-
-    #[test]
-    fn test_export_manifest() {
-        let dir = tempdir().unwrap();
-        let sub = dir.path().join("downloads");
-        std::fs::create_dir_all(&sub).unwrap();
-        std::fs::write(sub.join("file.txt"), "evidence data").unwrap();
-
-        let manifest = generate_export_manifest(dir.path()).unwrap();
-        assert!(manifest.contains("Export Manifest"));
-        assert!(manifest.contains("file.txt"));
-        // Should contain a hex SHA-256 hash (64 chars)
-        assert!(manifest.lines().any(|l| l.len() > 64));
     }
 
     #[test]

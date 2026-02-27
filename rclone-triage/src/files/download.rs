@@ -10,7 +10,7 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use crate::rclone::{RcloneOutput, RcloneRunner};
+use crate::rclone::RcloneRunner;
 
 /// Download mode
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -264,16 +264,6 @@ impl DownloadQueue {
             args.push("--dry-run".to_string());
         }
         args
-    }
-
-    /// Execute all downloads sequentially (parallel execution can be added later)
-    pub fn download_all(&self, rclone: &RcloneRunner) -> Result<Vec<RcloneOutput>> {
-        let mut outputs = Vec::new();
-        for request in &self.requests {
-            let output = self.download_one(rclone, request)?;
-            outputs.push(output);
-        }
-        Ok(outputs)
     }
 
     /// Execute all downloads with progress callback
@@ -668,27 +658,6 @@ impl DownloadQueue {
                 hash_error: None,
             },
         }
-    }
-
-    /// Execute a single download
-    pub fn download_one(
-        &self,
-        rclone: &RcloneRunner,
-        request: &DownloadRequest,
-    ) -> Result<RcloneOutput> {
-        let args = self.build_args(request);
-        let args_ref: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-
-        let output = match self.timeout {
-            Some(timeout) => rclone.run_with_timeout(&args_ref, Some(timeout))?,
-            None => rclone.run(&args_ref)?,
-        };
-
-        if !output.success() {
-            bail!("Download failed: {}", output.stderr_string());
-        }
-
-        Ok(output)
     }
 }
 

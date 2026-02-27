@@ -10,36 +10,7 @@ use std::path::PathBuf;
 pub mod directory;
 pub mod report;
 
-fn is_windows_reserved_name(name: &str) -> bool {
-    // Windows device names are reserved (case-insensitive), even with extensions (e.g. CON.txt).
-    // See: https://learn.microsoft.com/windows/win32/fileio/naming-a-file
-    let upper = name.to_ascii_uppercase();
-    matches!(
-        upper.as_str(),
-        "CON"
-            | "PRN"
-            | "AUX"
-            | "NUL"
-            | "COM1"
-            | "COM2"
-            | "COM3"
-            | "COM4"
-            | "COM5"
-            | "COM6"
-            | "COM7"
-            | "COM8"
-            | "COM9"
-            | "LPT1"
-            | "LPT2"
-            | "LPT3"
-            | "LPT4"
-            | "LPT5"
-            | "LPT6"
-            | "LPT7"
-            | "LPT8"
-            | "LPT9"
-    )
-}
+use crate::utils::path::is_windows_reserved_name;
 
 fn sanitize_session_id(input: &str) -> String {
     let trimmed = input.trim();

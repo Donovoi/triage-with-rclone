@@ -86,16 +86,9 @@ impl OAuthFlow {
         self.wait_for_redirect_with_state(expected_state.as_deref())
     }
 
-    /// Wait for the OAuth redirect without opening a browser.
-    ///
-    /// Useful for mobile/QR flows where the user opens the URL on another device.
-    pub fn wait_for_redirect(&self) -> Result<OAuthResult> {
-        self.wait_for_redirect_with_state(None)
-    }
-
     /// Wait for the OAuth redirect and optionally validate an expected `state` parameter.
     ///
-    /// This is the safer variant of `wait_for_redirect()` because it:
+    /// This variant:
     /// - Ignores non-callback requests (e.g. `/favicon.ico`)
     /// - Ignores callbacks with mismatched `state` (when provided)
     ///
