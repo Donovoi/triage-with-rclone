@@ -41,16 +41,16 @@ This document tracks the implementation coverage of the Rust `rclone-triage` aga
 
 ### 2. Provider Support ✅ COMPLETE
 
-| PowerShell Feature         | Rust Equivalent                     | Status     |
-| -------------------------- | ----------------------------------- | ---------- |
-| `Provider` class           | `CloudProvider` enum                | ✅         |
-| `Update-ProviderObjects`   | `CloudProvider::all()`              | ✅         |
-| `Get-ProvidersList`        | `supported_providers_from_rclone()` | ✅         |
-| `Get-RcloneProvidersJson`  | `supported_providers_from_rclone()` | ✅         |
-| `Get-RcloneOAuthProviders` | `supported_providers_from_rclone()` | ✅         |
-| `Get-rcloneFeaturesTable`  | `provider_supports_hashes()`        | ✅         |
-| Provider hash types        | `CloudProvider::hash_types()`       | ✅         |
-| Bad providers filtering    | Dynamic provider discovery          | ✅         |
+| PowerShell Feature         | Rust Equivalent                     | Status |
+| -------------------------- | ----------------------------------- | ------ |
+| `Provider` class           | `CloudProvider` enum                | ✅     |
+| `Update-ProviderObjects`   | `CloudProvider::all()`              | ✅     |
+| `Get-ProvidersList`        | `supported_providers_from_rclone()` | ✅     |
+| `Get-RcloneProvidersJson`  | `supported_providers_from_rclone()` | ✅     |
+| `Get-RcloneOAuthProviders` | `supported_providers_from_rclone()` | ✅     |
+| `Get-rcloneFeaturesTable`  | `provider_supports_hashes()`        | ✅     |
+| Provider hash types        | `CloudProvider::hash_types()`       | ✅     |
+| Bad providers filtering    | Dynamic provider discovery          | ✅     |
 
 **Note:** Provider list is now sourced dynamically from `rclone config providers --json`.  
 Known backends use specialized flows; unknown backends use the generic rclone config flow.
@@ -83,21 +83,21 @@ Known backends use specialized flows; unknown backends use the generic rclone co
 
 ### 4. Mobile Device Authentication ✅ MOSTLY COMPLETE
 
-| PowerShell Function                      | Rust Equivalent                            | Status |
-| ---------------------------------------- | ------------------------------------------ | ------ |
-| `New-MobileDeviceAuthentication`         | `perform_mobile_auth_flow()` TUI           | ✅     |
-| `Start-DeviceCodeFlow`                   | `authenticate_with_device_code()`          | ✅     |
-| `Request-DeviceCode`                     | `request_device_code()`                    | ✅     |
-| `Request-TokenFromDeviceCode`            | `poll_device_code_for_token()`             | ✅     |
-| `Get-DeviceCodeConfig`                   | `device_code_config()`                     | ✅     |
-| `Start-MobileOAuthServer`                | Generic redirect handler (better design)   | ✅     |
-| `Start-MobileOAuthCallbackServer`        | `OAuthFlow::wait_for_redirect()`           | ✅     |
-| `Build-OAuthAuthorizationUrl`            | `ProviderConfig::build_auth_url_with_client_id()` | ✅ |
-| `Complete-OAuthTokenExchange`            | `exchange_code_for_token()`                | ✅     |
-| `Get-OAuthTokenFromCode`                 | `exchange_code_for_token()`                | ✅     |
-| QR Code generation (`New-ConsoleQRCode`) | `render_qr_code()`                         | ✅     |
-| `Get-QRCodeData`                         | Unified into `render_qr_code()`            | ✅     |
-| `ConvertTo-ConsoleQRCode`                | Unified into `render_qr_code()`            | ✅     |
+| PowerShell Function                      | Rust Equivalent                                   | Status |
+| ---------------------------------------- | ------------------------------------------------- | ------ |
+| `New-MobileDeviceAuthentication`         | `perform_mobile_auth_flow()` TUI                  | ✅     |
+| `Start-DeviceCodeFlow`                   | `authenticate_with_device_code()`                 | ✅     |
+| `Request-DeviceCode`                     | `request_device_code()`                           | ✅     |
+| `Request-TokenFromDeviceCode`            | `poll_device_code_for_token()`                    | ✅     |
+| `Get-DeviceCodeConfig`                   | `device_code_config()`                            | ✅     |
+| `Start-MobileOAuthServer`                | Generic redirect handler (better design)          | ✅     |
+| `Start-MobileOAuthCallbackServer`        | `OAuthFlow::wait_for_redirect_with_state()`       | ✅     |
+| `Build-OAuthAuthorizationUrl`            | `ProviderConfig::build_auth_url_with_client_id()` | ✅     |
+| `Complete-OAuthTokenExchange`            | `exchange_code_for_token()`                       | ✅     |
+| `Get-OAuthTokenFromCode`                 | `exchange_code_for_token()`                       | ✅     |
+| QR Code generation (`New-ConsoleQRCode`) | `render_qr_code()`                                | ✅     |
+| `Get-QRCodeData`                         | Unified into `render_qr_code()`                   | ✅     |
+| `ConvertTo-ConsoleQRCode`                | Unified into `render_qr_code()`                   | ✅     |
 
 **Note:** Three MobileAuthFlow options available in TUI: Redirect, Redirect+AccessPoint, DeviceCode.
 
@@ -105,22 +105,22 @@ Known backends use specialized flows; unknown backends use the generic rclone co
 
 ### 5. Forensic Access Point (WiFi Hotspot) ✅ MOSTLY COMPLETE
 
-| PowerShell Function              | Rust Equivalent                              | Status |
-| -------------------------------- | -------------------------------------------- | ------ |
-| `Start-ForensicAccessPoint`      | `start_forensic_access_point()`              | ✅     |
-| `Stop-ForensicAccessPoint`       | `stop_forensic_access_point()`               | ✅     |
-| `Get-ForensicAccessPointStatus`  | `get_forensic_access_point_status()`         | ✅     |
-| `Test-NativeAPSupport`           | `test_native_ap_support()`                   | ✅     |
-| `Wait-ForUSBWiFiAdapter`         | `wait_for_usb_wifi_adapter()`                | ✅     |
-| `New-ForensicAPPassword`         | `generate_password()`                        | ✅     |
-| `Set-HostedNetworkConfig`        | `start_forensic_access_point()`              | ✅     |
-| `Start-HostedNetwork`            | `start_forensic_access_point()`              | ✅     |
-| `Get-ForensicAPIPAddress`        | `start_forensic_access_point()`              | ✅     |
-| `Set-ForensicAPDNS` (AdGuard)    | `start_forensic_access_point()`              | ✅     |
-| `Restore-OriginalDNS`            | `stop_forensic_access_point()`               | ✅     |
-| `Remove-ForensicAPFirewallRules` | `remove_firewall_rules()`                    | ✅     |
-| `Start-ForensicAPTimer`          | `start_forensic_ap_timer()`                  | ✅     |
-| `New-WiFiConnectionQRCode`       | `render_wifi_qr()`                           | ✅     |
+| PowerShell Function              | Rust Equivalent                      | Status |
+| -------------------------------- | ------------------------------------ | ------ |
+| `Start-ForensicAccessPoint`      | `start_forensic_access_point()`      | ✅     |
+| `Stop-ForensicAccessPoint`       | `stop_forensic_access_point()`       | ✅     |
+| `Get-ForensicAccessPointStatus`  | `get_forensic_access_point_status()` | ✅     |
+| `Test-NativeAPSupport`           | `test_native_ap_support()`           | ✅     |
+| `Wait-ForUSBWiFiAdapter`         | `wait_for_usb_wifi_adapter()`        | ✅     |
+| `New-ForensicAPPassword`         | `generate_password()`                | ✅     |
+| `Set-HostedNetworkConfig`        | `start_forensic_access_point()`      | ✅     |
+| `Start-HostedNetwork`            | `start_forensic_access_point()`      | ✅     |
+| `Get-ForensicAPIPAddress`        | `start_forensic_access_point()`      | ✅     |
+| `Set-ForensicAPDNS` (AdGuard)    | `start_forensic_access_point()`      | ✅     |
+| `Restore-OriginalDNS`            | `stop_forensic_access_point()`       | ✅     |
+| `Remove-ForensicAPFirewallRules` | `remove_firewall_rules()`            | ✅     |
+| `Start-ForensicAPTimer`          | `start_forensic_ap_timer()`          | ✅     |
+| `New-WiFiConnectionQRCode`       | `render_wifi_qr()`                   | ✅     |
 
 **Note:** TUI flow shows real-time AP setup status via `start_forensic_access_point_with_status()` callback.
 Connected client count displayed during AP flow. USB adapter auto-detection integrated.
@@ -144,17 +144,17 @@ Connected client count displayed during AP flow. USB adapter auto-detection inte
 
 ### 7. File Operations ✅ COMPLETE
 
-| PowerShell Function               | Rust Equivalent                          | Status |
-| --------------------------------- | ---------------------------------------- | ------ |
-| `Get-RemoteFileList`              | `list_path()`                            | ✅     |
-| `Invoke-RemoteFileListGeneration` | `list_path()`                            | ✅     |
-| `Invoke-ProcessAndWatchFile`      | `list_path_with_progress()` + TUI callback | ✅   |
-| `Invoke-CSVFileDownloader`        | `DownloadQueue` + `read_download_queue()`  | ✅   |
-| `Invoke-rcloneCopy`               | `DownloadQueue::download_one()`          | ✅     |
-| `Start-DownloadQueue`             | `DownloadQueue::download_all_with_progress()` | ✅ |
-| `Invoke-FileSelection` (GUI)      | Mount + selection file import            | ✅     |
-| `ConvertTo-Excel`                 | `export_listing_xlsx()`                  | ✅     |
-| CSV export                        | `export_listing()`                       | ✅     |
+| PowerShell Function               | Rust Equivalent                               | Status |
+| --------------------------------- | --------------------------------------------- | ------ |
+| `Get-RemoteFileList`              | `list_path()`                                 | ✅     |
+| `Invoke-RemoteFileListGeneration` | `list_path()`                                 | ✅     |
+| `Invoke-ProcessAndWatchFile`      | `list_path_with_progress()` + TUI callback    | ✅     |
+| `Invoke-CSVFileDownloader`        | `DownloadQueue` + `read_download_queue()`     | ✅     |
+| `Invoke-rcloneCopy`               | `DownloadQueue::download_one()`               | ✅     |
+| `Start-DownloadQueue`             | `DownloadQueue::download_all_with_progress()` | ✅     |
+| `Invoke-FileSelection` (GUI)      | Mount + selection file import                 | ✅     |
+| `ConvertTo-Excel`                 | `export_listing_xlsx()`                       | ✅     |
+| CSV export                        | `export_listing()`                            | ✅     |
 
 ---
 
@@ -216,15 +216,15 @@ Connected client count displayed during AP flow. USB adapter auto-detection inte
 
 ### 12. Utilities ⚠️ PARTIAL
 
-| PowerShell Function          | Rust Equivalent | Status |
-| ---------------------------- | --------------- | ------ |
-| `Get-FileName` (file dialog) | N/A (TUI-based) | ⚠️     |
-| `Format-Bytes`               | `format_bytes()`                | ✅ |
-| `Get-LocalIPAddress`         | `get_local_ip_address()`        | ✅ |
-| HTTP helpers                 | `http_get_json_with_retry()`    | ✅ |
-| `Start-SleepWithCountdown`   | `sleep_with_countdown()`        | ✅ |
-| `Invoke-ButtonPress` (FlaUI) | N/A                             | ❌ |
-| `Close-Window`               | `close_window_by_title()`       | ✅ |
+| PowerShell Function          | Rust Equivalent              | Status |
+| ---------------------------- | ---------------------------- | ------ |
+| `Get-FileName` (file dialog) | N/A (TUI-based)              | ⚠️     |
+| `Format-Bytes`               | `format_bytes()`             | ✅     |
+| `Get-LocalIPAddress`         | `get_local_ip_address()`     | ✅     |
+| HTTP helpers                 | `http_get_json_with_retry()` | ✅     |
+| `Start-SleepWithCountdown`   | `sleep_with_countdown()`     | ✅     |
+| `Invoke-ButtonPress` (FlaUI) | N/A                          | ❌     |
+| `Close-Window`               | `close_window_by_title()`    | ✅     |
 
 ---
 
@@ -299,12 +299,12 @@ Connected client count displayed during AP flow. USB adapter auto-detection inte
 
 ### Code Quality Comparison
 
-| Metric            | PowerShell | Rust            |
-| ----------------- | ---------- | --------------- |
-| Functions/Methods | ~100+      | ~200+           |
-| Test coverage     | Manual     | 213 unit tests  |
-| Type safety       | Limited    | Strong          |
-| Error handling    | try/catch  | Result<T>       |
+| Metric            | PowerShell | Rust           |
+| ----------------- | ---------- | -------------- |
+| Functions/Methods | ~100+      | ~200+          |
+| Test coverage     | Manual     | 213 unit tests |
+| Type safety       | Limited    | Strong         |
+| Error handling    | try/catch  | Result<T>      |
 
 ---
 

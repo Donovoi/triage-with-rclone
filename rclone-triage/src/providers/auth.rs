@@ -257,58 +257,6 @@ fn authenticate_with_authorize_fallback(
     })
 }
 
-/// Authenticate to a cloud provider
-pub fn authenticate(
-    provider: CloudProvider,
-    rclone: &RcloneRunner,
-    config: &RcloneConfig,
-    remote_name: &str,
-) -> Result<AuthResult> {
-    let provider_config = ProviderConfig::for_provider(provider);
-
-    if !provider_config.uses_oauth() {
-        // iCloud uses username/password
-        bail!(
-            "{} does not use OAuth. Manual configuration required.",
-            provider
-        );
-    }
-
-    // Run OAuth flow
-    let oauth = OAuthFlow::new();
-    let redirect_uri = oauth.redirect_uri();
-    let state = OAuthFlow::generate_state();
-    let auth_url = provider_config.build_auth_url(&redirect_uri, Some(&state));
-
-    println!("Opening browser for {} authentication...", provider);
-    let _result = oauth
-        .run(&auth_url)
-        .with_context(|| format!("OAuth authentication failed for {}", provider))?;
-
-    // Use rclone to complete the config with the auth code
-    // rclone config create <name> <type> config_token=<token>
-    let args = build_rclone_auth_args(provider, remote_name, true);
-    let args_ref: Vec<&str> = args.iter().map(String::as_str).collect();
-    let output = rclone.run(&args_ref)?;
-
-    if !output.success() {
-        bail!("Failed to create rclone remote: {}", output.stderr_string());
-    }
-
-    // Verify the remote was created
-    if !config.has_remote(remote_name)? {
-        bail!("Remote {} was not created in config", remote_name);
-    }
-
-    Ok(AuthResult {
-        provider,
-        remote_name: remote_name.to_string(),
-        user_info: None,
-        browser: None,
-        was_silent: false,
-    })
-}
-
 /// Authenticate using rclone's built-in OAuth flow
 pub fn authenticate_with_rclone(
     provider: CloudProvider,
@@ -757,42 +705,6 @@ pub fn authenticate_with_browser(
     })
 }
 
-/// Authenticate to all installed browsers for a provider
-///
-/// Returns a list of successfully authenticated remotes.
-/// Useful for capturing all possible accounts across browsers.
-pub fn authenticate_all_browsers(
-    provider: CloudProvider,
-    rclone: &RcloneRunner,
-    config: &RcloneConfig,
-) -> Vec<AuthResult> {
-    let browsers = BrowserDetector::detect_all();
-    let mut results = Vec::new();
-
-    for browser in browsers {
-        match authenticate_with_browser(provider, &browser, rclone, config) {
-            Ok(result) => {
-                tracing::info!(
-                    "Authenticated {} with browser {}",
-                    provider,
-                    browser.display_name()
-                );
-                results.push(result);
-            }
-            Err(e) => {
-                tracing::warn!(
-                    "Failed to authenticate {} with browser {}: {}",
-                    provider,
-                    browser.display_name(),
-                    e
-                );
-            }
-        }
-    }
-
-    results
-}
-
 /// Get available browsers for authentication
 pub fn get_available_browsers() -> Vec<Browser> {
     BrowserDetector::detect_all()
@@ -847,21 +759,6 @@ fn get_user_info(rclone: &RcloneRunner, remote_name: &str) -> Result<String> {
     }
 
     bail!("Could not get user info")
-}
-
-/// Check if a remote is already authenticated
-pub fn is_authenticated(config: &RcloneConfig, remote_name: &str) -> Result<bool> {
-    config.has_remote(remote_name)
-}
-
-/// List all authenticated remotes for a provider
-pub fn list_authenticated_remotes(
-    config: &RcloneConfig,
-    provider: CloudProvider,
-) -> Result<Vec<String>> {
-    let parsed = config.parse()?;
-    let remotes = parsed.remotes_by_type(provider.rclone_type());
-    Ok(remotes.iter().map(|r| r.name.clone()).collect())
 }
 
 // ============= SSO/Silent Authentication =============

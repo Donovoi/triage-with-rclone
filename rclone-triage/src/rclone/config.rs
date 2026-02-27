@@ -334,16 +334,6 @@ impl RcloneConfig {
         Self::new(config_path)
     }
 
-    /// Create a config in the system's rclone config directory
-    pub fn in_default_location() -> Result<Self> {
-        let config_dir = dirs::config_dir()
-            .context("Could not find config directory")?
-            .join("rclone");
-
-        fs::create_dir_all(&config_dir)?;
-        Self::new(config_dir.join("rclone.conf"))
-    }
-
     /// Create a config in a case-specific directory
     pub fn for_case(case_dir: impl AsRef<Path>) -> Result<Self> {
         let case_dir = case_dir.as_ref();
@@ -493,14 +483,6 @@ impl RcloneConfig {
         }
 
         Ok(None)
-    }
-
-    /// Copy the config file to a destination
-    pub fn copy_to(&self, dest: impl AsRef<Path>) -> Result<PathBuf> {
-        let dest = dest.as_ref();
-        fs::copy(&self.config_path, dest)
-            .with_context(|| format!("Failed to copy config to {:?}", dest))?;
-        Ok(dest.to_path_buf())
     }
 
     /// Parse the config file into structured data

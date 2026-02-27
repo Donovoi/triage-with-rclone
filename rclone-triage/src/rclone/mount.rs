@@ -517,37 +517,6 @@ pub fn open_file_explorer(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Open a file explorer window with a specific file selected
-pub fn open_file_explorer_select(path: &Path) -> Result<()> {
-    #[cfg(windows)]
-    {
-        Command::new("explorer")
-            .arg("/select,")
-            .arg(path)
-            .spawn()
-            .context("Failed to open Windows Explorer")?;
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        Command::new("open")
-            .args(["-R", path.to_str().unwrap_or("")])
-            .spawn()
-            .context("Failed to open Finder")?;
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        // On Linux, most file managers don't support selecting a file directly
-        // Open the parent directory instead
-        if let Some(parent) = path.parent() {
-            open_file_explorer(parent)?;
-        }
-    }
-
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

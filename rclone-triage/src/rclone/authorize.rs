@@ -5,12 +5,12 @@
 use anyhow::{bail, Context, Result};
 use regex::Regex;
 use std::io::{BufRead, BufReader};
-use std::process::{Child, Command, ExitStatus, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::rclone::process::RcloneRunner;
+use crate::rclone::process::{wait_with_timeout, RcloneRunner};
 
 /// Windows-specific: CREATE_NO_WINDOW flag
 #[cfg(windows)]
@@ -372,24 +372,6 @@ pub fn spawn_authorize(runner: &RcloneRunner, backend: &str, auth_no_open_browse
         stdout_handle: Some(stdout_handle),
         stderr_handle: Some(stderr_handle),
     })
-}
-
-/// Wait for a child process with timeout.
-fn wait_with_timeout(child: &mut Child, timeout: Duration) -> Result<(ExitStatus, bool)> {
-    let start = Instant::now();
-    loop {
-        match child.try_wait()? {
-            Some(status) => return Ok((status, false)),
-            None => {
-                if start.elapsed() > timeout {
-                    let _ = child.kill();
-                    let status = child.wait()?;
-                    return Ok((status, true));
-                }
-                std::thread::sleep(Duration::from_millis(100));
-            }
-        }
-    }
 }
 
 #[cfg(test)]

@@ -145,15 +145,6 @@ impl ExtractedBinary {
         Ok(())
     }
 
-    /// Transfer ownership - the file will not be cleaned up when this instance is dropped
-    pub fn release_ownership(&mut self) {
-        if let Some(temp_dir) = self.temp_dir.take() {
-            // Persist the directory on disk.
-            let _ = temp_dir.keep();
-        }
-        self.owns_file = false;
-    }
-
     /// Check if the extracted binary still exists
     pub fn exists(&self) -> bool {
         self.path.exists()
@@ -190,23 +181,6 @@ pub fn verify_embedded_binary() -> Result<()> {
     Ok(())
 }
 
-/// Get information about the embedded binary without extracting
-pub fn embedded_binary_info() -> Option<EmbeddedBinaryInfo> {
-    Assets::get("rclone.exe").map(|content| EmbeddedBinaryInfo {
-        size: content.data.len(),
-        expected_sha256: RCLONE_EXE_SHA256.to_string(),
-        version: RCLONE_VERSION.to_string(),
-    })
-}
-
-/// Information about the embedded binary
-#[derive(Debug, Clone)]
-pub struct EmbeddedBinaryInfo {
-    pub size: usize,
-    pub expected_sha256: String,
-    pub version: String,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -230,12 +204,5 @@ mod tests {
         binary.cleanup().expect("Failed to cleanup");
 
         assert!(!path.exists());
-    }
-
-    #[test]
-    fn test_embedded_binary_info() {
-        let info = embedded_binary_info().expect("Should have embedded binary info");
-        assert!(info.size > 0);
-        assert_eq!(info.version, RCLONE_VERSION);
     }
 }

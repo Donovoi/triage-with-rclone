@@ -111,10 +111,6 @@ impl Cleanup {
         Some(report)
     }
 
-    /// Create a shallow clone for signal handlers
-    pub fn clone_for_signal(&self) -> Self {
-        self.clone()
-    }
 }
 
 #[cfg(test)]
