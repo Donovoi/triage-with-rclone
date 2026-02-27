@@ -942,7 +942,7 @@ mod tests {
         queue.add(request.clone());
 
         let output = queue
-            .download_one(&runner, &request)
+            .download_one_verified(&runner, &request)
             .expect("Download failed");
         assert!(output.success());
     }
