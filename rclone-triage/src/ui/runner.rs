@@ -1384,26 +1384,7 @@ fn perform_post_auth_list<B: ratatui::backend::Backend>(
     let config = crate::rclone::RcloneConfig::for_case(&config_dir)?;
     let runner = crate::rclone::RcloneRunner::new(binary.path()).with_config(config.path());
 
-    let include_hashes = provider
-        .as_ref()
-        .and_then(|p| p.known)
-        .map(|known| !known.hash_types().is_empty())
-        .unwrap_or_else(|| {
-            if let Some(ref p) = provider {
-                matches!(
-                    crate::providers::features::provider_supports_hashes(p),
-                    Ok(Some(true))
-                )
-            } else {
-                false
-            }
-        });
-
-    let list_options = if include_hashes {
-        crate::files::listing::ListPathOptions::with_hashes()
-    } else {
-        crate::files::listing::ListPathOptions::without_hashes()
-    };
+    let (hash_type, is_onedrive) = resolve_provider_hash_info(provider.as_ref());
 
     let target = format!("{}:", remote_name);
     let short = provider
@@ -1411,22 +1392,22 @@ fn perform_post_auth_list<B: ratatui::backend::Backend>(
         .map(|p| p.short_name().to_string())
         .unwrap_or_else(|| remote_name.clone());
 
-    // Prefer large CSV streaming listing — better for thousands of files.
     let max_in_memory: usize = std::env::var("RCLONE_TRIAGE_LARGE_LISTING_IN_MEMORY")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(50_000);
 
+    app.auth_status = "Listing files... (0 found)".to_string();
+    terminal.draw(|f| crate::ui::render::render_state(f, app))?;
+
     if let Some(ref dirs) = app.forensics.directories {
         let csv_path = dirs.listings.join(format!("{}_files.csv", short));
 
-        app.auth_status = "Listing files... (0 found)".to_string();
-        terminal.draw(|f| crate::ui::render::render_state(f, app))?;
-
-        let listing_result = crate::files::listing::list_path_large_to_csv_with_progress(
+        let listing_result = crate::files::listing::list_path_large_lsf_to_ps_csv_with_progress(
             &runner,
             &target,
-            list_options,
+            hash_type.as_deref(),
+            is_onedrive,
             &csv_path,
             max_in_memory,
             |count| {
@@ -1437,32 +1418,7 @@ fn perform_post_auth_list<B: ratatui::backend::Backend>(
 
         match listing_result {
             Ok(result) => {
-                app.log_info(format!("Exported listing to {:?}", csv_path));
-                app.track_file(&csv_path, "Exported file listing CSV");
-
-                app.files.entries_full = result.entries.clone();
-                app.files.entries = result.entries.iter().map(|e| e.path.clone()).collect();
-
-                // Also export XLSX
-                if let Some(ref dirs) = app.forensics.directories {
-                    let xlsx_path = dirs.listings.join(format!("{}_files.xlsx", short));
-                    if let Err(e) = crate::files::export::export_listing_xlsx(&result.entries, &xlsx_path) {
-                        app.log_error(format!("Excel export failed: {}", e));
-                    } else {
-                        app.log_info(format!("Exported listing to {:?}", xlsx_path));
-                        app.track_file(&xlsx_path, "Exported file listing Excel");
-                    }
-                }
-
-                let shown = app.files.entries.len();
-                if result.truncated {
-                    app.auth_status = format!(
-                        "Found {} files (showing first {}). CSV: {:?}",
-                        result.total_entries, shown, csv_path
-                    );
-                } else {
-                    app.auth_status = format!("Found {} files. CSV: {:?}", result.total_entries, csv_path);
-                }
+                populate_listing_results(app, &result, &csv_path, &short);
             }
             Err(e) => {
                 app.log_error(format!("File listing failed: {}", e));
@@ -1470,14 +1426,17 @@ fn perform_post_auth_list<B: ratatui::backend::Backend>(
             }
         }
     } else {
-        // No case directories — fall back to in-memory listing.
-        app.auth_status = "Listing files... (0 found)".to_string();
-        terminal.draw(|f| crate::ui::render::render_state(f, app))?;
+        // No case directories — use a temp file for lsf output.
+        let tmp_dir = std::env::temp_dir();
+        let csv_path = tmp_dir.join(format!("{}_files.csv", short));
 
-        let listing_result = crate::files::listing::list_path_with_progress(
+        let listing_result = crate::files::listing::list_path_large_lsf_to_ps_csv_with_progress(
             &runner,
             &target,
-            list_options,
+            hash_type.as_deref(),
+            is_onedrive,
+            &csv_path,
+            max_in_memory,
             |count| {
                 app.auth_status = format!("Listing files... ({} found)", count);
                 let _ = terminal.draw(|f| crate::ui::render::render_state(f, app));
@@ -1485,10 +1444,12 @@ fn perform_post_auth_list<B: ratatui::backend::Backend>(
         );
 
         match listing_result {
-            Ok(entries) => {
-                app.files.entries_full = entries.clone();
-                app.files.entries = entries.iter().map(|e| e.path.clone()).collect();
+            Ok(result) => {
+                app.files.entries_full = result.entries.clone();
+                app.files.entries = result.entries.iter().map(|e| e.path.clone()).collect();
                 app.auth_status = format!("Found {} files", app.files.entries.len());
+                // Best-effort cleanup of temp file
+                let _ = std::fs::remove_file(&csv_path);
             }
             Err(e) => {
                 app.log_error(format!("File listing failed: {}", e));
@@ -1530,20 +1491,11 @@ fn perform_post_auth_mount<B: ratatui::backend::Backend>(
     let config = crate::rclone::RcloneConfig::for_case(&config_dir)?;
 
     // --- Phase 1: Run file listing BEFORE mounting ---
-    // This avoids API contention between the mount process and lsjson, which can
-    // cause empty results on providers like Google Drive.
+    // Uses rclone lsf (line-based) which handles empty remotes and dangling
+    // shortcuts gracefully, matching the PowerShell module approach.
     let runner = crate::rclone::RcloneRunner::new(binary.path()).with_config(config.path());
     let provider = app.provider.chosen.clone();
-    let include_hashes = provider
-        .as_ref()
-        .and_then(|p| p.known)
-        .map(|known| !known.hash_types().is_empty())
-        .unwrap_or(false);
-    let list_options = if include_hashes {
-        crate::files::listing::ListPathOptions::with_hashes()
-    } else {
-        crate::files::listing::ListPathOptions::without_hashes()
-    };
+    let (hash_type, is_onedrive) = resolve_provider_hash_info(provider.as_ref());
     let target = format!("{}:", remote_name);
     let short = provider
         .as_ref()
@@ -1564,10 +1516,11 @@ fn perform_post_auth_mount<B: ratatui::backend::Backend>(
 
     if let Some(ref dirs) = app.forensics.directories {
         let csv_path = dirs.listings.join(format!("{}_files.csv", short));
-        let listing_result = crate::files::listing::list_path_large_to_csv_with_progress(
+        let listing_result = crate::files::listing::list_path_large_lsf_to_ps_csv_with_progress(
             &runner,
             &target,
-            list_options,
+            hash_type.as_deref(),
+            is_onedrive,
             &csv_path,
             max_in_memory,
             |count| {
@@ -1577,37 +1530,7 @@ fn perform_post_auth_mount<B: ratatui::backend::Backend>(
         );
         match listing_result {
             Ok(result) => {
-                // If fast-list returned 0 entries, retry without it — some providers
-                // (notably Google Drive) may return empty results with --fast-list.
-                if result.total_entries == 0 && list_options.fast_list {
-                    tracing::warn!("Listing returned 0 entries with --fast-list, retrying without");
-                    app.auth_status = "Retrying listing without fast-list...".to_string();
-                    let _ = terminal.draw(|f| crate::ui::render::render_state(f, app));
-
-                    let retry_options = list_options.without_fast_list();
-                    let retry_result = crate::files::listing::list_path_large_to_csv_with_progress(
-                        &runner,
-                        &target,
-                        retry_options,
-                        &csv_path,
-                        max_in_memory,
-                        |count| {
-                            app.auth_status = format!("Listing files... ({} found)", count);
-                            let _ = terminal.draw(|f| crate::ui::render::render_state(f, app));
-                        },
-                    );
-                    match retry_result {
-                        Ok(retry) => {
-                            populate_listing_results(app, &retry, &csv_path, &short);
-                        }
-                        Err(e) => {
-                            app.log_error(format!("File listing retry failed: {}", e));
-                            app.auth_status = format!("Listing failed: {}", e);
-                        }
-                    }
-                } else {
-                    populate_listing_results(app, &result, &csv_path, &short);
-                }
+                populate_listing_results(app, &result, &csv_path, &short);
             }
             Err(e) => {
                 app.log_error(format!("File listing failed: {}", e));
@@ -1615,48 +1538,28 @@ fn perform_post_auth_mount<B: ratatui::backend::Backend>(
             }
         }
     } else {
-        // No case directories — fall back to in-memory listing.
-        let listing_result = crate::files::listing::list_path_with_progress(
+        // No case directories — use a temp file for lsf output.
+        let tmp_dir = std::env::temp_dir();
+        let csv_path = tmp_dir.join(format!("{}_files.csv", short));
+
+        let listing_result = crate::files::listing::list_path_large_lsf_to_ps_csv_with_progress(
             &runner,
             &target,
-            list_options,
+            hash_type.as_deref(),
+            is_onedrive,
+            &csv_path,
+            max_in_memory,
             |count| {
                 app.auth_status = format!("Listing files... ({} found)", count);
                 let _ = terminal.draw(|f| crate::ui::render::render_state(f, app));
             },
         );
         match listing_result {
-            Ok(entries) => {
-                if entries.is_empty() && list_options.fast_list {
-                    tracing::warn!("Listing returned 0 entries with --fast-list, retrying without");
-                    app.auth_status = "Retrying listing without fast-list...".to_string();
-                    let _ = terminal.draw(|f| crate::ui::render::render_state(f, app));
-
-                    let retry_options = list_options.without_fast_list();
-                    match crate::files::listing::list_path_with_progress(
-                        &runner,
-                        &target,
-                        retry_options,
-                        |count| {
-                            app.auth_status = format!("Listing files... ({} found)", count);
-                            let _ = terminal.draw(|f| crate::ui::render::render_state(f, app));
-                        },
-                    ) {
-                        Ok(retry_entries) => {
-                            app.files.entries_full = retry_entries.clone();
-                            app.files.entries = retry_entries.iter().map(|e| e.path.clone()).collect();
-                            app.auth_status = format!("Found {} files", app.files.entries.len());
-                        }
-                        Err(e) => {
-                            app.log_error(format!("File listing retry failed: {}", e));
-                            app.auth_status = format!("Listing failed: {}", e);
-                        }
-                    }
-                } else {
-                    app.files.entries_full = entries.clone();
-                    app.files.entries = entries.iter().map(|e| e.path.clone()).collect();
-                    app.auth_status = format!("Found {} files", app.files.entries.len());
-                }
+            Ok(result) => {
+                app.files.entries_full = result.entries.clone();
+                app.files.entries = result.entries.iter().map(|e| e.path.clone()).collect();
+                app.auth_status = format!("Found {} files", app.files.entries.len());
+                let _ = std::fs::remove_file(&csv_path);
             }
             Err(e) => {
                 app.log_error(format!("File listing failed: {}", e));
@@ -1756,6 +1659,22 @@ fn perform_post_auth_mount<B: ratatui::backend::Backend>(
 
     app.advance(); // PostAuthChoice → FileList
     Ok(())
+}
+
+/// Extract the preferred hash type and OneDrive flag from a chosen provider.
+///
+/// Returns `(hash_type, is_onedrive)` for use with `rclone lsf` listing.
+fn resolve_provider_hash_info(
+    provider: Option<&crate::providers::ProviderEntry>,
+) -> (Option<String>, bool) {
+    let known = provider.and_then(|p| p.known);
+    let hash_type = known
+        .and_then(|k: crate::providers::CloudProvider| k.hash_types().first().copied())
+        .map(|s: &str| s.to_string());
+    let is_onedrive = known
+        .map(|k| k == crate::providers::CloudProvider::OneDrive)
+        .unwrap_or(false);
+    (hash_type, is_onedrive)
 }
 
 /// Populate app state from a large listing result, including CSV/XLSX export tracking.
