@@ -490,6 +490,18 @@ fn run_lsjson_streaming<'a>(
     // If we killed the child due to a parse error, report the parse error
     // with all available diagnostic context.
     if was_killed {
+        // Special case: rclone exited successfully but produced no JSON at all.
+        // This happens when the remote is empty or contains only inaccessible
+        // entries (e.g. Google Drive dangling shortcuts). Treat as 0 results.
+        if exit_code == 0 && !stream_result.found_json {
+            tracing::info!(
+                target = target,
+                stderr = %stderr_msg,
+                "rclone lsjson produced no JSON output (exit 0) — treating as empty listing"
+            );
+            return Ok(0);
+        }
+
         let parse_err = stream_result.count.unwrap_err();
 
         // Build a detailed diagnostic message
@@ -535,6 +547,10 @@ struct LsjsonStreamResult {
     /// Non-JSON bytes rclone printed to stdout before the JSON payload.
     /// Often contains the real error message when rclone fails.
     skipped_prefix: Vec<u8>,
+    /// True if a JSON array/object delimiter was found in stdout.
+    /// False means rclone produced no JSON at all (e.g. empty remote,
+    /// dangling shortcuts only).
+    found_json: bool,
 }
 
 fn stream_lsjson_entries_from_reader<'a, R: Read>(
@@ -558,6 +574,7 @@ fn stream_lsjson_entries_from_reader<'a, R: Read>(
             .with_context(|| "Failed to parse rclone lsjson JSON payload")
     };
 
+    let found_json = json_reader.found_json;
     let skipped_prefix = json_reader.skipped_prefix().to_vec();
 
     // Drain remaining stdout bytes (e.g., noisy suffix logs) so the child can exit.
@@ -566,6 +583,7 @@ fn stream_lsjson_entries_from_reader<'a, R: Read>(
     LsjsonStreamResult {
         count,
         skipped_prefix,
+        found_json,
     }
 }
 
@@ -630,6 +648,8 @@ struct JsonPayloadReader<R> {
     buf_pos: usize,
     /// Bytes seen before the first JSON delimiter (non-JSON prefix from rclone).
     skipped: Vec<u8>,
+    /// True once we've found the opening `[` or `{` of a JSON payload.
+    found_json: bool,
 }
 
 impl<R: Read> JsonPayloadReader<R> {
@@ -645,6 +665,7 @@ impl<R: Read> JsonPayloadReader<R> {
             buf: Vec::new(),
             buf_pos: 0,
             skipped: Vec::new(),
+            found_json: false,
         }
     }
 
@@ -671,6 +692,7 @@ impl<R: Read> JsonPayloadReader<R> {
         self.depth = 1;
         self.in_string = false;
         self.escape = false;
+        self.found_json = true;
         self.push_byte(b);
     }
 
@@ -916,5 +938,34 @@ mod tests {
         assert_eq!(entry.hash_type.as_deref(), Some("MD5"));
         assert!(!entry.is_dir);
         assert!(entry.modified.is_some());
+    }
+
+    #[test]
+    fn test_stream_lsjson_empty_stdout_returns_no_json() {
+        // Simulates rclone producing no output at all (e.g. only dangling shortcuts
+        // in a Google Drive). The parser should report found_json=false.
+        let data = b"";
+        let mut on_entry = |_: RcloneLsJsonEntry| -> Result<()> { Ok(()) };
+        let result = stream_lsjson_entries_from_reader(
+            Cursor::new(data.as_ref()),
+            &mut on_entry,
+            None,
+        );
+        assert!(!result.found_json, "empty stdout should not count as JSON");
+        assert!(result.count.is_err(), "empty stdout should fail to parse");
+    }
+
+    #[test]
+    fn test_stream_lsjson_empty_array_returns_found_json() {
+        // Simulates rclone producing an empty array — valid JSON, 0 entries.
+        let data = b"[]";
+        let mut on_entry = |_: RcloneLsJsonEntry| -> Result<()> { Ok(()) };
+        let result = stream_lsjson_entries_from_reader(
+            Cursor::new(data.as_ref()),
+            &mut on_entry,
+            None,
+        );
+        assert!(result.found_json, "empty array is valid JSON");
+        assert_eq!(result.count.unwrap(), 0);
     }
 }
