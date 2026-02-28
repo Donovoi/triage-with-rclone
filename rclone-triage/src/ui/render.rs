@@ -526,8 +526,10 @@ pub fn render_state(frame: &mut Frame, app: &App) {
                     mounted.mount_point()
                 )
             } else {
-                "Mount completed but no active mount handle found.\nPress Backspace to go back."
-                    .to_string()
+                format!(
+                    "{}\n\nPress Backspace to go back and try again.",
+                    app.auth_status
+                )
             };
 
             let body = Paragraph::new(mount_info)

@@ -424,8 +424,28 @@ impl MountManager {
         let mount_ok = Self::wait_for_mount(&mount_point, &mut process, Duration::from_secs(30));
 
         if !mount_ok {
-            // Mount failed - try to get error from stderr
-            tracing::warn!("Mount point {:?} not accessible after timeout", mount_point);
+            // Capture stderr from the failed rclone process for diagnostics
+            let stderr_msg = process
+                .stderr
+                .take()
+                .and_then(|mut err| {
+                    use std::io::Read;
+                    let mut buf = String::new();
+                    err.read_to_string(&mut buf).ok()?;
+                    Some(buf)
+                })
+                .unwrap_or_default();
+
+            let _ = process.kill();
+            let _ = process.wait();
+            let _ = std::fs::remove_dir(&mount_point);
+
+            let detail = stderr_msg.trim();
+            if detail.is_empty() {
+                bail!("Mount failed: rclone exited without producing output. Check that FUSE/WinFSP is installed and the remote is configured correctly.");
+            } else {
+                bail!("Mount failed: {}", detail);
+            }
         }
 
         Ok(MountedRemote {
@@ -459,8 +479,11 @@ impl MountManager {
             }
             std::thread::sleep(Duration::from_millis(500));
         }
-        // Final check — some remotes may have a genuinely empty root
-        mount_point.read_dir().is_ok()
+        // Timeout reached — accept if the rclone process is still running
+        // (some remotes may have a genuinely empty root).
+        // The pre-created directory always passes read_dir().is_ok(), so
+        // checking that the process hasn't exited is the real signal.
+        matches!(process.try_wait(), Ok(None))
     }
 
     /// Mount a remote and open file explorer
