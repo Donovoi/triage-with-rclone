@@ -508,6 +508,38 @@ pub fn render_state(frame: &mut Frame, app: &App) {
             .wrap(Wrap { trim: true });
             frame.render_widget(footer, chunks[1]);
         }
+        AppState::Mounted => {
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Min(3), Constraint::Length(3)])
+                .split(area);
+
+            let mount_info = if let Some(ref mounted) = app.mounted_remote {
+                let remote = app
+                    .remote
+                    .chosen
+                    .as_deref()
+                    .unwrap_or("unknown");
+                format!(
+                    "Drive Mounted\n\nRemote: {}\nMount point: {:?}\n\nThe cloud drive is mounted and accessible via file explorer.\nPress 'u' to unmount, Backspace to go back, or 'q' to quit.",
+                    remote,
+                    mounted.mount_point()
+                )
+            } else {
+                "Mount completed but no active mount handle found.\nPress Backspace to go back."
+                    .to_string()
+            };
+
+            let body = Paragraph::new(mount_info)
+                .block(Block::default().borders(Borders::ALL).title("Mounted Drive"))
+                .wrap(Wrap { trim: true });
+            frame.render_widget(body, chunks[0]);
+
+            let hint = "u unmount • Backspace back • q quit";
+            let footer = Paragraph::new(vec![Line::from(Span::styled(hint, hint_style()))])
+                .wrap(Wrap { trim: true });
+            frame.render_widget(footer, chunks[1]);
+        }
         AppState::Downloading => {
             let chunks = Layout::default()
                 .direction(Direction::Vertical)

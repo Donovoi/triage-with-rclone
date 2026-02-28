@@ -913,6 +913,17 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                             app.remote.options.clear();
                             app.remote.selected = 0;
                             app.back();
+                        } else if app.state == crate::ui::AppState::Mounted {
+                            app.unmount_remote();
+                            app.log_info("Unmounted remote");
+                            if matches!(
+                                app.selected_action,
+                                Some(crate::ui::MenuAction::MountProvider)
+                            ) {
+                                app.state = crate::ui::AppState::ProviderSelect;
+                            } else {
+                                app.state = crate::ui::AppState::PostAuthChoice;
+                            }
                         } else if app.state == crate::ui::AppState::FileList {
                             if matches!(
                                 app.selected_action,
@@ -1082,9 +1093,21 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                         }
                     }
                     KeyCode::Char('u') => {
-                        if app.state == crate::ui::AppState::FileList {
+                        if app.state == crate::ui::AppState::FileList
+                            || app.state == crate::ui::AppState::Mounted
+                        {
                             app.unmount_remote();
                             app.log_info("Unmounted remote");
+                            if app.state == crate::ui::AppState::Mounted {
+                                if matches!(
+                                    app.selected_action,
+                                    Some(crate::ui::MenuAction::MountProvider)
+                                ) {
+                                    app.state = crate::ui::AppState::ProviderSelect;
+                                } else {
+                                    app.state = crate::ui::AppState::PostAuthChoice;
+                                }
+                            }
                         }
                     }
                     KeyCode::Char('i') => {
@@ -1464,15 +1487,14 @@ fn perform_post_auth_list<B: ratatui::backend::Backend>(
 
 /// Execute the "Mount as drive" post-auth action using the already-authenticated remote.
 ///
-/// Runs the file listing FIRST (to avoid API contention with the mount process),
-/// then mounts the remote for file explorer access.
+/// Mounts the remote for file explorer access without performing file listing.
 fn perform_post_auth_mount<B: ratatui::backend::Backend>(
     app: &mut App,
     terminal: &mut Terminal<B>,
 ) -> Result<()> {
     let Some(remote_name) = app.remote.chosen.clone() else {
         app.auth_status = "No remote available. Try authenticating again.".to_string();
-        app.advance(); // → FileList (empty)
+        app.state = crate::ui::AppState::Mounted;
         return Ok(());
     };
 
@@ -1490,91 +1512,13 @@ fn perform_post_auth_mount<B: ratatui::backend::Backend>(
         .unwrap_or_else(|| std::path::PathBuf::from("."));
     let config = crate::rclone::RcloneConfig::for_case(&config_dir)?;
 
-    // --- Phase 1: Run file listing BEFORE mounting ---
-    // Uses rclone lsf (line-based) which handles empty remotes and dangling
-    // shortcuts gracefully, matching the PowerShell module approach.
-    let runner = crate::rclone::RcloneRunner::new(binary.path()).with_config(config.path());
-    let provider = app.provider.chosen.clone();
-    let (hash_type, is_onedrive) = resolve_provider_hash_info(provider.as_ref());
-    let target = format!("{}:", remote_name);
-    let short = provider
-        .as_ref()
-        .map(|p| p.short_name().to_string())
-        .unwrap_or_else(|| remote_name.clone());
-    let max_in_memory: usize = std::env::var("RCLONE_TRIAGE_LARGE_LISTING_IN_MEMORY")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(50_000);
-
-    app.files.entries.clear();
-    app.files.entries_full.clear();
-    app.files.to_download.clear();
-    app.files.selected = 0;
-
-    app.auth_status = "Listing files... (0 found)".to_string();
-    terminal.draw(|f| crate::ui::render::render_state(f, app))?;
-
-    if let Some(ref dirs) = app.forensics.directories {
-        let csv_path = dirs.listings.join(format!("{}_files.csv", short));
-        let listing_result = crate::files::listing::list_path_large_lsf_to_ps_csv_with_progress(
-            &runner,
-            &target,
-            hash_type.as_deref(),
-            is_onedrive,
-            &csv_path,
-            max_in_memory,
-            |count| {
-                app.auth_status = format!("Listing files... ({} found)", count);
-                let _ = terminal.draw(|f| crate::ui::render::render_state(f, app));
-            },
-        );
-        match listing_result {
-            Ok(result) => {
-                populate_listing_results(app, &result, &csv_path, &short);
-            }
-            Err(e) => {
-                app.log_error(format!("File listing failed: {}", e));
-                app.auth_status = format!("Listing failed: {}", e);
-            }
-        }
-    } else {
-        // No case directories — use a temp file for lsf output.
-        let tmp_dir = std::env::temp_dir();
-        let csv_path = tmp_dir.join(format!("{}_files.csv", short));
-
-        let listing_result = crate::files::listing::list_path_large_lsf_to_ps_csv_with_progress(
-            &runner,
-            &target,
-            hash_type.as_deref(),
-            is_onedrive,
-            &csv_path,
-            max_in_memory,
-            |count| {
-                app.auth_status = format!("Listing files... ({} found)", count);
-                let _ = terminal.draw(|f| crate::ui::render::render_state(f, app));
-            },
-        );
-        match listing_result {
-            Ok(result) => {
-                app.files.entries_full = result.entries.clone();
-                app.files.entries = result.entries.iter().map(|e| e.path.clone()).collect();
-                app.auth_status = format!("Found {} files", app.files.entries.len());
-                let _ = std::fs::remove_file(&csv_path);
-            }
-            Err(e) => {
-                app.log_error(format!("File listing failed: {}", e));
-                app.auth_status = format!("Listing failed: {}", e);
-            }
-        }
-    }
-
-    // --- Phase 2: Mount the remote for file explorer access ---
+    // --- Mount the remote for file explorer access ---
     let mut manager = match crate::rclone::MountManager::new(binary.path()) {
         Ok(manager) => manager.with_config(config.path()),
         Err(e) => {
-            app.auth_status = format!("Found {} files. Mount failed: {}", app.files.entries.len(), e);
+            app.auth_status = format!("Mount failed: {}", e);
             app.log_error(format!("Mount failed: {}", e));
-            app.advance(); // → FileList (listing results are still available)
+            app.state = crate::ui::AppState::Mounted;
             return Ok(());
         }
     };
@@ -1583,10 +1527,7 @@ fn perform_post_auth_mount<B: ratatui::backend::Backend>(
     match manager.check_fuse_available() {
         Ok(true) => {}
         Ok(false) => {
-            app.auth_status = format!(
-                "Found {} files. Mounting...",
-                app.files.entries.len()
-            );
+            app.auth_status = "Mounting...".to_string();
             terminal.draw(|f| crate::ui::render::render_state(f, app))?;
             app.log_info("FUSE/WinFSP not detected — attempting auto-install");
 
@@ -1596,11 +1537,9 @@ fn perform_post_auth_mount<B: ratatui::backend::Backend>(
                 }
                 Ok(false) | Err(_) => {
                     app.log_error("FUSE/WinFSP auto-install failed");
-                    app.auth_status = format!(
-                        "Found {} files. Mount skipped (FUSE/WinFSP not available).",
-                        app.files.entries.len()
-                    );
-                    app.advance(); // → FileList (listing results are still available)
+                    app.auth_status =
+                        "Mount skipped (FUSE/WinFSP not available).".to_string();
+                    app.state = crate::ui::AppState::Mounted;
                     return Ok(());
                 }
             }
@@ -1621,11 +1560,7 @@ fn perform_post_auth_mount<B: ratatui::backend::Backend>(
         manager = manager.with_mount_base(&mount_base).with_cache_dir(&cache_dir);
     }
 
-    app.auth_status = format!(
-        "Found {} files. Mounting {}...",
-        app.files.entries.len(),
-        remote_name
-    );
+    app.auth_status = format!("Mounting {}...", remote_name);
     terminal.draw(|f| crate::ui::render::render_state(f, app))?;
 
     match manager.mount_and_explore(&remote_name, None) {
@@ -1633,31 +1568,15 @@ fn perform_post_auth_mount<B: ratatui::backend::Backend>(
             let mount_path = mounted.mount_point().to_path_buf();
             app.mounted_remote = Some(mounted);
             app.log_info(format!("Mounted {} at {:?}", remote_name, mount_path));
-            if app.files.entries.is_empty() {
-                app.auth_status = format!(
-                    "Mounted at {:?}. Listing returned 0 files — check logs.",
-                    mount_path
-                );
-            } else {
-                app.auth_status = format!(
-                    "Mounted at {:?}. {} files listed.",
-                    mount_path,
-                    app.files.entries.len()
-                );
-            }
+            app.auth_status = format!("Mounted at {:?}", mount_path);
         }
         Err(e) => {
             app.log_error(format!("Mount failed: {}", e));
-            app.auth_status = format!(
-                "Found {} files. Mount failed: {}",
-                app.files.entries.len(),
-                e
-            );
-            // Still advance — listing results are available for download.
+            app.auth_status = format!("Mount failed: {}", e);
         }
     }
 
-    app.advance(); // PostAuthChoice → FileList
+    app.state = crate::ui::AppState::Mounted;
     Ok(())
 }
 
