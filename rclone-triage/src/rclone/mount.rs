@@ -411,17 +411,17 @@ impl MountManager {
             .stdin(Stdio::null());
 
         // Spawn the mount process
-        let process = cmd
+        let mut process = cmd
             .spawn()
             .with_context(|| format!("Failed to start rclone mount for {}", remote))?;
 
         let active = Arc::new(AtomicBool::new(true));
 
-        // Wait a moment for mount to initialize
-        std::thread::sleep(Duration::from_millis(500));
+        // Wait for rclone to initialize the FUSE/WinFSP mount
+        std::thread::sleep(Duration::from_secs(2));
 
-        // Verify mount point is accessible
-        let mount_ok = Self::wait_for_mount(&mount_point, Duration::from_secs(10));
+        // Verify mount point has content (entries visible from the cloud remote)
+        let mount_ok = Self::wait_for_mount(&mount_point, &mut process, Duration::from_secs(30));
 
         if !mount_ok {
             // Mount failed - try to get error from stderr
@@ -436,23 +436,30 @@ impl MountManager {
         })
     }
 
-    /// Wait for mount point to become accessible
-    fn wait_for_mount(mount_point: &Path, timeout: Duration) -> bool {
+    /// Wait for mount point to become accessible with actual content.
+    ///
+    /// The mount directory is pre-created before rclone starts, so `read_dir()`
+    /// alone always succeeds on the empty dir. We must wait until entries appear
+    /// (FUSE/WinFSP is serving content). Also checks that the rclone process
+    /// hasn't crashed.
+    fn wait_for_mount(mount_point: &Path, process: &mut Child, timeout: Duration) -> bool {
         let start = std::time::Instant::now();
         while start.elapsed() < timeout {
-            // Try to read the directory
-            if mount_point.read_dir().is_ok() {
-                // Additional check - see if we can actually list contents
-                if let Ok(mut entries) = mount_point.read_dir() {
-                    // If we get at least one entry or it doesn't error, mount is ready
-                    if entries.next().is_some() || mount_point.read_dir().is_ok() {
-                        return true;
-                    }
+            // If rclone exited, the mount won't work
+            if let Ok(Some(_status)) = process.try_wait() {
+                tracing::warn!("rclone mount process exited during startup");
+                return false;
+            }
+
+            // Check for actual entries — not just that the dir is readable
+            if let Ok(mut entries) = mount_point.read_dir() {
+                if entries.next().is_some() {
+                    return true;
                 }
             }
-            std::thread::sleep(Duration::from_millis(200));
+            std::thread::sleep(Duration::from_millis(500));
         }
-        // Final check
+        // Final check — some remotes may have a genuinely empty root
         mount_point.read_dir().is_ok()
     }
 
