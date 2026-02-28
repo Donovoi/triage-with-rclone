@@ -30,6 +30,17 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 fn main() -> Result<()> {
+    // Enable tracing output to stderr. Control verbosity with RUST_LOG env var:
+    //   RUST_LOG=debug  — all debug+ messages
+    //   RUST_LOG=rclone_triage::files=trace  — just listing module
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
+        )
+        .with_writer(std::io::stderr)
+        .init();
+
     println!("rclone-triage v{}", env!("CARGO_PKG_VERSION"));
 
     let args = Cli::parse();

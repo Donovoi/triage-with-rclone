@@ -342,7 +342,7 @@ where
 }
 
 fn build_lsjson_args(target: &str, include_hashes: bool, fast_list: bool) -> Vec<&str> {
-    let mut args = vec!["lsjson"];
+    let mut args = vec!["lsjson", "-v"];
     if include_hashes {
         args.push("--hash");
     }
@@ -458,9 +458,9 @@ fn run_lsjson_streaming<'a>(
     });
 
     let stdout_reader = BufReader::new(stdout);
-    let parse_result = stream_lsjson_entries_from_reader(stdout_reader, on_entry, on_progress);
+    let stream_result = stream_lsjson_entries_from_reader(stdout_reader, on_entry, on_progress);
 
-    let was_killed = parse_result.is_err();
+    let was_killed = stream_result.count.is_err();
     if was_killed {
         let _ = child.kill();
     }
@@ -471,30 +471,48 @@ fn run_lsjson_streaming<'a>(
         .unwrap_or_else(|_| vec!["<stderr capture panicked>".to_string()]);
 
     let exit_code = status.code().unwrap_or(-1);
-    if !stderr_lines.is_empty() {
-        tracing::warn!(exit_code = exit_code, stderr = %stderr_lines.join("\n"), "rclone lsjson stderr output");
+    let stderr_msg = stderr_lines.join("\n");
+
+    // Log raw stdout prefix (non-JSON bytes rclone printed before any payload).
+    // This is often the actual error message on failure.
+    let stdout_prefix = String::from_utf8_lossy(&stream_result.skipped_prefix);
+    if !stdout_prefix.trim().is_empty() {
+        tracing::warn!(
+            stdout_prefix = %stdout_prefix,
+            "rclone lsjson: non-JSON output before payload (possible error message)"
+        );
+    }
+
+    if !stderr_msg.trim().is_empty() {
+        tracing::warn!(exit_code = exit_code, stderr = %stderr_msg, "rclone lsjson stderr output");
     }
 
     // If we killed the child due to a parse error, report the parse error
-    // rather than the misleading "rclone lsjson failed" exit-code message.
+    // with all available diagnostic context.
     if was_killed {
-        let parse_err = parse_result.unwrap_err();
-        let stderr_msg = stderr_lines.join("\n");
-        if stderr_msg.trim().is_empty() {
-            return Err(parse_err.context(format!(
-                "rclone lsjson output could not be parsed (exit code {})",
-                exit_code
-            )));
-        } else {
-            return Err(parse_err.context(format!(
-                "rclone lsjson output could not be parsed: {}",
-                stderr_msg
-            )));
+        let parse_err = stream_result.count.unwrap_err();
+
+        // Build a detailed diagnostic message
+        let mut detail = format!("exit code {}", exit_code);
+        if !stderr_msg.trim().is_empty() {
+            detail = format!("stderr: {}", stderr_msg);
         }
+        if !stdout_prefix.trim().is_empty() {
+            let prefix_truncated = if stdout_prefix.len() > 500 {
+                format!("{}...", &stdout_prefix[..500])
+            } else {
+                stdout_prefix.to_string()
+            };
+            detail = format!("{} | stdout before JSON: {}", detail, prefix_truncated);
+        }
+
+        return Err(parse_err.context(format!(
+            "rclone lsjson output could not be parsed ({})",
+            detail
+        )));
     }
 
     if exit_code != 0 {
-        let stderr_msg = stderr_lines.join("\n");
         if stderr_msg.trim().is_empty() {
             bail!(
                 "rclone lsjson failed (exit code {}). Check that the remote is properly configured and the token is valid.",
@@ -505,16 +523,25 @@ fn run_lsjson_streaming<'a>(
         }
     }
 
-    let count = parse_result?;
+    let count = stream_result.count?;
     tracing::info!(target = target, entries = count, "rclone lsjson completed");
     Ok(count)
+}
+
+/// Outcome of streaming lsjson parsing, including diagnostic info on failure.
+struct LsjsonStreamResult {
+    /// Number of entries successfully parsed (0 on total failure).
+    count: Result<usize>,
+    /// Non-JSON bytes rclone printed to stdout before the JSON payload.
+    /// Often contains the real error message when rclone fails.
+    skipped_prefix: Vec<u8>,
 }
 
 fn stream_lsjson_entries_from_reader<'a, R: Read>(
     reader: R,
     on_entry: &'a mut dyn FnMut(RcloneLsJsonEntry) -> Result<()>,
     on_progress: Option<&'a mut dyn FnMut(usize)>,
-) -> Result<usize> {
+) -> LsjsonStreamResult {
     let mut json_reader = JsonPayloadReader::new(reader);
     let count = {
         let mut de = serde_json::Deserializer::from_reader(&mut json_reader);
@@ -528,13 +555,18 @@ fn stream_lsjson_entries_from_reader<'a, R: Read>(
             last_emit: 0,
         };
         de.deserialize_seq(visitor)
-            .with_context(|| "Failed to parse rclone lsjson JSON payload")?
+            .with_context(|| "Failed to parse rclone lsjson JSON payload")
     };
+
+    let skipped_prefix = json_reader.skipped_prefix().to_vec();
 
     // Drain remaining stdout bytes (e.g., noisy suffix logs) so the child can exit.
     let _ = json_reader.drain_inner_to_end();
 
-    Ok(count)
+    LsjsonStreamResult {
+        count,
+        skipped_prefix,
+    }
 }
 
 struct LsjsonSeqVisitor<'a> {
@@ -596,6 +628,8 @@ struct JsonPayloadReader<R> {
     escape: bool,
     buf: Vec<u8>,
     buf_pos: usize,
+    /// Bytes seen before the first JSON delimiter (non-JSON prefix from rclone).
+    skipped: Vec<u8>,
 }
 
 impl<R: Read> JsonPayloadReader<R> {
@@ -610,7 +644,14 @@ impl<R: Read> JsonPayloadReader<R> {
             escape: false,
             buf: Vec::new(),
             buf_pos: 0,
+            skipped: Vec::new(),
         }
+    }
+
+    /// Return the bytes rclone printed to stdout before any JSON payload started.
+    /// If rclone output an error message instead of JSON, this contains that message.
+    fn skipped_prefix(&self) -> &[u8] {
+        &self.skipped
     }
 
     fn drain_inner_to_end(&mut self) -> io::Result<()> {
@@ -698,7 +739,12 @@ impl<R: Read> Read for JsonPayloadReader<R> {
                     JsonPayloadState::Seeking => match b {
                         b'[' => self.start_json(b'[', b']', b),
                         b'{' => self.start_json(b'{', b'}', b),
-                        _ => {}
+                        _ => {
+                            // Track non-JSON prefix (cap at 2 KB to avoid unbounded growth)
+                            if self.skipped.len() < 2048 {
+                                self.skipped.push(b);
+                            }
+                        }
                     },
                     JsonPayloadState::Streaming => {
                         self.handle_stream_byte(b);
@@ -843,12 +889,12 @@ mod tests {
             progress.push(count);
         };
 
-        let count = stream_lsjson_entries_from_reader(
+        let result = stream_lsjson_entries_from_reader(
             Cursor::new(data.as_bytes()),
             &mut on_entry,
             Some(&mut on_progress),
-        )
-        .unwrap();
+        );
+        let count = result.count.unwrap();
 
         assert_eq!(count, 1);
         assert_eq!(paths, vec!["folder[1]/file].txt".to_string()]);
