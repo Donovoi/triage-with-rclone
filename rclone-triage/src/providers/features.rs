@@ -77,6 +77,16 @@ pub fn provider_supports_hashes(provider: &ProviderEntry) -> Result<Option<bool>
     ))
 }
 
+/// Check whether a remote type (e.g. "drive", "dropbox") supports hashes
+/// using the built-in CloudProvider definitions. Does not make network requests.
+pub fn type_supports_hashes(remote_type: &str) -> bool {
+    if let Ok(provider) = remote_type.parse::<CloudProvider>() {
+        !provider.hash_types().is_empty()
+    } else {
+        false
+    }
+}
+
 fn resolve_provider_display_name(provider: &str) -> String {
     let trimmed = provider.trim();
     if let Ok(parsed) = trimmed.parse::<CloudProvider>() {
