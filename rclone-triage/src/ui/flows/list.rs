@@ -207,3 +207,131 @@ pub(crate) fn perform_list_flow<B: ratatui::backend::Backend>(
 
     Ok(())
 }
+
+/// Perform a list flow from an existing config file (config browser path).
+/// Unlike perform_list_flow, this does not require a provider selection—
+/// it loads all remotes from the config and lets the user pick one.
+pub(crate) fn perform_list_flow_from_config<B: ratatui::backend::Backend>(
+    app: &mut App,
+    terminal: &mut Terminal<B>,
+    config_path: &std::path::Path,
+) -> Result<()> {
+    app.provider.status = format!("Loading config: {}...", config_path.display());
+    terminal.draw(|f| render_state(f, app))?;
+
+    let binary = crate::embedded::ExtractedBinary::extract()?;
+    app.cleanup_track_file(binary.path());
+    if let Some(dir) = binary.temp_dir() {
+        app.cleanup_track_dir(dir);
+    }
+
+    app.track_env_var("RCLONE_CONFIG", "Set RCLONE_CONFIG for config-based listing");
+    let config = match crate::rclone::RcloneConfig::open_existing(config_path) {
+        Ok(config) => config,
+        Err(e) => {
+            app.config_browser.status = format!("Failed to open config: {}", e);
+            app.log_error(format!("Failed to open config: {}", e));
+            app.state = crate::ui::AppState::ConfigBrowser;
+            return Ok(());
+        }
+    };
+    app.cleanup_track_env_value("RCLONE_CONFIG", config.original_env());
+
+    let remotes = match crate::ui::flows::remotes::resolve_all_remotes(&config) {
+        Ok(remotes) => remotes,
+        Err(e) => {
+            app.config_browser.status = format!("Failed to parse config: {}", e);
+            app.log_error(format!("Failed to parse config: {}", e));
+            app.state = crate::ui::AppState::ConfigBrowser;
+            return Ok(());
+        }
+    };
+
+    if remotes.is_empty() {
+        app.config_browser.status = format!(
+            "No remotes found in {}. Choose a different config file.",
+            config_path.display()
+        );
+        app.log_error(format!("No remotes found in {}", config_path.display()));
+        app.state = crate::ui::AppState::ConfigBrowser;
+        return Ok(());
+    }
+
+    let (remote_name, remote_type) =
+        match crate::ui::flows::remotes::choose_remote_from_all(app, remotes)? {
+            Some(choice) => choice,
+            None => return Ok(()), // Gone to RemoteSelect screen
+        };
+
+    app.remote.chosen = Some(remote_name.clone());
+    app.files.to_download.clear();
+    app.files.entries.clear();
+    app.files.entries_full.clear();
+    app.files.selected = 0;
+
+    let runner = crate::rclone::RcloneRunner::new(binary.path()).with_config(config.path());
+
+    app.provider.status = format!("Listing {}...", remote_name);
+    terminal.draw(|f| render_state(f, app))?;
+
+    let include_hashes = crate::providers::features::type_supports_hashes(&remote_type);
+
+    let list_options = if include_hashes {
+        crate::files::listing::ListPathOptions::with_hashes()
+    } else {
+        crate::files::listing::ListPathOptions::without_hashes()
+    };
+
+    let listing_result = crate::files::listing::list_path_with_progress(
+        &runner,
+        &format!("{}:", remote_name),
+        list_options,
+        |count| {
+            app.provider.status = format!("Listing {}... ({} found)", remote_name, count);
+            let _ = terminal.draw(|f| render_state(f, app));
+        },
+    );
+
+    match listing_result {
+        Ok(entries) => {
+            if let Some(ref dirs) = app.forensics.directories {
+                let csv_path = dirs
+                    .listings
+                    .join(format!("{}_files.csv", remote_type));
+                if let Err(e) = crate::files::export::export_listing(&entries, &csv_path) {
+                    app.log_error(format!("CSV export failed: {}", e));
+                } else {
+                    app.log_info(format!("Exported listing to {:?}", csv_path));
+                    app.track_file(&csv_path, "Exported file listing CSV");
+                }
+
+                let xlsx_path = dirs
+                    .listings
+                    .join(format!("{}_files.xlsx", remote_type));
+                if let Err(e) = crate::files::export::export_listing_xlsx(&entries, &xlsx_path) {
+                    app.log_error(format!("Excel export failed: {}", e));
+                } else {
+                    app.log_info(format!("Exported listing to {:?}", xlsx_path));
+                    app.track_file(&xlsx_path, "Exported file listing Excel");
+                }
+            }
+
+            app.files.entries_full = entries.clone();
+            app.files.entries = entries.iter().map(|e| e.path.clone()).collect();
+            app.log_info(format!(
+                "Listed {} files from {} ({})",
+                app.files.entries.len(),
+                remote_name,
+                remote_type
+            ));
+            app.provider.status = format!("Found {} files", app.files.entries.len());
+            app.state = crate::ui::AppState::FileList;
+        }
+        Err(e) => {
+            app.provider.status = format!("Listing failed: {}", e);
+            app.log_error(format!("Listing failed: {}", e));
+        }
+    }
+
+    Ok(())
+}

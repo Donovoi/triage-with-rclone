@@ -51,3 +51,50 @@ pub(crate) fn choose_remote_or_prompt(
     Ok(None)
 }
 
+/// Resolve all remotes from a config regardless of type.
+pub(crate) fn resolve_all_remotes(
+    config: &crate::rclone::RcloneConfig,
+) -> Result<Vec<(String, String)>> {
+    let parsed = config.parse()?;
+    let remotes = parsed
+        .remotes
+        .iter()
+        .map(|r| (r.name.clone(), r.remote_type.clone()))
+        .collect();
+    Ok(remotes)
+}
+
+/// Choose a remote from all available remotes (no provider filter).
+/// Returns the remote name and type if selected, or None if going to RemoteSelect.
+pub(crate) fn choose_remote_from_all(
+    app: &mut App,
+    remotes: Vec<(String, String)>,
+) -> Result<Option<(String, String)>> {
+    if let Some(current) = app.remote.chosen.clone() {
+        if let Some(r) = remotes.iter().find(|(name, _)| name == &current) {
+            return Ok(Some(r.clone()));
+        }
+        app.remote.chosen = None;
+    }
+
+    if remotes.len() == 1 {
+        let (name, rtype) = remotes[0].clone();
+        app.remote.chosen = Some(name.clone());
+        return Ok(Some((name, rtype)));
+    }
+
+    if remotes.is_empty() {
+        return Ok(None);
+    }
+
+    // Show remotes with their type for user clarity
+    app.remote.options = remotes
+        .iter()
+        .map(|(name, rtype)| format!("{} ({})", name, rtype))
+        .collect();
+    app.remote.selected = 0;
+    app.provider.status = "Multiple remotes found. Select one to continue.".to_string();
+    app.state = crate::ui::AppState::RemoteSelect;
+    Ok(None)
+}
+

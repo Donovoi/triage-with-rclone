@@ -12,7 +12,8 @@ fn hint_style() -> Style {
 }
 
 use crate::ui::screens::{
-    auth::AuthScreen, browser_select::BrowserSelectScreen, download::DownloadScreen,
+    auth::AuthScreen, browser_select::BrowserSelectScreen,
+    config_browser::ConfigBrowserScreen, download::DownloadScreen,
     files::FilesScreen, main_menu::MainMenuScreen,
     provider_select::ProviderSelectScreen, remote_select::RemoteSelectScreen, report::ReportScreen,
 };
@@ -597,6 +598,32 @@ pub fn render_state(frame: &mut Frame, app: &App) {
             let screen = ReportScreen::new(lines);
             frame.render_widget(&screen, area);
         }
+        AppState::ConfigBrowser => {
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Min(3), Constraint::Length(3)])
+                .split(area);
+            let screen = ConfigBrowserScreen::new(
+                app.config_browser.current_dir.display().to_string(),
+                app.config_browser.entries.clone(),
+                app.config_browser.selected,
+                app.config_browser.status.clone(),
+                app.config_browser.preview.clone(),
+            );
+            frame.render_widget(&screen, chunks[0]);
+
+            let controls =
+                "Up/Down select \u{2022} Enter open/select \u{2022} Backspace parent dir \u{2022} Esc back \u{2022} q quit";
+            let footer = Paragraph::new(vec![
+                Line::from(Span::styled(
+                    "Select an rclone config file to load remotes from.",
+                    hint_style(),
+                )),
+                Line::from(controls),
+            ])
+            .wrap(Wrap { trim: true });
+            frame.render_widget(footer, chunks[1]);
+        }
     }
 }
 
@@ -616,6 +643,7 @@ mod tests {
         for state in [
             AppState::MainMenu,
             AppState::ProviderSelect,
+            AppState::ConfigBrowser,
             AppState::RemoteSelect,
             AppState::BrowserSelect,
             AppState::Authenticating,

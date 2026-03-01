@@ -31,6 +31,7 @@ pub enum AppState {
     AdditionalOptions,
     OneDriveMenu,
     ProviderSelect,
+    ConfigBrowser,
     RemoteSelect,
     MobileAuthFlow,
     BrowserSelect,
@@ -51,6 +52,7 @@ impl AppState {
             AppState::AdditionalOptions => AppState::AdditionalOptions,
             AppState::OneDriveMenu => AppState::OneDriveMenu,
             AppState::ProviderSelect => AppState::BrowserSelect,
+            AppState::ConfigBrowser => AppState::FileList,
             AppState::RemoteSelect => AppState::RemoteSelect,
             AppState::MobileAuthFlow => AppState::Authenticating,
             AppState::BrowserSelect => AppState::Authenticating,
@@ -71,6 +73,7 @@ impl AppState {
             AppState::AdditionalOptions => AppState::MainMenu,
             AppState::OneDriveMenu => AppState::AdditionalOptions,
             AppState::ProviderSelect => AppState::MainMenu,
+            AppState::ConfigBrowser => AppState::MainMenu,
             AppState::RemoteSelect => AppState::ProviderSelect,
             AppState::MobileAuthFlow => AppState::ProviderSelect,
             AppState::BrowserSelect => AppState::ProviderSelect,
@@ -224,6 +227,175 @@ pub struct DownloadProgress {
     pub report_lines: Vec<String>,
 }
 
+/// An entry in the config file browser
+#[derive(Debug, Clone)]
+pub struct ConfigBrowserEntry {
+    pub name: String,
+    pub path: PathBuf,
+    pub is_dir: bool,
+    pub size: Option<u64>,
+}
+
+/// State for the config file browser screen
+pub struct ConfigBrowserState {
+    /// Current directory being browsed
+    pub current_dir: PathBuf,
+    /// Directory entries (dirs first, then files)
+    pub entries: Vec<ConfigBrowserEntry>,
+    /// Currently highlighted index
+    pub selected: usize,
+    /// Status/error messages
+    pub status: String,
+    /// Preview of remotes in the selected config file
+    pub preview: Vec<String>,
+    /// Path of the selected config file (set on Enter)
+    pub selected_config: Option<PathBuf>,
+}
+
+impl Default for ConfigBrowserState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ConfigBrowserState {
+    pub fn new() -> Self {
+        // Try common config locations in order
+        let start_dir = dirs_path_or_cwd();
+        let mut state = Self {
+            current_dir: start_dir.clone(),
+            entries: Vec::new(),
+            selected: 0,
+            status: String::new(),
+            preview: Vec::new(),
+            selected_config: None,
+        };
+        state.load_entries(&start_dir);
+        state
+    }
+
+    pub fn from_dir(dir: PathBuf) -> Self {
+        let mut state = Self {
+            current_dir: dir.clone(),
+            entries: Vec::new(),
+            selected: 0,
+            status: String::new(),
+            preview: Vec::new(),
+            selected_config: None,
+        };
+        state.load_entries(&dir);
+        state
+    }
+
+    pub fn load_entries(&mut self, dir: &std::path::Path) {
+        self.entries.clear();
+        self.selected = 0;
+        self.preview.clear();
+
+        let read_dir = match std::fs::read_dir(dir) {
+            Ok(rd) => rd,
+            Err(e) => {
+                self.status = format!("Cannot read directory: {}", e);
+                return;
+            }
+        };
+
+        let mut dirs = Vec::new();
+        let mut files = Vec::new();
+
+        for entry in read_dir.flatten() {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().to_string();
+            // Skip hidden files
+            if name.starts_with('.') {
+                continue;
+            }
+            let metadata = entry.metadata().ok();
+            let is_dir = metadata.as_ref().is_some_and(|m| m.is_dir());
+            let size = metadata.as_ref().and_then(|m| if m.is_file() { Some(m.len()) } else { None });
+            let entry = ConfigBrowserEntry {
+                name,
+                path,
+                is_dir,
+                size,
+            };
+            if is_dir {
+                dirs.push(entry);
+            } else {
+                files.push(entry);
+            }
+        }
+
+        dirs.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        files.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        self.entries.extend(dirs);
+        self.entries.extend(files);
+        self.current_dir = dir.to_path_buf();
+        self.status = format!("{} items", self.entries.len());
+    }
+
+    pub fn navigate_up(&mut self) {
+        list_navigate_up(&mut self.selected, self.entries.len());
+        self.update_preview();
+    }
+
+    pub fn navigate_down(&mut self) {
+        list_navigate_down(&mut self.selected, self.entries.len());
+        self.update_preview();
+    }
+
+    pub fn enter_selected(&mut self) -> Option<PathBuf> {
+        let entry = self.entries.get(self.selected)?.clone();
+        if entry.is_dir {
+            self.load_entries(&entry.path);
+            None
+        } else {
+            // Return the selected file path
+            self.selected_config = Some(entry.path.clone());
+            Some(entry.path)
+        }
+    }
+
+    pub fn go_parent(&mut self) {
+        if let Some(parent) = self.current_dir.parent() {
+            let parent = parent.to_path_buf();
+            self.load_entries(&parent);
+        }
+    }
+
+    pub fn update_preview(&mut self) {
+        self.preview.clear();
+        if let Some(entry) = self.entries.get(self.selected) {
+            if !entry.is_dir {
+                // Try to parse as rclone config to show remotes
+                if let Ok(content) = std::fs::read_to_string(&entry.path) {
+                    let parsed = crate::rclone::config::ParsedConfig::parse(&content);
+                    if !parsed.remotes.is_empty() {
+                        self.preview.push(format!("Remotes ({})", parsed.remotes.len()));
+                        for remote in &parsed.remotes {
+                            self.preview
+                                .push(format!("  {} ({})", remote.name, remote.remote_type));
+                        }
+                    } else {
+                        self.preview.push("No remotes found in file".to_string());
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn dirs_path_or_cwd() -> PathBuf {
+    // Try ~/.config/rclone/ first
+    if let Some(config_dir) = dirs::config_dir() {
+        let rclone_dir = config_dir.join("rclone");
+        if rclone_dir.is_dir() {
+            return rclone_dir;
+        }
+    }
+    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+}
+
 /// Forensic context (case, logging, cleanup, change tracking)
 pub struct ForensicsContext {
     /// Case metadata
@@ -288,6 +460,8 @@ pub struct App {
     pub files: FileSelection,
     /// Download progress state
     pub download: DownloadProgress,
+    /// Config file browser state
+    pub config_browser: ConfigBrowserState,
     /// Forensic context
     pub forensics: ForensicsContext,
 }
@@ -367,6 +541,7 @@ impl App {
                 failures: Vec::new(),
                 report_lines: Vec::new(),
             },
+            config_browser: ConfigBrowserState::new(),
             forensics: ForensicsContext {
                 case: None,
                 directories: None,

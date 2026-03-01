@@ -704,7 +704,13 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                     }
 
                     match key.code {
-                    KeyCode::Char('q') | KeyCode::Esc => break,
+                    KeyCode::Char('q') | KeyCode::Esc => {
+                        if app.state == crate::ui::AppState::ConfigBrowser {
+                            app.state = crate::ui::AppState::MainMenu;
+                        } else {
+                            break;
+                        }
+                    }
                     KeyCode::Enter => {
                         if app.state == crate::ui::AppState::MainMenu {
                             if handle_main_menu_enter(app) {
@@ -839,6 +845,15 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                                     }
                                 }
                             }
+                        } else if app.state == crate::ui::AppState::ConfigBrowser {
+                            if let Some(config_path) = app.config_browser.enter_selected() {
+                                // User selected a file — attempt to load as config
+                                crate::ui::flows::list::perform_list_flow_from_config(
+                                    app,
+                                    &mut terminal,
+                                    &config_path,
+                                )?;
+                            }
                         } else if app.state == crate::ui::AppState::RemoteSelect {
                             if let Some(remote_name) = app.confirm_remote() {
                                 app.provider.status = format!("Selected remote: {}", remote_name);
@@ -909,7 +924,9 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                         }
                     }
                     KeyCode::Backspace => {
-                        if app.state == crate::ui::AppState::RemoteSelect {
+                        if app.state == crate::ui::AppState::ConfigBrowser {
+                            app.config_browser.go_parent();
+                        } else if app.state == crate::ui::AppState::RemoteSelect {
                             app.remote.options.clear();
                             app.remote.selected = 0;
                             app.back();
@@ -928,7 +945,11 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                             if matches!(
                                 app.selected_action,
                                 Some(crate::ui::MenuAction::RetrieveList)
-                                    | Some(crate::ui::MenuAction::MountProvider)
+                            ) {
+                                app.state = crate::ui::AppState::ConfigBrowser;
+                            } else if matches!(
+                                app.selected_action,
+                                Some(crate::ui::MenuAction::MountProvider)
                             ) {
                                 app.state = crate::ui::AppState::ProviderSelect;
                             } else {
@@ -947,6 +968,8 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                             app.onedrive_menu_up();
                         } else if app.state == crate::ui::AppState::ProviderSelect {
                             app.provider_up();
+                        } else if app.state == crate::ui::AppState::ConfigBrowser {
+                            app.config_browser.navigate_up();
                         } else if app.state == crate::ui::AppState::RemoteSelect {
                             app.remote_up();
                         } else if app.state == crate::ui::AppState::MobileAuthFlow {
@@ -972,6 +995,8 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                             app.onedrive_menu_down();
                         } else if app.state == crate::ui::AppState::ProviderSelect {
                             app.provider_down();
+                        } else if app.state == crate::ui::AppState::ConfigBrowser {
+                            app.config_browser.navigate_down();
                         } else if app.state == crate::ui::AppState::RemoteSelect {
                             app.remote_down();
                         } else if app.state == crate::ui::AppState::MobileAuthFlow {
@@ -1198,6 +1223,13 @@ fn handle_main_menu_enter(app: &mut App) -> bool {
             if let Err(e) = app.init_case(output_dir) {
                 app.auth_status = format!("Failed to create case: {}", e);
                 app.menu_status = format!("Failed to create case: {}", e);
+            } else if action == crate::ui::MenuAction::RetrieveList {
+                // For RetrieveList, go to config file browser instead of provider select
+                let start_dir = app
+                    .config_dir()
+                    .unwrap_or_else(crate::ui::dirs_path_or_cwd);
+                app.config_browser = crate::ui::ConfigBrowserState::from_dir(start_dir);
+                app.state = crate::ui::AppState::ConfigBrowser;
             } else {
                 app.state = crate::ui::AppState::ProviderSelect;
                 try_refresh_providers(app);
@@ -1211,6 +1243,10 @@ fn resume_remote_flow<B: ratatui::backend::Backend>(
     app: &mut App,
     terminal: &mut Terminal<B>,
 ) -> Result<()> {
+    // When coming from config browser flow, use the selected config path
+    if let Some(ref config_path) = app.config_browser.selected_config.clone() {
+        return crate::ui::flows::list::perform_list_flow_from_config(app, terminal, config_path);
+    }
     app.state = crate::ui::AppState::ProviderSelect;
     match app.selected_action {
         Some(crate::ui::MenuAction::RetrieveList) => crate::ui::flows::list::perform_list_flow(app, terminal),
@@ -1252,6 +1288,7 @@ fn handle_mouse_event(app: &mut App, area: ratatui::layout::Rect, mouse: MouseEv
             crate::ui::AppState::AdditionalOptions => app.additional_menu_up(),
             crate::ui::AppState::OneDriveMenu => app.onedrive_menu_up(),
             crate::ui::AppState::ProviderSelect => app.provider_up(),
+            crate::ui::AppState::ConfigBrowser => app.config_browser.navigate_up(),
             crate::ui::AppState::RemoteSelect => app.remote_up(),
             crate::ui::AppState::MobileAuthFlow => app.mobile_flow_up(),
             crate::ui::AppState::BrowserSelect => app.browser_up(),
@@ -1266,6 +1303,7 @@ fn handle_mouse_event(app: &mut App, area: ratatui::layout::Rect, mouse: MouseEv
             crate::ui::AppState::AdditionalOptions => app.additional_menu_down(),
             crate::ui::AppState::OneDriveMenu => app.onedrive_menu_down(),
             crate::ui::AppState::ProviderSelect => app.provider_down(),
+            crate::ui::AppState::ConfigBrowser => app.config_browser.navigate_down(),
             crate::ui::AppState::RemoteSelect => app.remote_down(),
             crate::ui::AppState::MobileAuthFlow => app.mobile_flow_down(),
             crate::ui::AppState::BrowserSelect => app.browser_down(),
@@ -1306,6 +1344,15 @@ fn handle_mouse_event(app: &mut App, area: ratatui::layout::Rect, mouse: MouseEv
                 if let Some(index) = list_index_from_click(list_area, mouse.row) {
                     if index < app.provider.entries.len() {
                         app.provider.selected = index;
+                    }
+                }
+            }
+            crate::ui::AppState::ConfigBrowser => {
+                let list_area = provider_list_area(area);
+                if let Some(index) = list_index_from_click(list_area, mouse.row) {
+                    if index < app.config_browser.entries.len() {
+                        app.config_browser.selected = index;
+                        app.config_browser.update_preview();
                     }
                 }
             }
