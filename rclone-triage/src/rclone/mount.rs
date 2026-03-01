@@ -358,8 +358,26 @@ impl MountManager {
             .replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_");
         let mount_point = self.mount_base.join(&safe_name);
 
-        std::fs::create_dir_all(&mount_point)
-            .with_context(|| format!("Failed to create mount point: {:?}", mount_point))?;
+        // Ensure the parent (mount_base) directory exists
+        std::fs::create_dir_all(&self.mount_base)
+            .with_context(|| format!("Failed to create mount base: {:?}", self.mount_base))?;
+
+        // On Windows, WinFSP requires the mount point to NOT exist — rclone
+        // creates it as a reparse point.  Remove a leftover empty dir from a
+        // previous failed mount so retries work.
+        // On Linux/macOS, FUSE requires the mount point directory to exist.
+        #[cfg(windows)]
+        {
+            if mount_point.exists() {
+                let _ = std::fs::remove_dir(&mount_point);
+            }
+        }
+
+        #[cfg(not(windows))]
+        {
+            std::fs::create_dir_all(&mount_point)
+                .with_context(|| format!("Failed to create mount point: {:?}", mount_point))?;
+        }
 
         // Build rclone mount command
         let mut cmd = Command::new(&self.rclone_path);
