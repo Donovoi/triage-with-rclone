@@ -47,7 +47,7 @@ pub fn render_state(frame: &mut Frame, app: &App) {
                 Some(app.menu_status.clone())
             };
             let actions = "Actions: Authenticate • Retrieve list • Download CSV/XLSX • Mount • Silent/Smart Auth • Mobile Auth • Additional Options • Exit".to_string();
-            let controls = "Up/Down select • Click select • Enter choose • Backspace back • q quit"
+            let controls = "Up/Down select • Enter choose • Backspace back • Ctrl+E export screen • q quit"
                 .to_string();
             let mut footer_lines = vec![Line::from(description)];
             if let Some(status) = status {
@@ -81,7 +81,7 @@ pub fn render_state(frame: &mut Frame, app: &App) {
             } else {
                 app.menu_status.clone()
             };
-            let controls = "Up/Down select • Click select • Enter choose • Backspace back • q quit"
+            let controls = "Up/Down select • Enter choose • Backspace back • Ctrl+E export screen • q quit"
                 .to_string();
             let footer = Paragraph::new(vec![
                 Line::from(description),
@@ -114,7 +114,7 @@ pub fn render_state(frame: &mut Frame, app: &App) {
             } else {
                 app.menu_status.clone()
             };
-            let controls = "Up/Down select • Click select • Enter choose • Backspace back • q quit"
+            let controls = "Up/Down select • Enter choose • Backspace back • Ctrl+E export screen • q quit"
                 .to_string();
             let footer = Paragraph::new(vec![
                 Line::from(description),
@@ -210,7 +210,7 @@ pub fn render_state(frame: &mut Frame, app: &App) {
                 frame.render_widget(help, content_chunks[1]);
             }
 
-            let controls = "Up/Down select • Space toggle • Enter confirm • r refresh • ? help • Backspace back • q quit".to_string();
+            let controls = "Up/Down select • Space toggle • Enter confirm • r refresh • ? help • Ctrl+E export • Backspace back • q quit".to_string();
             let footer_lines = if show_status_panel {
                 vec![Line::from(mode), Line::from(controls)]
             } else {
@@ -269,7 +269,7 @@ pub fn render_state(frame: &mut Frame, app: &App) {
                 app.provider.status.clone()
             };
             let controls =
-                "Up/Down select • Click select • Enter confirm • Backspace back • q quit"
+                "Up/Down select • Enter confirm • Backspace back • Ctrl+E export screen • q quit"
                     .to_string();
             let footer = Paragraph::new(vec![
                 Line::from(format!("Provider: {}", provider_name)),
@@ -302,7 +302,7 @@ pub fn render_state(frame: &mut Frame, app: &App) {
             } else {
                 app.menu_status.clone()
             };
-            let controls = "Up/Down select • Click select • Enter choose • Backspace back • q quit"
+            let controls = "Up/Down select • Enter choose • Backspace back • Ctrl+E export screen • q quit"
                 .to_string();
             let footer = Paragraph::new(vec![
                 Line::from(description),
@@ -337,7 +337,7 @@ pub fn render_state(frame: &mut Frame, app: &App) {
                 app.auth_status.clone()
             };
             let controls =
-                "Up/Down select • Space toggle • Enter confirm • Backspace back • q quit";
+                "Up/Down select • Space toggle • Enter confirm • Ctrl+E export • Backspace back • q quit";
             let footer = Paragraph::new(vec![
                 Line::from(next),
                 Line::from(status),
@@ -439,7 +439,7 @@ pub fn render_state(frame: &mut Frame, app: &App) {
             let paragraph = Paragraph::new(lines);
             frame.render_widget(paragraph, chunks[0]);
 
-            let hint = "↑/↓ Navigate   Enter: Confirm   Backspace: Back";
+            let hint = "↑/↓ Navigate   Enter: Confirm   Ctrl+E: Export   Backspace: Back";
             let footer = Paragraph::new(vec![Line::from(Span::styled(hint, hint_style()))])
                 .wrap(Wrap { trim: true });
             frame.render_widget(footer, chunks[1]);
@@ -486,19 +486,19 @@ pub fn render_state(frame: &mut Frame, app: &App) {
                         .unwrap_or_else(|| "Press 'm' to mount the remote.".to_string());
                     (
                         mount_hint,
-                        "m mount • u unmount • Backspace back • q quit".to_string(),
+                        "m mount • u unmount • Ctrl+E export • Backspace back • q quit".to_string(),
                     )
                 }
                 Some(crate::ui::MenuAction::RetrieveList) => (
                     "Listing complete: select files to download or press Backspace to return."
                         .to_string(),
-                    "Up/Down select • Space toggle • Enter download • Backspace back • q quit"
+                    "Up/Down select • Space toggle • Enter download • Ctrl+E export • Backspace back • q quit"
                         .to_string(),
                 ),
                 _ => (
                     "What happens now: select files (toggle) then press Enter to start download."
                         .to_string(),
-                    "Up/Down select • Space toggle • Enter download • Backspace back • q quit"
+                    "Up/Down select • Space toggle • Enter download • Ctrl+E export • Backspace back • q quit"
                         .to_string(),
                 ),
             };
@@ -538,7 +538,7 @@ pub fn render_state(frame: &mut Frame, app: &App) {
                 .wrap(Wrap { trim: true });
             frame.render_widget(body, chunks[0]);
 
-            let hint = "u unmount • Backspace back • q quit";
+            let hint = "u unmount • Ctrl+E export • Backspace back • q quit";
             let footer = Paragraph::new(vec![Line::from(Span::styled(hint, hint_style()))])
                 .wrap(Wrap { trim: true });
             frame.render_widget(footer, chunks[1]);
@@ -613,7 +613,7 @@ pub fn render_state(frame: &mut Frame, app: &App) {
             frame.render_widget(&screen, chunks[0]);
 
             let controls =
-                "Up/Down select \u{2022} Enter open/select \u{2022} Backspace parent dir \u{2022} Esc back \u{2022} q quit";
+                "Up/Down select \u{2022} Enter open/select \u{2022} Ctrl+E export \u{2022} Backspace parent dir \u{2022} Esc back \u{2022} q quit";
             let footer = Paragraph::new(vec![
                 Line::from(Span::styled(
                     "Select an rclone config file to load remotes from.",
@@ -628,6 +628,38 @@ pub fn render_state(frame: &mut Frame, app: &App) {
 }
 
 use super::layout::centered_rect;
+
+/// Render the current screen to a string for text export.
+///
+/// Uses a headless test backend to capture exactly what the user sees,
+/// then extracts the text content line by line (trailing whitespace trimmed).
+pub fn export_screen_text(app: &App, width: u16, height: u16) -> String {
+    use ratatui::backend::TestBackend;
+
+    let backend = TestBackend::new(width, height);
+    let mut terminal = match ratatui::Terminal::new(backend) {
+        Ok(t) => t,
+        Err(_) => return String::new(),
+    };
+    let _ = terminal.draw(|f| {
+        render_state(f, app);
+    });
+    let buf = terminal.backend().buffer();
+    let mut lines = Vec::new();
+    for y in 0..buf.area.height {
+        let mut line = String::new();
+        for x in 0..buf.area.width {
+            let cell = &buf[(x, y)];
+            line.push_str(cell.symbol());
+        }
+        lines.push(line.trim_end().to_string());
+    }
+    // Trim trailing empty lines
+    while lines.last().is_some_and(|l| l.is_empty()) {
+        lines.pop();
+    }
+    lines.join("\n")
+}
 
 #[cfg(test)]
 mod tests {

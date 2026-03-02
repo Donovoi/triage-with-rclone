@@ -674,14 +674,19 @@ pub fn run_loop(app: &mut App) -> Result<()> {
     try_refresh_providers(app);
 
     let mut last_nav: Option<(KeyCode, Instant)> = None;
+    let mut needs_redraw = true;
 
     loop {
-        terminal.draw(|f| {
-            render_state(f, app);
-        })?;
+        if needs_redraw {
+            terminal.draw(|f| {
+                render_state(f, app);
+            })?;
+            needs_redraw = false;
+        }
 
         if event::poll(Duration::from_millis(200))? {
             if let Event::Key(key) = event::read()? {
+                    needs_redraw = true;
                     if !should_handle_key(&key) {
                         continue;
                     }
@@ -697,6 +702,14 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                     }
 
                     if handle_provider_help_key(app, &key) {
+                        continue;
+                    }
+
+                    // Ctrl+E: export current screen text to file
+                    if key.code == KeyCode::Char('e')
+                        && key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL)
+                    {
+                        handle_export_screen(app, &terminal);
                         continue;
                     }
 
@@ -1186,6 +1199,14 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                     _ => {}
                     }
             }
+        } else {
+            // No event received — redraw periodically for states with dynamic content
+            if matches!(
+                app.state,
+                crate::ui::AppState::Authenticating | crate::ui::AppState::Downloading
+            ) {
+                needs_redraw = true;
+            }
         }
 
         if app.exit_requested {
@@ -1198,6 +1219,36 @@ pub fn run_loop(app: &mut App) -> Result<()> {
 
 fn should_handle_key(key: &KeyEvent) -> bool {
     key.kind == KeyEventKind::Press
+}
+
+/// Export the current screen text to a file.
+///
+/// Writes to `<case_logs>/screen_export.txt` if a case is active,
+/// otherwise falls back to `./screen_export.txt` in the current directory.
+fn handle_export_screen<B: ratatui::backend::Backend>(
+    app: &mut App,
+    terminal: &ratatui::Terminal<B>,
+) {
+    let size = terminal.size().unwrap_or(ratatui::layout::Size::new(80, 24));
+    let text = crate::ui::render::export_screen_text(app, size.width, size.height);
+
+    let path = app
+        .forensics
+        .directories
+        .as_ref()
+        .map(|d| d.logs.join("screen_export.txt"))
+        .unwrap_or_else(|| PathBuf::from("screen_export.txt"));
+
+    match std::fs::write(&path, &text) {
+        Ok(()) => {
+            app.menu_status = format!("Screen exported to {}", path.display());
+            app.log_info(format!("Screen exported to {}", path.display()));
+        }
+        Err(e) => {
+            app.menu_status = format!("Export failed: {}", e);
+            app.log_error(format!("Screen export failed: {}", e));
+        }
+    }
 }
 
 fn handle_main_menu_enter(app: &mut App) -> bool {
