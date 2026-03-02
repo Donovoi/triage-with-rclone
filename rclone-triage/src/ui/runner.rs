@@ -1277,12 +1277,48 @@ fn handle_main_menu_enter(app: &mut App) -> bool {
                 app.auth_status = format!("Failed to create case: {}", e);
                 app.menu_status = format!("Failed to create case: {}", e);
             } else if action == crate::ui::MenuAction::RetrieveList {
-                // For RetrieveList, go to config file browser instead of provider select
-                let start_dir = app
-                    .config_dir()
-                    .unwrap_or_else(crate::ui::dirs_path_or_cwd);
-                app.config_browser = crate::ui::ConfigBrowserState::from_dir(start_dir);
-                app.state = crate::ui::AppState::ConfigBrowser;
+                // On Windows, try native file dialog first; fall back to TUI browser
+                // if cancelled or if it fails. On non-Windows, go straight to TUI.
+                #[allow(unused_mut)]
+                let mut use_tui = true;
+
+                #[cfg(windows)]
+                {
+                    let start_dir = app
+                        .config_dir()
+                        .unwrap_or_else(crate::ui::dirs_path_or_cwd);
+                    match crate::utils::windows::open_file_dialog(
+                        Some("Select rclone config file"),
+                        Some(&start_dir),
+                        Some("Config Files (*.conf)|*.conf|All Files (*.*)|*.*"),
+                    ) {
+                        Ok(Some(path)) => {
+                            // User picked a file via native dialog
+                            use_tui = false;
+                            app.config_browser.selected_config = Some(path.clone());
+                            crate::ui::flows::list::perform_list_flow_from_config(
+                                app,
+                                &mut terminal,
+                                &path,
+                            )?;
+                        }
+                        Ok(None) => {
+                            // User cancelled native dialog — fall back to TUI browser
+                        }
+                        Err(e) => {
+                            app.menu_status =
+                                format!("Native file dialog failed: {}. Using TUI browser.", e);
+                        }
+                    }
+                }
+
+                if use_tui {
+                    let start_dir = app
+                        .config_dir()
+                        .unwrap_or_else(crate::ui::dirs_path_or_cwd);
+                    app.config_browser = crate::ui::ConfigBrowserState::from_dir(start_dir);
+                    app.state = crate::ui::AppState::ConfigBrowser;
+                }
             } else {
                 app.state = crate::ui::AppState::ProviderSelect;
                 try_refresh_providers(app);

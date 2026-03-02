@@ -328,10 +328,28 @@ impl ConfigBrowserState {
 
         dirs.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
         files.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+
+        // Always prepend . and .. navigation entries so the user sees
+        // where they are—even in empty directories.
+        let parent_path = dir.parent().unwrap_or(dir).to_path_buf();
+        self.entries.push(ConfigBrowserEntry {
+            name: ".".to_string(),
+            path: dir.to_path_buf(),
+            is_dir: true,
+            size: None,
+        });
+        self.entries.push(ConfigBrowserEntry {
+            name: "..".to_string(),
+            path: parent_path,
+            is_dir: true,
+            size: None,
+        });
+
         self.entries.extend(dirs);
         self.entries.extend(files);
         self.current_dir = dir.to_path_buf();
-        self.status = format!("{} items", self.entries.len());
+        let real_count = self.entries.len().saturating_sub(2);
+        self.status = format!("{} items", real_count);
     }
 
     pub fn navigate_up(&mut self) {
@@ -346,6 +364,16 @@ impl ConfigBrowserState {
 
     pub fn enter_selected(&mut self) -> Option<PathBuf> {
         let entry = self.entries.get(self.selected)?.clone();
+        if entry.name == "." {
+            // Refresh current directory
+            let cur = self.current_dir.clone();
+            self.load_entries(&cur);
+            return None;
+        }
+        if entry.name == ".." {
+            self.go_parent();
+            return None;
+        }
         if entry.is_dir {
             self.load_entries(&entry.path);
             None
@@ -1291,5 +1319,73 @@ mod tests {
         let log_content = std::fs::read_to_string(&log_path).unwrap();
         assert!(log_content.contains("Test info message"));
         assert!(log_content.contains("Test error message"));
+    }
+
+    #[test]
+    fn test_config_browser_load_entries_has_nav() {
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let state = ConfigBrowserState::from_dir(dir.path().to_path_buf());
+
+        // Even an empty directory should have . and ..
+        assert!(state.entries.len() >= 2);
+        assert_eq!(state.entries[0].name, ".");
+        assert_eq!(state.entries[1].name, "..");
+        assert!(state.entries[0].is_dir);
+        assert!(state.entries[1].is_dir);
+        assert_eq!(state.status, "0 items");
+    }
+
+    #[test]
+    fn test_config_browser_enter_dot_refreshes() {
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let mut state = ConfigBrowserState::from_dir(dir.path().to_path_buf());
+
+        // Select "." (index 0) and press enter
+        state.selected = 0;
+        let result = state.enter_selected();
+        assert!(result.is_none()); // No file selected
+        assert_eq!(state.current_dir, dir.path().to_path_buf());
+        assert!(state.entries.len() >= 2);
+    }
+
+    #[test]
+    fn test_config_browser_enter_dotdot_navigates_parent() {
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let child = dir.path().join("subdir");
+        std::fs::create_dir(&child).unwrap();
+        let mut state = ConfigBrowserState::from_dir(child.clone());
+
+        // Select ".." (index 1) and press enter
+        state.selected = 1;
+        let result = state.enter_selected();
+        assert!(result.is_none());
+        assert_eq!(state.current_dir, dir.path().to_path_buf());
+    }
+
+    #[test]
+    fn test_config_browser_nav_entries_before_real_dirs() {
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("alpha")).unwrap();
+        std::fs::write(dir.path().join("test.conf"), "[remote]\ntype=drive\n").unwrap();
+        let state = ConfigBrowserState::from_dir(dir.path().to_path_buf());
+
+        // First two entries must be . and ..
+        assert_eq!(state.entries[0].name, ".");
+        assert_eq!(state.entries[1].name, "..");
+        // Real dir comes after nav entries
+        assert_eq!(state.entries[2].name, "alpha");
+        assert!(state.entries[2].is_dir);
+        // File comes last
+        assert_eq!(state.entries[3].name, "test.conf");
+        assert!(!state.entries[3].is_dir);
+        assert_eq!(state.status, "2 items"); // Only counts real entries
     }
 }
