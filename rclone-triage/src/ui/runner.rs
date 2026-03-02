@@ -4,9 +4,8 @@
 
 use anyhow::{bail, Result};
 use crossterm::event::{
-    self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+    self, DisableBracketedPaste, EnableBracketedPaste,
     Event, KeyCode, KeyEvent, KeyEventKind,
-    MouseButton, MouseEvent, MouseEventKind,
 };
 use crossterm::execute;
 use crossterm::terminal::{
@@ -650,7 +649,7 @@ fn perform_onedrive_vault_flow<B: ratatui::backend::Backend>(
 pub fn run_loop(app: &mut App) -> Result<()> {
     enable_raw_mode()?;
     let mut out = stdout();
-    execute!(out, EnterAlternateScreen, EnableMouseCapture, EnableBracketedPaste)?;
+    execute!(out, EnterAlternateScreen, EnableBracketedPaste)?;
 
     let backend = CrosstermBackend::new(out);
     let mut terminal = Terminal::new(backend)?;
@@ -661,7 +660,7 @@ pub fn run_loop(app: &mut App) -> Result<()> {
         fn drop(&mut self) {
             let _ = disable_raw_mode();
             let mut out = std::io::stdout();
-            let _ = execute!(out, DisableBracketedPaste, DisableMouseCapture, LeaveAlternateScreen);
+            let _ = execute!(out, DisableBracketedPaste, LeaveAlternateScreen);
         }
     }
     let _guard = TuiGuard;
@@ -681,10 +680,8 @@ pub fn run_loop(app: &mut App) -> Result<()> {
             render_state(f, app);
         })?;
 
-        let area = terminal.size()?;
         if event::poll(Duration::from_millis(200))? {
-            match event::read()? {
-                Event::Key(key) => {
+            if let Event::Key(key) = event::read()? {
                     if !should_handle_key(&key) {
                         continue;
                     }
@@ -707,6 +704,17 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                     KeyCode::Char('q') | KeyCode::Esc => {
                         if app.state == crate::ui::AppState::ConfigBrowser {
                             app.state = crate::ui::AppState::MainMenu;
+                        } else if app.state == crate::ui::AppState::Mounted {
+                            app.unmount_remote();
+                            app.log_info("Unmounted remote");
+                            if matches!(
+                                app.selected_action,
+                                Some(crate::ui::MenuAction::MountProvider)
+                            ) {
+                                app.state = crate::ui::AppState::ProviderSelect;
+                            } else {
+                                app.state = crate::ui::AppState::PostAuthChoice;
+                            }
                         } else {
                             break;
                         }
@@ -1175,14 +1183,8 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                     }
                     KeyCode::Tab => app.toggle_file_download(),
                     KeyCode::Char(_ch) => {}
-                        _ => {}
+                    _ => {}
                     }
-                }
-                Event::Mouse(mouse) => {
-                    let area_rect = ratatui::layout::Rect::new(0, 0, area.width, area.height);
-                    handle_mouse_event(app, area_rect, mouse);
-                }
-                _ => {}
             }
         }
 
@@ -1279,152 +1281,6 @@ fn handle_provider_help_key(app: &mut App, key: &KeyEvent) -> bool {
             _ => false,
         }
     }
-}
-
-fn handle_mouse_event(app: &mut App, area: ratatui::layout::Rect, mouse: MouseEvent) {
-    match mouse.kind {
-        MouseEventKind::ScrollUp => match app.state {
-            crate::ui::AppState::MainMenu => app.menu_up(),
-            crate::ui::AppState::AdditionalOptions => app.additional_menu_up(),
-            crate::ui::AppState::OneDriveMenu => app.onedrive_menu_up(),
-            crate::ui::AppState::ProviderSelect => app.provider_up(),
-            crate::ui::AppState::ConfigBrowser => app.config_browser.navigate_up(),
-            crate::ui::AppState::RemoteSelect => app.remote_up(),
-            crate::ui::AppState::MobileAuthFlow => app.mobile_flow_up(),
-            crate::ui::AppState::BrowserSelect => app.browser_up(),
-            crate::ui::AppState::PostAuthChoice => {
-                if app.post_auth_selected > 0 { app.post_auth_selected -= 1; } else { app.post_auth_selected = 2; }
-            }
-            crate::ui::AppState::FileList => app.file_up(),
-            _ => {}
-        },
-        MouseEventKind::ScrollDown => match app.state {
-            crate::ui::AppState::MainMenu => app.menu_down(),
-            crate::ui::AppState::AdditionalOptions => app.additional_menu_down(),
-            crate::ui::AppState::OneDriveMenu => app.onedrive_menu_down(),
-            crate::ui::AppState::ProviderSelect => app.provider_down(),
-            crate::ui::AppState::ConfigBrowser => app.config_browser.navigate_down(),
-            crate::ui::AppState::RemoteSelect => app.remote_down(),
-            crate::ui::AppState::MobileAuthFlow => app.mobile_flow_down(),
-            crate::ui::AppState::BrowserSelect => app.browser_down(),
-            crate::ui::AppState::PostAuthChoice => {
-                app.post_auth_selected = (app.post_auth_selected + 1) % 3;
-            }
-            crate::ui::AppState::FileList => app.file_down(),
-            _ => {}
-        },
-        MouseEventKind::Down(MouseButton::Left) => match app.state {
-            crate::ui::AppState::MainMenu => {
-                let list_area = main_menu_list_area(area);
-                if let Some(index) = list_index_from_click(list_area, mouse.row) {
-                    if index < app.menu_items.len() {
-                        app.menu_selected = index;
-                        handle_main_menu_enter(app);
-                    }
-                }
-            }
-            crate::ui::AppState::AdditionalOptions => {
-                let list_area = main_menu_list_area(area);
-                if let Some(index) = list_index_from_click(list_area, mouse.row) {
-                    if index < app.additional_menu_items.len() {
-                        app.additional_menu_selected = index;
-                    }
-                }
-            }
-            crate::ui::AppState::OneDriveMenu => {
-                let list_area = main_menu_list_area(area);
-                if let Some(index) = list_index_from_click(list_area, mouse.row) {
-                    if index < app.onedrive_menu_items.len() {
-                        app.onedrive_menu_selected = index;
-                    }
-                }
-            }
-            crate::ui::AppState::ProviderSelect => {
-                let list_area = provider_list_area(area);
-                if let Some(index) = list_index_from_click(list_area, mouse.row) {
-                    if index < app.provider.entries.len() {
-                        app.provider.selected = index;
-                    }
-                }
-            }
-            crate::ui::AppState::ConfigBrowser => {
-                let list_area = provider_list_area(area);
-                if let Some(index) = list_index_from_click(list_area, mouse.row) {
-                    if index < app.config_browser.entries.len() {
-                        app.config_browser.selected = index;
-                        app.config_browser.update_preview();
-                    }
-                }
-            }
-            crate::ui::AppState::RemoteSelect => {
-                let list_area = main_menu_list_area(area);
-                if let Some(index) = list_index_from_click(list_area, mouse.row) {
-                    if index < app.remote.options.len() {
-                        app.remote.selected = index;
-                    }
-                }
-            }
-            crate::ui::AppState::BrowserSelect => {
-                if let Some(index) = list_index_from_click(area, mouse.row) {
-                    if index < app.browser.entries.len() + 1 {
-                        app.browser.selected = index;
-                    }
-                }
-            }
-            crate::ui::AppState::MobileAuthFlow => {
-                let list_area = main_menu_list_area(area);
-                if let Some(index) = list_index_from_click(list_area, mouse.row) {
-                    if index < app.mobile_flow_items.len() {
-                        app.mobile_flow_selected = index;
-                    }
-                }
-            }
-            crate::ui::AppState::FileList => {
-                if let Some(index) = list_index_from_click(area, mouse.row) {
-                    if index < app.files.entries.len() {
-                        app.files.selected = index;
-                    }
-                }
-            }
-            _ => {}
-        },
-        _ => {}
-    }
-}
-
-fn provider_list_area(area: ratatui::layout::Rect) -> ratatui::layout::Rect {
-    let chunks = ratatui::layout::Layout::default()
-        .direction(ratatui::layout::Direction::Vertical)
-        .constraints([ratatui::layout::Constraint::Min(3), ratatui::layout::Constraint::Length(4)])
-        .split(area);
-    let columns = ratatui::layout::Layout::default()
-        .direction(ratatui::layout::Direction::Horizontal)
-        .constraints([
-            ratatui::layout::Constraint::Percentage(65),
-            ratatui::layout::Constraint::Percentage(35),
-        ])
-        .split(chunks[0]);
-    columns[0]
-}
-
-fn main_menu_list_area(area: ratatui::layout::Rect) -> ratatui::layout::Rect {
-    let chunks = ratatui::layout::Layout::default()
-        .direction(ratatui::layout::Direction::Vertical)
-        .constraints([ratatui::layout::Constraint::Min(3), ratatui::layout::Constraint::Length(4)])
-        .split(area);
-    chunks[0]
-}
-
-fn list_index_from_click(area: ratatui::layout::Rect, row: u16) -> Option<usize> {
-    if area.height < 2 {
-        return None;
-    }
-    let content_start = area.y.saturating_add(1);
-    let content_end = area.y + area.height - 1;
-    if row < content_start || row >= content_end {
-        return None;
-    }
-    Some((row - content_start) as usize)
 }
 
 /// Execute the "List files to CSV" post-auth action using the already-authenticated remote.
@@ -1679,7 +1535,7 @@ fn populate_listing_results(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+    use crossterm::event::KeyModifiers;
 
     #[test]
     fn test_refresh_providers_from_json_replaces_defaults() {
@@ -1721,53 +1577,6 @@ mod tests {
             state: event::KeyEventState::NONE,
         };
         assert!(!should_handle_key(&repeat));
-    }
-
-    #[test]
-    fn test_main_menu_click_advances() {
-        let mut app = App::new();
-        let area = ratatui::layout::Rect::new(0, 0, 100, 20);
-        let list_area = main_menu_list_area(area);
-        let click_row = list_area.y + 1;
-        let click = MouseEvent {
-            kind: MouseEventKind::Down(MouseButton::Left),
-            column: list_area.x + 1,
-            row: click_row,
-            modifiers: KeyModifiers::NONE,
-        };
-
-        handle_mouse_event(&mut app, area, click);
-
-        assert_eq!(app.state, crate::ui::AppState::ProviderSelect);
-        assert_eq!(app.selected_action, Some(crate::ui::MenuAction::Authenticate));
-    }
-
-    #[test]
-    fn test_main_menu_click_exit_sets_flag() {
-        let mut app = App::new();
-        let area = ratatui::layout::Rect::new(0, 0, 100, 20);
-        let list_area = main_menu_list_area(area);
-        let exit_index = app.menu_items.len() - 1;
-        let click_row = list_area.y + 1 + exit_index as u16;
-        let click = MouseEvent {
-            kind: MouseEventKind::Down(MouseButton::Left),
-            column: list_area.x + 1,
-            row: click_row,
-            modifiers: KeyModifiers::NONE,
-        };
-
-        handle_mouse_event(&mut app, area, click);
-
-        assert!(app.exit_requested);
-        assert_eq!(app.state, crate::ui::AppState::MainMenu);
-        assert_eq!(app.selected_action, Some(crate::ui::MenuAction::Exit));
-    }
-
-    #[test]
-    fn test_provider_list_area_respects_split() {
-        let area = ratatui::layout::Rect::new(0, 0, 100, 20);
-        let list_area = provider_list_area(area);
-        assert_eq!(list_area.width, 65);
     }
 
     #[test]
