@@ -46,21 +46,34 @@ impl Widget for &ConfigBrowserScreen {
             .entries
             .iter()
             .map(|entry| {
-                let prefix = if entry.is_dir { "[DIR]  " } else { "[FILE] " };
-                let style = if entry.is_dir {
-                    Style::default().fg(Color::LightBlue)
+                let is_nav = entry.name == "." || entry.name == "..";
+                let (prefix, style) = if is_nav {
+                    ("[NAV]  ", Style::default().fg(Color::Yellow))
+                } else if entry.is_dir {
+                    ("[DIR]  ", Style::default().fg(Color::LightBlue))
                 } else if entry.name.ends_with(".conf") || entry.name.ends_with(".cfg") {
-                    Style::default().fg(Color::LightGreen)
+                    ("[FILE] ", Style::default().fg(Color::LightGreen))
                 } else {
-                    Style::default()
+                    ("[FILE] ", Style::default())
                 };
-                let size_str = entry
-                    .size
-                    .map(|s| format!("  ({} B)", s))
-                    .unwrap_or_default();
+                let label = if entry.name == "." {
+                    ".  (current directory)".to_string()
+                } else if entry.name == ".." {
+                    "..  (parent directory)".to_string()
+                } else {
+                    entry.name.clone()
+                };
+                let size_str = if is_nav {
+                    String::new()
+                } else {
+                    entry
+                        .size
+                        .map(|s| format!("  ({} B)", s))
+                        .unwrap_or_default()
+                };
                 ListItem::new(Line::from(vec![
                     Span::styled(prefix, style),
-                    Span::styled(&entry.name, style),
+                    Span::styled(label, style),
                     Span::styled(size_str, Style::default().fg(Color::DarkGray)),
                 ]))
             })
@@ -95,7 +108,13 @@ impl Widget for &ConfigBrowserScreen {
             lines.push(Line::from(""));
 
             if let Some(entry) = self.entries.get(self.selected) {
-                let kind = if entry.is_dir { "Directory" } else { "File" };
+                let kind = if entry.name == "." || entry.name == ".." {
+                    "Navigation"
+                } else if entry.is_dir {
+                    "Directory"
+                } else {
+                    "File"
+                };
                 lines.push(Line::from(format!("Selected: {}", entry.name)));
                 lines.push(Line::from(format!("Type: {}", kind)));
                 if let Some(size) = entry.size {
@@ -136,11 +155,26 @@ mod tests {
     #[test]
     fn test_render_empty() {
         let mut buf = Buffer::empty(Rect::new(0, 0, 80, 20));
+        // Even an "empty" directory should have . and .. entries
+        let entries = vec![
+            ConfigBrowserEntry {
+                name: ".".to_string(),
+                path: PathBuf::from("/tmp"),
+                is_dir: true,
+                size: None,
+            },
+            ConfigBrowserEntry {
+                name: "..".to_string(),
+                path: PathBuf::from("/"),
+                is_dir: true,
+                size: None,
+            },
+        ];
         let screen = ConfigBrowserScreen::new(
             "/tmp".to_string(),
-            vec![],
+            entries,
             0,
-            "Empty directory".to_string(),
+            "0 items".to_string(),
             vec![],
         );
         (&screen).render(Rect::new(0, 0, 80, 20), &mut buf);
@@ -150,6 +184,18 @@ mod tests {
     fn test_render_with_entries() {
         let mut buf = Buffer::empty(Rect::new(0, 0, 80, 20));
         let entries = vec![
+            ConfigBrowserEntry {
+                name: ".".to_string(),
+                path: PathBuf::from("/tmp"),
+                is_dir: true,
+                size: None,
+            },
+            ConfigBrowserEntry {
+                name: "..".to_string(),
+                path: PathBuf::from("/"),
+                is_dir: true,
+                size: None,
+            },
             ConfigBrowserEntry {
                 name: "subdir".to_string(),
                 path: PathBuf::from("/tmp/subdir"),
@@ -166,7 +212,7 @@ mod tests {
         let screen = ConfigBrowserScreen::new(
             "/tmp".to_string(),
             entries,
-            1,
+            3,
             "2 items".to_string(),
             vec!["Remotes (1)".to_string(), "  myremote (drive)".to_string()],
         );
