@@ -631,21 +631,33 @@ pub fn render_state(frame: &mut Frame, app: &App) {
                 .direction(Direction::Vertical)
                 .constraints([Constraint::Min(3), Constraint::Length(3)])
                 .split(area);
+            let has_error = app.config_browser.last_error.is_some();
             let screen = ConfigBrowserScreen::new(
                 app.config_browser.current_dir.display().to_string(),
                 app.config_browser.entries.clone(),
                 app.config_browser.selected,
                 app.config_browser.status.clone(),
                 app.config_browser.preview.clone(),
-            );
+            )
+            .with_error(app.config_browser.last_error.clone());
             frame.render_widget(&screen, chunks[0]);
 
-            let controls =
-                "Up/Down select \u{2022} Enter open/select \u{2022} Ctrl+E export \u{2022} Backspace parent dir \u{2022} Esc back \u{2022} q quit";
+            let (hint, controls) = if has_error {
+                (
+                    "Listing failed — see error details in the panel. Re-authenticate or try a different config.",
+                    "Esc back to main menu \u{2022} q quit",
+                )
+            } else {
+                (
+                    "Select an rclone config file to load remotes from.",
+                    "Up/Down select \u{2022} Enter open/select \u{2022} Ctrl+E export \u{2022} Backspace parent dir \u{2022} Esc back \u{2022} q quit",
+                )
+            };
+            let hint_color = if has_error { Color::LightRed } else { Color::LightGreen };
             let footer = Paragraph::new(vec![
                 Line::from(Span::styled(
-                    "Select an rclone config file to load remotes from.",
-                    hint_style(),
+                    hint,
+                    Style::default().fg(hint_color),
                 )),
                 Line::from(controls),
             ])

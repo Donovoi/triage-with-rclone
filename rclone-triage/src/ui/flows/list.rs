@@ -201,6 +201,8 @@ pub(crate) fn perform_list_flow_from_config<B: ratatui::backend::Backend>(
     terminal: &mut Terminal<B>,
     config_path: &std::path::Path,
 ) -> Result<()> {
+    // Clear any previous listing error when user retries
+    app.config_browser.last_error = None;
     app.provider.status = format!("Loading config: {}...", config_path.display());
     terminal.draw(|f| render_state(f, app))?;
 
