@@ -685,6 +685,37 @@ pub fn run_loop(app: &mut App) -> Result<()> {
             needs_redraw = false;
         }
 
+        // Poll background listing task for progress/completion
+        if app.state == crate::ui::AppState::Listing {
+            // Collect messages without holding a mutable borrow on app
+            let mut messages = Vec::new();
+            if let Some(ref mut task) = app.listing_task {
+                while let Ok(msg) = task.progress_rx.try_recv() {
+                    if let crate::ui::ListingProgress::Count(c) = &msg {
+                        task.count = *c;
+                    }
+                    messages.push(msg);
+                }
+            }
+            for msg in messages {
+                match msg {
+                    crate::ui::ListingProgress::Count(c) => {
+                        app.provider.status = format!("Listing... ({} found)", c);
+                    }
+                    crate::ui::ListingProgress::Done(entries) => {
+                        crate::ui::flows::list::finalize_listing(app, entries);
+                    }
+                    crate::ui::ListingProgress::Error(e) => {
+                        app.config_browser.status = format!("Listing failed: {}", e);
+                        app.log_error(format!("Listing failed: {}", e));
+                        app.listing_task = None;
+                        app.state = crate::ui::AppState::ConfigBrowser;
+                    }
+                }
+            }
+            needs_redraw = true; // Keep animating the progress gauge
+        }
+
         if event::poll(Duration::from_millis(200))? {
             if let Event::Key(key) = event::read()? {
                     needs_redraw = true;
@@ -718,6 +749,13 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                     KeyCode::Char('q') | KeyCode::Esc => {
                         if app.state == crate::ui::AppState::ConfigBrowser {
                             app.state = crate::ui::AppState::MainMenu;
+                        } else if app.state == crate::ui::AppState::Listing {
+                            if let Some(ref task) = app.listing_task {
+                                task.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                            }
+                            app.listing_task = None;
+                            app.config_browser.status = "Listing cancelled.".to_string();
+                            app.state = crate::ui::AppState::ConfigBrowser;
                         } else if app.state == crate::ui::AppState::Mounted {
                             app.unmount_remote();
                             app.log_info("Unmounted remote");
@@ -987,6 +1025,13 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                     KeyCode::Backspace => {
                         if app.state == crate::ui::AppState::ConfigBrowser {
                             app.config_browser.go_parent();
+                        } else if app.state == crate::ui::AppState::Listing {
+                            if let Some(ref task) = app.listing_task {
+                                task.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                            }
+                            app.listing_task = None;
+                            app.config_browser.status = "Listing cancelled.".to_string();
+                            app.state = crate::ui::AppState::ConfigBrowser;
                         } else if app.state == crate::ui::AppState::RemoteSelect {
                             app.remote.options.clear();
                             app.remote.selected = 0;
