@@ -738,6 +738,16 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                             if handle_main_menu_enter(app) {
                                 break;
                             }
+                            // On Windows the native file dialog may have
+                            // pre-selected a config file.  Trigger the
+                            // listing flow here where `terminal` is available.
+                            if let Some(config_path) = app.config_browser.selected_config.clone() {
+                                crate::ui::flows::list::perform_list_flow_from_config(
+                                    app,
+                                    &mut terminal,
+                                    &config_path,
+                                )?;
+                            }
                         } else if app.state == crate::ui::AppState::AdditionalOptions {
                             if let Some(item) = app.additional_menu_selected_item() {
                                 let action = item.action;
@@ -1328,14 +1338,11 @@ fn handle_main_menu_enter(app: &mut App) -> bool {
                         Some("Config Files (*.conf)|*.conf|All Files (*.*)|*.*"),
                     ) {
                         Ok(Some(path)) => {
-                            // User picked a file via native dialog
+                            // User picked a file via native dialog.
+                            // Store the path; the event loop will trigger the
+                            // listing flow where `terminal` is in scope.
                             use_tui = false;
-                            app.config_browser.selected_config = Some(path.clone());
-                            crate::ui::flows::list::perform_list_flow_from_config(
-                                app,
-                                &mut terminal,
-                                &path,
-                            )?;
+                            app.config_browser.selected_config = Some(path);
                         }
                         Ok(None) => {
                             // User cancelled native dialog — fall back to TUI browser
