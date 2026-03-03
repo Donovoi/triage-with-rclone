@@ -7,6 +7,7 @@
 //! - Mounting remotes as local filesystems
 
 pub mod authorize;
+pub mod combine;
 pub mod config;
 pub mod connectivity;
 pub mod mount;
@@ -15,6 +16,9 @@ pub mod process;
 pub mod web;
 
 pub use authorize::{authorize_fallback, AuthorizeFallbackResult};
+pub use combine::{
+    build_upstreams_value, create_combine_remote, remove_combine_remote, COMBINE_REMOTE_NAME,
+};
 pub use config::{
     OAuthCredentialStatus, OAuthToken, ParsedConfig, RcloneConfig, RemoteSection, UserInfo,
 };

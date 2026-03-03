@@ -104,6 +104,8 @@ pub enum PostAuthAction {
     MountAndBrowse,
     /// Skip listing entirely and go to the file list (empty).
     SkipToFileList,
+    /// Go back to provider select to authenticate another remote.
+    AddAnotherProvider,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -193,8 +195,12 @@ pub struct RemoteSelection {
     pub options: Vec<String>,
     /// Currently highlighted index
     pub selected: usize,
-    /// Confirmed remote choice
+    /// Multi-select checkboxes (for combining multiple remotes)
+    pub checked: Vec<bool>,
+    /// Confirmed remote choice (single-select mode)
     pub chosen: Option<String>,
+    /// Confirmed multi-select choices (combine mode)
+    pub chosen_multiple: Vec<String>,
 }
 
 /// File listing and selection state
@@ -478,6 +484,10 @@ pub struct App {
     pub mounted_remote: Option<MountedRemote>,
     /// Running Web GUI process (kept alive while TUI is open)
     pub web_gui_process: Option<crate::rclone::WebGuiProcess>,
+    /// Remotes authenticated in this session: (remote_name, provider_display_name)
+    pub authenticated_remotes: Vec<(String, String)>,
+    /// Whether a combine remote was created (needs cleanup on exit)
+    pub combine_remote_created: bool,
     /// Provider selection state
     pub provider: ProviderSelection,
     /// Browser selection state
@@ -533,6 +543,8 @@ impl App {
             post_auth_action: None,
             mounted_remote: None,
             web_gui_process: None,
+            authenticated_remotes: Vec::new(),
+            combine_remote_created: false,
             provider: ProviderSelection {
                 entries: providers,
                 selected: 0,
@@ -552,7 +564,9 @@ impl App {
             remote: RemoteSelection {
                 options: Vec::new(),
                 selected: 0,
+                checked: Vec::new(),
                 chosen: None,
+                chosen_multiple: Vec::new(),
             },
             files: FileSelection {
                 entries: Vec::new(),
@@ -949,8 +963,10 @@ impl App {
         }
         self.provider.chosen = Some(selected[0].clone());
         self.remote.chosen = None;
+        self.remote.chosen_multiple.clear();
         self.remote.options.clear();
         self.remote.selected = 0;
+        self.remote.checked.clear();
     }
 
     /// Move remote selection up
@@ -980,7 +996,50 @@ impl App {
         self.remote.chosen = Some(remote.clone());
         self.remote.options.clear();
         self.remote.selected = 0;
+        self.remote.checked.clear();
+        self.remote.chosen_multiple.clear();
         Some(remote)
+    }
+
+    /// Toggle whether the current remote is selected (multi-select mode)
+    pub fn toggle_remote_selection(&mut self) {
+        if self.state != AppState::RemoteSelect || self.remote.options.is_empty() {
+            return;
+        }
+        if let Some(entry) = self.remote.checked.get_mut(self.remote.selected) {
+            *entry = !*entry;
+        }
+    }
+
+    /// Get all checked remote names
+    pub fn selected_remotes(&self) -> Vec<String> {
+        self.remote
+            .options
+            .iter()
+            .zip(self.remote.checked.iter().copied())
+            .filter_map(|(name, checked)| if checked { Some(name.clone()) } else { None })
+            .collect()
+    }
+
+    /// Confirm multi-select remote selection. Returns list of selected remotes.
+    /// If none are checked, falls back to the highlighted item (single-select behavior).
+    pub fn confirm_remotes_multi(&mut self) -> Vec<String> {
+        let selected = self.selected_remotes();
+        if selected.is_empty() {
+            // Single-select fallback: use highlighted item
+            if let Some(remote) = self.confirm_remote() {
+                return vec![remote];
+            }
+            return Vec::new();
+        }
+        self.remote.chosen_multiple = selected.clone();
+        if selected.len() == 1 {
+            self.remote.chosen = Some(selected[0].clone());
+        }
+        self.remote.options.clear();
+        self.remote.selected = 0;
+        self.remote.checked.clear();
+        selected
     }
 
     /// Refresh browser list and reset selection
@@ -1079,9 +1138,21 @@ impl App {
         }
     }
 
-    /// Look up full FileEntry by path (to get hash info for verification)
-    pub fn get_file_entry(&self, path: &str) -> Option<&crate::files::FileEntry> {
-        self.files.entries_full.iter().find(|e| e.path == path)
+    /// Look up full FileEntry by display path.
+    ///
+    /// Searches by raw path first. Falls back to matching display entries
+    /// by index (for multi-remote `[remote] path` display strings).
+    pub fn get_file_entry(&self, display_path: &str) -> Option<&crate::files::FileEntry> {
+        // Direct match by raw path
+        if let Some(entry) = self.files.entries_full.iter().find(|e| e.path == display_path) {
+            return Some(entry);
+        }
+        // Index-based match: find position in display entries, return corresponding full entry
+        self.files
+            .entries
+            .iter()
+            .position(|e| e == display_path)
+            .and_then(|idx| self.files.entries_full.get(idx))
     }
 
     /// Path to selection file for GUI-based selection
@@ -1137,6 +1208,22 @@ impl App {
         if let Some(mounted) = self.mounted_remote.take() {
             let _ = mounted.unmount();
         }
+    }
+
+    /// Remove the auto-generated combine remote from the config (cleanup on exit).
+    pub fn cleanup_combine_remote(&mut self) {
+        if !self.combine_remote_created {
+            return;
+        }
+        if let Some(ref dirs) = self.forensics.directories {
+            let config_path = dirs.config.join("rclone.conf");
+            if config_path.exists() {
+                if let Ok(config) = crate::rclone::RcloneConfig::open_existing(&config_path) {
+                    let _ = crate::rclone::combine::remove_combine_remote(&config);
+                }
+            }
+        }
+        self.combine_remote_created = false;
     }
 
     /// Select all files for download
@@ -1387,5 +1474,113 @@ mod tests {
         assert_eq!(state.entries[3].name, "test.conf");
         assert!(!state.entries[3].is_dir);
         assert_eq!(state.status, "2 items"); // Only counts real entries
+    }
+
+    #[test]
+    fn test_toggle_remote_selection() {
+        let mut app = App::new();
+        app.state = AppState::RemoteSelect;
+        app.remote.options = vec!["gdrive".to_string(), "onedrive".to_string()];
+        app.remote.checked = vec![false, false];
+        app.remote.selected = 0;
+
+        app.toggle_remote_selection();
+        assert_eq!(app.remote.checked, vec![true, false]);
+
+        app.remote.selected = 1;
+        app.toggle_remote_selection();
+        assert_eq!(app.remote.checked, vec![true, true]);
+
+        app.toggle_remote_selection();
+        assert_eq!(app.remote.checked, vec![true, false]);
+    }
+
+    #[test]
+    fn test_selected_remotes() {
+        let mut app = App::new();
+        app.remote.options = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        app.remote.checked = vec![true, false, true];
+
+        let selected = app.selected_remotes();
+        assert_eq!(selected, vec!["a".to_string(), "c".to_string()]);
+    }
+
+    #[test]
+    fn test_confirm_remotes_multi_with_checked() {
+        let mut app = App::new();
+        app.state = AppState::RemoteSelect;
+        app.remote.options = vec!["gdrive".to_string(), "onedrive".to_string()];
+        app.remote.checked = vec![true, true];
+
+        let result = app.confirm_remotes_multi();
+        assert_eq!(result, vec!["gdrive".to_string(), "onedrive".to_string()]);
+        assert_eq!(app.remote.chosen_multiple, result);
+    }
+
+    #[test]
+    fn test_confirm_remotes_multi_none_checked_fallback() {
+        let mut app = App::new();
+        app.state = AppState::RemoteSelect;
+        app.remote.options = vec!["gdrive".to_string(), "onedrive".to_string()];
+        app.remote.checked = vec![false, false];
+        app.remote.selected = 1;
+
+        let result = app.confirm_remotes_multi();
+        // Falls back to single-select on the highlighted item
+        assert_eq!(result, vec!["onedrive".to_string()]);
+        assert_eq!(app.remote.chosen.as_deref(), Some("onedrive"));
+    }
+
+    #[test]
+    fn test_get_file_entry_with_remote_prefix() {
+        let mut app = App::new();
+        app.files.entries_full = vec![
+            crate::files::FileEntry {
+                path: "file.txt".to_string(),
+                size: 42,
+                modified: None,
+                is_dir: false,
+                hash: None,
+                hash_type: None,
+                remote_name: Some("gdrive".to_string()),
+            },
+        ];
+        app.files.entries = vec!["[gdrive] file.txt".to_string()];
+
+        // Index-based lookup via display path
+        let entry = app.get_file_entry("[gdrive] file.txt");
+        assert!(entry.is_some());
+        assert_eq!(entry.unwrap().path, "file.txt");
+        assert_eq!(entry.unwrap().remote_name.as_deref(), Some("gdrive"));
+
+        // Direct path lookup also works
+        let entry2 = app.get_file_entry("file.txt");
+        assert!(entry2.is_some());
+    }
+
+    #[test]
+    fn test_post_auth_add_another_tracks_remote() {
+        let mut app = App::new();
+        app.remote.chosen = Some("gdrive_remote".to_string());
+        app.provider.chosen = Some(crate::providers::ProviderEntry::from_known(
+            crate::providers::CloudProvider::GoogleDrive,
+        ));
+
+        // Simulate AddAnotherProvider
+        if let Some(ref remote) = app.remote.chosen {
+            let pname = app
+                .provider
+                .chosen
+                .as_ref()
+                .map(|p| p.display_name().to_string())
+                .unwrap_or_else(|| "Unknown".to_string());
+            if !app.authenticated_remotes.iter().any(|(r, _)| r == remote) {
+                app.authenticated_remotes.push((remote.clone(), pname));
+            }
+        }
+
+        assert_eq!(app.authenticated_remotes.len(), 1);
+        assert_eq!(app.authenticated_remotes[0].0, "gdrive_remote");
+        assert_eq!(app.authenticated_remotes[0].1, "Google Drive");
     }
 }
