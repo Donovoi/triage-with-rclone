@@ -12,6 +12,7 @@ use super::listing::FileEntry;
 
 #[derive(Debug, Serialize)]
 struct CsvFileEntry {
+    remote: Option<String>,
     path: String,
     size: u64,
     modified: Option<String>,
@@ -24,6 +25,7 @@ impl From<&FileEntry> for CsvFileEntry {
     fn from(entry: &FileEntry) -> Self {
         let modified = entry.modified.map(|dt| dt.to_rfc3339());
         Self {
+            remote: entry.remote_name.clone(),
             path: entry.path.clone(),
             size: entry.size,
             modified,
@@ -105,7 +107,7 @@ pub fn export_listing_xlsx(entries: &[FileEntry], path: impl AsRef<Path>) -> Res
         .set_name("Listing")
         .context("Failed to add worksheet")?;
 
-    let headers = ["Path", "Size", "Modified", "IsDir", "Hash", "HashType"];
+    let headers = ["Remote", "Path", "Size", "Modified", "IsDir", "Hash", "HashType"];
     for (col, header) in headers.iter().enumerate() {
         worksheet
             .write_string(0, col as u16, *header)
@@ -114,31 +116,36 @@ pub fn export_listing_xlsx(entries: &[FileEntry], path: impl AsRef<Path>) -> Res
 
     for (row, entry) in entries.iter().enumerate() {
         let row = (row + 1) as u32;
+        if let Some(ref remote) = entry.remote_name {
+            worksheet
+                .write_string(row, 0, remote)
+                .context("Failed to write remote")?;
+        }
         worksheet
-            .write_string(row, 0, &entry.path)
+            .write_string(row, 1, &entry.path)
             .context("Failed to write path")?;
         worksheet
-            .write_number(row, 1, entry.size as f64)
+            .write_number(row, 2, entry.size as f64)
             .context("Failed to write size")?;
 
         if let Some(modified) = entry.modified {
             worksheet
-                .write_string(row, 2, modified.to_rfc3339())
+                .write_string(row, 3, modified.to_rfc3339())
                 .context("Failed to write modified")?;
         }
 
         worksheet
-            .write_boolean(row, 3, entry.is_dir)
+            .write_boolean(row, 4, entry.is_dir)
             .context("Failed to write is_dir")?;
 
         if let Some(hash) = &entry.hash {
             worksheet
-                .write_string(row, 4, hash)
+                .write_string(row, 5, hash)
                 .context("Failed to write hash")?;
         }
         if let Some(hash_type) = &entry.hash_type {
             worksheet
-                .write_string(row, 5, hash_type)
+                .write_string(row, 6, hash_type)
                 .context("Failed to write hash type")?;
         }
     }
@@ -167,6 +174,7 @@ mod tests {
             is_dir: false,
             hash: Some("abc".to_string()),
             hash_type: Some("md5".to_string()),
+            remote_name: None,
         };
 
         export_listing(&[entry], &csv_path).unwrap();
@@ -187,6 +195,50 @@ mod tests {
             is_dir: false,
             hash: Some("abc".to_string()),
             hash_type: Some("md5".to_string()),
+            remote_name: None,
+        };
+
+        export_listing_xlsx(&[entry], &xlsx_path).unwrap();
+        assert!(xlsx_path.exists());
+    }
+
+    #[test]
+    fn test_export_csv_with_remote_name() {
+        let dir = tempdir().unwrap();
+        let csv_path = dir.path().join("listing.csv");
+
+        let entry = FileEntry {
+            path: "Documents/file.txt".to_string(),
+            size: 42,
+            modified: None,
+            is_dir: false,
+            hash: None,
+            hash_type: None,
+            remote_name: Some("gdrive".to_string()),
+        };
+
+        export_listing(&[entry], &csv_path).unwrap();
+
+        let content = std::fs::read_to_string(&csv_path).unwrap();
+        // Should contain the Remote column header and value
+        assert!(content.contains("remote"));
+        assert!(content.contains("gdrive"));
+        assert!(content.contains("Documents/file.txt"));
+    }
+
+    #[test]
+    fn test_export_xlsx_with_remote_name() {
+        let dir = tempdir().unwrap();
+        let xlsx_path = dir.path().join("listing.xlsx");
+
+        let entry = FileEntry {
+            path: "Photos/pic.jpg".to_string(),
+            size: 999,
+            modified: None,
+            is_dir: false,
+            hash: None,
+            hash_type: None,
+            remote_name: Some("onedrive".to_string()),
         };
 
         export_listing_xlsx(&[entry], &xlsx_path).unwrap();

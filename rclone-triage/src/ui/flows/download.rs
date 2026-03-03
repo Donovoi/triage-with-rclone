@@ -53,6 +53,10 @@ pub(crate) fn perform_download_flow<B: ratatui::backend::Backend>(
             .as_deref()
             .unwrap_or(provider.short_name());
 
+        // Check if this is a combine remote session
+        let is_combine = remote_name == crate::rclone::combine::COMBINE_REMOTE_NAME
+            || app.authenticated_remotes.len() > 1;
+
         // Use case downloads directory if available
         let dest_dir = app
             .downloads_dir()
@@ -70,13 +74,45 @@ pub(crate) fn perform_download_flow<B: ratatui::backend::Backend>(
         queue.set_verify_hashes(true);
 
         for file in &app.files.to_download {
-            let source = format!("{}:{}", remote_name, file);
-            let mapped = crate::utils::safe_join_under(&dest_dir, file);
+            // Resolve the full file entry for source path and hash info
+            let entry = app.get_file_entry(file);
+
+            // Construct source path and destination path
+            let (source, dest_relative) = if is_combine {
+                if let Some(e) = entry {
+                    if let Some(ref rn) = e.remote_name {
+                        // Combine remote: source = _triage_combined:remote/path
+                        let rclone_path = if e.path.is_empty() {
+                            rn.clone()
+                        } else {
+                            format!("{}/{}", rn, e.path)
+                        };
+                        let source = format!("{}:{}", remote_name, rclone_path);
+                        // Download into remote-specific subdirectory
+                        let dest_rel = format!("{}/{}", rn, e.path);
+                        (source, dest_rel)
+                    } else {
+                        // No remote_name tag — fall back to raw path
+                        let source = format!("{}:{}", remote_name, e.path);
+                        (source, e.path.clone())
+                    }
+                } else {
+                    // Entry not found — use display path as-is
+                    let source = format!("{}:{}", remote_name, file);
+                    (source, file.clone())
+                }
+            } else {
+                let raw_path = entry.map(|e| e.path.as_str()).unwrap_or(file.as_str());
+                let source = format!("{}:{}", remote_name, raw_path);
+                (source, raw_path.to_string())
+            };
+
+            let mapped = crate::utils::safe_join_under(&dest_dir, &dest_relative);
             let dest = mapped.path;
             if mapped.changed {
                 app.log_info(format!(
                     "Sanitized download destination for '{}' -> {:?}",
-                    file, dest
+                    dest_relative, dest
                 ));
             }
 
@@ -195,18 +231,26 @@ pub(crate) fn perform_download_flow<B: ratatui::backend::Backend>(
                 }
 
                 // Track downloaded file
-                let dest = crate::utils::safe_join_under(&dest_dir, file).path;
-                app.track_file(&dest, format!("Downloaded file: {}", file));
+                let entry = app.get_file_entry(file);
+                let actual_path = entry.map(|e| e.path.clone()).unwrap_or_else(|| file.clone());
+                let file_remote = entry.and_then(|e| e.remote_name.clone());
+                let dest_tracking = if let Some(ref rn) = file_remote {
+                    crate::utils::safe_join_under(&dest_dir, &format!("{}/{}", rn, actual_path)).path
+                } else {
+                    crate::utils::safe_join_under(&dest_dir, &actual_path).path
+                };
+                app.track_file(&dest_tracking, format!("Downloaded file: {}", actual_path));
 
                 // Track downloaded file in case
                 if let Some(ref mut case) = app.forensics.case {
                     case.add_download(crate::case::DownloadedFile {
-                        path: file.clone(),
+                        path: actual_path,
                         size,
                         hash: result.hash.clone(),
                         hash_type: result.hash_type.clone(),
                         hash_verified: result.hash_verified,
                         hash_error: result.hash_error.clone(),
+                        remote_name: file_remote,
                     });
                 }
             } else {

@@ -13,6 +13,8 @@ pub struct DownloadQueueEntry {
     pub hash: Option<String>,
     pub hash_type: Option<String>,
     pub is_dir: bool,
+    /// Which remote this entry belongs to (for multi-remote sessions).
+    pub remote_name: Option<String>,
 }
 
 pub fn read_download_queue(path: impl AsRef<Path>) -> Result<Vec<DownloadQueueEntry>> {
@@ -131,12 +133,20 @@ fn parse_record(record: &StringRecord, map: &HeaderMap) -> Option<DownloadQueueE
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string());
 
+    let remote_name = map
+        .remote
+        .and_then(|idx| record.get(idx))
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string());
+
     Some(DownloadQueueEntry {
         path,
         size,
         hash,
         hash_type,
         is_dir,
+        remote_name,
     })
 }
 
@@ -177,12 +187,20 @@ fn parse_row(row: &[Data], map: &HeaderMap) -> Option<DownloadQueueEntry> {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
 
+    let remote_name = map
+        .remote
+        .and_then(|idx| row.get(idx))
+        .map(cell_to_string)
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
     Some(DownloadQueueEntry {
         path,
         size,
         hash,
         hash_type,
         is_dir,
+        remote_name,
     })
 }
 
@@ -240,6 +258,7 @@ fn cell_to_bool(cell: &Data) -> bool {
 }
 
 struct HeaderMap {
+    remote: Option<usize>,
     path: Option<usize>,
     size: Option<usize>,
     hash: Option<usize>,
@@ -267,6 +286,7 @@ impl HeaderMap {
     }
 
     fn from_map(map: &HashMap<String, usize>) -> Self {
+        let remote = find_header(map, &["remote", "remotename"]);
         let path = find_header(map, &["path", "filepath", "file"]);
         let size = find_header(map, &["size", "sizebytes", "bytes"]);
         let hash = find_header(map, &["hash", "hashifsupported"]);
@@ -274,6 +294,7 @@ impl HeaderMap {
         let is_dir = find_header(map, &["isdir", "is_dir", "directory", "isdirectory"]);
 
         Self {
+            remote,
             path,
             size,
             hash,
@@ -355,5 +376,39 @@ mod tests {
         assert_eq!(entries[0].size, Some(42));
         assert_eq!(entries[0].hash.as_deref(), Some("xyz"));
         assert_eq!(entries[0].hash_type.as_deref(), Some("sha1"));
+    }
+
+    #[test]
+    fn test_read_csv_queue_with_remote() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("queue.csv");
+        std::fs::write(
+            &path,
+            "Remote,Path,Size,IsDir,Hash,HashType\ngdrive,file.txt,12,false,abc,md5\nonedrive,doc.pdf,99,false,,\n",
+        )
+        .unwrap();
+
+        let entries = read_download_queue(&path).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].remote_name.as_deref(), Some("gdrive"));
+        assert_eq!(entries[0].path, "file.txt");
+        assert_eq!(entries[1].remote_name.as_deref(), Some("onedrive"));
+        assert_eq!(entries[1].path, "doc.pdf");
+    }
+
+    #[test]
+    fn test_read_csv_queue_without_remote() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("queue.csv");
+        std::fs::write(
+            &path,
+            "Path,Size,IsDir\nfile.txt,12,false\n",
+        )
+        .unwrap();
+
+        let entries = read_download_queue(&path).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].remote_name.is_none());
+        assert_eq!(entries[0].path, "file.txt");
     }
 }

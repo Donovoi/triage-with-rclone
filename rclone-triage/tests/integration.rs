@@ -355,6 +355,7 @@ esac
         hash_type: results[0].hash_type.clone(),
         hash_verified: results[0].hash_verified,
         hash_error: results[0].hash_error.clone(),
+        remote_name: None,
     });
     case.finalize();
 

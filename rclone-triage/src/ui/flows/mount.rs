@@ -71,6 +71,23 @@ pub(crate) fn perform_mount_flow<B: ratatui::backend::Backend>(
 
     app.remote.chosen = Some(remote_name.clone());
 
+    // If multiple remotes were selected, create a combine remote for the mount
+    let mount_target = if app.remote.chosen_multiple.len() > 1 {
+        let combine_name = crate::rclone::combine::create_combine_remote(
+            &config,
+            &app.remote.chosen_multiple,
+        )?;
+        app.combine_remote_created = true;
+        app.log_info(format!(
+            "Created combine remote '{}' for mount with upstreams: {}",
+            combine_name,
+            app.remote.chosen_multiple.join(", ")
+        ));
+        combine_name
+    } else {
+        remote_name.clone()
+    };
+
     // --- Mount the remote for file explorer access ---
     let mut manager = match crate::rclone::MountManager::new(binary.path()) {
         Ok(manager) => manager.with_config(config.path()),
@@ -139,14 +156,14 @@ pub(crate) fn perform_mount_flow<B: ratatui::backend::Backend>(
         manager = manager.with_mount_base(&mount_base).with_cache_dir(&cache_dir);
     }
 
-    app.provider.status = format!("Mounting {}...", remote_name);
+    app.provider.status = format!("Mounting {}...", mount_target);
     terminal.draw(|f| render_state(f, app))?;
 
-    match manager.mount_and_explore(&remote_name, None) {
+    match manager.mount_and_explore(&mount_target, None) {
         Ok(mounted) => {
             let mount_path = mounted.mount_point().to_path_buf();
             app.mounted_remote = Some(mounted);
-            app.log_info(format!("Mounted {} at {:?}", remote_name, mount_path));
+            app.log_info(format!("Mounted {} at {:?}", mount_target, mount_path));
             app.provider.status = format!("Mounted at {:?}", mount_path);
         }
         Err(e) => {

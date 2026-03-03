@@ -160,8 +160,14 @@ pub fn generate_report_with_metadata(
                 Some(false) => "mismatch",
                 None => "unverified",
             };
+            let remote_prefix = f
+                .remote_name
+                .as_deref()
+                .map(|rn| format!("[{}] ", rn))
+                .unwrap_or_default();
             report.push_str(&format!(
-                "- {} ({} bytes) {:?} {:?} ({}){}\n",
+                "- {}{} ({} bytes) {:?} {:?} ({}){}\n",
+                remote_prefix,
                 f.path,
                 f.size,
                 f.hash_type,
@@ -173,6 +179,39 @@ pub fn generate_report_with_metadata(
                     .unwrap_or_default()
             ));
         }
+
+        // Per-remote breakdown when files have remote names
+        let remotes_in_downloads: Vec<String> = {
+            let mut names: Vec<String> = case
+                .downloaded_files
+                .iter()
+                .filter_map(|f| f.remote_name.clone())
+                .collect();
+            names.sort();
+            names.dedup();
+            names
+        };
+        if !remotes_in_downloads.is_empty() {
+            report.push_str("\nPer-Remote Breakdown:\n");
+            for rn in &remotes_in_downloads {
+                let count = case
+                    .downloaded_files
+                    .iter()
+                    .filter(|f| f.remote_name.as_deref() == Some(rn))
+                    .count();
+                let total_size: u64 = case
+                    .downloaded_files
+                    .iter()
+                    .filter(|f| f.remote_name.as_deref() == Some(rn))
+                    .map(|f| f.size)
+                    .sum();
+                report.push_str(&format!(
+                    "  {}: {} files, {} bytes\n",
+                    rn, count, total_size
+                ));
+            }
+        }
+
         report.push('\n');
     }
 
@@ -437,6 +476,7 @@ mod tests {
             hash_type: Some("sha256".to_string()),
             hash_verified: Some(true),
             hash_error: None,
+            remote_name: None,
         });
         case.finalize();
 

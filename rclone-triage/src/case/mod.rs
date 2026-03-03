@@ -81,6 +81,9 @@ pub struct DownloadedFile {
     pub hash_type: Option<String>,
     pub hash_verified: Option<bool>,
     pub hash_error: Option<String>,
+    /// Which remote this file was downloaded from (for multi-remote sessions).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_name: Option<String>,
 }
 
 impl Case {

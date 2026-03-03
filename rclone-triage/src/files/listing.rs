@@ -55,6 +55,10 @@ pub struct FileEntry {
     pub is_dir: bool,
     pub hash: Option<String>,
     pub hash_type: Option<String>,
+    /// Which remote this entry belongs to (set when listing a combine remote).
+    /// `None` for single-remote sessions (backward compatible).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_name: Option<String>,
 }
 
 /// Result of a large listing, where only a subset may be kept in memory.
@@ -98,6 +102,28 @@ impl From<RcloneLsJsonEntry> for FileEntry {
             is_dir: entry.is_dir,
             hash,
             hash_type,
+            remote_name: None,
+        }
+    }
+}
+
+/// Tag each entry with a remote name by splitting off the first path component
+/// when the listing came from a combine remote.
+///
+/// Combine remotes return paths like `gdrive/Documents/report.pdf` where the
+/// first component is the upstream name. This function splits those paths so
+/// `FileEntry.remote_name = Some("gdrive")` and `FileEntry.path = "Documents/report.pdf"`.
+pub fn tag_entries_with_remote(entries: &mut [FileEntry], known_remotes: &[String]) {
+    for entry in entries.iter_mut() {
+        if let Some((first, rest)) = entry.path.split_once('/') {
+            if known_remotes.iter().any(|r| r == first) {
+                entry.remote_name = Some(first.to_string());
+                entry.path = rest.to_string();
+            }
+        } else if known_remotes.iter().any(|r| r == &entry.path) {
+            // Top-level directory matching a remote name
+            entry.remote_name = Some(entry.path.clone());
+            entry.path = String::new();
         }
     }
 }
@@ -839,6 +865,7 @@ fn parse_lsf_ps_line(line: &str, hash_type: Option<&str>) -> Option<FileEntry> {
         is_dir: false,
         hash,
         hash_type,
+        remote_name: None,
     })
 }
 
@@ -967,5 +994,67 @@ mod tests {
         );
         assert!(result.found_json, "empty array is valid JSON");
         assert_eq!(result.count.unwrap(), 0);
+    }
+
+    #[test]
+    fn test_tag_entries_with_remote_splits_paths() {
+        let mut entries = vec![
+            FileEntry {
+                path: "gdrive/Documents/report.pdf".to_string(),
+                size: 100,
+                modified: None,
+                is_dir: false,
+                hash: None,
+                hash_type: None,
+                remote_name: None,
+            },
+            FileEntry {
+                path: "onedrive/Photos/pic.jpg".to_string(),
+                size: 200,
+                modified: None,
+                is_dir: false,
+                hash: None,
+                hash_type: None,
+                remote_name: None,
+            },
+            FileEntry {
+                path: "gdrive".to_string(),
+                size: 0,
+                modified: None,
+                is_dir: true,
+                hash: None,
+                hash_type: None,
+                remote_name: None,
+            },
+        ];
+        let remotes = vec!["gdrive".to_string(), "onedrive".to_string()];
+        tag_entries_with_remote(&mut entries, &remotes);
+
+        assert_eq!(entries[0].remote_name.as_deref(), Some("gdrive"));
+        assert_eq!(entries[0].path, "Documents/report.pdf");
+
+        assert_eq!(entries[1].remote_name.as_deref(), Some("onedrive"));
+        assert_eq!(entries[1].path, "Photos/pic.jpg");
+
+        assert_eq!(entries[2].remote_name.as_deref(), Some("gdrive"));
+        assert_eq!(entries[2].path, "");
+    }
+
+    #[test]
+    fn test_tag_entries_with_remote_ignores_non_matching() {
+        let mut entries = vec![FileEntry {
+            path: "other/file.txt".to_string(),
+            size: 50,
+            modified: None,
+            is_dir: false,
+            hash: None,
+            hash_type: None,
+            remote_name: None,
+        }];
+        let remotes = vec!["gdrive".to_string()];
+        tag_entries_with_remote(&mut entries, &remotes);
+
+        assert!(entries[0].remote_name.is_none());
+        assert_eq!(entries[0].path, "other/file.txt");
     }
 }

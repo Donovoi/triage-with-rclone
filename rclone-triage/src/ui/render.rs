@@ -254,7 +254,11 @@ pub fn render_state(frame: &mut Frame, app: &App) {
                 .direction(Direction::Vertical)
                 .constraints([Constraint::Min(3), Constraint::Length(4)])
                 .split(area);
-            let screen = RemoteSelectScreen::new(app.remote.options.clone(), app.remote.selected);
+            let screen = RemoteSelectScreen::new(
+                app.remote.options.clone(),
+                app.remote.checked.clone(),
+                app.remote.selected,
+            );
             frame.render_widget(&screen, chunks[0]);
 
             let provider_name = app
@@ -269,7 +273,7 @@ pub fn render_state(frame: &mut Frame, app: &App) {
                 app.provider.status.clone()
             };
             let controls =
-                "Up/Down select • Enter confirm • Backspace back • Ctrl+E export screen • q quit"
+                "Up/Down select • Space toggle • Enter confirm • Backspace back • Ctrl+E export screen • q quit"
                     .to_string();
             let footer = Paragraph::new(vec![
                 Line::from(format!("Provider: {}", provider_name)),
@@ -388,11 +392,25 @@ pub fn render_state(frame: &mut Frame, app: &App) {
                 .map(|p| p.display_name().to_string())
                 .unwrap_or_else(|| "Remote".to_string());
 
-            let choices = [
-                ("List all files to CSV/XLSX", "Recursively list every file in the remote and export to CSV. Best for triage and selective download."),
-                ("Mount as drive (File Explorer)", "Mount the remote as a local drive letter / mount point and browse files in your OS file manager."),
-                ("Skip to file list (empty)", "Go to the file list screen without listing. You can list or mount later from the main menu."),
+            let num_post_auth_choices: usize = 4;
+
+            let mut choices: Vec<(&str, String)> = vec![
+                ("List all files to CSV/XLSX", "Recursively list every file in the remote and export to CSV. Best for triage and selective download.".to_string()),
+                ("Mount as drive (File Explorer)", "Mount the remote as a local drive letter / mount point and browse files in your OS file manager.".to_string()),
+                ("Skip to file list (empty)", "Go to the file list screen without listing. You can list or mount later from the main menu.".to_string()),
             ];
+
+            // 4th option: Add Another Provider
+            let add_desc = if app.authenticated_remotes.is_empty() {
+                "Authenticate another cloud provider to combine multiple remotes into one listing/mount.".to_string()
+            } else {
+                let names: Vec<&str> = app.authenticated_remotes.iter().map(|(_, name)| name.as_str()).collect();
+                format!(
+                    "Already authenticated: {}. Add another to combine into one listing/mount.",
+                    names.join(", ")
+                )
+            };
+            choices.push(("Add another provider", add_desc));
 
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
@@ -404,6 +422,15 @@ pub fn render_state(frame: &mut Frame, app: &App) {
                 Span::styled("Authenticated: ", ratatui::style::Style::default().add_modifier(ratatui::style::Modifier::BOLD)),
                 Span::styled(&provider_name, ratatui::style::Style::default().fg(Color::LightGreen).add_modifier(ratatui::style::Modifier::BOLD)),
             ]));
+
+            if !app.authenticated_remotes.is_empty() {
+                let total = app.authenticated_remotes.len();
+                let remote_names: Vec<&str> = app.authenticated_remotes.iter().map(|(r, _)| r.as_str()).collect();
+                lines.push(Line::from(Span::styled(
+                    format!("{} remote(s) ready: {}", total, remote_names.join(", ")),
+                    ratatui::style::Style::default().fg(Color::LightCyan),
+                )));
+            }
 
             if !app.auth_status.is_empty() {
                 for line in app.auth_status.lines().take(3) {
@@ -436,6 +463,7 @@ pub fn render_state(frame: &mut Frame, app: &App) {
                 lines.push(Line::from(""));
             }
 
+            let _ = num_post_auth_choices; // used in runner.rs for wrapping
             let paragraph = Paragraph::new(lines);
             frame.render_widget(paragraph, chunks[0]);
 

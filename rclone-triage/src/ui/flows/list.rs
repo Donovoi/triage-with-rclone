@@ -210,7 +210,10 @@ pub(crate) fn perform_list_flow<B: ratatui::backend::Backend>(
 
 /// Perform a list flow from an existing config file (config browser path).
 /// Unlike perform_list_flow, this does not require a provider selection—
-/// it loads all remotes from the config and lets the user pick one.
+/// it loads all remotes from the config and lets the user pick one or more.
+///
+/// When multiple remotes are selected, a combine remote is created so all
+/// files appear under one listing with per-remote subdirectories.
 pub(crate) fn perform_list_flow_from_config<B: ratatui::backend::Backend>(
     app: &mut App,
     terminal: &mut Terminal<B>,
@@ -257,13 +260,55 @@ pub(crate) fn perform_list_flow_from_config<B: ratatui::backend::Backend>(
         return Ok(());
     }
 
-    let (remote_name, remote_type) =
-        match crate::ui::flows::remotes::choose_remote_from_all(app, remotes)? {
-            Some(choice) => choice,
-            None => return Ok(()), // Gone to RemoteSelect screen
-        };
+    // Check if multi-select was already confirmed (resume after RemoteSelect screen)
+    let (remote_name, remote_type, combine_remotes) = if !app.remote.chosen_multiple.is_empty() {
+        // Multi-select confirmed — strip " (type)" suffixes to get raw names
+        let raw_names: Vec<String> = app
+            .remote
+            .chosen_multiple
+            .iter()
+            .map(|s| s.split(" (").next().unwrap_or(s).to_string())
+            .collect();
 
-    app.remote.chosen = Some(remote_name.clone());
+        if raw_names.len() == 1 {
+            let rtype = remotes
+                .iter()
+                .find(|(n, _)| *n == raw_names[0])
+                .map(|(_, t)| t.clone())
+                .unwrap_or_default();
+            app.remote.chosen = Some(raw_names[0].clone());
+            (raw_names[0].clone(), rtype, Vec::new())
+        } else {
+            // Create combine remote
+            let combine_name = crate::rclone::combine::create_combine_remote(&config, &raw_names)?;
+            app.combine_remote_created = true;
+            app.remote.chosen = Some(combine_name.clone());
+            app.log_info(format!(
+                "Created combine remote '{}' with upstreams: {}",
+                combine_name,
+                raw_names.join(", ")
+            ));
+            (combine_name, "combine".to_string(), raw_names)
+        }
+    } else if let Some(chosen) = app.remote.chosen.clone() {
+        // Single-select already confirmed (auto-select or resuming)
+        let rtype = remotes
+            .iter()
+            .find(|(n, _)| *n == chosen)
+            .map(|(_, t)| t.clone())
+            .unwrap_or_default();
+        (chosen, rtype, Vec::new())
+    } else {
+        // First call — route to remote selection
+        match crate::ui::flows::remotes::choose_remote_from_all(app, remotes)? {
+            Some((name, rtype)) => {
+                app.remote.chosen = Some(name.clone());
+                (name, rtype, Vec::new())
+            }
+            None => return Ok(()), // Gone to RemoteSelect screen
+        }
+    };
+
     app.files.to_download.clear();
     app.files.entries.clear();
     app.files.entries_full.clear();
@@ -274,7 +319,11 @@ pub(crate) fn perform_list_flow_from_config<B: ratatui::backend::Backend>(
     app.provider.status = format!("Listing {}...", remote_name);
     terminal.draw(|f| render_state(f, app))?;
 
-    let include_hashes = crate::providers::features::type_supports_hashes(&remote_type);
+    let include_hashes = if combine_remotes.is_empty() {
+        crate::providers::features::type_supports_hashes(&remote_type)
+    } else {
+        false // combine remotes aggregate different hash types; skip for consistency
+    };
 
     let list_options = if include_hashes {
         crate::files::listing::ListPathOptions::with_hashes()
@@ -293,11 +342,22 @@ pub(crate) fn perform_list_flow_from_config<B: ratatui::backend::Backend>(
     );
 
     match listing_result {
-        Ok(entries) => {
+        Ok(mut entries) => {
+            // Tag entries with remote names when using a combine remote
+            if !combine_remotes.is_empty() {
+                crate::files::listing::tag_entries_with_remote(&mut entries, &combine_remotes);
+            }
+
+            let export_label = if combine_remotes.is_empty() {
+                remote_type.clone()
+            } else {
+                combine_remotes.join("+")
+            };
+
             if let Some(ref dirs) = app.forensics.directories {
                 let csv_path = dirs
                     .listings
-                    .join(format!("{}_files.csv", remote_type));
+                    .join(format!("{}_files.csv", export_label));
                 if let Err(e) = crate::files::export::export_listing(&entries, &csv_path) {
                     app.log_error(format!("CSV export failed: {}", e));
                 } else {
@@ -307,7 +367,7 @@ pub(crate) fn perform_list_flow_from_config<B: ratatui::backend::Backend>(
 
                 let xlsx_path = dirs
                     .listings
-                    .join(format!("{}_files.xlsx", remote_type));
+                    .join(format!("{}_files.xlsx", export_label));
                 if let Err(e) = crate::files::export::export_listing_xlsx(&entries, &xlsx_path) {
                     app.log_error(format!("Excel export failed: {}", e));
                 } else {
@@ -317,12 +377,28 @@ pub(crate) fn perform_list_flow_from_config<B: ratatui::backend::Backend>(
             }
 
             app.files.entries_full = entries.clone();
-            app.files.entries = entries.iter().map(|e| e.path.clone()).collect();
+            app.files.entries = entries
+                .iter()
+                .map(|e| {
+                    if let Some(ref rn) = e.remote_name {
+                        if e.path.is_empty() {
+                            format!("[{}]", rn)
+                        } else {
+                            format!("[{}] {}", rn, e.path)
+                        }
+                    } else {
+                        e.path.clone()
+                    }
+                })
+                .collect();
             app.log_info(format!(
-                "Listed {} files from {} ({})",
+                "Listed {} files from {}",
                 app.files.entries.len(),
-                remote_name,
-                remote_type
+                if combine_remotes.is_empty() {
+                    format!("{} ({})", remote_name, remote_type)
+                } else {
+                    format!("combined: {}", combine_remotes.join(", "))
+                }
             ));
             app.provider.status = format!("Found {} files", app.files.entries.len());
             app.state = crate::ui::AppState::FileList;

@@ -212,6 +212,7 @@ fn apply_queue_entries(
             is_dir: false,
             hash: entry.hash,
             hash_type: entry.hash_type,
+            remote_name: entry.remote_name,
         });
     }
 
@@ -876,8 +877,17 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                                 )?;
                             }
                         } else if app.state == crate::ui::AppState::RemoteSelect {
-                            if let Some(remote_name) = app.confirm_remote() {
-                                app.provider.status = format!("Selected remote: {}", remote_name);
+                            let selected = app.confirm_remotes_multi();
+                            if !selected.is_empty() {
+                                if selected.len() == 1 {
+                                    app.provider.status = format!("Selected remote: {}", selected[0]);
+                                } else {
+                                    app.provider.status = format!(
+                                        "Selected {} remotes: {}",
+                                        selected.len(),
+                                        selected.join(", ")
+                                    );
+                                }
                                 resume_remote_flow(app, &mut terminal)?;
                             }
                         } else if app.state == crate::ui::AppState::MobileAuthFlow {
@@ -920,7 +930,8 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                             let choice = match app.post_auth_selected {
                                 0 => crate::ui::PostAuthAction::ListToCsv,
                                 1 => crate::ui::PostAuthAction::MountAndBrowse,
-                                _ => crate::ui::PostAuthAction::SkipToFileList,
+                                2 => crate::ui::PostAuthAction::SkipToFileList,
+                                _ => crate::ui::PostAuthAction::AddAnotherProvider,
                             };
                             app.post_auth_action = Some(choice);
                             match choice {
@@ -932,6 +943,25 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                                 }
                                 crate::ui::PostAuthAction::SkipToFileList => {
                                     app.advance(); // PostAuthChoice → FileList
+                                }
+                                crate::ui::PostAuthAction::AddAnotherProvider => {
+                                    // Record current authenticated remote before going back
+                                    if let Some(ref remote) = app.remote.chosen {
+                                        let pname = app
+                                            .provider
+                                            .chosen
+                                            .as_ref()
+                                            .map(|p| p.display_name().to_string())
+                                            .unwrap_or_else(|| "Unknown".to_string());
+                                        if !app.authenticated_remotes.iter().any(|(r, _)| r == remote) {
+                                            app.authenticated_remotes.push((remote.clone(), pname));
+                                        }
+                                    }
+                                    // Go back to provider select to authenticate another
+                                    app.remote.chosen = None;
+                                    app.remote.chosen_multiple.clear();
+                                    app.post_auth_selected = 0;
+                                    app.state = crate::ui::AppState::ProviderSelect;
                                 }
                             }
                         } else if app.state == crate::ui::AppState::FileList {
@@ -1001,7 +1031,7 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                             if app.post_auth_selected > 0 {
                                 app.post_auth_selected -= 1;
                             } else {
-                                app.post_auth_selected = 2;
+                                app.post_auth_selected = 3;
                             }
                         } else if app.state == crate::ui::AppState::FileList {
                             app.file_up();
@@ -1025,7 +1055,7 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                         } else if app.state == crate::ui::AppState::BrowserSelect {
                             app.browser_down();
                         } else if app.state == crate::ui::AppState::PostAuthChoice {
-                            app.post_auth_selected = (app.post_auth_selected + 1) % 3;
+                            app.post_auth_selected = (app.post_auth_selected + 1) % 4;
                         } else if app.state == crate::ui::AppState::FileList {
                             app.file_down();
                         }
@@ -1184,6 +1214,8 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                             app.toggle_provider_selection();
                         } else if app.state == crate::ui::AppState::BrowserSelect {
                             app.toggle_browser_selection();
+                        } else if app.state == crate::ui::AppState::RemoteSelect {
+                            app.toggle_remote_selection();
                         } else if app.state == crate::ui::AppState::FileList {
                             app.toggle_file_download();
                         }
@@ -1213,6 +1245,9 @@ pub fn run_loop(app: &mut App) -> Result<()> {
             break;
         }
     }
+
+    // Clean up combine remote from config if one was created
+    app.cleanup_combine_remote();
 
     Ok(())
 }
@@ -1371,6 +1406,9 @@ fn handle_provider_help_key(app: &mut App, key: &KeyEvent) -> bool {
 }
 
 /// Execute the "List files to CSV" post-auth action using the already-authenticated remote.
+///
+/// When multiple remotes have been authenticated (via "Add another provider"),
+/// a combine remote is created so all files appear under one listing.
 fn perform_post_auth_list<B: ratatui::backend::Backend>(
     app: &mut App,
     terminal: &mut Terminal<B>,
@@ -1381,6 +1419,15 @@ fn perform_post_auth_list<B: ratatui::backend::Backend>(
         return Ok(());
     };
     let provider = app.provider.chosen.clone();
+
+    // Record the current remote if not already tracked
+    if !app.authenticated_remotes.iter().any(|(r, _)| r == &remote_name) {
+        let pname = provider
+            .as_ref()
+            .map(|p| p.display_name().to_string())
+            .unwrap_or_else(|| "Unknown".to_string());
+        app.authenticated_remotes.push((remote_name.clone(), pname));
+    }
 
     app.auth_status = "Extracting rclone...".to_string();
     terminal.draw(|f| crate::ui::render::render_state(f, app))?;
@@ -1395,15 +1442,34 @@ fn perform_post_auth_list<B: ratatui::backend::Backend>(
         .config_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."));
     let config = crate::rclone::RcloneConfig::for_case(&config_dir)?;
+
+    // Determine whether to create a combine remote
+    let (target, short, combine_remotes) = if app.authenticated_remotes.len() > 1 {
+        let remote_names: Vec<String> = app.authenticated_remotes.iter().map(|(r, _)| r.clone()).collect();
+        let combine_name = crate::rclone::combine::create_combine_remote(&config, &remote_names)?;
+        app.combine_remote_created = true;
+        app.log_info(format!(
+            "Created combine remote '{}' with upstreams: {}",
+            combine_name,
+            remote_names.join(", ")
+        ));
+        let label = remote_names.join("+");
+        (format!("{}:", combine_name), label, remote_names)
+    } else {
+        let short = provider
+            .as_ref()
+            .map(|p| p.short_name().to_string())
+            .unwrap_or_else(|| remote_name.clone());
+        (format!("{}:", remote_name), short, Vec::new())
+    };
+
     let runner = crate::rclone::RcloneRunner::new(binary.path()).with_config(config.path());
 
-    let (hash_type, is_onedrive) = resolve_provider_hash_info(provider.as_ref());
-
-    let target = format!("{}:", remote_name);
-    let short = provider
-        .as_ref()
-        .map(|p| p.short_name().to_string())
-        .unwrap_or_else(|| remote_name.clone());
+    let (hash_type, is_onedrive) = if combine_remotes.is_empty() {
+        resolve_provider_hash_info(provider.as_ref())
+    } else {
+        (None, false) // combine remotes mix hash types
+    };
 
     let max_in_memory: usize = std::env::var("RCLONE_TRIAGE_LARGE_LISTING_IN_MEMORY")
         .ok()
@@ -1431,7 +1497,7 @@ fn perform_post_auth_list<B: ratatui::backend::Backend>(
 
         match listing_result {
             Ok(result) => {
-                populate_listing_results(app, &result, &csv_path, &short);
+                populate_listing_results(app, &result, &csv_path, &short, &combine_remotes);
             }
             Err(e) => {
                 app.log_error(format!("File listing failed: {}", e));
@@ -1458,8 +1524,25 @@ fn perform_post_auth_list<B: ratatui::backend::Backend>(
 
         match listing_result {
             Ok(result) => {
-                app.files.entries_full = result.entries.clone();
-                app.files.entries = result.entries.iter().map(|e| e.path.clone()).collect();
+                let mut entries = result.entries.clone();
+                if !combine_remotes.is_empty() {
+                    crate::files::listing::tag_entries_with_remote(&mut entries, &combine_remotes);
+                }
+                app.files.entries_full = entries.clone();
+                app.files.entries = entries
+                    .iter()
+                    .map(|e| {
+                        if let Some(ref rn) = e.remote_name {
+                            if e.path.is_empty() {
+                                format!("[{}]", rn)
+                            } else {
+                                format!("[{}] {}", rn, e.path)
+                            }
+                        } else {
+                            e.path.clone()
+                        }
+                    })
+                    .collect();
                 app.auth_status = format!("Found {} files", app.files.entries.len());
                 // Best-effort cleanup of temp file
                 let _ = std::fs::remove_file(&csv_path);
@@ -1477,7 +1560,8 @@ fn perform_post_auth_list<B: ratatui::backend::Backend>(
 
 /// Execute the "Mount as drive" post-auth action using the already-authenticated remote.
 ///
-/// Mounts the remote for file explorer access without performing file listing.
+/// When multiple remotes have been authenticated, a combine remote is created
+/// so all files appear under one mount point with per-remote subdirectories.
 fn perform_post_auth_mount<B: ratatui::backend::Backend>(
     app: &mut App,
     terminal: &mut Terminal<B>,
@@ -1487,6 +1571,17 @@ fn perform_post_auth_mount<B: ratatui::backend::Backend>(
         app.state = crate::ui::AppState::Mounted;
         return Ok(());
     };
+
+    // Record the current remote if not already tracked
+    if !app.authenticated_remotes.iter().any(|(r, _)| r == &remote_name) {
+        let pname = app
+            .provider
+            .chosen
+            .as_ref()
+            .map(|p| p.display_name().to_string())
+            .unwrap_or_else(|| "Unknown".to_string());
+        app.authenticated_remotes.push((remote_name.clone(), pname));
+    }
 
     app.auth_status = "Preparing mount...".to_string();
     terminal.draw(|f| crate::ui::render::render_state(f, app))?;
@@ -1501,6 +1596,21 @@ fn perform_post_auth_mount<B: ratatui::backend::Backend>(
         .config_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."));
     let config = crate::rclone::RcloneConfig::for_case(&config_dir)?;
+
+    // Determine mount target — combine when multiple remotes
+    let mount_target = if app.authenticated_remotes.len() > 1 {
+        let remote_names: Vec<String> = app.authenticated_remotes.iter().map(|(r, _)| r.clone()).collect();
+        let combine_name = crate::rclone::combine::create_combine_remote(&config, &remote_names)?;
+        app.combine_remote_created = true;
+        app.log_info(format!(
+            "Created combine remote '{}' for mount with upstreams: {}",
+            combine_name,
+            remote_names.join(", ")
+        ));
+        combine_name
+    } else {
+        remote_name.clone()
+    };
 
     // --- Mount the remote for file explorer access ---
     let mut manager = match crate::rclone::MountManager::new(binary.path()) {
@@ -1550,14 +1660,14 @@ fn perform_post_auth_mount<B: ratatui::backend::Backend>(
         manager = manager.with_mount_base(&mount_base).with_cache_dir(&cache_dir);
     }
 
-    app.auth_status = format!("Mounting {}...", remote_name);
+    app.auth_status = format!("Mounting {}...", mount_target);
     terminal.draw(|f| crate::ui::render::render_state(f, app))?;
 
-    match manager.mount_and_explore(&remote_name, None) {
+    match manager.mount_and_explore(&mount_target, None) {
         Ok(mounted) => {
             let mount_path = mounted.mount_point().to_path_buf();
             app.mounted_remote = Some(mounted);
-            app.log_info(format!("Mounted {} at {:?}", remote_name, mount_path));
+            app.log_info(format!("Mounted {} at {:?}", mount_target, mount_path));
             app.auth_status = format!("Mounted at {:?}", mount_path);
         }
         Err(e) => {
@@ -1587,16 +1697,38 @@ fn resolve_provider_hash_info(
 }
 
 /// Populate app state from a large listing result, including CSV/XLSX export tracking.
+///
+/// When `combine_remotes` is non-empty, entries are tagged with their remote name
+/// and display paths include a `[remote]` prefix.
 fn populate_listing_results(
     app: &mut App,
     result: &crate::files::listing::LargeListingResult,
     csv_path: &std::path::Path,
     short: &str,
+    combine_remotes: &[String],
 ) {
     app.log_info(format!("Exported listing to {:?}", csv_path));
     app.track_file(csv_path, "Exported file listing CSV");
-    app.files.entries_full = result.entries.clone();
-    app.files.entries = result.entries.iter().map(|e| e.path.clone()).collect();
+
+    let mut entries = result.entries.clone();
+    if !combine_remotes.is_empty() {
+        crate::files::listing::tag_entries_with_remote(&mut entries, combine_remotes);
+    }
+    app.files.entries_full = entries.clone();
+    app.files.entries = entries
+        .iter()
+        .map(|e| {
+            if let Some(ref rn) = e.remote_name {
+                if e.path.is_empty() {
+                    format!("[{}]", rn)
+                } else {
+                    format!("[{}] {}", rn, e.path)
+                }
+            } else {
+                e.path.clone()
+            }
+        })
+        .collect();
 
     if let Some(ref dirs) = app.forensics.directories {
         let xlsx_path = dirs.listings.join(format!("{}_files.xlsx", short));
