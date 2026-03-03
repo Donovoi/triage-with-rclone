@@ -706,8 +706,10 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                         crate::ui::flows::list::finalize_listing(app, entries);
                     }
                     crate::ui::ListingProgress::Error(e) => {
-                        app.config_browser.status = format!("Listing failed: {}", e);
-                        app.log_error(format!("Listing failed: {}", e));
+                        let error_detail = format!("Listing failed: {}", e);
+                        app.config_browser.status = error_detail.clone();
+                        app.config_browser.last_error = Some(error_detail.clone());
+                        app.log_error(error_detail);
                         app.listing_task = None;
                         app.state = crate::ui::AppState::ConfigBrowser;
                     }
@@ -748,6 +750,7 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                     match key.code {
                     KeyCode::Char('q') | KeyCode::Esc => {
                         if app.state == crate::ui::AppState::ConfigBrowser {
+                            app.config_browser.last_error = None;
                             app.state = crate::ui::AppState::MainMenu;
                         } else if app.state == crate::ui::AppState::Listing {
                             if let Some(ref task) = app.listing_task {

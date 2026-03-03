@@ -302,6 +302,8 @@ pub struct ConfigBrowserState {
     pub preview: Vec<String>,
     /// Path of the selected config file (set on Enter)
     pub selected_config: Option<PathBuf>,
+    /// Listing error with user-friendly explanation and next steps
+    pub last_error: Option<String>,
 }
 
 impl Default for ConfigBrowserState {
@@ -321,6 +323,7 @@ impl ConfigBrowserState {
             status: String::new(),
             preview: Vec::new(),
             selected_config: None,
+            last_error: None,
         };
         state.load_entries(&start_dir);
         state
@@ -334,6 +337,7 @@ impl ConfigBrowserState {
             status: String::new(),
             preview: Vec::new(),
             selected_config: None,
+            last_error: None,
         };
         state.load_entries(&dir);
         state
