@@ -14,7 +14,10 @@ use crate::rclone::MountedRemote;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Local};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::AtomicBool;
+use std::sync::{mpsc, Arc, Mutex};
+use std::thread::JoinHandle;
+use std::time::Instant;
 
 pub mod flows;
 pub mod layout;
@@ -32,6 +35,7 @@ pub enum AppState {
     OneDriveMenu,
     ProviderSelect,
     ConfigBrowser,
+    Listing,
     RemoteSelect,
     MobileAuthFlow,
     BrowserSelect,
@@ -52,7 +56,8 @@ impl AppState {
             AppState::AdditionalOptions => AppState::AdditionalOptions,
             AppState::OneDriveMenu => AppState::OneDriveMenu,
             AppState::ProviderSelect => AppState::BrowserSelect,
-            AppState::ConfigBrowser => AppState::FileList,
+            AppState::ConfigBrowser => AppState::Listing,
+            AppState::Listing => AppState::FileList,
             AppState::RemoteSelect => AppState::RemoteSelect,
             AppState::MobileAuthFlow => AppState::Authenticating,
             AppState::BrowserSelect => AppState::Authenticating,
@@ -74,6 +79,7 @@ impl AppState {
             AppState::OneDriveMenu => AppState::AdditionalOptions,
             AppState::ProviderSelect => AppState::MainMenu,
             AppState::ConfigBrowser => AppState::MainMenu,
+            AppState::Listing => AppState::ConfigBrowser,
             AppState::RemoteSelect => AppState::ProviderSelect,
             AppState::MobileAuthFlow => AppState::ProviderSelect,
             AppState::BrowserSelect => AppState::ProviderSelect,
@@ -231,6 +237,46 @@ pub struct DownloadProgress {
     pub failures: Vec<String>,
     /// Final report lines
     pub report_lines: Vec<String>,
+}
+
+/// Progress update sent from a background listing thread.
+pub enum ListingProgress {
+    /// Number of entries found so far.
+    Count(usize),
+    /// Listing finished successfully with entries.
+    Done(Vec<crate::files::FileEntry>),
+    /// Listing failed.
+    Error(String),
+}
+
+/// Context needed to finalize listing results (export, state transition).
+pub struct ListingContext {
+    /// The remote name being listed.
+    pub remote_name: String,
+    /// The remote type (e.g. "drive", "onedrive").
+    pub remote_type: String,
+    /// Raw remote names when using a combine remote.
+    pub combine_remotes: Vec<String>,
+    /// Whether hashes were requested.
+    pub include_hashes: bool,
+    /// Path to the config file used.
+    pub config_path: PathBuf,
+}
+
+/// A background listing task with cancellation support.
+pub struct ListingTask {
+    /// Thread handle for the listing worker.
+    pub handle: JoinHandle<()>,
+    /// Receives progress updates from the worker.
+    pub progress_rx: mpsc::Receiver<ListingProgress>,
+    /// Flag to signal cancellation; checked by the worker.
+    pub cancel: Arc<AtomicBool>,
+    /// When the listing started.
+    pub started: Instant,
+    /// Number of entries found so far (for display).
+    pub count: usize,
+    /// Context needed to finalize the listing.
+    pub context: ListingContext,
 }
 
 /// An entry in the config file browser
@@ -500,6 +546,8 @@ pub struct App {
     pub download: DownloadProgress,
     /// Config file browser state
     pub config_browser: ConfigBrowserState,
+    /// Background listing task (non-blocking rclone lsjson)
+    pub listing_task: Option<ListingTask>,
     /// Forensic context
     pub forensics: ForensicsContext,
 }
@@ -584,6 +632,7 @@ impl App {
                 report_lines: Vec::new(),
             },
             config_browser: ConfigBrowserState::new(),
+            listing_task: None,
             forensics: ForensicsContext {
                 case: None,
                 directories: None,

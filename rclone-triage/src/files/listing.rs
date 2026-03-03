@@ -9,7 +9,9 @@ use std::fmt;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::io::{self, BufRead, BufReader, Read};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc};
 use std::thread;
 
 use crate::rclone::RcloneRunner;
@@ -192,6 +194,139 @@ where
             Err(err)
         }
     }
+}
+
+/// Spawn a background listing task that sends progress updates through a channel.
+///
+/// Returns a thread handle, a progress receiver, and a cancellation flag.
+/// The caller should poll `progress_rx` from the event loop and set `cancel`
+/// to `true` to abort.
+pub fn spawn_list_with_progress(
+    rclone_exe: PathBuf,
+    config_path: PathBuf,
+    target: String,
+    options: ListPathOptions,
+) -> (
+    std::thread::JoinHandle<()>,
+    mpsc::Receiver<crate::ui::ListingProgress>,
+    Arc<AtomicBool>,
+) {
+    use crate::ui::ListingProgress;
+
+    let (tx, rx) = mpsc::channel();
+    let cancel = Arc::new(AtomicBool::new(false));
+    let cancel_clone = cancel.clone();
+
+    let handle = thread::spawn(move || {
+        let run = || -> Result<Vec<FileEntry>> {
+            let runner = RcloneRunner::new(&rclone_exe).with_config(&config_path);
+            let args_owned = build_lsjson_args_owned(&target, options.include_hashes, options.fast_list);
+            let args: Vec<&str> = args_owned.iter().map(|s| s.as_str()).collect();
+            tracing::info!(target = &*target, fast_list = options.fast_list, include_hashes = options.include_hashes, "Starting background rclone lsjson");
+            let mut child = runner.spawn(&args)?;
+
+            let stdout = child.stdout.take().expect("stdout piped");
+            let stderr = child.stderr.take().expect("stderr piped");
+
+            let stderr_handle = thread::spawn(move || {
+                let reader = BufReader::new(stderr);
+                reader.lines().map_while(Result::ok).collect::<Vec<_>>()
+            });
+
+            let tx_progress = tx.clone();
+            let cancel_inner = cancel_clone.clone();
+            let mut entries = Vec::new();
+            let mut count: usize = 0;
+            let mut last_emit: usize = 0;
+
+            let mut on_entry = |raw: RcloneLsJsonEntry| -> Result<()> {
+                entries.push(FileEntry::from(raw));
+                count += 1;
+                if count - last_emit >= 100 {
+                    let _ = tx_progress.send(ListingProgress::Count(count));
+                    last_emit = count;
+                    if cancel_inner.load(Ordering::Relaxed) {
+                        bail!("Listing cancelled by user");
+                    }
+                }
+                Ok(())
+            };
+
+            let stdout_reader = BufReader::new(stdout);
+            let stream_result = stream_lsjson_entries_from_reader(stdout_reader, &mut on_entry, None);
+
+            let was_killed = stream_result.count.is_err();
+            if was_killed {
+                let _ = child.kill();
+            }
+
+            let status = child.wait()?;
+            let stderr_lines = stderr_handle
+                .join()
+                .unwrap_or_else(|_| vec!["<stderr capture panicked>".to_string()]);
+            let exit_code = status.code().unwrap_or(-1);
+            let stderr_msg = stderr_lines.join("\n");
+
+            if was_killed {
+                if exit_code == 0 && !stream_result.found_json {
+                    return Ok(Vec::new());
+                }
+                let parse_err = stream_result.count.unwrap_err();
+                let detail = if !stderr_msg.trim().is_empty() {
+                    format!("stderr: {}", stderr_msg)
+                } else {
+                    format!("exit code {}", exit_code)
+                };
+                return Err(parse_err.context(format!(
+                    "rclone lsjson output could not be parsed ({})",
+                    detail
+                )));
+            }
+
+            if exit_code != 0 {
+                if stderr_msg.trim().is_empty() {
+                    bail!(
+                        "rclone lsjson failed (exit code {}). Check that the remote is properly configured and the token is valid.",
+                        exit_code
+                    );
+                } else {
+                    bail!("rclone lsjson failed: {}", stderr_msg);
+                }
+            }
+
+            // Attempt fallbacks on failure
+            Ok(entries)
+        };
+
+        match run() {
+            Ok(entries) => {
+                let _ = tx.send(ListingProgress::Done(entries));
+            }
+            Err(e) => {
+                // If cancelled, don't report as error
+                if cancel_clone.load(Ordering::Relaxed) {
+                    let _ = tx.send(ListingProgress::Error("Listing cancelled".to_string()));
+                } else {
+                    let _ = tx.send(ListingProgress::Error(format!("{:#}", e)));
+                }
+            }
+        }
+    });
+
+    (handle, rx, cancel)
+}
+
+fn build_lsjson_args_owned(target: &str, include_hashes: bool, fast_list: bool) -> Vec<String> {
+    let mut args = vec!["lsjson".to_string(), "-v".to_string()];
+    if include_hashes {
+        args.push("--hash".to_string());
+    }
+    args.push("--recursive".to_string());
+    if fast_list {
+        args.push("--fast-list".to_string());
+    }
+    args.push(target.to_string());
+    args
 }
 
 /// List files for a given rclone path, streaming the output to CSV while keeping at most

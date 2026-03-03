@@ -14,7 +14,7 @@ fn hint_style() -> Style {
 use crate::ui::screens::{
     auth::AuthScreen, browser_select::BrowserSelectScreen,
     config_browser::ConfigBrowserScreen, download::DownloadScreen,
-    files::FilesScreen, main_menu::MainMenuScreen,
+    files::FilesScreen, listing::ListingScreen, main_menu::MainMenuScreen,
     provider_select::ProviderSelectScreen, remote_select::RemoteSelectScreen, report::ReportScreen,
 };
 use crate::ui::{App, AppState};
@@ -648,6 +648,42 @@ pub fn render_state(frame: &mut Frame, app: &App) {
                     hint_style(),
                 )),
                 Line::from(controls),
+            ])
+            .wrap(Wrap { trim: true });
+            frame.render_widget(footer, chunks[1]);
+        }
+        AppState::Listing => {
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Min(3), Constraint::Length(3)])
+                .split(area);
+
+            let (remote_name, count, elapsed_secs, status) =
+                if let Some(ref task) = app.listing_task {
+                    (
+                        task.context.remote_name.clone(),
+                        task.count,
+                        task.started.elapsed().as_secs(),
+                        app.provider.status.clone(),
+                    )
+                } else {
+                    (
+                        "unknown".to_string(),
+                        0,
+                        0,
+                        app.provider.status.clone(),
+                    )
+                };
+
+            let screen = ListingScreen::new(remote_name, count, elapsed_secs, status);
+            frame.render_widget(&screen, chunks[0]);
+
+            let footer = Paragraph::new(vec![
+                Line::from(Span::styled(
+                    "Listing files from remote...",
+                    hint_style(),
+                )),
+                Line::from("Esc cancel \u{2022} Ctrl+E export \u{2022} q quit"),
             ])
             .wrap(Wrap { trim: true });
             frame.render_widget(footer, chunks[1]);
