@@ -960,6 +960,28 @@ impl App {
             .map(|d| d.config.clone())
     }
 
+    /// Reset flow-specific state so a fresh MainMenu action starts cleanly.
+    ///
+    /// Called at the top of every MainMenu Enter handler to ensure stale
+    /// state from a previous "Retrieve list" / "Authenticate" / etc. flow
+    /// does not leak into the new action.
+    pub fn reset_flow_state(&mut self) {
+        self.config_browser.selected_config = None;
+        self.config_browser.last_error = None;
+        self.config_browser.status.clear();
+        self.remote.chosen = None;
+        self.remote.chosen_multiple.clear();
+        self.remote.options.clear();
+        self.remote.selected = 0;
+        self.remote.checked.clear();
+        self.auth_status.clear();
+        self.post_auth_selected = 0;
+        self.post_auth_action = None;
+        self.listing_task = None;
+        self.authenticated_remotes.clear();
+        self.combine_remote_created = false;
+    }
+
     /// Move to the next state in the flow
     pub fn advance(&mut self) {
         self.state = self.state.next();
