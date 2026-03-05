@@ -1355,12 +1355,7 @@ fn handle_main_menu_enter(app: &mut App) -> bool {
     let action = app.menu_items[app.menu_selected].action;
     app.selected_action = Some(action);
     app.menu_status.clear();
-
-    // Clear stale config browser state from previous "Retrieve list" attempts
-    // so it doesn't interfere with other flows (e.g. Authenticate).
-    if action != crate::ui::MenuAction::RetrieveList {
-        app.config_browser.selected_config = None;
-    }
+    app.reset_flow_state();
 
     match action {
         crate::ui::MenuAction::Exit => {
