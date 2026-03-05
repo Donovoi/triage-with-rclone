@@ -17,6 +17,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: rclone-triage -> rclone-triage/target
+      - name: Download rclone.exe
+        run: ../scripts/download-rclone.sh
       - name: Build (release)
         run: cargo build --release
       - name: Run tests
@@ -38,6 +40,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: rclone-triage -> rclone-triage/target
+      - name: Download rclone.exe
+        shell: bash
+        run: ../scripts/download-rclone.sh
       - name: Build (release)
         run: cargo build --release
       - name: Upload Windows EXE
