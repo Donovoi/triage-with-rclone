@@ -38,7 +38,7 @@ impl OAuthFlow {
             port: DEFAULT_OAUTH_PORT,
             timeout: Duration::from_secs(120),
             bind_host: "127.0.0.1".to_string(),
-            redirect_host: None,
+            redirect_host: Some("localhost".to_string()),
         }
     }
 
@@ -399,7 +399,7 @@ mod tests {
         );
 
         assert!(url.contains("client_id=test_client_id"));
-        assert!(url.contains("redirect_uri=http%3A%2F%2F127.0.0.1%3A53682%2F"));
+        assert!(url.contains("redirect_uri=http%3A%2F%2Flocalhost%3A53682%2F"));
         assert!(url.contains("response_type=code"));
         assert!(url.contains("state=test_state"));
     }
@@ -432,7 +432,7 @@ mod tests {
     #[test]
     fn test_redirect_uri() {
         let flow = OAuthFlow::new().with_port(12345);
-        assert_eq!(flow.redirect_uri(), "http://127.0.0.1:12345/");
+        assert_eq!(flow.redirect_uri(), "http://localhost:12345/");
     }
 
     #[test]
