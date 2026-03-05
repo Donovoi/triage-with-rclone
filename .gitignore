@@ -23,6 +23,9 @@ rcloned/rcloned.psd1
 rcloned/rcloned.psm1
 .vscode/settings.json
 
+# Embedded rclone binary (downloaded by scripts/download-rclone.sh)
+rclone-triage/assets/rclone.exe
+
 # Triage case output directories (contain logs/downloads)
 triage-*/
 rclone-triage/triage-*/
