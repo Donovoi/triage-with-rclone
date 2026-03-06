@@ -2,8 +2,10 @@
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, StatefulWidget, Widget};
+
+use crate::ui::theme;
 
 /// File tree widget
 #[derive(Debug, Clone)]
@@ -46,15 +48,18 @@ impl Widget for &FileTree {
             .collect();
 
         let list = List::new(items)
-            .block(Block::default().title("Files").borders(Borders::ALL))
-            .style(Style::default().fg(Color::Black).bg(Color::Gray))
-            .highlight_style(
-                Style::default()
-                    .fg(Color::White)
-                    .bg(Color::DarkGray)
-                    .add_modifier(Modifier::BOLD),
+            .block(
+                Block::default()
+                    .title(Line::from(Span::styled(
+                        "Files",
+                        theme::panel_title_style(),
+                    )))
+                    .borders(Borders::ALL)
+                    .border_style(theme::panel_border_style()),
             )
-            .highlight_symbol("▶ ");
+            .style(theme::list_style())
+            .highlight_style(theme::list_highlight_style())
+            .highlight_symbol(theme::list_highlight_symbol(0));
 
         let mut state = ListState::default();
         if !self.entries.is_empty() {

@@ -2,8 +2,10 @@
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, StatefulWidget, Widget};
+
+use crate::ui::theme;
 
 /// Browser list widget
 #[derive(Debug, Clone)]
@@ -48,20 +50,31 @@ impl Widget for &BrowserList {
             .map(|(idx, b)| {
                 let checked = self.checked.get(idx).copied().unwrap_or(false);
                 let prefix = if checked { "[x] " } else { "[ ] " };
-                ListItem::new(format!("{prefix}{b}"))
+                let prefix_style = if checked {
+                    theme::success_style()
+                } else {
+                    theme::muted_style()
+                };
+                ListItem::new(Line::from(vec![
+                    Span::styled(prefix, prefix_style),
+                    Span::styled(b.to_string(), theme::strong_style()),
+                ]))
             })
             .collect();
 
         let list = List::new(items)
-            .block(Block::default().title("Browsers").borders(Borders::ALL))
-            .style(Style::default().fg(Color::Black).bg(Color::Gray))
-            .highlight_style(
-                Style::default()
-                    .fg(Color::White)
-                    .bg(Color::DarkGray)
-                    .add_modifier(Modifier::BOLD),
+            .block(
+                Block::default()
+                    .title(Line::from(Span::styled(
+                        "Browsers",
+                        theme::panel_title_style(),
+                    )))
+                    .borders(Borders::ALL)
+                    .border_style(theme::panel_border_style()),
             )
-            .highlight_symbol("▶ ");
+            .style(theme::list_style())
+            .highlight_style(theme::list_highlight_style())
+            .highlight_symbol(theme::list_highlight_symbol(0));
 
         let mut state = ListState::default();
         if !self.browsers.is_empty() {

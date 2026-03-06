@@ -2,8 +2,10 @@
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
-use ratatui::widgets::{Block, Borders, List, ListItem, ListState, StatefulWidget, Widget};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{List, ListItem, ListState, StatefulWidget, Widget};
+
+use crate::ui::theme;
 
 pub struct RemoteSelectScreen {
     pub remotes: Vec<String>,
@@ -39,20 +41,23 @@ impl Widget for &RemoteSelectScreen {
             .map(|(idx, name)| {
                 let checked = self.checked.get(idx).copied().unwrap_or(false);
                 let prefix = if checked { "[x] " } else { "[ ] " };
-                ListItem::new(format!("{prefix}{name}"))
+                let prefix_style = if checked {
+                    theme::success_style()
+                } else {
+                    theme::muted_style()
+                };
+                ListItem::new(Line::from(vec![
+                    Span::styled(prefix, prefix_style),
+                    Span::styled(name.to_string(), theme::strong_style()),
+                ]))
             })
             .collect();
 
         let list = List::new(items)
-            .block(Block::default().title(title).borders(Borders::ALL))
-            .style(Style::default().fg(Color::Black).bg(Color::Gray))
-            .highlight_style(
-                Style::default()
-                    .fg(Color::White)
-                    .bg(Color::DarkGray)
-                    .add_modifier(Modifier::BOLD),
-            )
-            .highlight_symbol("▶ ");
+            .block(theme::panel_block(title))
+            .style(theme::list_style())
+            .highlight_style(theme::list_highlight_style())
+            .highlight_symbol(theme::list_highlight_symbol(0));
 
         let mut state = ListState::default();
         if !self.remotes.is_empty() {

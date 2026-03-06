@@ -2,7 +2,11 @@
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
+use ratatui::style::Style;
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Gauge, Widget};
+
+use crate::ui::theme;
 
 /// Progress bar widget
 #[derive(Debug, Clone)]
@@ -29,9 +33,18 @@ impl Widget for &ProgressBar {
         let gauge = Gauge::default()
             .block(
                 Block::default()
-                    .title(self.label.clone())
-                    .borders(Borders::ALL),
+                    .title(Line::from(Span::styled(
+                        self.label.clone(),
+                        theme::panel_title_style(),
+                    )))
+                    .borders(Borders::ALL)
+                    .border_style(theme::panel_border_style()),
             )
+            .gauge_style(theme::progress_style())
+            .label(Span::styled(
+                format!("{:>3}%", (self.progress * 100.0).round() as u16),
+                Style::default().fg(theme::text_primary()),
+            ))
             .ratio(self.progress);
 
         gauge.render(area, buf);
