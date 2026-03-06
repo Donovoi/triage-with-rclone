@@ -6,6 +6,7 @@ use crate::forensics::{
     generate_password, get_forensic_access_point_status, render_wifi_qr,
     start_forensic_access_point_with_status, stop_forensic_access_point,
 };
+use crate::providers::browser::BrowserAuthSession;
 use crate::providers::auth::user_identifier_from_config;
 use crate::providers::config::ProviderConfig;
 use crate::providers::mobile::{
@@ -214,6 +215,87 @@ struct AuthOutcome {
     was_silent: bool,
 }
 
+fn auth_error_mentions_timeout(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        let message = cause.to_string().to_lowercase();
+        message.contains("oauth timeout: no response received within")
+            || message.contains("authentication timed out waiting for")
+    })
+}
+
+fn should_auto_fallback_to_onedrive_device_code(
+    provider: CloudProvider,
+    error: &anyhow::Error,
+) -> bool {
+    provider == CloudProvider::OneDrive && auth_error_mentions_timeout(error)
+}
+
+fn browser_device_code_fallback_remote_name(task: &AuthBatchTask) -> Option<String> {
+    let browser = task.browser.as_ref()?;
+    Some(
+        BrowserAuthSession::new(browser.clone(), task.provider.short_name())
+            .remote_name(None),
+    )
+}
+
+fn maybe_fallback_to_onedrive_device_code<B: ratatui::backend::Backend>(
+    app: &mut App,
+    terminal: &mut Terminal<B>,
+    config: &crate::rclone::RcloneConfig,
+    task: &AuthBatchTask,
+    batch_label: &str,
+    remote_name: &str,
+    auth_result: Result<AuthOutcome>,
+) -> Result<AuthOutcome> {
+    let known = task.provider.known.ok_or_else(|| {
+        anyhow::anyhow!("Automatic OneDrive device-code fallback requires a known provider")
+    })?;
+
+    match auth_result {
+        Ok(outcome) => Ok(outcome),
+        Err(auth_error) if should_auto_fallback_to_onedrive_device_code(known, &auth_error) => {
+            let provider_name = task.provider.display_name();
+            let fallback_message = format!(
+                "{} browser authentication stalled; switching to device code.",
+                provider_name
+            );
+
+            tracing::warn!(
+                provider = %provider_name,
+                remote = %remote_name,
+                error = %auth_error,
+                "Browser authentication stalled; starting automatic device-code fallback"
+            );
+            app.log_info(fallback_message.clone());
+            app.auth_status = format!("{}\n\n{}", batch_label, fallback_message);
+            terminal.draw(|f| render_state(f, app))?;
+
+            perform_mobile_auth_flow(
+                app,
+                terminal,
+                known,
+                config,
+                remote_name,
+                crate::ui::MobileAuthFlow::DeviceCode,
+            )
+            .map(|result| AuthOutcome {
+                remote_name: result.remote_name,
+                user_info: result.user_info,
+                was_silent: result.was_silent,
+            })
+            .map_err(|fallback_error| {
+                anyhow::anyhow!(
+                    "Browser authentication stalled for {}: {}. Automatic device-code fallback failed: {}",
+                    provider_name,
+                    auth_error,
+                    fallback_error
+                )
+            })
+        }
+        Err(auth_error) => Err(auth_error),
+    }
+}
+
 fn build_auth_tasks(app: &App) -> Result<Vec<AuthBatchTask>> {
     let providers = if !app.provider.chosen_multiple.is_empty() {
         app.provider.chosen_multiple.clone()
@@ -359,14 +441,25 @@ fn perform_single_auth_task<B: ratatui::backend::Backend>(
                 );
                 terminal.draw(|f| render_state(f, app))?;
 
-                crate::providers::auth::authenticate_with_browser_choice(
-                    known, browser, runner, config,
+                let remote_name = browser_device_code_fallback_remote_name(task)
+                    .ok_or_else(|| anyhow::anyhow!("Missing browser for browser auth task"))?;
+
+                maybe_fallback_to_onedrive_device_code(
+                    app,
+                    terminal,
+                    config,
+                    task,
+                    &batch_label,
+                    &remote_name,
+                    crate::providers::auth::authenticate_with_browser_choice(
+                        known, browser, runner, config,
+                    )
+                    .map(|result| AuthOutcome {
+                        remote_name: result.remote_name,
+                        user_info: result.user_info,
+                        was_silent: result.was_silent,
+                    }),
                 )
-                .map(|result| AuthOutcome {
-                    remote_name: result.remote_name,
-                    user_info: result.user_info,
-                    was_silent: result.was_silent,
-                })
             } else {
                 app.auth_status = format!(
                     "{}\n\nAuthenticating {} via System Default...",
@@ -380,17 +473,25 @@ fn perform_single_auth_task<B: ratatui::backend::Backend>(
                 fallback_base = Some(base.to_string());
                 fallback_remote = Some(remote_name.clone());
 
-                crate::providers::auth::authenticate_with_system_browser(
-                    known,
-                    runner,
+                maybe_fallback_to_onedrive_device_code(
+                    app,
+                    terminal,
                     config,
+                    task,
+                    &batch_label,
                     &remote_name,
+                    crate::providers::auth::authenticate_with_system_browser(
+                        known,
+                        runner,
+                        config,
+                        &remote_name,
+                    )
+                    .map(|result| AuthOutcome {
+                        remote_name: result.remote_name,
+                        user_info: result.user_info,
+                        was_silent: result.was_silent,
+                    }),
                 )
-                .map(|result| AuthOutcome {
-                    remote_name: result.remote_name,
-                    user_info: result.user_info,
-                    was_silent: result.was_silent,
-                })
             }
         } else {
             let sso_status = crate::providers::auth::detect_sso_sessions(known);
@@ -423,12 +524,19 @@ fn perform_single_auth_task<B: ratatui::backend::Backend>(
             fallback_base = Some(base.to_string());
             fallback_remote = Some(remote_name.clone());
 
-            crate::providers::auth::smart_authenticate(known, runner, config, &remote_name).map(
-                |result| AuthOutcome {
-                    remote_name: result.remote_name,
-                    user_info: result.user_info,
-                    was_silent: result.was_silent,
-                },
+            maybe_fallback_to_onedrive_device_code(
+                app,
+                terminal,
+                config,
+                task,
+                &batch_label,
+                &remote_name,
+                crate::providers::auth::smart_authenticate(known, runner, config, &remote_name)
+                    .map(|result| AuthOutcome {
+                        remote_name: result.remote_name,
+                        user_info: result.user_info,
+                        was_silent: result.was_silent,
+                    }),
             )
         }
     } else {
@@ -822,8 +930,69 @@ pub(crate) fn perform_auth_flow<B: ratatui::backend::Backend>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anyhow::Context;
     use crate::providers::browser::{Browser, BrowserType};
     use crate::providers::{CloudProvider, ProviderEntry};
+
+    #[test]
+    fn test_should_auto_fallback_to_onedrive_device_code_for_oauth_timeout() {
+        let error = anyhow::anyhow!("OAuth timeout: no response received within 300 seconds");
+
+        assert!(should_auto_fallback_to_onedrive_device_code(
+            CloudProvider::OneDrive,
+            &error,
+        ));
+    }
+
+    #[test]
+    fn test_should_auto_fallback_to_onedrive_device_code_for_nested_browser_timeout() {
+        let error = Err::<(), _>(anyhow::anyhow!(
+            "Authentication timed out waiting for Microsoft OneDrive login"
+        ))
+        .context("Fallback OAuth failed for Microsoft OneDrive")
+        .unwrap_err();
+
+        assert!(should_auto_fallback_to_onedrive_device_code(
+            CloudProvider::OneDrive,
+            &error,
+        ));
+    }
+
+    #[test]
+    fn test_should_not_auto_fallback_for_non_timeout_errors() {
+        let error = anyhow::anyhow!("OAuth error: access_denied - user declined consent");
+
+        assert!(!should_auto_fallback_to_onedrive_device_code(
+            CloudProvider::OneDrive,
+            &error,
+        ));
+    }
+
+    #[test]
+    fn test_should_not_auto_fallback_for_other_providers() {
+        let error = anyhow::anyhow!("OAuth timeout: no response received within 300 seconds");
+
+        assert!(!should_auto_fallback_to_onedrive_device_code(
+            CloudProvider::GoogleDrive,
+            &error,
+        ));
+    }
+
+    #[test]
+    fn test_browser_device_code_fallback_remote_name_matches_browser_prefix() {
+        let mut browser = Browser::new(BrowserType::Edge);
+        browser.is_installed = true;
+
+        let task = AuthBatchTask {
+            provider: ProviderEntry::from_known(CloudProvider::OneDrive),
+            browser: Some(browser),
+        };
+
+        assert_eq!(
+            browser_device_code_fallback_remote_name(&task).as_deref(),
+            Some("edge-onedrive")
+        );
+    }
 
     #[test]
     fn test_build_auth_tasks_cross_product_in_visible_order() {
