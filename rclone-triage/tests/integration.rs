@@ -107,16 +107,18 @@ exit 1
     hasher.update(content);
     let expected_hash = format!("{:x}", hasher.finalize());
 
-    let request = DownloadRequest::new_copyto(
-        src_file.to_string_lossy(),
-        dst_file.to_string_lossy(),
-    )
-    .with_hash(Some(expected_hash.clone()), Some("sha256".to_string()));
+    let request =
+        DownloadRequest::new_copyto(src_file.to_string_lossy(), dst_file.to_string_lossy())
+            .with_hash(Some(expected_hash.clone()), Some("sha256".to_string()));
 
     let queue = DownloadQueue::new();
     let result = queue.download_one_verified(&runner, &request);
 
-    assert!(result.success, "download should succeed: {:?}", result.error);
+    assert!(
+        result.success,
+        "download should succeed: {:?}",
+        result.error
+    );
     assert_eq!(result.hash_verified, Some(true));
     assert_eq!(result.hash.as_deref(), Some(expected_hash.as_str()));
     assert_eq!(result.size, Some(content.len() as u64));
@@ -325,12 +327,9 @@ esac
     let mut queue = DownloadQueue::new();
     queue.set_verify_hashes(true);
     queue.add(
-        DownloadRequest::new_copyto(
-            source_file.to_string_lossy(),
-            dest_file.to_string_lossy(),
-        )
-        .with_hash(Some(expected_hash.clone()), Some("sha256".to_string()))
-        .with_size(Some(expected_size)),
+        DownloadRequest::new_copyto(source_file.to_string_lossy(), dest_file.to_string_lossy())
+            .with_hash(Some(expected_hash.clone()), Some("sha256".to_string()))
+            .with_size(Some(expected_size)),
     );
 
     let mut phases = Vec::new();
@@ -394,8 +393,8 @@ exit 1
     let (_dir, mock_path) = write_mock_rclone(script);
     let runner = RcloneRunner::new(&mock_path);
 
-    let err = list_path(&runner, "mock:", ListPathOptions::with_hashes())
-        .expect_err("expected failure");
+    let err =
+        list_path(&runner, "mock:", ListPathOptions::with_hashes()).expect_err("expected failure");
     assert!(err.to_string().contains("lsjson failed"));
 }
 
@@ -477,12 +476,10 @@ exit 1
     let dst_file = dst_dir.path().join("test.txt");
     fs::write(&src_file, "hello").unwrap();
 
-    let request = DownloadRequest::new_copyto(
-        src_file.to_string_lossy(),
-        dst_file.to_string_lossy(),
-    )
-    .with_hash(Some("deadbeef".to_string()), Some("sha256".to_string()))
-    .with_size(Some(5));
+    let request =
+        DownloadRequest::new_copyto(src_file.to_string_lossy(), dst_file.to_string_lossy())
+            .with_hash(Some("deadbeef".to_string()), Some("sha256".to_string()))
+            .with_size(Some(5));
 
     let queue = DownloadQueue::new();
     let result = queue.download_one_verified(&runner, &request);

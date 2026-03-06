@@ -21,7 +21,8 @@ fn sanitize_session_id(input: &str) -> String {
     let mut out = String::with_capacity(trimmed.len());
     for c in trimmed.chars() {
         // Cross-platform and Windows filename restrictions.
-        let invalid = c.is_control() || matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*');
+        let invalid =
+            c.is_control() || matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*');
         if invalid {
             out.push('_');
         } else {
@@ -182,5 +183,4 @@ mod tests {
         let json = serde_json::to_string(&case).unwrap();
         assert!(json.contains("name"));
     }
-
 }

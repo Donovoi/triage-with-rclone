@@ -1,8 +1,8 @@
 //! OneDrive Personal Vault helpers (Windows only).
 
-use anyhow::{bail, Result};
 #[cfg(windows)]
 use anyhow::Context;
+use anyhow::{bail, Result};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
@@ -53,10 +53,7 @@ pub fn open_onedrive_vault(
 
     let files = find_vhdx_files(&mount_point)?;
     if files.is_empty() {
-        warnings.push(format!(
-            "No VHDX files found under {:?}",
-            mount_point
-        ));
+        warnings.push(format!("No VHDX files found under {:?}", mount_point));
     }
 
     if !destination.exists() {
@@ -114,7 +111,10 @@ fn trigger_vault_unlock() -> Result<()> {
 fn disable_bitlocker(mount_point: &Path) -> Result<()> {
     use std::process::Command;
     let mount_str = mount_point.to_string_lossy().to_string();
-    let cmd = format!("Disable-BitLocker -MountPoint '{}'", mount_str.replace('\'', "''"));
+    let cmd = format!(
+        "Disable-BitLocker -MountPoint '{}'",
+        mount_str.replace('\'', "''")
+    );
     let status = Command::new("powershell")
         .args(["-NoProfile", "-NonInteractive", "-Command", &cmd])
         .status()?;

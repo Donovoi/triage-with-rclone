@@ -72,9 +72,7 @@ pub fn provider_supports_hashes(provider: &ProviderEntry) -> Result<Option<bool>
         return Ok(None);
     }
 
-    Ok(Some(
-        rows.iter().any(|row| row.hash != "Not Supported"),
-    ))
+    Ok(Some(rows.iter().any(|row| row.hash != "Not Supported")))
 }
 
 /// Check whether a remote type (e.g. "drive", "dropbox") supports hashes
@@ -173,9 +171,7 @@ fn parse_features_table(html: &str) -> Result<Vec<ProviderFeatureRow>> {
 
 fn extract_first_table(html: &str) -> Option<String> {
     let table_re = Regex::new(r"(?is)<table[^>]*>.*?</table>").ok()?;
-    table_re
-        .find(html)
-        .map(|mat| mat.as_str().to_string())
+    table_re.find(html).map(|mat| mat.as_str().to_string())
 }
 
 fn extract_headers(table_html: &str) -> Vec<String> {

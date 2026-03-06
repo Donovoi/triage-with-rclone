@@ -40,7 +40,11 @@ impl Cleanup {
     /// Track an environment variable change with a known original value
     pub fn track_env_value(&mut self, name: impl Into<String>, old_value: Option<String>) {
         let name = name.into();
-        if self.env_changes.iter().any(|(existing, _)| existing == &name) {
+        if self
+            .env_changes
+            .iter()
+            .any(|(existing, _)| existing == &name)
+        {
             return;
         }
         self.env_changes.push((name, old_value));
@@ -110,7 +114,6 @@ impl Cleanup {
         }
         Some(report)
     }
-
 }
 
 #[cfg(test)]

@@ -3,9 +3,9 @@
 //! Sets up terminal backend and renders a single frame.
 
 use anyhow::{bail, Result};
+use chrono::Local;
 use crossterm::event::{
-    self, DisableBracketedPaste, EnableBracketedPaste,
-    Event, KeyCode, KeyEvent, KeyEventKind,
+    self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEvent, KeyEventKind,
 };
 use crossterm::execute;
 use crossterm::terminal::{
@@ -13,7 +13,6 @@ use crossterm::terminal::{
 };
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
-use chrono::Local;
 use std::collections::HashSet;
 use std::io::stdout;
 use std::path::{Path, PathBuf};
@@ -43,12 +42,7 @@ fn format_provider_stats(
     };
     format!(
         "Total: {} (shown {}, OAuth {}, non-oauth {}, excluded {}: {}).",
-        stats.total,
-        kept,
-        stats.oauth_capable,
-        stats.non_oauth,
-        excluded,
-        detail_text
+        stats.total, kept, stats.oauth_capable, stats.non_oauth, excluded, detail_text
     )
 }
 
@@ -84,10 +78,7 @@ fn apply_discovered_providers(
             stats_summary
         );
         app.log_info("No supported providers found; using defaults");
-        record_provider_refresh(
-            app,
-            Some("No supported providers found.".to_string()),
-        );
+        record_provider_refresh(app, Some("No supported providers found.".to_string()));
     }
 }
 
@@ -281,7 +272,6 @@ fn try_refresh_providers(app: &mut App) {
     apply_discovered_providers(app, discovery);
 }
 
-
 fn perform_csv_download_flow<B: ratatui::backend::Backend>(
     app: &mut App,
     terminal: &mut Terminal<B>,
@@ -350,9 +340,9 @@ fn perform_csv_download_flow<B: ratatui::backend::Backend>(
 
     let remote_name =
         match crate::ui::flows::remotes::choose_remote_or_prompt(app, &provider, remotes)? {
-        Some(remote_name) => remote_name,
-        None => return Ok(()),
-    };
+            Some(remote_name) => remote_name,
+            None => return Ok(()),
+        };
 
     app.remote.chosen = Some(remote_name.clone());
     let count = match apply_queue_entries(app, queue_entries, &remote_name) {
@@ -365,7 +355,10 @@ fn perform_csv_download_flow<B: ratatui::backend::Backend>(
     };
 
     app.provider.status = format!("Loaded {} queued files from {:?}", count, queue_path);
-    app.log_info(format!("Loaded {} queued files from {:?}", count, queue_path));
+    app.log_info(format!(
+        "Loaded {} queued files from {:?}",
+        count, queue_path
+    ));
 
     app.state = crate::ui::AppState::Downloading;
     crate::ui::flows::download::perform_download_flow(app, terminal)?;
@@ -459,13 +452,9 @@ fn perform_update_tools_flow<B: ratatui::backend::Backend>(
                                 .to_string(),
                         );
                         #[cfg(target_os = "linux")]
-                        lines.push(
-                            "  Install fuse: sudo apt install fuse3 (or fuse)".to_string(),
-                        );
+                        lines.push("  Install fuse: sudo apt install fuse3 (or fuse)".to_string());
                         #[cfg(target_os = "macos")]
-                        lines.push(
-                            "  Install macFUSE from https://osxfuse.github.io/".to_string(),
-                        );
+                        lines.push("  Install macFUSE from https://osxfuse.github.io/".to_string());
                     }
                     Err(e) => lines.push(format!("FUSE/WinFSP: check failed: {}", e)),
                 },
@@ -621,7 +610,10 @@ fn perform_onedrive_vault_flow<B: ratatui::backend::Backend>(
             lines.push(format!("  Mount: {:?}", result.mount_point));
             lines.push(format!("  Destination: {:?}", result.destination));
             lines.push(format!("  Files copied: {}", result.copied_files.len()));
-            lines.push(format!("  BitLocker disabled: {}", result.bitlocker_disabled));
+            lines.push(format!(
+                "  BitLocker disabled: {}",
+                result.bitlocker_disabled
+            ));
             for warning in &result.warnings {
                 lines.push(format!("  Warning: {}", warning));
             }
@@ -720,34 +712,35 @@ pub fn run_loop(app: &mut App) -> Result<()> {
 
         if event::poll(Duration::from_millis(200))? {
             if let Event::Key(key) = event::read()? {
-                    needs_redraw = true;
-                    if !should_handle_key(&key) {
-                        continue;
-                    }
-                    let now = Instant::now();
-                    if matches!(key.code, KeyCode::Up | KeyCode::Down) {
-                        if let Some((prev, at)) = last_nav {
-                            if prev == key.code && now.duration_since(at) < Duration::from_millis(80)
-                            {
-                                continue;
-                            }
+                needs_redraw = true;
+                if !should_handle_key(&key) {
+                    continue;
+                }
+                let now = Instant::now();
+                if matches!(key.code, KeyCode::Up | KeyCode::Down) {
+                    if let Some((prev, at)) = last_nav {
+                        if prev == key.code && now.duration_since(at) < Duration::from_millis(80) {
+                            continue;
                         }
-                        last_nav = Some((key.code, now));
                     }
+                    last_nav = Some((key.code, now));
+                }
 
-                    if handle_provider_help_key(app, &key) {
-                        continue;
-                    }
+                if handle_provider_help_key(app, &key) {
+                    continue;
+                }
 
-                    // Ctrl+E: export current screen text to file
-                    if key.code == KeyCode::Char('e')
-                        && key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL)
-                    {
-                        handle_export_screen(app, &terminal);
-                        continue;
-                    }
+                // Ctrl+E: export current screen text to file
+                if key.code == KeyCode::Char('e')
+                    && key
+                        .modifiers
+                        .contains(crossterm::event::KeyModifiers::CONTROL)
+                {
+                    handle_export_screen(app, &terminal);
+                    continue;
+                }
 
-                    match key.code {
+                match key.code {
                     KeyCode::Char('q') | KeyCode::Esc => {
                         if app.state == crate::ui::AppState::ConfigBrowser {
                             app.config_browser.last_error = None;
@@ -755,7 +748,8 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                             app.state = crate::ui::AppState::MainMenu;
                         } else if app.state == crate::ui::AppState::Listing {
                             if let Some(ref task) = app.listing_task {
-                                task.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                                task.cancel
+                                    .store(true, std::sync::atomic::Ordering::Relaxed);
                             }
                             app.listing_task = None;
                             app.config_browser.status = "Listing cancelled.".to_string();
@@ -783,8 +777,13 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                             // On Windows the native file dialog may have
                             // pre-selected a config file.  Trigger the
                             // listing flow here where `terminal` is available.
-                            if matches!(app.selected_action, Some(crate::ui::MenuAction::RetrieveList)) {
-                                if let Some(config_path) = app.config_browser.selected_config.clone() {
+                            if matches!(
+                                app.selected_action,
+                                Some(crate::ui::MenuAction::RetrieveList)
+                            ) {
+                                if let Some(config_path) =
+                                    app.config_browser.selected_config.clone()
+                                {
                                     crate::ui::flows::list::perform_list_flow_from_config(
                                         app,
                                         &mut terminal,
@@ -818,7 +817,12 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                                         }
                                     }
                                     crate::ui::MenuAction::ExportDomainCookies => {
-                                        if let Err(e) = crate::ui::flows::exports::perform_export_domain_cookies(app, &mut terminal) {
+                                        if let Err(e) =
+                                            crate::ui::flows::exports::perform_export_domain_cookies(
+                                                app,
+                                                &mut terminal,
+                                            )
+                                        {
                                             app.menu_status =
                                                 format!("Failed to export domain cookies: {}", e);
                                         }
@@ -855,19 +859,48 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                                 continue;
                             }
 
+                            let selected_providers = if !app.provider.chosen_multiple.is_empty() {
+                                app.provider.chosen_multiple.clone()
+                            } else {
+                                app.provider.chosen.clone().into_iter().collect()
+                            };
+                            let first_provider = selected_providers
+                                .first()
+                                .cloned()
+                                .or_else(|| app.provider.chosen.clone());
+
                             let needs_oauth = matches!(
                                 app.selected_action,
                                 Some(crate::ui::MenuAction::Authenticate)
                                     | Some(crate::ui::MenuAction::SmartAuth)
                                     | Some(crate::ui::MenuAction::MobileAuth)
                             );
-                            let auth_kind = app.provider.chosen.as_ref().map(|p| p.auth_kind());
+                            let auth_kind = first_provider.as_ref().map(|p| p.auth_kind());
                             if needs_oauth {
+                                let has_manual_backend =
+                                    selected_providers.iter().any(|provider| {
+                                        matches!(
+                                            provider.auth_kind(),
+                                            crate::providers::ProviderAuthKind::KeyBased
+                                                | crate::providers::ProviderAuthKind::UserPass
+                                        )
+                                    });
+
+                                if has_manual_backend && selected_providers.len() > 1 {
+                                    app.provider.status = "Multi-select auth currently supports OAuth/browser flows only. Authenticate manual backends one at a time.".to_string();
+                                    app.clear_auth_batch();
+                                    continue;
+                                }
+
                                 match auth_kind {
                                     Some(crate::providers::ProviderAuthKind::KeyBased)
-                                    | Some(crate::providers::ProviderAuthKind::UserPass) => {
+                                    | Some(crate::providers::ProviderAuthKind::UserPass)
+                                        if selected_providers.len() == 1 =>
+                                    {
                                         app.menu_status.clear();
                                         app.browser.chosen = None;
+                                        app.browser.chosen_multiple.clear();
+                                        app.clear_auth_batch();
                                         app.state = crate::ui::AppState::Authenticating;
                                         crate::ui::flows::manual_config::perform_manual_config_flow(
                                             app,
@@ -876,7 +909,7 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                                         continue;
                                     }
                                     Some(crate::providers::ProviderAuthKind::Unknown) => {
-                                        if let Some(provider) = app.provider.chosen.as_ref() {
+                                        if let Some(provider) = first_provider.as_ref() {
                                             // Best-effort: allow trying OAuth even if we can't confidently classify the backend.
                                             app.menu_status = format!(
                                                 "Backend '{}' auth type is unknown. Attempting OAuth anyway; if it fails, configure it in an rclone config and use Retrieve List / Mount / Download from CSV.",
@@ -900,24 +933,35 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                                     crate::ui::flows::list::perform_list_flow(app, &mut terminal)?;
                                 }
                                 Some(crate::ui::MenuAction::MountProvider) => {
-                                    crate::ui::flows::mount::perform_mount_flow(app, &mut terminal)?;
+                                    crate::ui::flows::mount::perform_mount_flow(
+                                        app,
+                                        &mut terminal,
+                                    )?;
                                 }
                                 Some(crate::ui::MenuAction::DownloadFromCsv) => {
                                     perform_csv_download_flow(app, &mut terminal)?;
                                 }
                                 _ => {
-                                    if app
-                                        .provider.chosen
-                                        .as_ref()
-                                        .and_then(|p| p.known)
-                                        .is_some()
-                                    {
+                                    let needs_browser_selection =
+                                        selected_providers.iter().any(|provider| {
+                                            provider.known.is_some()
+                                                && matches!(
+                                                    provider.auth_kind(),
+                                                    crate::providers::ProviderAuthKind::OAuth
+                                                )
+                                        });
+                                    if needs_browser_selection {
                                         app.refresh_browsers();
                                         app.advance(); // Move to BrowserSelect
                                     } else {
                                         app.browser.chosen = None;
+                                        app.browser.chosen_multiple.clear();
+                                        app.clear_auth_batch();
                                         app.state = crate::ui::AppState::Authenticating;
-                                        crate::ui::flows::auth::perform_auth_flow(app, &mut terminal)?;
+                                        crate::ui::flows::auth::perform_auth_flow(
+                                            app,
+                                            &mut terminal,
+                                        )?;
                                     }
                                 }
                             }
@@ -934,7 +978,8 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                             let selected = app.confirm_remotes_multi();
                             if !selected.is_empty() {
                                 if selected.len() == 1 {
-                                    app.provider.status = format!("Selected remote: {}", selected[0]);
+                                    app.provider.status =
+                                        format!("Selected remote: {}", selected[0]);
                                 } else {
                                     app.provider.status = format!(
                                         "Selected {} remotes: {}",
@@ -951,18 +996,29 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                                         app.mobile_auth_flow =
                                             Some(crate::ui::MobileAuthFlow::Redirect);
                                         app.state = crate::ui::AppState::Authenticating;
-                                        crate::ui::flows::auth::perform_auth_flow(app, &mut terminal)?;
+                                        crate::ui::flows::auth::perform_auth_flow(
+                                            app,
+                                            &mut terminal,
+                                        )?;
                                     }
                                     crate::ui::MenuAction::MobileAuthRedirectWithAp => {
-                                        app.mobile_auth_flow =
-                                            Some(crate::ui::MobileAuthFlow::RedirectWithAccessPoint);
+                                        app.mobile_auth_flow = Some(
+                                            crate::ui::MobileAuthFlow::RedirectWithAccessPoint,
+                                        );
                                         app.state = crate::ui::AppState::Authenticating;
-                                        crate::ui::flows::auth::perform_auth_flow(app, &mut terminal)?;
+                                        crate::ui::flows::auth::perform_auth_flow(
+                                            app,
+                                            &mut terminal,
+                                        )?;
                                     }
                                     crate::ui::MenuAction::MobileAuthDeviceCode => {
-                                        app.mobile_auth_flow = Some(crate::ui::MobileAuthFlow::DeviceCode);
+                                        app.mobile_auth_flow =
+                                            Some(crate::ui::MobileAuthFlow::DeviceCode);
                                         app.state = crate::ui::AppState::Authenticating;
-                                        crate::ui::flows::auth::perform_auth_flow(app, &mut terminal)?;
+                                        crate::ui::flows::auth::perform_auth_flow(
+                                            app,
+                                            &mut terminal,
+                                        )?;
                                     }
                                     crate::ui::MenuAction::BackToProviders => {
                                         app.state = crate::ui::AppState::ProviderSelect;
@@ -999,19 +1055,15 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                                     app.advance(); // PostAuthChoice → FileList
                                 }
                                 crate::ui::PostAuthAction::AddAnotherProvider => {
-                                    // Record current authenticated remote before going back
-                                    if let Some(ref remote) = app.remote.chosen {
-                                        let pname = app
-                                            .provider
-                                            .chosen
-                                            .as_ref()
-                                            .map(|p| p.display_name().to_string())
-                                            .unwrap_or_else(|| "Unknown".to_string());
-                                        if !app.authenticated_remotes.iter().any(|(r, _)| r == remote) {
-                                            app.authenticated_remotes.push((remote.clone(), pname));
-                                        }
-                                    }
-                                    // Go back to provider select to authenticate another
+                                    // Go back to provider select to authenticate another batch.
+                                    app.provider.chosen = None;
+                                    app.provider.chosen_multiple.clear();
+                                    app.provider.checked = vec![false; app.provider.entries.len()];
+                                    app.browser.chosen = None;
+                                    app.browser.chosen_multiple.clear();
+                                    app.browser.checked =
+                                        vec![false; app.browser.entries.len() + 1];
+                                    app.clear_auth_batch();
                                     app.remote.chosen = None;
                                     app.remote.chosen_multiple.clear();
                                     app.post_auth_selected = 0;
@@ -1022,7 +1074,10 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                             // Start download if files are selected
                             if !app.files.to_download.is_empty() {
                                 app.advance(); // Move to Downloading
-                                crate::ui::flows::download::perform_download_flow(app, &mut terminal)?;
+                                crate::ui::flows::download::perform_download_flow(
+                                    app,
+                                    &mut terminal,
+                                )?;
                             }
                         } else {
                             app.advance();
@@ -1033,7 +1088,8 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                             app.config_browser.go_parent();
                         } else if app.state == crate::ui::AppState::Listing {
                             if let Some(ref task) = app.listing_task {
-                                task.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                                task.cancel
+                                    .store(true, std::sync::atomic::Ordering::Relaxed);
                             }
                             app.listing_task = None;
                             app.config_browser.status = "Listing cancelled.".to_string();
@@ -1053,6 +1109,9 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                             } else {
                                 app.state = crate::ui::AppState::PostAuthChoice;
                             }
+                        } else if app.state == crate::ui::AppState::Authenticating {
+                            app.clear_auth_batch();
+                            app.back();
                         } else if app.state == crate::ui::AppState::FileList {
                             if matches!(
                                 app.selected_action,
@@ -1166,16 +1225,19 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                             };
                             app.cleanup_track_env_value("RCLONE_CONFIG", config.original_env());
 
-                            let remote_name = app
-                                .remote.chosen
-                                .clone()
-                                .or_else(|| app.provider.chosen.as_ref().map(|p| p.short_name().to_string()));
+                            let remote_name = app.remote.chosen.clone().or_else(|| {
+                                app.provider
+                                    .chosen
+                                    .as_ref()
+                                    .map(|p| p.short_name().to_string())
+                            });
                             let Some(remote_name) = remote_name else {
                                 app.log_error("Mount failed: no remote selected");
                                 continue;
                             };
 
-                            let mut manager = match crate::rclone::MountManager::new(binary.path()) {
+                            let mut manager = match crate::rclone::MountManager::new(binary.path())
+                            {
                                 Ok(manager) => manager.with_config(config.path()),
                                 Err(e) => {
                                     app.log_error(format!("Mount failed: {}", e));
@@ -1195,7 +1257,10 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                                     ));
                                     continue;
                                 }
-                                app.track_file(&mount_base, "Created mount base directory inside case");
+                                app.track_file(
+                                    &mount_base,
+                                    "Created mount base directory inside case",
+                                );
 
                                 if let Err(e) = std::fs::create_dir_all(&cache_dir) {
                                     app.log_error(format!(
@@ -1204,9 +1269,14 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                                     ));
                                     continue;
                                 }
-                                app.track_file(&cache_dir, "Created rclone cache directory inside case");
+                                app.track_file(
+                                    &cache_dir,
+                                    "Created rclone cache directory inside case",
+                                );
 
-                                manager = manager.with_mount_base(&mount_base).with_cache_dir(&cache_dir);
+                                manager = manager
+                                    .with_mount_base(&mount_base)
+                                    .with_cache_dir(&cache_dir);
                             }
 
                             match manager.mount_and_explore(&remote_name, None) {
@@ -1290,7 +1360,7 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                     KeyCode::Tab => app.toggle_file_download(),
                     KeyCode::Char(_ch) => {}
                     _ => {}
-                    }
+                }
             }
         } else {
             // No event received — redraw periodically for states with dynamic content
@@ -1325,7 +1395,9 @@ fn handle_export_screen<B: ratatui::backend::Backend>(
     app: &mut App,
     terminal: &ratatui::Terminal<B>,
 ) {
-    let size = terminal.size().unwrap_or(ratatui::layout::Size::new(80, 24));
+    let size = terminal
+        .size()
+        .unwrap_or(ratatui::layout::Size::new(80, 24));
     let text = crate::ui::render::export_screen_text(app, size.width, size.height);
 
     let path = app
@@ -1368,8 +1440,8 @@ fn handle_main_menu_enter(app: &mut App) -> bool {
         }
         _ => {
             // Initialize case and go directly to provider selection.
-            let output_dir = std::env::current_dir()
-                .unwrap_or_else(|_| std::path::PathBuf::from("."));
+            let output_dir =
+                std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
             if let Err(e) = app.init_case(output_dir) {
                 app.auth_status = format!("Failed to create case: {}", e);
                 app.menu_status = format!("Failed to create case: {}", e);
@@ -1381,9 +1453,7 @@ fn handle_main_menu_enter(app: &mut App) -> bool {
 
                 #[cfg(windows)]
                 {
-                    let start_dir = app
-                        .config_dir()
-                        .unwrap_or_else(crate::ui::dirs_path_or_cwd);
+                    let start_dir = app.config_dir().unwrap_or_else(crate::ui::dirs_path_or_cwd);
                     match crate::utils::windows::open_file_dialog(
                         Some("Select rclone config file"),
                         Some(&start_dir),
@@ -1407,9 +1477,7 @@ fn handle_main_menu_enter(app: &mut App) -> bool {
                 }
 
                 if use_tui {
-                    let start_dir = app
-                        .config_dir()
-                        .unwrap_or_else(crate::ui::dirs_path_or_cwd);
+                    let start_dir = app.config_dir().unwrap_or_else(crate::ui::dirs_path_or_cwd);
                     app.config_browser = crate::ui::ConfigBrowserState::from_dir(start_dir);
                     app.state = crate::ui::AppState::ConfigBrowser;
                 }
@@ -1427,15 +1495,26 @@ fn resume_remote_flow<B: ratatui::backend::Backend>(
     terminal: &mut Terminal<B>,
 ) -> Result<()> {
     // When coming from config browser flow, use the selected config path
-    if matches!(app.selected_action, Some(crate::ui::MenuAction::RetrieveList)) {
+    if matches!(
+        app.selected_action,
+        Some(crate::ui::MenuAction::RetrieveList)
+    ) {
         if let Some(ref config_path) = app.config_browser.selected_config.clone() {
-            return crate::ui::flows::list::perform_list_flow_from_config(app, terminal, config_path);
+            return crate::ui::flows::list::perform_list_flow_from_config(
+                app,
+                terminal,
+                config_path,
+            );
         }
     }
     app.state = crate::ui::AppState::ProviderSelect;
     match app.selected_action {
-        Some(crate::ui::MenuAction::RetrieveList) => crate::ui::flows::list::perform_list_flow(app, terminal),
-        Some(crate::ui::MenuAction::MountProvider) => crate::ui::flows::mount::perform_mount_flow(app, terminal),
+        Some(crate::ui::MenuAction::RetrieveList) => {
+            crate::ui::flows::list::perform_list_flow(app, terminal)
+        }
+        Some(crate::ui::MenuAction::MountProvider) => {
+            crate::ui::flows::mount::perform_mount_flow(app, terminal)
+        }
         Some(crate::ui::MenuAction::DownloadFromCsv) => perform_csv_download_flow(app, terminal),
         _ => Ok(()),
     }
@@ -1482,7 +1561,11 @@ fn perform_post_auth_list<B: ratatui::backend::Backend>(
     let provider = app.provider.chosen.clone();
 
     // Record the current remote if not already tracked
-    if !app.authenticated_remotes.iter().any(|(r, _)| r == &remote_name) {
+    if !app
+        .authenticated_remotes
+        .iter()
+        .any(|(r, _)| r == &remote_name)
+    {
         let pname = provider
             .as_ref()
             .map(|p| p.display_name().to_string())
@@ -1506,7 +1589,11 @@ fn perform_post_auth_list<B: ratatui::backend::Backend>(
 
     // Determine whether to create a combine remote
     let (target, short, combine_remotes) = if app.authenticated_remotes.len() > 1 {
-        let remote_names: Vec<String> = app.authenticated_remotes.iter().map(|(r, _)| r.clone()).collect();
+        let remote_names: Vec<String> = app
+            .authenticated_remotes
+            .iter()
+            .map(|(r, _)| r.clone())
+            .collect();
         let combine_name = crate::rclone::combine::create_combine_remote(&config, &remote_names)?;
         app.combine_remote_created = true;
         app.log_info(format!(
@@ -1634,7 +1721,11 @@ fn perform_post_auth_mount<B: ratatui::backend::Backend>(
     };
 
     // Record the current remote if not already tracked
-    if !app.authenticated_remotes.iter().any(|(r, _)| r == &remote_name) {
+    if !app
+        .authenticated_remotes
+        .iter()
+        .any(|(r, _)| r == &remote_name)
+    {
         let pname = app
             .provider
             .chosen
@@ -1660,7 +1751,11 @@ fn perform_post_auth_mount<B: ratatui::backend::Backend>(
 
     // Determine mount target — combine when multiple remotes
     let mount_target = if app.authenticated_remotes.len() > 1 {
-        let remote_names: Vec<String> = app.authenticated_remotes.iter().map(|(r, _)| r.clone()).collect();
+        let remote_names: Vec<String> = app
+            .authenticated_remotes
+            .iter()
+            .map(|(r, _)| r.clone())
+            .collect();
         let combine_name = crate::rclone::combine::create_combine_remote(&config, &remote_names)?;
         app.combine_remote_created = true;
         app.log_info(format!(
@@ -1698,8 +1793,7 @@ fn perform_post_auth_mount<B: ratatui::backend::Backend>(
                 }
                 Ok(false) | Err(_) => {
                     app.log_error("FUSE/WinFSP auto-install failed");
-                    app.auth_status =
-                        "Mount skipped (FUSE/WinFSP not available).".to_string();
+                    app.auth_status = "Mount skipped (FUSE/WinFSP not available).".to_string();
                     app.state = crate::ui::AppState::Mounted;
                     return Ok(());
                 }
@@ -1718,7 +1812,9 @@ fn perform_post_auth_mount<B: ratatui::backend::Backend>(
         let _ = std::fs::create_dir_all(&cache_dir);
         app.track_file(&mount_base, "Created mount base directory inside case");
         app.track_file(&cache_dir, "Created rclone cache directory inside case");
-        manager = manager.with_mount_base(&mount_base).with_cache_dir(&cache_dir);
+        manager = manager
+            .with_mount_base(&mount_base)
+            .with_cache_dir(&cache_dir);
     }
 
     app.auth_status = format!("Mounting {}...", mount_target);
@@ -1838,10 +1934,7 @@ mod tests {
         assert!(app.provider.entries.iter().any(|p| p.id == "s3"));
         assert!(app.provider.entries.iter().any(|p| p.id == "azureblob"));
         let b2 = app.provider.entries.iter().find(|p| p.id == "b2").unwrap();
-        assert_eq!(
-            b2.auth_kind(),
-            crate::providers::ProviderAuthKind::KeyBased
-        );
+        assert_eq!(b2.auth_kind(), crate::providers::ProviderAuthKind::KeyBased);
         assert!(app.provider.entries.iter().any(|p| p.id == "drive"));
     }
 
@@ -1937,11 +2030,26 @@ mod tests {
 
     #[test]
     fn test_normalize_queue_path_strips_remote_prefix() {
-        assert_eq!(normalize_queue_path("drive:Documents/file.txt", "drive"), "Documents/file.txt");
-        assert_eq!(normalize_queue_path("drive:Documents/file.txt", "drive:"), "Documents/file.txt");
-        assert_eq!(normalize_queue_path("/Documents/file.txt", "drive"), "Documents/file.txt");
-        assert_eq!(normalize_queue_path("Documents/file.txt", "drive"), "Documents/file.txt");
-        assert_eq!(normalize_queue_path("  drive:file.txt  ", "drive"), "file.txt");
+        assert_eq!(
+            normalize_queue_path("drive:Documents/file.txt", "drive"),
+            "Documents/file.txt"
+        );
+        assert_eq!(
+            normalize_queue_path("drive:Documents/file.txt", "drive:"),
+            "Documents/file.txt"
+        );
+        assert_eq!(
+            normalize_queue_path("/Documents/file.txt", "drive"),
+            "Documents/file.txt"
+        );
+        assert_eq!(
+            normalize_queue_path("Documents/file.txt", "drive"),
+            "Documents/file.txt"
+        );
+        assert_eq!(
+            normalize_queue_path("  drive:file.txt  ", "drive"),
+            "file.txt"
+        );
     }
 
     #[test]
@@ -1967,6 +2075,9 @@ mod tests {
             .additional_menu_items
             .iter()
             .any(|item| item.action == crate::ui::MenuAction::StartWebGui);
-        assert!(has_web_gui, "Additional Options menu should include Start Web GUI");
+        assert!(
+            has_web_gui,
+            "Additional Options menu should include Start Web GUI"
+        );
     }
 }

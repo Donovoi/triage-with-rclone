@@ -253,8 +253,14 @@ impl MountManager {
         {
             // Strategy 1: winget (built into Windows 10 1709+ / Windows 11).
             let winget_ok = Command::new("winget")
-                .args(["install", "--id", "WinFsp.WinFsp", "-e",
-                       "--accept-source-agreements", "--accept-package-agreements"])
+                .args([
+                    "install",
+                    "--id",
+                    "WinFsp.WinFsp",
+                    "-e",
+                    "--accept-source-agreements",
+                    "--accept-package-agreements",
+                ])
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .stdin(Stdio::null())

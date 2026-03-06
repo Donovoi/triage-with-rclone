@@ -104,8 +104,14 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
 
-        assert!(text.contains("Authenticating:"), "Should show 'Authenticating:' during auth");
-        assert!(text.contains("Complete the authentication"), "Should show completion instruction during auth");
+        assert!(
+            text.contains("Authenticating:"),
+            "Should show 'Authenticating:' during auth"
+        );
+        assert!(
+            text.contains("Complete the authentication"),
+            "Should show completion instruction during auth"
+        );
     }
 
     #[test]
@@ -124,8 +130,14 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
 
-        assert!(text.contains("Authenticated:"), "Should show 'Authenticated:' post-auth");
-        assert!(!text.contains("Complete the authentication"), "Should NOT show completion instruction post-auth");
+        assert!(
+            text.contains("Authenticated:"),
+            "Should show 'Authenticated:' post-auth"
+        );
+        assert!(
+            !text.contains("Complete the authentication"),
+            "Should NOT show completion instruction post-auth"
+        );
     }
 
     #[test]
@@ -147,7 +159,13 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
 
-        assert!(text.contains("Authenticated:"), "Should show 'Authenticated:' when auth succeeded");
-        assert!(!text.contains("Complete the authentication"), "Must NOT ask user to authenticate again");
+        assert!(
+            text.contains("Authenticated:"),
+            "Should show 'Authenticated:' when auth succeeded"
+        );
+        assert!(
+            !text.contains("Complete the authentication"),
+            "Must NOT ask user to authenticate again"
+        );
     }
 }

@@ -88,7 +88,14 @@ pub fn generate_report(
     cleanup_report: Option<&str>,
     log_hash: Option<&str>,
 ) -> String {
-    generate_report_with_metadata(case, state_diff, change_report, cleanup_report, log_hash, None)
+    generate_report_with_metadata(
+        case,
+        state_diff,
+        change_report,
+        cleanup_report,
+        log_hash,
+        None,
+    )
 }
 
 /// Generate a report with full metadata (tool version, operator, system info).
@@ -259,8 +266,7 @@ pub fn write_report(path: impl AsRef<Path>, contents: &str) -> Result<()> {
         hash
     );
 
-    fs::write(path, &with_hash)
-        .with_context(|| format!("Failed to write report to {:?}", path))?;
+    fs::write(path, &with_hash).with_context(|| format!("Failed to write report to {:?}", path))?;
 
     // Restrict file permissions on Unix.
     #[cfg(unix)]
@@ -407,7 +413,9 @@ pub fn write_report_xlsx(
         }
     }
 
-    workbook.save(path_str).context("Failed to save XLSX report")?;
+    workbook
+        .save(path_str)
+        .context("Failed to save XLSX report")?;
     Ok(())
 }
 
@@ -435,9 +443,7 @@ mod tests {
             hostname: Some("forensic-ws".to_string()),
             os_info: Some("linux x86_64".to_string()),
         };
-        let report = generate_report_with_metadata(
-            &case, None, None, None, None, Some(&meta),
-        );
+        let report = generate_report_with_metadata(&case, None, None, None, None, Some(&meta));
         assert!(report.contains("rclone-triage version: 0.1.0"));
         assert!(report.contains("rclone version: v1.68.2"));
         assert!(report.contains("Operator: examiner1"));

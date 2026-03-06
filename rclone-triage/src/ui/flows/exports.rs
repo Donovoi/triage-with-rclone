@@ -14,7 +14,11 @@ pub(crate) fn perform_show_oauth_credentials(app: &mut App) -> Result<()> {
     let mut selected_path: Option<PathBuf> = None;
 
     if cfg!(windows) {
-        let initial_dir = app.forensics.directories.as_ref().map(|d| d.config.as_path());
+        let initial_dir = app
+            .forensics
+            .directories
+            .as_ref()
+            .map(|d| d.config.as_path());
         match open_file_dialog(
             Some("Select rclone config file"),
             initial_dir,
@@ -283,7 +287,8 @@ pub(crate) fn perform_export_domain_cookies<B: ratatui::backend::Backend>(
     };
 
     let listings_dir = app
-        .forensics.directories
+        .forensics
+        .directories
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("Case directories not initialized"))?
         .listings
@@ -346,4 +351,3 @@ pub(crate) fn perform_export_domain_cookies<B: ratatui::backend::Backend>(
 
     Ok(())
 }
-

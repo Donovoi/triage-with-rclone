@@ -306,13 +306,7 @@ fn main() -> Result<()> {
                         "Backend '{}' uses {:?} authentication. Entering manual configuration.",
                         provider_name, auth_kind
                     );
-                    cli_manual_config(
-                        &runner,
-                        &config,
-                        &provider_name,
-                        &remote_name,
-                        &binary,
-                    )?;
+                    cli_manual_config(&runner, &config, &provider_name, &remote_name, &binary)?;
                 }
                 ProviderAuthKind::Unknown => {
                     eprintln!(
@@ -379,20 +373,24 @@ fn main() -> Result<()> {
             } else {
                 None
             };
-            let result = rclone_triage::files::listing::list_path_large_lsf_to_ps_csv_with_progress(
-                &runner,
-                &format!("{}:", remote_name),
-                hash_type,
-                known.map(|p| p == CloudProvider::OneDrive).unwrap_or(false),
-                &out_path,
-                50_000,
-                |count| {
-                    if count % 500 == 0 {
-                        eprint!("\rListing files... ({} found)", count);
-                    }
-                },
-            )?;
-            eprintln!("\rListed {} entries -> {:?}", result.total_entries, out_path);
+            let result =
+                rclone_triage::files::listing::list_path_large_lsf_to_ps_csv_with_progress(
+                    &runner,
+                    &format!("{}:", remote_name),
+                    hash_type,
+                    known.map(|p| p == CloudProvider::OneDrive).unwrap_or(false),
+                    &out_path,
+                    50_000,
+                    |count| {
+                        if count % 500 == 0 {
+                            eprint!("\rListing files... ({} found)", count);
+                        }
+                    },
+                )?;
+            eprintln!(
+                "\rListed {} entries -> {:?}",
+                result.total_entries, out_path
+            );
         } else {
             let listing = list_path(
                 &runner,
@@ -504,9 +502,7 @@ fn cli_download_from_queue(
     remote_override: Option<&str>,
     app_guard: &AppGuard,
 ) -> Result<()> {
-    use rclone_triage::files::{
-        read_download_queue, DownloadMode, DownloadQueue, DownloadRequest,
-    };
+    use rclone_triage::files::{read_download_queue, DownloadMode, DownloadQueue, DownloadRequest};
 
     let queue_path = std::path::PathBuf::from(queue_path_str);
     if !queue_path.exists() {
@@ -649,7 +645,9 @@ fn cli_manual_config(
     use rclone_triage::providers::schema::provider_schema_from_rclone;
 
     let rclone_runner = RcloneRunner::new(binary.path());
-    let schema = provider_schema_from_rclone(&rclone_runner, backend).ok().flatten();
+    let schema = provider_schema_from_rclone(&rclone_runner, backend)
+        .ok()
+        .flatten();
 
     let mut options: Vec<(String, String)> = Vec::new();
 
@@ -699,8 +697,8 @@ fn cli_manual_config(
                 .iter()
                 .find(|o| o.name.eq_ignore_ascii_case(key.trim()))
         });
-        let needs_obscure = schema_opt.map(|o| o.is_password).unwrap_or(false)
-            || is_password_key(key.trim());
+        let needs_obscure =
+            schema_opt.map(|o| o.is_password).unwrap_or(false) || is_password_key(key.trim());
         let final_value = if needs_obscure {
             obscure_value_with_rclone(runner, &value)?
         } else {
@@ -717,15 +715,16 @@ fn cli_manual_config(
     if !config.has_remote(remote_name)? {
         bail!("Remote {} was not created", remote_name);
     }
-    println!("Remote '{}' configured for backend '{}'.", remote_name, backend);
+    println!(
+        "Remote '{}' configured for backend '{}'.",
+        remote_name, backend
+    );
     Ok(())
 }
 
 fn is_password_key(key: &str) -> bool {
     let k = key.trim().to_ascii_lowercase();
-    matches!(k.as_str(), "pass" | "password")
-        || k.ends_with("_pass")
-        || k.ends_with("_password")
+    matches!(k.as_str(), "pass" | "password") || k.ends_with("_pass") || k.ends_with("_password")
 }
 
 fn obscure_value_with_rclone(runner: &RcloneRunner, value: &str) -> Result<String> {

@@ -4,7 +4,9 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, StatefulWidget, Widget, Wrap};
+use ratatui::widgets::{
+    Block, Borders, List, ListItem, ListState, Paragraph, StatefulWidget, Widget, Wrap,
+};
 
 use crate::ui::ConfigBrowserEntry;
 
@@ -111,7 +113,9 @@ impl Widget for &ConfigBrowserScreen {
 
             if let Some(ref error) = self.error {
                 // Prominent error display with next steps
-                let error_style = Style::default().fg(Color::LightRed).add_modifier(Modifier::BOLD);
+                let error_style = Style::default()
+                    .fg(Color::LightRed)
+                    .add_modifier(Modifier::BOLD);
                 let hint_style = Style::default().fg(Color::Yellow);
 
                 lines.push(Line::from(Span::styled(
@@ -132,20 +136,14 @@ impl Widget for &ConfigBrowserScreen {
 
                 // Classify the error and give specific advice
                 let advice = classify_listing_error(error);
-                lines.push(Line::from(Span::styled(
-                    "What happened:",
-                    hint_style,
-                )));
+                lines.push(Line::from(Span::styled("What happened:", hint_style)));
                 lines.push(Line::from(Span::styled(
                     advice.explanation,
                     Style::default().fg(Color::White),
                 )));
                 lines.push(Line::from(""));
 
-                lines.push(Line::from(Span::styled(
-                    "Next steps:",
-                    hint_style,
-                )));
+                lines.push(Line::from(Span::styled("Next steps:", hint_style)));
                 for step in &advice.next_steps {
                     lines.push(Line::from(Span::styled(
                         format!("  {}", step),
@@ -194,7 +192,11 @@ impl Widget for &ConfigBrowserScreen {
                 lines.push(Line::from("Esc: back to main menu"));
             }
 
-            let title = if self.error.is_some() { "Error" } else { "Details" };
+            let title = if self.error.is_some() {
+                "Error"
+            } else {
+                "Details"
+            };
             let panel = Paragraph::new(lines)
                 .block(Block::default().title(title).borders(Borders::ALL))
                 .wrap(Wrap { trim: true });
@@ -211,7 +213,10 @@ struct ErrorAdvice {
 fn classify_listing_error(error: &str) -> ErrorAdvice {
     let lower = error.to_lowercase();
 
-    if lower.contains("access_denied") || lower.contains("account restricted") || lower.contains("servicenotallowed") {
+    if lower.contains("access_denied")
+        || lower.contains("account restricted")
+        || lower.contains("servicenotallowed")
+    {
         ErrorAdvice {
             explanation: "Access was denied by the cloud provider. The token may have been revoked or the account restricted.",
             next_steps: vec![
@@ -354,14 +359,11 @@ mod tests {
                 size: None,
             },
         ];
-        let screen = ConfigBrowserScreen::new(
-            "/tmp".to_string(),
-            entries,
-            0,
-            String::new(),
-            vec![],
-        )
-        .with_error(Some("Listing failed: oauth2: access_denied \"Account Restricted\"".to_string()));
+        let screen =
+            ConfigBrowserScreen::new("/tmp".to_string(), entries, 0, String::new(), vec![])
+                .with_error(Some(
+                    "Listing failed: oauth2: access_denied \"Account Restricted\"".to_string(),
+                ));
         (&screen).render(Rect::new(0, 0, 80, 20), &mut buf);
     }
 

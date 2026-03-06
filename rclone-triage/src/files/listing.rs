@@ -171,15 +171,25 @@ pub fn list_path_with_progress<F>(
 where
     F: FnMut(usize),
 {
-    match list_path_with_progress_inner(rclone, target, options.include_hashes, options.fast_list, &mut on_progress) {
+    match list_path_with_progress_inner(
+        rclone,
+        target,
+        options.include_hashes,
+        options.fast_list,
+        &mut on_progress,
+    ) {
         Ok(entries) => Ok(entries),
         Err(err) => {
             tracing::warn!(error = %err, "lsjson failed, attempting fallback");
             // Fallback 1: retry without hashes
             if options.include_hashes {
-                if let Ok(entries) =
-                    list_path_with_progress_inner(rclone, target, false, options.fast_list, &mut on_progress)
-                {
+                if let Ok(entries) = list_path_with_progress_inner(
+                    rclone,
+                    target,
+                    false,
+                    options.fast_list,
+                    &mut on_progress,
+                ) {
                     return Ok(entries);
                 }
             }
@@ -220,9 +230,15 @@ pub fn spawn_list_with_progress(
     let handle = thread::spawn(move || {
         let run = || -> Result<Vec<FileEntry>> {
             let runner = RcloneRunner::new(&rclone_exe).with_config(&config_path);
-            let args_owned = build_lsjson_args_owned(&target, options.include_hashes, options.fast_list);
+            let args_owned =
+                build_lsjson_args_owned(&target, options.include_hashes, options.fast_list);
             let args: Vec<&str> = args_owned.iter().map(|s| s.as_str()).collect();
-            tracing::info!(target = &*target, fast_list = options.fast_list, include_hashes = options.include_hashes, "Starting background rclone lsjson");
+            tracing::info!(
+                target = &*target,
+                fast_list = options.fast_list,
+                include_hashes = options.include_hashes,
+                "Starting background rclone lsjson"
+            );
             let mut child = runner.spawn(&args)?;
 
             let stdout = child.stdout.take().expect("stdout piped");
@@ -253,7 +269,8 @@ pub fn spawn_list_with_progress(
             };
 
             let stdout_reader = BufReader::new(stdout);
-            let stream_result = stream_lsjson_entries_from_reader(stdout_reader, &mut on_entry, None);
+            let stream_result =
+                stream_lsjson_entries_from_reader(stdout_reader, &mut on_entry, None);
 
             let was_killed = stream_result.count.is_err();
             if was_killed {
@@ -527,7 +544,14 @@ fn list_path_inner(
         Ok(())
     };
 
-    run_lsjson_streaming(rclone, target, include_hashes, fast_list, &mut on_entry, None)?;
+    run_lsjson_streaming(
+        rclone,
+        target,
+        include_hashes,
+        fast_list,
+        &mut on_entry,
+        None,
+    )?;
     Ok(entries)
 }
 
@@ -607,7 +631,12 @@ fn run_lsjson_streaming<'a>(
     on_progress: Option<&'a mut dyn FnMut(usize)>,
 ) -> Result<usize> {
     let args = build_lsjson_args(target, include_hashes, fast_list);
-    tracing::info!(target = target, fast_list = fast_list, include_hashes = include_hashes, "Starting rclone lsjson");
+    tracing::info!(
+        target = target,
+        fast_list = fast_list,
+        include_hashes = include_hashes,
+        "Starting rclone lsjson"
+    );
     let mut child = rclone.spawn(&args)?;
 
     let stdout = child.stdout.take().expect("stdout piped");
@@ -1108,11 +1137,8 @@ mod tests {
         // in a Google Drive). The parser should report found_json=false.
         let data = b"";
         let mut on_entry = |_: RcloneLsJsonEntry| -> Result<()> { Ok(()) };
-        let result = stream_lsjson_entries_from_reader(
-            Cursor::new(data.as_ref()),
-            &mut on_entry,
-            None,
-        );
+        let result =
+            stream_lsjson_entries_from_reader(Cursor::new(data.as_ref()), &mut on_entry, None);
         assert!(!result.found_json, "empty stdout should not count as JSON");
         assert!(result.count.is_err(), "empty stdout should fail to parse");
     }
@@ -1122,11 +1148,8 @@ mod tests {
         // Simulates rclone producing an empty array — valid JSON, 0 entries.
         let data = b"[]";
         let mut on_entry = |_: RcloneLsJsonEntry| -> Result<()> { Ok(()) };
-        let result = stream_lsjson_entries_from_reader(
-            Cursor::new(data.as_ref()),
-            &mut on_entry,
-            None,
-        );
+        let result =
+            stream_lsjson_entries_from_reader(Cursor::new(data.as_ref()), &mut on_entry, None);
         assert!(result.found_json, "empty array is valid JSON");
         assert_eq!(result.count.unwrap(), 0);
     }

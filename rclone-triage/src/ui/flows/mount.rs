@@ -63,20 +63,18 @@ pub(crate) fn perform_mount_flow<B: ratatui::backend::Backend>(
         return Ok(());
     }
 
-    let remote_name = match crate::ui::flows::remotes::choose_remote_or_prompt(app, &provider, remotes)?
-    {
-        Some(remote_name) => remote_name,
-        None => return Ok(()),
-    };
+    let remote_name =
+        match crate::ui::flows::remotes::choose_remote_or_prompt(app, &provider, remotes)? {
+            Some(remote_name) => remote_name,
+            None => return Ok(()),
+        };
 
     app.remote.chosen = Some(remote_name.clone());
 
     // If multiple remotes were selected, create a combine remote for the mount
     let mount_target = if app.remote.chosen_multiple.len() > 1 {
-        let combine_name = crate::rclone::combine::create_combine_remote(
-            &config,
-            &app.remote.chosen_multiple,
-        )?;
+        let combine_name =
+            crate::rclone::combine::create_combine_remote(&config, &app.remote.chosen_multiple)?;
         app.combine_remote_created = true;
         app.log_info(format!(
             "Created combine remote '{}' for mount with upstreams: {}",
@@ -113,8 +111,7 @@ pub(crate) fn perform_mount_flow<B: ratatui::backend::Backend>(
                 }
                 Ok(false) | Err(_) => {
                     app.log_error("FUSE/WinFSP auto-install failed");
-                    app.provider.status =
-                        "Mount skipped (FUSE/WinFSP not available).".to_string();
+                    app.provider.status = "Mount skipped (FUSE/WinFSP not available).".to_string();
                     app.state = crate::ui::AppState::Mounted;
                     return Ok(());
                 }
@@ -133,10 +130,7 @@ pub(crate) fn perform_mount_flow<B: ratatui::backend::Backend>(
 
         if let Err(e) = std::fs::create_dir_all(&mount_base) {
             app.provider.status = format!("Mount failed (mount dir): {}", e);
-            app.log_error(format!(
-                "Mount failed (mount dir {:?}): {}",
-                mount_base, e
-            ));
+            app.log_error(format!("Mount failed (mount dir {:?}): {}", mount_base, e));
             app.state = crate::ui::AppState::Mounted;
             return Ok(());
         }
@@ -144,16 +138,15 @@ pub(crate) fn perform_mount_flow<B: ratatui::backend::Backend>(
 
         if let Err(e) = std::fs::create_dir_all(&cache_dir) {
             app.provider.status = format!("Mount failed (cache dir): {}", e);
-            app.log_error(format!(
-                "Mount failed (cache dir {:?}): {}",
-                cache_dir, e
-            ));
+            app.log_error(format!("Mount failed (cache dir {:?}): {}", cache_dir, e));
             app.state = crate::ui::AppState::Mounted;
             return Ok(());
         }
         app.track_file(&cache_dir, "Created rclone cache directory inside case");
 
-        manager = manager.with_mount_base(&mount_base).with_cache_dir(&cache_dir);
+        manager = manager
+            .with_mount_base(&mount_base)
+            .with_cache_dir(&cache_dir);
     }
 
     app.provider.status = format!("Mounting {}...", mount_target);

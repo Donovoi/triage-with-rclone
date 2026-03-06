@@ -74,7 +74,10 @@ pub fn start_forensic_access_point_with_status(
         let wait_result = wait_for_usb_wifi_adapter(120)?;
         if !wait_result {
             if let Some(reason) = native.reason {
-                bail!("Access Point not supported: {}. No USB WiFi adapter detected after waiting.", reason);
+                bail!(
+                    "Access Point not supported: {}. No USB WiFi adapter detected after waiting.",
+                    reason
+                );
             } else {
                 bail!("Access Point not supported on this adapter. No USB WiFi adapter detected.");
             }
@@ -83,7 +86,10 @@ pub fn start_forensic_access_point_with_status(
         let native2 = test_native_ap_support()?;
         if !native2.supported {
             if let Some(reason) = native2.reason {
-                bail!("Access Point still not supported after adapter detected: {}", reason);
+                bail!(
+                    "Access Point still not supported after adapter detected: {}",
+                    reason
+                );
             } else {
                 bail!("Access Point still not supported after adapter detected");
             }
@@ -99,7 +105,8 @@ pub fn start_forensic_access_point_with_status(
 
     on_status("Retrieving adapter info...");
     let adapter = get_ap_adapter_name().ok().flatten();
-    let ip_address = get_ap_ip_address(adapter.as_deref()).unwrap_or_else(|_| "192.168.137.1".to_string());
+    let ip_address =
+        get_ap_ip_address(adapter.as_deref()).unwrap_or_else(|_| "192.168.137.1".to_string());
 
     on_status("Configuring AdGuard DNS...");
     let mut dns_configured = false;
@@ -257,7 +264,14 @@ fn set_hostednetwork_config(ssid: &str, password: &str) -> Result<()> {
     let _ = run_netsh(&["wlan", "set", "hostednetwork", "mode=allow"])?;
     let ssid_arg = format!("ssid={}", ssid);
     let key_arg = format!("key={}", password);
-    let _ = run_netsh(&["wlan", "set", "hostednetwork", &ssid_arg, &key_arg, "keyUsage=persistent"])?;
+    let _ = run_netsh(&[
+        "wlan",
+        "set",
+        "hostednetwork",
+        &ssid_arg,
+        &key_arg,
+        "keyUsage=persistent",
+    ])?;
     Ok(())
 }
 
@@ -313,10 +327,7 @@ if ($drivers -match 'Hosted network supported\\s*:\\s*Yes') {
         }
     }
 
-    Ok(NativeApSupport {
-        supported,
-        reason,
-    })
+    Ok(NativeApSupport { supported, reason })
 }
 
 #[cfg(windows)]

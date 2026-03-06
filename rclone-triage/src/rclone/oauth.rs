@@ -16,6 +16,8 @@ use tiny_http::{Response, Server};
 
 /// Default port for OAuth redirect (same as rclone)
 pub const DEFAULT_OAUTH_PORT: u16 = 53682;
+/// Default timeout for interactive OAuth callbacks.
+pub const DEFAULT_OAUTH_TIMEOUT_SECS: u64 = 300;
 
 const OAUTH_STATE_LEN_BYTES: usize = 32;
 
@@ -36,7 +38,7 @@ impl OAuthFlow {
     pub fn new() -> Self {
         Self {
             port: DEFAULT_OAUTH_PORT,
-            timeout: Duration::from_secs(120),
+            timeout: Duration::from_secs(DEFAULT_OAUTH_TIMEOUT_SECS),
             bind_host: "127.0.0.1".to_string(),
             redirect_host: Some("localhost".to_string()),
         }
@@ -94,7 +96,10 @@ impl OAuthFlow {
     ///
     /// Note: some OAuth providers omit `state` on the callback even if it was provided in the
     /// authorization URL. In that case, we accept the callback as a best-effort behavior.
-    pub fn wait_for_redirect_with_state(&self, expected_state: Option<&str>) -> Result<OAuthResult> {
+    pub fn wait_for_redirect_with_state(
+        &self,
+        expected_state: Option<&str>,
+    ) -> Result<OAuthResult> {
         // Start local server
         let bind_addr = format!("{}:{}", self.bind_host, self.port);
         let server = Server::http(&bind_addr)

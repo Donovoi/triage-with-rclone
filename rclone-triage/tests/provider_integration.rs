@@ -302,8 +302,7 @@ fn test_end_to_end_directory_workflow() {
 
     for subdir in &subdirs {
         let path = case_dir.join(subdir);
-        fs::create_dir_all(&path)
-            .unwrap_or_else(|_| panic!("Failed to create {}", subdir));
+        fs::create_dir_all(&path).unwrap_or_else(|_| panic!("Failed to create {}", subdir));
     }
 
     // Verify all directories exist

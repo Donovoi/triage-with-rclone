@@ -17,6 +17,8 @@ use crate::utils::network::get_local_ip_address;
 use anyhow::{bail, Context, Result};
 use std::time::Duration;
 
+const INTERACTIVE_AUTH_TIMEOUT: Duration = Duration::from_secs(300);
+
 /// Result of authentication
 #[derive(Debug, Clone)]
 pub struct AuthResult {
@@ -268,7 +270,7 @@ pub fn authenticate_with_rclone(
     // hang on post-OAuth interactive prompts when stdin is /dev/null.
     let args = build_rclone_auth_args(provider, remote_name, false);
     let args_ref: Vec<&str> = args.iter().map(String::as_str).collect();
-    let output = rclone.run_with_timeout(&args_ref, Some(Duration::from_secs(120)))?;
+    let output = rclone.run_with_timeout(&args_ref, Some(INTERACTIVE_AUTH_TIMEOUT))?;
 
     // If rclone hung (e.g., waiting for interactive prompts with stdin piped to null),
     // fall through to the authorize fallback.
@@ -606,14 +608,43 @@ pub fn authenticate_with_browser(
             }
         });
 
-    // When we don't have a client_secret, delegate to rclone authorize which
-    // knows its own built-in OAuth credentials (including secrets).
+    let prefer_direct_without_secret = provider == CloudProvider::OneDrive;
+
+    // When we don't have a client_secret, prefer the built-in browser authorize
+    // flow except for OneDrive, where a direct localhost callback tends to be
+    // more reliable than waiting on `rclone authorize` to finish.
     let (token_str, used_rclone_authorize) = if client_secret.is_none() && custom.is_none() {
-        let token = authenticate_with_browser_via_rclone(provider, browser, rclone)?;
-        (token, true)
+        if prefer_direct_without_secret {
+            match authenticate_with_browser_direct(
+                provider,
+                Some(browser),
+                &provider_config,
+                client_id,
+                client_secret,
+            ) {
+                Ok(token) => (token, false),
+                Err(direct_error) => {
+                    tracing::warn!(
+                        "Direct browser auth failed for {}; falling back to rclone authorize: {}",
+                        provider,
+                        direct_error
+                    );
+                    let token =
+                        authenticate_with_browser_via_rclone(provider, Some(browser), rclone)?;
+                    (token, true)
+                }
+            }
+        } else {
+            let token = authenticate_with_browser_via_rclone(provider, Some(browser), rclone)?;
+            (token, true)
+        }
     } else {
         let token = authenticate_with_browser_direct(
-            provider, browser, &provider_config, client_id, client_secret,
+            provider,
+            Some(browser),
+            &provider_config,
+            client_id,
+            client_secret,
         )?;
         (token, false)
     };
@@ -669,11 +700,120 @@ pub fn authenticate_with_browser(
     })
 }
 
+/// Authenticate interactively using the system default browser.
+pub fn authenticate_with_system_browser(
+    provider: CloudProvider,
+    rclone: &RcloneRunner,
+    config: &RcloneConfig,
+    remote_name: &str,
+) -> Result<AuthResult> {
+    let provider_config = ProviderConfig::for_provider(provider);
+
+    if !provider_config.uses_oauth() {
+        bail!(
+            "{} does not use OAuth. Manual configuration required.",
+            provider.display_name()
+        );
+    }
+
+    let custom = resolve_custom_oauth(provider);
+    let client_id = custom
+        .as_ref()
+        .map(|c| c.client_id.as_str())
+        .unwrap_or(provider_config.oauth.client_id);
+    let client_secret = custom
+        .as_ref()
+        .and_then(|c| c.client_secret.as_deref())
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| {
+            let s = provider_config.oauth.client_secret;
+            if s.trim().is_empty() {
+                None
+            } else {
+                Some(s)
+            }
+        });
+
+    let prefer_direct_without_secret = provider == CloudProvider::OneDrive;
+
+    let (token_str, used_rclone_authorize) = if client_secret.is_none() && custom.is_none() {
+        if prefer_direct_without_secret {
+            match authenticate_with_browser_direct(
+                provider,
+                None,
+                &provider_config,
+                client_id,
+                client_secret,
+            ) {
+                Ok(token) => (token, false),
+                Err(direct_error) => {
+                    tracing::warn!(
+                        "Direct system-browser auth failed for {}; falling back to rclone authorize: {}",
+                        provider,
+                        direct_error
+                    );
+                    let token = authenticate_with_browser_via_rclone(provider, None, rclone)?;
+                    (token, true)
+                }
+            }
+        } else {
+            let token = authenticate_with_browser_via_rclone(provider, None, rclone)?;
+            (token, true)
+        }
+    } else {
+        let token = authenticate_with_browser_direct(
+            provider,
+            None,
+            &provider_config,
+            client_id,
+            client_secret,
+        )?;
+        (token, false)
+    };
+
+    let mut options: Vec<(String, String)> = Vec::new();
+    for (key, value) in provider_config.rclone_options {
+        options.push(((*key).to_string(), (*value).to_string()));
+    }
+    if !used_rclone_authorize {
+        if !client_id.trim().is_empty() {
+            options.push(("client_id".to_string(), client_id.to_string()));
+        }
+        if let Some(secret) = client_secret {
+            if !secret.trim().is_empty() {
+                options.push(("client_secret".to_string(), secret.to_string()));
+            }
+        }
+    }
+    options.push(("token".to_string(), token_str));
+
+    let options_ref: Vec<(&str, &str)> = options
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
+
+    config.set_remote(remote_name, provider.rclone_type(), &options_ref)?;
+
+    if !config.has_remote(remote_name)? {
+        bail!("Remote {} was not created", remote_name);
+    }
+
+    let user_identifier = user_identifier_from_config(provider, config, remote_name);
+
+    Ok(AuthResult {
+        provider,
+        remote_name: remote_name.to_string(),
+        user_info: user_identifier,
+        browser: None,
+        was_silent: false,
+    })
+}
+
 /// Browser auth via `rclone authorize` — used when we don't have the provider's client_secret.
 /// rclone knows its own built-in secrets and handles the token exchange internally.
 fn authenticate_with_browser_via_rclone(
     provider: CloudProvider,
-    browser: &Browser,
+    browser: Option<&Browser>,
     rclone: &RcloneRunner,
 ) -> Result<String> {
     use crate::rclone::authorize::spawn_authorize;
@@ -691,12 +831,18 @@ fn authenticate_with_browser_via_rclone(
 
     open_browser_to_url(browser, &auth_url)?;
 
-    let finished = running.wait(Some(Duration::from_secs(120)))?;
+    let finished = running.wait(Some(INTERACTIVE_AUTH_TIMEOUT))?;
 
     if finished.timed_out {
+        let recovery_hint = if provider == CloudProvider::OneDrive {
+            " Try the Device Code flow from 'Authenticate from Mobile Device (QR Code)' if Microsoft sign-in keeps spinning."
+        } else {
+            ""
+        };
         bail!(
-            "Authentication timed out waiting for {} login",
-            provider.display_name()
+            "Authentication timed out waiting for {} login.{}",
+            provider.display_name(),
+            recovery_hint
         );
     }
 
@@ -713,12 +859,12 @@ fn authenticate_with_browser_via_rclone(
 /// Browser auth with Rust-side token exchange — used when we have the client_secret.
 fn authenticate_with_browser_direct(
     provider: CloudProvider,
-    browser: &Browser,
+    browser: Option<&Browser>,
     provider_config: &ProviderConfig,
     client_id: &str,
     client_secret: Option<&str>,
 ) -> Result<String> {
-    let oauth = OAuthFlow::new();
+    let oauth = OAuthFlow::new().with_timeout(INTERACTIVE_AUTH_TIMEOUT);
     let redirect_uri = oauth.redirect_uri();
     let state = OAuthFlow::generate_state();
     let auth_url =
@@ -745,15 +891,19 @@ fn authenticate_with_browser_direct(
     serde_json::to_string(&token_json).context("Failed to serialize token")
 }
 
-fn open_browser_to_url(browser: &Browser, url: &str) -> Result<()> {
-    if let Some(ref path) = browser.executable_path {
-        std::process::Command::new(path)
-            .arg(url)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .with_context(|| format!("Failed to open browser: {}", path.display()))?;
+fn open_browser_to_url(browser: Option<&Browser>, url: &str) -> Result<()> {
+    if let Some(browser) = browser {
+        if let Some(ref path) = browser.executable_path {
+            std::process::Command::new(path)
+                .arg(url)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .with_context(|| format!("Failed to open browser: {}", path.display()))?;
+        } else {
+            open::that(url).with_context(|| "Failed to open system default browser")?;
+        }
     } else {
         open::that(url).with_context(|| "Failed to open system default browser")?;
     }

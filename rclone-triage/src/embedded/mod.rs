@@ -23,7 +23,6 @@ pub const RCLONE_EXE_SHA256: &str =
 /// Rclone version embedded
 pub const RCLONE_VERSION: &str = "1.68.2";
 
-
 /// Manages the extracted rclone binary
 pub struct ExtractedBinary {
     /// Path to the extracted executable

@@ -32,10 +32,11 @@ mod tests {
     #[test]
     fn test_render() {
         let mut buf = Buffer::empty(Rect::new(0, 0, 50, 10));
-        let screen = BrowserSelectScreen::new(vec![
-            "System Default".to_string(),
-            "Mozilla Firefox".to_string(),
-        ], vec![false, true], 1);
+        let screen = BrowserSelectScreen::new(
+            vec!["System Default".to_string(), "Mozilla Firefox".to_string()],
+            vec![false, true],
+            1,
+        );
         (&screen).render(Rect::new(0, 0, 50, 10), &mut buf);
     }
 }

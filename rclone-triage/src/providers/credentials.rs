@@ -134,8 +134,7 @@ pub fn load_or_init_custom_oauth_config(path: &Path) -> Result<CustomOAuthConfig
 /// Write the custom OAuth config to disk.
 pub fn write_custom_oauth_config(path: &Path, config: &CustomOAuthConfig) -> Result<()> {
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("Failed to create {:?}", parent))?;
+        fs::create_dir_all(parent).with_context(|| format!("Failed to create {:?}", parent))?;
     }
     let json = serde_json::to_string_pretty(config).context("Failed to serialize OAuth config")?;
     fs::write(path, json).with_context(|| format!("Failed to write {:?}", path))?;

@@ -152,7 +152,11 @@ fn list_navigate_up(selected: &mut usize, len: usize) {
     if len == 0 {
         return;
     }
-    *selected = if *selected == 0 { len - 1 } else { *selected - 1 };
+    *selected = if *selected == 0 {
+        len - 1
+    } else {
+        *selected - 1
+    };
 }
 
 /// Move a list cursor down with wrapping.
@@ -181,6 +185,8 @@ pub struct ProviderSelection {
     pub last_error: Option<String>,
     /// Confirmed provider choice
     pub chosen: Option<ProviderEntry>,
+    /// Confirmed multi-select provider choices in visible list order
+    pub chosen_multiple: Vec<ProviderEntry>,
 }
 
 /// Browser selection state
@@ -193,6 +199,58 @@ pub struct BrowserSelection {
     pub checked: Vec<bool>,
     /// Confirmed browser choice (None = system default)
     pub chosen: Option<Browser>,
+    /// Confirmed multi-select browser choices in visible list order.
+    /// `None` represents the system default browser when the default browser
+    /// could not be resolved to a concrete installed browser entry.
+    pub chosen_multiple: Vec<Option<Browser>>,
+}
+
+/// A single queued authentication task.
+#[derive(Debug, Clone)]
+pub struct AuthBatchTask {
+    /// Provider to authenticate.
+    pub provider: ProviderEntry,
+    /// Browser to use for interactive auth.
+    /// `None` means system default browser.
+    pub browser: Option<Browser>,
+}
+
+impl AuthBatchTask {
+    pub fn description(&self) -> String {
+        match self.browser.as_ref() {
+            Some(browser) => format!(
+                "{} via {}",
+                self.provider.display_name(),
+                browser.display_name()
+            ),
+            None => format!("{} via System Default", self.provider.display_name()),
+        }
+    }
+}
+
+/// Batch state for sequential provider/browser authentication.
+#[derive(Debug, Default)]
+pub struct AuthBatchState {
+    /// Pending authentication tasks.
+    pub pending: Vec<AuthBatchTask>,
+    /// Task currently being processed.
+    pub current: Option<AuthBatchTask>,
+    /// Total number of tasks in this batch.
+    pub total: usize,
+    /// Number of tasks completed successfully.
+    pub completed: usize,
+    /// Last error encountered while running the batch.
+    pub last_error: Option<String>,
+}
+
+impl AuthBatchState {
+    pub fn clear(&mut self) {
+        self.pending.clear();
+        self.current = None;
+        self.total = 0;
+        self.completed = 0;
+        self.last_error = None;
+    }
 }
 
 /// Remote selection state
@@ -368,7 +426,9 @@ impl ConfigBrowserState {
             }
             let metadata = entry.metadata().ok();
             let is_dir = metadata.as_ref().is_some_and(|m| m.is_dir());
-            let size = metadata.as_ref().and_then(|m| if m.is_file() { Some(m.len()) } else { None });
+            let size = metadata
+                .as_ref()
+                .and_then(|m| if m.is_file() { Some(m.len()) } else { None });
             let entry = ConfigBrowserEntry {
                 name,
                 path,
@@ -455,7 +515,8 @@ impl ConfigBrowserState {
                 if let Ok(content) = std::fs::read_to_string(&entry.path) {
                     let parsed = crate::rclone::config::ParsedConfig::parse(&content);
                     if !parsed.remotes.is_empty() {
-                        self.preview.push(format!("Remotes ({})", parsed.remotes.len()));
+                        self.preview
+                            .push(format!("Remotes ({})", parsed.remotes.len()));
                         for remote in &parsed.remotes {
                             self.preview
                                 .push(format!("  {} ({})", remote.name, remote.remote_type));
@@ -542,6 +603,8 @@ pub struct App {
     pub provider: ProviderSelection,
     /// Browser selection state
     pub browser: BrowserSelection,
+    /// Pending/current authentication batch state
+    pub auth_batch: AuthBatchState,
     /// Remote selection state
     pub remote: RemoteSelection,
     /// File listing and selection state
@@ -606,13 +669,16 @@ impl App {
                 last_updated: None,
                 last_error: None,
                 chosen: None,
+                chosen_multiple: Vec::new(),
             },
             browser: BrowserSelection {
                 entries: browser_list.clone(),
                 selected: 0,
                 checked: vec![false; browser_list.len() + 1],
                 chosen: None,
+                chosen_multiple: Vec::new(),
             },
+            auth_batch: AuthBatchState::default(),
             remote: RemoteSelection {
                 options: Vec::new(),
                 selected: 0,
@@ -809,25 +875,37 @@ impl App {
 
     pub fn additional_menu_up(&mut self) {
         if self.state == AppState::AdditionalOptions {
-            list_navigate_up(&mut self.additional_menu_selected, self.additional_menu_items.len());
+            list_navigate_up(
+                &mut self.additional_menu_selected,
+                self.additional_menu_items.len(),
+            );
         }
     }
 
     pub fn additional_menu_down(&mut self) {
         if self.state == AppState::AdditionalOptions {
-            list_navigate_down(&mut self.additional_menu_selected, self.additional_menu_items.len());
+            list_navigate_down(
+                &mut self.additional_menu_selected,
+                self.additional_menu_items.len(),
+            );
         }
     }
 
     pub fn onedrive_menu_up(&mut self) {
         if self.state == AppState::OneDriveMenu {
-            list_navigate_up(&mut self.onedrive_menu_selected, self.onedrive_menu_items.len());
+            list_navigate_up(
+                &mut self.onedrive_menu_selected,
+                self.onedrive_menu_items.len(),
+            );
         }
     }
 
     pub fn onedrive_menu_down(&mut self) {
         if self.state == AppState::OneDriveMenu {
-            list_navigate_down(&mut self.onedrive_menu_selected, self.onedrive_menu_items.len());
+            list_navigate_down(
+                &mut self.onedrive_menu_selected,
+                self.onedrive_menu_items.len(),
+            );
         }
     }
 
@@ -969,12 +1047,19 @@ impl App {
         self.config_browser.selected_config = None;
         self.config_browser.last_error = None;
         self.config_browser.status.clear();
+        self.provider.chosen = None;
+        self.provider.chosen_multiple.clear();
+        self.provider.checked = vec![false; self.provider.entries.len()];
         self.remote.chosen = None;
         self.remote.chosen_multiple.clear();
         self.remote.options.clear();
         self.remote.selected = 0;
         self.remote.checked.clear();
         self.auth_status.clear();
+        self.browser.chosen = None;
+        self.browser.chosen_multiple.clear();
+        self.browser.checked = vec![false; self.browser.entries.len() + 1];
+        self.auth_batch.clear();
         self.post_auth_selected = 0;
         self.post_auth_action = None;
         self.listing_task = None;
@@ -1034,8 +1119,10 @@ impl App {
             self.provider.status =
                 "Select at least one provider (Space toggles selection).".to_string();
             self.provider.chosen = None;
+            self.provider.chosen_multiple.clear();
             return;
         }
+        self.provider.chosen_multiple = selected.clone();
         self.provider.chosen = Some(selected[0].clone());
         self.remote.chosen = None;
         self.remote.chosen_multiple.clear();
@@ -1123,6 +1210,7 @@ impl App {
         self.browser.selected = 0;
         self.browser.checked = vec![false; self.browser.entries.len() + 1];
         self.browser.chosen = None;
+        self.browser.chosen_multiple.clear();
     }
 
     /// Move browser selection up
@@ -1160,29 +1248,96 @@ impl App {
 
     /// Check if any browser is selected
     pub fn has_selected_browsers(&self) -> bool {
-        self.browser.checked.iter().any(|checked| *checked)
+        !self.selected_browsers().is_empty()
+    }
+
+    /// Get all selected browsers in visible list order.
+    ///
+    /// When "System Default" is selected and a detected default browser exists,
+    /// it is normalized to that concrete browser and any duplicate explicit
+    /// selection of the same browser is skipped.
+    pub fn selected_browsers(&self) -> Vec<Option<Browser>> {
+        let mut selected = Vec::new();
+        let system_default_selected = self.browser.checked.first().copied().unwrap_or(false);
+        let resolved_default = self
+            .browser
+            .entries
+            .iter()
+            .find(|browser| browser.is_default)
+            .cloned();
+
+        if system_default_selected {
+            selected.push(resolved_default.clone());
+        }
+
+        for (idx, browser) in self.browser.entries.iter().enumerate() {
+            if !self.browser.checked.get(idx + 1).copied().unwrap_or(false) {
+                continue;
+            }
+
+            if system_default_selected && browser.is_default {
+                continue;
+            }
+
+            selected.push(Some(browser.clone()));
+        }
+
+        selected
     }
 
     /// Persist the current browser selection for authentication
     pub fn confirm_browser(&mut self) {
-        if !self.has_selected_browsers() {
+        let selected = self.selected_browsers();
+        if selected.is_empty() {
             self.auth_status = "Select at least one browser (Space toggles selection).".to_string();
             self.browser.chosen = None;
+            self.browser.chosen_multiple.clear();
             return;
         }
-        let mut chosen = None;
-        for (idx, checked) in self.browser.checked.iter().copied().enumerate() {
-            if !checked {
-                continue;
-            }
-            if idx == 0 {
-                chosen = None;
-                break;
-            }
-            chosen = self.browser.entries.get(idx - 1).cloned();
-            break;
+        self.browser.chosen_multiple = selected.clone();
+        self.browser.chosen = selected.iter().flatten().next().cloned();
+    }
+
+    /// Start a new authentication batch.
+    pub fn start_auth_batch(&mut self, tasks: Vec<AuthBatchTask>) {
+        self.auth_batch.pending = tasks;
+        self.auth_batch.current = None;
+        self.auth_batch.total = self.auth_batch.pending.len();
+        self.auth_batch.completed = 0;
+        self.auth_batch.last_error = None;
+    }
+
+    /// Clear the current authentication batch.
+    pub fn clear_auth_batch(&mut self) {
+        self.auth_batch.clear();
+    }
+
+    /// Advance to the next task in the authentication batch.
+    pub fn next_auth_task(&mut self) -> Option<AuthBatchTask> {
+        if self.auth_batch.pending.is_empty() {
+            self.auth_batch.current = None;
+            return None;
         }
-        self.browser.chosen = chosen;
+
+        let task = self.auth_batch.pending.remove(0);
+        self.provider.chosen = Some(task.provider.clone());
+        self.browser.chosen = task.browser.clone();
+        self.auth_batch.current = Some(task.clone());
+        Some(task)
+    }
+
+    /// Mark the current auth task as successfully completed.
+    pub fn finish_current_auth_task(&mut self) {
+        if self.auth_batch.current.is_some() {
+            self.auth_batch.completed = (self.auth_batch.completed + 1).min(self.auth_batch.total);
+        }
+        self.auth_batch.current = None;
+        self.auth_batch.last_error = None;
+    }
+
+    /// Record an error for the current authentication task.
+    pub fn fail_current_auth_task(&mut self, error: impl Into<String>) {
+        self.auth_batch.last_error = Some(error.into());
     }
 
     /// Move file selection up
@@ -1219,7 +1374,12 @@ impl App {
     /// by index (for multi-remote `[remote] path` display strings).
     pub fn get_file_entry(&self, display_path: &str) -> Option<&crate::files::FileEntry> {
         // Direct match by raw path
-        if let Some(entry) = self.files.entries_full.iter().find(|e| e.path == display_path) {
+        if let Some(entry) = self
+            .files
+            .entries_full
+            .iter()
+            .find(|e| e.path == display_path)
+        {
             return Some(entry);
         }
         // Index-based match: find position in display entries, return corresponding full entry
@@ -1371,6 +1531,30 @@ mod tests {
         app.provider.checked[app.provider.selected] = true;
         app.confirm_provider();
         assert!(app.provider.chosen.is_some());
+        assert_eq!(app.provider.chosen_multiple.len(), 1);
+    }
+
+    #[test]
+    fn test_confirm_provider_with_multiple_selections_persists_all() {
+        let mut app = App::new();
+        app.state = AppState::ProviderSelect;
+        app.provider.checked = vec![false; app.provider.entries.len()];
+        app.provider.checked[0] = true;
+        app.provider.checked[1] = true;
+
+        app.confirm_provider();
+
+        assert_eq!(app.provider.chosen_multiple.len(), 2);
+        assert_eq!(
+            app.provider
+                .chosen
+                .as_ref()
+                .map(|provider| provider.id.as_str()),
+            app.provider
+                .chosen_multiple
+                .first()
+                .map(|provider| provider.id.as_str())
+        );
     }
 
     #[test]
@@ -1424,6 +1608,77 @@ mod tests {
         assert_eq!(app.browser.selected, 0);
         app.confirm_browser();
         assert!(app.browser.chosen.is_none());
+    }
+
+    #[test]
+    fn test_confirm_browser_dedupes_system_default_and_explicit_default() {
+        let mut app = App::new();
+        app.state = AppState::BrowserSelect;
+
+        let mut default_browser = Browser::new(crate::providers::browser::BrowserType::Chrome);
+        default_browser.is_installed = true;
+        default_browser.is_default = true;
+
+        let mut other_browser = Browser::new(crate::providers::browser::BrowserType::Edge);
+        other_browser.is_installed = true;
+
+        app.browser.entries = vec![default_browser.clone(), other_browser.clone()];
+        app.browser.checked = vec![true, true, true];
+
+        app.confirm_browser();
+
+        assert_eq!(app.browser.chosen_multiple.len(), 2);
+        assert_eq!(
+            app.browser.chosen_multiple[0]
+                .as_ref()
+                .map(|browser| browser.browser_type),
+            Some(default_browser.browser_type)
+        );
+        assert_eq!(
+            app.browser.chosen_multiple[1]
+                .as_ref()
+                .map(|browser| browser.browser_type),
+            Some(other_browser.browser_type)
+        );
+    }
+
+    #[test]
+    fn test_auth_batch_next_task_updates_current_provider_and_browser() {
+        let mut app = App::new();
+        let mut browser = Browser::new(crate::providers::browser::BrowserType::Chrome);
+        browser.is_installed = true;
+
+        let task = AuthBatchTask {
+            provider: crate::providers::ProviderEntry::from_known(
+                crate::providers::CloudProvider::GoogleDrive,
+            ),
+            browser: Some(browser.clone()),
+        };
+
+        app.start_auth_batch(vec![task.clone()]);
+        let next = app.next_auth_task().unwrap();
+
+        assert_eq!(next.description(), task.description());
+        assert_eq!(app.auth_batch.total, 1);
+        assert_eq!(app.auth_batch.completed, 0);
+        assert_eq!(
+            app.provider
+                .chosen
+                .as_ref()
+                .map(|provider| provider.id.as_str()),
+            Some("drive")
+        );
+        assert_eq!(
+            app.browser
+                .chosen
+                .as_ref()
+                .map(|chosen| chosen.browser_type),
+            Some(browser.browser_type)
+        );
+
+        app.finish_current_auth_task();
+        assert_eq!(app.auth_batch.completed, 1);
+        assert!(app.auth_batch.current.is_none());
     }
 
     #[test]
@@ -1609,17 +1864,15 @@ mod tests {
     #[test]
     fn test_get_file_entry_with_remote_prefix() {
         let mut app = App::new();
-        app.files.entries_full = vec![
-            crate::files::FileEntry {
-                path: "file.txt".to_string(),
-                size: 42,
-                modified: None,
-                is_dir: false,
-                hash: None,
-                hash_type: None,
-                remote_name: Some("gdrive".to_string()),
-            },
-        ];
+        app.files.entries_full = vec![crate::files::FileEntry {
+            path: "file.txt".to_string(),
+            size: 42,
+            modified: None,
+            is_dir: false,
+            hash: None,
+            hash_type: None,
+            remote_name: Some("gdrive".to_string()),
+        }];
         app.files.entries = vec!["[gdrive] file.txt".to_string()];
 
         // Index-based lookup via display path

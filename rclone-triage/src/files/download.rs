@@ -279,57 +279,61 @@ impl DownloadQueue {
         F: FnMut(DownloadProgress),
     {
         if self.parallel <= 1 {
-        let total = self.requests.len();
-        let mut results = Vec::with_capacity(total);
+            let total = self.requests.len();
+            let mut results = Vec::with_capacity(total);
 
-        for (i, request) in self.requests.iter().enumerate() {
-            // Notify starting
-            progress_callback(DownloadProgress::starting(i, total, &request.source));
+            for (i, request) in self.requests.iter().enumerate() {
+                // Notify starting
+                progress_callback(DownloadProgress::starting(i, total, &request.source));
 
-            let result = if self.timeout.is_some() {
-                // Timeout handling isn't supported for streaming progress yet
-                self.download_one_verified(rclone, request)
-            } else {
-                self.download_one_verified_with_progress(rclone, request, |done, total_bytes| {
-                    progress_callback(DownloadProgress::progress(
-                        i,
-                        total,
-                        &request.source,
-                        done,
-                        total_bytes,
-                    ));
-                })
-            };
-            match &result {
-                DownloadResult {
-                    success: true,
-                    size,
-                    ..
-                } => {
-                    progress_callback(DownloadProgress::completed(
-                        i,
-                        total,
-                        &request.source,
-                        size.unwrap_or(0),
-                    ));
+                let result = if self.timeout.is_some() {
+                    // Timeout handling isn't supported for streaming progress yet
+                    self.download_one_verified(rclone, request)
+                } else {
+                    self.download_one_verified_with_progress(
+                        rclone,
+                        request,
+                        |done, total_bytes| {
+                            progress_callback(DownloadProgress::progress(
+                                i,
+                                total,
+                                &request.source,
+                                done,
+                                total_bytes,
+                            ));
+                        },
+                    )
+                };
+                match &result {
+                    DownloadResult {
+                        success: true,
+                        size,
+                        ..
+                    } => {
+                        progress_callback(DownloadProgress::completed(
+                            i,
+                            total,
+                            &request.source,
+                            size.unwrap_or(0),
+                        ));
+                    }
+                    DownloadResult {
+                        success: false,
+                        error,
+                        ..
+                    } => {
+                        progress_callback(DownloadProgress::failed(
+                            i,
+                            total,
+                            &request.source,
+                            error.as_deref().unwrap_or("Unknown error"),
+                        ));
+                    }
                 }
-                DownloadResult {
-                    success: false,
-                    error,
-                    ..
-                } => {
-                    progress_callback(DownloadProgress::failed(
-                        i,
-                        total,
-                        &request.source,
-                        error.as_deref().unwrap_or("Unknown error"),
-                    ));
-                }
+                results.push(result);
             }
-            results.push(result);
-        }
 
-        results
+            results
         } else {
             self.download_all_parallel_with_progress(rclone, &mut progress_callback)
         }
@@ -375,78 +379,74 @@ impl DownloadQueue {
 
             let verify_hashes = self.verify_hashes;
 
-            let handle = thread::spawn(move || {
-                loop {
-                    let next = {
-                        let mut guard = queue.lock().expect("download queue lock");
-                        guard.pop_front()
-                    };
+            let handle = thread::spawn(move || loop {
+                let next = {
+                    let mut guard = queue.lock().expect("download queue lock");
+                    guard.pop_front()
+                };
 
-                    let (index, request) = match next {
-                        Some(item) => item,
-                        None => break,
-                    };
+                let (index, request) = match next {
+                    Some(item) => item,
+                    None => break,
+                };
 
-                    let total_files = total;
-                    let _ = event_tx.send(Event::Progress(DownloadProgress::starting(
-                        index,
-                        total_files,
-                        &request.source,
-                    )));
+                let total_files = total;
+                let _ = event_tx.send(Event::Progress(DownloadProgress::starting(
+                    index,
+                    total_files,
+                    &request.source,
+                )));
 
-                    let result = if runner.timeout().is_some() {
-                        let mut queue = DownloadQueue::new();
-                        queue.set_verify_hashes(verify_hashes);
-                        queue.download_one_verified(&runner, &request)
-                    } else {
-                        let mut queue = DownloadQueue::new();
-                        queue.set_verify_hashes(verify_hashes);
-                        queue.download_one_verified_with_progress(
-                            &runner,
-                            &request,
-                            |done, total_bytes| {
-                                let _ = event_tx.send(Event::Progress(
-                                    DownloadProgress::progress(
-                                        index,
-                                        total_files,
-                                        &request.source,
-                                        done,
-                                        total_bytes,
-                                    ),
-                                ));
-                            },
-                        )
-                    };
-
-                    match &result {
-                        DownloadResult {
-                            success: true,
-                            size,
-                            ..
-                        } => {
-                            let _ = event_tx.send(Event::Progress(DownloadProgress::completed(
+                let result = if runner.timeout().is_some() {
+                    let mut queue = DownloadQueue::new();
+                    queue.set_verify_hashes(verify_hashes);
+                    queue.download_one_verified(&runner, &request)
+                } else {
+                    let mut queue = DownloadQueue::new();
+                    queue.set_verify_hashes(verify_hashes);
+                    queue.download_one_verified_with_progress(
+                        &runner,
+                        &request,
+                        |done, total_bytes| {
+                            let _ = event_tx.send(Event::Progress(DownloadProgress::progress(
                                 index,
                                 total_files,
                                 &request.source,
-                                size.unwrap_or(0),
+                                done,
+                                total_bytes,
                             )));
-                        }
-                        DownloadResult {
-                            success: false,
-                            error,
-                            ..
-                        } => {
-                            let _ = event_tx.send(Event::Progress(DownloadProgress::failed(
-                                index,
-                                total_files,
-                                &request.source,
-                                error.as_deref().unwrap_or("Unknown error"),
-                            )));
-                        }
+                        },
+                    )
+                };
+
+                match &result {
+                    DownloadResult {
+                        success: true,
+                        size,
+                        ..
+                    } => {
+                        let _ = event_tx.send(Event::Progress(DownloadProgress::completed(
+                            index,
+                            total_files,
+                            &request.source,
+                            size.unwrap_or(0),
+                        )));
                     }
-
-                    let _ = event_tx.send(Event::Result(index, result));
+                    DownloadResult {
+                        success: false,
+                        error,
+                        ..
+                    } => {
+                        let _ = event_tx.send(Event::Progress(DownloadProgress::failed(
+                            index,
+                            total_files,
+                            &request.source,
+                            error.as_deref().unwrap_or("Unknown error"),
+                        )));
+                    }
                 }
+
+                let _ = event_tx.send(Event::Result(index, result));
             });
 
             handles.push(handle);
@@ -505,17 +505,24 @@ impl DownloadQueue {
                 let size = std::fs::metadata(dest_path).ok().map(|m| m.len());
 
                 // Compute hash if verification enabled and we have an expected hash
-                let (hash, hash_type, hash_verified, hash_error) =
-                    if self.verify_hashes && request.expected_hash.is_some() {
-                        match request.expected_hash_type.as_deref() {
-                            Some(hash_type) => match compute_file_hash_best_effort(rclone, dest_path, hash_type) {
+                let (hash, hash_type, hash_verified, hash_error) = if self.verify_hashes
+                    && request.expected_hash.is_some()
+                {
+                    match request.expected_hash_type.as_deref() {
+                        Some(hash_type) => {
+                            match compute_file_hash_best_effort(rclone, dest_path, hash_type) {
                                 Ok(computed) => {
                                     let verified = request
                                         .expected_hash
                                         .as_ref()
                                         .map(|expected| expected.eq_ignore_ascii_case(&computed))
                                         .unwrap_or(false);
-                                    (Some(computed), Some(hash_type.to_string()), Some(verified), None)
+                                    (
+                                        Some(computed),
+                                        Some(hash_type.to_string()),
+                                        Some(verified),
+                                        None,
+                                    )
                                 }
                                 Err(e) => (
                                     None,
@@ -523,17 +530,18 @@ impl DownloadQueue {
                                     None,
                                     Some(format!("Hash verification skipped: {}", e)),
                                 ),
-                            },
-                            None => (
-                                None,
-                                None,
-                                None,
-                                Some("Expected hash present but no hash type provided".to_string()),
-                            ),
+                            }
                         }
-                    } else {
-                        (None, None, None, None)
-                    };
+                        None => (
+                            None,
+                            None,
+                            None,
+                            Some("Expected hash present but no hash type provided".to_string()),
+                        ),
+                    }
+                } else {
+                    (None, None, None, None)
+                };
 
                 DownloadResult {
                     source: request.source.clone(),
@@ -593,17 +601,24 @@ impl DownloadQueue {
                 let size = std::fs::metadata(dest_path).ok().map(|m| m.len());
 
                 // Compute hash if verification enabled and we have an expected hash
-                let (hash, hash_type, hash_verified, hash_error) =
-                    if self.verify_hashes && request.expected_hash.is_some() {
-                        match request.expected_hash_type.as_deref() {
-                            Some(hash_type) => match compute_file_hash_best_effort(rclone, dest_path, hash_type) {
+                let (hash, hash_type, hash_verified, hash_error) = if self.verify_hashes
+                    && request.expected_hash.is_some()
+                {
+                    match request.expected_hash_type.as_deref() {
+                        Some(hash_type) => {
+                            match compute_file_hash_best_effort(rclone, dest_path, hash_type) {
                                 Ok(computed) => {
                                     let verified = request
                                         .expected_hash
                                         .as_ref()
                                         .map(|expected| expected.eq_ignore_ascii_case(&computed))
                                         .unwrap_or(false);
-                                    (Some(computed), Some(hash_type.to_string()), Some(verified), None)
+                                    (
+                                        Some(computed),
+                                        Some(hash_type.to_string()),
+                                        Some(verified),
+                                        None,
+                                    )
                                 }
                                 Err(e) => (
                                     None,
@@ -611,17 +626,18 @@ impl DownloadQueue {
                                     None,
                                     Some(format!("Hash verification skipped: {}", e)),
                                 ),
-                            },
-                            None => (
-                                None,
-                                None,
-                                None,
-                                Some("Expected hash present but no hash type provided".to_string()),
-                            ),
+                            }
                         }
-                    } else {
-                        (None, None, None, None)
-                    };
+                        None => (
+                            None,
+                            None,
+                            None,
+                            Some("Expected hash present but no hash type provided".to_string()),
+                        ),
+                    }
+                } else {
+                    (None, None, None, None)
+                };
 
                 DownloadResult {
                     source: request.source.clone(),
@@ -712,7 +728,11 @@ pub fn compute_file_hash(path: &Path, hash_type: &str) -> Result<String> {
     }
 }
 
-fn compute_file_hash_with_rclone(rclone: &RcloneRunner, path: &Path, hash_type: &str) -> Result<String> {
+fn compute_file_hash_with_rclone(
+    rclone: &RcloneRunner,
+    path: &Path,
+    hash_type: &str,
+) -> Result<String> {
     let path_str = path.to_string_lossy();
     let args = ["hashsum", hash_type, path_str.as_ref()];
     let output = rclone.run(&args)?;
@@ -862,8 +882,7 @@ mod tests {
 
     #[test]
     fn test_parse_transferred_bytes() {
-        let line =
-            "Transferred:   1.00 MiB / 2.00 MiB, 50%, 1.00 MiB/s, ETA 1s";
+        let line = "Transferred:   1.00 MiB / 2.00 MiB, 50%, 1.00 MiB/s, ETA 1s";
         let parsed = parse_transferred_bytes(line).unwrap();
         assert_eq!(parsed.0, 1_048_576);
         assert_eq!(parsed.1, 2_097_152);
@@ -941,8 +960,7 @@ mod tests {
             DownloadRequest::new_copyto(src_file.to_string_lossy(), dst_file.to_string_lossy());
         queue.add(request.clone());
 
-        let output = queue
-            .download_one_verified(&runner, &request);
+        let output = queue.download_one_verified(&runner, &request);
         assert!(output.success);
     }
 

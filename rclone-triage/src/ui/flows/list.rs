@@ -58,11 +58,11 @@ pub(crate) fn perform_list_flow<B: ratatui::backend::Backend>(
         return Ok(());
     }
 
-    let remote_name = match crate::ui::flows::remotes::choose_remote_or_prompt(app, &provider, remotes)?
-    {
-        Some(remote_name) => remote_name,
-        None => return Ok(()),
-    };
+    let remote_name =
+        match crate::ui::flows::remotes::choose_remote_or_prompt(app, &provider, remotes)? {
+            Some(remote_name) => remote_name,
+            None => return Ok(()),
+        };
     app.remote.chosen = Some(remote_name.clone());
     app.files.to_download.clear();
     app.files.entries.clear();
@@ -83,8 +83,8 @@ pub(crate) fn perform_list_flow<B: ratatui::backend::Backend>(
     let include_hashes = provider
         .known
         .map(|known| !known.hash_types().is_empty())
-        .unwrap_or_else(|| {
-            match crate::providers::features::provider_supports_hashes(&provider) {
+        .unwrap_or_else(
+            || match crate::providers::features::provider_supports_hashes(&provider) {
                 Ok(Some(true)) => true,
                 Ok(Some(false)) | Ok(None) => false,
                 Err(e) => {
@@ -94,8 +94,8 @@ pub(crate) fn perform_list_flow<B: ratatui::backend::Backend>(
                     ));
                     false
                 }
-            }
-        });
+            },
+        );
 
     let list_options = if include_hashes {
         crate::files::listing::ListPathOptions::with_hashes()
@@ -212,7 +212,10 @@ pub(crate) fn perform_list_flow_from_config<B: ratatui::backend::Backend>(
         app.cleanup_track_dir(dir);
     }
 
-    app.track_env_var("RCLONE_CONFIG", "Set RCLONE_CONFIG for config-based listing");
+    app.track_env_var(
+        "RCLONE_CONFIG",
+        "Set RCLONE_CONFIG for config-based listing",
+    );
     let config = match crate::rclone::RcloneConfig::open_existing(config_path) {
         Ok(config) => config,
         Err(e) => {
