@@ -32,10 +32,11 @@ mod tests {
     #[test]
     fn test_render() {
         let mut buf = Buffer::empty(Rect::new(0, 0, 50, 10));
-        let screen = ProviderSelectScreen::new(vec![
-            "Google Drive".to_string(),
-            "Dropbox".to_string(),
-        ], vec![false, true], 1);
+        let screen = ProviderSelectScreen::new(
+            vec!["Google Drive".to_string(), "Dropbox".to_string()],
+            vec![false, true],
+            1,
+        );
         (&screen).render(Rect::new(0, 0, 50, 10), &mut buf);
     }
 }

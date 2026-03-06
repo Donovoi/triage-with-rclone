@@ -116,7 +116,7 @@ fn format_change_type(change: &ChangeType) -> String {
         ChangeType::EnvVarSet { name, old_value } => match old_value {
             Some(old) => format!("Set env var: {} (was: {})", name, old),
             None => format!("Set env var: {} (was unset)", name),
-        }
+        },
         #[cfg(windows)]
         ChangeType::RegistryKeyCreated { path } => {
             format!("Created registry key: {}", path)

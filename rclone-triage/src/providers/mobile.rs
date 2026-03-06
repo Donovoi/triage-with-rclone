@@ -343,7 +343,9 @@ mod tests {
 
     #[test]
     fn test_device_code_config_for_onedrive() {
-        let config = device_code_config(CloudProvider::OneDrive).unwrap().unwrap();
+        let config = device_code_config(CloudProvider::OneDrive)
+            .unwrap()
+            .unwrap();
         assert!(config.device_code_url.contains("devicecode"));
         assert!(config.token_url.contains("token"));
         assert!(config.scope.contains("Files"));

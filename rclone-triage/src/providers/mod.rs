@@ -275,7 +275,11 @@ impl CloudProvider {
     }
 
     pub fn entries() -> Vec<ProviderEntry> {
-        Self::all().iter().copied().map(ProviderEntry::from_known).collect()
+        Self::all()
+            .iter()
+            .copied()
+            .map(ProviderEntry::from_known)
+            .collect()
     }
 
     /// Get the rclone remote type for this provider

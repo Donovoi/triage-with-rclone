@@ -20,7 +20,8 @@ pub(crate) fn perform_download_flow<B: ratatui::backend::Backend>(
     app.download.current_bytes = None;
     app.download.done_bytes = 0;
     let total_bytes: u64 = app
-        .files.to_download
+        .files
+        .to_download
         .iter()
         .filter_map(|file| app.get_file_entry(file).map(|e| e.size))
         .sum();
@@ -49,7 +50,8 @@ pub(crate) fn perform_download_flow<B: ratatui::backend::Backend>(
 
     if let Some(provider) = app.provider.chosen.clone() {
         let remote_name = app
-            .remote.chosen
+            .remote
+            .chosen
             .as_deref()
             .unwrap_or(provider.short_name());
 
@@ -232,10 +234,13 @@ pub(crate) fn perform_download_flow<B: ratatui::backend::Backend>(
 
                 // Track downloaded file
                 let entry = app.get_file_entry(file);
-                let actual_path = entry.map(|e| e.path.clone()).unwrap_or_else(|| file.clone());
+                let actual_path = entry
+                    .map(|e| e.path.clone())
+                    .unwrap_or_else(|| file.clone());
                 let file_remote = entry.and_then(|e| e.remote_name.clone());
                 let dest_tracking = if let Some(ref rn) = file_remote {
-                    crate::utils::safe_join_under(&dest_dir, &format!("{}/{}", rn, actual_path)).path
+                    crate::utils::safe_join_under(&dest_dir, &format!("{}/{}", rn, actual_path))
+                        .path
                 } else {
                     crate::utils::safe_join_under(&dest_dir, &actual_path).path
                 };
@@ -294,15 +299,21 @@ pub(crate) fn perform_download_flow<B: ratatui::backend::Backend>(
         );
 
         // Generate and write the forensic report
-        if let (Some(ref case), Some(ref dirs)) = (&app.forensics.case, &app.forensics.directories) {
-            let log_hash = app.forensics.logger.as_ref().and_then(|l| l.final_hash().ok());
+        if let (Some(ref case), Some(ref dirs)) = (&app.forensics.case, &app.forensics.directories)
+        {
+            let log_hash = app
+                .forensics
+                .logger
+                .as_ref()
+                .and_then(|l| l.final_hash().ok());
 
             // Capture final state and compute diff
             let state_diff = app.capture_final_state();
 
             // Get change tracker report as string
             let change_report = app
-                .forensics.change_tracker
+                .forensics
+                .change_tracker
                 .lock()
                 .ok()
                 .map(|tracker| tracker.generate_report());
@@ -356,37 +367,48 @@ pub(crate) fn perform_download_flow<B: ratatui::backend::Backend>(
 
         // Add case metadata if available
         if let Some(ref case) = app.forensics.case {
-            app.download.report_lines
+            app.download
+                .report_lines
                 .push(format!("Case: {}", case.session_id()));
             app.download.report_lines.push(format!(
                 "Started: {}",
                 case.start_time.format("%Y-%m-%d %H:%M:%S UTC")
             ));
             if let Some(end) = case.end_time {
-                app.download.report_lines
+                app.download
+                    .report_lines
                     .push(format!("Ended: {}", end.format("%Y-%m-%d %H:%M:%S UTC")));
             }
             app.download.report_lines.push(String::new());
         }
 
-        app.download.report_lines
+        app.download
+            .report_lines
             .push(format!("Provider: {}", provider.display_name()));
-        app.download.report_lines.push(format!("Files requested: {}", total));
-        app.download.report_lines
+        app.download
+            .report_lines
+            .push(format!("Files requested: {}", total));
+        app.download
+            .report_lines
             .push(format!("Files downloaded: {}", success_count));
         if failed_count > 0 {
-            app.download.report_lines
+            app.download
+                .report_lines
                 .push(format!("Failed downloads: {}", failed_count));
         }
-        app.download.report_lines
+        app.download
+            .report_lines
             .push(format!("Destination: {}", dest_display));
         app.download.report_lines.push(String::new());
-        app.download.report_lines.push("Downloaded files:".to_string());
+        app.download
+            .report_lines
+            .push("Downloaded files:".to_string());
 
         // Use case downloaded_files if available for sizes
         if let Some(ref case) = app.forensics.case {
             for file in &case.downloaded_files {
-                app.download.report_lines
+                app.download
+                    .report_lines
                     .push(format!("  - {} ({} bytes)", file.path, file.size));
             }
         } else {
@@ -397,10 +419,13 @@ pub(crate) fn perform_download_flow<B: ratatui::backend::Backend>(
 
         app.download.report_lines.push(String::new());
         if failed_count > 0 {
-            app.download.report_lines
+            app.download
+                .report_lines
                 .push("Press 'r' to retry failed downloads or 'q' to exit.".to_string());
         } else {
-            app.download.report_lines.push("Press 'q' to exit.".to_string());
+            app.download
+                .report_lines
+                .push("Press 'q' to exit.".to_string());
         }
 
         app.advance(); // Move to Complete

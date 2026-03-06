@@ -69,12 +69,16 @@ pub(crate) fn prompt_text_in_tui<B: ratatui::backend::Backend>(
                         input.pop();
                     }
                     KeyCode::Char('u')
-                        if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) =>
+                        if key
+                            .modifiers
+                            .contains(crossterm::event::KeyModifiers::CONTROL) =>
                     {
                         input.clear();
                     }
                     KeyCode::Char('w')
-                        if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) =>
+                        if key
+                            .modifiers
+                            .contains(crossterm::event::KeyModifiers::CONTROL) =>
                     {
                         // Delete the last "word" (simple ASCII whitespace heuristic).
                         while matches!(input.chars().last(), Some(c) if c.is_whitespace()) {
@@ -103,4 +107,3 @@ pub(crate) fn prompt_text_in_tui<B: ratatui::backend::Backend>(
         }
     }
 }
-

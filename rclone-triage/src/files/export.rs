@@ -107,7 +107,9 @@ pub fn export_listing_xlsx(entries: &[FileEntry], path: impl AsRef<Path>) -> Res
         .set_name("Listing")
         .context("Failed to add worksheet")?;
 
-    let headers = ["Remote", "Path", "Size", "Modified", "IsDir", "Hash", "HashType"];
+    let headers = [
+        "Remote", "Path", "Size", "Modified", "IsDir", "Hash", "HashType",
+    ];
     for (col, header) in headers.iter().enumerate() {
         worksheet
             .write_string(0, col as u16, *header)
@@ -150,9 +152,7 @@ pub fn export_listing_xlsx(entries: &[FileEntry], path: impl AsRef<Path>) -> Res
         }
     }
 
-    workbook
-        .save(path_str)
-        .context("Failed to save workbook")?;
+    workbook.save(path_str).context("Failed to save workbook")?;
     Ok(())
 }
 

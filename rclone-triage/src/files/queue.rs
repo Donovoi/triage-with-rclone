@@ -61,8 +61,8 @@ fn read_csv_queue(path: &Path) -> Result<Vec<DownloadQueueEntry>> {
 }
 
 fn read_xlsx_queue(path: &Path) -> Result<Vec<DownloadQueueEntry>> {
-    let mut workbook =
-        open_workbook_auto(path).with_context(|| format!("Failed to open XLSX queue: {:?}", path))?;
+    let mut workbook = open_workbook_auto(path)
+        .with_context(|| format!("Failed to open XLSX queue: {:?}", path))?;
     let sheet_name = workbook
         .sheet_names()
         .first()
@@ -114,10 +114,7 @@ fn parse_record(record: &StringRecord, map: &HeaderMap) -> Option<DownloadQueueE
         return None;
     }
 
-    let size = map
-        .size
-        .and_then(|idx| record.get(idx))
-        .and_then(parse_u64);
+    let size = map.size.and_then(|idx| record.get(idx)).and_then(parse_u64);
 
     let hash = map
         .hash
@@ -168,10 +165,7 @@ fn parse_row(row: &[Data], map: &HeaderMap) -> Option<DownloadQueueEntry> {
         return None;
     }
 
-    let size = map
-        .size
-        .and_then(|idx| row.get(idx))
-        .and_then(cell_to_u64);
+    let size = map.size.and_then(|idx| row.get(idx)).and_then(cell_to_u64);
 
     let hash = map
         .hash
@@ -400,11 +394,7 @@ mod tests {
     fn test_read_csv_queue_without_remote() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("queue.csv");
-        std::fs::write(
-            &path,
-            "Path,Size,IsDir\nfile.txt,12,false\n",
-        )
-        .unwrap();
+        std::fs::write(&path, "Path,Size,IsDir\nfile.txt,12,false\n").unwrap();
 
         let entries = read_download_queue(&path).unwrap();
         assert_eq!(entries.len(), 1);

@@ -131,7 +131,10 @@ pub(crate) fn perform_manual_config_flow<B: ratatui::backend::Backend>(
     let config_dir = app
         .config_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."));
-    app.track_env_var("RCLONE_CONFIG", "Set RCLONE_CONFIG for manual backend config");
+    app.track_env_var(
+        "RCLONE_CONFIG",
+        "Set RCLONE_CONFIG for manual backend config",
+    );
     let config = match crate::rclone::RcloneConfig::for_case(&config_dir) {
         Ok(config) => config,
         Err(e) => {
@@ -175,17 +178,19 @@ pub(crate) fn perform_manual_config_flow<B: ratatui::backend::Backend>(
 
     let mut options: Vec<(String, String)> = Vec::new();
 
-    let schema = match crate::providers::schema::provider_schema_from_rclone(&rclone, provider.short_name()) {
-        Ok(schema) => schema,
-        Err(e) => {
-            app.log_info(format!(
-                "Provider option schema unavailable for {}: {}",
-                provider.short_name(),
-                e
-            ));
-            None
-        }
-    };
+    let schema =
+        match crate::providers::schema::provider_schema_from_rclone(&rclone, provider.short_name())
+        {
+            Ok(schema) => schema,
+            Err(e) => {
+                app.log_info(format!(
+                    "Provider option schema unavailable for {}: {}",
+                    provider.short_name(),
+                    e
+                ));
+                None
+            }
+        };
 
     let known_keys_preview = schema.as_ref().map(|schema| {
         let mut keys = schema
@@ -300,11 +305,9 @@ pub(crate) fn perform_manual_config_flow<B: ratatui::backend::Backend>(
             break;
         }
 
-        let schema_opt = schema.as_ref().and_then(|s| {
-            s.options
-                .iter()
-                .find(|o| o.name.eq_ignore_ascii_case(&key))
-        });
+        let schema_opt = schema
+            .as_ref()
+            .and_then(|s| s.options.iter().find(|o| o.name.eq_ignore_ascii_case(&key)));
 
         let Some(mut value) = prompt_text_in_tui(
             app,
@@ -318,10 +321,8 @@ pub(crate) fn perform_manual_config_flow<B: ratatui::backend::Backend>(
             return Ok(());
         };
 
-        let needs_obscure = schema_opt
-            .map(|o| o.is_password)
-            .unwrap_or(false)
-            || should_obscure_option_key(&key);
+        let needs_obscure =
+            schema_opt.map(|o| o.is_password).unwrap_or(false) || should_obscure_option_key(&key);
         if needs_obscure {
             let raw_prefix = "raw:";
             if value.to_ascii_lowercase().starts_with(raw_prefix) {
@@ -330,12 +331,8 @@ pub(crate) fn perform_manual_config_flow<B: ratatui::backend::Backend>(
                 match obscure_with_rclone(&rclone, &value) {
                     Ok(obscured) => value = obscured,
                     Err(e) => {
-                        app.auth_status =
-                            format!("Manual config failed (obscure {}): {}", key, e);
-                        app.log_error(format!(
-                            "Manual config failed (obscure {}): {}",
-                            key, e
-                        ));
+                        app.auth_status = format!("Manual config failed (obscure {}): {}", key, e);
+                        app.log_error(format!("Manual config failed (obscure {}): {}", key, e));
                         return Ok(());
                     }
                 }
@@ -435,17 +432,19 @@ pub(crate) fn perform_manual_config_flow<B: ratatui::backend::Backend>(
     let include_hashes = provider
         .known
         .map(|known| !known.hash_types().is_empty())
-        .unwrap_or_else(|| match crate::providers::features::provider_supports_hashes(&provider) {
-            Ok(Some(true)) => true,
-            Ok(Some(false)) | Ok(None) => false,
-            Err(e) => {
-                app.log_info(format!(
-                    "Skipping remote hashes (hash support lookup failed): {}",
-                    e
-                ));
-                false
-            }
-        });
+        .unwrap_or_else(
+            || match crate::providers::features::provider_supports_hashes(&provider) {
+                Ok(Some(true)) => true,
+                Ok(Some(false)) | Ok(None) => false,
+                Err(e) => {
+                    app.log_info(format!(
+                        "Skipping remote hashes (hash support lookup failed): {}",
+                        e
+                    ));
+                    false
+                }
+            },
+        );
 
     let list_options = if include_hashes {
         crate::files::listing::ListPathOptions::with_hashes()

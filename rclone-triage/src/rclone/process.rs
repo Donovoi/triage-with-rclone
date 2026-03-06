@@ -350,7 +350,10 @@ fn capture_output<R: std::io::Read>(reader: R, tx: Sender<String>) {
     }
 }
 
-fn stream_lines<R: Read, F: FnMut(&str)>(mut reader: R, mut on_line: F) -> std::io::Result<Vec<String>> {
+fn stream_lines<R: Read, F: FnMut(&str)>(
+    mut reader: R,
+    mut on_line: F,
+) -> std::io::Result<Vec<String>> {
     let mut lines = Vec::new();
     let mut buffer = [0u8; 1024];
     let mut current: Vec<u8> = Vec::new();
@@ -401,7 +404,10 @@ fn stream_lines<R: Read, F: FnMut(&str)>(mut reader: R, mut on_line: F) -> std::
 }
 
 /// Wait for a child process with timeout
-pub(crate) fn wait_with_timeout(child: &mut Child, timeout: Duration) -> Result<(ExitStatus, bool)> {
+pub(crate) fn wait_with_timeout(
+    child: &mut Child,
+    timeout: Duration,
+) -> Result<(ExitStatus, bool)> {
     let start = std::time::Instant::now();
     loop {
         match child.try_wait()? {

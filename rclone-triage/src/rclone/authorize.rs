@@ -56,8 +56,7 @@ pub fn normalize_backend(backend: &str) -> Result<String> {
 }
 
 pub fn extract_auth_url(stdout: &[String], stderr: &[String]) -> Option<String> {
-    let notice_re =
-        Regex::new(r#"NOTICE.*(?:link|go to).*:\s*(https?://[^\s"]+)"#).ok()?;
+    let notice_re = Regex::new(r#"NOTICE.*(?:link|go to).*:\s*(https?://[^\s"]+)"#).ok()?;
     let url_re = Regex::new(r#"(https?://[^\s"]+)"#).ok()?;
 
     for line in stdout.iter().chain(stderr.iter()) {
@@ -252,7 +251,10 @@ pub fn parse_authorize_callback_input(input: &str) -> Result<AuthorizeCallback> 
     let (code, state) = if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
         // Strip fragment, then parse query string.
         let without_fragment = trimmed.split('#').next().unwrap_or(trimmed);
-        let query = without_fragment.split_once('?').map(|(_, q)| q).unwrap_or("");
+        let query = without_fragment
+            .split_once('?')
+            .map(|(_, q)| q)
+            .unwrap_or("");
         let synthetic = format!("/?{}", query);
         (
             crate::rclone::oauth::extract_param(&synthetic, "code"),
@@ -312,7 +314,11 @@ pub fn send_local_authorize_callback(
 }
 
 /// Spawn `rclone authorize <backend>` and stream output lines.
-pub fn spawn_authorize(runner: &RcloneRunner, backend: &str, auth_no_open_browser: bool) -> Result<RunningAuthorize> {
+pub fn spawn_authorize(
+    runner: &RcloneRunner,
+    backend: &str,
+    auth_no_open_browser: bool,
+) -> Result<RunningAuthorize> {
     let backend = normalize_backend(backend)?;
 
     let mut cmd = Command::new(runner.exe_path());
@@ -339,8 +345,14 @@ pub fn spawn_authorize(runner: &RcloneRunner, backend: &str, auth_no_open_browse
         .spawn()
         .with_context(|| format!("Failed to spawn rclone authorize for {}", backend))?;
 
-    let stdout = child.stdout.take().ok_or_else(|| anyhow::anyhow!("stdout was not captured"))?;
-    let stderr = child.stderr.take().ok_or_else(|| anyhow::anyhow!("stderr was not captured"))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("stdout was not captured"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("stderr was not captured"))?;
 
     let (tx, rx) = mpsc::channel::<(AuthorizeOutputStream, String)>();
     let tx_out = tx.clone();
@@ -397,7 +409,10 @@ mod tests {
         let stdout = vec!["{\"access_token\":\"abc\",\"token_type\":\"Bearer\"}".to_string()];
         let token = extract_token_json(&stdout, &[]).unwrap();
         let value: serde_json::Value = serde_json::from_str(&token).unwrap();
-        assert_eq!(value.get("access_token").and_then(|v| v.as_str()), Some("abc"));
+        assert_eq!(
+            value.get("access_token").and_then(|v| v.as_str()),
+            Some("abc")
+        );
     }
 
     #[test]
@@ -410,6 +425,9 @@ mod tests {
         ];
         let token = extract_token_json(&stdout, &[]).unwrap();
         let value: serde_json::Value = serde_json::from_str(&token).unwrap();
-        assert_eq!(value.get("access_token").and_then(|v| v.as_str()), Some("abc"));
+        assert_eq!(
+            value.get("access_token").and_then(|v| v.as_str()),
+            Some("abc")
+        );
     }
 }

@@ -26,7 +26,10 @@ impl Widget for &RemoteSelectScreen {
         let title = if self.remotes.is_empty() {
             "Remotes".to_string()
         } else {
-            format!("Remotes ({}) — Space: toggle, Enter: confirm", self.remotes.len())
+            format!(
+                "Remotes ({}) — Space: toggle, Enter: confirm",
+                self.remotes.len()
+            )
         };
 
         let items: Vec<ListItem> = self

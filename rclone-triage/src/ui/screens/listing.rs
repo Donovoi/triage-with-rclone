@@ -120,7 +120,12 @@ mod tests {
     fn test_pulse_ratio_bounds() {
         for secs in 0..20 {
             let r = pulse_ratio(secs);
-            assert!((0.0..=1.0).contains(&r), "pulse_ratio({}) = {} out of range", secs, r);
+            assert!(
+                (0.0..=1.0).contains(&r),
+                "pulse_ratio({}) = {} out of range",
+                secs,
+                r
+            );
         }
     }
 }

@@ -40,7 +40,8 @@ pub(crate) fn choose_remote_or_prompt(
     app.remote.options = remotes;
     app.remote.checked = vec![false; app.remote.options.len()];
     app.remote.selected = app
-        .remote.chosen
+        .remote
+        .chosen
         .as_ref()
         .and_then(|remote| app.remote.options.iter().position(|r| r == remote))
         .unwrap_or(0);
@@ -95,8 +96,8 @@ pub(crate) fn choose_remote_from_all(
         .collect();
     app.remote.checked = vec![false; app.remote.options.len()];
     app.remote.selected = 0;
-    app.provider.status = "Multiple remotes found. Select one or more to continue (Space to toggle).".to_string();
+    app.provider.status =
+        "Multiple remotes found. Select one or more to continue (Space to toggle).".to_string();
     app.state = crate::ui::AppState::RemoteSelect;
     Ok(None)
 }
-

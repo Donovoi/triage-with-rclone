@@ -12,10 +12,10 @@ fn hint_style() -> Style {
 }
 
 use crate::ui::screens::{
-    auth::AuthScreen, browser_select::BrowserSelectScreen,
-    config_browser::ConfigBrowserScreen, download::DownloadScreen,
-    files::FilesScreen, listing::ListingScreen, main_menu::MainMenuScreen,
-    provider_select::ProviderSelectScreen, remote_select::RemoteSelectScreen, report::ReportScreen,
+    auth::AuthScreen, browser_select::BrowserSelectScreen, config_browser::ConfigBrowserScreen,
+    download::DownloadScreen, files::FilesScreen, listing::ListingScreen,
+    main_menu::MainMenuScreen, provider_select::ProviderSelectScreen,
+    remote_select::RemoteSelectScreen, report::ReportScreen,
 };
 use crate::ui::{App, AppState};
 
@@ -47,8 +47,9 @@ pub fn render_state(frame: &mut Frame, app: &App) {
                 Some(app.menu_status.clone())
             };
             let actions = "Actions: Authenticate • Retrieve list • Download CSV/XLSX • Mount • Silent/Smart Auth • Mobile Auth • Additional Options • Exit".to_string();
-            let controls = "Up/Down select • Enter choose • Backspace back • Ctrl+E export screen • q quit"
-                .to_string();
+            let controls =
+                "Up/Down select • Enter choose • Backspace back • Ctrl+E export screen • q quit"
+                    .to_string();
             let mut footer_lines = vec![Line::from(description)];
             if let Some(status) = status {
                 footer_lines.push(Line::from(status));
@@ -81,8 +82,9 @@ pub fn render_state(frame: &mut Frame, app: &App) {
             } else {
                 app.menu_status.clone()
             };
-            let controls = "Up/Down select • Enter choose • Backspace back • Ctrl+E export screen • q quit"
-                .to_string();
+            let controls =
+                "Up/Down select • Enter choose • Backspace back • Ctrl+E export screen • q quit"
+                    .to_string();
             let footer = Paragraph::new(vec![
                 Line::from(description),
                 Line::from(status),
@@ -114,8 +116,9 @@ pub fn render_state(frame: &mut Frame, app: &App) {
             } else {
                 app.menu_status.clone()
             };
-            let controls = "Up/Down select • Enter choose • Backspace back • Ctrl+E export screen • q quit"
-                .to_string();
+            let controls =
+                "Up/Down select • Enter choose • Backspace back • Ctrl+E export screen • q quit"
+                    .to_string();
             let footer = Paragraph::new(vec![
                 Line::from(description),
                 Line::from(status),
@@ -306,8 +309,9 @@ pub fn render_state(frame: &mut Frame, app: &App) {
             } else {
                 app.menu_status.clone()
             };
-            let controls = "Up/Down select • Enter choose • Backspace back • Ctrl+E export screen • q quit"
-                .to_string();
+            let controls =
+                "Up/Down select • Enter choose • Backspace back • Ctrl+E export screen • q quit"
+                    .to_string();
             let footer = Paragraph::new(vec![
                 Line::from(description),
                 Line::from(status),
@@ -404,7 +408,11 @@ pub fn render_state(frame: &mut Frame, app: &App) {
             let add_desc = if app.authenticated_remotes.is_empty() {
                 "Authenticate another cloud provider to combine multiple remotes into one listing/mount.".to_string()
             } else {
-                let names: Vec<&str> = app.authenticated_remotes.iter().map(|(_, name)| name.as_str()).collect();
+                let names: Vec<&str> = app
+                    .authenticated_remotes
+                    .iter()
+                    .map(|(_, name)| name.as_str())
+                    .collect();
                 format!(
                     "Already authenticated: {}. Add another to combine into one listing/mount.",
                     names.join(", ")
@@ -419,13 +427,25 @@ pub fn render_state(frame: &mut Frame, app: &App) {
 
             let mut lines: Vec<Line> = Vec::new();
             lines.push(Line::from(vec![
-                Span::styled("Authenticated: ", ratatui::style::Style::default().add_modifier(ratatui::style::Modifier::BOLD)),
-                Span::styled(&provider_name, ratatui::style::Style::default().fg(Color::LightGreen).add_modifier(ratatui::style::Modifier::BOLD)),
+                Span::styled(
+                    "Authenticated: ",
+                    ratatui::style::Style::default().add_modifier(ratatui::style::Modifier::BOLD),
+                ),
+                Span::styled(
+                    &provider_name,
+                    ratatui::style::Style::default()
+                        .fg(Color::LightGreen)
+                        .add_modifier(ratatui::style::Modifier::BOLD),
+                ),
             ]));
 
             if !app.authenticated_remotes.is_empty() {
                 let total = app.authenticated_remotes.len();
-                let remote_names: Vec<&str> = app.authenticated_remotes.iter().map(|(r, _)| r.as_str()).collect();
+                let remote_names: Vec<&str> = app
+                    .authenticated_remotes
+                    .iter()
+                    .map(|(r, _)| r.as_str())
+                    .collect();
                 lines.push(Line::from(Span::styled(
                     format!("{} remote(s) ready: {}", total, remote_names.join(", ")),
                     ratatui::style::Style::default().fg(Color::LightCyan),
@@ -449,7 +469,11 @@ pub fn render_state(frame: &mut Frame, app: &App) {
             lines.push(Line::from(""));
 
             for (i, (label, desc)) in choices.iter().enumerate() {
-                let marker = if i == app.post_auth_selected { "▶ " } else { "  " };
+                let marker = if i == app.post_auth_selected {
+                    "▶ "
+                } else {
+                    "  "
+                };
                 let style = if i == app.post_auth_selected {
                     ratatui::style::Style::default()
                         .fg(Color::Yellow)
@@ -457,9 +481,15 @@ pub fn render_state(frame: &mut Frame, app: &App) {
                 } else {
                     ratatui::style::Style::default()
                 };
-                lines.push(Line::from(Span::styled(format!("{}  {}", marker, label), style)));
+                lines.push(Line::from(Span::styled(
+                    format!("{}  {}", marker, label),
+                    style,
+                )));
                 let desc_style = ratatui::style::Style::default().fg(Color::DarkGray);
-                lines.push(Line::from(Span::styled(format!("     {}", desc), desc_style)));
+                lines.push(Line::from(Span::styled(
+                    format!("     {}", desc),
+                    desc_style,
+                )));
                 lines.push(Line::from(""));
             }
 
@@ -544,11 +574,7 @@ pub fn render_state(frame: &mut Frame, app: &App) {
                 .split(area);
 
             let mount_info = if let Some(ref mounted) = app.mounted_remote {
-                let remote = app
-                    .remote
-                    .chosen
-                    .as_deref()
-                    .unwrap_or("unknown");
+                let remote = app.remote.chosen.as_deref().unwrap_or("unknown");
                 format!(
                     "Drive Mounted\n\nRemote: {}\nMount point: {:?}\n\nThe cloud drive is mounted and accessible via file explorer.\nPress 'u' to unmount, Backspace to go back, or 'q' to quit.",
                     remote,
@@ -562,7 +588,11 @@ pub fn render_state(frame: &mut Frame, app: &App) {
             };
 
             let body = Paragraph::new(mount_info)
-                .block(Block::default().borders(Borders::ALL).title("Mounted Drive"))
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title("Mounted Drive"),
+                )
                 .wrap(Wrap { trim: true });
             frame.render_widget(body, chunks[0]);
 
@@ -653,12 +683,13 @@ pub fn render_state(frame: &mut Frame, app: &App) {
                     "Up/Down select \u{2022} Enter open/select \u{2022} Ctrl+E export \u{2022} Backspace parent dir \u{2022} Esc back \u{2022} q quit",
                 )
             };
-            let hint_color = if has_error { Color::LightRed } else { Color::LightGreen };
+            let hint_color = if has_error {
+                Color::LightRed
+            } else {
+                Color::LightGreen
+            };
             let footer = Paragraph::new(vec![
-                Line::from(Span::styled(
-                    hint,
-                    Style::default().fg(hint_color),
-                )),
+                Line::from(Span::styled(hint, Style::default().fg(hint_color))),
                 Line::from(controls),
             ])
             .wrap(Wrap { trim: true });
@@ -679,22 +710,14 @@ pub fn render_state(frame: &mut Frame, app: &App) {
                         app.provider.status.clone(),
                     )
                 } else {
-                    (
-                        "unknown".to_string(),
-                        0,
-                        0,
-                        app.provider.status.clone(),
-                    )
+                    ("unknown".to_string(), 0, 0, app.provider.status.clone())
                 };
 
             let screen = ListingScreen::new(remote_name, count, elapsed_secs, status);
             frame.render_widget(&screen, chunks[0]);
 
             let footer = Paragraph::new(vec![
-                Line::from(Span::styled(
-                    "Listing files from remote...",
-                    hint_style(),
-                )),
+                Line::from(Span::styled("Listing files from remote...", hint_style())),
                 Line::from("Esc cancel \u{2022} Ctrl+E export \u{2022} q quit"),
             ])
             .wrap(Wrap { trim: true });

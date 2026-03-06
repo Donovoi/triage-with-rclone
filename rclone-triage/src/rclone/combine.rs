@@ -35,11 +35,7 @@ pub fn create_combine_remote(config: &RcloneConfig, remote_names: &[String]) -> 
     let upstreams = build_upstreams_value(remote_names);
 
     config
-        .set_remote(
-            COMBINE_REMOTE_NAME,
-            "combine",
-            &[("upstreams", &upstreams)],
-        )
+        .set_remote(COMBINE_REMOTE_NAME, "combine", &[("upstreams", &upstreams)])
         .with_context(|| "Failed to write combine remote to rclone config")?;
 
     Ok(COMBINE_REMOTE_NAME.to_string())
@@ -60,7 +56,10 @@ mod tests {
     #[test]
     fn test_build_upstreams_value() {
         let names = vec!["gdrive".to_string(), "onedrive".to_string()];
-        assert_eq!(build_upstreams_value(&names), "gdrive=gdrive: onedrive=onedrive:");
+        assert_eq!(
+            build_upstreams_value(&names),
+            "gdrive=gdrive: onedrive=onedrive:"
+        );
     }
 
     #[test]
@@ -79,10 +78,15 @@ mod tests {
     fn test_create_and_remove_combine_remote() {
         let dir = tempdir().unwrap();
         let config_path = dir.path().join("rclone.conf");
-        std::fs::write(&config_path, "[gdrive]\ntype = drive\n\n[onedrive]\ntype = onedrive\n").unwrap();
+        std::fs::write(
+            &config_path,
+            "[gdrive]\ntype = drive\n\n[onedrive]\ntype = onedrive\n",
+        )
+        .unwrap();
         let config = RcloneConfig::open_existing(&config_path).unwrap();
 
-        let name = create_combine_remote(&config, &["gdrive".to_string(), "onedrive".to_string()]).unwrap();
+        let name = create_combine_remote(&config, &["gdrive".to_string(), "onedrive".to_string()])
+            .unwrap();
         assert_eq!(name, COMBINE_REMOTE_NAME);
 
         let content = std::fs::read_to_string(&config_path).unwrap();

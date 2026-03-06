@@ -796,7 +796,6 @@ impl SessionExtractor {
         }
         Self::extract_email_from_value(value)
     }
-
 }
 
 fn domain_to_like_pattern(domain: &str) -> Option<String> {
@@ -844,8 +843,6 @@ impl Default for SessionExtractor {
         Self::new().expect("Failed to create session extractor")
     }
 }
-
-
 
 /// Get browsers with valid sessions for a provider
 pub fn browsers_with_sessions(provider: CloudProvider) -> Vec<(Browser, BrowserSession)> {

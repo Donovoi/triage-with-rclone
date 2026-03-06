@@ -78,12 +78,7 @@ const KEY_PATTERNS: &[&str] = &[
     r"account[_-]?key",
 ];
 
-const USERPASS_PATTERNS: &[&str] = &[
-    r"username",
-    r"password",
-    r"\bpass\b",
-    r"passphrase",
-];
+const USERPASS_PATTERNS: &[&str] = &[r"username", r"password", r"\bpass\b", r"passphrase"];
 
 pub(crate) fn is_bad_provider(prefix: &str, name: Option<&str>) -> bool {
     let prefix = prefix.trim().to_lowercase();
@@ -245,10 +240,7 @@ pub fn providers_from_rclone_json(json: &str) -> Result<ProviderDiscoveryResult>
 pub fn providers_from_rclone(runner: &RcloneRunner) -> Result<ProviderDiscoveryResult> {
     let output = runner.run(&["config", "providers"])?;
     if !output.success() {
-        bail!(
-            "rclone config providers failed: {}",
-            output.stderr_string()
-        );
+        bail!("rclone config providers failed: {}", output.stderr_string());
     }
 
     let stdout = output.stdout_string();

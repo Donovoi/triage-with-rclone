@@ -97,20 +97,30 @@ pub fn providers_from_rclone_json(json: &str) -> Result<Vec<ProviderSchema>> {
 }
 
 /// Find a provider schema for `prefix` in rclone provider JSON.
-pub fn provider_schema_from_rclone_json(json: &str, prefix: &str) -> Result<Option<ProviderSchema>> {
+pub fn provider_schema_from_rclone_json(
+    json: &str,
+    prefix: &str,
+) -> Result<Option<ProviderSchema>> {
     let wanted = prefix.trim().to_ascii_lowercase();
     if wanted.is_empty() {
         bail!("Provider prefix cannot be empty");
     }
 
     let providers = providers_from_rclone_json(json)?;
-    Ok(providers
-        .into_iter()
-        .find(|p| p.prefix.as_deref().unwrap_or("").trim().eq_ignore_ascii_case(&wanted)))
+    Ok(providers.into_iter().find(|p| {
+        p.prefix
+            .as_deref()
+            .unwrap_or("")
+            .trim()
+            .eq_ignore_ascii_case(&wanted)
+    }))
 }
 
 /// Ask rclone for provider schemas and return the schema for `prefix`, if any.
-pub fn provider_schema_from_rclone(runner: &RcloneRunner, prefix: &str) -> Result<Option<ProviderSchema>> {
+pub fn provider_schema_from_rclone(
+    runner: &RcloneRunner,
+    prefix: &str,
+) -> Result<Option<ProviderSchema>> {
     let output = runner.run(&["config", "providers"])?;
     if !output.success() {
         bail!("rclone config providers failed: {}", output.stderr_string());
@@ -167,11 +177,13 @@ mod tests {
         assert_eq!(url.default_string(), None);
         let examples = url.examples_as_strings();
         assert_eq!(examples.len(), 1);
-        assert_eq!(examples[0].0, "https://example.com/remote.php/dav/files/user/");
+        assert_eq!(
+            examples[0].0,
+            "https://example.com/remote.php/dav/files/user/"
+        );
 
         let pass = schema.options.iter().find(|o| o.name == "pass").unwrap();
         assert!(!pass.required);
         assert!(pass.is_password);
     }
 }
-

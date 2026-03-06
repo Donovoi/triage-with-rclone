@@ -60,8 +60,8 @@ fn sanitize_component(raw: &str) -> (String, bool) {
     let mut out = String::with_capacity(raw.len());
 
     for c in raw.chars() {
-        let invalid = matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*')
-            || c.is_control();
+        let invalid =
+            matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*') || c.is_control();
         if invalid {
             out.push('_');
             changed = true;
@@ -224,4 +224,3 @@ mod tests {
         assert!(!mapped.path.to_string_lossy().ends_with("/CON.txt"));
     }
 }
-
