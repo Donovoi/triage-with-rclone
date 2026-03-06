@@ -6,8 +6,8 @@ use crate::forensics::{
     generate_password, get_forensic_access_point_status, render_wifi_qr,
     start_forensic_access_point_with_status, stop_forensic_access_point,
 };
-use crate::providers::browser::BrowserAuthSession;
 use crate::providers::auth::user_identifier_from_config;
+use crate::providers::browser::BrowserAuthSession;
 use crate::providers::config::ProviderConfig;
 use crate::providers::mobile::{
     device_code_config, poll_device_code_for_token, render_qr_code, request_device_code,
@@ -232,10 +232,7 @@ fn should_auto_fallback_to_onedrive_device_code(
 
 fn browser_device_code_fallback_remote_name(task: &AuthBatchTask) -> Option<String> {
     let browser = task.browser.as_ref()?;
-    Some(
-        BrowserAuthSession::new(browser.clone(), task.provider.short_name())
-            .remote_name(None),
-    )
+    Some(BrowserAuthSession::new(browser.clone(), task.provider.short_name()).remote_name(None))
 }
 
 fn maybe_fallback_to_onedrive_device_code<B: ratatui::backend::Backend>(
@@ -930,9 +927,9 @@ pub(crate) fn perform_auth_flow<B: ratatui::backend::Backend>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use anyhow::Context;
     use crate::providers::browser::{Browser, BrowserType};
     use crate::providers::{CloudProvider, ProviderEntry};
+    use anyhow::Context;
 
     #[test]
     fn test_should_auto_fallback_to_onedrive_device_code_for_oauth_timeout() {

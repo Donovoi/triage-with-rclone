@@ -2,20 +2,20 @@
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Widget};
 
+use crate::ui::theme;
+
 /// Bright green style for dynamic/working status messages.
 fn status_style() -> Style {
-    Style::default()
-        .fg(Color::LightGreen)
-        .add_modifier(Modifier::BOLD)
+    theme::hint_style()
 }
 
 /// Default style for static instruction text.
 fn static_style() -> Style {
-    Style::default().add_modifier(Modifier::BOLD)
+    theme::strong_style()
 }
 
 pub struct AuthScreen {
@@ -71,7 +71,7 @@ impl Widget for &AuthScreen {
             )));
         }
 
-        let paragraph = Paragraph::new(lines);
+        let paragraph = Paragraph::new(lines).block(theme::panel_block("Authentication"));
         paragraph.render(area, buf);
     }
 }

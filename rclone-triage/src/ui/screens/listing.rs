@@ -2,9 +2,10 @@
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Gauge, Paragraph, Widget, Wrap};
+use ratatui::widgets::{Gauge, Paragraph, Widget, Wrap};
+
+use crate::ui::theme;
 
 pub struct ListingScreen {
     pub remote_name: String,
@@ -37,21 +38,16 @@ impl Widget for &ListingScreen {
 
         // Title with remote name
         let title_text = format!("Listing files from: {}", self.remote_name);
-        let title = Paragraph::new(Line::from(Span::styled(
-            title_text,
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-        )))
-        .block(Block::default().borders(Borders::ALL).title("File Listing"));
+        let title = Paragraph::new(Line::from(Span::styled(title_text, theme::strong_style())))
+            .block(theme::panel_block("File Listing"));
         title.render(chunks[0], buf);
 
         // Progress gauge (indeterminate — just show count)
         let elapsed = format_elapsed(self.elapsed_secs);
         let label = format!("{} files found  ({})", self.count, elapsed);
         let gauge = Gauge::default()
-            .block(Block::default().borders(Borders::ALL).title("Progress"))
-            .gauge_style(Style::default().fg(Color::LightCyan).bg(Color::DarkGray))
+            .block(theme::panel_block("Progress"))
+            .gauge_style(theme::progress_style())
             .label(label)
             .ratio(pulse_ratio(self.elapsed_secs));
         gauge.render(chunks[1], buf);
@@ -61,22 +57,22 @@ impl Widget for &ListingScreen {
         if !self.status.is_empty() {
             lines.push(Line::from(Span::styled(
                 &*self.status,
-                Style::default().fg(Color::LightYellow),
+                theme::warning_style(),
             )));
             lines.push(Line::from(""));
         }
         lines.push(Line::from(Span::styled(
             "rclone is scanning the remote recursively...",
-            Style::default().fg(Color::Gray),
+            theme::muted_style(),
         )));
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             "Press Esc to cancel and return to config browser.",
-            Style::default().fg(Color::LightGreen),
+            theme::hint_style(),
         )));
 
         let body = Paragraph::new(lines)
-            .block(Block::default().borders(Borders::ALL).title("Status"))
+            .block(theme::panel_block("Status"))
             .wrap(Wrap { trim: true });
         body.render(chunks[2], buf);
     }

@@ -2,13 +2,11 @@
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{
-    Block, Borders, List, ListItem, ListState, Paragraph, StatefulWidget, Widget, Wrap,
-};
+use ratatui::widgets::{List, ListItem, ListState, Paragraph, StatefulWidget, Widget, Wrap};
 
-use crate::ui::ConfigBrowserEntry;
+use crate::ui::{theme, ConfigBrowserEntry};
 
 pub struct ConfigBrowserScreen {
     pub current_dir: String,
@@ -57,13 +55,13 @@ impl Widget for &ConfigBrowserScreen {
             .map(|entry| {
                 let is_nav = entry.name == "." || entry.name == "..";
                 let (prefix, style) = if is_nav {
-                    ("[NAV]  ", Style::default().fg(Color::Yellow))
+                    ("[NAV]  ", theme::warning_style())
                 } else if entry.is_dir {
-                    ("[DIR]  ", Style::default().fg(Color::LightBlue))
+                    ("[DIR]  ", theme::info_style())
                 } else if entry.name.ends_with(".conf") || entry.name.ends_with(".cfg") {
-                    ("[FILE] ", Style::default().fg(Color::LightGreen))
+                    ("[CONF] ", theme::success_style())
                 } else {
-                    ("[FILE] ", Style::default())
+                    ("[FILE] ", theme::strong_style())
                 };
                 let label = if entry.name == "." {
                     ".  (current directory)".to_string()
@@ -83,21 +81,17 @@ impl Widget for &ConfigBrowserScreen {
                 ListItem::new(Line::from(vec![
                     Span::styled(prefix, style),
                     Span::styled(label, style),
-                    Span::styled(size_str, Style::default().fg(Color::DarkGray)),
+                    Span::styled(size_str, theme::muted_style()),
                 ]))
             })
             .collect();
 
-        let title = format!("Browse: {}", self.current_dir);
+        let title = format!("Browse // {}", self.current_dir);
         let list = List::new(list_items)
-            .block(Block::default().title(title).borders(Borders::ALL))
-            .highlight_style(
-                Style::default()
-                    .fg(Color::White)
-                    .bg(Color::DarkGray)
-                    .add_modifier(Modifier::BOLD),
-            )
-            .highlight_symbol("▶ ");
+            .block(theme::panel_block(title))
+            .style(theme::list_style())
+            .highlight_style(theme::list_highlight_style())
+            .highlight_symbol(theme::list_highlight_symbol(0));
 
         let mut state = ListState::default();
         if !self.entries.is_empty() {
@@ -113,13 +107,11 @@ impl Widget for &ConfigBrowserScreen {
 
             if let Some(ref error) = self.error {
                 // Prominent error display with next steps
-                let error_style = Style::default()
-                    .fg(Color::LightRed)
-                    .add_modifier(Modifier::BOLD);
-                let hint_style = Style::default().fg(Color::Yellow);
+                let error_style = theme::error_style();
+                let hint_style = theme::warning_style();
 
                 lines.push(Line::from(Span::styled(
-                    "!! Listing Failed !!",
+                    "!! Remote listing failed !!",
                     error_style,
                 )));
                 lines.push(Line::from(""));
@@ -129,7 +121,7 @@ impl Widget for &ConfigBrowserScreen {
                     let s = String::from_utf8_lossy(chunk);
                     lines.push(Line::from(Span::styled(
                         s.to_string(),
-                        Style::default().fg(Color::LightRed),
+                        theme::error_style(),
                     )));
                 }
                 lines.push(Line::from(""));
@@ -139,7 +131,7 @@ impl Widget for &ConfigBrowserScreen {
                 lines.push(Line::from(Span::styled("What happened:", hint_style)));
                 lines.push(Line::from(Span::styled(
                     advice.explanation,
-                    Style::default().fg(Color::White),
+                    Style::default().fg(theme::text_primary()),
                 )));
                 lines.push(Line::from(""));
 
@@ -147,7 +139,7 @@ impl Widget for &ConfigBrowserScreen {
                 for step in &advice.next_steps {
                     lines.push(Line::from(Span::styled(
                         format!("  {}", step),
-                        Style::default().fg(Color::White),
+                        Style::default().fg(theme::text_primary()),
                     )));
                 }
                 lines.push(Line::from(""));
@@ -155,7 +147,7 @@ impl Widget for &ConfigBrowserScreen {
             } else {
                 lines.push(Line::from(Span::styled(
                     "Config File Browser",
-                    Style::default().add_modifier(Modifier::BOLD),
+                    theme::panel_title_style(),
                 )));
                 lines.push(Line::from(""));
 
@@ -179,7 +171,7 @@ impl Widget for &ConfigBrowserScreen {
                     for line in &self.preview {
                         lines.push(Line::from(Span::styled(
                             line.as_str(),
-                            Style::default().fg(Color::LightGreen),
+                            theme::success_style(),
                         )));
                     }
                     lines.push(Line::from(""));
@@ -198,7 +190,7 @@ impl Widget for &ConfigBrowserScreen {
                 "Details"
             };
             let panel = Paragraph::new(lines)
-                .block(Block::default().title(title).borders(Borders::ALL))
+                .block(theme::panel_block(title))
                 .wrap(Wrap { trim: true });
             panel.render(content_chunks[1], buf);
         }

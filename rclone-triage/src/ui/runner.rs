@@ -671,6 +671,7 @@ pub fn run_loop(app: &mut App) -> Result<()> {
 
     loop {
         if needs_redraw {
+            app.advance_animation();
             terminal.draw(|f| {
                 render_state(f, app);
             })?;
@@ -1366,7 +1367,12 @@ pub fn run_loop(app: &mut App) -> Result<()> {
             // No event received — redraw periodically for states with dynamic content
             if matches!(
                 app.state,
-                crate::ui::AppState::Authenticating | crate::ui::AppState::Downloading
+                crate::ui::AppState::MainMenu
+                    | crate::ui::AppState::AdditionalOptions
+                    | crate::ui::AppState::OneDriveMenu
+                    | crate::ui::AppState::MobileAuthFlow
+                    | crate::ui::AppState::Authenticating
+                    | crate::ui::AppState::Downloading
             ) {
                 needs_redraw = true;
             }

@@ -2,8 +2,10 @@
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, StatefulWidget, Widget};
+
+use crate::ui::theme;
 
 /// Simple list widget
 #[derive(Debug, Clone)]
@@ -34,17 +36,16 @@ impl Widget for &SimpleList {
         let list = List::new(list_items)
             .block(
                 Block::default()
-                    .title(self.title.as_str())
-                    .borders(Borders::ALL),
+                    .title(Line::from(Span::styled(
+                        self.title.clone(),
+                        theme::panel_title_style(),
+                    )))
+                    .borders(Borders::ALL)
+                    .border_style(theme::panel_border_style()),
             )
-            .style(Style::default().fg(Color::Black).bg(Color::Gray))
-            .highlight_style(
-                Style::default()
-                    .fg(Color::White)
-                    .bg(Color::DarkGray)
-                    .add_modifier(Modifier::BOLD),
-            )
-            .highlight_symbol("▶ ");
+            .style(theme::list_style())
+            .highlight_style(theme::list_highlight_style())
+            .highlight_symbol(theme::list_highlight_symbol(0));
 
         let mut state = ListState::default();
         if !self.items.is_empty() {

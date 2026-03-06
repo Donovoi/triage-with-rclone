@@ -25,6 +25,7 @@ pub mod prompt;
 pub mod render;
 pub mod runner;
 pub mod screens;
+pub mod theme;
 pub mod widgets;
 
 /// Application states for the TUI flow
@@ -583,6 +584,8 @@ pub struct App {
     pub mobile_auth_flow: Option<MobileAuthFlow>,
     /// Menu status message (shown in footer)
     pub menu_status: String,
+    /// Monotonic frame counter for subtle TUI animation.
+    pub animation_frame: u64,
     pub exit_requested: bool,
     /// Auth status message
     pub auth_status: String,
@@ -651,6 +654,7 @@ impl App {
             mobile_flow_selected: 0,
             mobile_auth_flow: None,
             menu_status: String::new(),
+            animation_frame: 0,
             exit_requested: false,
             auth_status: String::new(),
             sso_status: None,
@@ -1070,6 +1074,11 @@ impl App {
     /// Move to the next state in the flow
     pub fn advance(&mut self) {
         self.state = self.state.next();
+    }
+
+    /// Advance the shared animation frame counter.
+    pub fn advance_animation(&mut self) {
+        self.animation_frame = self.animation_frame.wrapping_add(1);
     }
 
     /// Move to the previous state in the flow

@@ -1,15 +1,10 @@
 //! Screen rendering based on application state
 
-use ratatui::layout::{Constraint, Direction, Layout};
-use ratatui::style::{Color, Style};
+use ratatui::layout::{Alignment, Constraint, Direction, Layout};
+use ratatui::style::Color;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::widgets::{Paragraph, Wrap};
 use ratatui::Frame;
-
-/// Style for dynamic/working/thinking hints.
-fn hint_style() -> Style {
-    Style::default().fg(Color::LightGreen)
-}
 
 use crate::ui::screens::{
     auth::AuthScreen, browser_select::BrowserSelectScreen, config_browser::ConfigBrowserScreen,
@@ -17,7 +12,97 @@ use crate::ui::screens::{
     main_menu::MainMenuScreen, provider_select::ProviderSelectScreen,
     remote_select::RemoteSelectScreen, report::ReportScreen,
 };
-use crate::ui::{App, AppState};
+use crate::ui::theme;
+use crate::ui::{App, AppState, MenuAction, MenuItem};
+
+fn main_menu_banner_lines(frame: u64) -> Vec<Line<'static>> {
+    vec![
+        Line::from(Span::styled(
+            ".------------------------------------------------------------.",
+            theme::panel_border_style(),
+        )),
+        Line::from(vec![
+            Span::styled("| ", theme::panel_border_style()),
+            Span::styled("rclone-triage", theme::panel_title_style()),
+            Span::styled(" // ", theme::muted_style()),
+            Span::styled("forensic cloud ops deck", theme::strong_style()),
+            Span::styled(" ", theme::muted_style()),
+            Span::styled(theme::banner_activity(frame), theme::success_style()),
+            Span::styled(" |", theme::panel_border_style()),
+        ]),
+        Line::from(vec![
+            Span::styled("| ", theme::panel_border_style()),
+            Span::styled("auth", theme::info_style()),
+            Span::styled(" • ", theme::muted_style()),
+            Span::styled("enumerate", theme::warning_style()),
+            Span::styled(" • ", theme::muted_style()),
+            Span::styled("xfer", theme::success_style()),
+            Span::styled(" • ", theme::muted_style()),
+            Span::styled("mount", theme::menu_badge_style("MOUNT")),
+            Span::styled(" • ", theme::muted_style()),
+            Span::styled("toolbox", theme::menu_badge_style("TOOLS")),
+            Span::styled(" |", theme::panel_border_style()),
+        ]),
+        Line::from(Span::styled(
+            "'------------------------------------------------------------'",
+            theme::panel_border_style(),
+        )),
+    ]
+}
+
+fn main_menu_display_label(item: &MenuItem) -> String {
+    match item.action {
+        MenuAction::Authenticate => "[AUTH] Browser auth on suspect device".to_string(),
+        MenuAction::RetrieveList => "[LIST] Load authenticated config".to_string(),
+        MenuAction::DownloadFromCsv => "[XFER] Download from CSV/XLSX".to_string(),
+        MenuAction::MountProvider => "[MOUNT] Mount remote as network share".to_string(),
+        MenuAction::SmartAuth => "[SSO] Silent / smart authentication".to_string(),
+        MenuAction::MobileAuth => "[MOB] Mobile-device authentication".to_string(),
+        MenuAction::AdditionalOptions => "[TOOLS] Additional options".to_string(),
+        MenuAction::Exit => "[EXIT] Exit application".to_string(),
+        _ => item.label.to_string(),
+    }
+}
+
+fn main_menu_footer_lines(app: &App) -> Vec<Line<'static>> {
+    let description = app
+        .menu_selected_item()
+        .map(|item| item.description)
+        .unwrap_or("Select an option to continue.");
+
+    let mut lines = vec![Line::from(vec![
+        Span::styled("Selected ", theme::warning_style()),
+        Span::styled(description.to_string(), theme::strong_style()),
+    ])];
+
+    if !app.menu_status.is_empty() {
+        lines.push(Line::from(vec![
+            Span::styled(
+                theme::footer_spinner(app.animation_frame),
+                theme::success_style(),
+            ),
+            Span::raw(" "),
+            Span::styled(app.menu_status.clone(), theme::info_style()),
+        ]));
+    }
+
+    lines.push(Line::from(vec![
+        Span::styled("Ops ", theme::panel_title_style()),
+        Span::styled(
+            "auth • list • xfer • mount • sso • mobile • tools",
+            theme::muted_style(),
+        ),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled("Keys ", theme::warning_style()),
+        Span::styled(
+            "↑/↓ move • Enter launch • Backspace back • Ctrl+E export • q quit",
+            theme::muted_style(),
+        ),
+    ]));
+
+    lines
+}
 
 /// Render the current state into the frame
 pub fn render_state(frame: &mut Frame, app: &App) {
@@ -26,38 +111,30 @@ pub fn render_state(frame: &mut Frame, app: &App) {
         AppState::MainMenu => {
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
-                .constraints([Constraint::Min(3), Constraint::Length(4)])
+                .constraints([
+                    Constraint::Length(4),
+                    Constraint::Min(3),
+                    Constraint::Length(5),
+                ])
                 .split(area);
+
+            let banner = Paragraph::new(main_menu_banner_lines(app.animation_frame))
+                .alignment(Alignment::Center);
+            frame.render_widget(banner, chunks[0]);
+
             let labels = app
                 .menu_items
                 .iter()
-                .map(|item| item.label.to_string())
+                .map(main_menu_display_label)
                 .collect::<Vec<_>>();
             let mut screen = MainMenuScreen::new(labels);
             screen.list.selected = app.menu_selected;
-            frame.render_widget(&screen, chunks[0]);
+            screen.list.title = "rclone-triage // mission menu".to_string();
+            screen.list.animation_frame = app.animation_frame;
+            frame.render_widget(&screen, chunks[1]);
 
-            let description = app
-                .menu_selected_item()
-                .map(|item| item.description)
-                .unwrap_or("Select an option to continue.");
-            let status = if app.menu_status.is_empty() {
-                None
-            } else {
-                Some(app.menu_status.clone())
-            };
-            let actions = "Actions: Authenticate • Retrieve list • Download CSV/XLSX • Mount • Silent/Smart Auth • Mobile Auth • Additional Options • Exit".to_string();
-            let controls =
-                "Up/Down select • Enter choose • Backspace back • Ctrl+E export screen • q quit"
-                    .to_string();
-            let mut footer_lines = vec![Line::from(description)];
-            if let Some(status) = status {
-                footer_lines.push(Line::from(status));
-            }
-            footer_lines.push(Line::from(actions));
-            footer_lines.push(Line::from(controls));
-            let footer = Paragraph::new(footer_lines).wrap(Wrap { trim: true });
-            frame.render_widget(footer, chunks[1]);
+            let footer = Paragraph::new(main_menu_footer_lines(app)).wrap(Wrap { trim: true });
+            frame.render_widget(footer, chunks[2]);
         }
         AppState::AdditionalOptions => {
             let chunks = Layout::default()
@@ -71,6 +148,8 @@ pub fn render_state(frame: &mut Frame, app: &App) {
                 .collect::<Vec<_>>();
             let mut screen = MainMenuScreen::new(labels);
             screen.list.selected = app.additional_menu_selected;
+            screen.list.title = "toolbox // extra ops".to_string();
+            screen.list.animation_frame = app.animation_frame;
             frame.render_widget(&screen, chunks[0]);
 
             let description = app
@@ -105,6 +184,8 @@ pub fn render_state(frame: &mut Frame, app: &App) {
                 .collect::<Vec<_>>();
             let mut screen = MainMenuScreen::new(labels);
             screen.list.selected = app.onedrive_menu_selected;
+            screen.list.title = "onedrive // utilities".to_string();
+            screen.list.animation_frame = app.animation_frame;
             frame.render_widget(&screen, chunks[0]);
 
             let description = app
@@ -208,7 +289,7 @@ pub fn render_state(frame: &mut Frame, app: &App) {
                     "Next: Enter confirms selection → browser/auth flow.",
                 ));
                 let help = Paragraph::new(help_lines)
-                    .block(Block::default().title("Status").borders(Borders::ALL))
+                    .block(theme::panel_block("Status"))
                     .wrap(Wrap { trim: true });
                 frame.render_widget(help, content_chunks[1]);
             }
@@ -243,11 +324,7 @@ pub fn render_state(frame: &mut Frame, app: &App) {
                     Line::from("Press ? or Esc to close."),
                 ];
                 let help = Paragraph::new(help_lines)
-                    .block(
-                        Block::default()
-                            .title("Provider Help")
-                            .borders(Borders::ALL),
-                    )
+                    .block(theme::panel_block("Provider Help"))
                     .wrap(Wrap { trim: true });
                 frame.render_widget(help, overlay);
             }
@@ -298,6 +375,8 @@ pub fn render_state(frame: &mut Frame, app: &App) {
                 .collect::<Vec<_>>();
             let mut screen = MainMenuScreen::new(labels);
             screen.list.selected = app.mobile_flow_selected;
+            screen.list.title = "mobile auth // field kit".to_string();
+            screen.list.animation_frame = app.animation_frame;
             frame.render_widget(&screen, chunks[0]);
 
             let description = app
@@ -384,7 +463,7 @@ pub fn render_state(frame: &mut Frame, app: &App) {
             } else {
                 "What happens now: complete auth in the browser, then return here to continue."
             };
-            let footer = Paragraph::new(vec![Line::from(Span::styled(hint, hint_style()))])
+            let footer = Paragraph::new(vec![Line::from(Span::styled(hint, theme::hint_style()))])
                 .wrap(Wrap { trim: true });
             frame.render_widget(footer, chunks[1]);
         }
@@ -498,7 +577,7 @@ pub fn render_state(frame: &mut Frame, app: &App) {
             frame.render_widget(paragraph, chunks[0]);
 
             let hint = "↑/↓ Navigate   Enter: Confirm   Ctrl+E: Export   Backspace: Back";
-            let footer = Paragraph::new(vec![Line::from(Span::styled(hint, hint_style()))])
+            let footer = Paragraph::new(vec![Line::from(Span::styled(hint, theme::hint_style()))])
                 .wrap(Wrap { trim: true });
             frame.render_widget(footer, chunks[1]);
         }
@@ -561,7 +640,7 @@ pub fn render_state(frame: &mut Frame, app: &App) {
                 ),
             };
             let footer = Paragraph::new(vec![
-                Line::from(Span::styled(&*hint, hint_style())),
+                Line::from(Span::styled(&*hint, theme::hint_style())),
                 Line::from(controls),
             ])
             .wrap(Wrap { trim: true });
@@ -588,16 +667,12 @@ pub fn render_state(frame: &mut Frame, app: &App) {
             };
 
             let body = Paragraph::new(mount_info)
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .title("Mounted Drive"),
-                )
+                .block(theme::panel_block("Mounted Drive"))
                 .wrap(Wrap { trim: true });
             frame.render_widget(body, chunks[0]);
 
             let hint = "u unmount • Ctrl+E export • Backspace back • q quit";
-            let footer = Paragraph::new(vec![Line::from(Span::styled(hint, hint_style()))])
+            let footer = Paragraph::new(vec![Line::from(Span::styled(hint, theme::hint_style()))])
                 .wrap(Wrap { trim: true });
             frame.render_widget(footer, chunks[1]);
         }
@@ -634,7 +709,7 @@ pub fn render_state(frame: &mut Frame, app: &App) {
 
             let hint =
                 "What happens now: downloads run sequentially; progress and logs update below.";
-            let footer = Paragraph::new(vec![Line::from(Span::styled(hint, hint_style()))])
+            let footer = Paragraph::new(vec![Line::from(Span::styled(hint, theme::hint_style()))])
                 .wrap(Wrap { trim: true });
             frame.render_widget(footer, chunks[1]);
         }
@@ -683,13 +758,13 @@ pub fn render_state(frame: &mut Frame, app: &App) {
                     "Up/Down select \u{2022} Enter open/select \u{2022} Ctrl+E export \u{2022} Backspace parent dir \u{2022} Esc back \u{2022} q quit",
                 )
             };
-            let hint_color = if has_error {
-                Color::LightRed
+            let hint_style = if has_error {
+                theme::error_style()
             } else {
-                Color::LightGreen
+                theme::hint_style()
             };
             let footer = Paragraph::new(vec![
-                Line::from(Span::styled(hint, Style::default().fg(hint_color))),
+                Line::from(Span::styled(hint, hint_style)),
                 Line::from(controls),
             ])
             .wrap(Wrap { trim: true });
@@ -717,7 +792,10 @@ pub fn render_state(frame: &mut Frame, app: &App) {
             frame.render_widget(&screen, chunks[0]);
 
             let footer = Paragraph::new(vec![
-                Line::from(Span::styled("Listing files from remote...", hint_style())),
+                Line::from(Span::styled(
+                    "Listing files from remote...",
+                    theme::hint_style(),
+                )),
                 Line::from("Esc cancel \u{2022} Ctrl+E export \u{2022} q quit"),
             ])
             .wrap(Wrap { trim: true });
