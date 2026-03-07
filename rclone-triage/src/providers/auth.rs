@@ -15,6 +15,7 @@ use super::{config::ProviderConfig, CloudProvider};
 use crate::rclone::{authorize_fallback, OAuthFlow, RcloneConfig, RcloneRunner};
 use crate::utils::network::get_local_ip_address;
 use anyhow::{bail, Context, Result};
+use serde::Deserialize;
 use std::time::Duration;
 
 const INTERACTIVE_AUTH_TIMEOUT: Duration = Duration::from_secs(300);
@@ -176,6 +177,169 @@ fn resolve_fallback_credentials(
     (client_id, client_secret)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct OneDriveDriveSelection {
+    drive_id: String,
+    drive_type: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct OneDriveDriveResponse {
+    id: String,
+    #[serde(rename = "driveType")]
+    drive_type: String,
+}
+
+fn parse_onedrive_drive_selection_response(body: &str) -> Result<OneDriveDriveSelection> {
+    let response: OneDriveDriveResponse =
+        serde_json::from_str(body).context("Failed to parse OneDrive drive discovery response")?;
+
+    if response.id.trim().is_empty() {
+        bail!("OneDrive drive discovery response did not include a drive id");
+    }
+    if response.drive_type.trim().is_empty() {
+        bail!("OneDrive drive discovery response did not include a drive type");
+    }
+
+    Ok(OneDriveDriveSelection {
+        drive_id: response.id,
+        drive_type: response.drive_type,
+    })
+}
+
+fn resolve_onedrive_drive_selection(access_token: &str) -> Result<OneDriveDriveSelection> {
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(Duration::from_secs(5))
+        .timeout_read(Duration::from_secs(15))
+        .timeout_write(Duration::from_secs(15))
+        .build();
+
+    let response = match agent
+        .get("https://graph.microsoft.com/v1.0/me/drive")
+        .set("Authorization", &format!("Bearer {}", access_token))
+        .set("Accept", "application/json")
+        .call()
+    {
+        Ok(response) => response,
+        Err(ureq::Error::Status(code, response)) => {
+            let body = response.into_string().unwrap_or_default();
+            bail!("OneDrive drive discovery failed (HTTP {}): {}", code, body);
+        }
+        Err(error) => return Err(error.into()),
+    };
+
+    let body = response
+        .into_string()
+        .context("Failed to read OneDrive drive discovery response")?;
+    parse_onedrive_drive_selection_response(&body)
+}
+
+fn persist_remote_option_updates(
+    config: &RcloneConfig,
+    remote_name: &str,
+    updates: Vec<(String, String)>,
+) -> Result<()> {
+    let parsed = config.parse()?;
+    let remote = parsed
+        .get_remote(remote_name)
+        .ok_or_else(|| anyhow::anyhow!("Remote {} not found", remote_name))?;
+
+    let mut options: Vec<(String, String)> = remote.options.clone().into_iter().collect();
+    if let Some(ref token) = remote.token {
+        let token_json = serde_json::to_string(token)?;
+        options.push(("token".to_string(), token_json));
+    }
+
+    for (key, value) in updates {
+        if let Some(existing) = options.iter_mut().find(|(existing_key, _)| *existing_key == key) {
+            existing.1 = value;
+        } else {
+            options.push((key, value));
+        }
+    }
+
+    let options_ref: Vec<(&str, &str)> = options
+        .iter()
+        .map(|(key, value)| (key.as_str(), value.as_str()))
+        .collect();
+
+    config.set_remote(remote_name, &remote.remote_type, &options_ref)
+}
+
+fn complete_onedrive_remote_setup_with_resolver<F>(
+    config: &RcloneConfig,
+    remote_name: &str,
+    resolve_drive: F,
+) -> Result<()>
+where
+    F: FnOnce(&str) -> Result<OneDriveDriveSelection>,
+{
+    let parsed = config.parse()?;
+    let remote = parsed
+        .get_remote(remote_name)
+        .ok_or_else(|| anyhow::anyhow!("Remote {} not found", remote_name))?;
+
+    if remote.remote_type != CloudProvider::OneDrive.rclone_type() {
+        return Ok(());
+    }
+
+    let has_drive_id = remote
+        .options
+        .get("drive_id")
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false);
+    let has_drive_type = remote
+        .options
+        .get("drive_type")
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false);
+    if has_drive_id && has_drive_type {
+        return Ok(());
+    }
+
+    let access_token = remote
+        .token
+        .as_ref()
+        .and_then(|token| token.access_token.as_deref())
+        .filter(|token| !token.trim().is_empty())
+        .ok_or_else(|| anyhow::anyhow!("OneDrive remote {} is missing an access token", remote_name))?;
+
+    let selection = resolve_drive(access_token)
+        .with_context(|| format!("Failed to resolve OneDrive drive details for {}", remote_name))?;
+
+    persist_remote_option_updates(
+        config,
+        remote_name,
+        vec![
+            ("drive_id".to_string(), selection.drive_id),
+            ("drive_type".to_string(), selection.drive_type),
+        ],
+    )?;
+
+    tracing::info!(remote = %remote_name, "Completed OneDrive remote setup");
+    Ok(())
+}
+
+fn complete_onedrive_remote_setup(config: &RcloneConfig, remote_name: &str) -> Result<()> {
+    complete_onedrive_remote_setup_with_resolver(
+        config,
+        remote_name,
+        resolve_onedrive_drive_selection,
+    )
+}
+
+pub(crate) fn complete_provider_remote_setup(
+    provider: CloudProvider,
+    config: &RcloneConfig,
+    remote_name: &str,
+) -> Result<()> {
+    if provider == CloudProvider::OneDrive {
+        complete_onedrive_remote_setup(config, remote_name)?;
+    }
+
+    Ok(())
+}
+
 fn authenticate_with_authorize_fallback(
     provider: CloudProvider,
     rclone: &RcloneRunner,
@@ -248,6 +412,8 @@ fn authenticate_with_authorize_fallback(
         bail!("Remote {} was not created", remote_name);
     }
 
+    complete_provider_remote_setup(provider, config, remote_name)?;
+
     let user_identifier = user_identifier_from_config(provider, config, remote_name);
 
     Ok(AuthResult {
@@ -307,6 +473,8 @@ pub fn authenticate_with_rclone(
     if !config.has_remote(remote_name)? {
         bail!("Remote {} was not created", remote_name);
     }
+
+    complete_provider_remote_setup(provider, config, remote_name)?;
 
     // Try to get user info from config
     let user_identifier = user_identifier_from_config(provider, config, remote_name);
@@ -455,6 +623,8 @@ where
         bail!("Remote {} was not created", remote_name);
     }
 
+    complete_provider_remote_setup(provider, config, remote_name)?;
+
     let user_identifier = user_identifier_from_config(provider, config, remote_name);
 
     status(vec![format!("Remote '{}' configured.", remote_name)])?;
@@ -552,6 +722,8 @@ pub fn authenticate_with_device_code(
     if !config.has_remote(remote_name)? {
         bail!("Remote {} was not created", remote_name);
     }
+
+    complete_provider_remote_setup(provider, config, remote_name)?;
 
     let user_identifier = user_identifier_from_config(provider, config, remote_name);
 
@@ -677,6 +849,8 @@ pub fn authenticate_with_browser(
         bail!("Remote {} was not created", temp_remote_name);
     }
 
+    complete_provider_remote_setup(provider, config, &temp_remote_name)?;
+
     let user_identifier = user_identifier_from_config(provider, config, &temp_remote_name);
 
     let final_remote_name = if let Some(ref username) = user_identifier {
@@ -797,6 +971,8 @@ pub fn authenticate_with_system_browser(
     if !config.has_remote(remote_name)? {
         bail!("Remote {} was not created", remote_name);
     }
+
+    complete_provider_remote_setup(provider, config, remote_name)?;
 
     let user_identifier = user_identifier_from_config(provider, config, remote_name);
 
@@ -1057,6 +1233,8 @@ pub fn authenticate_with_sso(
         bail!("Remote {} was not created", remote_name);
     }
 
+    complete_provider_remote_setup(provider, config, &remote_name)?;
+
     // Get user info from config token if supported, otherwise fall back to hint.
     let user_identifier = user_identifier_from_config(provider, config, &remote_name)
         .or_else(|| session.user_hint.clone());
@@ -1233,5 +1411,71 @@ mod tests {
         let (host, port) = parse_redirect_host_port("https://localhost:8888/callback").unwrap();
         assert_eq!(host, "localhost");
         assert_eq!(port, 8888);
+    }
+
+    #[test]
+    fn test_parse_onedrive_drive_selection_response() {
+        let selection = parse_onedrive_drive_selection_response(
+            r#"{"id":"drive-123","driveType":"business"}"#,
+        )
+        .unwrap();
+
+        assert_eq!(selection.drive_id, "drive-123");
+        assert_eq!(selection.drive_type, "business");
+    }
+
+    #[test]
+    fn test_complete_onedrive_remote_setup_persists_drive_details() {
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let config = RcloneConfig::new(dir.path().join("rclone.conf")).unwrap();
+        config
+            .set_remote(
+                "onedrive-test",
+                CloudProvider::OneDrive.rclone_type(),
+                &[(
+                    "token",
+                    r#"{"access_token":"token-123","refresh_token":"refresh-456","token_type":"Bearer"}"#,
+                )],
+            )
+            .unwrap();
+
+        complete_onedrive_remote_setup_with_resolver(&config, "onedrive-test", |_token| {
+            Ok(OneDriveDriveSelection {
+                drive_id: "drive-123".to_string(),
+                drive_type: "business".to_string(),
+            })
+        })
+        .unwrap();
+
+        let parsed = config.parse().unwrap();
+        let remote = parsed.get_remote("onedrive-test").unwrap();
+        assert_eq!(remote.options.get("drive_id").map(String::as_str), Some("drive-123"));
+        assert_eq!(remote.options.get("drive_type").map(String::as_str), Some("business"));
+    }
+
+    #[test]
+    fn test_complete_onedrive_remote_setup_skips_resolver_when_drive_already_present() {
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let config = RcloneConfig::new(dir.path().join("rclone.conf")).unwrap();
+        config
+            .set_remote(
+                "onedrive-test",
+                CloudProvider::OneDrive.rclone_type(),
+                &[
+                    ("token", r#"{"access_token":"token-123","token_type":"Bearer"}"#),
+                    ("drive_id", "drive-123"),
+                    ("drive_type", "personal"),
+                ],
+            )
+            .unwrap();
+
+        complete_onedrive_remote_setup_with_resolver(&config, "onedrive-test", |_token| {
+            panic!("resolver should not be called when drive details already exist")
+        })
+        .unwrap();
     }
 }
