@@ -116,6 +116,8 @@ fn perform_mobile_auth_flow<B: ratatui::backend::Backend>(
                 bail!("Remote {} was not created", remote_name);
             }
 
+            crate::providers::auth::complete_provider_remote_setup(provider, config, remote_name)?;
+
             let user_identifier = user_identifier_from_config(provider, config, remote_name);
 
             Ok(crate::providers::auth::AuthResult {
@@ -353,6 +355,104 @@ fn format_batch_progress(app: &App, task: &AuthBatchTask) -> String {
         )
     } else {
         task.description()
+    }
+}
+
+fn build_batch_stopped_status(
+    task_label: &str,
+    completed: usize,
+    total: usize,
+    remaining: usize,
+    failure: &str,
+    follow_up: Option<&str>,
+) -> String {
+    let mut status = if total > 1 {
+        format!(
+            "{}\n\nBatch stopped after {} of {} successful task(s).\nRemaining queued authentications: {}\n\n{}",
+            task_label, completed, total, remaining, failure
+        )
+    } else {
+        failure.to_string()
+    };
+
+    if let Some(note) = follow_up.filter(|note| !note.trim().is_empty()) {
+        status.push_str("\n\n");
+        status.push_str(note);
+    }
+
+    status
+}
+
+fn partial_success_retry_guidance(provider: &crate::providers::ProviderEntry) -> String {
+    if provider.known == Some(CloudProvider::OneDrive) {
+        "Continuing with the ready remotes. Return to Provider Select to retry Microsoft OneDrive. If Microsoft sign-in keeps completing but the remote still fails, try the Device Code flow.".to_string()
+    } else {
+        format!(
+            "Continuing with the ready remotes. Return to Provider Select to retry {}.",
+            provider.display_name()
+        )
+    }
+}
+
+fn no_success_retry_guidance(provider: &crate::providers::ProviderEntry) -> String {
+    if provider.known == Some(CloudProvider::OneDrive) {
+        "No validated remotes are ready yet. Return to Provider Select and retry Microsoft OneDrive. If Microsoft sign-in keeps completing but the remote still fails, try the Device Code flow or use a known-good rclone config.".to_string()
+    } else {
+        format!(
+            "No validated remotes are ready yet. Return to Provider Select and retry {}.",
+            provider.display_name()
+        )
+    }
+}
+
+fn build_auth_completion_status(
+    authenticated_remotes: &[(String, String)],
+    total_steps: usize,
+    provider: &crate::providers::ProviderEntry,
+    result: &AuthOutcome,
+    last_error: Option<&str>,
+) -> String {
+    let failure_note = last_error
+        .filter(|error| !error.trim().is_empty())
+        .map(|error| {
+            format!(
+                "\n\nOne or more authentication steps failed:\n{}\n\nContinue with the ready remotes, then return to Provider Select to retry the failed provider.",
+                error
+            )
+        })
+        .unwrap_or_default();
+
+    if authenticated_remotes.len() > 1 || total_steps > 1 {
+        let ready_names: Vec<String> = authenticated_remotes
+            .iter()
+            .map(|(remote, _)| remote.clone())
+            .collect();
+
+        format!(
+            "Authenticated {} remote(s) across {} authentication step(s).\nReady remotes: {}{}\n\nChoose how to access the remote files.",
+            authenticated_remotes.len(),
+            total_steps,
+            ready_names.join(", "),
+            failure_note,
+        )
+    } else {
+        let provider_name = provider.display_name().to_string();
+        let user_line = result
+            .user_info
+            .as_ref()
+            .map(|user| format!("  User: {}\n", user))
+            .unwrap_or_default();
+        format!(
+            "Authenticated {} successfully ({}){}{}\n\nChoose how to access the remote files.",
+            provider_name,
+            if result.was_silent { "SSO" } else { "interactive" },
+            if user_line.is_empty() {
+                String::new()
+            } else {
+                format!("\n{}", user_line)
+            },
+            failure_note,
+        )
     }
 }
 
@@ -767,9 +867,6 @@ pub(crate) fn perform_auth_flow<B: ratatui::backend::Backend>(
                     auth_type
                 ));
 
-                record_authenticated_remote(app, &task.provider, &result);
-                last_success = Some((task.provider.clone(), result.clone()));
-
                 app.auth_status = if app.auth_batch.total > 1 {
                     format!("{}\n\nTesting connectivity...", task_label)
                 } else {
@@ -812,6 +909,10 @@ pub(crate) fn perform_auth_flow<B: ratatui::backend::Backend>(
                         connectivity.duration.as_millis(),
                         extra
                     ));
+
+                    record_authenticated_remote(app, &task.provider, &result);
+                    last_success = Some((task.provider.clone(), result.clone()));
+                    app.finish_current_auth_task();
                 } else {
                     let err_msg = connectivity
                         .error
@@ -821,26 +922,44 @@ pub(crate) fn perform_auth_flow<B: ratatui::backend::Backend>(
                         attempt, err_msg
                     );
                     app.log_error(failure.clone());
+                    if let Err(cleanup_error) = config.remove_remote(&result.remote_name) {
+                        app.log_error(format!(
+                            "Failed to clean up remote '{}' after connectivity failure: {}",
+                            result.remote_name, cleanup_error
+                        ));
+                    }
                     app.fail_current_auth_task(failure.clone());
-                    app.auth_status = if app.auth_batch.total > 1 {
-                        format!(
-                            "{}\n\nBatch stopped after {} of {} successful task(s).\nRemaining queued authentications: {}\n\n{}",
-                            task_label,
+                    app.auth_batch.current = None;
+
+                    if last_success.is_some() {
+                        let remaining_tasks = app.auth_batch.pending.len();
+                        app.auth_batch.pending.clear();
+                        app.auth_status = build_batch_stopped_status(
+                            &task_label,
                             app.auth_batch.completed,
                             app.auth_batch.total,
-                            app.auth_batch.pending.len(),
-                            failure
-                        )
-                    } else {
-                        format!(
-                            "{}\n\nYou can retry listing from the file list screen.",
-                            failure
-                        )
-                    };
+                            remaining_tasks,
+                            &failure,
+                            Some(&partial_success_retry_guidance(&task.provider)),
+                        );
+                        break;
+                    }
+
+                    let guidance = no_success_retry_guidance(&task.provider);
+                    let status = build_batch_stopped_status(
+                        &task_label,
+                        app.auth_batch.completed,
+                        app.auth_batch.total,
+                        app.auth_batch.pending.len(),
+                        &failure,
+                        Some(&guidance),
+                    );
+                    app.auth_status = status.clone();
+                    app.provider.status = status;
+                    app.clear_auth_batch();
+                    app.state = crate::ui::AppState::ProviderSelect;
                     return Ok(());
                 }
-
-                app.finish_current_auth_task();
 
                 if app.auth_batch.completed < app.auth_batch.total {
                     app.auth_status = format!(
@@ -860,14 +979,30 @@ pub(crate) fn perform_auth_flow<B: ratatui::backend::Backend>(
                 );
                 app.log_error(error_text.clone());
                 app.fail_current_auth_task(error_text.clone());
+                app.auth_batch.current = None;
+
+                if last_success.is_some() {
+                    let remaining_tasks = app.auth_batch.pending.len();
+                    app.auth_batch.pending.clear();
+                    app.auth_status = build_batch_stopped_status(
+                        &task_label,
+                        app.auth_batch.completed,
+                        app.auth_batch.total,
+                        remaining_tasks,
+                        &error_text,
+                        Some(&partial_success_retry_guidance(&task.provider)),
+                    );
+                    break;
+                }
+
                 app.auth_status = if app.auth_batch.total > 1 {
-                    format!(
-                        "{}\n\nBatch stopped after {} of {} successful task(s).\nRemaining queued authentications: {}\n\n{}",
-                        task_label,
+                    build_batch_stopped_status(
+                        &task_label,
                         app.auth_batch.completed,
                         app.auth_batch.total,
                         app.auth_batch.pending.len(),
-                        error_text
+                        &error_text,
+                        None,
                     )
                 } else {
                     format!("Auth failed: {}", e)
@@ -878,44 +1013,19 @@ pub(crate) fn perform_auth_flow<B: ratatui::backend::Backend>(
     }
 
     if let Some((provider, result)) = last_success {
-        let ready_names: Vec<String> = app
-            .authenticated_remotes
-            .iter()
-            .map(|(remote, _)| remote.clone())
-            .collect();
-
-        app.auth_status = if app.authenticated_remotes.len() > 1 || app.auth_batch.total > 1 {
-            format!(
-                "Authenticated {} remote(s) across {} authentication step(s).\nReady remotes: {}\n\nChoose how to access the remote files.",
-                app.authenticated_remotes.len(),
-                app.auth_batch.total,
-                ready_names.join(", ")
-            )
-        } else {
-            let provider_name = provider.display_name().to_string();
-            let user_line = result
-                .user_info
-                .as_ref()
-                .map(|user| format!("  User: {}\n", user))
-                .unwrap_or_default();
-            format!(
-                "Authenticated {} successfully ({}){}\n\nChoose how to access the remote files.",
-                provider_name,
-                if result.was_silent {
-                    "SSO"
-                } else {
-                    "interactive"
-                },
-                if user_line.is_empty() {
-                    String::new()
-                } else {
-                    format!("\n{}", user_line)
-                },
-            )
-        };
+        let total_steps = app.auth_batch.total;
+        let last_error = app.auth_batch.last_error.clone();
+        app.auth_status = build_auth_completion_status(
+            &app.authenticated_remotes,
+            total_steps,
+            &provider,
+            &result,
+            last_error.as_deref(),
+        );
 
         app.post_auth_selected = 0;
         app.post_auth_action = None;
+        app.clear_auth_batch();
         app.advance();
     } else {
         app.auth_status = "No provider selected".to_string();
@@ -1057,5 +1167,51 @@ mod tests {
         let tasks = build_auth_tasks(&app).unwrap();
         assert_eq!(tasks.len(), 2);
         assert!(tasks.iter().all(|task| task.browser.is_none()));
+    }
+
+    #[test]
+    fn test_build_batch_stopped_status_appends_follow_up_note() {
+        let status = build_batch_stopped_status(
+            "[2/2] Microsoft OneDrive via Chrome",
+            1,
+            2,
+            0,
+            "Authentication succeeded, but connectivity check failed after 4 attempts",
+            Some("Continuing with the ready remotes."),
+        );
+
+        assert!(status.contains("Batch stopped after 1 of 2 successful task(s)."));
+        assert!(status.contains("Continuing with the ready remotes."));
+    }
+
+    #[test]
+    fn test_no_success_retry_guidance_for_onedrive_mentions_device_code() {
+        let provider = ProviderEntry::from_known(CloudProvider::OneDrive);
+        let guidance = no_success_retry_guidance(&provider);
+
+        assert!(guidance.contains("Microsoft OneDrive"));
+        assert!(guidance.contains("Device Code"));
+    }
+
+    #[test]
+    fn test_build_auth_completion_status_includes_partial_failure_note() {
+        let provider = ProviderEntry::from_known(CloudProvider::GoogleDrive);
+        let outcome = AuthOutcome {
+            remote_name: "drive-user@example.com".to_string(),
+            user_info: Some("user@example.com".to_string()),
+            was_silent: false,
+        };
+
+        let status = build_auth_completion_status(
+            &[("drive-user@example.com".to_string(), "Google Drive".to_string())],
+            2,
+            &provider,
+            &outcome,
+            Some("Authentication failed for Microsoft OneDrive"),
+        );
+
+        assert!(status.contains("Ready remotes: drive-user@example.com"));
+        assert!(status.contains("One or more authentication steps failed"));
+        assert!(status.contains("retry the failed provider"));
     }
 }
