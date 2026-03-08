@@ -217,12 +217,43 @@ struct AuthOutcome {
     was_silent: bool,
 }
 
-fn auth_error_mentions_timeout(error: &anyhow::Error) -> bool {
-    error.chain().any(|cause| {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BrowserTimeoutKind {
+    ViaRcloneAuthorize,
+    LocalhostCallback,
+    Other,
+}
+
+fn classify_browser_timeout(error: &anyhow::Error) -> Option<BrowserTimeoutKind> {
+    let mut saw_browser_timeout = false;
+    let mut saw_localhost_callback_timeout = false;
+
+    for cause in error.chain() {
         let message = cause.to_string().to_lowercase();
-        message.contains("oauth timeout: no response received within")
-            || message.contains("authentication timed out waiting for")
-    })
+
+        if message.contains("authentication timed out waiting for") {
+            saw_browser_timeout = true;
+            if message.contains("via rclone authorize") {
+                return Some(BrowserTimeoutKind::ViaRcloneAuthorize);
+            }
+        }
+
+        if message.contains("oauth timeout: no response received within") {
+            saw_localhost_callback_timeout = true;
+        }
+    }
+
+    if saw_localhost_callback_timeout {
+        Some(BrowserTimeoutKind::LocalhostCallback)
+    } else if saw_browser_timeout {
+        Some(BrowserTimeoutKind::Other)
+    } else {
+        None
+    }
+}
+
+fn auth_error_mentions_timeout(error: &anyhow::Error) -> bool {
+    classify_browser_timeout(error).is_some()
 }
 
 fn should_auto_fallback_to_onedrive_device_code(
@@ -235,6 +266,26 @@ fn should_auto_fallback_to_onedrive_device_code(
 fn browser_device_code_fallback_remote_name(task: &AuthBatchTask) -> Option<String> {
     let browser = task.browser.as_ref()?;
     Some(BrowserAuthSession::new(browser.clone(), task.provider.short_name()).remote_name(None))
+}
+
+fn build_onedrive_device_code_fallback_message(
+    provider_name: &str,
+    error: &anyhow::Error,
+) -> String {
+    match classify_browser_timeout(error) {
+        Some(BrowserTimeoutKind::ViaRcloneAuthorize) => format!(
+            "{} browser authentication timed out via rclone authorize; switching to device code.",
+            provider_name
+        ),
+        Some(BrowserTimeoutKind::LocalhostCallback) => format!(
+            "{} browser authentication timed out waiting for the localhost callback; switching to device code.",
+            provider_name
+        ),
+        _ => format!(
+            "{} browser authentication stalled; switching to device code.",
+            provider_name
+        ),
+    }
 }
 
 fn maybe_fallback_to_onedrive_device_code<B: ratatui::backend::Backend>(
@@ -254,10 +305,8 @@ fn maybe_fallback_to_onedrive_device_code<B: ratatui::backend::Backend>(
         Ok(outcome) => Ok(outcome),
         Err(auth_error) if should_auto_fallback_to_onedrive_device_code(known, &auth_error) => {
             let provider_name = task.provider.display_name();
-            let fallback_message = format!(
-                "{} browser authentication stalled; switching to device code.",
-                provider_name
-            );
+            let fallback_message =
+                build_onedrive_device_code_fallback_message(provider_name, &auth_error);
 
             tracing::warn!(
                 provider = %provider_name,
@@ -445,7 +494,11 @@ fn build_auth_completion_status(
         format!(
             "Authenticated {} successfully ({}){}{}\n\nChoose how to access the remote files.",
             provider_name,
-            if result.was_silent { "SSO" } else { "interactive" },
+            if result.was_silent {
+                "SSO"
+            } else {
+                "interactive"
+            },
             if user_line.is_empty() {
                 String::new()
             } else {
@@ -1054,7 +1107,7 @@ mod tests {
     #[test]
     fn test_should_auto_fallback_to_onedrive_device_code_for_nested_browser_timeout() {
         let error = Err::<(), _>(anyhow::anyhow!(
-            "Authentication timed out waiting for Microsoft OneDrive login"
+            "Authentication timed out waiting for Microsoft OneDrive login via rclone authorize"
         ))
         .context("Fallback OAuth failed for Microsoft OneDrive")
         .unwrap_err();
@@ -1099,6 +1152,32 @@ mod tests {
             browser_device_code_fallback_remote_name(&task).as_deref(),
             Some("edge-onedrive")
         );
+    }
+
+    #[test]
+    fn test_build_onedrive_device_code_fallback_message_for_rclone_authorize_timeout() {
+        let error = anyhow::anyhow!(
+            "Authentication timed out waiting for Microsoft OneDrive login via rclone authorize"
+        );
+
+        let message = build_onedrive_device_code_fallback_message("Microsoft OneDrive", &error);
+
+        assert!(message.contains("via rclone authorize"));
+        assert!(!message.contains("localhost callback"));
+    }
+
+    #[test]
+    fn test_build_onedrive_device_code_fallback_message_for_localhost_timeout() {
+        let error = Err::<(), _>(anyhow::anyhow!(
+            "OAuth timeout: no response received within 300 seconds"
+        ))
+        .context("OAuth authentication failed for Microsoft OneDrive")
+        .unwrap_err();
+
+        let message = build_onedrive_device_code_fallback_message("Microsoft OneDrive", &error);
+
+        assert!(message.contains("localhost callback"));
+        assert!(!message.contains("via rclone authorize"));
     }
 
     #[test]
@@ -1203,7 +1282,10 @@ mod tests {
         };
 
         let status = build_auth_completion_status(
-            &[("drive-user@example.com".to_string(), "Google Drive".to_string())],
+            &[(
+                "drive-user@example.com".to_string(),
+                "Google Drive".to_string(),
+            )],
             2,
             &provider,
             &outcome,
