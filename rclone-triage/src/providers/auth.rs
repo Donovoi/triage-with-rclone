@@ -12,7 +12,7 @@ use super::mobile::{
 };
 use super::session::{browsers_with_sessions, BrowserSession, SessionExtractor};
 use super::{config::ProviderConfig, CloudProvider};
-use crate::rclone::{authorize_fallback, OAuthFlow, RcloneConfig, RcloneRunner};
+use crate::rclone::{OAuthFlow, RcloneConfig, RcloneRunner};
 use crate::utils::network::get_local_ip_address;
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
@@ -60,6 +60,84 @@ fn resolve_custom_oauth(provider: CloudProvider) -> Option<OAuthCredentials> {
             None
         }
     }
+}
+
+fn non_empty_owned(value: &str) -> Option<String> {
+    if value.trim().is_empty() {
+        None
+    } else {
+        Some(value.to_string())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BrowserAuthStrategy {
+    DirectCodeExchange,
+    ViaRcloneAuthorize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ResolvedBrowserAuthSettings {
+    client_id: String,
+    client_secret: Option<String>,
+    strategy: BrowserAuthStrategy,
+}
+
+fn select_browser_auth_strategy(
+    has_effective_client_secret: bool,
+    has_custom_oauth_config: bool,
+) -> BrowserAuthStrategy {
+    if has_effective_client_secret || has_custom_oauth_config {
+        BrowserAuthStrategy::DirectCodeExchange
+    } else {
+        BrowserAuthStrategy::ViaRcloneAuthorize
+    }
+}
+
+fn resolve_effective_client_secret(
+    provider_config: &ProviderConfig,
+    custom: Option<&OAuthCredentials>,
+) -> Option<String> {
+    match custom {
+        Some(custom) => custom
+            .client_secret
+            .clone()
+            .filter(|secret| !secret.trim().is_empty())
+            .or_else(|| {
+                if custom.client_id.trim() == provider_config.oauth.client_id {
+                    non_empty_owned(provider_config.oauth.client_secret)
+                } else {
+                    None
+                }
+            }),
+        None => non_empty_owned(provider_config.oauth.client_secret),
+    }
+}
+
+fn resolve_browser_auth_settings_with_custom(
+    provider_config: &ProviderConfig,
+    custom: Option<OAuthCredentials>,
+) -> ResolvedBrowserAuthSettings {
+    let has_custom_oauth_config = custom.is_some();
+    let client_id = custom
+        .as_ref()
+        .map(|creds| creds.client_id.clone())
+        .unwrap_or_else(|| provider_config.oauth.client_id.to_string());
+    let client_secret = resolve_effective_client_secret(provider_config, custom.as_ref());
+    let strategy = select_browser_auth_strategy(client_secret.is_some(), has_custom_oauth_config);
+
+    ResolvedBrowserAuthSettings {
+        client_id,
+        client_secret,
+        strategy,
+    }
+}
+
+fn resolve_browser_auth_settings(
+    provider: CloudProvider,
+    provider_config: &ProviderConfig,
+) -> ResolvedBrowserAuthSettings {
+    resolve_browser_auth_settings_with_custom(provider_config, resolve_custom_oauth(provider))
 }
 
 fn build_rclone_auth_args(
@@ -126,55 +204,6 @@ pub fn user_identifier_from_config(
         .ok()
         .flatten()
         .and_then(|u| u.best_identifier())
-}
-
-fn parse_redirect_host_port(redirect_uri: &str) -> Option<(String, u16)> {
-    let trimmed = redirect_uri.trim();
-    let stripped = trimmed
-        .strip_prefix("http://")
-        .or_else(|| trimmed.strip_prefix("https://"))?;
-    let host_port = stripped.split('/').next().unwrap_or(stripped);
-    if let Some((host, port_str)) = host_port.split_once(':') {
-        if let Ok(port) = port_str.parse::<u16>() {
-            return Some((host.to_string(), port));
-        }
-    }
-    Some((
-        host_port.to_string(),
-        crate::rclone::oauth::DEFAULT_OAUTH_PORT,
-    ))
-}
-
-fn resolve_fallback_credentials(
-    provider: CloudProvider,
-    provider_config: &ProviderConfig,
-    client_id_from_url: Option<&str>,
-) -> (String, Option<String>) {
-    let custom = resolve_custom_oauth(provider);
-    let client_id = client_id_from_url
-        .filter(|s| !s.trim().is_empty())
-        .map(|s| s.to_string())
-        .or_else(|| custom.as_ref().map(|c| c.client_id.clone()))
-        .unwrap_or_else(|| provider_config.oauth.client_id.to_string());
-
-    let mut client_secret = custom
-        .and_then(|c| {
-            if c.client_id.trim() == client_id {
-                c.client_secret
-            } else {
-                None
-            }
-        })
-        .filter(|s| !s.trim().is_empty());
-
-    if client_secret.is_none() {
-        let secret = provider_config.oauth.client_secret;
-        if !secret.trim().is_empty() {
-            client_secret = Some(secret.to_string());
-        }
-    }
-
-    (client_id, client_secret)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -251,7 +280,10 @@ fn persist_remote_option_updates(
     }
 
     for (key, value) in updates {
-        if let Some(existing) = options.iter_mut().find(|(existing_key, _)| *existing_key == key) {
+        if let Some(existing) = options
+            .iter_mut()
+            .find(|(existing_key, _)| *existing_key == key)
+        {
             existing.1 = value;
         } else {
             options.push((key, value));
@@ -302,10 +334,16 @@ where
         .as_ref()
         .and_then(|token| token.access_token.as_deref())
         .filter(|token| !token.trim().is_empty())
-        .ok_or_else(|| anyhow::anyhow!("OneDrive remote {} is missing an access token", remote_name))?;
+        .ok_or_else(|| {
+            anyhow::anyhow!("OneDrive remote {} is missing an access token", remote_name)
+        })?;
 
-    let selection = resolve_drive(access_token)
-        .with_context(|| format!("Failed to resolve OneDrive drive details for {}", remote_name))?;
+    let selection = resolve_drive(access_token).with_context(|| {
+        format!(
+            "Failed to resolve OneDrive drive details for {}",
+            remote_name
+        )
+    })?;
 
     persist_remote_option_updates(
         config,
@@ -346,83 +384,8 @@ fn authenticate_with_authorize_fallback(
     config: &RcloneConfig,
     remote_name: &str,
 ) -> Result<AuthResult> {
-    let provider_config = ProviderConfig::for_provider(provider);
-    if !provider_config.uses_oauth() {
-        bail!(
-            "{} does not use OAuth. Fallback authorization is not supported.",
-            provider.display_name()
-        );
-    }
-
-    let fallback = authorize_fallback(rclone, provider.rclone_type(), Duration::from_secs(15))?;
-    let auth_url = fallback
-        .auth_url
-        .ok_or_else(|| anyhow::anyhow!("Fallback did not capture an auth URL"))?;
-
-    let auth_url = ensure_oauth_url_has_state(&auth_url);
-
-    let redirect_uri = crate::rclone::oauth::extract_param(&auth_url, "redirect_uri")
-        .unwrap_or_else(|| OAuthFlow::new().redirect_uri());
-    let mut oauth = OAuthFlow::new();
-    if let Some((host, port)) = parse_redirect_host_port(&redirect_uri) {
-        oauth = oauth
-            .with_port(port)
-            .with_bind_host(host.clone())
-            .with_redirect_host(host);
-    }
-
-    let result = oauth
-        .run(&auth_url)
-        .with_context(|| format!("Fallback OAuth failed for {}", provider.display_name()))?;
-
-    let client_id_from_url = crate::rclone::oauth::extract_param(&auth_url, "client_id");
-    let (client_id, client_secret) =
-        resolve_fallback_credentials(provider, &provider_config, client_id_from_url.as_deref());
-
-    let token_json = exchange_code_for_token(
-        provider_config.oauth.token_url,
-        &result.code,
-        &redirect_uri,
-        &client_id,
-        client_secret.as_deref(),
-    )?;
-    let token_str = serde_json::to_string(&token_json)?;
-
-    let mut options: Vec<(String, String)> = Vec::new();
-    for (key, value) in provider_config.rclone_options {
-        options.push(((*key).to_string(), (*value).to_string()));
-    }
-    if !client_id.trim().is_empty() {
-        options.push(("client_id".to_string(), client_id));
-    }
-    if let Some(secret) = client_secret {
-        if !secret.trim().is_empty() {
-            options.push(("client_secret".to_string(), secret));
-        }
-    }
-    options.push(("token".to_string(), token_str));
-
-    let options_ref: Vec<(&str, &str)> = options
-        .iter()
-        .map(|(k, v)| (k.as_str(), v.as_str()))
-        .collect();
-
-    config.set_remote(remote_name, provider.rclone_type(), &options_ref)?;
-    if !config.has_remote(remote_name)? {
-        bail!("Remote {} was not created", remote_name);
-    }
-
-    complete_provider_remote_setup(provider, config, remote_name)?;
-
-    let user_identifier = user_identifier_from_config(provider, config, remote_name);
-
-    Ok(AuthResult {
-        provider,
-        remote_name: remote_name.to_string(),
-        user_info: user_identifier,
-        browser: None,
-        was_silent: false,
-    })
+    authenticate_with_system_browser(provider, rclone, config, remote_name)
+        .with_context(|| format!("Fallback OAuth failed for {}", provider.display_name()))
 }
 
 /// Authenticate using rclone's built-in OAuth flow
@@ -638,26 +601,6 @@ where
     })
 }
 
-fn ensure_oauth_url_has_state(auth_url: &str) -> String {
-    if crate::rclone::oauth::extract_param(auth_url, "state").is_some() {
-        return auth_url.to_string();
-    }
-
-    let state = OAuthFlow::generate_state();
-    let (before_fragment, fragment) = auth_url.split_once('#').unwrap_or((auth_url, ""));
-    let sep = if before_fragment.contains('?') {
-        "&"
-    } else {
-        "?"
-    };
-    let mut out = format!("{}{}state={}", before_fragment, sep, state);
-    if !fragment.is_empty() {
-        out.push('#');
-        out.push_str(fragment);
-    }
-    out
-}
-
 /// Authenticate using device code flow (for providers that support it).
 pub fn authenticate_with_device_code(
     provider: CloudProvider,
@@ -762,63 +705,23 @@ pub fn authenticate_with_browser(
         );
     }
 
-    let custom = resolve_custom_oauth(provider);
-    let client_id = custom
-        .as_ref()
-        .map(|c| c.client_id.as_str())
-        .unwrap_or(provider_config.oauth.client_id);
-    let client_secret = custom
-        .as_ref()
-        .and_then(|c| c.client_secret.as_deref())
-        .filter(|s| !s.trim().is_empty())
-        .or_else(|| {
-            let s = provider_config.oauth.client_secret;
-            if s.trim().is_empty() {
-                None
-            } else {
-                Some(s)
-            }
-        });
+    let auth_settings = resolve_browser_auth_settings(provider, &provider_config);
 
-    let prefer_direct_without_secret = provider == CloudProvider::OneDrive;
-
-    // When we don't have a client_secret, prefer the built-in browser authorize
-    // flow except for OneDrive, where a direct localhost callback tends to be
-    // more reliable than waiting on `rclone authorize` to finish.
-    let (token_str, used_rclone_authorize) = if client_secret.is_none() && custom.is_none() {
-        if prefer_direct_without_secret {
-            match authenticate_with_browser_direct(
+    let (token_str, used_rclone_authorize) = match auth_settings.strategy {
+        BrowserAuthStrategy::DirectCodeExchange => (
+            authenticate_with_browser_direct(
                 provider,
                 Some(browser),
                 &provider_config,
-                client_id,
-                client_secret,
-            ) {
-                Ok(token) => (token, false),
-                Err(direct_error) => {
-                    tracing::warn!(
-                        "Direct browser auth failed for {}; falling back to rclone authorize: {}",
-                        provider,
-                        direct_error
-                    );
-                    let token =
-                        authenticate_with_browser_via_rclone(provider, Some(browser), rclone)?;
-                    (token, true)
-                }
-            }
-        } else {
-            let token = authenticate_with_browser_via_rclone(provider, Some(browser), rclone)?;
-            (token, true)
-        }
-    } else {
-        let token = authenticate_with_browser_direct(
-            provider,
-            Some(browser),
-            &provider_config,
-            client_id,
-            client_secret,
-        )?;
-        (token, false)
+                &auth_settings.client_id,
+                auth_settings.client_secret.as_deref(),
+            )?,
+            false,
+        ),
+        BrowserAuthStrategy::ViaRcloneAuthorize => (
+            authenticate_with_browser_via_rclone(provider, Some(browser), rclone)?,
+            true,
+        ),
     };
 
     // Build config options
@@ -827,10 +730,10 @@ pub fn authenticate_with_browser(
         options.push(((*key).to_string(), (*value).to_string()));
     }
     if !used_rclone_authorize {
-        if !client_id.trim().is_empty() {
-            options.push(("client_id".to_string(), client_id.to_string()));
+        if !auth_settings.client_id.trim().is_empty() {
+            options.push(("client_id".to_string(), auth_settings.client_id.clone()));
         }
-        if let Some(secret) = client_secret {
+        if let Some(secret) = auth_settings.client_secret.as_deref() {
             if !secret.trim().is_empty() {
                 options.push(("client_secret".to_string(), secret.to_string()));
             }
@@ -890,59 +793,23 @@ pub fn authenticate_with_system_browser(
         );
     }
 
-    let custom = resolve_custom_oauth(provider);
-    let client_id = custom
-        .as_ref()
-        .map(|c| c.client_id.as_str())
-        .unwrap_or(provider_config.oauth.client_id);
-    let client_secret = custom
-        .as_ref()
-        .and_then(|c| c.client_secret.as_deref())
-        .filter(|s| !s.trim().is_empty())
-        .or_else(|| {
-            let s = provider_config.oauth.client_secret;
-            if s.trim().is_empty() {
-                None
-            } else {
-                Some(s)
-            }
-        });
+    let auth_settings = resolve_browser_auth_settings(provider, &provider_config);
 
-    let prefer_direct_without_secret = provider == CloudProvider::OneDrive;
-
-    let (token_str, used_rclone_authorize) = if client_secret.is_none() && custom.is_none() {
-        if prefer_direct_without_secret {
-            match authenticate_with_browser_direct(
+    let (token_str, used_rclone_authorize) = match auth_settings.strategy {
+        BrowserAuthStrategy::DirectCodeExchange => (
+            authenticate_with_browser_direct(
                 provider,
                 None,
                 &provider_config,
-                client_id,
-                client_secret,
-            ) {
-                Ok(token) => (token, false),
-                Err(direct_error) => {
-                    tracing::warn!(
-                        "Direct system-browser auth failed for {}; falling back to rclone authorize: {}",
-                        provider,
-                        direct_error
-                    );
-                    let token = authenticate_with_browser_via_rclone(provider, None, rclone)?;
-                    (token, true)
-                }
-            }
-        } else {
-            let token = authenticate_with_browser_via_rclone(provider, None, rclone)?;
-            (token, true)
-        }
-    } else {
-        let token = authenticate_with_browser_direct(
-            provider,
-            None,
-            &provider_config,
-            client_id,
-            client_secret,
-        )?;
-        (token, false)
+                &auth_settings.client_id,
+                auth_settings.client_secret.as_deref(),
+            )?,
+            false,
+        ),
+        BrowserAuthStrategy::ViaRcloneAuthorize => (
+            authenticate_with_browser_via_rclone(provider, None, rclone)?,
+            true,
+        ),
     };
 
     let mut options: Vec<(String, String)> = Vec::new();
@@ -950,10 +817,10 @@ pub fn authenticate_with_system_browser(
         options.push(((*key).to_string(), (*value).to_string()));
     }
     if !used_rclone_authorize {
-        if !client_id.trim().is_empty() {
-            options.push(("client_id".to_string(), client_id.to_string()));
+        if !auth_settings.client_id.trim().is_empty() {
+            options.push(("client_id".to_string(), auth_settings.client_id.clone()));
         }
-        if let Some(secret) = client_secret {
+        if let Some(secret) = auth_settings.client_secret.as_deref() {
             if !secret.trim().is_empty() {
                 options.push(("client_secret".to_string(), secret.to_string()));
             }
@@ -1016,7 +883,7 @@ fn authenticate_with_browser_via_rclone(
             ""
         };
         bail!(
-            "Authentication timed out waiting for {} login.{}",
+            "Authentication timed out waiting for {} login via rclone authorize.{}",
             provider.display_name(),
             recovery_hint
         );
@@ -1403,22 +1270,65 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_redirect_host_port() {
-        let (host, port) = parse_redirect_host_port("http://127.0.0.1:53682/").unwrap();
-        assert_eq!(host, "127.0.0.1");
-        assert_eq!(port, 53682);
+    fn test_select_browser_auth_strategy_without_secret_or_custom_uses_rclone_authorize() {
+        assert_eq!(
+            select_browser_auth_strategy(false, false),
+            BrowserAuthStrategy::ViaRcloneAuthorize
+        );
+    }
 
-        let (host, port) = parse_redirect_host_port("https://localhost:8888/callback").unwrap();
-        assert_eq!(host, "localhost");
-        assert_eq!(port, 8888);
+    #[test]
+    fn test_select_browser_auth_strategy_with_secret_uses_direct() {
+        assert_eq!(
+            select_browser_auth_strategy(true, false),
+            BrowserAuthStrategy::DirectCodeExchange
+        );
+    }
+
+    #[test]
+    fn test_resolve_browser_auth_settings_for_onedrive_default_config_uses_rclone_authorize() {
+        let provider_config = ProviderConfig::for_provider(CloudProvider::OneDrive);
+        let settings = resolve_browser_auth_settings_with_custom(&provider_config, None);
+
+        assert_eq!(settings.strategy, BrowserAuthStrategy::ViaRcloneAuthorize);
+        assert_eq!(settings.client_id, provider_config.oauth.client_id);
+        assert_eq!(settings.client_secret, None);
+    }
+
+    #[test]
+    fn test_resolve_browser_auth_settings_for_google_drive_default_config_uses_direct() {
+        let provider_config = ProviderConfig::for_provider(CloudProvider::GoogleDrive);
+        let settings = resolve_browser_auth_settings_with_custom(&provider_config, None);
+
+        assert_eq!(settings.strategy, BrowserAuthStrategy::DirectCodeExchange);
+        assert_eq!(settings.client_id, provider_config.oauth.client_id);
+        assert_eq!(
+            settings.client_secret.as_deref(),
+            Some(provider_config.oauth.client_secret)
+        );
+    }
+
+    #[test]
+    fn test_resolve_browser_auth_settings_with_custom_public_client_uses_direct() {
+        let provider_config = ProviderConfig::for_provider(CloudProvider::OneDrive);
+        let settings = resolve_browser_auth_settings_with_custom(
+            &provider_config,
+            Some(OAuthCredentials {
+                client_id: "custom-client-id".to_string(),
+                client_secret: None,
+            }),
+        );
+
+        assert_eq!(settings.strategy, BrowserAuthStrategy::DirectCodeExchange);
+        assert_eq!(settings.client_id, "custom-client-id");
+        assert_eq!(settings.client_secret, None);
     }
 
     #[test]
     fn test_parse_onedrive_drive_selection_response() {
-        let selection = parse_onedrive_drive_selection_response(
-            r#"{"id":"drive-123","driveType":"business"}"#,
-        )
-        .unwrap();
+        let selection =
+            parse_onedrive_drive_selection_response(r#"{"id":"drive-123","driveType":"business"}"#)
+                .unwrap();
 
         assert_eq!(selection.drive_id, "drive-123");
         assert_eq!(selection.drive_type, "business");
@@ -1451,8 +1361,14 @@ mod tests {
 
         let parsed = config.parse().unwrap();
         let remote = parsed.get_remote("onedrive-test").unwrap();
-        assert_eq!(remote.options.get("drive_id").map(String::as_str), Some("drive-123"));
-        assert_eq!(remote.options.get("drive_type").map(String::as_str), Some("business"));
+        assert_eq!(
+            remote.options.get("drive_id").map(String::as_str),
+            Some("drive-123")
+        );
+        assert_eq!(
+            remote.options.get("drive_type").map(String::as_str),
+            Some("business")
+        );
     }
 
     #[test]
@@ -1466,7 +1382,10 @@ mod tests {
                 "onedrive-test",
                 CloudProvider::OneDrive.rclone_type(),
                 &[
-                    ("token", r#"{"access_token":"token-123","token_type":"Bearer"}"#),
+                    (
+                        "token",
+                        r#"{"access_token":"token-123","token_type":"Bearer"}"#,
+                    ),
                     ("drive_id", "drive-123"),
                     ("drive_type", "personal"),
                 ],
