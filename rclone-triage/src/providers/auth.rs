@@ -10,7 +10,7 @@ use super::mobile::{
     device_code_config, exchange_code_for_token, poll_device_code_for_token, render_qr_code,
     request_device_code,
 };
-use super::session::{browsers_with_sessions, BrowserSession, SessionExtractor};
+use super::session::{browsers_with_sessions, BrowserSession};
 use super::{config::ProviderConfig, CloudProvider};
 use crate::rclone::{OAuthFlow, RcloneConfig, RcloneRunner};
 use crate::utils::network::get_local_ip_address;
@@ -84,9 +84,14 @@ struct ResolvedBrowserAuthSettings {
 }
 
 fn select_browser_auth_strategy(
+    provider: CloudProvider,
     has_effective_client_secret: bool,
     has_custom_oauth_config: bool,
 ) -> BrowserAuthStrategy {
+    if provider == CloudProvider::GooglePhotos && !has_custom_oauth_config {
+        return BrowserAuthStrategy::ViaRcloneAuthorize;
+    }
+
     if has_effective_client_secret || has_custom_oauth_config {
         BrowserAuthStrategy::DirectCodeExchange
     } else {
@@ -124,7 +129,11 @@ fn resolve_browser_auth_settings_with_custom(
         .map(|creds| creds.client_id.clone())
         .unwrap_or_else(|| provider_config.oauth.client_id.to_string());
     let client_secret = resolve_effective_client_secret(provider_config, custom.as_ref());
-    let strategy = select_browser_auth_strategy(client_secret.is_some(), has_custom_oauth_config);
+    let strategy = select_browser_auth_strategy(
+        provider_config.provider,
+        client_secret.is_some(),
+        has_custom_oauth_config,
+    );
 
     ResolvedBrowserAuthSettings {
         client_id,
@@ -936,14 +945,10 @@ fn authenticate_with_browser_direct(
 
 fn open_browser_to_url(browser: Option<&Browser>, url: &str) -> Result<()> {
     if let Some(browser) = browser {
-        if let Some(ref path) = browser.executable_path {
-            std::process::Command::new(path)
-                .arg(url)
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .spawn()
-                .with_context(|| format!("Failed to open browser: {}", path.display()))?;
+        if browser.executable_path.is_some() {
+            browser
+                .open_url(url)
+                .with_context(|| format!("Failed to open {}", browser.display_name()))?;
         } else {
             open::that(url).with_context(|| "Failed to open system default browser")?;
         }
@@ -1174,26 +1179,14 @@ pub fn smart_authenticate(
 
 /// Authenticate using a user-selected browser
 ///
-/// Tries SSO with that browser if a valid session exists,
-/// otherwise falls back to interactive auth in that browser.
+/// Uses the explicit browser/profile launch path so the chosen browser profile
+/// is actually honored during OAuth.
 pub fn authenticate_with_browser_choice(
     provider: CloudProvider,
     browser: &Browser,
     rclone: &RcloneRunner,
     config: &RcloneConfig,
 ) -> Result<AuthResult> {
-    if let Ok(extractor) = SessionExtractor::new() {
-        if let Ok(session) = extractor.extract_session(browser, provider) {
-            if session.is_valid {
-                if let Ok(result) =
-                    authenticate_with_sso(provider, browser, &session, rclone, config)
-                {
-                    return Ok(result);
-                }
-            }
-        }
-    }
-
     authenticate_with_browser(provider, browser, rclone, config)
 }
 
@@ -1272,7 +1265,7 @@ mod tests {
     #[test]
     fn test_select_browser_auth_strategy_without_secret_or_custom_uses_rclone_authorize() {
         assert_eq!(
-            select_browser_auth_strategy(false, false),
+            select_browser_auth_strategy(CloudProvider::GoogleDrive, false, false),
             BrowserAuthStrategy::ViaRcloneAuthorize
         );
     }
@@ -1280,8 +1273,16 @@ mod tests {
     #[test]
     fn test_select_browser_auth_strategy_with_secret_uses_direct() {
         assert_eq!(
-            select_browser_auth_strategy(true, false),
+            select_browser_auth_strategy(CloudProvider::GoogleDrive, true, false),
             BrowserAuthStrategy::DirectCodeExchange
+        );
+    }
+
+    #[test]
+    fn test_select_browser_auth_strategy_for_google_photos_prefers_rclone_authorize() {
+        assert_eq!(
+            select_browser_auth_strategy(CloudProvider::GooglePhotos, true, false),
+            BrowserAuthStrategy::ViaRcloneAuthorize
         );
     }
 
@@ -1306,6 +1307,14 @@ mod tests {
             settings.client_secret.as_deref(),
             Some(provider_config.oauth.client_secret)
         );
+    }
+
+    #[test]
+    fn test_resolve_browser_auth_settings_for_google_photos_default_config_uses_rclone_authorize() {
+        let provider_config = ProviderConfig::for_provider(CloudProvider::GooglePhotos);
+        let settings = resolve_browser_auth_settings_with_custom(&provider_config, None);
+
+        assert_eq!(settings.strategy, BrowserAuthStrategy::ViaRcloneAuthorize);
     }
 
     #[test]

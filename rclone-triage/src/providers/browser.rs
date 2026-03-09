@@ -5,7 +5,7 @@
 
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Known browser definitions
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -75,6 +75,22 @@ impl BrowserType {
         }
     }
 
+    /// Whether this browser uses Chromium-style profile directories/flags.
+    pub fn is_chromium_family(&self) -> bool {
+        matches!(
+            self,
+            BrowserType::Chrome
+                | BrowserType::ChromeBeta
+                | BrowserType::Chromium
+                | BrowserType::Edge
+                | BrowserType::Brave
+                | BrowserType::Opera
+                | BrowserType::OperaGX
+                | BrowserType::Vivaldi
+                | BrowserType::Yandex
+        )
+    }
+
     /// Get Windows ProgID for default browser setting
     #[cfg(windows)]
     pub fn prog_id(&self) -> &'static str {
@@ -137,6 +153,19 @@ impl Browser {
         self.browser_type.short_name()
     }
 
+    fn launch_args_for_url(&self, url: &str) -> Vec<String> {
+        let mut args = Vec::new();
+
+        if self.browser_type.is_chromium_family() {
+            if let Some(profile_path) = self.profile_path.as_deref() {
+                append_chromium_profile_args(&mut args, profile_path);
+            }
+        }
+
+        args.push(url.to_string());
+        args
+    }
+
     /// Open a URL in this browser
     pub fn open_url(&self, url: &str) -> Result<()> {
         if !self.is_installed {
@@ -148,10 +177,34 @@ impl Browser {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("No executable path for {}", self.browser_type))?;
 
-        std::process::Command::new(exe_path).arg(url).spawn()?;
+        let mut command = std::process::Command::new(exe_path);
+        for arg in self.launch_args_for_url(url) {
+            command.arg(arg);
+        }
+
+        command
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()?;
 
         Ok(())
     }
+}
+
+fn append_chromium_profile_args(args: &mut Vec<String>, profile_path: &Path) {
+    let Some(profile_name) = profile_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.trim().is_empty())
+    else {
+        return;
+    };
+
+    if let Some(user_data_dir) = profile_path.parent() {
+        args.push(format!("--user-data-dir={}", user_data_dir.display()));
+    }
+    args.push(format!("--profile-directory={}", profile_name));
 }
 
 /// Detects installed browsers on the system
@@ -542,6 +595,32 @@ mod tests {
         assert_eq!(
             session.remote_name(Some("user@example.com")),
             "chrome-gdrive-user@example.com"
+        );
+    }
+
+    #[test]
+    fn test_browser_type_is_chromium_family() {
+        assert!(BrowserType::Chrome.is_chromium_family());
+        assert!(BrowserType::Edge.is_chromium_family());
+        assert!(!BrowserType::Firefox.is_chromium_family());
+    }
+
+    #[test]
+    fn test_launch_args_for_url_include_selected_chromium_profile() {
+        let mut browser = Browser::new(BrowserType::Chrome);
+        browser.profile_path = Some(PathBuf::from(
+            "/home/test/.config/google-chrome/Profile 1",
+        ));
+
+        let args = browser.launch_args_for_url("https://example.com/auth");
+
+        assert_eq!(
+            args,
+            vec![
+                "--user-data-dir=/home/test/.config/google-chrome".to_string(),
+                "--profile-directory=Profile 1".to_string(),
+                "https://example.com/auth".to_string(),
+            ]
         );
     }
 }
