@@ -175,6 +175,12 @@ fn list_navigate_down(selected: &mut usize, len: usize) {
     *selected = (*selected + 1) % len;
 }
 
+fn should_preselect_detected_account(
+    candidate: &crate::providers::account_detection::DetectedAccountCandidate,
+) -> bool {
+    candidate.selection_allowed() && candidate.provider != CloudProvider::GooglePhotos
+}
+
 /// Provider selection state
 pub struct ProviderSelection {
     /// Available providers
@@ -1347,14 +1353,30 @@ impl App {
         let default_checked: Vec<bool> = report
             .candidates
             .iter()
-            .map(|candidate| candidate.selection_allowed())
+            .map(should_preselect_detected_account)
             .collect();
         let selected = report
             .candidates
             .iter()
-            .position(|candidate| candidate.selection_allowed())
+            .position(should_preselect_detected_account)
+            .or_else(|| {
+                report
+                    .candidates
+                    .iter()
+                    .position(|candidate| candidate.selection_allowed())
+            })
             .unwrap_or(0);
-        let status = report.summary_line();
+        let skipped_by_default = report
+            .candidates
+            .iter()
+            .filter(|candidate| candidate.selection_allowed() && !should_preselect_detected_account(candidate))
+            .count();
+        let mut status = report.summary_line();
+        if skipped_by_default > 0 {
+            status.push_str(
+                " Some runnable providers were left unchecked by default; review before authenticating.",
+            );
+        }
 
         self.detected_accounts.report = Some(report);
         self.detected_accounts.selected = selected;
@@ -1672,6 +1694,14 @@ mod tests {
         capability: DetectionCapability,
         profile_name: &str,
     ) -> DetectedAccountCandidate {
+        sample_detected_candidate_for_provider(CloudProvider::GoogleDrive, capability, profile_name)
+    }
+
+    fn sample_detected_candidate_for_provider(
+        provider: CloudProvider,
+        capability: DetectionCapability,
+        profile_name: &str,
+    ) -> DetectedAccountCandidate {
         let mut browser = Browser::new(crate::providers::browser::BrowserType::Chrome);
         browser.is_installed = true;
         browser.executable_path = Some(std::path::PathBuf::from("/usr/bin/google-chrome"));
@@ -1681,7 +1711,7 @@ mod tests {
         )));
 
         DetectedAccountCandidate {
-            provider: CloudProvider::GoogleDrive,
+            provider,
             browser_profile: DetectedBrowserProfile {
                 browser,
                 source: BrowserProfileSource::InstalledBrowser,
@@ -2188,5 +2218,31 @@ mod tests {
         assert_eq!(selected.len(), 1);
         assert_eq!(selected[0].browser_profile.profile_name, "Profile 3");
         assert!(app.has_selected_detected_accounts());
+    }
+
+    #[test]
+    fn test_load_detected_accounts_leaves_google_photos_unchecked_by_default() {
+        let mut app = App::new();
+        app.state = AppState::ReviewDetectedAccounts;
+        app.load_detected_accounts(DetectionReport {
+            scanned_profiles: Vec::new(),
+            candidates: vec![
+                sample_detected_candidate_for_provider(
+                    CloudProvider::GooglePhotos,
+                    DetectionCapability::RunnableAuth,
+                    "Profile 1",
+                ),
+                sample_detected_candidate_for_provider(
+                    CloudProvider::GoogleDrive,
+                    DetectionCapability::RunnableAuth,
+                    "Profile 2",
+                ),
+            ],
+            errors: Vec::new(),
+        });
+
+        assert_eq!(app.detected_accounts.checked, vec![false, true]);
+        assert_eq!(app.detected_accounts.selected, 1);
+        assert!(app.detected_accounts.status.contains("left unchecked by default"));
     }
 }

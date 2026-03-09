@@ -192,7 +192,15 @@ impl ProviderConfig {
                 client_secret: "X4Z3ca8xfWDb1Voo-F9a7ZxJ",
                 auth_url: "https://accounts.google.com/o/oauth2/auth",
                 token_url: "https://oauth2.googleapis.com/token",
-                scopes: &["https://www.googleapis.com/auth/photoslibrary.readonly"],
+                // Google Photos now uses app-created-data scopes for custom OAuth clients.
+                // The default auth path is handled via `rclone authorize`, but keeping these
+                // scopes current avoids prompting for the legacy blocked scope when a custom
+                // client ID/secret is configured.
+                scopes: &[
+                    "https://www.googleapis.com/auth/photoslibrary.appendonly",
+                    "https://www.googleapis.com/auth/photoslibrary.readonly.appcreateddata",
+                    "https://www.googleapis.com/auth/photoslibrary.edit.appcreateddata",
+                ],
             },
             rclone_options: &[],
         }
@@ -484,5 +492,15 @@ mod tests {
         assert!(url.contains("client_id="));
         assert!(url.contains("redirect_uri="));
         assert!(url.contains("state=test_state"));
+    }
+
+    #[test]
+    fn test_google_photos_uses_app_created_data_scopes() {
+        let config = ProviderConfig::for_provider(CloudProvider::GooglePhotos);
+        let scopes = config.oauth.scopes.join(" ");
+
+        assert!(scopes.contains("photoslibrary.appendonly"));
+        assert!(scopes.contains("photoslibrary.readonly.appcreateddata"));
+        assert!(scopes.contains("photoslibrary.edit.appcreateddata"));
     }
 }
