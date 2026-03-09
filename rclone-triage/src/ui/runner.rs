@@ -743,7 +743,22 @@ pub fn run_loop(app: &mut App) -> Result<()> {
 
                 match key.code {
                     KeyCode::Char('q') | KeyCode::Esc => {
-                        if app.state == crate::ui::AppState::ConfigBrowser {
+                        if app.state == crate::ui::AppState::ReviewDetectedAccounts
+                            || app.state == crate::ui::AppState::DetectingAccounts
+                        {
+                            app.state = crate::ui::AppState::MainMenu;
+                        } else if app.state == crate::ui::AppState::Authenticating
+                            && matches!(
+                                app.selected_action,
+                                Some(crate::ui::MenuAction::AutoDetectAccounts)
+                            )
+                        {
+                            app.clear_auth_batch();
+                            app.detected_accounts.status =
+                                "Authentication cancelled. Review the detected accounts and retry."
+                                    .to_string();
+                            app.state = crate::ui::AppState::ReviewDetectedAccounts;
+                        } else if app.state == crate::ui::AppState::ConfigBrowser {
                             app.config_browser.last_error = None;
                             app.config_browser.selected_config = None;
                             app.state = crate::ui::AppState::MainMenu;
@@ -774,6 +789,16 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                         if app.state == crate::ui::AppState::MainMenu {
                             if handle_main_menu_enter(app) {
                                 break;
+                            }
+                            if matches!(
+                                app.selected_action,
+                                Some(crate::ui::MenuAction::AutoDetectAccounts)
+                            ) && app.state == crate::ui::AppState::DetectingAccounts
+                            {
+                                crate::ui::flows::auto_detect::perform_detection_flow(
+                                    app,
+                                    &mut terminal,
+                                )?;
                             }
                             // On Windows the native file dialog may have
                             // pre-selected a config file.  Trigger the
@@ -1037,6 +1062,21 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                             if app.state == crate::ui::AppState::Authenticating {
                                 crate::ui::flows::auth::perform_auth_flow(app, &mut terminal)?;
                             }
+                        } else if app.state == crate::ui::AppState::DetectingAccounts {
+                            crate::ui::flows::auto_detect::perform_detection_flow(
+                                app,
+                                &mut terminal,
+                            )?;
+                        } else if app.state == crate::ui::AppState::ReviewDetectedAccounts {
+                            if !app.has_selected_detected_accounts() {
+                                app.detected_accounts.status =
+                                    "Select at least one runnable detected account first."
+                                        .to_string();
+                                continue;
+                            }
+                            app.state = crate::ui::AppState::Authenticating;
+                            app.clear_auth_batch();
+                            crate::ui::flows::auth::perform_auth_flow(app, &mut terminal)?;
                         } else if app.state == crate::ui::AppState::PostAuthChoice {
                             let choice = match app.post_auth_selected {
                                 0 => crate::ui::PostAuthAction::ListToCsv,
@@ -1057,6 +1097,13 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                                 }
                                 crate::ui::PostAuthAction::AddAnotherProvider => {
                                     // Go back to provider select to authenticate another batch.
+                                    if matches!(
+                                        app.selected_action,
+                                        Some(crate::ui::MenuAction::AutoDetectAccounts)
+                                    ) {
+                                        app.selected_action =
+                                            Some(crate::ui::MenuAction::Authenticate);
+                                    }
                                     app.provider.chosen = None;
                                     app.provider.chosen_multiple.clear();
                                     app.provider.checked = vec![false; app.provider.entries.len()];
@@ -1085,7 +1132,11 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                         }
                     }
                     KeyCode::Backspace => {
-                        if app.state == crate::ui::AppState::ConfigBrowser {
+                        if app.state == crate::ui::AppState::ReviewDetectedAccounts
+                            || app.state == crate::ui::AppState::DetectingAccounts
+                        {
+                            app.state = crate::ui::AppState::MainMenu;
+                        } else if app.state == crate::ui::AppState::ConfigBrowser {
                             app.config_browser.go_parent();
                         } else if app.state == crate::ui::AppState::Listing {
                             if let Some(ref task) = app.listing_task {
@@ -1110,6 +1161,17 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                             } else {
                                 app.state = crate::ui::AppState::PostAuthChoice;
                             }
+                        } else if app.state == crate::ui::AppState::Authenticating
+                            && matches!(
+                                app.selected_action,
+                                Some(crate::ui::MenuAction::AutoDetectAccounts)
+                            )
+                        {
+                            app.clear_auth_batch();
+                            app.detected_accounts.status =
+                                "Authentication cancelled. Review the detected accounts and retry."
+                                    .to_string();
+                            app.state = crate::ui::AppState::ReviewDetectedAccounts;
                         } else if app.state == crate::ui::AppState::Authenticating {
                             app.clear_auth_batch();
                             app.back();
@@ -1148,6 +1210,8 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                             app.mobile_flow_up();
                         } else if app.state == crate::ui::AppState::BrowserSelect {
                             app.browser_up();
+                        } else if app.state == crate::ui::AppState::ReviewDetectedAccounts {
+                            app.detected_accounts_up();
                         } else if app.state == crate::ui::AppState::PostAuthChoice {
                             if app.post_auth_selected > 0 {
                                 app.post_auth_selected -= 1;
@@ -1175,6 +1239,8 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                             app.mobile_flow_down();
                         } else if app.state == crate::ui::AppState::BrowserSelect {
                             app.browser_down();
+                        } else if app.state == crate::ui::AppState::ReviewDetectedAccounts {
+                            app.detected_accounts_down();
                         } else if app.state == crate::ui::AppState::PostAuthChoice {
                             app.post_auth_selected = (app.post_auth_selected + 1) % 4;
                         } else if app.state == crate::ui::AppState::FileList {
@@ -1184,6 +1250,11 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                     KeyCode::Char('r') => {
                         if app.state == crate::ui::AppState::ProviderSelect {
                             try_refresh_providers(app);
+                        } else if app.state == crate::ui::AppState::ReviewDetectedAccounts {
+                            crate::ui::flows::auto_detect::perform_detection_flow(
+                                app,
+                                &mut terminal,
+                            )?;
                         } else if app.state == crate::ui::AppState::Complete
                             && !app.download.failures.is_empty()
                         {
@@ -1346,6 +1417,8 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                             app.toggle_provider_selection();
                         } else if app.state == crate::ui::AppState::BrowserSelect {
                             app.toggle_browser_selection();
+                        } else if app.state == crate::ui::AppState::ReviewDetectedAccounts {
+                            app.toggle_detected_account_selection();
                         } else if app.state == crate::ui::AppState::RemoteSelect {
                             app.toggle_remote_selection();
                         } else if app.state == crate::ui::AppState::FileList {
@@ -1354,7 +1427,11 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                     }
                     KeyCode::Char('a') => {
                         // 'a' selects all files
-                        if app.state == crate::ui::AppState::FileList {
+                        if app.state == crate::ui::AppState::ReviewDetectedAccounts {
+                            app.select_all_runnable_detected_accounts();
+                            app.detected_accounts.status =
+                                "Selected all runnable detected accounts.".to_string();
+                        } else if app.state == crate::ui::AppState::FileList {
                             app.select_all_files();
                         }
                     }
@@ -1371,6 +1448,7 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                     | crate::ui::AppState::AdditionalOptions
                     | crate::ui::AppState::OneDriveMenu
                     | crate::ui::AppState::MobileAuthFlow
+                    | crate::ui::AppState::DetectingAccounts
                     | crate::ui::AppState::Authenticating
                     | crate::ui::AppState::Downloading
             ) {
@@ -1451,6 +1529,8 @@ fn handle_main_menu_enter(app: &mut App) -> bool {
             if let Err(e) = app.init_case(output_dir) {
                 app.auth_status = format!("Failed to create case: {}", e);
                 app.menu_status = format!("Failed to create case: {}", e);
+            } else if action == crate::ui::MenuAction::AutoDetectAccounts {
+                app.state = crate::ui::AppState::DetectingAccounts;
             } else if action == crate::ui::MenuAction::RetrieveList {
                 // On Windows, try native file dialog first; fall back to TUI browser
                 // if cancelled or if it fails. On non-Windows, go straight to TUI.
@@ -2026,6 +2106,26 @@ mod tests {
             Some(crate::ui::MenuAction::DownloadFromCsv)
         );
         assert!(app.menu_status.is_empty());
+    }
+
+    #[test]
+    fn test_main_menu_enter_auto_detect_starts_detecting_flow() {
+        let mut app = App::new();
+        let index = app
+            .menu_items
+            .iter()
+            .position(|item| item.action == crate::ui::MenuAction::AutoDetectAccounts)
+            .unwrap();
+        app.menu_selected = index;
+
+        let exited = handle_main_menu_enter(&mut app);
+
+        assert!(!exited);
+        assert_eq!(app.state, crate::ui::AppState::DetectingAccounts);
+        assert_eq!(
+            app.selected_action,
+            Some(crate::ui::MenuAction::AutoDetectAccounts)
+        );
     }
 
     #[test]

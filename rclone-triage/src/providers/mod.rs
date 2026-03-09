@@ -3,6 +3,7 @@
 //! Defines supported cloud providers and their configurations.
 
 pub mod auth;
+pub mod account_detection;
 pub mod browser;
 pub mod config;
 pub mod credentials;

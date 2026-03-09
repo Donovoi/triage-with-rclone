@@ -8,8 +8,9 @@ use ratatui::Frame;
 
 use crate::ui::screens::{
     auth::AuthScreen, browser_select::BrowserSelectScreen, config_browser::ConfigBrowserScreen,
-    download::DownloadScreen, files::FilesScreen, listing::ListingScreen,
-    main_menu::MainMenuScreen, provider_select::ProviderSelectScreen,
+    detected_accounts::{DetectedAccountRow, DetectedAccountsScreen}, download::DownloadScreen,
+    files::FilesScreen, listing::ListingScreen, main_menu::MainMenuScreen,
+    provider_select::ProviderSelectScreen,
     remote_select::RemoteSelectScreen, report::ReportScreen,
 };
 use crate::ui::theme;
@@ -34,6 +35,8 @@ fn main_menu_banner_lines(frame: u64) -> Vec<Line<'static>> {
             Span::styled("| ", theme::panel_border_style()),
             Span::styled("auth", theme::info_style()),
             Span::styled(" • ", theme::muted_style()),
+            Span::styled("detect", theme::warning_style()),
+            Span::styled(" • ", theme::muted_style()),
             Span::styled("enumerate", theme::warning_style()),
             Span::styled(" • ", theme::muted_style()),
             Span::styled("xfer", theme::success_style()),
@@ -53,6 +56,7 @@ fn main_menu_banner_lines(frame: u64) -> Vec<Line<'static>> {
 fn main_menu_display_label(item: &MenuItem) -> String {
     match item.action {
         MenuAction::Authenticate => "[AUTH] Browser auth on suspect device".to_string(),
+        MenuAction::AutoDetectAccounts => "[DETECT] Review likely signed-in accounts".to_string(),
         MenuAction::RetrieveList => "[LIST] Load authenticated config".to_string(),
         MenuAction::DownloadFromCsv => "[XFER] Download from CSV/XLSX".to_string(),
         MenuAction::MountProvider => "[MOUNT] Mount remote as network share".to_string(),
@@ -89,7 +93,7 @@ fn main_menu_footer_lines(app: &App) -> Vec<Line<'static>> {
     lines.push(Line::from(vec![
         Span::styled("Ops ", theme::panel_title_style()),
         Span::styled(
-            "auth • list • xfer • mount • sso • mobile • tools",
+            "auth • detect • list • xfer • mount • sso • mobile • tools",
             theme::muted_style(),
         ),
     ]));
@@ -135,6 +139,49 @@ pub fn render_state(frame: &mut Frame, app: &App) {
 
             let footer = Paragraph::new(main_menu_footer_lines(app)).wrap(Wrap { trim: true });
             frame.render_widget(footer, chunks[2]);
+        }
+        AppState::DetectingAccounts => {
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Min(3), Constraint::Length(4)])
+                .split(area);
+
+            let status = if app.detected_accounts.status.is_empty() {
+                "Scanning installed browsers and known profile roots for likely provider accounts..."
+                    .to_string()
+            } else {
+                app.detected_accounts.status.clone()
+            };
+
+            let body = Paragraph::new(vec![
+                Line::from(Span::styled(
+                    "Automatic account detection",
+                    theme::panel_title_style(),
+                )),
+                Line::from(""),
+                Line::from(Span::styled(status, theme::strong_style())),
+                Line::from(""),
+                Line::from(Span::styled(
+                    format!(
+                        "{} scanning browser profiles and provider cookies...",
+                        theme::footer_spinner(app.animation_frame)
+                    ),
+                    theme::success_style(),
+                )),
+            ])
+            .block(theme::panel_block("Detecting likely accounts"))
+            .wrap(Wrap { trim: true });
+            frame.render_widget(body, chunks[0]);
+
+            let footer = Paragraph::new(vec![
+                Line::from(Span::styled(
+                    "This uses the existing session/cookie pipeline to locate likely reusable accounts.",
+                    theme::hint_style(),
+                )),
+                Line::from("Ctrl+E export • Backspace/Esc/q cancel after scan completes"),
+            ])
+            .wrap(Wrap { trim: true });
+            frame.render_widget(footer, chunks[1]);
         }
         AppState::AdditionalOptions => {
             let chunks = Layout::default()
@@ -417,9 +464,11 @@ pub fn render_state(frame: &mut Frame, app: &App) {
                 BrowserSelectScreen::new(names, app.browser.checked.clone(), app.browser.selected);
             frame.render_widget(&screen, chunks[0]);
 
-            let next = "Next: Enter selects browser → authentication opens.";
+            let next =
+                "Next: Enter starts auth. Signed-in sessions may be reused automatically.";
             let status = if app.auth_status.is_empty() {
-                "Select one or more browsers for authentication.".to_string()
+                "If no session is reusable, the browser/provider may ask which account to use."
+                    .to_string()
             } else {
                 app.auth_status.clone()
             };
@@ -429,6 +478,102 @@ pub fn render_state(frame: &mut Frame, app: &App) {
                 Line::from(next),
                 Line::from(status),
                 Line::from(controls),
+            ])
+            .wrap(Wrap { trim: true });
+            frame.render_widget(footer, chunks[1]);
+        }
+        AppState::ReviewDetectedAccounts => {
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Min(3), Constraint::Length(4)])
+                .split(area);
+
+            let report = app.detected_accounts.report.as_ref();
+            let rows = if let Some(report) = report {
+                if report.candidates.is_empty() {
+                    vec![DetectedAccountRow {
+                        label: "No likely provider accounts were detected during the last scan."
+                            .to_string(),
+                        checked: false,
+                        selectable: false,
+                    }]
+                } else {
+                    report
+                        .candidates
+                        .iter()
+                        .enumerate()
+                        .map(|(idx, candidate)| DetectedAccountRow {
+                            label: candidate.list_label(),
+                            checked: app
+                                .detected_accounts
+                                .checked
+                                .get(idx)
+                                .copied()
+                                .unwrap_or(false),
+                            selectable: candidate.selection_allowed(),
+                        })
+                        .collect()
+                }
+            } else {
+                vec![DetectedAccountRow {
+                    label: "No detection report is loaded yet.".to_string(),
+                    checked: false,
+                    selectable: false,
+                }]
+            };
+
+            let mut details = Vec::new();
+            if let Some(candidate) = app.current_detected_account() {
+                details.push(format!("Provider: {}", candidate.provider.display_name()));
+                details.push(format!(
+                    "Browser: {}",
+                    candidate.browser_profile.browser.display_name()
+                ));
+                details.push(format!("Profile: {}", candidate.browser_profile.profile_name));
+                details.push(format!("Capability: {}", candidate.capability.label()));
+                details.push(format!("Confidence: {}", candidate.confidence.label()));
+                details.push(format!("Account hint: {}", candidate.account_label()));
+                details.push(format!(
+                    "Profile source: {}",
+                    candidate.browser_profile.source.summary()
+                ));
+                if let Some(path) = candidate.browser_profile.profile_path() {
+                    details.push(format!("Profile path: {}", path.display()));
+                }
+                details.push(String::new());
+                details.push("Evidence:".to_string());
+                for evidence in &candidate.evidence {
+                    details.push(format!("• {}: {}", evidence.label, evidence.detail));
+                }
+            } else if let Some(report) = report {
+                details.push(report.summary_line());
+                if !report.errors.is_empty() {
+                    details.push(String::new());
+                    details.push("Warnings:".to_string());
+                    for error in report.errors.iter().take(4) {
+                        details.push(format!("• {}", error));
+                    }
+                    if report.errors.len() > 4 {
+                        details.push(format!("• ... and {} more", report.errors.len() - 4));
+                    }
+                }
+            } else {
+                details.push(app.detected_accounts.status.clone());
+            }
+
+            let screen = DetectedAccountsScreen::new(rows, app.detected_accounts.selected, details);
+            frame.render_widget(&screen, chunks[0]);
+
+            let status = if app.detected_accounts.status.is_empty() {
+                "Review runnable candidates before starting authentication.".to_string()
+            } else {
+                app.detected_accounts.status.clone()
+            };
+            let footer = Paragraph::new(vec![
+                Line::from(status),
+                Line::from(
+                    "Up/Down select • Space toggle runnable • a select all runnable • r rescan • Enter auth selected • Ctrl+E export • Backspace/Esc/q main menu",
+                ),
             ])
             .wrap(Wrap { trim: true });
             frame.render_widget(footer, chunks[1]);
@@ -851,6 +996,8 @@ mod tests {
 
         for state in [
             AppState::MainMenu,
+            AppState::DetectingAccounts,
+            AppState::ReviewDetectedAccounts,
             AppState::ProviderSelect,
             AppState::ConfigBrowser,
             AppState::RemoteSelect,
@@ -874,5 +1021,32 @@ mod tests {
                 })
                 .unwrap();
         }
+    }
+
+    #[test]
+    fn test_browser_select_footer_mentions_session_reuse_and_account_prompt() {
+        let mut app = App::new();
+        app.state = AppState::BrowserSelect;
+
+        let rendered = export_screen_text(&app, 140, 24);
+
+        assert!(rendered.contains("Signed-in sessions may be reused automatically"));
+        assert!(rendered.contains("the browser/provider may ask which account to use"));
+    }
+
+    #[test]
+    fn test_main_menu_render_mentions_auto_detect_entry() {
+        let mut app = App::new();
+        app.state = AppState::MainMenu;
+        app.menu_selected = app
+            .menu_items
+            .iter()
+            .position(|item| item.action == MenuAction::AutoDetectAccounts)
+            .unwrap();
+
+        let rendered = export_screen_text(&app, 140, 24);
+
+        assert!(rendered.contains("[DETECT] Review likely signed-in accounts"));
+        assert!(rendered.contains("auth • detect • list • xfer • mount • sso • mobile • tools"));
     }
 }

@@ -3,6 +3,7 @@
 pub mod auth;
 pub mod browser_select;
 pub mod config_browser;
+pub mod detected_accounts;
 pub mod download;
 pub mod files;
 pub mod listing;
