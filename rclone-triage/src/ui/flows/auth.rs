@@ -221,6 +221,7 @@ struct AuthOutcome {
 enum BrowserFailureKind {
     ViaRcloneAuthorize,
     LocalhostCallback,
+    LocalhostListenerUnavailable,
     MissingAuthorizeUrl,
     Other,
 }
@@ -228,13 +229,23 @@ enum BrowserFailureKind {
 fn classify_browser_failure(error: &anyhow::Error) -> Option<BrowserFailureKind> {
     let mut saw_browser_timeout = false;
     let mut saw_localhost_callback_timeout = false;
+    let mut saw_localhost_listener_unavailable = false;
     let mut saw_missing_authorize_url = false;
+    let mut saw_direct_retry_failure = false;
 
     for cause in error.chain() {
         let message = cause.to_string().to_lowercase();
 
         if message.contains("did not produce an auth url") {
             saw_missing_authorize_url = true;
+        }
+
+        if message.contains(
+            "direct browser oauth retry failed after rclone authorize did not yield an auth url",
+        ) || message.contains(
+            "direct system-browser oauth retry failed after rclone authorize did not yield an auth url",
+        ) {
+            saw_direct_retry_failure = true;
         }
 
         if message.contains("authentication timed out waiting for") {
@@ -247,9 +258,17 @@ fn classify_browser_failure(error: &anyhow::Error) -> Option<BrowserFailureKind>
         if message.contains("oauth timeout: no response received within") {
             saw_localhost_callback_timeout = true;
         }
+
+        if message.contains("failed to start oauth server on")
+            || message.contains("address already in use")
+        {
+            saw_localhost_listener_unavailable = true;
+        }
     }
 
-    if saw_missing_authorize_url {
+    if saw_direct_retry_failure || saw_localhost_listener_unavailable {
+        Some(BrowserFailureKind::LocalhostListenerUnavailable)
+    } else if saw_missing_authorize_url {
         Some(BrowserFailureKind::MissingAuthorizeUrl)
     } else if saw_localhost_callback_timeout {
         Some(BrowserFailureKind::LocalhostCallback)
@@ -317,6 +336,10 @@ fn build_onedrive_device_code_fallback_message(
         ),
         Some(BrowserFailureKind::LocalhostCallback) => format!(
             "{} browser authentication timed out waiting for the localhost callback; switching to device code.",
+            provider_name
+        ),
+        Some(BrowserFailureKind::LocalhostListenerUnavailable) => format!(
+            "{} browser authentication could not start the localhost callback listener; switching to device code.",
             provider_name
         ),
         Some(BrowserFailureKind::MissingAuthorizeUrl) => format!(
@@ -1362,6 +1385,22 @@ mod tests {
     }
 
     #[test]
+    fn test_should_auto_fallback_to_onedrive_device_code_for_direct_retry_failure() {
+        let error = Err::<(), _>(anyhow::anyhow!(
+            "Failed to start OAuth server on 127.0.0.1:53682: address already in use"
+        ))
+        .context(
+            "Direct browser OAuth retry failed after rclone authorize did not yield an auth URL",
+        )
+        .unwrap_err();
+
+        assert!(should_auto_fallback_to_onedrive_device_code(
+            CloudProvider::OneDrive,
+            &error,
+        ));
+    }
+
+    #[test]
     fn test_should_not_auto_fallback_for_non_timeout_errors() {
         let error = anyhow::anyhow!("OAuth error: access_denied - user declined consent");
 
@@ -1433,6 +1472,22 @@ mod tests {
 
         assert!(message.contains("could not get an rclone authorize URL"));
         assert!(!message.contains("localhost callback"));
+    }
+
+    #[test]
+    fn test_build_onedrive_device_code_fallback_message_for_localhost_listener_unavailable() {
+        let error = Err::<(), _>(anyhow::anyhow!(
+            "Failed to start OAuth server on 127.0.0.1:53682: address already in use"
+        ))
+        .context(
+            "Direct browser OAuth retry failed after rclone authorize did not yield an auth URL",
+        )
+        .unwrap_err();
+
+        let message = build_onedrive_device_code_fallback_message("Microsoft OneDrive", &error);
+
+        assert!(message.contains("could not start the localhost callback listener"));
+        assert!(!message.contains("could not get an rclone authorize URL"));
     }
 
     #[test]

@@ -80,12 +80,30 @@ impl OAuthFlow {
     /// # Returns
     /// The authorization code from the OAuth redirect
     pub fn run(&self, auth_url: &str) -> Result<OAuthResult> {
-        // Open browser
+        let expected_state = extract_param(auth_url, "state");
+        let server = self.bind_server()?;
+
+        // Open browser after the callback server is already listening to avoid
+        // fast redirects hitting a stale listener or racing the bind.
         open::that(auth_url)
             .with_context(|| format!("Failed to open browser with URL: {}", auth_url))?;
 
+        self.wait_for_redirect_on_server(server, expected_state.as_deref())
+    }
+
+    /// Run the OAuth flow using a caller-provided browser opener.
+    ///
+    /// This binds the callback server before opening the browser, which is
+    /// important when the provider may redirect back immediately using an
+    /// existing signed-in session.
+    pub fn run_with_opener<F>(&self, auth_url: &str, open_browser: F) -> Result<OAuthResult>
+    where
+        F: FnOnce(&str) -> Result<()>,
+    {
         let expected_state = extract_param(auth_url, "state");
-        self.wait_for_redirect_with_state(expected_state.as_deref())
+        let server = self.bind_server()?;
+        open_browser(auth_url)?;
+        self.wait_for_redirect_on_server(server, expected_state.as_deref())
     }
 
     /// Wait for the OAuth redirect and optionally validate an expected `state` parameter.
@@ -100,11 +118,22 @@ impl OAuthFlow {
         &self,
         expected_state: Option<&str>,
     ) -> Result<OAuthResult> {
+        let server = self.bind_server()?;
+        self.wait_for_redirect_on_server(server, expected_state)
+    }
+
+    fn bind_server(&self) -> Result<Server> {
         // Start local server
         let bind_addr = format!("{}:{}", self.bind_host, self.port);
-        let server = Server::http(&bind_addr)
-            .map_err(|e| anyhow::anyhow!("Failed to start OAuth server on {}: {}", bind_addr, e))?;
+        Server::http(&bind_addr)
+            .map_err(|e| anyhow::anyhow!("Failed to start OAuth server on {}: {}", bind_addr, e))
+    }
 
+    fn wait_for_redirect_on_server(
+        &self,
+        server: Server,
+        expected_state: Option<&str>,
+    ) -> Result<OAuthResult> {
         let deadline = Instant::now() + self.timeout;
 
         loop {
