@@ -218,23 +218,29 @@ struct AuthOutcome {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum BrowserTimeoutKind {
+enum BrowserFailureKind {
     ViaRcloneAuthorize,
     LocalhostCallback,
+    MissingAuthorizeUrl,
     Other,
 }
 
-fn classify_browser_timeout(error: &anyhow::Error) -> Option<BrowserTimeoutKind> {
+fn classify_browser_failure(error: &anyhow::Error) -> Option<BrowserFailureKind> {
     let mut saw_browser_timeout = false;
     let mut saw_localhost_callback_timeout = false;
+    let mut saw_missing_authorize_url = false;
 
     for cause in error.chain() {
         let message = cause.to_string().to_lowercase();
 
+        if message.contains("did not produce an auth url") {
+            saw_missing_authorize_url = true;
+        }
+
         if message.contains("authentication timed out waiting for") {
             saw_browser_timeout = true;
             if message.contains("via rclone authorize") {
-                return Some(BrowserTimeoutKind::ViaRcloneAuthorize);
+                return Some(BrowserFailureKind::ViaRcloneAuthorize);
             }
         }
 
@@ -243,17 +249,19 @@ fn classify_browser_timeout(error: &anyhow::Error) -> Option<BrowserTimeoutKind>
         }
     }
 
-    if saw_localhost_callback_timeout {
-        Some(BrowserTimeoutKind::LocalhostCallback)
+    if saw_missing_authorize_url {
+        Some(BrowserFailureKind::MissingAuthorizeUrl)
+    } else if saw_localhost_callback_timeout {
+        Some(BrowserFailureKind::LocalhostCallback)
     } else if saw_browser_timeout {
-        Some(BrowserTimeoutKind::Other)
+        Some(BrowserFailureKind::Other)
     } else {
         None
     }
 }
 
 fn auth_error_mentions_timeout(error: &anyhow::Error) -> bool {
-    classify_browser_timeout(error).is_some()
+    classify_browser_failure(error).is_some()
 }
 
 fn should_auto_fallback_to_onedrive_device_code(
@@ -302,13 +310,17 @@ fn build_onedrive_device_code_fallback_message(
     provider_name: &str,
     error: &anyhow::Error,
 ) -> String {
-    match classify_browser_timeout(error) {
-        Some(BrowserTimeoutKind::ViaRcloneAuthorize) => format!(
+    match classify_browser_failure(error) {
+        Some(BrowserFailureKind::ViaRcloneAuthorize) => format!(
             "{} browser authentication timed out via rclone authorize; switching to device code.",
             provider_name
         ),
-        Some(BrowserTimeoutKind::LocalhostCallback) => format!(
+        Some(BrowserFailureKind::LocalhostCallback) => format!(
             "{} browser authentication timed out waiting for the localhost callback; switching to device code.",
+            provider_name
+        ),
+        Some(BrowserFailureKind::MissingAuthorizeUrl) => format!(
+            "{} browser authentication could not get an rclone authorize URL; switching to device code.",
             provider_name
         ),
         _ => format!(
@@ -1338,6 +1350,18 @@ mod tests {
     }
 
     #[test]
+    fn test_should_auto_fallback_to_onedrive_device_code_for_missing_authorize_url() {
+        let error = anyhow::anyhow!(
+            "rclone authorize did not produce an auth URL for Microsoft OneDrive"
+        );
+
+        assert!(should_auto_fallback_to_onedrive_device_code(
+            CloudProvider::OneDrive,
+            &error,
+        ));
+    }
+
+    #[test]
     fn test_should_not_auto_fallback_for_non_timeout_errors() {
         let error = anyhow::anyhow!("OAuth error: access_denied - user declined consent");
 
@@ -1397,6 +1421,18 @@ mod tests {
 
         assert!(message.contains("localhost callback"));
         assert!(!message.contains("via rclone authorize"));
+    }
+
+    #[test]
+    fn test_build_onedrive_device_code_fallback_message_for_missing_authorize_url() {
+        let error = anyhow::anyhow!(
+            "rclone authorize did not produce an auth URL for Microsoft OneDrive"
+        );
+
+        let message = build_onedrive_device_code_fallback_message("Microsoft OneDrive", &error);
+
+        assert!(message.contains("could not get an rclone authorize URL"));
+        assert!(!message.contains("localhost callback"));
     }
 
     #[test]
