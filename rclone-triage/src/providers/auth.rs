@@ -99,6 +99,15 @@ fn select_browser_auth_strategy(
     }
 }
 
+fn should_retry_onedrive_direct_browser_auth(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .to_string()
+            .to_lowercase()
+            .contains("did not produce an auth url")
+    })
+}
+
 fn resolve_effective_client_secret(
     provider_config: &ProviderConfig,
     custom: Option<&OAuthCredentials>,
@@ -727,10 +736,37 @@ pub fn authenticate_with_browser(
             )?,
             false,
         ),
-        BrowserAuthStrategy::ViaRcloneAuthorize => (
-            authenticate_with_browser_via_rclone(provider, Some(browser), rclone)?,
-            true,
-        ),
+        BrowserAuthStrategy::ViaRcloneAuthorize => {
+            match authenticate_with_browser_via_rclone(provider, Some(browser), rclone) {
+                Ok(token) => (token, true),
+                Err(error)
+                    if provider == CloudProvider::OneDrive
+                        && should_retry_onedrive_direct_browser_auth(&error) =>
+                {
+                    tracing::warn!(
+                        provider = %provider.display_name(),
+                        browser = %browser.display_name(),
+                        error = %error,
+                        "rclone authorize did not yield an auth URL for OneDrive; retrying with direct browser OAuth"
+                    );
+
+                    (
+                        authenticate_with_browser_direct(
+                            provider,
+                            Some(browser),
+                            &provider_config,
+                            &auth_settings.client_id,
+                            auth_settings.client_secret.as_deref(),
+                        )
+                        .context(
+                            "Direct browser OAuth retry failed after rclone authorize did not yield an auth URL",
+                        )?,
+                        false,
+                    )
+                }
+                Err(error) => return Err(error),
+            }
+        }
     };
 
     // Build config options
@@ -815,10 +851,36 @@ pub fn authenticate_with_system_browser(
             )?,
             false,
         ),
-        BrowserAuthStrategy::ViaRcloneAuthorize => (
-            authenticate_with_browser_via_rclone(provider, None, rclone)?,
-            true,
-        ),
+        BrowserAuthStrategy::ViaRcloneAuthorize => {
+            match authenticate_with_browser_via_rclone(provider, None, rclone) {
+                Ok(token) => (token, true),
+                Err(error)
+                    if provider == CloudProvider::OneDrive
+                        && should_retry_onedrive_direct_browser_auth(&error) =>
+                {
+                    tracing::warn!(
+                        provider = %provider.display_name(),
+                        error = %error,
+                        "rclone authorize did not yield an auth URL for OneDrive; retrying with direct system-browser OAuth"
+                    );
+
+                    (
+                        authenticate_with_browser_direct(
+                            provider,
+                            None,
+                            &provider_config,
+                            &auth_settings.client_id,
+                            auth_settings.client_secret.as_deref(),
+                        )
+                        .context(
+                            "Direct system-browser OAuth retry failed after rclone authorize did not yield an auth URL",
+                        )?,
+                        false,
+                    )
+                }
+                Err(error) => return Err(error),
+            }
+        }
     };
 
     let mut options: Vec<(String, String)> = Vec::new();
@@ -872,14 +934,42 @@ fn authenticate_with_browser_via_rclone(
 
     let mut running = spawn_authorize(rclone, provider.rclone_type(), true)?;
 
-    let auth_url = running
-        .wait_for_auth_url(Duration::from_secs(15))?
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "rclone authorize did not produce an auth URL for {}",
-                provider.display_name()
-            )
-        })?;
+    let auth_url = match running.wait_for_auth_url(Duration::from_secs(20))? {
+        Some(url) => url,
+        None => {
+            let finished = running.wait(Some(Duration::from_secs(1)))?;
+            let mut details = Vec::new();
+
+            if finished.timed_out {
+                details.push("still running after waiting for the auth URL".to_string());
+            } else if finished.status != 0 {
+                details.push(format!("exit status {}", finished.status));
+            }
+
+            let stderr = finished.stderr.join("\n").trim().to_string();
+            if !stderr.is_empty() {
+                details.push(format!("stderr: {}", stderr));
+            }
+
+            let stdout = finished.stdout.join("\n").trim().to_string();
+            if !stdout.is_empty() {
+                details.push(format!("stdout: {}", stdout));
+            }
+
+            if details.is_empty() {
+                bail!(
+                    "rclone authorize did not produce an auth URL for {}",
+                    provider.display_name()
+                );
+            }
+
+            bail!(
+                "rclone authorize did not produce an auth URL for {} ({})",
+                provider.display_name(),
+                details.join("; ")
+            );
+        }
+    };
 
     open_browser_to_url(browser, &auth_url)?;
 
@@ -1284,6 +1374,22 @@ mod tests {
             select_browser_auth_strategy(CloudProvider::GooglePhotos, true, false),
             BrowserAuthStrategy::ViaRcloneAuthorize
         );
+    }
+
+    #[test]
+    fn test_should_retry_onedrive_direct_browser_auth_for_missing_auth_url() {
+        let error = anyhow::anyhow!(
+            "rclone authorize did not produce an auth URL for Microsoft OneDrive"
+        );
+
+        assert!(should_retry_onedrive_direct_browser_auth(&error));
+    }
+
+    #[test]
+    fn test_should_not_retry_onedrive_direct_browser_auth_for_other_errors() {
+        let error = anyhow::anyhow!("OAuth error: access_denied");
+
+        assert!(!should_retry_onedrive_direct_browser_auth(&error));
     }
 
     #[test]
