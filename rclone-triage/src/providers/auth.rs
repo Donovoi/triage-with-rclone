@@ -1012,10 +1012,8 @@ fn authenticate_with_browser_direct(
     let auth_url =
         provider_config.build_auth_url_with_client_id(client_id, &redirect_uri, Some(&state));
 
-    open_browser_to_url(browser, &auth_url)?;
-
     let result = oauth
-        .wait_for_redirect_with_state(Some(&state))
+        .run_with_opener(&auth_url, |url| open_browser_to_url(browser, url))
         .with_context(|| {
             format!(
                 "OAuth authentication failed for {}",
