@@ -6,6 +6,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, StatefulWidget, Widget};
 
 use crate::ui::theme;
+use crate::ui::widgets::{marquee_text_line, text_width};
 
 /// Simple list widget
 #[derive(Debug, Clone)]
@@ -13,6 +14,7 @@ pub struct SimpleList {
     pub title: String,
     pub items: Vec<String>,
     pub selected: usize,
+    pub animation_frame: u64,
 }
 
 impl SimpleList {
@@ -21,16 +23,32 @@ impl SimpleList {
             title: title.into(),
             items,
             selected,
+            animation_frame: 0,
         }
     }
 }
 
 impl Widget for &SimpleList {
     fn render(self, area: Rect, buf: &mut Buffer) {
+        let highlight_width = text_width(theme::list_highlight_symbol(self.animation_frame)) as u16;
+        let inner_width = area.width.saturating_sub(2);
         let list_items = self
             .items
             .iter()
-            .map(|item| ListItem::new(item.clone()))
+            .enumerate()
+            .map(|(idx, item)| {
+                let available_width = inner_width.saturating_sub(if idx == self.selected {
+                    highlight_width
+                } else {
+                    0
+                });
+                ListItem::new(marquee_text_line(
+                    item,
+                    theme::strong_style(),
+                    available_width,
+                    self.animation_frame,
+                ))
+            })
             .collect::<Vec<_>>();
 
         let list = List::new(list_items)
@@ -45,7 +63,7 @@ impl Widget for &SimpleList {
             )
             .style(theme::list_style())
             .highlight_style(theme::list_highlight_style())
-            .highlight_symbol(theme::list_highlight_symbol(0));
+            .highlight_symbol(theme::list_highlight_symbol(self.animation_frame));
 
         let mut state = ListState::default();
         if !self.items.is_empty() {

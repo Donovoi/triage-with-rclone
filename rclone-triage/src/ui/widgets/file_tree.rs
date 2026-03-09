@@ -6,12 +6,14 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, StatefulWidget, Widget};
 
 use crate::ui::theme;
+use crate::ui::widgets::{marquee_text_line, text_width};
 
 /// File tree widget
 #[derive(Debug, Clone)]
 pub struct FileTree {
     pub entries: Vec<String>,
     pub selected: usize,
+    pub animation_frame: u64,
 }
 
 impl FileTree {
@@ -19,6 +21,7 @@ impl FileTree {
         Self {
             entries,
             selected: 0,
+            animation_frame: 0,
         }
     }
 
@@ -41,10 +44,26 @@ impl FileTree {
 
 impl Widget for &FileTree {
     fn render(self, area: Rect, buf: &mut Buffer) {
+        let highlight_symbol = theme::list_highlight_symbol(self.animation_frame);
+        let highlight_width = text_width(highlight_symbol) as u16;
+        let inner_width = area.width.saturating_sub(2);
         let items: Vec<ListItem> = self
             .entries
             .iter()
-            .map(|e| ListItem::new(e.clone()))
+            .enumerate()
+            .map(|(idx, e)| {
+                let available_width = inner_width.saturating_sub(if idx == self.selected {
+                    highlight_width
+                } else {
+                    0
+                });
+                ListItem::new(marquee_text_line(
+                    e,
+                    theme::strong_style(),
+                    available_width,
+                    self.animation_frame,
+                ))
+            })
             .collect();
 
         let list = List::new(items)
@@ -59,7 +78,7 @@ impl Widget for &FileTree {
             )
             .style(theme::list_style())
             .highlight_style(theme::list_highlight_style())
-            .highlight_symbol(theme::list_highlight_symbol(0));
+            .highlight_symbol(highlight_symbol);
 
         let mut state = ListState::default();
         if !self.entries.is_empty() {

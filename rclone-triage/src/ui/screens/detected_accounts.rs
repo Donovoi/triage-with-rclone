@@ -6,6 +6,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{List, ListItem, ListState, Paragraph, StatefulWidget, Widget, Wrap};
 
 use crate::ui::theme;
+use crate::ui::widgets::{marquee_line, marquee_text_line, text_width, MarqueeSegment};
 
 #[derive(Debug, Clone)]
 pub struct DetectedAccountRow {
@@ -18,6 +19,7 @@ pub struct DetectedAccountsScreen {
     pub rows: Vec<DetectedAccountRow>,
     pub selected: usize,
     pub details: Vec<String>,
+    pub animation_frame: u64,
 }
 
 impl DetectedAccountsScreen {
@@ -26,6 +28,7 @@ impl DetectedAccountsScreen {
             rows,
             selected,
             details,
+            animation_frame: 0,
         }
     }
 }
@@ -37,10 +40,15 @@ impl Widget for &DetectedAccountsScreen {
             .constraints([Constraint::Percentage(62), Constraint::Percentage(38)])
             .split(area);
 
+        let highlight_symbol = theme::list_highlight_symbol(self.animation_frame);
+        let highlight_width = text_width(highlight_symbol) as u16;
+        let list_inner_width = chunks[0].width.saturating_sub(2);
+
         let items: Vec<ListItem> = self
             .rows
             .iter()
-            .map(|row| {
+            .enumerate()
+            .map(|(idx, row)| {
                 let prefix = if row.selectable {
                     if row.checked { "[x] " } else { "[ ] " }
                 } else {
@@ -61,10 +69,18 @@ impl Widget for &DetectedAccountsScreen {
                     theme::muted_style()
                 };
 
-                ListItem::new(Line::from(vec![
-                    Span::styled(prefix, prefix_style),
-                    Span::styled(row.label.clone(), label_style),
-                ]))
+                let available_width = list_inner_width.saturating_sub(if idx == self.selected {
+                    highlight_width
+                } else {
+                    0
+                });
+
+                ListItem::new(marquee_line(
+                    vec![Span::styled(prefix, prefix_style)],
+                    vec![MarqueeSegment::new(&row.label, label_style)],
+                    available_width,
+                    self.animation_frame,
+                ))
             })
             .collect();
 
@@ -72,7 +88,7 @@ impl Widget for &DetectedAccountsScreen {
             .block(theme::panel_block(format!("Detected accounts ({})", self.rows.len())))
             .style(theme::list_style())
             .highlight_style(theme::list_highlight_style())
-            .highlight_symbol(theme::list_highlight_symbol(0));
+            .highlight_symbol(highlight_symbol);
 
         let mut state = ListState::default();
         if !self.rows.is_empty() {
@@ -80,10 +96,17 @@ impl Widget for &DetectedAccountsScreen {
         }
         StatefulWidget::render(list, chunks[0], buf, &mut state);
 
-        let detail_lines: Vec<Line> = self.details.iter().cloned().map(Line::from).collect();
+        let detail_width = chunks[1].width.saturating_sub(2);
+        let detail_lines: Vec<Line> = self
+            .details
+            .iter()
+            .map(|line| {
+                marquee_text_line(line, theme::strong_style(), detail_width, self.animation_frame)
+            })
+            .collect();
         let details = Paragraph::new(detail_lines)
             .block(theme::panel_block("Detection details"))
-            .wrap(Wrap { trim: true });
+            .wrap(Wrap { trim: false });
         details.render(chunks[1], buf);
     }
 }

@@ -270,11 +270,12 @@ pub fn render_state(frame: &mut Frame, app: &App) {
                 .iter()
                 .map(|p| p.display_name().to_string())
                 .collect::<Vec<_>>();
-            let screen = ProviderSelectScreen::new(
+            let mut screen = ProviderSelectScreen::new(
                 names,
                 app.provider.checked.clone(),
                 app.provider.selected,
             );
+            screen.list.animation_frame = app.animation_frame;
             frame.render_widget(&screen, content_chunks[0]);
 
             let mode = app
@@ -381,11 +382,12 @@ pub fn render_state(frame: &mut Frame, app: &App) {
                 .direction(Direction::Vertical)
                 .constraints([Constraint::Min(3), Constraint::Length(4)])
                 .split(area);
-            let screen = RemoteSelectScreen::new(
+            let mut screen = RemoteSelectScreen::new(
                 app.remote.options.clone(),
                 app.remote.checked.clone(),
                 app.remote.selected,
             );
+            screen.animation_frame = app.animation_frame;
             frame.render_widget(&screen, chunks[0]);
 
             let provider_name = app
@@ -460,8 +462,9 @@ pub fn render_state(frame: &mut Frame, app: &App) {
                 .direction(Direction::Vertical)
                 .constraints([Constraint::Min(3), Constraint::Length(3)])
                 .split(area);
-            let screen =
+            let mut screen =
                 BrowserSelectScreen::new(names, app.browser.checked.clone(), app.browser.selected);
+            screen.list.animation_frame = app.animation_frame;
             frame.render_widget(&screen, chunks[0]);
 
             let next =
@@ -561,7 +564,9 @@ pub fn render_state(frame: &mut Frame, app: &App) {
                 details.push(app.detected_accounts.status.clone());
             }
 
-            let screen = DetectedAccountsScreen::new(rows, app.detected_accounts.selected, details);
+            let mut screen =
+                DetectedAccountsScreen::new(rows, app.detected_accounts.selected, details);
+            screen.animation_frame = app.animation_frame;
             frame.render_widget(&screen, chunks[0]);
 
             let status = if app.detected_accounts.status.is_empty() {
@@ -757,6 +762,7 @@ pub fn render_state(frame: &mut Frame, app: &App) {
                 .split(area);
             let mut screen = FilesScreen::new(entries);
             screen.tree.selected = app.files.selected;
+            screen.tree.animation_frame = app.animation_frame;
             frame.render_widget(&screen, chunks[0]);
 
             let (hint, controls) = match app.selected_action {
@@ -882,7 +888,7 @@ pub fn render_state(frame: &mut Frame, app: &App) {
                 .constraints([Constraint::Min(3), Constraint::Length(3)])
                 .split(area);
             let has_error = app.config_browser.last_error.is_some();
-            let screen = ConfigBrowserScreen::new(
+            let mut screen = ConfigBrowserScreen::new(
                 app.config_browser.current_dir.display().to_string(),
                 app.config_browser.entries.clone(),
                 app.config_browser.selected,
@@ -890,6 +896,7 @@ pub fn render_state(frame: &mut Frame, app: &App) {
                 app.config_browser.preview.clone(),
             )
             .with_error(app.config_browser.last_error.clone());
+            screen.animation_frame = app.animation_frame;
             frame.render_widget(&screen, chunks[0]);
 
             let (hint, controls) = if has_error {

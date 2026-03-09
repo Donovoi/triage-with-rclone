@@ -1447,9 +1447,15 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                 crate::ui::AppState::MainMenu
                     | crate::ui::AppState::AdditionalOptions
                     | crate::ui::AppState::OneDriveMenu
+                    | crate::ui::AppState::ProviderSelect
+                    | crate::ui::AppState::ConfigBrowser
+                    | crate::ui::AppState::RemoteSelect
                     | crate::ui::AppState::MobileAuthFlow
+                    | crate::ui::AppState::BrowserSelect
                     | crate::ui::AppState::DetectingAccounts
+                    | crate::ui::AppState::ReviewDetectedAccounts
                     | crate::ui::AppState::Authenticating
+                    | crate::ui::AppState::FileList
                     | crate::ui::AppState::Downloading
             ) {
                 needs_redraw = true;

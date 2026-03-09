@@ -6,6 +6,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, StatefulWidget, Widget};
 
 use crate::ui::theme;
+use crate::ui::widgets::{marquee_line, marquee_text_line, text_width, MarqueeSegment};
 
 /// Main menu list widget
 #[derive(Debug, Clone)]
@@ -29,10 +30,21 @@ impl MenuList {
 
 impl Widget for &MenuList {
     fn render(self, area: Rect, buf: &mut Buffer) {
+        let highlight_symbol = theme::list_highlight_symbol(self.animation_frame);
+        let highlight_width = text_width(highlight_symbol) as u16;
+        let inner_width = area.width.saturating_sub(2);
         let list_items = self
             .items
             .iter()
-            .map(|item| ListItem::new(format_menu_item(item)))
+            .enumerate()
+            .map(|(idx, item)| {
+                let available_width = inner_width.saturating_sub(if idx == self.selected {
+                    highlight_width
+                } else {
+                    0
+                });
+                ListItem::new(format_menu_item(item, available_width, self.animation_frame))
+            })
             .collect::<Vec<_>>();
 
         let list = List::new(list_items)
@@ -47,7 +59,7 @@ impl Widget for &MenuList {
             )
             .style(theme::list_style())
             .highlight_style(theme::list_highlight_style())
-            .highlight_symbol(theme::list_highlight_symbol(self.animation_frame));
+            .highlight_symbol(highlight_symbol);
 
         let mut state = ListState::default();
         if !self.items.is_empty() {
@@ -58,15 +70,19 @@ impl Widget for &MenuList {
     }
 }
 
-fn format_menu_item(item: &str) -> Line<'static> {
+fn format_menu_item(item: &str, available_width: u16, frame: u64) -> Line<'static> {
     if let Some((tag, label)) = split_tagged_label(item) {
-        Line::from(vec![
-            Span::styled(format!("[{}]", tag), theme::menu_badge_style(tag)),
-            Span::raw(" "),
-            Span::styled(label.to_string(), theme::strong_style()),
-        ])
+        marquee_line(
+            vec![
+                Span::styled(format!("[{}]", tag), theme::menu_badge_style(tag)),
+                Span::raw(" "),
+            ],
+            vec![MarqueeSegment::new(label, theme::strong_style())],
+            available_width,
+            frame,
+        )
     } else {
-        Line::from(Span::styled(item.to_string(), theme::strong_style()))
+        marquee_text_line(item, theme::strong_style(), available_width, frame)
     }
 }
 
@@ -94,7 +110,7 @@ mod tests {
 
     #[test]
     fn test_format_menu_item_with_badge() {
-        let line = format_menu_item("[AUTH] Browser authentication");
+        let line = format_menu_item("[AUTH] Browser authentication", 80, 0);
         let text = line
             .spans
             .iter()

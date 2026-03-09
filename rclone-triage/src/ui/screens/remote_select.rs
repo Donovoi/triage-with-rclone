@@ -2,15 +2,17 @@
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::text::{Line, Span};
+use ratatui::text::Span;
 use ratatui::widgets::{List, ListItem, ListState, StatefulWidget, Widget};
 
 use crate::ui::theme;
+use crate::ui::widgets::{marquee_line, text_width, MarqueeSegment};
 
 pub struct RemoteSelectScreen {
     pub remotes: Vec<String>,
     pub checked: Vec<bool>,
     pub selected: usize,
+    pub animation_frame: u64,
 }
 
 impl RemoteSelectScreen {
@@ -19,12 +21,17 @@ impl RemoteSelectScreen {
             remotes,
             checked,
             selected,
+            animation_frame: 0,
         }
     }
 }
 
 impl Widget for &RemoteSelectScreen {
     fn render(self, area: Rect, buf: &mut Buffer) {
+        let highlight_symbol = theme::list_highlight_symbol(self.animation_frame);
+        let highlight_width = text_width(highlight_symbol) as u16;
+        let inner_width = area.width.saturating_sub(2);
+
         let title = if self.remotes.is_empty() {
             "Remotes".to_string()
         } else {
@@ -46,10 +53,17 @@ impl Widget for &RemoteSelectScreen {
                 } else {
                     theme::muted_style()
                 };
-                ListItem::new(Line::from(vec![
-                    Span::styled(prefix, prefix_style),
-                    Span::styled(name.to_string(), theme::strong_style()),
-                ]))
+                let available_width = inner_width.saturating_sub(if idx == self.selected {
+                    highlight_width
+                } else {
+                    0
+                });
+                ListItem::new(marquee_line(
+                    vec![Span::styled(prefix, prefix_style)],
+                    vec![MarqueeSegment::new(name, theme::strong_style())],
+                    available_width,
+                    self.animation_frame,
+                ))
             })
             .collect();
 
@@ -57,7 +71,7 @@ impl Widget for &RemoteSelectScreen {
             .block(theme::panel_block(title))
             .style(theme::list_style())
             .highlight_style(theme::list_highlight_style())
-            .highlight_symbol(theme::list_highlight_symbol(0));
+            .highlight_symbol(highlight_symbol);
 
         let mut state = ListState::default();
         if !self.remotes.is_empty() {
