@@ -40,6 +40,8 @@ pub enum AppState {
     RemoteSelect,
     MobileAuthFlow,
     BrowserSelect,
+    DetectingAccounts,
+    ReviewDetectedAccounts,
     Authenticating,
     PostAuthChoice,
     Mounted,
@@ -62,6 +64,8 @@ impl AppState {
             AppState::RemoteSelect => AppState::RemoteSelect,
             AppState::MobileAuthFlow => AppState::Authenticating,
             AppState::BrowserSelect => AppState::Authenticating,
+            AppState::DetectingAccounts => AppState::ReviewDetectedAccounts,
+            AppState::ReviewDetectedAccounts => AppState::Authenticating,
             AppState::Authenticating => AppState::PostAuthChoice,
             AppState::PostAuthChoice => AppState::FileList,
             AppState::Mounted => AppState::Complete,
@@ -84,6 +88,8 @@ impl AppState {
             AppState::RemoteSelect => AppState::ProviderSelect,
             AppState::MobileAuthFlow => AppState::ProviderSelect,
             AppState::BrowserSelect => AppState::ProviderSelect,
+            AppState::DetectingAccounts => AppState::MainMenu,
+            AppState::ReviewDetectedAccounts => AppState::MainMenu,
             AppState::Authenticating => AppState::BrowserSelect,
             AppState::PostAuthChoice => AppState::Authenticating,
             AppState::Mounted => AppState::PostAuthChoice,
@@ -118,6 +124,7 @@ pub enum PostAuthAction {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MenuAction {
     Authenticate,
+    AutoDetectAccounts,
     RetrieveList,
     DownloadFromCsv,
     MountProvider,
@@ -204,6 +211,19 @@ pub struct BrowserSelection {
     /// `None` represents the system default browser when the default browser
     /// could not be resolved to a concrete installed browser entry.
     pub chosen_multiple: Vec<Option<Browser>>,
+}
+
+/// Detected-account review state.
+#[derive(Default)]
+pub struct DetectedAccountsState {
+    /// Latest detection report, if any.
+    pub report: Option<crate::providers::account_detection::DetectionReport>,
+    /// Highlighted candidate index.
+    pub selected: usize,
+    /// Checkbox state for visible candidates.
+    pub checked: Vec<bool>,
+    /// Status message for detection/review flow.
+    pub status: String,
 }
 
 /// A single queued authentication task.
@@ -606,6 +626,8 @@ pub struct App {
     pub provider: ProviderSelection,
     /// Browser selection state
     pub browser: BrowserSelection,
+    /// Automatic detected-account review state
+    pub detected_accounts: DetectedAccountsState,
     /// Pending/current authentication batch state
     pub auth_batch: AuthBatchState,
     /// Remote selection state
@@ -682,6 +704,7 @@ impl App {
                 chosen: None,
                 chosen_multiple: Vec::new(),
             },
+            detected_accounts: DetectedAccountsState::default(),
             auth_batch: AuthBatchState::default(),
             remote: RemoteSelection {
                 options: Vec::new(),
@@ -724,6 +747,11 @@ impl App {
                 label: "Authenticate with the chosen Browsers & Providers (TO BE RUN ON SUSPECT DEVICE)",
                 description: "Launch browser-based authentication on the suspect device for selected providers.",
                 action: MenuAction::Authenticate,
+            },
+            MenuItem {
+                label: "Automatically detect likely signed-in cloud accounts (REVIEW FIRST)",
+                description: "Scan installed browsers and known profile roots for likely reusable provider sessions, then review runnable vs hint-only findings.",
+                action: MenuAction::AutoDetectAccounts,
             },
             MenuItem {
                 label: "Retrieve a list of Files from an authenticated config (RUN AT OFFICE OR YOUR DEVICE)",
@@ -1063,6 +1091,10 @@ impl App {
         self.browser.chosen = None;
         self.browser.chosen_multiple.clear();
         self.browser.checked = vec![false; self.browser.entries.len() + 1];
+        self.detected_accounts.report = None;
+        self.detected_accounts.selected = 0;
+        self.detected_accounts.checked.clear();
+        self.detected_accounts.status.clear();
         self.auth_batch.clear();
         self.post_auth_selected = 0;
         self.post_auth_action = None;
@@ -1307,6 +1339,149 @@ impl App {
         self.browser.chosen = selected.iter().flatten().next().cloned();
     }
 
+    /// Load a freshly generated detected-account report into app state.
+    pub fn load_detected_accounts(
+        &mut self,
+        report: crate::providers::account_detection::DetectionReport,
+    ) {
+        let default_checked: Vec<bool> = report
+            .candidates
+            .iter()
+            .map(|candidate| candidate.selection_allowed())
+            .collect();
+        let selected = report
+            .candidates
+            .iter()
+            .position(|candidate| candidate.selection_allowed())
+            .unwrap_or(0);
+        let status = report.summary_line();
+
+        self.detected_accounts.report = Some(report);
+        self.detected_accounts.selected = selected;
+        self.detected_accounts.checked = default_checked;
+        self.detected_accounts.status = status;
+    }
+
+    /// Move detected-account selection up.
+    pub fn detected_accounts_up(&mut self) {
+        if self.state != AppState::ReviewDetectedAccounts {
+            return;
+        }
+
+        let len = self
+            .detected_accounts
+            .report
+            .as_ref()
+            .map(|report| report.candidates.len())
+            .unwrap_or(0);
+        list_navigate_up(&mut self.detected_accounts.selected, len);
+    }
+
+    /// Move detected-account selection down.
+    pub fn detected_accounts_down(&mut self) {
+        if self.state != AppState::ReviewDetectedAccounts {
+            return;
+        }
+
+        let len = self
+            .detected_accounts
+            .report
+            .as_ref()
+            .map(|report| report.candidates.len())
+            .unwrap_or(0);
+        list_navigate_down(&mut self.detected_accounts.selected, len);
+    }
+
+    /// Toggle the selected detected-account candidate if it is runnable.
+    pub fn toggle_detected_account_selection(&mut self) {
+        if self.state != AppState::ReviewDetectedAccounts {
+            return;
+        }
+
+        let Some(report) = self.detected_accounts.report.as_ref() else {
+            return;
+        };
+
+        let Some(candidate) = report.candidates.get(self.detected_accounts.selected) else {
+            return;
+        };
+
+        if !candidate.selection_allowed() {
+            self.detected_accounts.status =
+                "Hint-only findings are not safe to auto-authenticate.".to_string();
+            return;
+        }
+
+        if let Some(checked) = self
+            .detected_accounts
+            .checked
+            .get_mut(self.detected_accounts.selected)
+        {
+            *checked = !*checked;
+        }
+    }
+
+    /// Select every runnable detected-account candidate.
+    pub fn select_all_runnable_detected_accounts(&mut self) {
+        let Some(report) = self.detected_accounts.report.as_ref() else {
+            return;
+        };
+
+        if self.detected_accounts.checked.len() != report.candidates.len() {
+            self.detected_accounts.checked = vec![false; report.candidates.len()];
+        }
+
+        for (checked, candidate) in self
+            .detected_accounts
+            .checked
+            .iter_mut()
+            .zip(report.candidates.iter())
+        {
+            *checked = candidate.selection_allowed();
+        }
+    }
+
+    /// Return the currently highlighted detected-account candidate.
+    pub fn current_detected_account(
+        &self,
+    ) -> Option<&crate::providers::account_detection::DetectedAccountCandidate> {
+        self.detected_accounts
+            .report
+            .as_ref()?
+            .candidates
+            .get(self.detected_accounts.selected)
+    }
+
+    /// Return the checked, runnable detected-account candidates in visible order.
+    pub fn selected_detected_accounts(
+        &self,
+    ) -> Vec<crate::providers::account_detection::DetectedAccountCandidate> {
+        self.detected_accounts
+            .report
+            .as_ref()
+            .map(|report| {
+                report
+                    .candidates
+                    .iter()
+                    .cloned()
+                    .zip(self.detected_accounts.checked.iter().copied())
+                    .filter_map(|(candidate, checked)| {
+                        if checked && candidate.selection_allowed() {
+                            Some(candidate)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Whether any runnable detected-account candidate is selected.
+    pub fn has_selected_detected_accounts(&self) -> bool {
+        !self.selected_detected_accounts().is_empty()
+    }
+
     /// Start a new authentication batch.
     pub fn start_auth_batch(&mut self, tasks: Vec<AuthBatchTask>) {
         self.auth_batch.pending = tasks;
@@ -1488,6 +1663,41 @@ impl Default for App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::providers::account_detection::{
+        BrowserProfileSource, DetectedAccountCandidate, DetectedBrowserProfile,
+        DetectionCapability, DetectionConfidence, DetectionReport,
+    };
+
+    fn sample_detected_candidate(
+        capability: DetectionCapability,
+        profile_name: &str,
+    ) -> DetectedAccountCandidate {
+        let mut browser = Browser::new(crate::providers::browser::BrowserType::Chrome);
+        browser.is_installed = true;
+        browser.executable_path = Some(std::path::PathBuf::from("/usr/bin/google-chrome"));
+        browser.profile_path = Some(std::path::PathBuf::from(format!(
+            "/profiles/{}",
+            profile_name
+        )));
+
+        DetectedAccountCandidate {
+            provider: CloudProvider::GoogleDrive,
+            browser_profile: DetectedBrowserProfile {
+                browser,
+                source: BrowserProfileSource::InstalledBrowser,
+                profile_name: profile_name.to_string(),
+            },
+            capability,
+            confidence: DetectionConfidence::High,
+            user_hint: Some(format!("{}@example.com", profile_name.to_lowercase())),
+            evidence: Vec::new(),
+            hint_reason: if capability == DetectionCapability::HintOnly {
+                Some("Investigative hint only".to_string())
+            } else {
+                None
+            },
+        }
+    }
 
     #[test]
     fn test_state_sequence() {
@@ -1919,5 +2129,64 @@ mod tests {
         assert_eq!(app.authenticated_remotes.len(), 1);
         assert_eq!(app.authenticated_remotes[0].0, "gdrive_remote");
         assert_eq!(app.authenticated_remotes[0].1, "Google Drive");
+    }
+
+    #[test]
+    fn test_load_detected_accounts_preselects_runnable_candidates_only() {
+        let mut app = App::new();
+        app.state = AppState::ReviewDetectedAccounts;
+        app.load_detected_accounts(DetectionReport {
+            scanned_profiles: Vec::new(),
+            candidates: vec![
+                sample_detected_candidate(DetectionCapability::RunnableAuth, "Default"),
+                sample_detected_candidate(DetectionCapability::HintOnly, "Profile 1"),
+            ],
+            errors: Vec::new(),
+        });
+
+        assert_eq!(app.detected_accounts.selected, 0);
+        assert_eq!(app.detected_accounts.checked, vec![true, false]);
+        assert!(app.detected_accounts.status.contains("1 runnable candidate"));
+        assert_eq!(app.selected_detected_accounts().len(), 1);
+    }
+
+    #[test]
+    fn test_toggle_detected_account_selection_ignores_hint_only_candidates() {
+        let mut app = App::new();
+        app.state = AppState::ReviewDetectedAccounts;
+        app.load_detected_accounts(DetectionReport {
+            scanned_profiles: Vec::new(),
+            candidates: vec![sample_detected_candidate(
+                DetectionCapability::HintOnly,
+                "Profile 2",
+            )],
+            errors: Vec::new(),
+        });
+
+        app.toggle_detected_account_selection();
+
+        assert_eq!(app.detected_accounts.checked, vec![false]);
+        assert!(app.detected_accounts.status.contains("Hint-only findings"));
+    }
+
+    #[test]
+    fn test_selected_detected_accounts_returns_only_checked_runnable_candidates() {
+        let mut app = App::new();
+        app.state = AppState::ReviewDetectedAccounts;
+        app.load_detected_accounts(DetectionReport {
+            scanned_profiles: Vec::new(),
+            candidates: vec![
+                sample_detected_candidate(DetectionCapability::RunnableAuth, "Default"),
+                sample_detected_candidate(DetectionCapability::RunnableAuth, "Profile 3"),
+            ],
+            errors: Vec::new(),
+        });
+        app.detected_accounts.checked = vec![false, true];
+
+        let selected = app.selected_detected_accounts();
+
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].browser_profile.profile_name, "Profile 3");
+        assert!(app.has_selected_detected_accounts());
     }
 }

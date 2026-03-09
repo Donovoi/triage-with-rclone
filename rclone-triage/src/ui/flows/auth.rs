@@ -268,6 +268,36 @@ fn browser_device_code_fallback_remote_name(task: &AuthBatchTask) -> Option<Stri
     Some(BrowserAuthSession::new(browser.clone(), task.provider.short_name()).remote_name(None))
 }
 
+fn browser_profile_label(browser: &crate::providers::browser::Browser) -> Option<String> {
+    browser
+        .profile_path
+        .as_ref()?
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.trim().is_empty())
+        .map(|name| name.to_string())
+}
+
+fn browser_name_for_auth_status(
+    app: &App,
+    browser: &crate::providers::browser::Browser,
+) -> String {
+    if matches!(app.selected_action, Some(MenuAction::AutoDetectAccounts)) {
+        if let Some(profile) = browser_profile_label(browser) {
+            return format!("{} [{}]", browser.display_name(), profile);
+        }
+    }
+
+    browser.display_name().to_string()
+}
+
+fn uses_targeted_browser_auth(action: Option<MenuAction>) -> bool {
+    matches!(
+        action,
+        Some(MenuAction::Authenticate) | Some(MenuAction::AutoDetectAccounts)
+    )
+}
+
 fn build_onedrive_device_code_fallback_message(
     provider_name: &str,
     error: &anyhow::Error,
@@ -345,6 +375,10 @@ fn maybe_fallback_to_onedrive_device_code<B: ratatui::backend::Backend>(
 }
 
 fn build_auth_tasks(app: &App) -> Result<Vec<AuthBatchTask>> {
+    if matches!(app.selected_action, Some(MenuAction::AutoDetectAccounts)) {
+        return crate::ui::flows::auto_detect::build_auth_tasks_from_detected_accounts(app);
+    }
+
     let providers = if !app.provider.chosen_multiple.is_empty() {
         app.provider.chosen_multiple.clone()
     } else {
@@ -486,27 +520,205 @@ fn build_auth_completion_status(
         )
     } else {
         let provider_name = provider.display_name().to_string();
-        let user_line = result
-            .user_info
-            .as_ref()
-            .map(|user| format!("  User: {}\n", user))
-            .unwrap_or_default();
+        let user_line = format!(
+            "  {}\n",
+            authenticated_account_status_line(&provider_name, result.user_info.as_deref())
+        );
         format!(
-            "Authenticated {} successfully ({}){}{}\n\nChoose how to access the remote files.",
+            "Authenticated {} successfully ({})\n{}{}\nChoose how to access the remote files.",
             provider_name,
             if result.was_silent {
                 "SSO"
             } else {
                 "interactive"
             },
-            if user_line.is_empty() {
-                String::new()
-            } else {
-                format!("\n{}", user_line)
-            },
+            user_line,
             failure_note,
         )
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum BrowserAccountContext {
+    KnownUser(String),
+    ReusableSessionUnknownUser,
+    NoReusableSession,
+    InspectionUnavailable,
+    UnresolvedSystemDefault,
+}
+
+fn browser_account_context_from_session(
+    session: &crate::providers::session::BrowserSession,
+) -> BrowserAccountContext {
+    if !session.is_valid {
+        return BrowserAccountContext::NoReusableSession;
+    }
+
+    match session
+        .user_hint
+        .as_deref()
+        .map(str::trim)
+        .filter(|hint| !hint.is_empty())
+    {
+        Some(hint) => BrowserAccountContext::KnownUser(hint.to_string()),
+        None => BrowserAccountContext::ReusableSessionUnknownUser,
+    }
+}
+
+fn inspect_browser_account_context(
+    provider: CloudProvider,
+    browser: Option<&crate::providers::browser::Browser>,
+) -> BrowserAccountContext {
+    let Some(browser) = browser else {
+        return BrowserAccountContext::UnresolvedSystemDefault;
+    };
+
+    let extractor = match crate::providers::session::SessionExtractor::new() {
+        Ok(extractor) => extractor,
+        Err(_) => return BrowserAccountContext::InspectionUnavailable,
+    };
+
+    match extractor.extract_session(browser, provider) {
+        Ok(session) => browser_account_context_from_session(&session),
+        Err(_) => BrowserAccountContext::InspectionUnavailable,
+    }
+}
+
+fn build_browser_account_context_message(
+    provider_name: &str,
+    browser_name: &str,
+    context: &BrowserAccountContext,
+) -> String {
+    match context {
+        BrowserAccountContext::KnownUser(user) => format!(
+            "Detected reusable {} session for {}; that account is likely to be used unless {} prompts otherwise.",
+            browser_name, user, provider_name
+        ),
+        BrowserAccountContext::ReusableSessionUnknownUser => format!(
+            "Detected reusable {} session, but the account could not yet be identified.",
+            browser_name
+        ),
+        BrowserAccountContext::NoReusableSession => format!(
+            "No reusable {} session was detected; the browser/provider may ask which account to use.",
+            browser_name
+        ),
+        BrowserAccountContext::InspectionUnavailable => format!(
+            "The current {} session could not be inspected.",
+            browser_name
+        ),
+        BrowserAccountContext::UnresolvedSystemDefault => {
+            "Using the system default browser. The OS/browser will decide which signed-in account is presented.".to_string()
+        }
+    }
+}
+
+fn build_browser_auth_status(
+    task_label: &str,
+    provider_name: &str,
+    browser_name: &str,
+    context: &BrowserAccountContext,
+) -> String {
+    [
+        task_label.to_string(),
+        String::new(),
+        format!("Authenticating {} via {}...", provider_name, browser_name),
+        build_browser_account_context_message(provider_name, browser_name, context),
+    ]
+    .join("\n")
+}
+
+fn format_sso_session_summary(status: &crate::providers::auth::SsoStatus) -> Option<String> {
+    if !status.has_sessions {
+        return None;
+    }
+
+    let has_user_hints = status
+        .browsers_with_sessions
+        .iter()
+        .any(|(_, session)| {
+            session
+                .user_hint
+                .as_deref()
+                .map(str::trim)
+                .is_some_and(|hint| !hint.is_empty())
+        });
+
+    let session_descriptions: Vec<String> = status
+        .browsers_with_sessions
+        .iter()
+        .map(|(browser, session)| match session
+            .user_hint
+            .as_deref()
+            .map(str::trim)
+            .filter(|hint| !hint.is_empty())
+        {
+            Some(hint) => format!("{} ({})", browser.display_name(), hint),
+            None if has_user_hints => {
+                format!("{} (account not identified)", browser.display_name())
+            }
+            None => browser.display_name().to_string(),
+        })
+        .collect();
+
+    if session_descriptions.is_empty() {
+        None
+    } else if has_user_hints {
+        Some(format!("Session hints: {}", session_descriptions.join(", ")))
+    } else {
+        Some(format!(
+            "Reusable sessions detected in: {}",
+            session_descriptions.join(", ")
+        ))
+    }
+}
+
+fn build_sso_auth_status(
+    task_label: &str,
+    provider_name: &str,
+    status: &crate::providers::auth::SsoStatus,
+) -> String {
+    let mut lines = vec![task_label.to_string(), String::new()];
+
+    if status.has_sessions {
+        lines.push(format!(
+            "Found existing {} sessions - attempting SSO...",
+            provider_name
+        ));
+        if let Some(summary) = format_sso_session_summary(status) {
+            lines.push(summary);
+        }
+    } else {
+        lines.push(format!(
+            "No reusable {} browser sessions were detected; interactive auth may ask which account to use.",
+            provider_name
+        ));
+    }
+
+    lines.join("\n")
+}
+
+fn authenticated_account_status_line(provider_name: &str, user_info: Option<&str>) -> String {
+    match user_info.map(str::trim).filter(|user| !user.is_empty()) {
+        Some(user) => format!("Authenticated account: {}", user),
+        None => format!(
+            "Authenticated account: not reported yet ({} did not report an account identifier yet).",
+            provider_name
+        ),
+    }
+}
+
+fn build_connectivity_status(
+    task_label: Option<&str>,
+    detail: &str,
+    provider_name: &str,
+    user_info: Option<&str>,
+) -> String {
+    let mut lines = vec![detail.to_string()];
+    if let Some(label) = task_label.map(str::trim).filter(|label| !label.is_empty()) {
+        lines.push(label.to_string());
+    }
+    lines.push(authenticated_account_status_line(provider_name, user_info));
+    lines.join("\n")
 }
 
 fn record_authenticated_remote(
@@ -581,13 +793,15 @@ fn perform_single_auth_task<B: ratatui::backend::Backend>(
                     was_silent: result.was_silent,
                 },
             )
-        } else if matches!(app.selected_action, Some(MenuAction::Authenticate)) {
+        } else if uses_targeted_browser_auth(app.selected_action) {
             if let Some(ref browser) = task.browser {
-                app.auth_status = format!(
-                    "{}\n\nAuthenticating {} via {}...",
-                    batch_label,
+                let browser_name = browser_name_for_auth_status(app, browser);
+                let account_context = inspect_browser_account_context(known, Some(browser));
+                app.auth_status = build_browser_auth_status(
+                    &batch_label,
                     provider.display_name(),
-                    browser.display_name()
+                    &browser_name,
+                    &account_context,
                 );
                 terminal.draw(|f| render_state(f, app))?;
 
@@ -611,10 +825,12 @@ fn perform_single_auth_task<B: ratatui::backend::Backend>(
                     }),
                 )
             } else {
-                app.auth_status = format!(
-                    "{}\n\nAuthenticating {} via System Default...",
-                    batch_label,
-                    provider.display_name()
+                let account_context = inspect_browser_account_context(known, None);
+                app.auth_status = build_browser_auth_status(
+                    &batch_label,
+                    provider.display_name(),
+                    "System Default",
+                    &account_context,
                 );
                 terminal.draw(|f| render_state(f, app))?;
 
@@ -645,23 +861,18 @@ fn perform_single_auth_task<B: ratatui::backend::Backend>(
             }
         } else {
             let sso_status = crate::providers::auth::detect_sso_sessions(known);
+            app.auth_status = build_sso_auth_status(
+                &batch_label,
+                provider.display_name(),
+                &sso_status,
+            );
             if sso_status.has_sessions {
-                app.auth_status = format!(
-                    "{}\n\nFound existing {} sessions - attempting SSO...",
-                    batch_label,
-                    provider.display_name()
-                );
                 app.log_info(format!(
                     "Found {} browser(s) with {} sessions - attempting SSO auth",
                     sso_status.browsers_with_sessions.len(),
                     provider.display_name()
                 ));
             } else {
-                app.auth_status = format!(
-                    "{}\n\nAuthenticating {}...",
-                    batch_label,
-                    provider.display_name()
-                );
                 app.log_info(format!(
                     "No existing sessions for {} - using interactive auth",
                     provider.display_name()
@@ -920,11 +1131,17 @@ pub(crate) fn perform_auth_flow<B: ratatui::backend::Backend>(
                     auth_type
                 ));
 
-                app.auth_status = if app.auth_batch.total > 1 {
-                    format!("{}\n\nTesting connectivity...", task_label)
+                let connectivity_label = if app.auth_batch.total > 1 {
+                    Some(task_label.as_str())
                 } else {
-                    "Testing connectivity...".to_string()
+                    None
                 };
+                app.auth_status = build_connectivity_status(
+                    connectivity_label,
+                    "Testing connectivity...",
+                    task.provider.display_name(),
+                    result.user_info.as_deref(),
+                );
                 terminal.draw(|f| render_state(f, app))?;
 
                 let max_retries: u32 = 3;
@@ -940,11 +1157,12 @@ pub(crate) fn perform_auth_flow<B: ratatui::backend::Backend>(
                         delay.as_secs()
                     );
                     app.log_info(&msg);
-                    app.auth_status = if app.auth_batch.total > 1 {
-                        format!("{}\n\n{}", task_label, msg)
-                    } else {
-                        msg
-                    };
+                    app.auth_status = build_connectivity_status(
+                        connectivity_label,
+                        &msg,
+                        task.provider.display_name(),
+                        result.user_info.as_deref(),
+                    );
                     terminal.draw(|f| render_state(f, app))?;
                     std::thread::sleep(delay);
                     connectivity = crate::rclone::test_connectivity(&runner, &result.remote_name)?;
@@ -1091,6 +1309,7 @@ pub(crate) fn perform_auth_flow<B: ratatui::backend::Backend>(
 mod tests {
     use super::*;
     use crate::providers::browser::{Browser, BrowserType};
+    use crate::providers::session::BrowserSession;
     use crate::providers::{CloudProvider, ProviderEntry};
     use anyhow::Context;
 
@@ -1249,6 +1468,27 @@ mod tests {
     }
 
     #[test]
+    fn test_browser_name_for_auth_status_includes_profile_for_auto_detect_flow() {
+        let mut app = App::new();
+        app.selected_action = Some(MenuAction::AutoDetectAccounts);
+
+        let mut browser = Browser::new(BrowserType::Chrome);
+        browser.profile_path = Some(std::path::PathBuf::from("/profiles/Profile 7"));
+
+        assert_eq!(
+            browser_name_for_auth_status(&app, &browser),
+            "Google Chrome [Profile 7]"
+        );
+    }
+
+    #[test]
+    fn test_uses_targeted_browser_auth_includes_auto_detect_accounts() {
+        assert!(uses_targeted_browser_auth(Some(MenuAction::Authenticate)));
+        assert!(uses_targeted_browser_auth(Some(MenuAction::AutoDetectAccounts)));
+        assert!(!uses_targeted_browser_auth(Some(MenuAction::SmartAuth)));
+    }
+
+    #[test]
     fn test_build_batch_stopped_status_appends_follow_up_note() {
         let status = build_batch_stopped_status(
             "[2/2] Microsoft OneDrive via Chrome",
@@ -1295,5 +1535,75 @@ mod tests {
         assert!(status.contains("Ready remotes: drive-user@example.com"));
         assert!(status.contains("One or more authentication steps failed"));
         assert!(status.contains("retry the failed provider"));
+    }
+
+    #[test]
+    fn test_browser_account_context_message_for_detected_known_user_session() {
+        let session = BrowserSession {
+            browser_type: BrowserType::Edge,
+            provider: CloudProvider::OneDrive,
+            cookies: Vec::new(),
+            user_hint: Some("analyst@example.com".to_string()),
+            is_valid: true,
+            local_state_key: None,
+        };
+
+        let message = build_browser_account_context_message(
+            "Microsoft OneDrive",
+            "Microsoft Edge",
+            &browser_account_context_from_session(&session),
+        );
+
+        assert!(message.contains("analyst@example.com"));
+        assert!(message.contains("likely to be used"));
+    }
+
+    #[test]
+    fn test_browser_account_context_message_when_no_reusable_session_detected() {
+        let session = BrowserSession {
+            browser_type: BrowserType::Chrome,
+            provider: CloudProvider::GoogleDrive,
+            cookies: Vec::new(),
+            user_hint: None,
+            is_valid: false,
+            local_state_key: None,
+        };
+
+        let message = build_browser_account_context_message(
+            "Google Drive",
+            "Google Chrome",
+            &browser_account_context_from_session(&session),
+        );
+
+        assert!(message.contains("No reusable Google Chrome session was detected"));
+        assert!(message.contains("may ask which account to use"));
+    }
+
+    #[test]
+    fn test_build_connectivity_status_includes_authenticated_account_when_present() {
+        let status = build_connectivity_status(
+            Some("[1/1] Google Drive via Chrome"),
+            "Testing connectivity...",
+            "Google Drive",
+            Some("user@example.com"),
+        );
+
+        assert!(status.starts_with("Testing connectivity..."));
+        assert!(status.contains("[1/1] Google Drive via Chrome"));
+        assert!(status.contains("Authenticated account: user@example.com"));
+    }
+
+    #[test]
+    fn test_build_connectivity_status_explains_missing_account_when_absent() {
+        let status = build_connectivity_status(
+            None,
+            "Testing connectivity...",
+            "Microsoft OneDrive",
+            None,
+        );
+
+        assert!(status.contains("Testing connectivity..."));
+        assert!(status.contains("Authenticated account: not reported yet"));
+        assert!(status.contains("did not report an account identifier yet"));
     }
 }
