@@ -7,6 +7,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{List, ListItem, ListState, Paragraph, StatefulWidget, Widget, Wrap};
 
 use crate::ui::{theme, ConfigBrowserEntry};
+use crate::ui::widgets::{marquee_line, marquee_text_line, text_width, MarqueeSegment};
 
 pub struct ConfigBrowserScreen {
     pub current_dir: String,
@@ -15,6 +16,7 @@ pub struct ConfigBrowserScreen {
     pub status: String,
     pub preview: Vec<String>,
     pub error: Option<String>,
+    pub animation_frame: u64,
 }
 
 impl ConfigBrowserScreen {
@@ -32,6 +34,7 @@ impl ConfigBrowserScreen {
             status,
             preview,
             error: None,
+            animation_frame: 0,
         }
     }
 
@@ -48,11 +51,16 @@ impl Widget for &ConfigBrowserScreen {
             .constraints([Constraint::Percentage(65), Constraint::Percentage(35)])
             .split(area);
 
+        let highlight_symbol = theme::list_highlight_symbol(self.animation_frame);
+        let highlight_width = text_width(highlight_symbol) as u16;
+        let list_inner_width = content_chunks[0].width.saturating_sub(2);
+
         // Left panel: directory listing
         let list_items: Vec<ListItem> = self
             .entries
             .iter()
-            .map(|entry| {
+            .enumerate()
+            .map(|(idx, entry)| {
                 let is_nav = entry.name == "." || entry.name == "..";
                 let (prefix, style) = if is_nav {
                     ("[NAV]  ", theme::warning_style())
@@ -78,11 +86,20 @@ impl Widget for &ConfigBrowserScreen {
                         .map(|s| format!("  ({} B)", s))
                         .unwrap_or_default()
                 };
-                ListItem::new(Line::from(vec![
-                    Span::styled(prefix, style),
-                    Span::styled(label, style),
-                    Span::styled(size_str, theme::muted_style()),
-                ]))
+                let available_width = list_inner_width.saturating_sub(if idx == self.selected {
+                    highlight_width
+                } else {
+                    0
+                });
+                ListItem::new(marquee_line(
+                    vec![Span::styled(prefix, style)],
+                    vec![
+                        MarqueeSegment::new(label, style),
+                        MarqueeSegment::new(size_str, theme::muted_style()),
+                    ],
+                    available_width,
+                    self.animation_frame,
+                ))
             })
             .collect();
 
@@ -91,7 +108,7 @@ impl Widget for &ConfigBrowserScreen {
             .block(theme::panel_block(title))
             .style(theme::list_style())
             .highlight_style(theme::list_highlight_style())
-            .highlight_symbol(theme::list_highlight_symbol(0));
+            .highlight_symbol(highlight_symbol);
 
         let mut state = ListState::default();
         if !self.entries.is_empty() {
@@ -104,51 +121,73 @@ impl Widget for &ConfigBrowserScreen {
         let show_panel = content_chunks[1].width >= 20 && content_chunks[1].height >= 4;
         if show_panel {
             let mut lines = Vec::new();
+            let panel_width = content_chunks[1].width.saturating_sub(2);
 
             if let Some(ref error) = self.error {
                 // Prominent error display with next steps
                 let error_style = theme::error_style();
                 let hint_style = theme::warning_style();
 
-                lines.push(Line::from(Span::styled(
+                lines.push(marquee_text_line(
                     "!! Remote listing failed !!",
                     error_style,
-                )));
+                    panel_width,
+                    self.animation_frame,
+                ));
                 lines.push(Line::from(""));
 
-                // Wrap error text into lines for the panel
-                for chunk in error.as_bytes().chunks(40) {
-                    let s = String::from_utf8_lossy(chunk);
-                    lines.push(Line::from(Span::styled(
-                        s.to_string(),
-                        theme::error_style(),
-                    )));
-                }
+                lines.push(marquee_text_line(
+                    error,
+                    theme::error_style(),
+                    panel_width,
+                    self.animation_frame,
+                ));
                 lines.push(Line::from(""));
 
                 // Classify the error and give specific advice
                 let advice = classify_listing_error(error);
-                lines.push(Line::from(Span::styled("What happened:", hint_style)));
-                lines.push(Line::from(Span::styled(
+                lines.push(marquee_text_line(
+                    "What happened:",
+                    hint_style,
+                    panel_width,
+                    self.animation_frame,
+                ));
+                lines.push(marquee_text_line(
                     advice.explanation,
                     Style::default().fg(theme::text_primary()),
-                )));
+                    panel_width,
+                    self.animation_frame,
+                ));
                 lines.push(Line::from(""));
 
-                lines.push(Line::from(Span::styled("Next steps:", hint_style)));
+                lines.push(marquee_text_line(
+                    "Next steps:",
+                    hint_style,
+                    panel_width,
+                    self.animation_frame,
+                ));
                 for step in &advice.next_steps {
-                    lines.push(Line::from(Span::styled(
+                    lines.push(marquee_text_line(
                         format!("  {}", step),
                         Style::default().fg(theme::text_primary()),
-                    )));
+                        panel_width,
+                        self.animation_frame,
+                    ));
                 }
                 lines.push(Line::from(""));
-                lines.push(Line::from("Esc: back to main menu"));
+                lines.push(marquee_text_line(
+                    "Esc: back to main menu",
+                    theme::strong_style(),
+                    panel_width,
+                    self.animation_frame,
+                ));
             } else {
-                lines.push(Line::from(Span::styled(
+                lines.push(marquee_text_line(
                     "Config File Browser",
                     theme::panel_title_style(),
-                )));
+                    panel_width,
+                    self.animation_frame,
+                ));
                 lines.push(Line::from(""));
 
                 if let Some(entry) = self.entries.get(self.selected) {
@@ -159,29 +198,66 @@ impl Widget for &ConfigBrowserScreen {
                     } else {
                         "File"
                     };
-                    lines.push(Line::from(format!("Selected: {}", entry.name)));
-                    lines.push(Line::from(format!("Type: {}", kind)));
+                    lines.push(marquee_text_line(
+                        format!("Selected: {}", entry.name),
+                        theme::strong_style(),
+                        panel_width,
+                        self.animation_frame,
+                    ));
+                    lines.push(marquee_text_line(
+                        format!("Type: {}", kind),
+                        theme::strong_style(),
+                        panel_width,
+                        self.animation_frame,
+                    ));
                     if let Some(size) = entry.size {
-                        lines.push(Line::from(format!("Size: {} bytes", size)));
+                        lines.push(marquee_text_line(
+                            format!("Size: {} bytes", size),
+                            theme::strong_style(),
+                            panel_width,
+                            self.animation_frame,
+                        ));
                     }
                     lines.push(Line::from(""));
                 }
 
                 if !self.preview.is_empty() {
                     for line in &self.preview {
-                        lines.push(Line::from(Span::styled(
-                            line.as_str(),
+                        lines.push(marquee_text_line(
+                            line,
                             theme::success_style(),
-                        )));
+                            panel_width,
+                            self.animation_frame,
+                        ));
                     }
                     lines.push(Line::from(""));
                 }
 
-                lines.push(Line::from(format!("Status: {}", self.status)));
+                lines.push(marquee_text_line(
+                    format!("Status: {}", self.status),
+                    theme::strong_style(),
+                    panel_width,
+                    self.animation_frame,
+                ));
                 lines.push(Line::from(""));
-                lines.push(Line::from("Enter: open dir / select file"));
-                lines.push(Line::from("Backspace: parent directory"));
-                lines.push(Line::from("Esc: back to main menu"));
+                lines.push(marquee_text_line(
+                    "Enter: open dir / select file",
+                    theme::strong_style(),
+                    panel_width,
+                    self.animation_frame,
+                ));
+                lines.push(marquee_text_line(
+                    "Backspace: parent directory",
+                    theme::strong_style(),
+                    panel_width,
+                    self.animation_frame,
+                ));
+                lines.push(marquee_text_line(
+                    "Esc: back to main menu",
+                    theme::strong_style(),
+                    panel_width,
+                    self.animation_frame,
+                ));
             }
 
             let title = if self.error.is_some() {
@@ -191,7 +267,7 @@ impl Widget for &ConfigBrowserScreen {
             };
             let panel = Paragraph::new(lines)
                 .block(theme::panel_block(title))
-                .wrap(Wrap { trim: true });
+                .wrap(Wrap { trim: false });
             panel.render(content_chunks[1], buf);
         }
     }

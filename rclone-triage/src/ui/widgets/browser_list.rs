@@ -6,6 +6,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, StatefulWidget, Widget};
 
 use crate::ui::theme;
+use crate::ui::widgets::{marquee_line, text_width, MarqueeSegment};
 
 /// Browser list widget
 #[derive(Debug, Clone)]
@@ -13,6 +14,7 @@ pub struct BrowserList {
     pub browsers: Vec<String>,
     pub checked: Vec<bool>,
     pub selected: usize,
+    pub animation_frame: u64,
 }
 
 impl BrowserList {
@@ -21,6 +23,7 @@ impl BrowserList {
             browsers,
             checked,
             selected,
+            animation_frame: 0,
         }
     }
 
@@ -43,6 +46,9 @@ impl BrowserList {
 
 impl Widget for &BrowserList {
     fn render(self, area: Rect, buf: &mut Buffer) {
+        let highlight_symbol = theme::list_highlight_symbol(self.animation_frame);
+        let highlight_width = text_width(highlight_symbol) as u16;
+        let inner_width = area.width.saturating_sub(2);
         let items: Vec<ListItem> = self
             .browsers
             .iter()
@@ -55,10 +61,17 @@ impl Widget for &BrowserList {
                 } else {
                     theme::muted_style()
                 };
-                ListItem::new(Line::from(vec![
-                    Span::styled(prefix, prefix_style),
-                    Span::styled(b.to_string(), theme::strong_style()),
-                ]))
+                let available_width = inner_width.saturating_sub(if idx == self.selected {
+                    highlight_width
+                } else {
+                    0
+                });
+                ListItem::new(marquee_line(
+                    vec![Span::styled(prefix, prefix_style)],
+                    vec![MarqueeSegment::new(b, theme::strong_style())],
+                    available_width,
+                    self.animation_frame,
+                ))
             })
             .collect();
 
@@ -74,7 +87,7 @@ impl Widget for &BrowserList {
             )
             .style(theme::list_style())
             .highlight_style(theme::list_highlight_style())
-            .highlight_symbol(theme::list_highlight_symbol(0));
+            .highlight_symbol(highlight_symbol);
 
         let mut state = ListState::default();
         if !self.browsers.is_empty() {
