@@ -18,7 +18,6 @@ pub(crate) fn perform_detection_flow<B: ratatui::backend::Backend>(
         Ok(report) => {
             let summary = report.summary_line();
             app.load_detected_accounts(report);
-            app.detected_accounts.status = summary.clone();
             app.state = AppState::ReviewDetectedAccounts;
             app.log_info(summary);
         }
@@ -134,6 +133,8 @@ mod tests {
         });
 
         let error = build_auth_tasks_from_detected_accounts(&app).unwrap_err();
-        assert!(error.to_string().contains("Select at least one runnable detected account"));
+        assert!(error
+            .to_string()
+            .contains("Select at least one runnable detected account"));
     }
 }

@@ -153,12 +153,34 @@ impl Browser {
         self.browser_type.short_name()
     }
 
+    /// Get the detected profile name, if available.
+    pub fn profile_name(&self) -> Option<String> {
+        self.profile_path
+            .as_ref()?
+            .file_name()
+            .and_then(|name| name.to_str())
+            .filter(|name| !name.trim().is_empty())
+            .map(|name| name.to_string())
+    }
+
+    /// Get a display name including the selected profile when known.
+    pub fn display_name_with_profile(&self) -> String {
+        match self.profile_name() {
+            Some(profile) => format!("{} [{}]", self.display_name(), profile),
+            None => self.display_name().to_string(),
+        }
+    }
+
     fn launch_args_for_url(&self, url: &str) -> Vec<String> {
         let mut args = Vec::new();
 
         if self.browser_type.is_chromium_family() {
             if let Some(profile_path) = self.profile_path.as_deref() {
                 append_chromium_profile_args(&mut args, profile_path);
+                // Open auth in a dedicated window so Chromium is less likely to
+                // route the URL into whichever profile currently owns the last
+                // active window.
+                args.push("--new-window".to_string());
             }
         }
 
@@ -608,9 +630,7 @@ mod tests {
     #[test]
     fn test_launch_args_for_url_include_selected_chromium_profile() {
         let mut browser = Browser::new(BrowserType::Chrome);
-        browser.profile_path = Some(PathBuf::from(
-            "/home/test/.config/google-chrome/Profile 1",
-        ));
+        browser.profile_path = Some(PathBuf::from("/home/test/.config/google-chrome/Profile 1"));
 
         let args = browser.launch_args_for_url("https://example.com/auth");
 
@@ -619,8 +639,20 @@ mod tests {
             vec![
                 "--user-data-dir=/home/test/.config/google-chrome".to_string(),
                 "--profile-directory=Profile 1".to_string(),
+                "--new-window".to_string(),
                 "https://example.com/auth".to_string(),
             ]
+        );
+    }
+
+    #[test]
+    fn test_display_name_with_profile_includes_profile_name() {
+        let mut browser = Browser::new(BrowserType::Chrome);
+        browser.profile_path = Some(PathBuf::from("/home/test/.config/google-chrome/Profile 7"));
+
+        assert_eq!(
+            browser.display_name_with_profile(),
+            "Google Chrome [Profile 7]"
         );
     }
 }

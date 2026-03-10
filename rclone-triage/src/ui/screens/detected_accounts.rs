@@ -50,7 +50,11 @@ impl Widget for &DetectedAccountsScreen {
             .enumerate()
             .map(|(idx, row)| {
                 let prefix = if row.selectable {
-                    if row.checked { "[x] " } else { "[ ] " }
+                    if row.checked {
+                        "[x] "
+                    } else {
+                        "[ ] "
+                    }
                 } else {
                     "[·] "
                 };
@@ -85,7 +89,10 @@ impl Widget for &DetectedAccountsScreen {
             .collect();
 
         let list = List::new(items)
-            .block(theme::panel_block(format!("Detected accounts ({})", self.rows.len())))
+            .block(theme::panel_block(format!(
+                "Detected accounts ({})",
+                self.rows.len()
+            )))
             .style(theme::list_style())
             .highlight_style(theme::list_highlight_style())
             .highlight_symbol(highlight_symbol);
@@ -101,7 +108,12 @@ impl Widget for &DetectedAccountsScreen {
             .details
             .iter()
             .map(|line| {
-                marquee_text_line(line, theme::strong_style(), detail_width, self.animation_frame)
+                marquee_text_line(
+                    line,
+                    theme::strong_style(),
+                    detail_width,
+                    self.animation_frame,
+                )
             })
             .collect();
         let details = Paragraph::new(detail_lines)

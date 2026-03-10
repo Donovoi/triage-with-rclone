@@ -68,7 +68,10 @@ pub fn marquee_line(
         return Line::from(prefix);
     }
 
-    let content_width: usize = content.iter().map(|segment| text_width(&segment.text)).sum();
+    let content_width: usize = content
+        .iter()
+        .map(|segment| text_width(&segment.text))
+        .sum();
     let remaining_width = available_width - prefix_width;
 
     let mut spans = prefix;

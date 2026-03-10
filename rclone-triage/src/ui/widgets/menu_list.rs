@@ -43,7 +43,11 @@ impl Widget for &MenuList {
                 } else {
                     0
                 });
-                ListItem::new(format_menu_item(item, available_width, self.animation_frame))
+                ListItem::new(format_menu_item(
+                    item,
+                    available_width,
+                    self.animation_frame,
+                ))
             })
             .collect::<Vec<_>>();
 
