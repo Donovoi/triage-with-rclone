@@ -145,7 +145,10 @@ pub struct DetectionReport {
 
 impl DetectionReport {
     pub fn runnable_count(&self) -> usize {
-        self.candidates.iter().filter(|candidate| candidate.is_runnable()).count()
+        self.candidates
+            .iter()
+            .filter(|candidate| candidate.is_runnable())
+            .count()
     }
 
     pub fn hint_only_count(&self) -> usize {
@@ -211,7 +214,11 @@ fn sort_detection_report(report: &mut DetectionReport) {
             .browser
             .is_default
             .cmp(&left.browser.is_default)
-            .then_with(|| left.browser.display_name().cmp(right.browser.display_name()))
+            .then_with(|| {
+                left.browser
+                    .display_name()
+                    .cmp(right.browser.display_name())
+            })
             .then_with(|| left.profile_name.cmp(&right.profile_name))
             .then_with(|| {
                 left.profile_path()
@@ -225,14 +232,22 @@ fn sort_detection_report(report: &mut DetectionReport) {
             .is_runnable()
             .cmp(&left.is_runnable())
             .then_with(|| right.confidence.cmp(&left.confidence))
-            .then_with(|| left.provider.display_name().cmp(right.provider.display_name()))
+            .then_with(|| {
+                left.provider
+                    .display_name()
+                    .cmp(right.provider.display_name())
+            })
             .then_with(|| {
                 left.browser_profile
                     .browser
                     .display_name()
                     .cmp(right.browser_profile.browser.display_name())
             })
-            .then_with(|| left.browser_profile.profile_name.cmp(&right.browser_profile.profile_name))
+            .then_with(|| {
+                left.browser_profile
+                    .profile_name
+                    .cmp(&right.browser_profile.profile_name)
+            })
             .then_with(|| left.account_label().cmp(right.account_label()))
     });
 }
@@ -265,7 +280,11 @@ fn collect_detected_browser_profiles() -> Vec<DetectedBrowserProfile> {
         if let Some(profile_path) = template.profile_path.clone() {
             insert_detected_profile(
                 &mut profiles,
-                profile_from_path(&template, profile_path, BrowserProfileSource::InstalledBrowser),
+                profile_from_path(
+                    &template,
+                    profile_path,
+                    BrowserProfileSource::InstalledBrowser,
+                ),
             );
         }
 
@@ -306,7 +325,10 @@ fn insert_detected_profile(
     }
 }
 
-fn merge_detected_profiles(existing: &mut DetectedBrowserProfile, incoming: DetectedBrowserProfile) {
+fn merge_detected_profiles(
+    existing: &mut DetectedBrowserProfile,
+    incoming: DetectedBrowserProfile,
+) {
     if source_priority(&incoming.source) > source_priority(&existing.source) {
         existing.source = incoming.source.clone();
     }
@@ -355,7 +377,9 @@ fn profile_name_from_path(path: &Path) -> String {
 fn derived_profile_roots(browser_type: BrowserType, browser: &Browser) -> Vec<PathBuf> {
     let mut roots = Vec::new();
     if let Some(profile_path) = browser.profile_path.as_deref() {
-        let root = if is_chromium_family(browser_type) && browser_profile_has_session_store(browser_type, profile_path) {
+        let root = if is_chromium_family(browser_type)
+            && browser_profile_has_session_store(browser_type, profile_path)
+        {
             profile_path.parent().unwrap_or(profile_path).to_path_buf()
         } else {
             profile_path.to_path_buf()
@@ -406,13 +430,9 @@ fn known_profile_roots(browser_type: BrowserType) -> Vec<PathBuf> {
                 BrowserType::ChromeBeta => Some(local.join(r"Google\Chrome Beta\User Data")),
                 BrowserType::Chromium => Some(local.join(r"Chromium\User Data")),
                 BrowserType::Edge => Some(local.join(r"Microsoft\Edge\User Data")),
-                BrowserType::Brave => {
-                    Some(local.join(r"BraveSoftware\Brave-Browser\User Data"))
-                }
+                BrowserType::Brave => Some(local.join(r"BraveSoftware\Brave-Browser\User Data")),
                 BrowserType::Vivaldi => Some(local.join(r"Vivaldi\User Data")),
-                BrowserType::Yandex => {
-                    Some(local.join(r"Yandex\YandexBrowser\User Data"))
-                }
+                BrowserType::Yandex => Some(local.join(r"Yandex\YandexBrowser\User Data")),
                 BrowserType::Firefox
                 | BrowserType::Opera
                 | BrowserType::OperaGX
@@ -602,7 +622,10 @@ fn classify_candidate(
     }
 
     if let Some(reason) = hint_reason.as_ref() {
-        evidence.push(DetectionEvidence::new("Why not auto-runnable", reason.clone()));
+        evidence.push(DetectionEvidence::new(
+            "Why not auto-runnable",
+            reason.clone(),
+        ));
     }
 
     Some(DetectedAccountCandidate {

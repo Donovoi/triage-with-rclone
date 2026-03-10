@@ -305,10 +305,7 @@ fn browser_profile_label(browser: &crate::providers::browser::Browser) -> Option
         .map(|name| name.to_string())
 }
 
-fn browser_name_for_auth_status(
-    app: &App,
-    browser: &crate::providers::browser::Browser,
-) -> String {
+fn browser_name_for_auth_status(app: &App, browser: &crate::providers::browser::Browser) -> String {
     if matches!(app.selected_action, Some(MenuAction::AutoDetectAccounts)) {
         if let Some(profile) = browser_profile_label(browser) {
             return format!("{} [{}]", browser.display_name(), profile);
@@ -667,38 +664,40 @@ fn format_sso_session_summary(status: &crate::providers::auth::SsoStatus) -> Opt
         return None;
     }
 
-    let has_user_hints = status
-        .browsers_with_sessions
-        .iter()
-        .any(|(_, session)| {
-            session
-                .user_hint
-                .as_deref()
-                .map(str::trim)
-                .is_some_and(|hint| !hint.is_empty())
-        });
+    let has_user_hints = status.browsers_with_sessions.iter().any(|(_, session)| {
+        session
+            .user_hint
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|hint| !hint.is_empty())
+    });
 
     let session_descriptions: Vec<String> = status
         .browsers_with_sessions
         .iter()
-        .map(|(browser, session)| match session
-            .user_hint
-            .as_deref()
-            .map(str::trim)
-            .filter(|hint| !hint.is_empty())
-        {
-            Some(hint) => format!("{} ({})", browser.display_name(), hint),
-            None if has_user_hints => {
-                format!("{} (account not identified)", browser.display_name())
+        .map(|(browser, session)| {
+            match session
+                .user_hint
+                .as_deref()
+                .map(str::trim)
+                .filter(|hint| !hint.is_empty())
+            {
+                Some(hint) => format!("{} ({})", browser.display_name(), hint),
+                None if has_user_hints => {
+                    format!("{} (account not identified)", browser.display_name())
+                }
+                None => browser.display_name().to_string(),
             }
-            None => browser.display_name().to_string(),
         })
         .collect();
 
     if session_descriptions.is_empty() {
         None
     } else if has_user_hints {
-        Some(format!("Session hints: {}", session_descriptions.join(", ")))
+        Some(format!(
+            "Session hints: {}",
+            session_descriptions.join(", ")
+        ))
     } else {
         Some(format!(
             "Reusable sessions detected in: {}",
@@ -896,11 +895,8 @@ fn perform_single_auth_task<B: ratatui::backend::Backend>(
             }
         } else {
             let sso_status = crate::providers::auth::detect_sso_sessions(known);
-            app.auth_status = build_sso_auth_status(
-                &batch_label,
-                provider.display_name(),
-                &sso_status,
-            );
+            app.auth_status =
+                build_sso_auth_status(&batch_label, provider.display_name(), &sso_status);
             if sso_status.has_sessions {
                 app.log_info(format!(
                     "Found {} browser(s) with {} sessions - attempting SSO auth",
@@ -1374,9 +1370,8 @@ mod tests {
 
     #[test]
     fn test_should_auto_fallback_to_onedrive_device_code_for_missing_authorize_url() {
-        let error = anyhow::anyhow!(
-            "rclone authorize did not produce an auth URL for Microsoft OneDrive"
-        );
+        let error =
+            anyhow::anyhow!("rclone authorize did not produce an auth URL for Microsoft OneDrive");
 
         assert!(should_auto_fallback_to_onedrive_device_code(
             CloudProvider::OneDrive,
@@ -1464,9 +1459,8 @@ mod tests {
 
     #[test]
     fn test_build_onedrive_device_code_fallback_message_for_missing_authorize_url() {
-        let error = anyhow::anyhow!(
-            "rclone authorize did not produce an auth URL for Microsoft OneDrive"
-        );
+        let error =
+            anyhow::anyhow!("rclone authorize did not produce an auth URL for Microsoft OneDrive");
 
         let message = build_onedrive_device_code_fallback_message("Microsoft OneDrive", &error);
 
@@ -1575,7 +1569,9 @@ mod tests {
     #[test]
     fn test_uses_targeted_browser_auth_includes_auto_detect_accounts() {
         assert!(uses_targeted_browser_auth(Some(MenuAction::Authenticate)));
-        assert!(uses_targeted_browser_auth(Some(MenuAction::AutoDetectAccounts)));
+        assert!(uses_targeted_browser_auth(Some(
+            MenuAction::AutoDetectAccounts
+        )));
         assert!(!uses_targeted_browser_auth(Some(MenuAction::SmartAuth)));
     }
 
@@ -1686,12 +1682,8 @@ mod tests {
 
     #[test]
     fn test_build_connectivity_status_explains_missing_account_when_absent() {
-        let status = build_connectivity_status(
-            None,
-            "Testing connectivity...",
-            "Microsoft OneDrive",
-            None,
-        );
+        let status =
+            build_connectivity_status(None, "Testing connectivity...", "Microsoft OneDrive", None);
 
         assert!(status.contains("Testing connectivity..."));
         assert!(status.contains("Authenticated account: not reported yet"));

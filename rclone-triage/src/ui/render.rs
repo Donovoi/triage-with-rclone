@@ -7,11 +7,17 @@ use ratatui::widgets::{Paragraph, Wrap};
 use ratatui::Frame;
 
 use crate::ui::screens::{
-    auth::AuthScreen, browser_select::BrowserSelectScreen, config_browser::ConfigBrowserScreen,
-    detected_accounts::{DetectedAccountRow, DetectedAccountsScreen}, download::DownloadScreen,
-    files::FilesScreen, listing::ListingScreen, main_menu::MainMenuScreen,
+    auth::AuthScreen,
+    browser_select::BrowserSelectScreen,
+    config_browser::ConfigBrowserScreen,
+    detected_accounts::{DetectedAccountRow, DetectedAccountsScreen},
+    download::DownloadScreen,
+    files::FilesScreen,
+    listing::ListingScreen,
+    main_menu::MainMenuScreen,
     provider_select::ProviderSelectScreen,
-    remote_select::RemoteSelectScreen, report::ReportScreen,
+    remote_select::RemoteSelectScreen,
+    report::ReportScreen,
 };
 use crate::ui::theme;
 use crate::ui::{App, AppState, MenuAction, MenuItem};
@@ -467,8 +473,7 @@ pub fn render_state(frame: &mut Frame, app: &App) {
             screen.list.animation_frame = app.animation_frame;
             frame.render_widget(&screen, chunks[0]);
 
-            let next =
-                "Next: Enter starts auth. Signed-in sessions may be reused automatically.";
+            let next = "Next: Enter starts auth. Signed-in sessions may be reused automatically.";
             let status = if app.auth_status.is_empty() {
                 "If no session is reusable, the browser/provider may ask which account to use."
                     .to_string()
@@ -532,7 +537,10 @@ pub fn render_state(frame: &mut Frame, app: &App) {
                     "Browser: {}",
                     candidate.browser_profile.browser.display_name()
                 ));
-                details.push(format!("Profile: {}", candidate.browser_profile.profile_name));
+                details.push(format!(
+                    "Profile: {}",
+                    candidate.browser_profile.profile_name
+                ));
                 details.push(format!("Capability: {}", candidate.capability.label()));
                 details.push(format!("Confidence: {}", candidate.confidence.label()));
                 details.push(format!("Account hint: {}", candidate.account_label()));
@@ -993,8 +1001,14 @@ pub fn export_screen_text(app: &App, width: u16, height: u16) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::providers::mobile::render_qr_code;
+    use crate::providers::{CloudProvider, ProviderEntry};
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
+
+    fn contains_qr_art(text: &str) -> bool {
+        text.chars().any(|ch| matches!(ch, '▀' | '▄' | '█'))
+    }
 
     #[test]
     fn test_render_state_all() {
@@ -1055,5 +1069,28 @@ mod tests {
 
         assert!(rendered.contains("[DETECT] Review likely signed-in accounts"));
         assert!(rendered.contains("auth • detect • list • xfer • mount • sso • mobile • tools"));
+    }
+
+    #[test]
+    fn test_auth_render_hides_qr_until_space_is_available() {
+        let mut app = App::new();
+        app.state = AppState::Authenticating;
+        app.provider.chosen = Some(ProviderEntry::from_known(CloudProvider::GoogleDrive));
+
+        let qr = render_qr_code("https://example.com/device-auth").unwrap();
+        app.auth_status = format!(
+            "Open on phone: https://example.com/device-auth\nScan this QR code:\n{}",
+            qr
+        );
+
+        let small = export_screen_text(&app, 100, 10);
+        assert!(small.contains("Open on phone:"));
+        assert!(small.contains("QR hidden at this window size"));
+        assert!(!contains_qr_art(&small));
+
+        let large = export_screen_text(&app, 100, 40);
+        assert!(large.contains("Scan this QR code:"));
+        assert!(contains_qr_art(&large));
+        assert!(!large.contains("QR hidden at this window size"));
     }
 }

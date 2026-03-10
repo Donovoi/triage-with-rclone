@@ -1376,9 +1376,8 @@ mod tests {
 
     #[test]
     fn test_should_retry_onedrive_direct_browser_auth_for_missing_auth_url() {
-        let error = anyhow::anyhow!(
-            "rclone authorize did not produce an auth URL for Microsoft OneDrive"
-        );
+        let error =
+            anyhow::anyhow!("rclone authorize did not produce an auth URL for Microsoft OneDrive");
 
         assert!(should_retry_onedrive_direct_browser_auth(&error));
     }

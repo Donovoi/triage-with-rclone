@@ -13,6 +13,7 @@ use crate::providers::{CloudProvider, ProviderEntry};
 use crate::rclone::MountedRemote;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Local};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::{mpsc, Arc, Mutex};
@@ -175,10 +176,27 @@ fn list_navigate_down(selected: &mut usize, len: usize) {
     *selected = (*selected + 1) % len;
 }
 
+fn detected_account_auto_select_key(
+    candidate: &crate::providers::account_detection::DetectedAccountCandidate,
+) -> Option<(CloudProvider, crate::providers::browser::BrowserType)> {
+    candidate.selection_allowed().then_some((
+        candidate.provider,
+        candidate.browser_profile.browser.browser_type,
+    ))
+}
+
 fn should_preselect_detected_account(
     candidate: &crate::providers::account_detection::DetectedAccountCandidate,
+    runnable_counts: &HashMap<(CloudProvider, crate::providers::browser::BrowserType), usize>,
 ) -> bool {
-    candidate.selection_allowed() && candidate.provider != CloudProvider::GooglePhotos
+    if !candidate.selection_allowed() || candidate.provider == CloudProvider::GooglePhotos {
+        return false;
+    }
+
+    detected_account_auto_select_key(candidate)
+        .and_then(|key| runnable_counts.get(&key).copied())
+        .unwrap_or(0)
+        == 1
 }
 
 /// Provider selection state
@@ -248,7 +266,7 @@ impl AuthBatchTask {
             Some(browser) => format!(
                 "{} via {}",
                 self.provider.display_name(),
-                browser.display_name()
+                browser.display_name_with_profile()
             ),
             None => format!("{} via System Default", self.provider.display_name()),
         }
@@ -1350,15 +1368,24 @@ impl App {
         &mut self,
         report: crate::providers::account_detection::DetectionReport,
     ) {
+        let mut runnable_counts: HashMap<
+            (CloudProvider, crate::providers::browser::BrowserType),
+            usize,
+        > = HashMap::new();
+        for candidate in &report.candidates {
+            if let Some(key) = detected_account_auto_select_key(candidate) {
+                *runnable_counts.entry(key).or_default() += 1;
+            }
+        }
+
         let default_checked: Vec<bool> = report
             .candidates
             .iter()
-            .map(should_preselect_detected_account)
+            .map(|candidate| should_preselect_detected_account(candidate, &runnable_counts))
             .collect();
-        let selected = report
-            .candidates
+        let selected = default_checked
             .iter()
-            .position(should_preselect_detected_account)
+            .position(|checked| *checked)
             .or_else(|| {
                 report
                     .candidates
@@ -1369,12 +1396,19 @@ impl App {
         let skipped_by_default = report
             .candidates
             .iter()
-            .filter(|candidate| candidate.selection_allowed() && !should_preselect_detected_account(candidate))
+            .zip(default_checked.iter().copied())
+            .filter(|(candidate, checked)| candidate.selection_allowed() && !checked)
             .count();
+        let duplicate_profile_groups = runnable_counts.values().filter(|count| **count > 1).count();
         let mut status = report.summary_line();
         if skipped_by_default > 0 {
             status.push_str(
                 " Some runnable providers were left unchecked by default; review before authenticating.",
+            );
+        }
+        if duplicate_profile_groups > 0 {
+            status.push_str(
+                " Multiple runnable profiles were detected for the same provider/browser; choose the intended profile before authenticating.",
             );
         }
 
@@ -2176,8 +2210,36 @@ mod tests {
 
         assert_eq!(app.detected_accounts.selected, 0);
         assert_eq!(app.detected_accounts.checked, vec![true, false]);
-        assert!(app.detected_accounts.status.contains("1 runnable candidate"));
+        assert!(app
+            .detected_accounts
+            .status
+            .contains("1 runnable candidate"));
         assert_eq!(app.selected_detected_accounts().len(), 1);
+    }
+
+    #[test]
+    fn test_load_detected_accounts_leaves_duplicate_browser_profiles_unchecked_by_default() {
+        let mut app = App::new();
+        app.state = AppState::ReviewDetectedAccounts;
+        app.load_detected_accounts(DetectionReport {
+            scanned_profiles: Vec::new(),
+            candidates: vec![
+                sample_detected_candidate(DetectionCapability::RunnableAuth, "Default"),
+                sample_detected_candidate(DetectionCapability::RunnableAuth, "Profile 1"),
+            ],
+            errors: Vec::new(),
+        });
+
+        assert_eq!(app.detected_accounts.checked, vec![false, false]);
+        assert_eq!(app.detected_accounts.selected, 0);
+        assert!(app
+            .detected_accounts
+            .status
+            .contains("left unchecked by default"));
+        assert!(app
+            .detected_accounts
+            .status
+            .contains("Multiple runnable profiles were detected"));
     }
 
     #[test]
@@ -2243,6 +2305,9 @@ mod tests {
 
         assert_eq!(app.detected_accounts.checked, vec![false, true]);
         assert_eq!(app.detected_accounts.selected, 1);
-        assert!(app.detected_accounts.status.contains("left unchecked by default"));
+        assert!(app
+            .detected_accounts
+            .status
+            .contains("left unchecked by default"));
     }
 }

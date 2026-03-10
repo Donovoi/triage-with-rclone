@@ -6,8 +6,8 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{List, ListItem, ListState, Paragraph, StatefulWidget, Widget, Wrap};
 
-use crate::ui::{theme, ConfigBrowserEntry};
 use crate::ui::widgets::{marquee_line, marquee_text_line, text_width, MarqueeSegment};
+use crate::ui::{theme, ConfigBrowserEntry};
 
 pub struct ConfigBrowserScreen {
     pub current_dir: String,

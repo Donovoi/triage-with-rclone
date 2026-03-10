@@ -712,116 +712,122 @@ pub fn run_loop(app: &mut App) -> Result<()> {
         }
 
         if event::poll(Duration::from_millis(200))? {
-            if let Event::Key(key) = event::read()? {
-                needs_redraw = true;
-                if !should_handle_key(&key) {
-                    continue;
+            match event::read()? {
+                Event::Resize(_, _) => {
+                    needs_redraw = true;
                 }
-                let now = Instant::now();
-                if matches!(key.code, KeyCode::Up | KeyCode::Down) {
-                    if let Some((prev, at)) = last_nav {
-                        if prev == key.code && now.duration_since(at) < Duration::from_millis(80) {
-                            continue;
-                        }
+                Event::Key(key) => {
+                    needs_redraw = true;
+                    if !should_handle_key(&key) {
+                        continue;
                     }
-                    last_nav = Some((key.code, now));
-                }
+                    let now = Instant::now();
+                    if matches!(key.code, KeyCode::Up | KeyCode::Down) {
+                        if let Some((prev, at)) = last_nav {
+                            if prev == key.code
+                                && now.duration_since(at) < Duration::from_millis(80)
+                            {
+                                continue;
+                            }
+                        }
+                        last_nav = Some((key.code, now));
+                    }
 
-                if handle_provider_help_key(app, &key) {
-                    continue;
-                }
+                    if handle_provider_help_key(app, &key) {
+                        continue;
+                    }
 
-                // Ctrl+E: export current screen text to file
-                if key.code == KeyCode::Char('e')
-                    && key
-                        .modifiers
-                        .contains(crossterm::event::KeyModifiers::CONTROL)
-                {
-                    handle_export_screen(app, &terminal);
-                    continue;
-                }
+                    // Ctrl+E: export current screen text to file
+                    if key.code == KeyCode::Char('e')
+                        && key
+                            .modifiers
+                            .contains(crossterm::event::KeyModifiers::CONTROL)
+                    {
+                        handle_export_screen(app, &terminal);
+                        continue;
+                    }
 
-                match key.code {
-                    KeyCode::Char('q') | KeyCode::Esc => {
-                        if app.state == crate::ui::AppState::ReviewDetectedAccounts
-                            || app.state == crate::ui::AppState::DetectingAccounts
-                        {
-                            app.state = crate::ui::AppState::MainMenu;
-                        } else if app.state == crate::ui::AppState::Authenticating
-                            && matches!(
-                                app.selected_action,
-                                Some(crate::ui::MenuAction::AutoDetectAccounts)
-                            )
-                        {
-                            app.clear_auth_batch();
-                            app.detected_accounts.status =
+                    match key.code {
+                        KeyCode::Char('q') | KeyCode::Esc => {
+                            if app.state == crate::ui::AppState::ReviewDetectedAccounts
+                                || app.state == crate::ui::AppState::DetectingAccounts
+                            {
+                                app.state = crate::ui::AppState::MainMenu;
+                            } else if app.state == crate::ui::AppState::Authenticating
+                                && matches!(
+                                    app.selected_action,
+                                    Some(crate::ui::MenuAction::AutoDetectAccounts)
+                                )
+                            {
+                                app.clear_auth_batch();
+                                app.detected_accounts.status =
                                 "Authentication cancelled. Review the detected accounts and retry."
                                     .to_string();
-                            app.state = crate::ui::AppState::ReviewDetectedAccounts;
-                        } else if app.state == crate::ui::AppState::ConfigBrowser {
-                            app.config_browser.last_error = None;
-                            app.config_browser.selected_config = None;
-                            app.state = crate::ui::AppState::MainMenu;
-                        } else if app.state == crate::ui::AppState::Listing {
-                            if let Some(ref task) = app.listing_task {
-                                task.cancel
-                                    .store(true, std::sync::atomic::Ordering::Relaxed);
-                            }
-                            app.listing_task = None;
-                            app.config_browser.status = "Listing cancelled.".to_string();
-                            app.state = crate::ui::AppState::ConfigBrowser;
-                        } else if app.state == crate::ui::AppState::Mounted {
-                            app.unmount_remote();
-                            app.log_info("Unmounted remote");
-                            if matches!(
-                                app.selected_action,
-                                Some(crate::ui::MenuAction::MountProvider)
-                            ) {
-                                app.state = crate::ui::AppState::ProviderSelect;
+                                app.state = crate::ui::AppState::ReviewDetectedAccounts;
+                            } else if app.state == crate::ui::AppState::ConfigBrowser {
+                                app.config_browser.last_error = None;
+                                app.config_browser.selected_config = None;
+                                app.state = crate::ui::AppState::MainMenu;
+                            } else if app.state == crate::ui::AppState::Listing {
+                                if let Some(ref task) = app.listing_task {
+                                    task.cancel
+                                        .store(true, std::sync::atomic::Ordering::Relaxed);
+                                }
+                                app.listing_task = None;
+                                app.config_browser.status = "Listing cancelled.".to_string();
+                                app.state = crate::ui::AppState::ConfigBrowser;
+                            } else if app.state == crate::ui::AppState::Mounted {
+                                app.unmount_remote();
+                                app.log_info("Unmounted remote");
+                                if matches!(
+                                    app.selected_action,
+                                    Some(crate::ui::MenuAction::MountProvider)
+                                ) {
+                                    app.state = crate::ui::AppState::ProviderSelect;
+                                } else {
+                                    app.state = crate::ui::AppState::PostAuthChoice;
+                                }
                             } else {
-                                app.state = crate::ui::AppState::PostAuthChoice;
-                            }
-                        } else {
-                            break;
-                        }
-                    }
-                    KeyCode::Enter => {
-                        if app.state == crate::ui::AppState::MainMenu {
-                            if handle_main_menu_enter(app) {
                                 break;
                             }
-                            if matches!(
-                                app.selected_action,
-                                Some(crate::ui::MenuAction::AutoDetectAccounts)
-                            ) && app.state == crate::ui::AppState::DetectingAccounts
-                            {
-                                crate::ui::flows::auto_detect::perform_detection_flow(
-                                    app,
-                                    &mut terminal,
-                                )?;
-                            }
-                            // On Windows the native file dialog may have
-                            // pre-selected a config file.  Trigger the
-                            // listing flow here where `terminal` is available.
-                            if matches!(
-                                app.selected_action,
-                                Some(crate::ui::MenuAction::RetrieveList)
-                            ) {
-                                if let Some(config_path) =
-                                    app.config_browser.selected_config.clone()
+                        }
+                        KeyCode::Enter => {
+                            if app.state == crate::ui::AppState::MainMenu {
+                                if handle_main_menu_enter(app) {
+                                    break;
+                                }
+                                if matches!(
+                                    app.selected_action,
+                                    Some(crate::ui::MenuAction::AutoDetectAccounts)
+                                ) && app.state == crate::ui::AppState::DetectingAccounts
                                 {
-                                    crate::ui::flows::list::perform_list_flow_from_config(
+                                    crate::ui::flows::auto_detect::perform_detection_flow(
                                         app,
                                         &mut terminal,
-                                        &config_path,
                                     )?;
                                 }
-                            }
-                        } else if app.state == crate::ui::AppState::AdditionalOptions {
-                            if let Some(item) = app.additional_menu_selected_item() {
-                                let action = item.action;
-                                app.menu_status.clear();
-                                match action {
+                                // On Windows the native file dialog may have
+                                // pre-selected a config file.  Trigger the
+                                // listing flow here where `terminal` is available.
+                                if matches!(
+                                    app.selected_action,
+                                    Some(crate::ui::MenuAction::RetrieveList)
+                                ) {
+                                    if let Some(config_path) =
+                                        app.config_browser.selected_config.clone()
+                                    {
+                                        crate::ui::flows::list::perform_list_flow_from_config(
+                                            app,
+                                            &mut terminal,
+                                            &config_path,
+                                        )?;
+                                    }
+                                }
+                            } else if app.state == crate::ui::AppState::AdditionalOptions {
+                                if let Some(item) = app.additional_menu_selected_item() {
+                                    let action = item.action;
+                                    app.menu_status.clear();
+                                    match action {
                                     crate::ui::MenuAction::UpdateTools => {
                                         perform_update_tools_flow(app, &mut terminal)?;
                                     }
@@ -864,520 +870,303 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                                     }
                                     _ => {}
                                 }
-                            }
-                        } else if app.state == crate::ui::AppState::OneDriveMenu {
-                            if let Some(item) = app.onedrive_menu_selected_item() {
-                                let action = item.action;
-                                app.menu_status.clear();
-                                match action {
-                                    crate::ui::MenuAction::OpenOneDriveVault => {
-                                        perform_onedrive_vault_flow(app, &mut terminal)?;
-                                    }
-                                    crate::ui::MenuAction::BackToAdditionalOptions => {
-                                        app.state = crate::ui::AppState::AdditionalOptions;
-                                    }
-                                    _ => {}
                                 }
-                            }
-                        } else if app.state == crate::ui::AppState::ProviderSelect {
-                            app.confirm_provider();
-                            if app.provider.chosen.is_none() {
-                                continue;
-                            }
-
-                            let selected_providers = if !app.provider.chosen_multiple.is_empty() {
-                                app.provider.chosen_multiple.clone()
-                            } else {
-                                app.provider.chosen.clone().into_iter().collect()
-                            };
-                            let first_provider = selected_providers
-                                .first()
-                                .cloned()
-                                .or_else(|| app.provider.chosen.clone());
-
-                            let needs_oauth = matches!(
-                                app.selected_action,
-                                Some(crate::ui::MenuAction::Authenticate)
-                                    | Some(crate::ui::MenuAction::SmartAuth)
-                                    | Some(crate::ui::MenuAction::MobileAuth)
-                            );
-                            let auth_kind = first_provider.as_ref().map(|p| p.auth_kind());
-                            if needs_oauth {
-                                let has_manual_backend =
-                                    selected_providers.iter().any(|provider| {
-                                        matches!(
-                                            provider.auth_kind(),
-                                            crate::providers::ProviderAuthKind::KeyBased
-                                                | crate::providers::ProviderAuthKind::UserPass
-                                        )
-                                    });
-
-                                if has_manual_backend && selected_providers.len() > 1 {
-                                    app.provider.status = "Multi-select auth currently supports OAuth/browser flows only. Authenticate manual backends one at a time.".to_string();
-                                    app.clear_auth_batch();
+                            } else if app.state == crate::ui::AppState::OneDriveMenu {
+                                if let Some(item) = app.onedrive_menu_selected_item() {
+                                    let action = item.action;
+                                    app.menu_status.clear();
+                                    match action {
+                                        crate::ui::MenuAction::OpenOneDriveVault => {
+                                            perform_onedrive_vault_flow(app, &mut terminal)?;
+                                        }
+                                        crate::ui::MenuAction::BackToAdditionalOptions => {
+                                            app.state = crate::ui::AppState::AdditionalOptions;
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                            } else if app.state == crate::ui::AppState::ProviderSelect {
+                                app.confirm_provider();
+                                if app.provider.chosen.is_none() {
                                     continue;
                                 }
 
-                                match auth_kind {
-                                    Some(crate::providers::ProviderAuthKind::KeyBased)
-                                    | Some(crate::providers::ProviderAuthKind::UserPass)
-                                        if selected_providers.len() == 1 =>
-                                    {
-                                        app.menu_status.clear();
-                                        app.browser.chosen = None;
-                                        app.browser.chosen_multiple.clear();
+                                let selected_providers = if !app.provider.chosen_multiple.is_empty()
+                                {
+                                    app.provider.chosen_multiple.clone()
+                                } else {
+                                    app.provider.chosen.clone().into_iter().collect()
+                                };
+                                let first_provider = selected_providers
+                                    .first()
+                                    .cloned()
+                                    .or_else(|| app.provider.chosen.clone());
+
+                                let needs_oauth = matches!(
+                                    app.selected_action,
+                                    Some(crate::ui::MenuAction::Authenticate)
+                                        | Some(crate::ui::MenuAction::SmartAuth)
+                                        | Some(crate::ui::MenuAction::MobileAuth)
+                                );
+                                let auth_kind = first_provider.as_ref().map(|p| p.auth_kind());
+                                if needs_oauth {
+                                    let has_manual_backend =
+                                        selected_providers.iter().any(|provider| {
+                                            matches!(
+                                                provider.auth_kind(),
+                                                crate::providers::ProviderAuthKind::KeyBased
+                                                    | crate::providers::ProviderAuthKind::UserPass
+                                            )
+                                        });
+
+                                    if has_manual_backend && selected_providers.len() > 1 {
+                                        app.provider.status = "Multi-select auth currently supports OAuth/browser flows only. Authenticate manual backends one at a time.".to_string();
                                         app.clear_auth_batch();
-                                        app.state = crate::ui::AppState::Authenticating;
-                                        crate::ui::flows::manual_config::perform_manual_config_flow(
+                                        continue;
+                                    }
+
+                                    match auth_kind {
+                                        Some(crate::providers::ProviderAuthKind::KeyBased)
+                                        | Some(crate::providers::ProviderAuthKind::UserPass)
+                                            if selected_providers.len() == 1 =>
+                                        {
+                                            app.menu_status.clear();
+                                            app.browser.chosen = None;
+                                            app.browser.chosen_multiple.clear();
+                                            app.clear_auth_batch();
+                                            app.state = crate::ui::AppState::Authenticating;
+                                            crate::ui::flows::manual_config::perform_manual_config_flow(
                                             app,
                                             &mut terminal,
                                         )?;
-                                        continue;
-                                    }
-                                    Some(crate::providers::ProviderAuthKind::Unknown) => {
-                                        if let Some(provider) = first_provider.as_ref() {
-                                            // Best-effort: allow trying OAuth even if we can't confidently classify the backend.
-                                            app.menu_status = format!(
+                                            continue;
+                                        }
+                                        Some(crate::providers::ProviderAuthKind::Unknown) => {
+                                            if let Some(provider) = first_provider.as_ref() {
+                                                // Best-effort: allow trying OAuth even if we can't confidently classify the backend.
+                                                app.menu_status = format!(
                                                 "Backend '{}' auth type is unknown. Attempting OAuth anyway; if it fails, configure it in an rclone config and use Retrieve List / Mount / Download from CSV.",
                                                 provider.display_name()
                                             );
+                                            }
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                                match app.selected_action {
+                                    Some(crate::ui::MenuAction::MobileAuth) => {
+                                        app.state = crate::ui::AppState::MobileAuthFlow;
+                                    }
+                                    Some(crate::ui::MenuAction::SmartAuth) => {
+                                        app.browser.chosen = None;
+                                        app.state = crate::ui::AppState::Authenticating;
+                                        crate::ui::flows::auth::perform_auth_flow(
+                                            app,
+                                            &mut terminal,
+                                        )?;
+                                    }
+                                    Some(crate::ui::MenuAction::RetrieveList) => {
+                                        crate::ui::flows::list::perform_list_flow(
+                                            app,
+                                            &mut terminal,
+                                        )?;
+                                    }
+                                    Some(crate::ui::MenuAction::MountProvider) => {
+                                        crate::ui::flows::mount::perform_mount_flow(
+                                            app,
+                                            &mut terminal,
+                                        )?;
+                                    }
+                                    Some(crate::ui::MenuAction::DownloadFromCsv) => {
+                                        perform_csv_download_flow(app, &mut terminal)?;
+                                    }
+                                    _ => {
+                                        let needs_browser_selection =
+                                            selected_providers.iter().any(|provider| {
+                                                provider.known.is_some()
+                                                    && matches!(
+                                                        provider.auth_kind(),
+                                                        crate::providers::ProviderAuthKind::OAuth
+                                                    )
+                                            });
+                                        if needs_browser_selection {
+                                            app.refresh_browsers();
+                                            app.advance(); // Move to BrowserSelect
+                                        } else {
+                                            app.browser.chosen = None;
+                                            app.browser.chosen_multiple.clear();
+                                            app.clear_auth_batch();
+                                            app.state = crate::ui::AppState::Authenticating;
+                                            crate::ui::flows::auth::perform_auth_flow(
+                                                app,
+                                                &mut terminal,
+                                            )?;
                                         }
                                     }
-                                    _ => {}
                                 }
-                            }
-                            match app.selected_action {
-                                Some(crate::ui::MenuAction::MobileAuth) => {
-                                    app.state = crate::ui::AppState::MobileAuthFlow;
+                            } else if app.state == crate::ui::AppState::ConfigBrowser {
+                                if let Some(config_path) = app.config_browser.enter_selected() {
+                                    // User selected a file — attempt to load as config
+                                    crate::ui::flows::list::perform_list_flow_from_config(
+                                        app,
+                                        &mut terminal,
+                                        &config_path,
+                                    )?;
                                 }
-                                Some(crate::ui::MenuAction::SmartAuth) => {
-                                    app.browser.chosen = None;
-                                    app.state = crate::ui::AppState::Authenticating;
+                            } else if app.state == crate::ui::AppState::RemoteSelect {
+                                let selected = app.confirm_remotes_multi();
+                                if !selected.is_empty() {
+                                    if selected.len() == 1 {
+                                        app.provider.status =
+                                            format!("Selected remote: {}", selected[0]);
+                                    } else {
+                                        app.provider.status = format!(
+                                            "Selected {} remotes: {}",
+                                            selected.len(),
+                                            selected.join(", ")
+                                        );
+                                    }
+                                    resume_remote_flow(app, &mut terminal)?;
+                                }
+                            } else if app.state == crate::ui::AppState::MobileAuthFlow {
+                                if let Some(item) = app.mobile_flow_selected_item() {
+                                    match item.action {
+                                        crate::ui::MenuAction::MobileAuthRedirect => {
+                                            app.mobile_auth_flow =
+                                                Some(crate::ui::MobileAuthFlow::Redirect);
+                                            app.state = crate::ui::AppState::Authenticating;
+                                            crate::ui::flows::auth::perform_auth_flow(
+                                                app,
+                                                &mut terminal,
+                                            )?;
+                                        }
+                                        crate::ui::MenuAction::MobileAuthRedirectWithAp => {
+                                            app.mobile_auth_flow = Some(
+                                                crate::ui::MobileAuthFlow::RedirectWithAccessPoint,
+                                            );
+                                            app.state = crate::ui::AppState::Authenticating;
+                                            crate::ui::flows::auth::perform_auth_flow(
+                                                app,
+                                                &mut terminal,
+                                            )?;
+                                        }
+                                        crate::ui::MenuAction::MobileAuthDeviceCode => {
+                                            app.mobile_auth_flow =
+                                                Some(crate::ui::MobileAuthFlow::DeviceCode);
+                                            app.state = crate::ui::AppState::Authenticating;
+                                            crate::ui::flows::auth::perform_auth_flow(
+                                                app,
+                                                &mut terminal,
+                                            )?;
+                                        }
+                                        crate::ui::MenuAction::BackToProviders => {
+                                            app.state = crate::ui::AppState::ProviderSelect;
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                            } else if app.state == crate::ui::AppState::BrowserSelect {
+                                app.confirm_browser();
+                                if !app.has_selected_browsers() {
+                                    continue;
+                                }
+                                app.advance(); // Move to Authenticating
+
+                                if app.state == crate::ui::AppState::Authenticating {
                                     crate::ui::flows::auth::perform_auth_flow(app, &mut terminal)?;
                                 }
-                                Some(crate::ui::MenuAction::RetrieveList) => {
-                                    crate::ui::flows::list::perform_list_flow(app, &mut terminal)?;
+                            } else if app.state == crate::ui::AppState::DetectingAccounts {
+                                crate::ui::flows::auto_detect::perform_detection_flow(
+                                    app,
+                                    &mut terminal,
+                                )?;
+                            } else if app.state == crate::ui::AppState::ReviewDetectedAccounts {
+                                if !app.has_selected_detected_accounts() {
+                                    app.detected_accounts.status =
+                                        "Select at least one runnable detected account first."
+                                            .to_string();
+                                    continue;
                                 }
-                                Some(crate::ui::MenuAction::MountProvider) => {
-                                    crate::ui::flows::mount::perform_mount_flow(
+                                app.state = crate::ui::AppState::Authenticating;
+                                app.clear_auth_batch();
+                                crate::ui::flows::auth::perform_auth_flow(app, &mut terminal)?;
+                            } else if app.state == crate::ui::AppState::PostAuthChoice {
+                                let choice = match app.post_auth_selected {
+                                    0 => crate::ui::PostAuthAction::ListToCsv,
+                                    1 => crate::ui::PostAuthAction::MountAndBrowse,
+                                    2 => crate::ui::PostAuthAction::SkipToFileList,
+                                    _ => crate::ui::PostAuthAction::AddAnotherProvider,
+                                };
+                                app.post_auth_action = Some(choice);
+                                match choice {
+                                    crate::ui::PostAuthAction::ListToCsv => {
+                                        perform_post_auth_list(app, &mut terminal)?;
+                                    }
+                                    crate::ui::PostAuthAction::MountAndBrowse => {
+                                        perform_post_auth_mount(app, &mut terminal)?;
+                                    }
+                                    crate::ui::PostAuthAction::SkipToFileList => {
+                                        app.advance(); // PostAuthChoice → FileList
+                                    }
+                                    crate::ui::PostAuthAction::AddAnotherProvider => {
+                                        // Go back to provider select to authenticate another batch.
+                                        if matches!(
+                                            app.selected_action,
+                                            Some(crate::ui::MenuAction::AutoDetectAccounts)
+                                        ) {
+                                            app.selected_action =
+                                                Some(crate::ui::MenuAction::Authenticate);
+                                        }
+                                        app.provider.chosen = None;
+                                        app.provider.chosen_multiple.clear();
+                                        app.provider.checked =
+                                            vec![false; app.provider.entries.len()];
+                                        app.browser.chosen = None;
+                                        app.browser.chosen_multiple.clear();
+                                        app.browser.checked =
+                                            vec![false; app.browser.entries.len() + 1];
+                                        app.clear_auth_batch();
+                                        app.remote.chosen = None;
+                                        app.remote.chosen_multiple.clear();
+                                        app.post_auth_selected = 0;
+                                        app.state = crate::ui::AppState::ProviderSelect;
+                                    }
+                                }
+                            } else if app.state == crate::ui::AppState::FileList {
+                                // Start download if files are selected
+                                if !app.files.to_download.is_empty() {
+                                    app.advance(); // Move to Downloading
+                                    crate::ui::flows::download::perform_download_flow(
                                         app,
                                         &mut terminal,
                                     )?;
                                 }
-                                Some(crate::ui::MenuAction::DownloadFromCsv) => {
-                                    perform_csv_download_flow(app, &mut terminal)?;
-                                }
-                                _ => {
-                                    let needs_browser_selection =
-                                        selected_providers.iter().any(|provider| {
-                                            provider.known.is_some()
-                                                && matches!(
-                                                    provider.auth_kind(),
-                                                    crate::providers::ProviderAuthKind::OAuth
-                                                )
-                                        });
-                                    if needs_browser_selection {
-                                        app.refresh_browsers();
-                                        app.advance(); // Move to BrowserSelect
-                                    } else {
-                                        app.browser.chosen = None;
-                                        app.browser.chosen_multiple.clear();
-                                        app.clear_auth_batch();
-                                        app.state = crate::ui::AppState::Authenticating;
-                                        crate::ui::flows::auth::perform_auth_flow(
-                                            app,
-                                            &mut terminal,
-                                        )?;
-                                    }
-                                }
-                            }
-                        } else if app.state == crate::ui::AppState::ConfigBrowser {
-                            if let Some(config_path) = app.config_browser.enter_selected() {
-                                // User selected a file — attempt to load as config
-                                crate::ui::flows::list::perform_list_flow_from_config(
-                                    app,
-                                    &mut terminal,
-                                    &config_path,
-                                )?;
-                            }
-                        } else if app.state == crate::ui::AppState::RemoteSelect {
-                            let selected = app.confirm_remotes_multi();
-                            if !selected.is_empty() {
-                                if selected.len() == 1 {
-                                    app.provider.status =
-                                        format!("Selected remote: {}", selected[0]);
-                                } else {
-                                    app.provider.status = format!(
-                                        "Selected {} remotes: {}",
-                                        selected.len(),
-                                        selected.join(", ")
-                                    );
-                                }
-                                resume_remote_flow(app, &mut terminal)?;
-                            }
-                        } else if app.state == crate::ui::AppState::MobileAuthFlow {
-                            if let Some(item) = app.mobile_flow_selected_item() {
-                                match item.action {
-                                    crate::ui::MenuAction::MobileAuthRedirect => {
-                                        app.mobile_auth_flow =
-                                            Some(crate::ui::MobileAuthFlow::Redirect);
-                                        app.state = crate::ui::AppState::Authenticating;
-                                        crate::ui::flows::auth::perform_auth_flow(
-                                            app,
-                                            &mut terminal,
-                                        )?;
-                                    }
-                                    crate::ui::MenuAction::MobileAuthRedirectWithAp => {
-                                        app.mobile_auth_flow = Some(
-                                            crate::ui::MobileAuthFlow::RedirectWithAccessPoint,
-                                        );
-                                        app.state = crate::ui::AppState::Authenticating;
-                                        crate::ui::flows::auth::perform_auth_flow(
-                                            app,
-                                            &mut terminal,
-                                        )?;
-                                    }
-                                    crate::ui::MenuAction::MobileAuthDeviceCode => {
-                                        app.mobile_auth_flow =
-                                            Some(crate::ui::MobileAuthFlow::DeviceCode);
-                                        app.state = crate::ui::AppState::Authenticating;
-                                        crate::ui::flows::auth::perform_auth_flow(
-                                            app,
-                                            &mut terminal,
-                                        )?;
-                                    }
-                                    crate::ui::MenuAction::BackToProviders => {
-                                        app.state = crate::ui::AppState::ProviderSelect;
-                                    }
-                                    _ => {}
-                                }
-                            }
-                        } else if app.state == crate::ui::AppState::BrowserSelect {
-                            app.confirm_browser();
-                            if !app.has_selected_browsers() {
-                                continue;
-                            }
-                            app.advance(); // Move to Authenticating
-
-                            if app.state == crate::ui::AppState::Authenticating {
-                                crate::ui::flows::auth::perform_auth_flow(app, &mut terminal)?;
-                            }
-                        } else if app.state == crate::ui::AppState::DetectingAccounts {
-                            crate::ui::flows::auto_detect::perform_detection_flow(
-                                app,
-                                &mut terminal,
-                            )?;
-                        } else if app.state == crate::ui::AppState::ReviewDetectedAccounts {
-                            if !app.has_selected_detected_accounts() {
-                                app.detected_accounts.status =
-                                    "Select at least one runnable detected account first."
-                                        .to_string();
-                                continue;
-                            }
-                            app.state = crate::ui::AppState::Authenticating;
-                            app.clear_auth_batch();
-                            crate::ui::flows::auth::perform_auth_flow(app, &mut terminal)?;
-                        } else if app.state == crate::ui::AppState::PostAuthChoice {
-                            let choice = match app.post_auth_selected {
-                                0 => crate::ui::PostAuthAction::ListToCsv,
-                                1 => crate::ui::PostAuthAction::MountAndBrowse,
-                                2 => crate::ui::PostAuthAction::SkipToFileList,
-                                _ => crate::ui::PostAuthAction::AddAnotherProvider,
-                            };
-                            app.post_auth_action = Some(choice);
-                            match choice {
-                                crate::ui::PostAuthAction::ListToCsv => {
-                                    perform_post_auth_list(app, &mut terminal)?;
-                                }
-                                crate::ui::PostAuthAction::MountAndBrowse => {
-                                    perform_post_auth_mount(app, &mut terminal)?;
-                                }
-                                crate::ui::PostAuthAction::SkipToFileList => {
-                                    app.advance(); // PostAuthChoice → FileList
-                                }
-                                crate::ui::PostAuthAction::AddAnotherProvider => {
-                                    // Go back to provider select to authenticate another batch.
-                                    if matches!(
-                                        app.selected_action,
-                                        Some(crate::ui::MenuAction::AutoDetectAccounts)
-                                    ) {
-                                        app.selected_action =
-                                            Some(crate::ui::MenuAction::Authenticate);
-                                    }
-                                    app.provider.chosen = None;
-                                    app.provider.chosen_multiple.clear();
-                                    app.provider.checked = vec![false; app.provider.entries.len()];
-                                    app.browser.chosen = None;
-                                    app.browser.chosen_multiple.clear();
-                                    app.browser.checked =
-                                        vec![false; app.browser.entries.len() + 1];
-                                    app.clear_auth_batch();
-                                    app.remote.chosen = None;
-                                    app.remote.chosen_multiple.clear();
-                                    app.post_auth_selected = 0;
-                                    app.state = crate::ui::AppState::ProviderSelect;
-                                }
-                            }
-                        } else if app.state == crate::ui::AppState::FileList {
-                            // Start download if files are selected
-                            if !app.files.to_download.is_empty() {
-                                app.advance(); // Move to Downloading
-                                crate::ui::flows::download::perform_download_flow(
-                                    app,
-                                    &mut terminal,
-                                )?;
-                            }
-                        } else {
-                            app.advance();
-                        }
-                    }
-                    KeyCode::Backspace => {
-                        if app.state == crate::ui::AppState::ReviewDetectedAccounts
-                            || app.state == crate::ui::AppState::DetectingAccounts
-                        {
-                            app.state = crate::ui::AppState::MainMenu;
-                        } else if app.state == crate::ui::AppState::ConfigBrowser {
-                            app.config_browser.go_parent();
-                        } else if app.state == crate::ui::AppState::Listing {
-                            if let Some(ref task) = app.listing_task {
-                                task.cancel
-                                    .store(true, std::sync::atomic::Ordering::Relaxed);
-                            }
-                            app.listing_task = None;
-                            app.config_browser.status = "Listing cancelled.".to_string();
-                            app.state = crate::ui::AppState::ConfigBrowser;
-                        } else if app.state == crate::ui::AppState::RemoteSelect {
-                            app.remote.options.clear();
-                            app.remote.selected = 0;
-                            app.back();
-                        } else if app.state == crate::ui::AppState::Mounted {
-                            app.unmount_remote();
-                            app.log_info("Unmounted remote");
-                            if matches!(
-                                app.selected_action,
-                                Some(crate::ui::MenuAction::MountProvider)
-                            ) {
-                                app.state = crate::ui::AppState::ProviderSelect;
                             } else {
-                                app.state = crate::ui::AppState::PostAuthChoice;
+                                app.advance();
                             }
-                        } else if app.state == crate::ui::AppState::Authenticating
-                            && matches!(
-                                app.selected_action,
-                                Some(crate::ui::MenuAction::AutoDetectAccounts)
-                            )
-                        {
-                            app.clear_auth_batch();
-                            app.detected_accounts.status =
-                                "Authentication cancelled. Review the detected accounts and retry."
-                                    .to_string();
-                            app.state = crate::ui::AppState::ReviewDetectedAccounts;
-                        } else if app.state == crate::ui::AppState::Authenticating {
-                            app.clear_auth_batch();
-                            app.back();
-                        } else if app.state == crate::ui::AppState::FileList {
-                            if matches!(
-                                app.selected_action,
-                                Some(crate::ui::MenuAction::RetrieveList)
-                            ) {
-                                app.state = crate::ui::AppState::ConfigBrowser;
-                            } else if matches!(
-                                app.selected_action,
-                                Some(crate::ui::MenuAction::MountProvider)
-                            ) {
-                                app.state = crate::ui::AppState::ProviderSelect;
-                            } else {
-                                app.back();
-                            }
-                        } else {
-                            app.back();
                         }
-                    }
-                    KeyCode::Up => {
-                        if app.state == crate::ui::AppState::MainMenu {
-                            app.menu_up();
-                        } else if app.state == crate::ui::AppState::AdditionalOptions {
-                            app.additional_menu_up();
-                        } else if app.state == crate::ui::AppState::OneDriveMenu {
-                            app.onedrive_menu_up();
-                        } else if app.state == crate::ui::AppState::ProviderSelect {
-                            app.provider_up();
-                        } else if app.state == crate::ui::AppState::ConfigBrowser {
-                            app.config_browser.navigate_up();
-                        } else if app.state == crate::ui::AppState::RemoteSelect {
-                            app.remote_up();
-                        } else if app.state == crate::ui::AppState::MobileAuthFlow {
-                            app.mobile_flow_up();
-                        } else if app.state == crate::ui::AppState::BrowserSelect {
-                            app.browser_up();
-                        } else if app.state == crate::ui::AppState::ReviewDetectedAccounts {
-                            app.detected_accounts_up();
-                        } else if app.state == crate::ui::AppState::PostAuthChoice {
-                            if app.post_auth_selected > 0 {
-                                app.post_auth_selected -= 1;
-                            } else {
-                                app.post_auth_selected = 3;
-                            }
-                        } else if app.state == crate::ui::AppState::FileList {
-                            app.file_up();
-                        }
-                    }
-                    KeyCode::Down => {
-                        if app.state == crate::ui::AppState::MainMenu {
-                            app.menu_down();
-                        } else if app.state == crate::ui::AppState::AdditionalOptions {
-                            app.additional_menu_down();
-                        } else if app.state == crate::ui::AppState::OneDriveMenu {
-                            app.onedrive_menu_down();
-                        } else if app.state == crate::ui::AppState::ProviderSelect {
-                            app.provider_down();
-                        } else if app.state == crate::ui::AppState::ConfigBrowser {
-                            app.config_browser.navigate_down();
-                        } else if app.state == crate::ui::AppState::RemoteSelect {
-                            app.remote_down();
-                        } else if app.state == crate::ui::AppState::MobileAuthFlow {
-                            app.mobile_flow_down();
-                        } else if app.state == crate::ui::AppState::BrowserSelect {
-                            app.browser_down();
-                        } else if app.state == crate::ui::AppState::ReviewDetectedAccounts {
-                            app.detected_accounts_down();
-                        } else if app.state == crate::ui::AppState::PostAuthChoice {
-                            app.post_auth_selected = (app.post_auth_selected + 1) % 4;
-                        } else if app.state == crate::ui::AppState::FileList {
-                            app.file_down();
-                        }
-                    }
-                    KeyCode::Char('r') => {
-                        if app.state == crate::ui::AppState::ProviderSelect {
-                            try_refresh_providers(app);
-                        } else if app.state == crate::ui::AppState::ReviewDetectedAccounts {
-                            crate::ui::flows::auto_detect::perform_detection_flow(
-                                app,
-                                &mut terminal,
-                            )?;
-                        } else if app.state == crate::ui::AppState::Complete
-                            && !app.download.failures.is_empty()
-                        {
-                            app.files.to_download = app.download.failures.clone();
-                            app.download.failures.clear();
-                            app.download.status = "Retrying failed downloads...".to_string();
-                            app.state = crate::ui::AppState::Downloading;
-                            crate::ui::flows::download::perform_download_flow(app, &mut terminal)?;
-                        }
-                    }
-                    KeyCode::Char('m') => {
-                        if app.state == crate::ui::AppState::FileList {
-                            if app.mounted_remote.is_some() {
-                                app.log_info("Remote already mounted for GUI selection");
-                                continue;
-                            }
-
-                            let binary = match crate::embedded::ExtractedBinary::extract() {
-                                Ok(binary) => binary,
-                                Err(e) => {
-                                    app.log_error(format!("Mount failed (extract): {}", e));
-                                    continue;
-                                }
-                            };
-                            app.cleanup_track_file(binary.path());
-                            if let Some(dir) = binary.temp_dir() {
-                                app.cleanup_track_dir(dir);
-                            }
-
-                            let config_dir = app
-                                .config_dir()
-                                .unwrap_or_else(|| std::path::PathBuf::from("."));
-                            app.track_env_var("RCLONE_CONFIG", "Set RCLONE_CONFIG for mount");
-                            let config = match crate::rclone::RcloneConfig::for_case(&config_dir) {
-                                Ok(config) => config,
-                                Err(e) => {
-                                    app.log_error(format!("Mount failed (config): {}", e));
-                                    continue;
-                                }
-                            };
-                            app.cleanup_track_env_value("RCLONE_CONFIG", config.original_env());
-
-                            let remote_name = app.remote.chosen.clone().or_else(|| {
-                                app.provider
-                                    .chosen
-                                    .as_ref()
-                                    .map(|p| p.short_name().to_string())
-                            });
-                            let Some(remote_name) = remote_name else {
-                                app.log_error("Mount failed: no remote selected");
-                                continue;
-                            };
-
-                            let mut manager = match crate::rclone::MountManager::new(binary.path())
+                        KeyCode::Backspace => {
+                            if app.state == crate::ui::AppState::ReviewDetectedAccounts
+                                || app.state == crate::ui::AppState::DetectingAccounts
                             {
-                                Ok(manager) => manager.with_config(config.path()),
-                                Err(e) => {
-                                    app.log_error(format!("Mount failed: {}", e));
-                                    continue;
+                                app.state = crate::ui::AppState::MainMenu;
+                            } else if app.state == crate::ui::AppState::ConfigBrowser {
+                                app.config_browser.go_parent();
+                            } else if app.state == crate::ui::AppState::Listing {
+                                if let Some(ref task) = app.listing_task {
+                                    task.cancel
+                                        .store(true, std::sync::atomic::Ordering::Relaxed);
                                 }
-                            };
-
-                            // Keep mount points and caches inside the case directory to reduce system footprint.
-                            if let Some(ref dirs) = app.forensics.directories {
-                                let mount_base = dirs.base.join("mounts");
-                                let cache_dir = dirs.base.join("cache").join("rclone");
-
-                                if let Err(e) = std::fs::create_dir_all(&mount_base) {
-                                    app.log_error(format!(
-                                        "Mount failed (mount dir {:?}): {}",
-                                        mount_base, e
-                                    ));
-                                    continue;
-                                }
-                                app.track_file(
-                                    &mount_base,
-                                    "Created mount base directory inside case",
-                                );
-
-                                if let Err(e) = std::fs::create_dir_all(&cache_dir) {
-                                    app.log_error(format!(
-                                        "Mount failed (cache dir {:?}): {}",
-                                        cache_dir, e
-                                    ));
-                                    continue;
-                                }
-                                app.track_file(
-                                    &cache_dir,
-                                    "Created rclone cache directory inside case",
-                                );
-
-                                manager = manager
-                                    .with_mount_base(&mount_base)
-                                    .with_cache_dir(&cache_dir);
-                            }
-
-                            match manager.mount_and_explore(&remote_name, None) {
-                                Ok(mounted) => {
-                                    let mount_path = mounted.mount_point().to_path_buf();
-                                    app.mounted_remote = Some(mounted);
-                                    app.log_info(format!("Mounted remote at {:?}", mount_path));
-                                    if let Some(path) = app.selection_file_path() {
-                                        app.log_info(format!(
-                                            "Create selection file at {:?} (one path per line), then press 'i' to load.",
-                                            path
-                                        ));
-                                    } else {
-                                        app.log_info("No selection file path available");
-                                    }
-                                }
-                                Err(e) => {
-                                    app.log_error(format!("Mount failed: {}", e));
-                                }
-                            }
-                        }
-                    }
-                    KeyCode::Char('u') => {
-                        if app.state == crate::ui::AppState::FileList
-                            || app.state == crate::ui::AppState::Mounted
-                        {
-                            app.unmount_remote();
-                            app.log_info("Unmounted remote");
-                            if app.state == crate::ui::AppState::Mounted {
+                                app.listing_task = None;
+                                app.config_browser.status = "Listing cancelled.".to_string();
+                                app.state = crate::ui::AppState::ConfigBrowser;
+                            } else if app.state == crate::ui::AppState::RemoteSelect {
+                                app.remote.options.clear();
+                                app.remote.selected = 0;
+                                app.back();
+                            } else if app.state == crate::ui::AppState::Mounted {
+                                app.unmount_remote();
+                                app.log_info("Unmounted remote");
                                 if matches!(
                                     app.selected_action,
                                     Some(crate::ui::MenuAction::MountProvider)
@@ -1386,59 +1175,290 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                                 } else {
                                     app.state = crate::ui::AppState::PostAuthChoice;
                                 }
-                            }
-                        }
-                    }
-                    KeyCode::Char('i') => {
-                        if app.state == crate::ui::AppState::FileList {
-                            if let Some(path) = app.selection_file_path() {
-                                match app.load_selection_from_file(&path) {
-                                    Ok(count) => {
-                                        app.log_info(format!(
-                                            "Loaded {} selected files from {:?}",
-                                            count, path
-                                        ));
-                                    }
-                                    Err(e) => {
-                                        app.log_error(format!(
-                                            "Failed to load selection from {:?}: {}",
-                                            path, e
-                                        ));
-                                    }
+                            } else if app.state == crate::ui::AppState::Authenticating
+                                && matches!(
+                                    app.selected_action,
+                                    Some(crate::ui::MenuAction::AutoDetectAccounts)
+                                )
+                            {
+                                app.clear_auth_batch();
+                                app.detected_accounts.status =
+                                "Authentication cancelled. Review the detected accounts and retry."
+                                    .to_string();
+                                app.state = crate::ui::AppState::ReviewDetectedAccounts;
+                            } else if app.state == crate::ui::AppState::Authenticating {
+                                app.clear_auth_batch();
+                                app.back();
+                            } else if app.state == crate::ui::AppState::FileList {
+                                if matches!(
+                                    app.selected_action,
+                                    Some(crate::ui::MenuAction::RetrieveList)
+                                ) {
+                                    app.state = crate::ui::AppState::ConfigBrowser;
+                                } else if matches!(
+                                    app.selected_action,
+                                    Some(crate::ui::MenuAction::MountProvider)
+                                ) {
+                                    app.state = crate::ui::AppState::ProviderSelect;
+                                } else {
+                                    app.back();
                                 }
                             } else {
-                                app.log_error("Selection file path not available");
+                                app.back();
                             }
                         }
-                    }
-                    KeyCode::Char(' ') => {
-                        // Space toggles file selection
-                        if app.state == crate::ui::AppState::ProviderSelect {
-                            app.toggle_provider_selection();
-                        } else if app.state == crate::ui::AppState::BrowserSelect {
-                            app.toggle_browser_selection();
-                        } else if app.state == crate::ui::AppState::ReviewDetectedAccounts {
-                            app.toggle_detected_account_selection();
-                        } else if app.state == crate::ui::AppState::RemoteSelect {
-                            app.toggle_remote_selection();
-                        } else if app.state == crate::ui::AppState::FileList {
-                            app.toggle_file_download();
+                        KeyCode::Up => {
+                            if app.state == crate::ui::AppState::MainMenu {
+                                app.menu_up();
+                            } else if app.state == crate::ui::AppState::AdditionalOptions {
+                                app.additional_menu_up();
+                            } else if app.state == crate::ui::AppState::OneDriveMenu {
+                                app.onedrive_menu_up();
+                            } else if app.state == crate::ui::AppState::ProviderSelect {
+                                app.provider_up();
+                            } else if app.state == crate::ui::AppState::ConfigBrowser {
+                                app.config_browser.navigate_up();
+                            } else if app.state == crate::ui::AppState::RemoteSelect {
+                                app.remote_up();
+                            } else if app.state == crate::ui::AppState::MobileAuthFlow {
+                                app.mobile_flow_up();
+                            } else if app.state == crate::ui::AppState::BrowserSelect {
+                                app.browser_up();
+                            } else if app.state == crate::ui::AppState::ReviewDetectedAccounts {
+                                app.detected_accounts_up();
+                            } else if app.state == crate::ui::AppState::PostAuthChoice {
+                                if app.post_auth_selected > 0 {
+                                    app.post_auth_selected -= 1;
+                                } else {
+                                    app.post_auth_selected = 3;
+                                }
+                            } else if app.state == crate::ui::AppState::FileList {
+                                app.file_up();
+                            }
                         }
-                    }
-                    KeyCode::Char('a') => {
-                        // 'a' selects all files
-                        if app.state == crate::ui::AppState::ReviewDetectedAccounts {
-                            app.select_all_runnable_detected_accounts();
-                            app.detected_accounts.status =
-                                "Selected all runnable detected accounts.".to_string();
-                        } else if app.state == crate::ui::AppState::FileList {
-                            app.select_all_files();
+                        KeyCode::Down => {
+                            if app.state == crate::ui::AppState::MainMenu {
+                                app.menu_down();
+                            } else if app.state == crate::ui::AppState::AdditionalOptions {
+                                app.additional_menu_down();
+                            } else if app.state == crate::ui::AppState::OneDriveMenu {
+                                app.onedrive_menu_down();
+                            } else if app.state == crate::ui::AppState::ProviderSelect {
+                                app.provider_down();
+                            } else if app.state == crate::ui::AppState::ConfigBrowser {
+                                app.config_browser.navigate_down();
+                            } else if app.state == crate::ui::AppState::RemoteSelect {
+                                app.remote_down();
+                            } else if app.state == crate::ui::AppState::MobileAuthFlow {
+                                app.mobile_flow_down();
+                            } else if app.state == crate::ui::AppState::BrowserSelect {
+                                app.browser_down();
+                            } else if app.state == crate::ui::AppState::ReviewDetectedAccounts {
+                                app.detected_accounts_down();
+                            } else if app.state == crate::ui::AppState::PostAuthChoice {
+                                app.post_auth_selected = (app.post_auth_selected + 1) % 4;
+                            } else if app.state == crate::ui::AppState::FileList {
+                                app.file_down();
+                            }
                         }
+                        KeyCode::Char('r') => {
+                            if app.state == crate::ui::AppState::ProviderSelect {
+                                try_refresh_providers(app);
+                            } else if app.state == crate::ui::AppState::ReviewDetectedAccounts {
+                                crate::ui::flows::auto_detect::perform_detection_flow(
+                                    app,
+                                    &mut terminal,
+                                )?;
+                            } else if app.state == crate::ui::AppState::Complete
+                                && !app.download.failures.is_empty()
+                            {
+                                app.files.to_download = app.download.failures.clone();
+                                app.download.failures.clear();
+                                app.download.status = "Retrying failed downloads...".to_string();
+                                app.state = crate::ui::AppState::Downloading;
+                                crate::ui::flows::download::perform_download_flow(
+                                    app,
+                                    &mut terminal,
+                                )?;
+                            }
+                        }
+                        KeyCode::Char('m') => {
+                            if app.state == crate::ui::AppState::FileList {
+                                if app.mounted_remote.is_some() {
+                                    app.log_info("Remote already mounted for GUI selection");
+                                    continue;
+                                }
+
+                                let binary = match crate::embedded::ExtractedBinary::extract() {
+                                    Ok(binary) => binary,
+                                    Err(e) => {
+                                        app.log_error(format!("Mount failed (extract): {}", e));
+                                        continue;
+                                    }
+                                };
+                                app.cleanup_track_file(binary.path());
+                                if let Some(dir) = binary.temp_dir() {
+                                    app.cleanup_track_dir(dir);
+                                }
+
+                                let config_dir = app
+                                    .config_dir()
+                                    .unwrap_or_else(|| std::path::PathBuf::from("."));
+                                app.track_env_var("RCLONE_CONFIG", "Set RCLONE_CONFIG for mount");
+                                let config =
+                                    match crate::rclone::RcloneConfig::for_case(&config_dir) {
+                                        Ok(config) => config,
+                                        Err(e) => {
+                                            app.log_error(format!("Mount failed (config): {}", e));
+                                            continue;
+                                        }
+                                    };
+                                app.cleanup_track_env_value("RCLONE_CONFIG", config.original_env());
+
+                                let remote_name = app.remote.chosen.clone().or_else(|| {
+                                    app.provider
+                                        .chosen
+                                        .as_ref()
+                                        .map(|p| p.short_name().to_string())
+                                });
+                                let Some(remote_name) = remote_name else {
+                                    app.log_error("Mount failed: no remote selected");
+                                    continue;
+                                };
+
+                                let mut manager =
+                                    match crate::rclone::MountManager::new(binary.path()) {
+                                        Ok(manager) => manager.with_config(config.path()),
+                                        Err(e) => {
+                                            app.log_error(format!("Mount failed: {}", e));
+                                            continue;
+                                        }
+                                    };
+
+                                // Keep mount points and caches inside the case directory to reduce system footprint.
+                                if let Some(ref dirs) = app.forensics.directories {
+                                    let mount_base = dirs.base.join("mounts");
+                                    let cache_dir = dirs.base.join("cache").join("rclone");
+
+                                    if let Err(e) = std::fs::create_dir_all(&mount_base) {
+                                        app.log_error(format!(
+                                            "Mount failed (mount dir {:?}): {}",
+                                            mount_base, e
+                                        ));
+                                        continue;
+                                    }
+                                    app.track_file(
+                                        &mount_base,
+                                        "Created mount base directory inside case",
+                                    );
+
+                                    if let Err(e) = std::fs::create_dir_all(&cache_dir) {
+                                        app.log_error(format!(
+                                            "Mount failed (cache dir {:?}): {}",
+                                            cache_dir, e
+                                        ));
+                                        continue;
+                                    }
+                                    app.track_file(
+                                        &cache_dir,
+                                        "Created rclone cache directory inside case",
+                                    );
+
+                                    manager = manager
+                                        .with_mount_base(&mount_base)
+                                        .with_cache_dir(&cache_dir);
+                                }
+
+                                match manager.mount_and_explore(&remote_name, None) {
+                                    Ok(mounted) => {
+                                        let mount_path = mounted.mount_point().to_path_buf();
+                                        app.mounted_remote = Some(mounted);
+                                        app.log_info(format!("Mounted remote at {:?}", mount_path));
+                                        if let Some(path) = app.selection_file_path() {
+                                            app.log_info(format!(
+                                            "Create selection file at {:?} (one path per line), then press 'i' to load.",
+                                            path
+                                        ));
+                                        } else {
+                                            app.log_info("No selection file path available");
+                                        }
+                                    }
+                                    Err(e) => {
+                                        app.log_error(format!("Mount failed: {}", e));
+                                    }
+                                }
+                            }
+                        }
+                        KeyCode::Char('u') => {
+                            if app.state == crate::ui::AppState::FileList
+                                || app.state == crate::ui::AppState::Mounted
+                            {
+                                app.unmount_remote();
+                                app.log_info("Unmounted remote");
+                                if app.state == crate::ui::AppState::Mounted {
+                                    if matches!(
+                                        app.selected_action,
+                                        Some(crate::ui::MenuAction::MountProvider)
+                                    ) {
+                                        app.state = crate::ui::AppState::ProviderSelect;
+                                    } else {
+                                        app.state = crate::ui::AppState::PostAuthChoice;
+                                    }
+                                }
+                            }
+                        }
+                        KeyCode::Char('i') => {
+                            if app.state == crate::ui::AppState::FileList {
+                                if let Some(path) = app.selection_file_path() {
+                                    match app.load_selection_from_file(&path) {
+                                        Ok(count) => {
+                                            app.log_info(format!(
+                                                "Loaded {} selected files from {:?}",
+                                                count, path
+                                            ));
+                                        }
+                                        Err(e) => {
+                                            app.log_error(format!(
+                                                "Failed to load selection from {:?}: {}",
+                                                path, e
+                                            ));
+                                        }
+                                    }
+                                } else {
+                                    app.log_error("Selection file path not available");
+                                }
+                            }
+                        }
+                        KeyCode::Char(' ') => {
+                            // Space toggles file selection
+                            if app.state == crate::ui::AppState::ProviderSelect {
+                                app.toggle_provider_selection();
+                            } else if app.state == crate::ui::AppState::BrowserSelect {
+                                app.toggle_browser_selection();
+                            } else if app.state == crate::ui::AppState::ReviewDetectedAccounts {
+                                app.toggle_detected_account_selection();
+                            } else if app.state == crate::ui::AppState::RemoteSelect {
+                                app.toggle_remote_selection();
+                            } else if app.state == crate::ui::AppState::FileList {
+                                app.toggle_file_download();
+                            }
+                        }
+                        KeyCode::Char('a') => {
+                            // 'a' selects all files
+                            if app.state == crate::ui::AppState::ReviewDetectedAccounts {
+                                app.select_all_runnable_detected_accounts();
+                                app.detected_accounts.status =
+                                    "Selected all runnable detected accounts.".to_string();
+                            } else if app.state == crate::ui::AppState::FileList {
+                                app.select_all_files();
+                            }
+                        }
+                        KeyCode::Tab => app.toggle_file_download(),
+                        KeyCode::Char(_ch) => {}
+                        _ => {}
                     }
-                    KeyCode::Tab => app.toggle_file_download(),
-                    KeyCode::Char(_ch) => {}
-                    _ => {}
                 }
+                _ => {}
             }
         } else {
             // No event received — redraw periodically for states with dynamic content
