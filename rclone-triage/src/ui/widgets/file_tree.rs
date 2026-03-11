@@ -2,11 +2,11 @@
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::text::{Line, Span};
+use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, StatefulWidget, Widget};
 
 use crate::ui::theme;
-use crate::ui::widgets::{marquee_text_line, text_width};
+use crate::ui::widgets::{text_width, wrap_text_lines};
 
 /// File tree widget
 #[derive(Debug, Clone)]
@@ -57,12 +57,11 @@ impl Widget for &FileTree {
                 } else {
                     0
                 });
-                ListItem::new(marquee_text_line(
+                ListItem::new(Text::from(wrap_text_lines(
                     e,
                     theme::strong_style(),
                     available_width,
-                    self.animation_frame,
-                ))
+                )))
             })
             .collect();
 

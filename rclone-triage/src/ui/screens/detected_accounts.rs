@@ -2,11 +2,11 @@
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::text::{Line, Span};
+use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{List, ListItem, ListState, Paragraph, StatefulWidget, Widget, Wrap};
 
 use crate::ui::theme;
-use crate::ui::widgets::{marquee_line, marquee_text_line, text_width, MarqueeSegment};
+use crate::ui::widgets::{marquee_text_line, text_width, wrap_line, MarqueeSegment};
 
 #[derive(Debug, Clone)]
 pub struct DetectedAccountRow {
@@ -79,12 +79,11 @@ impl Widget for &DetectedAccountsScreen {
                     0
                 });
 
-                ListItem::new(marquee_line(
+                ListItem::new(Text::from(wrap_line(
                     vec![Span::styled(prefix, prefix_style)],
                     vec![MarqueeSegment::new(&row.label, label_style)],
                     available_width,
-                    self.animation_frame,
-                ))
+                )))
             })
             .collect();
 

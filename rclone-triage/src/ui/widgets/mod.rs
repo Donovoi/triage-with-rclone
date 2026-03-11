@@ -10,7 +10,10 @@ pub mod simple_list;
 
 pub use browser_list::BrowserList;
 pub use file_tree::FileTree;
-pub use marquee::{line_width, marquee_line, marquee_text_line, text_width, MarqueeSegment};
+pub use marquee::{
+    line_width, marquee_line, marquee_text_line, text_width, wrap_line, wrap_text_lines,
+    MarqueeSegment,
+};
 pub use menu_list::MenuList;
 pub use progress_bar::ProgressBar;
 pub use provider_list::ProviderList;

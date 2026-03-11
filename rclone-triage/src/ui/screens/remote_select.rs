@@ -2,11 +2,11 @@
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::text::Span;
+use ratatui::text::{Span, Text};
 use ratatui::widgets::{List, ListItem, ListState, StatefulWidget, Widget};
 
 use crate::ui::theme;
-use crate::ui::widgets::{marquee_line, text_width, MarqueeSegment};
+use crate::ui::widgets::{text_width, wrap_line, MarqueeSegment};
 
 pub struct RemoteSelectScreen {
     pub remotes: Vec<String>,
@@ -58,12 +58,11 @@ impl Widget for &RemoteSelectScreen {
                 } else {
                     0
                 });
-                ListItem::new(marquee_line(
+                ListItem::new(Text::from(wrap_line(
                     vec![Span::styled(prefix, prefix_style)],
                     vec![MarqueeSegment::new(name, theme::strong_style())],
                     available_width,
-                    self.animation_frame,
-                ))
+                )))
             })
             .collect();
 

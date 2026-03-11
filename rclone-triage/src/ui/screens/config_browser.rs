@@ -3,10 +3,10 @@
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Style;
-use ratatui::text::{Line, Span};
+use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{List, ListItem, ListState, Paragraph, StatefulWidget, Widget, Wrap};
 
-use crate::ui::widgets::{marquee_line, marquee_text_line, text_width, MarqueeSegment};
+use crate::ui::widgets::{marquee_text_line, text_width, wrap_line, MarqueeSegment};
 use crate::ui::{theme, ConfigBrowserEntry};
 
 pub struct ConfigBrowserScreen {
@@ -91,15 +91,14 @@ impl Widget for &ConfigBrowserScreen {
                 } else {
                     0
                 });
-                ListItem::new(marquee_line(
+                ListItem::new(Text::from(wrap_line(
                     vec![Span::styled(prefix, style)],
                     vec![
                         MarqueeSegment::new(label, style),
                         MarqueeSegment::new(size_str, theme::muted_style()),
                     ],
                     available_width,
-                    self.animation_frame,
-                ))
+                )))
             })
             .collect();
 
