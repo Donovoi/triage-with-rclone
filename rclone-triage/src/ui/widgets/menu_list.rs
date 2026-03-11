@@ -2,11 +2,11 @@
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::text::{Line, Span};
+use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, StatefulWidget, Widget};
 
 use crate::ui::theme;
-use crate::ui::widgets::{marquee_line, marquee_text_line, text_width, MarqueeSegment};
+use crate::ui::widgets::{text_width, wrap_line, wrap_text_lines, MarqueeSegment};
 
 /// Main menu list widget
 #[derive(Debug, Clone)]
@@ -43,11 +43,7 @@ impl Widget for &MenuList {
                 } else {
                     0
                 });
-                ListItem::new(format_menu_item(
-                    item,
-                    available_width,
-                    self.animation_frame,
-                ))
+                ListItem::new(Text::from(format_menu_item(item, available_width)))
             })
             .collect::<Vec<_>>();
 
@@ -74,19 +70,18 @@ impl Widget for &MenuList {
     }
 }
 
-fn format_menu_item(item: &str, available_width: u16, frame: u64) -> Line<'static> {
+fn format_menu_item(item: &str, available_width: u16) -> Vec<Line<'static>> {
     if let Some((tag, label)) = split_tagged_label(item) {
-        marquee_line(
+        wrap_line(
             vec![
                 Span::styled(format!("[{}]", tag), theme::menu_badge_style(tag)),
                 Span::raw(" "),
             ],
             vec![MarqueeSegment::new(label, theme::strong_style())],
             available_width,
-            frame,
         )
     } else {
-        marquee_text_line(item, theme::strong_style(), available_width, frame)
+        wrap_text_lines(item, theme::strong_style(), available_width)
     }
 }
 
@@ -114,11 +109,10 @@ mod tests {
 
     #[test]
     fn test_format_menu_item_with_badge() {
-        let line = format_menu_item("[AUTH] Browser authentication", 80, 0);
-        let text = line
-            .spans
+        let lines = format_menu_item("[AUTH] Browser authentication", 80);
+        let text = lines
             .iter()
-            .map(|span| span.content.as_ref())
+            .flat_map(|line| line.spans.iter().map(|span| span.content.as_ref()))
             .collect::<String>();
 
         assert!(text.contains("[AUTH]"));
