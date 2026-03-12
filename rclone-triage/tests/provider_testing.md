@@ -106,6 +106,11 @@ Optional environment variables:
 - `RCLONE_PROVIDER_SMOKE_RCLONE` — path to the rclone binary to use
 - `RCLONE_PROVIDER_SMOKE_BACKENDS` — comma-separated backend filter such as `drive,s3,onedrive`
 
+For GitHub Actions, the easiest setup is to store the full contents of an
+`rclone.conf` file in a repository secret named `RCLONE_PROVIDER_SMOKE_CONFIG`.
+That single secret can contain many `Test*` remotes, so you do **not** need one
+workflow input per account.
+
 Recommended naming convention for live test remotes:
 
 - `TestDrive`
@@ -134,6 +139,16 @@ Run:
 
 - the full Rust test suite
 - the live smoke test against configured `Test*` remotes
+
+The repository workflow for this is:
+
+- `.github/workflows/provider-smoke.yml`
+
+It runs on a nightly schedule and via manual dispatch.
+
+Optional repository variable:
+
+- `RCLONE_PROVIDER_SMOKE_BACKENDS` — default backend filter for the workflow
 
 Suggested nightly provider set:
 

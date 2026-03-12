@@ -1,0 +1,83 @@
+name: Provider Smoke
+
+"on":
+    workflow_dispatch:
+        inputs:
+            backends:
+                description: "Optional comma-separated backend or Test* remote filter (for example: drive,s3,TestOneDrive)"
+                required: false
+                default: ""
+    schedule:
+        - cron: "35 7 * * *"
+
+permissions:
+    contents: read
+
+jobs:
+    provider-smoke-linux:
+        name: Provider smoke (Linux)
+        runs-on: ubuntu-latest
+        defaults:
+            run:
+                working-directory: rclone-triage
+        steps:
+            - uses: actions/checkout@v4
+
+            - uses: dtolnay/rust-toolchain@stable
+
+            - uses: Swatinem/rust-cache@v2
+              with:
+                  workspaces: rclone-triage -> rclone-triage/target
+
+            - name: Prepare smoke config
+              id: smoke-config
+              shell: bash
+              env:
+                  RCLONE_PROVIDER_SMOKE_CONFIG_SECRET: ${{ secrets.RCLONE_PROVIDER_SMOKE_CONFIG }}
+                  SMOKE_BACKENDS_INPUT: ${{ github.event.inputs.backends }}
+                  SMOKE_BACKENDS_VAR: ${{ vars.RCLONE_PROVIDER_SMOKE_BACKENDS }}
+              run: |
+                  set -euo pipefail
+
+                  if [[ -z "${RCLONE_PROVIDER_SMOKE_CONFIG_SECRET:-}" ]]; then
+                    echo "configured=false" >> "$GITHUB_OUTPUT"
+                    echo "No RCLONE_PROVIDER_SMOKE_CONFIG secret configured; provider smoke tests will be skipped." >> "$GITHUB_STEP_SUMMARY"
+                    exit 0
+                  fi
+
+                  smoke_dir="$RUNNER_TEMP/rclone-provider-smoke"
+                  mkdir -p "$smoke_dir"
+                  config_path="$smoke_dir/rclone.conf"
+                  printf '%s\n' "$RCLONE_PROVIDER_SMOKE_CONFIG_SECRET" > "$config_path"
+                  chmod 600 "$config_path"
+
+                  echo "configured=true" >> "$GITHUB_OUTPUT"
+                  echo "config_path=$config_path" >> "$GITHUB_OUTPUT"
+
+                  selected_backends="${SMOKE_BACKENDS_INPUT:-}"
+                  if [[ -z "$selected_backends" ]]; then
+                    selected_backends="${SMOKE_BACKENDS_VAR:-}"
+                  fi
+                  selected_backends="$(printf '%s' "$selected_backends" | tr -d '[:space:]')"
+                  if [[ -n "$selected_backends" ]]; then
+                    echo "backends=$selected_backends" >> "$GITHUB_OUTPUT"
+                    echo "Provider smoke filter: \`$selected_backends\`" >> "$GITHUB_STEP_SUMMARY"
+                  else
+                    echo "Provider smoke filter: all configured Test* remotes" >> "$GITHUB_STEP_SUMMARY"
+                  fi
+
+            - name: Install Linux rclone
+              if: steps.smoke-config.outputs.configured == 'true'
+              shell: bash
+              run: |
+                  set -euo pipefail
+                  sudo apt-get update
+                  sudo apt-get install -y rclone
+                  rclone version
+
+            - name: Run provider smoke tests
+              if: steps.smoke-config.outputs.configured == 'true'
+              env:
+                  RCLONE_PROVIDER_SMOKE_CONFIG: ${{ steps.smoke-config.outputs.config_path }}
+                  RCLONE_PROVIDER_SMOKE_BACKENDS: ${{ steps.smoke-config.outputs.backends }}
+              run: cargo test --release --test provider_smoke -- --nocapture --test-threads=1
