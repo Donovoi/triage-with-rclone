@@ -6,7 +6,7 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, StatefulWidget, Widget};
 
 use crate::ui::theme;
-use crate::ui::widgets::{text_width, wrap_line, wrap_text_lines, MarqueeSegment};
+use crate::ui::widgets::{text_width, wrap_line, wrap_text_lines, StyledSegment};
 
 /// Main menu list widget
 #[derive(Debug, Clone)]
@@ -77,7 +77,7 @@ fn format_menu_item(item: &str, available_width: u16) -> Vec<Line<'static>> {
                 Span::styled(format!("[{}]", tag), theme::menu_badge_style(tag)),
                 Span::raw(" "),
             ],
-            vec![MarqueeSegment::new(label, theme::strong_style())],
+            vec![StyledSegment::new(label, theme::strong_style())],
             available_width,
         )
     } else {

@@ -6,7 +6,7 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{List, ListItem, ListState, Paragraph, StatefulWidget, Widget, Wrap};
 
 use crate::ui::theme;
-use crate::ui::widgets::{marquee_text_line, text_width, wrap_line, MarqueeSegment};
+use crate::ui::widgets::{styled_text_line, text_width, wrap_line, StyledSegment};
 
 #[derive(Debug, Clone)]
 pub struct DetectedAccountRow {
@@ -81,7 +81,7 @@ impl Widget for &DetectedAccountsScreen {
 
                 ListItem::new(Text::from(wrap_line(
                     vec![Span::styled(prefix, prefix_style)],
-                    vec![MarqueeSegment::new(&row.label, label_style)],
+                    vec![StyledSegment::new(&row.label, label_style)],
                     available_width,
                 )))
             })
@@ -102,18 +102,10 @@ impl Widget for &DetectedAccountsScreen {
         }
         StatefulWidget::render(list, chunks[0], buf, &mut state);
 
-        let detail_width = chunks[1].width.saturating_sub(2);
         let detail_lines: Vec<Line> = self
             .details
             .iter()
-            .map(|line| {
-                marquee_text_line(
-                    line,
-                    theme::strong_style(),
-                    detail_width,
-                    self.animation_frame,
-                )
-            })
+            .map(|line| styled_text_line(line, theme::strong_style()))
             .collect();
         let details = Paragraph::new(detail_lines)
             .block(theme::panel_block("Detection details"))

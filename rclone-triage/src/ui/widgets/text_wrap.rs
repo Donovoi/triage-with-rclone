@@ -1,4 +1,4 @@
-//! Wrapping helpers for long UI lines.
+//! Wrapping helpers for styled UI text.
 
 use std::collections::VecDeque;
 
@@ -7,12 +7,12 @@ use ratatui::text::{Line, Span};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 #[derive(Debug, Clone)]
-pub struct MarqueeSegment {
+pub struct StyledSegment {
     pub text: String,
     pub style: Style,
 }
 
-impl MarqueeSegment {
+impl StyledSegment {
     pub fn new(text: impl Into<String>, style: Style) -> Self {
         Self {
             text: text.into(),
@@ -32,28 +32,8 @@ pub fn text_width(text: &str) -> usize {
     UnicodeWidthStr::width(text)
 }
 
-pub fn marquee_text_line(
-    text: impl Into<String>,
-    style: Style,
-    _available_width: u16,
-    _frame: u64,
-) -> Line<'static> {
+pub fn styled_text_line(text: impl Into<String>, style: Style) -> Line<'static> {
     Line::from(Span::styled(text.into(), style))
-}
-
-pub fn marquee_line(
-    prefix: Vec<Span<'static>>,
-    content: Vec<MarqueeSegment>,
-    _available_width: u16,
-    _frame: u64,
-) -> Line<'static> {
-    let mut spans = prefix;
-    spans.extend(
-        content
-            .into_iter()
-            .map(|segment| Span::styled(segment.text, segment.style)),
-    );
-    Line::from(spans)
 }
 
 pub fn wrap_text_lines(
@@ -63,14 +43,14 @@ pub fn wrap_text_lines(
 ) -> Vec<Line<'static>> {
     wrap_line(
         Vec::new(),
-        vec![MarqueeSegment::new(text, style)],
+        vec![StyledSegment::new(text, style)],
         available_width,
     )
 }
 
 pub fn wrap_line(
     prefix: Vec<Span<'static>>,
-    content: Vec<MarqueeSegment>,
+    content: Vec<StyledSegment>,
     available_width: u16,
 ) -> Vec<Line<'static>> {
     let available_width = available_width as usize;
@@ -112,7 +92,7 @@ fn tokenize_spans(spans: Vec<Span<'static>>) -> VecDeque<StyledToken> {
         .collect()
 }
 
-fn tokenize_segments(segments: Vec<MarqueeSegment>) -> VecDeque<StyledToken> {
+fn tokenize_segments(segments: Vec<StyledSegment>) -> VecDeque<StyledToken> {
     segments
         .into_iter()
         .flat_map(|segment| tokenize_text(&segment.text, segment.style))
@@ -332,21 +312,9 @@ mod tests {
     }
 
     #[test]
-    fn test_marquee_text_line_keeps_full_text() {
-        let line = marquee_text_line("short", Style::default(), 20, 0);
+    fn test_styled_text_line_keeps_full_text() {
+        let line = styled_text_line("short", Style::default());
         assert_eq!(line_text(&line), "short");
-    }
-
-    #[test]
-    fn test_marquee_line_keeps_full_text() {
-        let line = marquee_line(
-            vec![Span::raw("[x] ")],
-            vec![MarqueeSegment::new("abcdefghij", Style::default())],
-            8,
-            0,
-        );
-
-        assert_eq!(line_text(&line), "[x] abcdefghij");
     }
 
     #[test]
@@ -361,7 +329,7 @@ mod tests {
     fn test_wrap_line_preserves_prefix() {
         let lines = wrap_line(
             vec![Span::raw("[x] ")],
-            vec![MarqueeSegment::new("abcdefghij", Style::default())],
+            vec![StyledSegment::new("abcdefghij", Style::default())],
             8,
         );
         let texts = lines.iter().map(line_text).collect::<Vec<_>>();

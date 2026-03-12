@@ -6,7 +6,7 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, StatefulWidget, Widget};
 
 use crate::ui::theme;
-use crate::ui::widgets::{text_width, wrap_line, MarqueeSegment};
+use crate::ui::widgets::{text_width, wrap_line, StyledSegment};
 
 /// Provider list widget
 #[derive(Debug, Clone)]
@@ -68,7 +68,7 @@ impl Widget for &ProviderList {
                 });
                 ListItem::new(Text::from(wrap_line(
                     vec![Span::styled(prefix, prefix_style)],
-                    vec![MarqueeSegment::new(p, theme::strong_style())],
+                    vec![StyledSegment::new(p, theme::strong_style())],
                     available_width,
                 )))
             })
