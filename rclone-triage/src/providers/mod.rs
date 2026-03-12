@@ -63,19 +63,13 @@ impl ProviderEntry {
     }
 
     pub fn from_known(provider: CloudProvider) -> Self {
-        let uses_oauth =
-            crate::providers::config::ProviderConfig::for_provider(provider).uses_oauth();
-        let auth_kind = if uses_oauth {
-            ProviderAuthKind::OAuth
-        } else {
-            ProviderAuthKind::UserPass
-        };
+        let auth_kind = provider.auth_kind();
         Self {
             id: provider.rclone_type().to_string(),
             name: provider.display_name().to_string(),
             description: None,
             known: Some(provider),
-            oauth_capable: uses_oauth,
+            oauth_capable: auth_kind == ProviderAuthKind::OAuth,
             auth_kind,
         }
     }
@@ -211,6 +205,73 @@ pub enum CloudProvider {
 }
 
 impl CloudProvider {
+    /// Best-effort default auth classification used before dynamic discovery
+    /// from `rclone config providers` is available.
+    pub fn auth_kind(&self) -> ProviderAuthKind {
+        match self {
+            CloudProvider::GoogleDrive
+            | CloudProvider::OneDrive
+            | CloudProvider::Dropbox
+            | CloudProvider::Box
+            | CloudProvider::GooglePhotos
+            | CloudProvider::PCloud
+            | CloudProvider::HiDrive
+            | CloudProvider::Jottacloud
+            | CloudProvider::Mailru
+            | CloudProvider::PikPak
+            | CloudProvider::PremiumizeMe
+            | CloudProvider::Putio
+            | CloudProvider::ShareFile
+            | CloudProvider::SugarSync
+            | CloudProvider::YandexDisk
+            | CloudProvider::Zoho => ProviderAuthKind::OAuth,
+
+            CloudProvider::AzureBlob
+            | CloudProvider::AzureFiles
+            | CloudProvider::B2
+            | CloudProvider::Cloudinary
+            | CloudProvider::Fichier
+            | CloudProvider::FilesCom
+            | CloudProvider::Gofile
+            | CloudProvider::GoogleCloudStorage
+            | CloudProvider::ImageKit
+            | CloudProvider::InternetArchive
+            | CloudProvider::NetStorage
+            | CloudProvider::OracleObjectStorage
+            | CloudProvider::QingStor
+            | CloudProvider::S3
+            | CloudProvider::Storj => ProviderAuthKind::KeyBased,
+
+            CloudProvider::ICloud
+            | CloudProvider::Doi
+            | CloudProvider::Drime
+            | CloudProvider::FileFabric
+            | CloudProvider::Filelu
+            | CloudProvider::Filen
+            | CloudProvider::Ftp
+            | CloudProvider::Hdfs
+            | CloudProvider::Http
+            | CloudProvider::Internxt
+            | CloudProvider::Koofr
+            | CloudProvider::Linkbox
+            | CloudProvider::Local
+            | CloudProvider::Mega
+            | CloudProvider::Memory
+            | CloudProvider::OpenDrive
+            | CloudProvider::Pixeldrain
+            | CloudProvider::ProtonDrive
+            | CloudProvider::Quatrix
+            | CloudProvider::Seafile
+            | CloudProvider::Sftp
+            | CloudProvider::Shade
+            | CloudProvider::Sia
+            | CloudProvider::Smb
+            | CloudProvider::Swift
+            | CloudProvider::Ulozto
+            | CloudProvider::WebDav => ProviderAuthKind::UserPass,
+        }
+    }
+
     /// Get all supported providers
     pub fn all() -> &'static [CloudProvider] {
         &[
@@ -658,5 +719,26 @@ mod tests {
     fn test_rclone_type() {
         assert_eq!(CloudProvider::GoogleDrive.rclone_type(), "drive");
         assert_eq!(CloudProvider::OneDrive.rclone_type(), "onedrive");
+    }
+
+    #[test]
+    fn test_auth_kind_samples() {
+        assert_eq!(
+            CloudProvider::GoogleDrive.auth_kind(),
+            ProviderAuthKind::OAuth
+        );
+        assert_eq!(CloudProvider::B2.auth_kind(), ProviderAuthKind::KeyBased);
+        assert_eq!(CloudProvider::Sftp.auth_kind(), ProviderAuthKind::UserPass);
+    }
+
+    #[test]
+    fn test_from_known_uses_provider_auth_kind() {
+        let b2 = ProviderEntry::from_known(CloudProvider::B2);
+        assert_eq!(b2.auth_kind(), ProviderAuthKind::KeyBased);
+        assert!(!b2.oauth_capable);
+
+        let drive = ProviderEntry::from_known(CloudProvider::GoogleDrive);
+        assert_eq!(drive.auth_kind(), ProviderAuthKind::OAuth);
+        assert!(drive.oauth_capable);
     }
 }

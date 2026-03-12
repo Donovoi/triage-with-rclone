@@ -2,212 +2,200 @@
 
 ## Overview
 
-This document outlines the testing strategy for cloud providers in rclone-triage.
-The goal is to ensure reliable authentication, file listing, and download for all
-supported providers, with a clear process for adding new providers.
+`rclone-triage` should follow the same broad pattern as upstream rclone:
 
-## Current Providers (v0.1.0)
+- keep **always-on contract tests** for every provider known to the program
+- run **mock and emulator-backed integration tests** in normal CI
+- run **credentialed smoke tests** only for explicitly configured test remotes
+- reserve **manual/release validation** for the providers with the hardest auth flows
 
-| Provider     | rclone type   | Auth Method        | Hash Types        |
-| ------------ | ------------- | ------------------ | ----------------- |
-| Google Drive | `drive`       | OAuth 2.0          | md5, sha1, sha256 |
-| OneDrive     | `onedrive`    | OAuth 2.0          | quickxorhash      |
-| Dropbox      | `dropbox`     | OAuth 2.0          | dropbox           |
-| Box          | `box`         | OAuth 2.0          | sha1              |
-| iCloud Drive | `iclouddrive` | Apple ID (cookies) | none              |
+The source of truth for supported providers is `src/providers/mod.rs` via
+`CloudProvider::all()`, not this document.
 
-## Testing Levels
+## Testing Layers
 
-### Level 1: Unit Tests (Automated)
+### 1. Provider contract tests (always on)
 
-Tests that run without network or credentials:
+These tests run without credentials or network access and should cover **every**
+provider in `CloudProvider::all()`.
 
-- `CloudProvider` enum parsing and serialization
-- Provider config generation
-- rclone command building
-- File entry parsing from mock JSON
-- Hash selection logic
+Current coverage lives in:
 
-**Run with:** `cargo test --release -- --test-threads=1`
+- `tests/provider_matrix.rs`
+- `src/providers/mod.rs` unit tests
+- `src/providers/config.rs` unit tests
 
-### Level 2: Integration Tests (Mock Server)
+These checks validate things like:
 
-Tests using a mock HTTP server:
+- unique `rclone_type`, `short_name`, and display names
+- default auth classification (`OAuth`, `KeyBased`, `UserPass`)
+- OAuth config completeness for OAuth-capable backends
+- hash type normalization and uniqueness
+- `ProviderEntry::from_known(...)` consistency
 
-- OAuth redirect capture
-- JSON response parsing
-- Error handling for failed auth
+This layer is the minimum safety net for every pull request.
 
-**Run with:** `cargo test --release integration`
+### 2. Mock integration tests (always on)
 
-### Level 3: Sandbox Tests (Real Provider, Test Account)
+These tests exercise the app’s rclone wrapper logic with a fake rclone binary.
 
-Manual tests with real providers using test accounts:
+Current coverage lives in:
 
-```bash
-# Create test config
-rclone config create test-gdrive drive
+- `tests/integration.rs`
+- `tests/provider_integration.rs`
 
-# Run listing test
-./target/release/rclone-triage --provider gdrive --name sandbox-test
+These validate:
 
-# Verify in TUI mode
-./target/release/rclone-triage --tui
-```
+- `lsjson` parsing
+- download queue behavior
+- report generation
+- connectivity checks
+- config handling
+- hash verification workflows
 
-### Level 4: Production Validation (Real Data)
+This layer ensures the wrapper logic works even when a real cloud account is not available.
 
-Final validation before release with real user scenarios.
+### 3. Live provider smoke tests (opt-in)
 
-## Test Fixtures
+These are lightweight, read-only tests against **explicitly named test remotes**.
 
-### Mock lsjson Response
+Current coverage lives in:
 
-```json
-[
-  {
-    "Path": "Documents",
-    "Size": 0,
-    "ModTime": "2024-01-01T00:00:00Z",
-    "IsDir": true
-  },
-  {
-    "Path": "Documents/report.pdf",
-    "Size": 1024,
-    "ModTime": "2024-01-15T10:30:00Z",
-    "IsDir": false,
-    "Hashes": { "MD5": "abc123" }
-  },
-  {
-    "Path": "Photos/vacation.jpg",
-    "Size": 2048,
-    "ModTime": "2024-02-01T15:45:00Z",
-    "IsDir": false,
-    "Hashes": { "SHA1": "def456" }
-  }
-]
-```
+- `tests/provider_smoke.rs`
 
-### Mock about Response
+The live smoke test intentionally only uses remotes that:
 
-```json
-{
-  "total": 15000000000,
-  "used": 5000000000,
-  "free": 10000000000,
-  "trashed": 100000000
-}
-```
+- exist in the chosen rclone config
+- have names starting with `Test`
+- use a backend type that maps to a known `CloudProvider`
 
-## Adding a New Provider
+This mirrors rclone’s upstream convention of `TestDrive`, `TestOneDrive`, etc.
 
-### Step 1: Research
+The smoke test performs:
 
-1. Check rclone supports it: `rclone config providers | jq '.[] | select(.Name == "newprovider")'`
-2. Check auth method (OAuth, API key, username/password)
-3. Check hash types: `rclone backend features newprovider --json`
-4. Note any special requirements
+- `rclone listremotes`
+- shallow connectivity (`lsjson --max-depth 1`)
+- shallow top-level `lsjson`
+- `--hash` on providers that advertise hash support
 
-### Step 2: Add to CloudProvider enum
+It does **not** create, modify, or delete remote data.
 
-```rust
-// In src/providers/mod.rs
-pub enum CloudProvider {
-    // ... existing
-    NewProvider,
-}
+### 4. Release validation (manual)
 
-impl CloudProvider {
-    pub fn rclone_type(&self) -> &'static str {
-        match self {
-            // ...
-            CloudProvider::NewProvider => "newprovider",
-        }
-    }
-    // Update all match arms
-}
-```
+Some providers still need manual or semi-manual verification before release,
+especially when they depend on:
 
-### Step 3: Add Provider Config
+- MFA or interactive browser flows
+- cookies or session reuse
+- enterprise-only account variants
+- brittle/rate-limited vendor APIs
 
-```rust
-// In src/providers/config.rs
-fn for_provider(provider: CloudProvider) -> ProviderConfig {
-    match provider {
-        CloudProvider::NewProvider => ProviderConfig {
-            rclone_type: "newprovider",
-            // ...
-        },
-    }
-}
-```
+Examples include iCloud, Google Photos, OneDrive Business variants, and any provider
+whose upstream rclone backend needs provider-specific ignores or workarounds.
 
-### Step 4: Test
+## How the live smoke test is configured
 
-1. Run unit tests: `cargo test cloudprovider`
-2. Run integration tests: `cargo test integration`
-3. Manual sandbox test: `./target/release/rclone-triage --provider newprovider`
+`tests/provider_smoke.rs` resolves configuration in this order:
 
-### Step 5: Document
+1. `RCLONE_PROVIDER_SMOKE_CONFIG`
+2. `RCLONE_CONFIG`
+3. default rclone config path (`~/.config/rclone/rclone.conf` on Linux)
 
-Update README.md with provider-specific notes if any.
+Optional environment variables:
 
-## Provider-Specific Notes
+- `RCLONE_PROVIDER_SMOKE_RCLONE` — path to the rclone binary to use
+- `RCLONE_PROVIDER_SMOKE_BACKENDS` — comma-separated backend filter such as `drive,s3,onedrive`
 
-### Google Drive
+Recommended naming convention for live test remotes:
 
-- Requires OAuth scope selection (full access vs read-only)
-- Supports team drives (shared drives)
-- Has file versioning
+- `TestDrive`
+- `TestOneDrive`
+- `TestDropbox`
+- `TestS3`
+- `TestAzureBlob`
 
-### OneDrive
+Keep these remotes small and disposable. The smoke tests are read-only, but small remotes keep
+nightly runs fast and predictable.
 
-- Microsoft account vs work/school account
-- Different auth URLs for personal vs business
-- Supports SharePoint sites
+## Recommended CI split
 
-### Dropbox
+### Pull requests
 
-- Uses content hash (dropbox hash algorithm)
-- Supports team folders
-- Has paper documents (special handling)
+Run:
 
-### Box
+- provider contract tests
+- all existing mock/unit/integration tests
 
-- Enterprise vs personal accounts
-- Supports webhooks for real-time sync
-- Has metadata templates
+Do **not** require real provider credentials for PR validation.
 
-### iCloud Drive
+### Nightly / scheduled
 
-- No OAuth - uses Apple ID cookies
-- Requires 2FA handling
-- Limited API compared to others
+Run:
 
-## Automated CI Testing
+- the full Rust test suite
+- the live smoke test against configured `Test*` remotes
 
-```yaml
-# .github/workflows/test.yml
-name: Tests
-on: [push, pull_request]
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - run: cargo test --release -- --test-threads=1
-```
+Suggested nightly provider set:
 
-## Manual Test Checklist
+- Google Drive
+- OneDrive
+- Dropbox
+- Box
+- Google Photos
+- pCloud
+- S3
+- Backblaze B2
+- Azure Blob
+- Google Cloud Storage
+- WebDAV
+- SFTP
 
-For each provider release:
+Expand gradually; do not try to light up every provider on day one.
 
-- [ ] OAuth flow completes successfully
-- [ ] File listing returns correct entries
-- [ ] File download preserves content
-- [ ] Hash verification passes
-- [ ] Large file (>100MB) downloads correctly
-- [ ] Unicode filenames handled correctly
-- [ ] Empty directories listed
-- [ ] Error messages are informative
+### Release gate
+
+Before release, manually validate:
+
+- OAuth/browser auth flows still complete
+- config-browser import works for representative providers
+- list/download/hash verification works end-to-end
+- error messages remain informative on failed auth/list operations
+
+## Why not test every provider on every PR?
+
+Because upstream rclone doesn’t do that either.
+
+Real provider testing has unavoidable constraints:
+
+- credentials and secret rotation
+- rate limits
+- provider-specific feature gaps
+- eventual consistency
+- unstable or region-specific APIs
+- business/personal account differences
+
+Upstream rclone handles this with a dedicated backend test harness, configured `Test*`
+remotes, per-provider ignores, and daily integration runs. `rclone-triage` should keep
+the same philosophy while focusing on the parts this application owns.
+
+## Adding or updating a provider
+
+When a provider is added or changed:
+
+1. Update `CloudProvider` metadata in `src/providers/mod.rs`
+2. Update `ProviderConfig` in `src/providers/config.rs`
+3. Add or update contract assertions in `tests/provider_matrix.rs`
+4. Add mock/integration coverage if the wrapper behavior changed
+5. Add a `Test*` remote and nightly smoke coverage if the provider matters for production use
+6. Update this document if the workflow changed
+
+## Practical goal
+
+The realistic goal is **broad automated confidence plus targeted live validation**.
+
+That means:
+
+- every declared provider is checked structurally
+- major provider families are tested behaviorally
+- live remotes are validated safely and repeatedly
+- the app stays reliable without pretending we can fully emulate the entire cloud industry in CI
