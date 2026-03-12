@@ -6,7 +6,7 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{List, ListItem, ListState, Paragraph, StatefulWidget, Widget, Wrap};
 
-use crate::ui::widgets::{marquee_text_line, text_width, wrap_line, MarqueeSegment};
+use crate::ui::widgets::{styled_text_line, text_width, wrap_line, StyledSegment};
 use crate::ui::{theme, ConfigBrowserEntry};
 
 pub struct ConfigBrowserScreen {
@@ -94,8 +94,8 @@ impl Widget for &ConfigBrowserScreen {
                 ListItem::new(Text::from(wrap_line(
                     vec![Span::styled(prefix, style)],
                     vec![
-                        MarqueeSegment::new(label, style),
-                        MarqueeSegment::new(size_str, theme::muted_style()),
+                        StyledSegment::new(label, style),
+                        StyledSegment::new(size_str, theme::muted_style()),
                     ],
                     available_width,
                 )))
@@ -120,72 +120,43 @@ impl Widget for &ConfigBrowserScreen {
         let show_panel = content_chunks[1].width >= 20 && content_chunks[1].height >= 4;
         if show_panel {
             let mut lines = Vec::new();
-            let panel_width = content_chunks[1].width.saturating_sub(2);
 
             if let Some(ref error) = self.error {
                 // Prominent error display with next steps
                 let error_style = theme::error_style();
                 let hint_style = theme::warning_style();
 
-                lines.push(marquee_text_line(
-                    "!! Remote listing failed !!",
-                    error_style,
-                    panel_width,
-                    self.animation_frame,
-                ));
+                lines.push(styled_text_line("!! Remote listing failed !!", error_style));
                 lines.push(Line::from(""));
 
-                lines.push(marquee_text_line(
-                    error,
-                    theme::error_style(),
-                    panel_width,
-                    self.animation_frame,
-                ));
+                lines.push(styled_text_line(error, theme::error_style()));
                 lines.push(Line::from(""));
 
                 // Classify the error and give specific advice
                 let advice = classify_listing_error(error);
-                lines.push(marquee_text_line(
-                    "What happened:",
-                    hint_style,
-                    panel_width,
-                    self.animation_frame,
-                ));
-                lines.push(marquee_text_line(
+                lines.push(styled_text_line("What happened:", hint_style));
+                lines.push(styled_text_line(
                     advice.explanation,
                     Style::default().fg(theme::text_primary()),
-                    panel_width,
-                    self.animation_frame,
                 ));
                 lines.push(Line::from(""));
 
-                lines.push(marquee_text_line(
-                    "Next steps:",
-                    hint_style,
-                    panel_width,
-                    self.animation_frame,
-                ));
+                lines.push(styled_text_line("Next steps:", hint_style));
                 for step in &advice.next_steps {
-                    lines.push(marquee_text_line(
+                    lines.push(styled_text_line(
                         format!("  {}", step),
                         Style::default().fg(theme::text_primary()),
-                        panel_width,
-                        self.animation_frame,
                     ));
                 }
                 lines.push(Line::from(""));
-                lines.push(marquee_text_line(
+                lines.push(styled_text_line(
                     "Esc: back to main menu",
                     theme::strong_style(),
-                    panel_width,
-                    self.animation_frame,
                 ));
             } else {
-                lines.push(marquee_text_line(
+                lines.push(styled_text_line(
                     "Config File Browser",
                     theme::panel_title_style(),
-                    panel_width,
-                    self.animation_frame,
                 ));
                 lines.push(Line::from(""));
 
@@ -197,24 +168,18 @@ impl Widget for &ConfigBrowserScreen {
                     } else {
                         "File"
                     };
-                    lines.push(marquee_text_line(
+                    lines.push(styled_text_line(
                         format!("Selected: {}", entry.name),
                         theme::strong_style(),
-                        panel_width,
-                        self.animation_frame,
                     ));
-                    lines.push(marquee_text_line(
+                    lines.push(styled_text_line(
                         format!("Type: {}", kind),
                         theme::strong_style(),
-                        panel_width,
-                        self.animation_frame,
                     ));
                     if let Some(size) = entry.size {
-                        lines.push(marquee_text_line(
+                        lines.push(styled_text_line(
                             format!("Size: {} bytes", size),
                             theme::strong_style(),
-                            panel_width,
-                            self.animation_frame,
                         ));
                     }
                     lines.push(Line::from(""));
@@ -222,40 +187,27 @@ impl Widget for &ConfigBrowserScreen {
 
                 if !self.preview.is_empty() {
                     for line in &self.preview {
-                        lines.push(marquee_text_line(
-                            line,
-                            theme::success_style(),
-                            panel_width,
-                            self.animation_frame,
-                        ));
+                        lines.push(styled_text_line(line, theme::success_style()));
                     }
                     lines.push(Line::from(""));
                 }
 
-                lines.push(marquee_text_line(
+                lines.push(styled_text_line(
                     format!("Status: {}", self.status),
                     theme::strong_style(),
-                    panel_width,
-                    self.animation_frame,
                 ));
                 lines.push(Line::from(""));
-                lines.push(marquee_text_line(
+                lines.push(styled_text_line(
                     "Enter: open dir / select file",
                     theme::strong_style(),
-                    panel_width,
-                    self.animation_frame,
                 ));
-                lines.push(marquee_text_line(
+                lines.push(styled_text_line(
                     "Backspace: parent directory",
                     theme::strong_style(),
-                    panel_width,
-                    self.animation_frame,
                 ));
-                lines.push(marquee_text_line(
+                lines.push(styled_text_line(
                     "Esc: back to main menu",
                     theme::strong_style(),
-                    panel_width,
-                    self.animation_frame,
                 ));
             }
 
