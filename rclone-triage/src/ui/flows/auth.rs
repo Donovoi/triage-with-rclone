@@ -18,7 +18,75 @@ use crate::ui::prompt::prompt_text_in_tui;
 use crate::ui::render::render_state;
 use crate::ui::{App, AuthBatchTask, MenuAction};
 
-fn update_auth_status<B: ratatui::backend::Backend>(
+/// Own cleanup as soon as AP startup succeeds, before any fallible UI work.
+struct AccessPointGuard<F: FnMut() -> Result<()>> {
+    active: bool,
+    stop: F,
+    logger: Option<std::sync::Arc<crate::forensics::logger::ForensicLogger>>,
+}
+
+impl<F: FnMut() -> Result<()>> AccessPointGuard<F> {
+    fn new(
+        stop: F,
+        logger: Option<std::sync::Arc<crate::forensics::logger::ForensicLogger>>,
+    ) -> Self {
+        Self {
+            active: true,
+            stop,
+            logger,
+        }
+    }
+
+    fn finish(&mut self) -> Result<()> {
+        if self.active {
+            (self.stop)()?;
+            self.active = false;
+        }
+        Ok(())
+    }
+
+    fn log_cleanup_error(&self, error: &anyhow::Error) {
+        if let Some(logger) = &self.logger {
+            let _ = logger.error(format!(
+                "Forensic access point restoration failed: {error:#}"
+            ));
+        }
+    }
+
+    fn finish_auth<T>(&mut self, result: Result<T>) -> Result<T> {
+        match self.finish() {
+            Ok(()) => result,
+            Err(cleanup_error) => {
+                self.log_cleanup_error(&cleanup_error);
+                match result {
+                    Ok(_) => Err(anyhow::anyhow!(
+                        "Authentication succeeded and the authenticated remote is retained, but access point restoration failed: {cleanup_error:#}"
+                    )),
+                    Err(auth_error) => Err(auth_error.context(format!(
+                        "Access point restoration also failed: {cleanup_error:#}"
+                    ))),
+                }
+            }
+        }
+    }
+}
+
+impl<F: FnMut() -> Result<()>> Drop for AccessPointGuard<F> {
+    fn drop(&mut self) {
+        // Retry a failed explicit stop or clean up a terminal/auth early return.
+        // A failed attempt stays active so the next attempt can restore settings.
+        for _ in 0..2 {
+            match self.finish() {
+                Ok(()) => break,
+                Err(error) => self.log_cleanup_error(&error),
+            }
+        }
+    }
+}
+
+fn update_auth_status<
+    B: ratatui::backend::Backend<Error: std::error::Error + Send + Sync + 'static>,
+>(
     app: &mut App,
     terminal: &mut Terminal<B>,
     lines: Vec<String>,
@@ -28,7 +96,9 @@ fn update_auth_status<B: ratatui::backend::Backend>(
     Ok(())
 }
 
-fn perform_mobile_auth_flow<B: ratatui::backend::Backend>(
+fn perform_mobile_auth_flow<
+    B: ratatui::backend::Backend<Error: std::error::Error + Send + Sync + 'static>,
+>(
     app: &mut App,
     terminal: &mut Terminal<B>,
     provider: CloudProvider,
@@ -131,6 +201,7 @@ fn perform_mobile_auth_flow<B: ratatui::backend::Backend>(
         crate::ui::MobileAuthFlow::Redirect
         | crate::ui::MobileAuthFlow::RedirectWithAccessPoint => {
             let mut ap_info: Option<crate::forensics::ForensicAccessPointInfo> = None;
+            let mut ap_guard = None;
             if flow == crate::ui::MobileAuthFlow::RedirectWithAccessPoint {
                 let password = generate_password();
                 let ssid = format!("FORENSIC-{}", &password[..6]);
@@ -146,6 +217,10 @@ fn perform_mobile_auth_flow<B: ratatui::backend::Backend>(
                     let _ = terminal.draw(|f| render_state(f, app));
                 }) {
                     Ok(info) => {
+                        ap_guard = Some(AccessPointGuard::new(
+                            || stop_forensic_access_point(true),
+                            app.forensics.logger.clone(),
+                        ));
                         // Show AP status with connected client count
                         let mut status_lines = vec![
                             format!("Access point '{}' is running.", info.ssid),
@@ -201,8 +276,8 @@ fn perform_mobile_auth_flow<B: ratatui::backend::Backend>(
                 )
             };
 
-            if ap_info.is_some() {
-                let _ = stop_forensic_access_point(true);
+            if let Some(guard) = ap_guard.as_mut() {
+                return guard.finish_auth(result);
             }
 
             result
@@ -350,7 +425,9 @@ fn build_onedrive_device_code_fallback_message(
     }
 }
 
-fn maybe_fallback_to_onedrive_device_code<B: ratatui::backend::Backend>(
+fn maybe_fallback_to_onedrive_device_code<
+    B: ratatui::backend::Backend<Error: std::error::Error + Send + Sync + 'static>,
+>(
     app: &mut App,
     terminal: &mut Terminal<B>,
     config: &crate::rclone::RcloneConfig,
@@ -784,7 +861,9 @@ fn record_authenticated_remote(
     app.remote.chosen = Some(result.remote_name.clone());
 }
 
-fn perform_single_auth_task<B: ratatui::backend::Backend>(
+fn perform_single_auth_task<
+    B: ratatui::backend::Backend<Error: std::error::Error + Send + Sync + 'static>,
+>(
     app: &mut App,
     terminal: &mut Terminal<B>,
     runner: &crate::rclone::RcloneRunner,
@@ -1092,7 +1171,9 @@ fn perform_single_auth_task<B: ratatui::backend::Backend>(
 }
 
 /// Perform the authentication flow (extract binary, create config, auth, list files)
-pub(crate) fn perform_auth_flow<B: ratatui::backend::Backend>(
+pub(crate) fn perform_auth_flow<
+    B: ratatui::backend::Backend<Error: std::error::Error + Send + Sync + 'static>,
+>(
     app: &mut App,
     terminal: &mut Terminal<B>,
 ) -> Result<()> {
@@ -1343,6 +1424,66 @@ mod tests {
     use crate::providers::session::BrowserSession;
     use crate::providers::{CloudProvider, ProviderEntry};
     use anyhow::Context;
+
+    #[test]
+    fn access_point_guard_stops_on_terminal_early_return() {
+        fn fail_after_start(stop: impl FnMut() -> Result<()>) -> Result<()> {
+            let _guard = AccessPointGuard::new(stop, None);
+            bail!("terminal disconnected");
+        }
+        let stops = std::cell::Cell::new(0);
+        let result = fail_after_start(|| {
+            stops.set(stops.get() + 1);
+            Ok(())
+        });
+        assert!(result.is_err());
+        assert_eq!(stops.get(), 1);
+    }
+
+    #[test]
+    fn access_point_guard_surfaces_stop_failure_and_retries_without_losing_auth_error() {
+        let stops = std::cell::Cell::new(0);
+        {
+            let mut guard = AccessPointGuard::new(
+                || {
+                    stops.set(stops.get() + 1);
+                    if stops.get() == 1 {
+                        bail!("restore settings denied");
+                    }
+                    Ok(())
+                },
+                None,
+            );
+            let error = guard.finish_auth(Ok("authenticated remote")).unwrap_err();
+            assert!(error.to_string().contains("Authentication succeeded"));
+            assert!(error.to_string().contains("remote is retained"));
+            assert!(error.to_string().contains("restore settings denied"));
+        }
+        assert_eq!(stops.get(), 2);
+        let mut guard = AccessPointGuard::new(|| Err(anyhow::anyhow!("stop denied")), None);
+        let error = guard
+            .finish_auth::<()>(Err(anyhow::anyhow!("auth denied")))
+            .unwrap_err();
+        let detail = format!("{error:#}");
+        assert!(detail.contains("stop denied"));
+        assert!(detail.contains("auth denied"));
+    }
+
+    #[test]
+    fn access_point_guard_success_stops_once_and_preserves_auth_outcome() {
+        let stops = std::cell::Cell::new(0);
+        {
+            let mut guard = AccessPointGuard::new(
+                || {
+                    stops.set(stops.get() + 1);
+                    Ok(())
+                },
+                None,
+            );
+            assert_eq!(guard.finish_auth(Ok("remote")).unwrap(), "remote");
+        }
+        assert_eq!(stops.get(), 1);
+    }
 
     #[test]
     fn test_should_auto_fallback_to_onedrive_device_code_for_oauth_timeout() {

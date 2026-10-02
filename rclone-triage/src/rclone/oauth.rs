@@ -11,6 +11,7 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use rand::rngs::OsRng;
 use rand::RngCore;
+use sha2::{Digest, Sha256};
 use std::time::{Duration, Instant};
 use tiny_http::{Response, Server};
 
@@ -20,6 +21,35 @@ pub const DEFAULT_OAUTH_PORT: u16 = 53682;
 pub const DEFAULT_OAUTH_TIMEOUT_SECS: u64 = 300;
 
 const OAUTH_STATE_LEN_BYTES: usize = 32;
+
+/// Per-attempt proof key. The verifier is never added to the browser URL.
+pub struct Pkce {
+    verifier: String,
+}
+impl Default for Pkce {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+impl Pkce {
+    pub fn new() -> Self {
+        Self {
+            verifier: OAuthFlow::generate_state(),
+        }
+    }
+    pub fn verifier(&self) -> &str {
+        &self.verifier
+    }
+    pub fn authorize_url(&self, url: &str) -> String {
+        let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(self.verifier.as_bytes()));
+        let separator = if url.contains('?') { '&' } else { '?' };
+        format!("{url}{separator}code_challenge={challenge}&code_challenge_method=S256")
+    }
+}
+
+fn state_mismatch_html() -> &'static str {
+    "<html><head><title>Authentication Session Mismatch</title></head><body><h1>Authentication Session Mismatch</h1><p>This callback does not match the current authentication session. Return to the application and try again.</p></body></html>"
+}
 
 /// OAuth flow handler
 pub struct OAuthFlow {
@@ -112,8 +142,7 @@ impl OAuthFlow {
     /// - Ignores non-callback requests (e.g. `/favicon.ico`)
     /// - Ignores callbacks with mismatched `state` (when provided)
     ///
-    /// Note: some OAuth providers omit `state` on the callback even if it was provided in the
-    /// authorization URL. In that case, we accept the callback as a best-effort behavior.
+    /// Missing state is also rejected when the caller supplied an expected value.
     pub fn wait_for_redirect_with_state(
         &self,
         expected_state: Option<&str>,
@@ -176,24 +205,10 @@ impl OAuthFlow {
                     let _ = request.respond(response);
                     continue;
                 }
-                CallbackParse::StateMismatch { got } => {
-                    let expected = expected_state.unwrap_or("<none>");
-                    let got = got.as_deref().unwrap_or("<missing>");
-                    let response = Response::from_string(format!(
-                        r#"<html>
-                        <head><title>Authentication Session Mismatch</title></head>
-                        <body>
-                        <h1>Authentication Session Mismatch</h1>
-                        <p>This callback does not match the current authentication session.</p>
-                        <p>Expected state: <code>{}</code></p>
-                        <p>Received state: <code>{}</code></p>
-                        <p>Please return to the application and try again.</p>
-                        </body>
-                        </html>"#,
-                        escape_html(expected),
-                        escape_html(got)
-                    ))
-                    .with_header(content_type_header());
+                CallbackParse::StateMismatch { .. } => {
+                    let response = Response::from_string(state_mismatch_html())
+                        .with_status_code(400)
+                        .with_header(content_type_header());
                     let _ = request.respond(response);
                     continue;
                 }
@@ -421,6 +436,29 @@ pub(crate) fn urldecoded(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pkce_matches_rfc7636_s256_vector() {
+        let pkce = Pkce {
+            verifier: "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk".into(),
+        };
+        let url = pkce.authorize_url("https://example.test/authorize?state=state-secret");
+        assert!(url.contains("code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"));
+        assert!(url.contains("code_challenge_method=S256"));
+        assert!(!url.contains(pkce.verifier()));
+    }
+
+    #[test]
+    fn mismatch_response_contains_no_secret_state() {
+        assert!(matches!(
+            parse_oauth_callback_url("/?code=probe&state=bad", Some("private-state")),
+            CallbackParse::StateMismatch { .. }
+        ));
+        let page = state_mismatch_html();
+        assert!(!page.contains("private-state"));
+        assert!(!page.contains("Expected state"));
+        assert!(!page.contains("Received state"));
+    }
 
     #[test]
     fn test_build_auth_url() {

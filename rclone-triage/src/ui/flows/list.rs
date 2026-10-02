@@ -1,10 +1,43 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use ratatui::Terminal;
 
 use crate::ui::render::render_state;
 use crate::ui::App;
 
-pub(crate) fn perform_list_flow<B: ratatui::backend::Backend>(
+/// Keep a selected source config immutable, including token refreshes by rclone.
+pub(crate) fn working_config(
+    app: &mut App,
+    source: &std::path::Path,
+) -> Result<std::path::PathBuf> {
+    let original_path = source
+        .canonicalize()
+        .context("Cannot resolve source config")?;
+    if let Some(snapshot) = &app.config_snapshot {
+        if snapshot.original_path == original_path && snapshot.working_path.is_file() {
+            return Ok(snapshot.working_path.clone());
+        }
+        app.remote.chosen = None;
+        app.remote.chosen_multiple.clear();
+        app.remote.options.clear();
+    }
+    let config_dir = app
+        .config_dir()
+        .context("Case directory is not initialized")?;
+    let working_path = crate::case::directory::snapshot_config(&original_path, &config_dir)?;
+    app.log_info(format!(
+        "Preserved source config {:?}; using private working copy {:?}",
+        original_path, working_path
+    ));
+    app.config_snapshot = Some(crate::ui::ConfigSnapshot {
+        original_path,
+        working_path: working_path.clone(),
+    });
+    Ok(working_path)
+}
+
+pub(crate) fn perform_list_flow<
+    B: ratatui::backend::Backend<Error: std::error::Error + Send + Sync + 'static>,
+>(
     app: &mut App,
     terminal: &mut Terminal<B>,
 ) -> Result<()> {
@@ -64,6 +97,11 @@ pub(crate) fn perform_list_flow<B: ratatui::backend::Backend>(
             None => return Ok(()),
         };
     app.remote.chosen = Some(remote_name.clone());
+    app.acquisition = Some(crate::ui::AcquisitionSource {
+        config_path: config.path().to_path_buf(),
+        default_remote: remote_name.clone(),
+        label: provider.display_name().to_string(),
+    });
     app.files.to_download.clear();
     app.files.entries.clear();
     app.files.entries_full.clear();
@@ -103,57 +141,6 @@ pub(crate) fn perform_list_flow<B: ratatui::backend::Backend>(
         crate::files::listing::ListPathOptions::without_hashes()
     };
 
-    if large_listing {
-        if app.forensics.directories.is_none() {
-            app.log_info("Large listing requested, but case directories are unavailable; falling back to in-memory listing.");
-        }
-        if let Some(ref dirs) = app.forensics.directories {
-            let runner = crate::rclone::RcloneRunner::new(binary.path()).with_config(config.path());
-            let csv_path = dirs
-                .listings
-                .join(format!("{}_files.csv", provider.short_name()));
-
-            let listing_result = crate::files::listing::list_path_large_to_csv_with_progress(
-                &runner,
-                &format!("{}:", remote_name),
-                list_options,
-                &csv_path,
-                large_in_memory,
-                |count| {
-                    app.provider.status = format!("Listing {}... ({} found)", remote_name, count);
-                    let _ = terminal.draw(|f| render_state(f, app));
-                },
-            );
-
-            match listing_result {
-                Ok(result) => {
-                    app.log_info(format!("Exported listing to {:?}", csv_path));
-                    app.track_file(&csv_path, "Exported file listing CSV");
-
-                    app.files.entries_full = result.entries.clone();
-                    app.files.entries = result.entries.iter().map(|e| e.path.clone()).collect();
-
-                    let shown = app.files.entries.len();
-                    if result.truncated {
-                        app.provider.status = format!(
-                            "Found {} files (showing first {}). CSV: {:?}",
-                            result.total_entries, shown, csv_path
-                        );
-                    } else {
-                        app.provider.status = format!("Found {} files", result.total_entries);
-                    }
-                    app.state = crate::ui::AppState::FileList;
-                }
-                Err(e) => {
-                    app.provider.status = format!("Listing failed: {}", e);
-                    app.log_error(format!("Listing failed: {}", e));
-                }
-            }
-
-            return Ok(());
-        }
-    }
-
     // Spawn listing in background thread so the TUI stays responsive
     let target = format!("{}:", remote_name);
     let remote_type = provider
@@ -162,12 +149,31 @@ pub(crate) fn perform_list_flow<B: ratatui::backend::Backend>(
         .unwrap_or_else(|| provider.short_name().to_string());
     app.log_info(format!("Starting background listing of {}", target));
 
-    let (handle, progress_rx, cancel) = crate::files::listing::spawn_list_with_progress(
-        binary.path().to_path_buf(),
-        config.path().to_path_buf(),
-        target,
-        list_options,
-    );
+    let listing_csv = if large_listing {
+        app.forensics
+            .directories
+            .as_ref()
+            .map(|dirs| dirs.listings.join("large-listing.csv"))
+    } else {
+        None
+    };
+    let (handle, progress_rx, cancel) = if let Some(csv_path) = &listing_csv {
+        crate::files::listing::spawn_large_list_with_progress(
+            binary,
+            config.path().to_path_buf(),
+            target,
+            list_options,
+            csv_path.clone(),
+            large_in_memory,
+        )
+    } else {
+        crate::files::listing::spawn_list_with_progress(
+            binary,
+            config.path().to_path_buf(),
+            target,
+            list_options,
+        )
+    };
 
     app.listing_task = Some(crate::ui::ListingTask {
         handle,
@@ -181,6 +187,7 @@ pub(crate) fn perform_list_flow<B: ratatui::backend::Backend>(
             combine_remotes: Vec::new(),
             include_hashes,
             config_path: config.path().to_path_buf(),
+            listing_csv,
         },
     });
 
@@ -196,7 +203,9 @@ pub(crate) fn perform_list_flow<B: ratatui::backend::Backend>(
 ///
 /// When multiple remotes are selected, a combine remote is created so all
 /// files appear under one listing with per-remote subdirectories.
-pub(crate) fn perform_list_flow_from_config<B: ratatui::backend::Backend>(
+pub(crate) fn perform_list_flow_from_config<
+    B: ratatui::backend::Backend<Error: std::error::Error + Send + Sync + 'static>,
+>(
     app: &mut App,
     terminal: &mut Terminal<B>,
     config_path: &std::path::Path,
@@ -216,7 +225,17 @@ pub(crate) fn perform_list_flow_from_config<B: ratatui::backend::Backend>(
         "RCLONE_CONFIG",
         "Set RCLONE_CONFIG for config-based listing",
     );
-    let config = match crate::rclone::RcloneConfig::open_existing(config_path) {
+    let private_config_path = match working_config(app, config_path) {
+        Ok(path) => path,
+        Err(error) => {
+            app.config_browser.status = format!("Could not preserve source config: {error:#}");
+            app.config_browser.last_error = Some(app.config_browser.status.clone());
+            app.log_error(&app.config_browser.status);
+            app.state = crate::ui::AppState::ConfigBrowser;
+            return Ok(());
+        }
+    };
+    let config = match crate::rclone::RcloneConfig::open_existing(&private_config_path) {
         Ok(config) => config,
         Err(e) => {
             app.config_browser.status = format!("Failed to open config: {}", e);
@@ -269,6 +288,8 @@ pub(crate) fn perform_list_flow_from_config<B: ratatui::backend::Backend>(
             // Create combine remote
             let combine_name = crate::rclone::combine::create_combine_remote(&config, &raw_names)?;
             app.combine_remote_created = true;
+            app.generated_combines
+                .push((config.path().to_path_buf(), combine_name.clone()));
             app.remote.chosen = Some(combine_name.clone());
             app.log_info(format!(
                 "Created combine remote '{}' with upstreams: {}",
@@ -314,16 +335,53 @@ pub(crate) fn perform_list_flow_from_config<B: ratatui::backend::Backend>(
     };
 
     let target = format!("{}:", remote_name);
+    app.acquisition = Some(crate::ui::AcquisitionSource {
+        config_path: private_config_path.clone(),
+        default_remote: remote_name.clone(),
+        label: if combine_remotes.is_empty() {
+            remote_name.clone()
+        } else {
+            combine_remotes.join(", ")
+        },
+    });
     app.provider.status = format!("Listing {}...", remote_name);
     app.log_info(format!("Starting background listing of {}", target));
 
-    // Spawn listing in background thread so the TUI stays responsive
-    let (handle, progress_rx, cancel) = crate::files::listing::spawn_list_with_progress(
-        binary.path().to_path_buf(),
-        config.path().to_path_buf(),
-        target,
-        list_options,
-    );
+    let large_listing = std::env::var("RCLONE_TRIAGE_LARGE_LISTING")
+        .map(|value| value != "0")
+        .unwrap_or(false);
+    let listing_csv = if large_listing && combine_remotes.is_empty() {
+        app.forensics
+            .directories
+            .as_ref()
+            .map(|dirs| dirs.listings.join("large-listing.csv"))
+    } else {
+        if large_listing {
+            app.log_info("Combined listings retain the full inventory in memory to preserve each source remote. Use one remote for bounded listing.");
+        }
+        None
+    };
+    let (handle, progress_rx, cancel) = if let Some(csv_path) = &listing_csv {
+        let limit = std::env::var("RCLONE_TRIAGE_LARGE_LISTING_IN_MEMORY")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(50_000);
+        crate::files::listing::spawn_large_list_with_progress(
+            binary,
+            config.path().to_path_buf(),
+            target,
+            list_options,
+            csv_path.clone(),
+            limit,
+        )
+    } else {
+        crate::files::listing::spawn_list_with_progress(
+            binary,
+            config.path().to_path_buf(),
+            target,
+            list_options,
+        )
+    };
 
     app.listing_task = Some(crate::ui::ListingTask {
         handle,
@@ -336,7 +394,8 @@ pub(crate) fn perform_list_flow_from_config<B: ratatui::backend::Backend>(
             remote_type,
             combine_remotes,
             include_hashes,
-            config_path: config_path.to_path_buf(),
+            config_path: private_config_path,
+            listing_csv,
         },
     });
 
@@ -348,12 +407,41 @@ pub(crate) fn perform_list_flow_from_config<B: ratatui::backend::Backend>(
 
 /// Finalize a completed background listing: export CSV/XLSX, populate file entries, transition
 /// to FileList. Called from the event loop when `ListingProgress::Done` is received.
-pub(crate) fn finalize_listing(app: &mut App, mut entries: Vec<crate::files::FileEntry>) {
+pub(crate) fn finalize_listing(app: &mut App, entries: Vec<crate::files::FileEntry>) {
+    finalize_listing_inner(app, entries, None);
+}
+
+pub(crate) fn finalize_large_listing(
+    app: &mut App,
+    result: crate::files::listing::LargeListingResult,
+) {
+    finalize_listing_inner(
+        app,
+        result.entries,
+        Some((result.total_entries, result.truncated)),
+    );
+}
+
+fn finalize_listing_inner(
+    app: &mut App,
+    mut entries: Vec<crate::files::FileEntry>,
+    large: Option<(usize, bool)>,
+) {
     let task = match app.listing_task.take() {
         Some(t) => t,
         None => return,
     };
     let ctx = task.context;
+    let _ = task.handle.join();
+    app.acquisition = Some(crate::ui::AcquisitionSource {
+        config_path: ctx.config_path.clone(),
+        default_remote: ctx.remote_name.clone(),
+        label: if ctx.combine_remotes.is_empty() {
+            ctx.remote_name.clone()
+        } else {
+            ctx.combine_remotes.join(", ")
+        },
+    });
 
     // Tag entries with remote names when using a combine remote
     if !ctx.combine_remotes.is_empty() {
@@ -366,7 +454,10 @@ pub(crate) fn finalize_listing(app: &mut App, mut entries: Vec<crate::files::Fil
         ctx.combine_remotes.join("+")
     };
 
-    if let Some(ref dirs) = app.forensics.directories {
+    if let Some(csv_path) = &ctx.listing_csv {
+        app.log_info(format!("Exported complete listing to {:?}", csv_path));
+        app.track_file(csv_path, "Exported complete file listing CSV");
+    } else if let Some(ref dirs) = app.forensics.directories {
         let csv_path = dirs.listings.join(format!("{}_files.csv", export_label));
         if let Err(e) = crate::files::export::export_listing(&entries, &csv_path) {
             app.log_error(format!("CSV export failed: {}", e));
@@ -384,7 +475,6 @@ pub(crate) fn finalize_listing(app: &mut App, mut entries: Vec<crate::files::Fil
         }
     }
 
-    app.files.entries_full = entries.clone();
     app.files.entries = entries
         .iter()
         .map(|e| {
@@ -399,6 +489,8 @@ pub(crate) fn finalize_listing(app: &mut App, mut entries: Vec<crate::files::Fil
             }
         })
         .collect();
+    app.files.entries_full = entries;
+    app.rebuild_file_index();
     app.log_info(format!(
         "Listed {} files from {}",
         app.files.entries.len(),
@@ -409,5 +501,16 @@ pub(crate) fn finalize_listing(app: &mut App, mut entries: Vec<crate::files::Fil
         }
     ));
     app.provider.status = format!("Found {} files", app.files.entries.len());
+    if let Some((total, true)) = large {
+        app.files.total_entries = Some(total);
+        app.provider.status = format!(
+            "Found {total} entries; showing first {}. Complete CSV: {}",
+            app.files.entries.len(),
+            ctx.listing_csv
+                .as_ref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_default()
+        );
+    }
     app.state = crate::ui::AppState::FileList;
 }

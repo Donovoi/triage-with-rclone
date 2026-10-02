@@ -1,14 +1,14 @@
 [package]
 name = "rclone-triage"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Forensic cloud triage tool with embedded rclone"
 authors = ["Forensic Team"]
-license = "MIT"
+license = "Apache-2.0"
 
 [dependencies]
 # TUI
-ratatui = "0.29"
+ratatui = { version = "0.30.2", default-features = false, features = ["crossterm_0_28", "layout-cache", "underline-color"] }
 crossterm = "0.28"
 
 # Embedded binary
@@ -21,7 +21,7 @@ open = "5.3"
 # Serialization & Output
 csv = "1.3"
 rust_xlsxwriter = "0.69"
-calamine = "0.25"
+calamine = "0.36.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 qrcode = "0.14"
@@ -38,7 +38,7 @@ aes-gcm = "0.10"
 pbkdf2 = "0.12"
 
 # Database
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.32", features = ["bundled", "backup"] }
 
 # Regex
 regex = "1.10"
@@ -64,7 +64,7 @@ ctrlc = "3.4"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 flate2 = "1.1.9"
-tar = "0.4.44"
+tar = "0.4.46"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"
@@ -72,6 +72,7 @@ windows = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Security_Cryptography",
     "Win32_System_Memory",
+    "Win32_NetworkManagement_WiFi",
 ] }
 
 [target.'cfg(windows)'.build-dependencies]

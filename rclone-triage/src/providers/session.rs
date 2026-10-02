@@ -9,8 +9,8 @@
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::path::Path;
+use std::time::{Duration, Instant};
 
 use super::browser::{Browser, BrowserType};
 use crate::providers::CloudProvider;
@@ -186,19 +186,12 @@ impl ProviderCookieConfig {
 }
 
 /// Extracts browser sessions for authentication
-pub struct SessionExtractor {
-    /// Temporary directory for working with encrypted data
-    temp_dir: PathBuf,
-}
+pub struct SessionExtractor;
 
 impl SessionExtractor {
     /// Create a new session extractor
     pub fn new() -> Result<Self> {
-        let temp_dir = std::env::temp_dir().join("rclone-triage-sessions");
-        std::fs::create_dir_all(&temp_dir)
-            .context("Failed to create temp directory for session extraction")?;
-
-        Ok(Self { temp_dir })
+        Ok(Self)
     }
 
     /// Extract session for a provider from a specific browser
@@ -285,13 +278,34 @@ impl SessionExtractor {
         }
     }
 
-    fn unique_temp_db_path(&self, prefix: &str) -> PathBuf {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos();
-        self.temp_dir
-            .join(format!("{}_{}_{}.db", prefix, std::process::id(), nanos))
+    /// Include committed WAL pages without placing a plaintext copy on disk.
+    fn snapshot_database(&self, path: &Path) -> Result<rusqlite::Connection> {
+        use rusqlite::backup::{Backup, StepResult};
+        let source = rusqlite::Connection::open_with_flags(
+            path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .with_context(|| format!("Failed to open read-only browser database {:?}", path))?;
+        source.busy_timeout(Duration::from_millis(100))?;
+        let mut snapshot = rusqlite::Connection::open_in_memory()?;
+        snapshot.execute_batch("PRAGMA temp_store=MEMORY;")?;
+        {
+            let backup = Backup::new(&source, &mut snapshot)?;
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                match backup.step(128)? {
+                    StepResult::Done => break,
+                    StepResult::Busy | StepResult::Locked => {
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    _ => {}
+                }
+                if Instant::now() >= deadline {
+                    bail!("Timed out acquiring a consistent browser database snapshot");
+                }
+            }
+        }
+        Ok(snapshot)
     }
 
     /// Extract cookies from Chromium-based browser
@@ -362,14 +376,7 @@ impl SessionExtractor {
         #[cfg(not(windows))]
         let local_state_key: Option<Vec<u8>> = None;
 
-        // Copy the database to temp to avoid locking issues
-        let temp_db = self.unique_temp_db_path("chromium_cookies");
-        std::fs::copy(cookies_path, &temp_db)
-            .with_context(|| format!("Failed to copy cookies db from {:?}", cookies_path))?;
-
-        // Open SQLite database
-        let conn =
-            rusqlite::Connection::open(&temp_db).context("Failed to open cookies database")?;
+        let conn = self.snapshot_database(cookies_path)?;
 
         let mut cookies = Vec::new();
 
@@ -428,9 +435,6 @@ impl SessionExtractor {
                 http_only: is_httponly,
             });
         }
-
-        // Clean up temp file
-        let _ = std::fs::remove_file(&temp_db);
 
         Ok(cookies)
     }
@@ -699,11 +703,7 @@ impl SessionExtractor {
             found_path.ok_or_else(|| anyhow::anyhow!("Firefox cookies.sqlite not found"))?
         };
 
-        // Copy to temp to avoid locking
-        let temp_db = self.unique_temp_db_path("firefox_cookies");
-        std::fs::copy(&cookies_path, &temp_db)?;
-
-        let conn = rusqlite::Connection::open(&temp_db)?;
+        let conn = self.snapshot_database(&cookies_path)?;
 
         let mut cookies = Vec::new();
 
@@ -744,8 +744,6 @@ impl SessionExtractor {
                 http_only: is_http_only != 0,
             });
         }
-
-        let _ = std::fs::remove_file(&temp_db);
 
         Ok(cookies)
     }
@@ -926,5 +924,48 @@ mod tests {
     fn test_session_extractor_creation() {
         let extractor = SessionExtractor::new();
         assert!(extractor.is_ok());
+    }
+
+    #[test]
+    fn snapshot_includes_uncheckpointed_wal_without_cookie_temp_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cookies.sqlite");
+        let source = rusqlite::Connection::open(&path).unwrap();
+        source.execute_batch("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0;
+            CREATE TABLE moz_cookies (name TEXT, value TEXT, host TEXT, path TEXT,
+                expiry INTEGER, isSecure INTEGER, isHttpOnly INTEGER);
+            PRAGMA wal_checkpoint(TRUNCATE);
+            INSERT INTO moz_cookies VALUES ('SID','synthetic-cookie','.google.com','/',4102444800,1,1);").unwrap();
+        let extractor = SessionExtractor::new().unwrap();
+        let cookies = extractor
+            .extract_firefox_cookies_by_patterns(dir.path(), &["%.google.com".into()])
+            .unwrap();
+        assert_eq!(cookies.len(), 1);
+        assert_eq!(cookies[0].value, "synthetic-cookie");
+        let snapshot = extractor.snapshot_database(&path).unwrap();
+        let database_file: String = snapshot
+            .query_row("PRAGMA database_list", [], |row| row.get(2))
+            .unwrap();
+        assert!(database_file.is_empty(), "snapshot must remain in memory");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 3);
+        assert_eq!(
+            source
+                .query_row("SELECT COUNT(*) FROM moz_cookies", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn failed_snapshot_does_not_create_missing_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing.sqlite");
+        assert!(SessionExtractor::new()
+            .unwrap()
+            .snapshot_database(&missing)
+            .is_err());
+        assert!(!missing.exists());
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
     }
 }

@@ -97,7 +97,9 @@ fn format_option_key_hint(known_keys_preview: Option<&str>) -> String {
 ///
 /// This is best-effort. It writes a remote section to the case's rclone config and then
 /// attempts connectivity + listing so the investigator can see files quickly.
-pub(crate) fn perform_manual_config_flow<B: ratatui::backend::Backend>(
+pub(crate) fn perform_manual_config_flow<
+    B: ratatui::backend::Backend<Error: std::error::Error + Send + Sync + 'static>,
+>(
     app: &mut App,
     terminal: &mut Terminal<B>,
 ) -> Result<()> {
@@ -374,7 +376,9 @@ pub(crate) fn perform_manual_config_flow<B: ratatui::backend::Backend>(
         });
     }
 
-    let runner = crate::rclone::RcloneRunner::new(binary.path()).with_config(config.path());
+    let runner = crate::rclone::RcloneRunner::new(binary.path())
+        .with_config(config.path())
+        .with_cancel_flag(app.shutdown.clone());
 
     app.auth_status = "Testing connectivity...".to_string();
     terminal.draw(|f| render_state(f, app))?;
@@ -383,7 +387,7 @@ pub(crate) fn perform_manual_config_flow<B: ratatui::backend::Backend>(
     let max_retries: u32 = 3;
     let mut connectivity = crate::rclone::test_connectivity(&runner, &remote_name)?;
     let mut attempt: u32 = 1;
-    while !connectivity.ok && attempt <= max_retries {
+    while !connectivity.ok && attempt <= max_retries && !runner.is_cancelled() {
         let delay = crate::rclone::retry_delay(attempt - 1);
         let msg = format!(
             "Connectivity check failed (attempt {}/{}), retrying in {}s...",
@@ -418,140 +422,8 @@ pub(crate) fn perform_manual_config_flow<B: ratatui::backend::Backend>(
         );
     }
 
-    app.auth_status = "Listing files...".to_string();
-    terminal.draw(|f| render_state(f, app))?;
-
-    let large_listing = std::env::var("RCLONE_TRIAGE_LARGE_LISTING")
-        .map(|v| v != "0")
-        .unwrap_or(false);
-    let large_in_memory: usize = std::env::var("RCLONE_TRIAGE_LARGE_LISTING_IN_MEMORY")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(50_000);
-
-    let include_hashes = provider
-        .known
-        .map(|known| !known.hash_types().is_empty())
-        .unwrap_or_else(
-            || match crate::providers::features::provider_supports_hashes(&provider) {
-                Ok(Some(true)) => true,
-                Ok(Some(false)) | Ok(None) => false,
-                Err(e) => {
-                    app.log_info(format!(
-                        "Skipping remote hashes (hash support lookup failed): {}",
-                        e
-                    ));
-                    false
-                }
-            },
-        );
-
-    let list_options = if include_hashes {
-        crate::files::listing::ListPathOptions::with_hashes()
-    } else {
-        crate::files::listing::ListPathOptions::without_hashes()
-    };
-
-    if large_listing {
-        if app.forensics.directories.is_none() {
-            app.log_info("Large listing requested, but case directories are unavailable; falling back to in-memory listing.");
-        }
-        if let Some(ref dirs) = app.forensics.directories {
-            let csv_path = dirs
-                .listings
-                .join(format!("{}_files.csv", provider.short_name()));
-
-            let listing_result = crate::files::listing::list_path_large_to_csv_with_progress(
-                &runner,
-                &format!("{}:", remote_name),
-                list_options,
-                &csv_path,
-                large_in_memory,
-                |count| {
-                    app.auth_status = format!("Listing files... ({} found)", count);
-                    let _ = terminal.draw(|f| render_state(f, app));
-                },
-            );
-
-            match listing_result {
-                Ok(result) => {
-                    app.log_info(format!("Exported listing to {:?}", csv_path));
-                    app.track_file(&csv_path, "Exported file listing CSV");
-
-                    app.files.entries_full = result.entries.clone();
-                    app.files.entries = result.entries.iter().map(|e| e.path.clone()).collect();
-                    app.files.to_download.clear();
-                    app.files.selected = 0;
-
-                    let shown = app.files.entries.len();
-                    if result.truncated {
-                        app.auth_status = format!(
-                            "Found {} files (showing first {}). CSV: {:?}",
-                            result.total_entries, shown, csv_path
-                        );
-                    } else {
-                        app.auth_status = format!("Found {} files", result.total_entries);
-                    }
-                    app.advance(); // Move to FileList
-                }
-                Err(e) => {
-                    app.log_error(format!("Listing failed: {}", e));
-                    app.auth_status = format!("Listing failed: {}", e);
-                }
-            }
-
-            return Ok(());
-        }
+    if runner.is_cancelled() {
+        return Ok(());
     }
-
-    let listing_result = crate::files::listing::list_path_with_progress(
-        &runner,
-        &format!("{}:", remote_name),
-        list_options,
-        |count| {
-            app.auth_status = format!("Listing files... ({} found)", count);
-            let _ = terminal.draw(|f| render_state(f, app));
-        },
-    );
-
-    match listing_result {
-        Ok(entries) => {
-            // Export file listing to CSV/XLSX (best-effort).
-            if let Some(ref dirs) = app.forensics.directories {
-                let csv_path = dirs
-                    .listings
-                    .join(format!("{}_files.csv", provider.short_name()));
-                if let Err(e) = crate::files::export::export_listing(&entries, &csv_path) {
-                    app.log_error(format!("CSV export failed: {}", e));
-                } else {
-                    app.log_info(format!("Exported listing to {:?}", csv_path));
-                    app.track_file(&csv_path, "Exported file listing CSV");
-                }
-
-                let xlsx_path = dirs
-                    .listings
-                    .join(format!("{}_files.xlsx", provider.short_name()));
-                if let Err(e) = crate::files::export::export_listing_xlsx(&entries, &xlsx_path) {
-                    app.log_error(format!("Excel export failed: {}", e));
-                } else {
-                    app.log_info(format!("Exported listing to {:?}", xlsx_path));
-                    app.track_file(&xlsx_path, "Exported file listing Excel");
-                }
-            }
-
-            app.files.entries_full = entries.clone();
-            app.files.entries = entries.iter().map(|e| e.path.clone()).collect();
-            app.files.to_download.clear();
-            app.files.selected = 0;
-
-            app.auth_status = format!("Found {} files", app.files.entries.len());
-            app.advance(); // Move to FileList
-        }
-        Err(e) => {
-            app.log_error(format!("Listing failed: {}", e));
-            app.auth_status = format!("Listing failed: {}", e);
-        }
-    }
-
-    Ok(())
+    crate::ui::flows::list::perform_list_flow(app, terminal)
 }
