@@ -121,7 +121,10 @@ where
     if provider == CloudProvider::OneDrive
         && !custom.is_some_and(|credentials| {
             !credentials.client_id.trim().is_empty()
-                && credentials.client_id.trim() != provider_config.oauth.client_id
+                && !credentials
+                    .client_id
+                    .trim()
+                    .eq_ignore_ascii_case(provider_config.oauth.client_id)
         })
     {
         bail!("Auth-only OneDrive requires your own OAuth client registration in RCLONE_TRIAGE_OAUTH_CONFIG; the bundled registration needs rclone-managed authorization");
@@ -168,7 +171,11 @@ mod tests {
                 .into(),
             client_secret: None,
         };
-        for custom in [None, Some(&bundled)] {
+        let uppercase_bundled = OAuthCredentials {
+            client_id: bundled.client_id.to_ascii_uppercase(),
+            client_secret: None,
+        };
+        for custom in [None, Some(&bundled), Some(&uppercase_bundled)] {
             let result = authenticate_only_with(
                 CloudProvider::OneDrive,
                 &config,
