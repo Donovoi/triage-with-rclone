@@ -19,6 +19,9 @@ use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 use std::time::Duration;
 
+mod auth_only;
+pub use auth_only::{authenticate_only, AuthOnlyFlow};
+
 const INTERACTIVE_AUTH_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Result of authentication

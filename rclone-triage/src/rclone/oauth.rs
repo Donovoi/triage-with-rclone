@@ -12,6 +12,7 @@ use base64::Engine;
 use rand::rngs::OsRng;
 use rand::RngCore;
 use sha2::{Digest, Sha256};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use tiny_http::{Response, Server};
 
@@ -136,6 +137,29 @@ impl OAuthFlow {
         self.wait_for_redirect_on_server(server, expected_state.as_deref())
     }
 
+    /// Bind and open authorization while observing cancellation during callback waits.
+    pub fn run_with_opener_cancellable<F>(
+        &self,
+        auth_url: &str,
+        cancel: &AtomicBool,
+        open_browser: F,
+    ) -> Result<OAuthResult>
+    where
+        F: FnOnce(&str) -> Result<()>,
+    {
+        if cancel.load(Ordering::Relaxed) {
+            bail!("Authorization cancelled");
+        }
+        let expected_state = extract_param(auth_url, "state");
+        let server = self.bind_server()?;
+        open_browser(auth_url)?;
+        self.wait_for_redirect_on_server_with_cancel(
+            server,
+            expected_state.as_deref(),
+            Some(cancel),
+        )
+    }
+
     /// Wait for the OAuth redirect and optionally validate an expected `state` parameter.
     ///
     /// This variant:
@@ -163,9 +187,21 @@ impl OAuthFlow {
         server: Server,
         expected_state: Option<&str>,
     ) -> Result<OAuthResult> {
+        self.wait_for_redirect_on_server_with_cancel(server, expected_state, None)
+    }
+
+    fn wait_for_redirect_on_server_with_cancel(
+        &self,
+        server: Server,
+        expected_state: Option<&str>,
+        cancel: Option<&AtomicBool>,
+    ) -> Result<OAuthResult> {
         let deadline = Instant::now() + self.timeout;
 
         loop {
+            if cancel.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
+                bail!("Authorization cancelled");
+            }
             let now = Instant::now();
             if now >= deadline {
                 bail!(
@@ -175,12 +211,17 @@ impl OAuthFlow {
             }
             let remaining = deadline - now;
 
-            let request = server.recv_timeout(remaining)?.ok_or_else(|| {
-                anyhow::anyhow!(
-                    "OAuth timeout: no response received within {} seconds",
-                    self.timeout.as_secs()
-                )
-            })?;
+            let wait = if cancel.is_some() {
+                remaining.min(Duration::from_millis(100))
+            } else {
+                remaining
+            };
+            let Some(request) = server.recv_timeout(wait)? else {
+                continue;
+            };
+            if cancel.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
+                bail!("Authorization cancelled");
+            }
 
             let url = request.url().to_string();
 
@@ -436,6 +477,28 @@ pub(crate) fn urldecoded(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quiet_callback_listener_observes_cancellation() {
+        let cancel = std::sync::Arc::new(AtomicBool::new(false));
+        let cancel_worker = cancel.clone();
+        let worker = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(50));
+            cancel_worker.store(true, Ordering::Relaxed);
+        });
+        let start = Instant::now();
+        let result = OAuthFlow::new()
+            .with_port(0)
+            .with_timeout(Duration::from_secs(30))
+            .run_with_opener_cancellable(
+                "https://example.invalid/authorize?state=synthetic",
+                &cancel,
+                |_| Ok(()),
+            );
+        worker.join().unwrap();
+        assert!(result.unwrap_err().to_string().contains("cancelled"));
+        assert!(start.elapsed() < Duration::from_secs(2));
+    }
 
     #[test]
     fn pkce_matches_rfc7636_s256_vector() {
