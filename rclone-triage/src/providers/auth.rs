@@ -7,11 +7,12 @@
 use super::browser::{Browser, BrowserAuthSession, BrowserDetector};
 use super::credentials::{custom_oauth_credentials_for, OAuthCredentials};
 use super::mobile::{
-    device_code_config, exchange_code_for_token, poll_device_code_for_token, render_qr_code,
-    request_device_code,
+    device_code_config, exchange_code_for_token_with_pkce, poll_device_code_for_token,
+    render_qr_code, request_device_code,
 };
 use super::session::{browsers_with_sessions, BrowserSession};
 use super::{config::ProviderConfig, CloudProvider};
+use crate::rclone::oauth::Pkce;
 use crate::rclone::{OAuthFlow, RcloneConfig, RcloneRunner};
 use crate::utils::network::get_local_ip_address;
 use anyhow::{bail, Context, Result};
@@ -68,6 +69,30 @@ fn non_empty_owned(value: &str) -> Option<String> {
     } else {
         Some(value.to_string())
     }
+}
+
+/// New Google authorizations must use an investigator-controlled client. Existing
+/// imported tokens remain usable; this guard does not mutate or revoke them.
+pub fn ensure_new_auth_credentials(provider: CloudProvider) -> Result<()> {
+    if matches!(
+        provider,
+        CloudProvider::GoogleDrive | CloudProvider::GooglePhotos
+    ) {
+        let custom = custom_oauth_credentials_for(provider)?;
+        let defaults = ProviderConfig::for_provider(provider);
+        let valid = custom.as_ref().is_some_and(|creds| {
+            !creds.client_id.trim().is_empty()
+                && creds.client_id != defaults.oauth.client_id
+                && creds
+                    .client_secret
+                    .as_ref()
+                    .is_some_and(|secret| !secret.trim().is_empty())
+        });
+        if !valid {
+            bail!("Configure your own OAuth client ID and client secret for {} before starting new authentication. The shared rclone Google client is being retired. Existing authenticated configs can still be imported. See https://rclone.org/{}/#making-your-own-client-id", provider.display_name(), if provider == CloudProvider::GoogleDrive { "drive" } else { "googlephotos" });
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -162,13 +187,19 @@ fn build_rclone_auth_args(
     provider: CloudProvider,
     remote_name: &str,
     non_interactive: bool,
-) -> Vec<String> {
+) -> Result<Vec<String>> {
+    ensure_new_auth_credentials(provider)?;
     let mut args = vec![
         "config".to_string(),
         "create".to_string(),
         remote_name.to_string(),
         provider.rclone_type().to_string(),
     ];
+
+    for (key, value) in ProviderConfig::for_provider(provider).rclone_options {
+        args.push((*key).to_owned());
+        args.push((*value).to_owned());
+    }
 
     if let Some(creds) = resolve_custom_oauth(provider) {
         if !creds.client_id.trim().is_empty() {
@@ -187,7 +218,7 @@ fn build_rclone_auth_args(
         args.push("--non-interactive".to_string());
     }
 
-    args
+    Ok(args)
 }
 
 fn run_rclone_with_browser_env(
@@ -415,7 +446,7 @@ pub fn authenticate_with_rclone(
 ) -> Result<AuthResult> {
     // Use rclone config create with a timeout. Without --non-interactive, rclone may
     // hang on post-OAuth interactive prompts when stdin is /dev/null.
-    let args = build_rclone_auth_args(provider, remote_name, false);
+    let args = build_rclone_auth_args(provider, remote_name, false)?;
     let args_ref: Vec<&str> = args.iter().map(String::as_str).collect();
     let output = rclone.run_with_timeout(&args_ref, Some(INTERACTIVE_AUTH_TIMEOUT))?;
 
@@ -508,6 +539,7 @@ pub fn authenticate_with_mobile_redirect<F>(
 where
     F: FnMut(Vec<String>) -> Result<()>,
 {
+    ensure_new_auth_credentials(provider)?;
     let provider_config = ProviderConfig::for_provider(provider);
 
     if !provider_config.uses_oauth() {
@@ -522,18 +554,8 @@ where
         .as_ref()
         .map(|c| c.client_id.as_str())
         .unwrap_or(provider_config.oauth.client_id);
-    let client_secret = custom
-        .as_ref()
-        .and_then(|c| c.client_secret.as_deref())
-        .filter(|s| !s.trim().is_empty())
-        .or_else(|| {
-            let secret = provider_config.oauth.client_secret;
-            if secret.trim().is_empty() {
-                None
-            } else {
-                Some(secret)
-            }
-        });
+    let resolved_secret = resolve_effective_client_secret(&provider_config, custom.as_ref());
+    let client_secret = resolved_secret.as_deref();
 
     let local_ip = get_local_ip_address()?
         .ok_or_else(|| anyhow::anyhow!("Unable to determine local IP address"))?;
@@ -546,8 +568,12 @@ where
 
     let redirect_uri = oauth.redirect_uri();
     let state = OAuthFlow::generate_state();
-    let auth_url =
-        provider_config.build_auth_url_with_client_id(client_id, &redirect_uri, Some(&state));
+    let pkce = Pkce::new();
+    let auth_url = pkce.authorize_url(&provider_config.build_auth_url_with_client_id(
+        client_id,
+        &redirect_uri,
+        Some(&state),
+    ));
 
     let mut lines = prelude_lines;
     lines.push(format!(
@@ -572,12 +598,13 @@ where
         "Authorization received. Exchanging token...".to_string()
     ])?;
 
-    let token_json = exchange_code_for_token(
+    let token_json = exchange_code_for_token_with_pkce(
         provider_config.oauth.token_url,
         &result.code,
         &redirect_uri,
         client_id,
         client_secret,
+        Some(pkce.verifier()),
     )?;
     let token_str = serde_json::to_string(&token_json)?;
 
@@ -625,6 +652,7 @@ pub fn authenticate_with_device_code(
     config: &RcloneConfig,
     remote_name: &str,
 ) -> Result<AuthResult> {
+    ensure_new_auth_credentials(provider)?;
     let provider_config = ProviderConfig::for_provider(provider);
     if !provider_config.uses_oauth() {
         bail!(
@@ -708,6 +736,7 @@ pub fn authenticate_with_browser(
     rclone: &RcloneRunner,
     config: &RcloneConfig,
 ) -> Result<AuthResult> {
+    ensure_new_auth_credentials(provider)?;
     if !browser.is_installed {
         bail!("Browser {} is not installed", browser.display_name());
     }
@@ -829,6 +858,7 @@ pub fn authenticate_with_system_browser(
     config: &RcloneConfig,
     remote_name: &str,
 ) -> Result<AuthResult> {
+    ensure_new_auth_credentials(provider)?;
     let provider_config = ProviderConfig::for_provider(provider);
 
     if !provider_config.uses_oauth() {
@@ -1009,8 +1039,12 @@ fn authenticate_with_browser_direct(
     let oauth = OAuthFlow::new().with_timeout(INTERACTIVE_AUTH_TIMEOUT);
     let redirect_uri = oauth.redirect_uri();
     let state = OAuthFlow::generate_state();
-    let auth_url =
-        provider_config.build_auth_url_with_client_id(client_id, &redirect_uri, Some(&state));
+    let pkce = Pkce::new();
+    let auth_url = pkce.authorize_url(&provider_config.build_auth_url_with_client_id(
+        client_id,
+        &redirect_uri,
+        Some(&state),
+    ));
 
     let result = oauth
         .run_with_opener(&auth_url, |url| open_browser_to_url(browser, url))
@@ -1021,12 +1055,13 @@ fn authenticate_with_browser_direct(
             )
         })?;
 
-    let token_json = exchange_code_for_token(
+    let token_json = exchange_code_for_token_with_pkce(
         provider_config.oauth.token_url,
         &result.code,
         &redirect_uri,
         client_id,
         client_secret,
+        Some(pkce.verifier()),
     )?;
     serde_json::to_string(&token_json).context("Failed to serialize token")
 }
@@ -1175,7 +1210,7 @@ pub fn authenticate_with_sso(
 
     // Use rclone config create - the browser already has the session,
     // so OAuth should complete quickly/silently
-    let args = build_rclone_auth_args(provider, &remote_name, false);
+    let args = build_rclone_auth_args(provider, &remote_name, false)?;
     let args_ref: Vec<&str> = args.iter().map(String::as_str).collect();
     let output = run_rclone_with_browser_env(browser, rclone, &args_ref)?;
 

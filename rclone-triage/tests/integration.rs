@@ -80,9 +80,19 @@ if [ $# -gt 0 ]; then
   shift
 fi
 
-if [ "$cmd" = "copyto" ]; then
-  src="${1-}"
-  dest="${2-}"
+if [ "$cmd" = "lsjson" ]; then
+  echo '{"IsDir":false}'
+  exit 0
+fi
+
+if [ "$cmd" = "rc" ]; then
+  shift 2
+  srcfs="${1#srcFs=}"
+  srcname="${2#srcRemote=}"
+  dstfs="${3#dstFs=}"
+  dstname="${4#dstRemote=}"
+  src="$srcfs/$srcname"
+  dest="$dstfs/$dstname"
   mkdir -p "$(dirname "$dest")"
   cp "$src" "$dest"
   exit 0
@@ -281,15 +291,24 @@ fi
 
 case "$cmd" in
   lsjson)
+    if [ "${{1-}}" = "--stat" ]; then
+      echo '{{"IsDir":false}}'
+      exit 0
+    fi
     cat <<'JSON'
 [
   {{"Path":"file.txt","Size":{size},"ModTime":"2024-01-01T00:00:00Z","IsDir":false,"Hashes":{{"SHA256":"{hash}"}}}}
 ]
 JSON
     ;;
-  copyto)
-    src="${{1-}}"
-    dest="${{2-}}"
+  rc)
+    shift 2
+    srcfs="${{1#srcFs=}}"
+    srcname="${{2#srcRemote=}}"
+    dstfs="${{3#dstFs=}}"
+    dstname="${{4#dstRemote=}}"
+    src="$srcfs/$srcname"
+    dest="$dstfs/$dstname"
     echo "Transferred: {half} B / {size} B, 50%, 1 B/s, ETA 1s" 1>&2
     echo "Transferred: {size} B / {size} B, 100%, 1 B/s, ETA 0s" 1>&2
     mkdir -p "$(dirname "$dest")"
@@ -412,7 +431,12 @@ if [ $# -gt 0 ]; then
   shift
 fi
 
-if [ "$cmd" = "copyto" ]; then
+if [ "$cmd" = "lsjson" ]; then
+  echo '{"IsDir":false}'
+  exit 0
+fi
+
+if [ "$cmd" = "rc" ]; then
   echo "copy failed" >&2
   exit 3
 fi
@@ -454,9 +478,19 @@ if [ $# -gt 0 ]; then
   shift
 fi
 
-if [ "$cmd" = "copyto" ]; then
-  src="${1-}"
-  dest="${2-}"
+if [ "$cmd" = "lsjson" ]; then
+  echo '{"IsDir":false}'
+  exit 0
+fi
+
+if [ "$cmd" = "rc" ]; then
+  shift 2
+  srcfs="${1#srcFs=}"
+  srcname="${2#srcRemote=}"
+  dstfs="${3#dstFs=}"
+  dstname="${4#dstRemote=}"
+  src="$srcfs/$srcname"
+  dest="$dstfs/$dstname"
   mkdir -p "$(dirname "$dest")"
   cp "$src" "$dest"
   exit 0
@@ -484,6 +518,11 @@ exit 1
     let queue = DownloadQueue::new();
     let result = queue.download_one_verified(&runner, &request);
 
-    assert!(result.success);
+    assert!(!result.success);
+    assert_eq!(
+        result.integrity,
+        rclone_triage::files::download::IntegrityStatus::Mismatch
+    );
+    assert!(result.local_sha256.is_some());
     assert_eq!(result.hash_verified, Some(false));
 }

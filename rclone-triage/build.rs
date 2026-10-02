@@ -1,11 +1,22 @@
 //! Build script for rclone-triage
 //!
 //! Handles Windows-specific resource embedding:
-//! - Application manifest (DPI awareness, Windows 7+ compatibility)
+//! - Application manifest (DPI awareness, Windows 10/11 compatibility)
 //! - Version information
 //! - Application icon (if available)
 
 fn main() {
+    let runtime =
+        std::fs::read_to_string("../rclone-version.env").expect("read pinned runtime manifest");
+    for line in runtime.lines() {
+        if let Some((key, value)) = line.split_once('=') {
+            if matches!(key, "RCLONE_VERSION" | "RCLONE_EXE_SHA256") {
+                println!("cargo:rustc-env=TRIAGE_{key}={value}");
+            }
+        }
+    }
+    println!("cargo:rerun-if-changed=../rclone-version.env");
+    println!("cargo:rerun-if-changed=assets/rclone.exe");
     // Only run winres on Windows targets
     #[cfg(windows)]
     {
@@ -18,27 +29,27 @@ fn main() {
 
 #[cfg(windows)]
 fn windows_resources() {
-    use std::io::Write;
-
     let mut res = winres::WindowsResource::new();
-
-    // Set version info
-    res.set_version_info(winres::VersionInfo::PRODUCTVERSION, 0x00010000); // 1.0.0.0
-    res.set_version_info(winres::VersionInfo::FILEVERSION, 0x00010000);
-
-    // Set manifest for DPI awareness and Windows 7+ compatibility
-    res.set_manifest(WINDOWS_MANIFEST);
-
-    // Compile resources
-    if let Err(e) = res.compile() {
-        // Don't fail the build, just warn
-        let mut stderr = std::io::stderr();
-        let _ = writeln!(
-            stderr,
-            "cargo:warning=Failed to compile Windows resources: {}",
-            e
-        );
-    }
+    let major: u64 = std::env::var("CARGO_PKG_VERSION_MAJOR")
+        .unwrap()
+        .parse()
+        .unwrap();
+    let minor: u64 = std::env::var("CARGO_PKG_VERSION_MINOR")
+        .unwrap()
+        .parse()
+        .unwrap();
+    let patch: u64 = std::env::var("CARGO_PKG_VERSION_PATCH")
+        .unwrap()
+        .parse()
+        .unwrap();
+    let packed = (major << 48) | (minor << 32) | (patch << 16);
+    let version = format!("{major}.{minor}.{patch}.0");
+    res.set_version_info(winres::VersionInfo::PRODUCTVERSION, packed);
+    res.set_version_info(winres::VersionInfo::FILEVERSION, packed);
+    res.set("FileVersion", &version);
+    res.set("ProductVersion", &version);
+    res.set_manifest(&WINDOWS_MANIFEST.replace("@VERSION@", &version));
+    res.compile().expect("compile Windows resources");
 }
 
 #[cfg(windows)]
@@ -46,7 +57,7 @@ const WINDOWS_MANIFEST: &str = r#"
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
   <assemblyIdentity
-    version="1.0.0.0"
+    version="@VERSION@"
     processorArchitecture="*"
     name="RcloneTriage"
     type="win32"
@@ -62,15 +73,9 @@ const WINDOWS_MANIFEST: &str = r#"
     </security>
   </trustInfo>
   
-  <!-- Windows 7, 8, 8.1, 10, 11 compatibility -->
+  <!-- Supported deployment targets: Windows 10/11 -->
   <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
     <application>
-      <!-- Windows 7 -->
-      <supportedOS Id="{35138b9a-5d96-4fbd-8e2d-a2440225f93a}"/>
-      <!-- Windows 8 -->
-      <supportedOS Id="{4a2f28e3-53b9-4441-ba9c-d69d4a4a6e38}"/>
-      <!-- Windows 8.1 -->
-      <supportedOS Id="{1f676c76-80e1-4239-95bb-83d0f6d0da78}"/>
       <!-- Windows 10/11 -->
       <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}"/>
     </application>

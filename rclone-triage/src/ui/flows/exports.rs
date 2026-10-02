@@ -249,7 +249,9 @@ fn parse_domain_patterns(raw: &str) -> Vec<String> {
         .collect()
 }
 
-pub(crate) fn perform_export_domain_cookies<B: ratatui::backend::Backend>(
+pub(crate) fn perform_export_domain_cookies<
+    B: ratatui::backend::Backend<Error: std::error::Error + Send + Sync + 'static>,
+>(
     app: &mut App,
     terminal: &mut Terminal<B>,
 ) -> Result<()> {

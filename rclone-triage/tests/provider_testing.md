@@ -95,11 +95,22 @@ whose upstream rclone backend needs provider-specific ignores or workarounds.
 
 ## How the live smoke test is configured
 
-`tests/provider_smoke.rs` resolves configuration in this order:
+The live test is ignored by default and requires an explicit
+`RCLONE_PROVIDER_SMOKE_CONFIG` path. It refuses fallback credential stores.
+An unreadable config, missing runtime, or empty matching Test-remote set fails
+the explicitly requested test rather than returning a passing skip.
 
-1. `RCLONE_PROVIDER_SMOKE_CONFIG`
-2. `RCLONE_CONFIG`
-3. default rclone config path (`~/.config/rclone/rclone.conf` on Linux)
+```powershell
+$env:RCLONE_PROVIDER_SMOKE_CONFIG = 'C:/TestAccounts/rclone.conf'
+$env:RCLONE_PROVIDER_SMOKE_RCLONE = (Resolve-Path ./assets/rclone.exe).Path
+cargo test --locked --release --test provider_smoke test_configured_provider_remotes_smoke -- --ignored --exact --nocapture --test-threads=1
+```
+
+Use a disposable working copy of the config: rclone can refresh tokens in it.
+These commands run from the crate directory after the runtime bootstrap.
+The GitHub workflow creates a private temporary config, prepares both pinned
+runtime assets, and removes the config after the run. Without credentials its
+summary explicitly states that live acceptance was not run.
 
 Optional environment variables:
 

@@ -12,9 +12,10 @@ use super::listing::FileEntry;
 
 #[derive(Debug, Serialize)]
 struct CsvFileEntry {
+    path_encoding: &'static str,
     remote: Option<String>,
     path: String,
-    size: u64,
+    size: Option<u64>,
     modified: Option<String>,
     is_dir: bool,
     hash: Option<String>,
@@ -25,14 +26,23 @@ impl From<&FileEntry> for CsvFileEntry {
     fn from(entry: &FileEntry) -> Self {
         let modified = entry.modified.map(|dt| dt.to_rfc3339());
         Self {
-            remote: entry.remote_name.clone(),
-            path: entry.path.clone(),
+            path_encoding: "excel-safe-v1",
+            remote: entry.remote_name.as_deref().map(excel_safe_text),
+            path: excel_safe_text(&entry.path),
             size: entry.size,
             modified,
             is_dir: entry.is_dir,
             hash: entry.hash.clone(),
             hash_type: entry.hash_type.clone(),
         }
+    }
+}
+
+fn excel_safe_text(value: &str) -> String {
+    if value.starts_with(['=', '+', '-', '@', '\t', '\r', '\n', '\'']) {
+        format!("'{value}")
+    } else {
+        value.to_string()
     }
 }
 
@@ -126,9 +136,12 @@ pub fn export_listing_xlsx(entries: &[FileEntry], path: impl AsRef<Path>) -> Res
         worksheet
             .write_string(row, 1, &entry.path)
             .context("Failed to write path")?;
-        worksheet
-            .write_number(row, 2, entry.size as f64)
-            .context("Failed to write size")?;
+        if let Some(size) = entry.size {
+            // Preserve integer byte counts exactly, including values above 2^53.
+            worksheet
+                .write_string(row, 2, size.to_string())
+                .context("Failed to write size")?;
+        }
 
         if let Some(modified) = entry.modified {
             worksheet
@@ -160,6 +173,33 @@ pub fn export_listing_xlsx(entries: &[FileEntry], path: impl AsRef<Path>) -> Res
 mod tests {
     use super::*;
     use chrono::{DateTime, Utc};
+
+    #[test]
+    fn csv_round_trip_keeps_exact_paths_without_formula_execution() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("inventory.csv");
+        let names = ["=1+1", "'literal.txt", " leading.txt", "trailing.txt "];
+        let entries: Vec<_> = names
+            .iter()
+            .map(|name| FileEntry {
+                path: (*name).into(),
+                size: None,
+                modified: None,
+                is_dir: false,
+                hash: None,
+                hash_type: None,
+                remote_name: Some("remote".into()),
+            })
+            .collect();
+        export_listing(&entries, &path).unwrap();
+        let csv = std::fs::read_to_string(&path).unwrap();
+        assert!(csv.contains("'=1+1"));
+        let imported = crate::files::queue::read_download_queue(&path).unwrap();
+        assert_eq!(
+            imported.iter().map(|e| e.path.as_str()).collect::<Vec<_>>(),
+            names
+        );
+    }
     use tempfile::tempdir;
 
     #[test]
@@ -169,7 +209,7 @@ mod tests {
 
         let entry = FileEntry {
             path: "file.txt".to_string(),
-            size: 123,
+            size: Some(123),
             modified: Some(DateTime::<Utc>::from(std::time::SystemTime::UNIX_EPOCH)),
             is_dir: false,
             hash: Some("abc".to_string()),
@@ -190,7 +230,7 @@ mod tests {
 
         let entry = FileEntry {
             path: "file.txt".to_string(),
-            size: 123,
+            size: Some(123),
             modified: Some(DateTime::<Utc>::from(std::time::SystemTime::UNIX_EPOCH)),
             is_dir: false,
             hash: Some("abc".to_string()),
@@ -209,7 +249,7 @@ mod tests {
 
         let entry = FileEntry {
             path: "Documents/file.txt".to_string(),
-            size: 42,
+            size: Some(42),
             modified: None,
             is_dir: false,
             hash: None,
@@ -233,7 +273,7 @@ mod tests {
 
         let entry = FileEntry {
             path: "Photos/pic.jpg".to_string(),
-            size: 999,
+            size: Some(999),
             modified: None,
             is_dir: false,
             hash: None,

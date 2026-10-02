@@ -4,7 +4,9 @@ use ratatui::Terminal;
 use crate::ui::render::render_state;
 use crate::ui::{App, AppState, AuthBatchTask};
 
-pub(crate) fn perform_detection_flow<B: ratatui::backend::Backend>(
+pub(crate) fn perform_detection_flow<
+    B: ratatui::backend::Backend<Error: std::error::Error + Send + Sync + 'static>,
+>(
     app: &mut App,
     terminal: &mut Terminal<B>,
 ) -> Result<()> {

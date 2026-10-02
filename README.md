@@ -1,93 +1,69 @@
 # triage-with-rclone
 
-This repository provides a forensic-first cloud triage tool built around rclone.
+Windows cloud acquisition CLI and terminal UI, built in Rust with a verified rclone runtime embedded in the executable. The current development version is **0.2.0**, embedding **rclone 1.75.1**. Windows 10/11 are the deployment targets; Linux CI exercises the portable library and mocked integrations.
 
-## Rust TUI implementation (rclone-triage)
+## Build and run
 
-`rclone-triage` is a Rust reimplementation that targets a **single Windows executable** with **all dependencies embedded** (including `rclone.exe`). It includes:
+Install Rust with the MSVC toolchain and Visual Studio C++ build tools. CI uses Rust 1.95.0. From the repository root:
 
-- Embedded rclone binary (offline-friendly, reproducible)
-- Hash‑chained forensic logs
-- System state snapshots + change tracking
-- Case‑structured output directories
-- TUI flow for case setup → provider auth → listing → download
+```powershell
+./scripts/download-rclone.ps1
+cd rclone-triage
+cargo build --locked --release
+./target/release/rclone-triage.exe --name investigation-001 --output-dir C:/Cases
+```
 
-### Build
+The bootstrap checks both the downloaded archive and extracted executable against [rclone-version.env](rclone-version.env). Linux contributors must also prepare the embedded Windows asset with `bash scripts/download-rclone.sh` before compiling. Runtime updates require replacing the reviewed version and hashes in that manifest.
 
-- `cd /home/toor/triage-with-rclone/rclone-triage`
-- `cargo build --release`
+The UI supports authentication, existing-config selection, listing, CSV/XLSX queue import, and file acquisition. Case name and output directory apply to both CLI and UI. `/` searches the inventory and `n` advances between matches. Source config files are copied into private working snapshots inside the case; originals are preserved even when rclone refreshes tokens or creates a combined listing remote.
 
-### Run (current CLI skeleton)
+## Acquire a queue
 
-- `./target/release/rclone-triage --name my-session --output-dir .`
-- Alternatively, omit `--name` to use auto-generated name: `./target/release/rclone-triage --output-dir .`
+```powershell
+./rclone-triage.exe --name investigation-001 --output-dir C:/Cases `
+  --rclone-config-path C:/Configs/rclone.conf --download queue.csv
+```
 
-### Tests
+```csv
+Path,Remote,Size,Hash,HashType,IsDir
+Documents/report.pdf,DriveA,1024,,,false
+Documents/report.pdf,DriveB,2048,,,false
+```
 
-- Linux/WSL: `cargo test --release -- --test-threads=1`
-- Windows (local): `powershell -ExecutionPolicy Bypass -File scripts/run-windows-tests.ps1`
+`Remote` resolves each row to its actual configured source. Rows without it require `--remote NAME` unless there is only one configured remote. Remote names and object paths remain distinct; output paths are recorded in the manifest, including remapping for Windows names and collisions. Relative path traversal, absolute paths, symlinks/reparse-point destinations, and ambiguous separators are rejected. Directory rows are skipped; select or list their individual files to acquire their contents. Existing acquired files are preserved under newly allocated destination names on later runs.
 
-### Forensic notes
+Windows single-letter remote names are rejected because rclone interprets them as drive letters. Configured runners ignore inherited `RCLONE_*` overrides except `RCLONE_CONFIG_PASS`; the selected config and explicit per-call settings determine the source and transfer behavior.
 
-- Temporary artifacts (extracted `rclone.exe`, env vars) are tracked and cleaned.
-- Any changes that cannot be reverted are designed to be documented in the final report.
+Every run writes a plan before transfers and final outcomes afterward. A failed source, cancellation, size discrepancy, or supported source-hash mismatch produces an incomplete manifest and a nonzero CLI exit status. Every transferred file has a local SHA256; that local digest alone does **not** establish agreement with the cloud source. `integrity` distinguishes verified, unverified, unsupported-hash, mismatched, failed, cancelled, and dry-run outcomes. Keep the manifest and original queue with the acquired files.
 
----
+## Evidence and privacy
 
-This program is a tool the helps forensic teams triage and download cloud data that is stored on all of the cloud providers supported by rclone, currently they [are](https://rclone.org/overview/):
+Case directories contain listings, downloads, config snapshots with source SHA256 provenance, acquisition manifests, reports, and hash-chained logs. JSON-line log records safely encode newlines; checkpoints record the final hash and entry count. Keep checkpoints separately to detect truncation: a hash chain without a trusted external checkpoint cannot detect removal of its tail or wholesale replacement. These are integrity aids, not digital signatures or a claim of legal admissibility.
 
-| Name                          | Hash              | ModTime | Case Insensitive | Duplicate Files | MIME Type | Metadata |
-| ----------------------------- | ----------------- | ------- | ---------------- | --------------- | --------- | -------- |
-| 1Fichier                      | Whirlpool         | -       | No               | Yes             | R         | -        |
-| Akamai Netstorage             | MD5, SHA256       | R/W     | No               | No              | R         | -        |
-| Amazon S3 (or S3 compatible)  | MD5               | R/W     | No               | No              | R/W       | RWU      |
-| Backblaze B2                  | SHA1              | R/W     | No               | No              | R/W       | -        |
-| Box                           | SHA1              | R/W     | Yes              | No              | -         | -        |
-| Citrix ShareFile              | MD5               | R/W     | Yes              | No              | -         | -        |
-| Cloudinary                    | MD5               | R       | No               | Yes             | -         | -        |
-| Dropbox                       | DBHASH ¹          | R       | Yes              | No              | -         | -        |
-| Enterprise File Fabric        | -                 | R/W     | Yes              | No              | R/W       | -        |
-| FileLu Cloud Storage          | MD5               | R/W     | No               | Yes             | R         | -        |
-| Files.com                     | MD5, CRC32        | DR/W    | Yes              | No              | R         | -        |
-| FTP                           | -                 | R/W ¹⁰  | No               | No              | -         | -        |
-| Gofile                        | MD5               | DR/W    | No               | Yes             | R         | -        |
-| Google Cloud Storage          | MD5               | R/W     | No               | No              | R/W       | -        |
-| Google Drive                  | MD5, SHA1, SHA256 | DR/W    | No               | Yes             | R/W       | DRWU     |
-| Google Photos                 | -                 | -       | No               | Yes             | R         | -        |
-| HDFS                          | -                 | R/W     | No               | No              | -         | -        |
-| HiDrive                       | HiDrive ¹²        | R/W     | No               | No              | -         | -        |
-| HTTP                          | -                 | R       | No               | No              | R         | R        |
-| iCloud Drive                  | -                 | R       | No               | No              | -         | -        |
-| Internet Archive              | MD5, SHA1, CRC32  | R/W ¹¹  | No               | No              | -         | RWU      |
-| Jottacloud                    | MD5               | R/W     | Yes              | No              | R         | RW       |
-| Koofr                         | MD5               | -       | Yes              | No              | -         | -        |
-| Linkbox                       | -                 | R       | No               | No              | -         | -        |
-| Mail.ru Cloud                 | Mailru ⁶          | R/W     | Yes              | No              | -         | -        |
-| Mega                          | -                 | -       | No               | Yes             | -         | -        |
-| Memory                        | MD5               | R/W     | No               | No              | -         | -        |
-| Microsoft Azure Blob Storage  | MD5               | R/W     | No               | No              | R/W       | -        |
-| Microsoft Azure Files Storage | MD5               | R/W     | Yes              | No              | R/W       | -        |
-| Microsoft OneDrive            | QuickXorHash ⁵    | DR/W    | Yes              | No              | R         | DRW      |
-| OpenDrive                     | MD5               | R/W     | Yes              | Partial ⁸       | -         | -        |
-| OpenStack Swift               | MD5               | R/W     | No               | No              | R/W       | -        |
-| Oracle Object Storage         | MD5               | R/W     | No               | No              | R/W       | RU       |
-| pCloud                        | MD5, SHA1 ⁷       | R/W     | No               | No              | W         | -        |
-| PikPak                        | MD5               | R       | No               | No              | R         | -        |
-| Pixeldrain                    | SHA256            | R/W     | No               | No              | R         | RW       |
-| premiumize.me                 | -                 | -       | Yes              | No              | R         | -        |
-| put.io                        | CRC-32            | R/W     | No               | Yes             | R         | -        |
-| Proton Drive                  | SHA1              | R/W     | No               | No              | R         | -        |
-| QingStor                      | MD5               | - ⁹     | No               | No              | R/W       | -        |
-| Quatrix by Maytech            | -                 | R/W     | No               | No              | -         | -        |
-| Seafile                       | -                 | -       | No               | No              | -         | -        |
-| SFTP                          | MD5, SHA1 ²       | DR/W    | Depends          | No              | -         | -        |
-| Sia                           | -                 | -       | No               | No              | -         | -        |
-| SMB                           | -                 | R/W     | Yes              | No              | -         | -        |
-| SugarSync                     | -                 | -       | No               | No              | -         | -        |
-| Storj                         | -                 | R       | No               | No              | -         | -        |
-| Uloz.to                       | MD5, SHA256 ¹³    | -       | No               | Yes             | -         | -        |
-| Uptobox                       | -                 | -       | No               | Yes             | -         | -        |
-| WebDAV                        | MD5, SHA1 ³       | R ⁴     | Depends          | No              | -         | -        |
-| Yandex Disk                   | MD5               | R/W     | No               | No              | R         | -        |
-| Zoho WorkDrive                | -                 | -       | No               | No              | -         | -        |
-| The local filesystem          | All               | DR/W    | Depends          | No              | -         | DRWU     |
+**Case configs contain credentials.** Restrict access to the case directory and storage; Windows files inherit its ACL. Keep original evidence separately. SQLite browser stores are opened read-only and snapshotted through SQLite's backup API into memory, including committed WAL contents; locked or inaccessible stores produce errors instead of a stale raw-file copy. OneDrive vault handling does not decrypt BitLocker volumes. System-state collection and browser access have not been validated against every endpoint protection product.
+
+`--collect-logs` creates a local redacted diagnostic archive. It redacts environment values and structured secret settings before writing staging files, omits listing contents, and does not automatically transmit the bundle. Arbitrary log prose and paths may still contain case information: inspect the archive before sharing. Redacted logs are diagnostic copies, not the original hash-verifiable evidence.
+
+## Provider and network limits
+
+Backend discovery comes from the pinned runtime. A discovered backend or successful mock test is not proof of account-level provider compatibility. Consult the current [rclone backend documentation](https://rclone.org/overview/) for permissions and provider-specific limits.
+
+New Google Drive/Photos authorization requires your own OAuth client; see [rclone's Google Drive client instructions](https://rclone.org/drive/#making-your-own-client-id). New Drive/OneDrive authorization requests read-only file access. Existing remote credentials retain the permissions previously granted by their provider. Google Photos API access is limited by Google's app-created-data policy and is not an unrestricted photo-library export.
+
+OAuth state remains secret and direct authorization-code flows use PKCE. Mobile callbacks require the documented matching client redirect URI; ordinary HTTP LAN callbacks do not provide transport confidentiality. Prefer loopback/desktop or device-code authorization where practical. Real OAuth, browser decryption, mounted vaults, and AP hardware behavior require controlled acceptance testing with explicit test accounts/devices.
+
+The Windows forensic access-point controller owns its WLAN session and temporary firewall rule, refuses to take over an already active hosted network, restores saved settings on graceful stop, and does not change adapter DNS. Keep the controller process open until its timeout or Ctrl+C. Unsupported adapters fail explicitly. Forced termination or OS failure cannot guarantee graceful restoration; check host state after an abnormal stop. `--forensic-ap-stop` never force-stops another process's network.
+
+## Validation and releases
+
+```powershell
+./scripts/run-windows-tests.ps1
+```
+
+Equivalent crate commands are `cargo fmt --all -- --check`, `cargo clippy --locked --all-targets --all-features -- -D warnings`, and `cargo test --locked --release -- --test-threads=1`. Live cloud tests are ignored by default; see [provider testing](rclone-triage/tests/provider_testing.md) for explicit opt-in and acceptance limits.
+
+CI gates prereleases on both Windows and Linux checks. Release assets include executable SHA256 checksums, the runtime manifest, a Cargo dependency inventory, and GitHub build provenance. Verify downloaded binaries with `gh attestation verify rclone-triage.exe --repo Donovoi/triage-with-rclone` and compare `SHA256SUMS`. A dependency inventory is not a complete SBOM for the embedded Go runtime.
+
+See [the hardening record](HARDENING.md) for the reviewed failures, regression coverage, and remaining acceptance work. Inventory entries remain memory-resident; million-object cases require capacity measurements before use. The legacy PowerShell coverage document is historical, not a current parity guarantee.
+
+Licensed under [Apache-2.0](LICENSE).

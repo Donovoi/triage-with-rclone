@@ -1,73 +1,108 @@
 name: CI
-
 on:
   push:
   pull_request:
-
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 jobs:
-  test-linux:
-    name: Test (Linux)
+  audit:
+    name: Dependency security audit
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067
+        with:
+          toolchain: 1.95.0
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          key: audit-tool
+          workspaces: rclone-triage -> target
+      - run: cargo install cargo-audit --version 0.22.2 --locked
+      - run: cargo audit --file rclone-triage/Cargo.lock --deny warnings
+  test:
+    name: Test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
     defaults:
       run:
         working-directory: rclone-triage
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067
         with:
-          workspaces: rclone-triage -> rclone-triage/target
-      - name: Download rclone.exe
-        run: ../scripts/download-rclone.sh
-      - name: Build (release)
-        run: cargo build --release
-      - name: Run tests
-        run: cargo test --release -- --test-threads=1
+          toolchain: 1.95.0
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: rclone-triage -> target
+      - name: Prepare verified embedded runtime
+        shell: bash
+        run: bash ../scripts/download-rclone.sh
+      - name: Formatting
+        run: cargo fmt --all -- --check
       - name: Clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
-
-  test-windows:
-    name: Test (Windows)
-    runs-on: windows-latest
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
+      - name: Offline tests and local transfer regressions
+        run: cargo test --locked --release -- --test-threads=1
+      - name: Build release
+        run: cargo build --locked --release
+      - name: Record dependency inventory
+        if: runner.os == 'Windows'
+        shell: bash
+        run: cargo metadata --locked --format-version 1 > target/release/dependencies.json
+      - name: Upload checked Windows build
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: rclone-triage-windows
+          path: |
+            rclone-triage/target/release/rclone-triage.exe
+            rclone-triage/target/release/dependencies.json
+            rclone-version.env
+          if-no-files-found: error
+          retention-days: 14
+  release:
+    name: Publish checked prerelease
+    needs: [test, audit]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
     permissions:
       contents: write
-    defaults:
-      run:
-        working-directory: rclone-triage
+      id-token: write
+      attestations: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          workspaces: rclone-triage -> rclone-triage/target
-      - name: Download rclone.exe
-        shell: bash
-        run: ../scripts/download-rclone.sh
-      - name: Build (release)
-        run: cargo build --release
-      - name: Upload Windows EXE
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: rclone-triage-windows-exe
-          path: rclone-triage/target/release/rclone-triage.exe
-          if-no-files-found: warn
-      - name: Run tests
-        run: cargo test --release -- --test-threads=1
-      - name: Clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
-      - name: Compute nightly tag
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        shell: pwsh
+          name: rclone-triage-windows
+          path: artifact
+      - name: Package checked outputs
         run: |
-          $timestamp = (Get-Date -AsUTC).ToString("yyyyMMdd-HHmm")
-          "NIGHTLY_TAG=nightly-$timestamp" | Out-File -FilePath $env:GITHUB_ENV -Append
-          "NIGHTLY_NAME=Nightly $((Get-Date -AsUTC).ToString("yyyy-MM-dd HH:mm 'UTC'"))" | Out-File -FilePath $env:GITHUB_ENV -Append
-      - name: Create nightly release
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: softprops/action-gh-release@v2
+          mkdir release
+          cp artifact/rclone-triage/target/release/rclone-triage.exe release/
+          cp artifact/rclone-triage/target/release/dependencies.json release/
+          cp artifact/rclone-version.env release/
+          cd release
+          sha256sum rclone-triage.exe dependencies.json rclone-version.env > SHA256SUMS
+      - name: Attest binary provenance
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
         with:
-          tag_name: ${{ env.NIGHTLY_TAG }}
-          name: ${{ env.NIGHTLY_NAME }}
-          target_commitish: ${{ github.sha }}
-          files: rclone-triage/target/release/rclone-triage.exe
+          subject-path: release/rclone-triage.exe
+      - name: Publish prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          COMMIT: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          gh release create "nightly-${RUN_ID}-${RUN_ATTEMPT}" release/* \
+            --target "$COMMIT" --title "Validated build ${COMMIT:0:12}" \
+            --prerelease --generate-notes

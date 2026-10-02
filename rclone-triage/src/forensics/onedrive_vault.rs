@@ -1,6 +1,6 @@
 //! OneDrive Personal Vault helpers (Windows only).
 
-#[cfg(windows)]
+#[cfg(any(test, windows))]
 use anyhow::Context;
 use anyhow::{bail, Result};
 use std::path::{Path, PathBuf};
@@ -40,37 +40,16 @@ pub fn open_onedrive_vault(
         );
     }
 
-    let bitlocker_disabled = match disable_bitlocker(&mount_point) {
-        Ok(()) => true,
-        Err(e) => {
-            warnings.push(format!(
-                "Failed to disable BitLocker: {} (admin rights may be required)",
-                e
-            ));
-            false
-        }
-    };
+    // Acquisition must never decrypt or remove protectors from a source volume.
+    // Windows Hello unlocks the vault; BitLocker policy remains untouched.
+    let bitlocker_disabled = false;
 
     let files = find_vhdx_files(&mount_point)?;
     if files.is_empty() {
         warnings.push(format!("No VHDX files found under {:?}", mount_point));
     }
 
-    if !destination.exists() {
-        std::fs::create_dir_all(&destination)
-            .with_context(|| format!("Failed to create {:?}", destination))?;
-    }
-
-    let mut copied = Vec::new();
-    for file in files {
-        let file_name = file
-            .file_name()
-            .ok_or_else(|| anyhow::anyhow!("Missing filename for {:?}", file))?;
-        let dest_file = destination.join(file_name);
-        std::fs::copy(&file, &dest_file)
-            .with_context(|| format!("Failed to copy {:?} to {:?}", file, dest_file))?;
-        copied.push(dest_file);
-    }
+    let copied = copy_vhdx_files(&mount_point, &destination, &files)?;
 
     Ok(OneDriveVaultResult {
         mount_point,
@@ -107,52 +86,109 @@ fn trigger_vault_unlock() -> Result<()> {
     Ok(())
 }
 
-#[cfg(windows)]
-fn disable_bitlocker(mount_point: &Path) -> Result<()> {
-    use std::process::Command;
-    let mount_str = mount_point.to_string_lossy().to_string();
-    let cmd = format!(
-        "Disable-BitLocker -MountPoint '{}'",
-        mount_str.replace('\'', "''")
-    );
-    let status = Command::new("powershell")
-        .args(["-NoProfile", "-NonInteractive", "-Command", &cmd])
-        .status()?;
-    if !status.success() {
-        bail!("Disable-BitLocker failed");
-    }
-    Ok(())
-}
-
 #[cfg(any(test, windows))]
 fn find_vhdx_files(root: &Path) -> Result<Vec<PathBuf>> {
     let mut results = Vec::new();
     let mut stack = vec![root.to_path_buf()];
 
     while let Some(path) = stack.pop() {
-        let entries = match std::fs::read_dir(&path) {
-            Ok(entries) => entries,
-            Err(_) => continue,
-        };
+        let entries = std::fs::read_dir(&path)
+            .with_context(|| format!("Cannot inventory vault directory {:?}", path))?;
         for entry in entries {
-            let entry = match entry {
-                Ok(entry) => entry,
-                Err(_) => continue,
-            };
+            let entry = entry?;
             let path = entry.path();
-            if path.is_dir() {
+            let metadata = std::fs::symlink_metadata(&path)?;
+            let is_link = metadata.file_type().is_symlink();
+            #[cfg(windows)]
+            let is_link = {
+                use std::os::windows::fs::MetadataExt;
+                is_link || metadata.file_attributes() & 0x400 != 0
+            };
+            if is_link {
+                bail!(
+                    "Vault inventory contains a link or reparse point: {:?}",
+                    path
+                );
+            }
+            if metadata.is_dir() {
                 stack.push(path);
                 continue;
             }
-            if let Some(ext) = path.extension() {
-                if ext.eq_ignore_ascii_case("vhdx") {
-                    results.push(path);
-                }
+            if metadata.is_file()
+                && path
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("vhdx"))
+            {
+                results.push(path);
             }
         }
     }
 
+    results.sort();
     Ok(results)
+}
+
+#[cfg(any(test, windows))]
+fn copy_vhdx_files(root: &Path, destination: &Path, files: &[PathBuf]) -> Result<Vec<PathBuf>> {
+    use crate::utils::path::ensure_no_link_components;
+    use std::fs::OpenOptions;
+    ensure_no_link_components(destination)?;
+    // Resolve the explicitly selected mount point, but do not follow links found
+    // inside it. Keep output outside the source to avoid collecting prior copies.
+    let source_root = std::fs::canonicalize(root)?;
+    let mut existing = std::path::absolute(destination)?;
+    let mut missing = Vec::new();
+    while !existing.exists() {
+        missing.push(
+            existing
+                .file_name()
+                .context("Invalid vault destination")?
+                .to_owned(),
+        );
+        existing = existing
+            .parent()
+            .context("Invalid vault destination root")?
+            .to_owned();
+    }
+    let mut output_root = std::fs::canonicalize(existing)?;
+    for part in missing.into_iter().rev() {
+        output_root.push(part);
+    }
+    if output_root.starts_with(&source_root) {
+        bail!("Vault destination must be outside the source mount point");
+    }
+    let mut copies = Vec::with_capacity(files.len());
+    for source in files {
+        let relative = source
+            .strip_prefix(root)
+            .context("Vault source escaped its root")?;
+        let target = output_root.join(relative);
+        ensure_no_link_components(&target)?;
+        if target.exists() {
+            bail!(
+                "Refusing to overwrite existing vault evidence: {:?}",
+                target
+            );
+        }
+        copies.push((source, target));
+    }
+    // Complete preflight before writing; exclusive creation also prevents a
+    // newly appearing file from being overwritten between planning and copying.
+    for (source, target) in &copies {
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        ensure_no_link_components(target)?;
+        let mut input = std::fs::File::open(source)?;
+        let mut output = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(target)?;
+        std::io::copy(&mut input, &mut output)
+            .with_context(|| format!("Failed to copy {:?} to {:?}", source, target))?;
+        output.sync_all()?;
+    }
+    Ok(copies.into_iter().map(|(_, target)| target).collect())
 }
 
 #[cfg(test)]
@@ -171,5 +207,38 @@ mod tests {
 
         let files = find_vhdx_files(root).unwrap();
         assert_eq!(files.len(), 2);
+    }
+
+    #[test]
+    fn vault_copy_preserves_nested_identity_and_never_overwrites() {
+        let root = tempdir().unwrap();
+        let output = tempdir().unwrap();
+        std::fs::create_dir(root.path().join("nested")).unwrap();
+        std::fs::write(root.path().join("image.vhdx"), b"first").unwrap();
+        std::fs::write(root.path().join("nested/image.vhdx"), b"second").unwrap();
+        let files = find_vhdx_files(root.path()).unwrap();
+        let copied = copy_vhdx_files(root.path(), output.path(), &files).unwrap();
+        assert_eq!(copied.len(), 2);
+        assert_eq!(
+            std::fs::read(output.path().join("image.vhdx")).unwrap(),
+            b"first"
+        );
+        assert_eq!(
+            std::fs::read(output.path().join("nested/image.vhdx")).unwrap(),
+            b"second"
+        );
+        std::fs::write(root.path().join("image.vhdx"), b"changed source").unwrap();
+        assert!(copy_vhdx_files(root.path(), output.path(), &files).is_err());
+        assert_eq!(
+            std::fs::read(output.path().join("image.vhdx")).unwrap(),
+            b"first"
+        );
+    }
+
+    #[test]
+    fn unreadable_or_missing_vault_inventory_is_not_silently_complete() {
+        let root = tempdir().unwrap();
+        assert!(find_vhdx_files(&root.path().join("missing")).is_err());
+        assert!(copy_vhdx_files(root.path(), &root.path().join("new/output"), &[]).is_err());
     }
 }

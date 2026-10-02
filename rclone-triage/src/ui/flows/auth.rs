@@ -18,7 +18,9 @@ use crate::ui::prompt::prompt_text_in_tui;
 use crate::ui::render::render_state;
 use crate::ui::{App, AuthBatchTask, MenuAction};
 
-fn update_auth_status<B: ratatui::backend::Backend>(
+fn update_auth_status<
+    B: ratatui::backend::Backend<Error: std::error::Error + Send + Sync + 'static>,
+>(
     app: &mut App,
     terminal: &mut Terminal<B>,
     lines: Vec<String>,
@@ -28,7 +30,9 @@ fn update_auth_status<B: ratatui::backend::Backend>(
     Ok(())
 }
 
-fn perform_mobile_auth_flow<B: ratatui::backend::Backend>(
+fn perform_mobile_auth_flow<
+    B: ratatui::backend::Backend<Error: std::error::Error + Send + Sync + 'static>,
+>(
     app: &mut App,
     terminal: &mut Terminal<B>,
     provider: CloudProvider,
@@ -350,7 +354,9 @@ fn build_onedrive_device_code_fallback_message(
     }
 }
 
-fn maybe_fallback_to_onedrive_device_code<B: ratatui::backend::Backend>(
+fn maybe_fallback_to_onedrive_device_code<
+    B: ratatui::backend::Backend<Error: std::error::Error + Send + Sync + 'static>,
+>(
     app: &mut App,
     terminal: &mut Terminal<B>,
     config: &crate::rclone::RcloneConfig,
@@ -784,7 +790,9 @@ fn record_authenticated_remote(
     app.remote.chosen = Some(result.remote_name.clone());
 }
 
-fn perform_single_auth_task<B: ratatui::backend::Backend>(
+fn perform_single_auth_task<
+    B: ratatui::backend::Backend<Error: std::error::Error + Send + Sync + 'static>,
+>(
     app: &mut App,
     terminal: &mut Terminal<B>,
     runner: &crate::rclone::RcloneRunner,
@@ -1092,7 +1100,9 @@ fn perform_single_auth_task<B: ratatui::backend::Backend>(
 }
 
 /// Perform the authentication flow (extract binary, create config, auth, list files)
-pub(crate) fn perform_auth_flow<B: ratatui::backend::Backend>(
+pub(crate) fn perform_auth_flow<
+    B: ratatui::backend::Backend<Error: std::error::Error + Send + Sync + 'static>,
+>(
     app: &mut App,
     terminal: &mut Terminal<B>,
 ) -> Result<()> {
