@@ -7,7 +7,11 @@ use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use std::time::{Duration as StdDuration, Instant};
 
-use super::{config::ProviderConfig, credentials::custom_oauth_credentials_for, CloudProvider};
+use super::{
+    config::ProviderConfig,
+    credentials::{custom_oauth_credentials_for, OAuthCredentials},
+    CloudProvider,
+};
 
 fn oauth_agent() -> ureq::Agent {
     ureq::AgentBuilder::new()
@@ -167,29 +171,20 @@ pub fn exchange_code_for_token_with_pkce(
 
 /// Return device code config for providers that support it.
 pub fn device_code_config(provider: CloudProvider) -> Result<Option<DeviceCodeConfig>> {
+    device_code_config_with_credentials(provider, custom_oauth_credentials_for(provider)?)
+}
+
+fn device_code_config_with_credentials(
+    provider: CloudProvider,
+    custom: Option<OAuthCredentials>,
+) -> Result<Option<DeviceCodeConfig>> {
+    super::auth::ensure_new_auth_credentials_with_custom(provider, custom.as_ref())?;
     let provider_config = ProviderConfig::for_provider(provider);
     if !provider_config.uses_oauth() {
         return Ok(None);
     }
 
-    let custom = custom_oauth_credentials_for(provider).ok().flatten();
-    let client_id = custom
-        .as_ref()
-        .map(|c| c.client_id.as_str())
-        .unwrap_or(provider_config.oauth.client_id)
-        .to_string();
-    let client_secret = custom
-        .as_ref()
-        .and_then(|c| c.client_secret.clone())
-        .filter(|s| !s.trim().is_empty())
-        .or_else(|| {
-            let secret = provider_config.oauth.client_secret;
-            if secret.trim().is_empty() {
-                None
-            } else {
-                Some(secret.to_string())
-            }
-        });
+    let (client_id, client_secret) = device_code_credentials(&provider_config, custom.as_ref());
 
     let scope = if !provider_config.oauth.scopes.is_empty() {
         provider_config.oauth.scopes.join(" ")
@@ -214,6 +209,28 @@ pub fn device_code_config(provider: CloudProvider) -> Result<Option<DeviceCodeCo
         client_id,
         client_secret,
     }))
+}
+
+fn device_code_credentials(
+    provider_config: &ProviderConfig,
+    custom: Option<&OAuthCredentials>,
+) -> (String, Option<String>) {
+    let client_id = custom
+        .map(|credentials| credentials.client_id.as_str())
+        .unwrap_or(provider_config.oauth.client_id)
+        .to_owned();
+    let client_secret = custom
+        .and_then(|credentials| credentials.client_secret.as_deref())
+        .filter(|secret| !secret.trim().is_empty())
+        .or_else(|| {
+            // A secret belongs to one client registration. Public custom
+            // clients must never borrow the unrelated bundled client's secret.
+            let uses_bundled_client = client_id.trim() == provider_config.oauth.client_id;
+            (uses_bundled_client && !provider_config.oauth.client_secret.trim().is_empty())
+                .then_some(provider_config.oauth.client_secret)
+        })
+        .map(str::to_owned);
+    (client_id, client_secret)
 }
 
 /// Request a device code from the OAuth device authorization endpoint.
@@ -416,11 +433,74 @@ mod tests {
 
     #[test]
     fn test_device_code_config_for_onedrive() {
-        let config = device_code_config(CloudProvider::OneDrive)
+        let config = device_code_config_with_credentials(CloudProvider::OneDrive, None)
             .unwrap()
             .unwrap();
         assert!(config.device_code_url.contains("devicecode"));
         assert!(config.token_url.contains("token"));
         assert!(config.scope.contains("Files"));
+    }
+
+    #[test]
+    fn custom_device_code_client_never_borrows_another_clients_secret() {
+        let mut defaults = ProviderConfig::for_provider(CloudProvider::OneDrive);
+        defaults.oauth.client_id = "bundled-client";
+        defaults.oauth.client_secret = "bundled-secret";
+        for secret in [None, Some(String::new()), Some("  ".to_string())] {
+            let custom = OAuthCredentials {
+                client_id: "custom-public-client".into(),
+                client_secret: secret,
+            };
+            let (client_id, secret) = device_code_credentials(&defaults, Some(&custom));
+            assert_eq!(client_id, "custom-public-client");
+            assert_eq!(secret, None);
+        }
+        let custom = OAuthCredentials {
+            client_id: "custom-confidential-client".into(),
+            client_secret: Some("custom-secret".into()),
+        };
+        assert_eq!(
+            device_code_credentials(&defaults, Some(&custom)),
+            (
+                "custom-confidential-client".into(),
+                Some("custom-secret".into())
+            )
+        );
+        assert_eq!(
+            device_code_credentials(&defaults, None),
+            ("bundled-client".into(), Some("bundled-secret".into()))
+        );
+    }
+
+    #[test]
+    fn google_device_code_requires_own_credentials_before_requesting_authorization() {
+        for provider in [CloudProvider::GoogleDrive, CloudProvider::GooglePhotos] {
+            assert!(device_code_config_with_credentials(provider, None).is_err());
+            let custom_public = OAuthCredentials {
+                client_id: "synthetic-public-google-client".into(),
+                client_secret: None,
+            };
+            assert!(device_code_config_with_credentials(provider, Some(custom_public)).is_err());
+            let shared = OAuthCredentials {
+                client_id: ProviderConfig::for_provider(provider)
+                    .oauth
+                    .client_id
+                    .into(),
+                client_secret: Some("synthetic-secret".into()),
+            };
+            assert!(device_code_config_with_credentials(provider, Some(shared)).is_err());
+            let custom = OAuthCredentials {
+                client_id: "synthetic-own-google-client".into(),
+                client_secret: Some("synthetic-own-secret".into()),
+            };
+            let config = device_code_config_with_credentials(provider, Some(custom))
+                .unwrap()
+                .unwrap();
+            assert_eq!(config.client_id, "synthetic-own-google-client");
+            assert_eq!(
+                config.client_secret.as_deref(),
+                Some("synthetic-own-secret")
+            );
+        }
     }
 }
