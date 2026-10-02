@@ -62,6 +62,8 @@ The Windows forensic access-point controller owns its WLAN session and temporary
 
 Equivalent crate commands are `cargo fmt --all -- --check`, `cargo clippy --locked --all-targets --all-features -- -D warnings`, and `cargo test --locked --release -- --test-threads=1`. Live cloud tests are ignored by default; see [provider testing](rclone-triage/tests/provider_testing.md) for explicit opt-in and acceptance limits.
 
+For acceptance of the downloaded Windows executable in a disposable, disconnected guest, use the [CLI and TUI acceptance harnesses](scripts/acceptance/windows/README.md). They exercise synthetic local sources and retain machine-readable results; they do not establish live-provider or physical-device compatibility.
+
 CI gates prereleases on both Windows and Linux checks. Release assets include executable SHA256 checksums, the runtime manifest, a Cargo dependency inventory, and GitHub build provenance. Verify downloaded binaries with `gh attestation verify rclone-triage.exe --repo Donovoi/triage-with-rclone` and compare `SHA256SUMS`. A dependency inventory is not a complete SBOM for the embedded Go runtime.
 
 See [the hardening record](HARDENING.md) for the reviewed failures, regression coverage, and remaining acceptance work. Inventory entries remain memory-resident; million-object cases require capacity measurements before use. The legacy PowerShell coverage document is historical, not a current parity guarantee.
