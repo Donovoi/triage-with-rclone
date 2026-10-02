@@ -5,6 +5,7 @@ use chrono::{Duration, Utc};
 use qrcode::QrCode;
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration as StdDuration, Instant};
 
 use super::{
@@ -174,7 +175,7 @@ pub fn device_code_config(provider: CloudProvider) -> Result<Option<DeviceCodeCo
     device_code_config_with_credentials(provider, custom_oauth_credentials_for(provider)?)
 }
 
-fn device_code_config_with_credentials(
+pub(super) fn device_code_config_with_credentials(
     provider: CloudProvider,
     custom: Option<OAuthCredentials>,
 ) -> Result<Option<DeviceCodeConfig>> {
@@ -281,10 +282,21 @@ pub fn poll_device_code_for_token(
     interval_secs: u64,
     expires_in: u64,
 ) -> Result<Value> {
+    poll_device_code_for_token_with_cancel(config, device_code, interval_secs, expires_in, None)
+}
+
+pub(super) fn poll_device_code_for_token_with_cancel(
+    config: &DeviceCodeConfig,
+    device_code: &str,
+    interval_secs: u64,
+    expires_in: u64,
+    cancel: Option<&AtomicBool>,
+) -> Result<Value> {
     let start = Instant::now();
     let mut interval = interval_secs.max(1);
 
     loop {
+        ensure_not_cancelled(cancel)?;
         if start.elapsed() >= StdDuration::from_secs(expires_in) {
             bail!("Device code expired before authorization completed");
         }
@@ -310,6 +322,8 @@ pub fn poll_device_code_for_token(
             .set("Content-Type", "application/x-www-form-urlencoded")
             .send_string(&body);
 
+        ensure_not_cancelled(cancel)?;
+
         match response {
             Ok(ok) => {
                 let token: TokenResponse = serde_json::from_reader(ok.into_reader())
@@ -322,22 +336,24 @@ pub fn poll_device_code_for_token(
                     if let Some(err) = error_json.get("error").and_then(|v| v.as_str()) {
                         match err {
                             "authorization_pending" => {
-                                std::thread::sleep(
+                                wait_for_next_poll(
                                     StdDuration::from_secs(interval).min(
                                         StdDuration::from_secs(expires_in)
                                             .saturating_sub(start.elapsed()),
                                     ),
-                                );
+                                    cancel,
+                                )?;
                                 continue;
                             }
                             "slow_down" => {
                                 interval = interval.saturating_add(5);
-                                std::thread::sleep(
+                                wait_for_next_poll(
                                     StdDuration::from_secs(interval).min(
                                         StdDuration::from_secs(expires_in)
                                             .saturating_sub(start.elapsed()),
                                     ),
-                                );
+                                    cancel,
+                                )?;
                                 continue;
                             }
                             "access_denied" => bail!("User denied access"),
@@ -352,6 +368,29 @@ pub fn poll_device_code_for_token(
             }
             Err(e) => return Err(e.into()),
         }
+    }
+}
+
+fn ensure_not_cancelled(cancel: Option<&AtomicBool>) -> Result<()> {
+    if cancel.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
+        bail!("Authorization cancelled");
+    }
+    Ok(())
+}
+
+fn wait_for_next_poll(duration: StdDuration, cancel: Option<&AtomicBool>) -> Result<()> {
+    if cancel.is_none() {
+        std::thread::sleep(duration);
+        return Ok(());
+    }
+    let start = Instant::now();
+    loop {
+        ensure_not_cancelled(cancel)?;
+        let remaining = duration.saturating_sub(start.elapsed());
+        if remaining.is_zero() {
+            return Ok(());
+        }
+        std::thread::sleep(remaining.min(StdDuration::from_millis(100)));
     }
 }
 
@@ -395,6 +434,21 @@ fn urlencoded(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn device_poll_interval_observes_cancellation() {
+        let cancel = std::sync::Arc::new(AtomicBool::new(false));
+        let cancel_worker = cancel.clone();
+        let worker = std::thread::spawn(move || {
+            std::thread::sleep(StdDuration::from_millis(50));
+            cancel_worker.store(true, Ordering::Relaxed);
+        });
+        let start = Instant::now();
+        let result = wait_for_next_poll(StdDuration::from_secs(30), Some(&cancel));
+        worker.join().unwrap();
+        assert!(result.unwrap_err().to_string().contains("cancelled"));
+        assert!(start.elapsed() < StdDuration::from_secs(2));
+    }
 
     #[test]
     fn token_request_binds_code_to_proof_key() {
