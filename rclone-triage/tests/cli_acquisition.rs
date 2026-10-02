@@ -140,7 +140,10 @@ fn cli_uses_snapshot_despite_inherited_remote_and_dry_run_overrides() {
         .arg(queue)
         .arg("--rclone-config-path")
         .arg(&fixture.config)
-        .env("RCLONE_CONFIG_REMOTEA_REMOTE", fixture.temp.path().join("b"))
+        .env(
+            "RCLONE_CONFIG_REMOTEA_REMOTE",
+            fixture.temp.path().join("b"),
+        )
         .env("RCLONE_DRY_RUN", "true")
         .output()
         .unwrap();
