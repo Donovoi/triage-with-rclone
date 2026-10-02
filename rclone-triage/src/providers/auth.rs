@@ -79,8 +79,23 @@ pub fn ensure_new_auth_credentials(provider: CloudProvider) -> Result<()> {
         CloudProvider::GoogleDrive | CloudProvider::GooglePhotos
     ) {
         let custom = custom_oauth_credentials_for(provider)?;
+        ensure_new_auth_credentials_with_custom(provider, custom.as_ref())?;
+    }
+    Ok(())
+}
+
+/// Apply the same migration policy to already-loaded credentials without reading
+/// the host's configuration again (also permits fully synthetic flow tests).
+pub(super) fn ensure_new_auth_credentials_with_custom(
+    provider: CloudProvider,
+    custom: Option<&OAuthCredentials>,
+) -> Result<()> {
+    if matches!(
+        provider,
+        CloudProvider::GoogleDrive | CloudProvider::GooglePhotos
+    ) {
         let defaults = ProviderConfig::for_provider(provider);
-        let valid = custom.as_ref().is_some_and(|creds| {
+        let valid = custom.is_some_and(|creds| {
             !creds.client_id.trim().is_empty()
                 && creds.client_id != defaults.oauth.client_id
                 && creds
