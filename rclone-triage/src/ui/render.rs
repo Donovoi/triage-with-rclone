@@ -3,7 +3,7 @@
 use ratatui::layout::{Alignment, Constraint, Direction, Layout};
 use ratatui::style::Color;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Paragraph, Wrap};
+use ratatui::widgets::{Clear, Paragraph, Wrap};
 use ratatui::Frame;
 
 use crate::ui::screens::{
@@ -380,6 +380,7 @@ pub fn render_state(frame: &mut Frame, app: &App) {
                 let help = Paragraph::new(help_lines)
                     .block(theme::panel_block("Provider Help"))
                     .wrap(Wrap { trim: true });
+                frame.render_widget(Clear, overlay);
                 frame.render_widget(help, overlay);
             }
         }

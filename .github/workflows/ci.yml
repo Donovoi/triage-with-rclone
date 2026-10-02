@@ -50,6 +50,17 @@ jobs:
         run: bash ../scripts/download-rclone.sh
       - name: Formatting
         run: cargo fmt --all -- --check
+      - name: Validate Windows acceptance harnesses
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Get-ChildItem ../scripts/acceptance/windows -Filter *.ps1 | ForEach-Object {
+            $parseErrors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$null, [ref]$parseErrors)
+            if ($parseErrors) { throw ($parseErrors | Out-String) }
+          }
+          Add-Type -Path ../scripts/acceptance/windows/ConPtyHarness.cs
       - name: Clippy
         run: cargo clippy --locked --all-targets --all-features -- -D warnings
       - name: Offline tests and local transfer regressions
