@@ -201,44 +201,31 @@ type = sftp
 }
 
 #[test]
+#[ignore = "requires explicit RCLONE_PROVIDER_SMOKE_CONFIG and read-only test credentials"]
 fn test_configured_provider_remotes_smoke() {
-    let Some(config_path) = resolve_smoke_config_path() else {
-        eprintln!(
-            "Skipping live provider smoke test: set RCLONE_PROVIDER_SMOKE_CONFIG or create Test* remotes in your rclone config."
-        );
-        return;
-    };
-
-    let config = match RcloneConfig::open_existing(&config_path) {
-        Ok(config) => config,
-        Err(error) => {
-            eprintln!(
-                "Skipping live provider smoke test: failed to open config {:?}: {}",
-                config_path, error
-            );
-            return;
-        }
-    };
+    let explicit = std::env::var("RCLONE_PROVIDER_SMOKE_CONFIG")
+        .expect("Set RCLONE_PROVIDER_SMOKE_CONFIG explicitly to run live tests");
+    assert!(!explicit.trim().is_empty(), "Smoke config path is empty");
+    let config_path = resolve_smoke_config_path().expect("Smoke config does not exist");
+    assert_eq!(
+        config_path,
+        PathBuf::from(explicit.trim()),
+        "Refusing a fallback credential store"
+    );
+    let config = RcloneConfig::open_existing(&config_path).expect("Cannot open smoke config");
 
     let runner = RcloneRunner::new(smoke_rclone_binary()).with_config(config.path());
-    if let Err(error) = runner.version() {
-        eprintln!(
-            "Skipping live provider smoke test: rclone is unavailable or failed to start: {}",
-            error
-        );
-        return;
-    }
+    runner
+        .version()
+        .expect("Smoke rclone is unavailable or failed to start");
 
     let parsed = config.parse().expect("provider smoke config should parse");
     let requested = requested_backends();
     let remotes = collect_smoke_remotes(&parsed, requested.as_ref());
-    if remotes.is_empty() {
-        eprintln!(
-            "Skipping live provider smoke test: no matching Test* remotes were found in {:?}.",
-            config.path()
-        );
-        return;
-    }
+    assert!(
+        !remotes.is_empty(),
+        "No matching Test* remotes: provider acceptance was not exercised"
+    );
 
     let available_remotes = runner
         .list_remotes()

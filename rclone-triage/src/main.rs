@@ -26,6 +26,7 @@ use rclone_triage::rclone::authorize::{
 };
 use rclone_triage::rclone::{start_web_gui, RcloneConfig, RcloneRunner};
 use rclone_triage::ui::App as TuiApp;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -49,15 +50,10 @@ fn main() -> Result<()> {
     // Capture initial system state before any operations
     let initial_state = SystemStateSnapshot::capture("Initial state before session").ok();
 
-    // Ctrl+C handler for graceful shutdown
+    // Signal cancellation; owners finalize evidence and reap children before exiting.
     {
-        let cleanup = app_guard.cleanup.clone();
-        let _ = ctrlc::set_handler(move || {
-            if let Ok(mut cleanup) = cleanup.lock() {
-                let _ = cleanup.execute();
-            }
-            std::process::exit(130);
-        });
+        let shutdown = app_guard.shutdown.clone();
+        ctrlc::set_handler(move || shutdown.store(true, Ordering::SeqCst))?;
     }
 
     // Verify embedded binary
@@ -65,8 +61,9 @@ fn main() -> Result<()> {
 
     // Optional TUI loop (default when no explicit CLI action is selected)
     if should_run_tui(&args) {
-        let mut app = TuiApp::new();
+        let mut app = TuiApp::with_case_settings(args.name.clone(), args.output_dir.clone());
         app.set_cleanup(app_guard.cleanup.clone());
+        app.set_shutdown_flag(app_guard.shutdown.clone());
         rclone_triage::ui::runner::run_loop(&mut app)?;
         return Ok(());
     }
@@ -103,7 +100,7 @@ fn main() -> Result<()> {
         )?;
         println!("Press Ctrl+C to stop.");
 
-        let status = web.wait()?;
+        let status = web.wait_cancellable(&app_guard.shutdown)?;
         println!("Web GUI exited with status: {}", status);
         return Ok(());
     }
@@ -118,6 +115,20 @@ fn main() -> Result<()> {
             .clone()
             .unwrap_or_else(generate_password);
 
+        let deadline = match args
+            .forensic_ap_timeout_minutes
+            .filter(|minutes| *minutes > 0)
+        {
+            Some(minutes) => Some(
+                minutes
+                    .checked_mul(60)
+                    .and_then(|seconds| {
+                        std::time::Instant::now().checked_add(Duration::from_secs(seconds))
+                    })
+                    .ok_or_else(|| anyhow::anyhow!("Access-point timeout is too large"))?,
+            ),
+            None => None,
+        };
         let info = start_forensic_access_point(&ssid, &password, args.forensic_ap_timeout_minutes)?;
 
         println!("Forensic Access Point started:");
@@ -136,13 +147,21 @@ fn main() -> Result<()> {
         if let Ok(qr) = render_wifi_qr(&ssid, &password) {
             println!("\nScan to connect:\n{}", qr);
         }
+        println!(
+            "Keeping this controller open; press Ctrl+C to stop and restore the access point."
+        );
+        while !app_guard.shutdown.load(Ordering::SeqCst) {
+            if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        stop_forensic_access_point(true)?;
         return Ok(());
     }
 
     if args.forensic_ap_stop {
-        stop_forensic_access_point(true)?;
-        println!("Forensic Access Point stopped.");
-        return Ok(());
+        bail!("Stop the owning --forensic-ap-start controller with Ctrl+C; this process cannot stop another controller");
     }
 
     if args.forensic_ap_status {
@@ -216,7 +235,11 @@ fn main() -> Result<()> {
         );
         println!(
             "Client Secret: {}",
-            creds.client_secret.as_deref().unwrap_or("<none>")
+            if creds.has_client_secret {
+                "[REDACTED]"
+            } else {
+                "<none>"
+            }
         );
         println!("Has Client ID: {}", creds.has_client_id);
         println!("Has Client Secret: {}", creds.has_client_secret);
@@ -239,6 +262,7 @@ fn main() -> Result<()> {
             &case,
             queue_path_str,
             args.remote.as_deref(),
+            args.rclone_config_path.as_deref(),
             &app_guard,
         );
     }
@@ -253,7 +277,9 @@ fn main() -> Result<()> {
         println!("Authenticating {}...", display_name);
         let config = RcloneConfig::for_case(&case.output_dir)?;
         app_guard.track_env_value("RCLONE_CONFIG", config.original_env());
-        let runner = RcloneRunner::new(binary.path()).with_config(config.path());
+        let runner = RcloneRunner::new(binary.path())
+            .with_config(config.path())
+            .with_cancel_flag(app_guard.shutdown.clone());
 
         let base_remote = known
             .map(|p| p.short_name().to_string())
@@ -500,137 +526,128 @@ fn cli_download_from_queue(
     case: &Case,
     queue_path_str: &str,
     remote_override: Option<&str>,
+    config_override: Option<&str>,
     app_guard: &AppGuard,
 ) -> Result<()> {
-    use rclone_triage::files::{read_download_queue, DownloadMode, DownloadQueue, DownloadRequest};
-
-    let queue_path = std::path::PathBuf::from(queue_path_str);
-    if !queue_path.exists() {
-        bail!("Queue file not found: {:?}", queue_path);
-    }
-
-    println!("Loading download queue from {:?}...", queue_path);
-    let entries = read_download_queue(&queue_path)?;
-    if entries.is_empty() {
-        bail!("Queue file is empty or has no usable entries");
-    }
-    println!("Found {} files in queue", entries.len());
-
-    // Set up config
-    let config = RcloneConfig::for_case(&case.output_dir)?;
-    app_guard.track_env_value("RCLONE_CONFIG", config.original_env());
-    let runner = RcloneRunner::new(binary.path()).with_config(config.path());
-
-    // Determine remote name
-    let remote_name = if let Some(name) = remote_override {
-        // Validate that the specified remote exists in the config
-        let parsed = config.parse()?;
-        let exists = parsed.remotes.iter().any(|r| r.name == name);
-        if !exists {
-            let available: Vec<&str> = parsed.remotes.iter().map(|r| r.name.as_str()).collect();
-            bail!(
-                "Remote '{}' not found in config {:?}. Available remotes: {}",
-                name,
-                config.path(),
-                if available.is_empty() {
-                    "(none)".to_string()
-                } else {
-                    available.join(", ")
-                }
-            );
-        }
-        name.to_string()
-    } else {
-        // Try to find a remote in the config
-        let parsed = config.parse()?;
-        let remotes: Vec<String> = parsed.remotes.iter().map(|s| s.name.clone()).collect();
-        if remotes.is_empty() {
-            bail!(
-                "No remotes found in config {:?}. Authenticate first with --provider, or specify --remote.",
-                config.path()
-            );
-        }
-        if remotes.len() == 1 {
-            println!("Using remote: {}", remotes[0]);
-            remotes[0].clone()
-        } else {
-            println!("Available remotes:");
-            for (i, r) in remotes.iter().enumerate() {
-                println!("  {}. {}", i + 1, r);
-            }
-            let choice = prompt_line("Select remote number: ")?;
-            let idx: usize = choice
-                .trim()
-                .parse::<usize>()
-                .map_err(|_| anyhow::anyhow!("Invalid number"))?;
-            if idx == 0 || idx > remotes.len() {
-                bail!("Invalid remote number");
-            }
-            remotes[idx - 1].clone()
-        }
+    use rclone_triage::case::directory::{create_case_directories, snapshot_config};
+    use rclone_triage::case::report::{
+        generate_report_with_metadata, write_report, ReportMetadata,
     };
+    use rclone_triage::case::DownloadedFile;
+    use rclone_triage::files::planner::{plan_downloads, write_acquisition_manifest};
+    use rclone_triage::files::{read_download_queue, DownloadQueue};
+    use rclone_triage::forensics::ForensicLogger;
 
-    // Build downloads directory
-    let downloads_dir = case.output_dir.join(&case.name).join("downloads");
-    std::fs::create_dir_all(&downloads_dir)?;
-
-    // Build download queue
+    let entries = read_download_queue(queue_path_str)?;
+    let dirs = create_case_directories(case)?;
+    let source_config = config_override
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| case.output_dir.join("config/rclone.conf"));
+    let working_config = snapshot_config(&source_config, &dirs.config)?;
+    let config = RcloneConfig::open_existing(&working_config)?;
+    app_guard.track_env_value("RCLONE_CONFIG", config.original_env());
+    let runner = RcloneRunner::new(binary.path())
+        .with_config(config.path())
+        .with_cancel_flag(app_guard.shutdown.clone());
+    let known_remotes: Vec<String> = config
+        .parse()?
+        .remotes
+        .into_iter()
+        .map(|r| r.name)
+        .collect();
+    let default_remote = if let Some(remote) = remote_override {
+        remote.trim_end_matches(':').to_string()
+    } else if entries.iter().all(|entry| entry.remote_name.is_some()) {
+        String::new()
+    } else if known_remotes.len() == 1 {
+        known_remotes[0].clone()
+    } else {
+        bail!("Queue rows without Remote require --remote when the config has multiple remotes");
+    };
+    let plan = plan_downloads(&entries, &default_remote, &known_remotes, &dirs.downloads)?;
+    if plan.files.is_empty() {
+        bail!("The queue contains no files to acquire");
+    }
+    let run_id = chrono::Utc::now().format("%Y%m%dT%H%M%S%.f").to_string();
+    let manifest_path = dirs.base.join(format!("acquisition-{}.json", run_id));
+    write_acquisition_manifest(&plan, config.path(), &[], &manifest_path)?;
+    let log = ForensicLogger::new(dirs.logs.join(format!("acquisition-{}.log", run_id)))?;
+    log.info(format!(
+        "Planned {} file acquisitions from {}",
+        plan.files.len(),
+        source_config.display()
+    ))?;
     let mut queue = DownloadQueue::new();
-    queue.set_verify_hashes(true);
-    for entry in &entries {
-        let normalized = entry
-            .path
-            .trim()
-            .trim_start_matches(&format!("{}:", remote_name.trim_end_matches(':')))
-            .trim_start_matches(['/', '\\'])
-            .to_string();
-        if normalized.is_empty() {
-            continue;
+    queue.requests = plan.files.iter().map(|file| file.request.clone()).collect();
+    println!(
+        "Downloading {} files to {:?}...",
+        plan.files.len(),
+        dirs.downloads
+    );
+    let results =
+        queue.download_all_with_progress(&runner, |progress| println!("{}", progress.status));
+    write_acquisition_manifest(&plan, config.path(), &results, &manifest_path)?;
+    let successes = results.iter().filter(|result| result.success).count();
+    let mut completed_case = case.clone();
+    for (file, result) in plan.files.iter().zip(&results) {
+        log.info(format!(
+            "{} -> {}: success={}, verification={:?}, error={:?}",
+            result.source, result.destination, result.success, result.hash_verified, result.error
+        ))?;
+        if result.size.is_some() {
+            completed_case.add_download(DownloadedFile {
+                path: result.destination.clone(),
+                size: result.size.unwrap_or_default(),
+                hash: result.hash.clone(),
+                hash_type: result.hash_type.clone(),
+                hash_verified: result.hash_verified,
+                hash_error: result.hash_error.clone(),
+                remote_name: Some(file.remote_name.clone()),
+            });
         }
-        let source = format!("{}:{}", remote_name.trim_end_matches(':'), normalized);
-        let dest_path = downloads_dir.join(&normalized);
-        if let Some(parent) = dest_path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        queue.add(DownloadRequest {
-            source,
-            destination: dest_path.to_string_lossy().to_string(),
-            mode: DownloadMode::CopyTo,
-            expected_hash: entry.hash.clone(),
-            expected_hash_type: entry.hash_type.clone(),
-            expected_size: entry.size,
-        });
-    }
-
-    let total = queue.requests.len();
-    println!("Downloading {} files to {:?}...", total, downloads_dir);
-
-    let results = queue.download_all_with_progress(&runner, |progress| {
-        println!("{}", progress.status);
-    });
-
-    let mut successes = 0;
-    let mut failures = Vec::new();
-    for result in &results {
-        if result.success {
-            successes += 1;
-        } else {
-            failures.push(format!(
-                "  {} - {}",
+        if !result.success {
+            eprintln!(
+                "Failed: {}: {}",
                 result.source,
-                result.error.as_deref().unwrap_or("unknown error")
-            ));
+                result.error.as_deref().unwrap_or("acquisition incomplete")
+            );
         }
     }
-
-    println!("\nDownload complete: {}/{} succeeded", successes, total);
-    if !failures.is_empty() {
-        println!("Failed downloads:");
-        for f in &failures {
-            println!("{}", f);
-        }
+    completed_case.finalize();
+    log.info(format!(
+        "Acquisition finalized: {}/{} succeeded; manifest {}",
+        successes,
+        plan.files.len(),
+        manifest_path.display()
+    ))?;
+    let checkpoint = log.checkpoint()?;
+    let checkpoint_path = dirs
+        .logs
+        .join(format!("acquisition-{}.checkpoint.json", run_id));
+    std::fs::write(&checkpoint_path, serde_json::to_vec_pretty(&checkpoint)?)?;
+    let mut metadata = ReportMetadata::from_environment();
+    metadata.rclone_version = Some(embedded::RCLONE_VERSION.to_string());
+    let report = generate_report_with_metadata(
+        &completed_case,
+        None,
+        None,
+        None,
+        Some(&checkpoint.hash),
+        Some(&metadata),
+    );
+    write_report(
+        dirs.base.join(format!("acquisition-{}.txt", run_id)),
+        &report,
+    )?;
+    println!(
+        "Download complete: {}/{} succeeded",
+        successes,
+        plan.files.len()
+    );
+    println!("Acquisition manifest: {}", manifest_path.display());
+    if successes != plan.files.len() || app_guard.shutdown.load(Ordering::SeqCst) {
+        bail!("Acquisition incomplete: inspect the manifest for failed, cancelled or mismatched files");
     }
-
     Ok(())
 }
 
@@ -749,12 +766,14 @@ fn obscure_value_with_rclone(runner: &RcloneRunner, value: &str) -> Result<Strin
 /// Ensures cleanup is run on drop
 struct AppGuard {
     cleanup: Arc<Mutex<Cleanup>>,
+    shutdown: Arc<AtomicBool>,
 }
 
 impl AppGuard {
     fn new() -> Self {
         Self {
             cleanup: Arc::new(Mutex::new(Cleanup::new())),
+            shutdown: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -785,205 +804,128 @@ impl Drop for AppGuard {
     }
 }
 
-/// Collect debug logs, compress into a tarball, and optionally share via Tailscale.
+/// Collect redacted diagnostics locally; sharing is an explicit separate operation.
 fn collect_debug_logs(args: &Cli) -> Result<()> {
+    use rclone_triage::diagnostics::{redact_environment_value, redact_text};
     use std::io::Write;
-
-    let timestamp = chrono::Utc::now().format("%Y%m%d-%H%M%S").to_string();
-    let staging = std::path::PathBuf::from(format!("/tmp/rclone-triage-logs-{}", timestamp));
-    std::fs::create_dir_all(&staging)?;
-
-    println!("Collecting debug logs...");
-
-    // 1. System info
-    let mut sys_info = String::new();
-    sys_info.push_str(&format!("Date: {}\n", chrono::Utc::now()));
-    sys_info.push_str(&format!(
-        "OS: {} {}\n",
+    rclone_triage::utils::path::ensure_no_link_components(&args.output_dir)?;
+    std::fs::create_dir_all(&args.output_dir)?;
+    let staging = tempfile::Builder::new()
+        .prefix("diagnostics-")
+        .tempdir_in(&args.output_dir)?;
+    let mut sys_info = format!(
+        "Date: {}\nOS: {} {}\nRelevant environment:\n",
+        chrono::Utc::now(),
         std::env::consts::OS,
         std::env::consts::ARCH
-    ));
-    if let Ok(hostname) = std::fs::read_to_string("/etc/hostname") {
-        sys_info.push_str(&format!("Hostname: {}\n", hostname.trim()));
-    }
-    if let Ok(user) = std::env::var("USER") {
-        sys_info.push_str(&format!("User: {}\n", user));
-    }
-    // Filtered env vars
-    sys_info.push_str("\nRelevant environment:\n");
-    for (key, val) in std::env::vars() {
-        if key.starts_with("RCLONE_") || key == "PATH" || key == "HOME" || key == "SHELL" {
-            sys_info.push_str(&format!("  {}={}\n", key, val));
-        }
-    }
-    std::fs::write(staging.join("system-info.txt"), &sys_info)?;
-    println!("  [+] System info");
-
-    // 2. rclone-triage version
-    let triage_info = format!(
-        "rclone-triage v{}\nOS: {} {}\n",
-        env!("CARGO_PKG_VERSION"),
-        std::env::consts::OS,
-        std::env::consts::ARCH,
     );
-    std::fs::write(staging.join("triage-info.txt"), &triage_info)?;
-    println!("  [+] Tool version");
-
-    // 3. Find and collect case directory
-    let case_dir = find_latest_case_dir(&args.output_dir);
-    if let Some(ref case) = case_dir {
-        println!("  [+] Found case: {}", case.display());
-
-        // Copy logs
-        let logs_src = case.join("logs");
-        if logs_src.is_dir() {
-            let logs_dst = staging.join("logs");
-            std::fs::create_dir_all(&logs_dst)?;
-            copy_dir_contents(&logs_src, &logs_dst)?;
-            println!("  [+] Forensic logs");
+    for (key, value) in std::env::vars() {
+        if key.starts_with("RCLONE_") || matches!(key.as_str(), "PATH" | "HOME" | "SHELL") {
+            sys_info.push_str(&format!(
+                "  {}={}\n",
+                key,
+                redact_environment_value(&key, &value)
+            ));
         }
-
-        // Copy config (redacted)
-        let config_src = case.join("config");
-        if config_src.is_dir() {
-            let config_dst = staging.join("config");
-            std::fs::create_dir_all(&config_dst)?;
-            for entry in std::fs::read_dir(&config_src)? {
-                let entry = entry?;
-                if entry.file_type()?.is_file() {
-                    let content = std::fs::read_to_string(entry.path()).unwrap_or_default();
-                    let redacted = redact_secrets(&content);
-                    std::fs::write(config_dst.join(entry.file_name()), redacted)?;
-                }
-            }
-            println!("  [+] Config (secrets redacted)");
-        }
-
-        // Copy forensic report
-        let report = case.join("forensic_report.txt");
-        if report.is_file() {
-            std::fs::copy(&report, staging.join("forensic_report.txt"))?;
-            println!("  [+] Forensic report");
-        }
-
-        // Listing samples (first 50 lines)
-        let listings_src = case.join("listings");
-        if listings_src.is_dir() {
-            let listings_dst = staging.join("listings");
-            std::fs::create_dir_all(&listings_dst)?;
-            for entry in std::fs::read_dir(&listings_src)? {
-                let entry = entry?;
-                let name = entry.file_name();
-                if entry.file_type()?.is_file() {
-                    let content = std::fs::read_to_string(entry.path()).unwrap_or_default();
-                    let sample: String = content.lines().take(51).collect::<Vec<_>>().join("\n");
-                    std::fs::write(listings_dst.join(name), sample)?;
-                }
-            }
-            println!("  [+] Listing samples");
-        }
+    }
+    std::fs::write(staging.path().join("system-info.txt"), sys_info)?;
+    std::fs::write(
+        staging.path().join("triage-info.txt"),
+        format!(
+            "rclone-triage {}\nrclone {}\n",
+            env!("CARGO_PKG_VERSION"),
+            embedded::RCLONE_VERSION
+        ),
+    )?;
+    let named_case = args
+        .output_dir
+        .join(Case::new(&args.name, args.output_dir.clone())?.session_id());
+    let case_dir = if !args.name.is_empty() && named_case.is_dir() {
+        Some(named_case)
     } else {
-        println!(
-            "  [!] No case directory found (searched {})",
-            args.output_dir.display()
-        );
+        find_latest_case_dir(&args.output_dir)
+    };
+    if let Some(case_dir) = case_dir {
+        for name in ["logs", "config"] {
+            let source = case_dir.join(name);
+            if source.is_dir() {
+                let destination = staging.path().join(name);
+                std::fs::create_dir_all(&destination)?;
+                copy_redacted_diagnostics(&source, &destination)?;
+            }
+        }
+        let report = case_dir.join("forensic_report.txt");
+        if report.is_file()
+            && rclone_triage::utils::path::ensure_no_link_components(&report).is_ok()
+            && std::fs::metadata(&report)?.len() <= 2 * 1024 * 1024
+        {
+            let content = std::fs::read_to_string(report)?;
+            std::fs::write(
+                staging.path().join("forensic_report.txt"),
+                redact_text(&content),
+            )?;
+        }
     }
+    std::fs::write(staging.path().join("README.txt"),
+        "Local diagnostic bundle. Sensitive environment values and recognized secret fields are redacted. Listing contents are excluded. Logs and paths can still contain private case information: review before sharing. No network transmission was performed. Redacted logs are diagnostic copies, not original integrity-verifiable evidence.\n")?;
+    let archive_path = args.output_dir.join(format!(
+        "rclone-triage-logs-{}.tar.gz",
+        chrono::Utc::now().format("%Y%m%dT%H%M%S%.f")
+    ));
+    let mut archive_options = std::fs::OpenOptions::new();
+    archive_options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        archive_options.mode(0o600);
+    }
+    let file = archive_options.open(&archive_path)?;
+    let mut tar = tar::Builder::new(flate2::write::GzEncoder::new(
+        file,
+        flate2::Compression::default(),
+    ));
+    tar.append_dir_all("diagnostics", staging.path())?;
+    let mut file = tar.into_inner()?.finish()?;
+    file.flush()?;
+    file.sync_all()?;
+    staging.close()?;
+    println!(
+        "Log bundle: {} ({} bytes)",
+        archive_path.display(),
+        std::fs::metadata(&archive_path)?.len()
+    );
+    println!("Review the diagnostic copies for private case information before sharing.");
+    Ok(())
+}
 
-    // 4. README for LLM context
-    let mut readme = String::new();
-    readme.push_str("# rclone-triage Debug Log Bundle\n\n");
-    readme.push_str(&format!("Generated: {}\n\n", chrono::Utc::now()));
-    readme.push_str("## Files\n\n");
-    readme.push_str("- system-info.txt   — OS, env vars\n");
-    readme.push_str("- triage-info.txt   — Tool version\n");
-    readme.push_str("- logs/             — Hash-chained forensic logs\n");
-    readme.push_str("- config/           — rclone config (secrets redacted)\n");
-    readme.push_str("- listings/         — First 50 lines of listing CSVs\n");
-    readme.push_str("- forensic_report.txt — Session report\n\n");
-    readme.push_str("## Instructions\n\n");
-    readme.push_str("Share the .tar.gz with an LLM for debugging.\n");
-    readme.push_str("All secrets/tokens have been redacted.\n");
-    std::fs::write(staging.join("README.md"), &readme)?;
-
-    // 5. Create .tar.gz
-    let archive_path = format!("/tmp/rclone-triage-logs-{}.tar.gz", timestamp);
-    let tar_gz = std::fs::File::create(&archive_path)?;
-    let enc = flate2::write::GzEncoder::new(tar_gz, flate2::Compression::default());
-    let mut tar = tar::Builder::new(enc);
-    tar.append_dir_all(format!("rclone-triage-logs-{}", timestamp), &staging)?;
-    tar.finish()?;
-
-    let size = std::fs::metadata(&archive_path)?.len();
-    println!("\nLog bundle: {} ({} bytes)", archive_path, size);
-
-    // 6. Tailscale sharing
-    if which_exists("tailscale") {
-        println!("\nTailscale detected. Checking peers...");
-        let output = std::process::Command::new("tailscale")
-            .args(["status", "--json"])
-            .output();
-        if let Ok(output) = output {
-            if output.status.success() {
-                if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&output.stdout) {
-                    let mut peers = Vec::new();
-                    if let Some(peer_map) = json.get("Peer").and_then(|p| p.as_object()) {
-                        for (_key, peer) in peer_map {
-                            let online = peer
-                                .get("Online")
-                                .and_then(|v| v.as_bool())
-                                .unwrap_or(false);
-                            if online {
-                                let name = peer
-                                    .get("HostName")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("unknown");
-                                let ip = peer
-                                    .get("TailscaleIPs")
-                                    .and_then(|v| v.as_array())
-                                    .and_then(|a| a.first())
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("");
-                                peers.push((name.to_string(), ip.to_string()));
-                            }
-                        }
-                    }
-                    if !peers.is_empty() {
-                        println!("Online peers:");
-                        for (name, ip) in &peers {
-                            println!("  {} ({})", name, ip);
-                        }
-                        print!("\nSend to peer (hostname, or Enter to skip): ");
-                        std::io::stdout().flush()?;
-                        let target = prompt_line("")?;
-                        if !target.is_empty() {
-                            println!("Sending to {}...", target);
-                            let send = std::process::Command::new("tailscale")
-                                .args(["file", "cp", &archive_path, &format!("{}:", target)])
-                                .status();
-                            match send {
-                                Ok(s) if s.success() => {
-                                    println!("Sent! Peer can accept with: tailscale file get .");
-                                }
-                                _ => {
-                                    println!(
-                                        "Send failed. Manual: tailscale file cp {} {}:",
-                                        archive_path, target
-                                    );
-                                }
-                            }
-                        }
-                    } else {
-                        println!("No online peers found.");
-                    }
-                }
+fn copy_redacted_diagnostics(
+    source: &std::path::Path,
+    destination: &std::path::Path,
+) -> Result<()> {
+    // Reject symlinks and Windows reparse points, including the top-level path.
+    if rclone_triage::utils::path::ensure_no_link_components(source).is_err() {
+        return Ok(());
+    }
+    for entry in std::fs::read_dir(source)? {
+        let entry = entry?;
+        if rclone_triage::utils::path::ensure_no_link_components(&entry.path()).is_err() {
+            continue;
+        }
+        let kind = entry.file_type()?;
+        let target = destination.join(entry.file_name());
+        if kind.is_dir() {
+            std::fs::create_dir_all(&target)?;
+            copy_redacted_diagnostics(&entry.path(), &target)?;
+        } else if kind.is_file() {
+            // Bound diagnostics and never copy binary files, symlinks or credential stores verbatim.
+            if entry.metadata()?.len() > 2 * 1024 * 1024 {
+                continue;
+            }
+            if let Ok(content) = std::fs::read_to_string(entry.path()) {
+                std::fs::write(target, rclone_triage::diagnostics::redact_text(&content))?;
             }
         }
     }
-
-    println!("\nManual share options:");
-    println!("  tailscale file cp {} <peer>:", archive_path);
-    println!("  scp {} user@host:/path/", archive_path);
-
     Ok(())
 }
 
@@ -1007,55 +949,6 @@ fn find_latest_case_dir(base: &std::path::Path) -> Option<std::path::PathBuf> {
             )
     });
     candidates.first().map(|e| e.path())
-}
-
-fn copy_dir_contents(src: &std::path::Path, dst: &std::path::Path) -> Result<()> {
-    for entry in std::fs::read_dir(src)? {
-        let entry = entry?;
-        let dest_path = dst.join(entry.file_name());
-        if entry.file_type()?.is_dir() {
-            std::fs::create_dir_all(&dest_path)?;
-            copy_dir_contents(&entry.path(), &dest_path)?;
-        } else {
-            std::fs::copy(entry.path(), &dest_path)?;
-        }
-    }
-    Ok(())
-}
-
-fn redact_secrets(content: &str) -> String {
-    let mut output = String::with_capacity(content.len());
-    for line in content.lines() {
-        let lower = line.to_lowercase();
-        if lower.contains("token")
-            || lower.contains("secret")
-            || lower.contains("password")
-            || lower.contains("pass =")
-            || lower.contains("access_token")
-            || lower.contains("refresh_token")
-        {
-            if let Some(eq_pos) = line.find('=') {
-                output.push_str(&line[..=eq_pos]);
-                output.push_str(" <REDACTED>");
-            } else {
-                output.push_str(line);
-            }
-        } else {
-            output.push_str(line);
-        }
-        output.push('\n');
-    }
-    output
-}
-
-fn which_exists(cmd: &str) -> bool {
-    std::process::Command::new("which")
-        .arg(cmd)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
 }
 
 /// CLI arguments
@@ -1117,7 +1010,7 @@ struct Cli {
     #[arg(long)]
     show_oauth_creds: Option<String>,
 
-    /// Override rclone config path for credential inspection
+    /// Config input for queue downloads or credential inspection (source is preserved)
     #[arg(long)]
     rclone_config_path: Option<String>,
 
@@ -1177,7 +1070,7 @@ struct Cli {
     #[arg(long, default_value_t = false)]
     onedrive_vault_no_wait: bool,
 
-    /// Collect debug logs, compress, and optionally share via Tailscale
+    /// Write a redacted local diagnostic archive; review before sharing
     #[arg(long, default_value_t = false)]
     collect_logs: bool,
 }

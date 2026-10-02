@@ -8,6 +8,7 @@
 //! This module provides a best-effort mapping that keeps directory structure where possible
 //! while guaranteeing the resulting path stays under a caller-provided base directory.
 
+use anyhow::{bail, Context, Result};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
@@ -114,7 +115,7 @@ fn append_suffix(filename: &str, suffix: &str) -> String {
 /// - sanitize illegal filesystem characters (especially for Windows)
 /// - if any change occurred, append a stable suffix to the final component based on the original path
 pub fn safe_join_under(base: &Path, remote_path: &str) -> SafeMappedPath {
-    let original = remote_path.trim();
+    let original = remote_path;
     let normalized = original.replace('\\', "/");
 
     let mut changed = normalized != original;
@@ -173,6 +174,57 @@ pub fn safe_join_under(base: &Path, remote_path: &str) -> SafeMappedPath {
     SafeMappedPath { path: out, changed }
 }
 
+/// Reject path syntax that can change the destination root. Source keys are never trimmed.
+pub fn validate_remote_path(remote_path: &str) -> Result<()> {
+    if remote_path.is_empty()
+        || remote_path.starts_with(['/', '\\'])
+        || remote_path.contains('\\')
+        || remote_path.as_bytes().get(1) == Some(&b':')
+        || remote_path
+            .split('/')
+            .any(|p| p.is_empty() || p == "." || p == "..")
+    {
+        bail!("Unsafe or ambiguous remote path: {:?}", remote_path);
+    }
+    Ok(())
+}
+
+/// Check each existing component, including ancestors of the output root. Reject
+/// symlinks and Windows junctions/reparse points instead of following them.
+pub fn ensure_no_link_components(path: &Path) -> Result<()> {
+    for component in path.ancestors() {
+        match std::fs::symlink_metadata(component) {
+            Ok(metadata) => {
+                let is_link = metadata.file_type().is_symlink();
+                #[cfg(windows)]
+                let is_link = {
+                    use std::os::windows::fs::MetadataExt;
+                    is_link || metadata.file_attributes() & 0x400 != 0
+                };
+                if is_link {
+                    bail!(
+                        "Destination contains a symlink or reparse point: {:?}",
+                        component
+                    );
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("Cannot inspect destination {:?}", component))
+            }
+        }
+    }
+    Ok(())
+}
+
+pub fn checked_join_under(base: &Path, remote_path: &str) -> Result<SafeMappedPath> {
+    validate_remote_path(remote_path)?;
+    let mapped = safe_join_under(base, remote_path);
+    ensure_no_link_components(&mapped.path)?;
+    Ok(mapped)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -222,5 +274,32 @@ mod tests {
         assert!(mapped.path.starts_with(base));
         // Must not end with "CON.txt" exactly.
         assert!(!mapped.path.to_string_lossy().ends_with("/CON.txt"));
+    }
+
+    #[test]
+    fn preserves_leading_space_and_distinguishes_trailing_space() {
+        let base = Path::new("base");
+        let plain = safe_join_under(base, "report.txt");
+        let leading = safe_join_under(base, " report.txt");
+        let trailing = safe_join_under(base, "report.txt ");
+        assert_ne!(plain.path, leading.path);
+        assert_ne!(plain.path, trailing.path);
+        assert!(trailing.changed);
+    }
+
+    #[test]
+    fn rejects_root_and_parent_paths() {
+        for input in ["../a", "x/../a", "/a", "C:/a", "C:\\a", "x\\a", "./a"] {
+            assert!(validate_remote_path(input).is_err(), "{input}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_symlink_ancestor() {
+        let tmp = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(outside.path(), tmp.path().join("link")).unwrap();
+        assert!(checked_join_under(tmp.path(), "link/file.txt").is_err());
     }
 }

@@ -16,12 +16,11 @@ use tempfile::TempDir;
 #[folder = "assets/"]
 pub struct Assets;
 
-/// Expected SHA256 hash of embedded rclone.exe (v1.68.2 windows-amd64)
-pub const RCLONE_EXE_SHA256: &str =
-    "dcbb5d188358df520b08a584df42a8e76161b30a90a62fefdd0001174d002122";
+/// Expected SHA256 hash from the repository runtime manifest.
+pub const RCLONE_EXE_SHA256: &str = env!("TRIAGE_RCLONE_EXE_SHA256");
 
 /// Rclone version embedded
-pub const RCLONE_VERSION: &str = "1.68.2";
+pub const RCLONE_VERSION: &str = env!("TRIAGE_RCLONE_VERSION");
 
 /// Manages the extracted rclone binary
 pub struct ExtractedBinary {

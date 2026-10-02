@@ -322,6 +322,25 @@ pub struct FileSelection {
     pub selected: usize,
     /// Paths marked for download
     pub to_download: Vec<String>,
+    /// Display identity to source entry. Rebuilt when an inventory changes.
+    pub index: HashMap<String, usize>,
+    pub search: String,
+    /// Full inventory count when only the first entries are retained in memory.
+    pub total_entries: Option<usize>,
+}
+
+/// Acquisition identity survives transitions between listing, selection and download.
+#[derive(Debug, Clone)]
+pub struct AcquisitionSource {
+    pub config_path: PathBuf,
+    pub default_remote: String,
+    pub label: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ConfigSnapshot {
+    pub original_path: PathBuf,
+    pub working_path: PathBuf,
 }
 
 /// Download progress state
@@ -348,6 +367,8 @@ pub enum ListingProgress {
     Count(usize),
     /// Listing finished successfully with entries.
     Done(Vec<crate::files::FileEntry>),
+    /// Bounded listing finished with a complete CSV and a partial in-memory view.
+    LargeDone(crate::files::listing::LargeListingResult),
     /// Listing failed.
     Error(String),
 }
@@ -364,6 +385,8 @@ pub struct ListingContext {
     pub include_hashes: bool,
     /// Path to the config file used.
     pub config_path: PathBuf,
+    /// Complete on-disk CSV when the in-memory view is bounded.
+    pub listing_csv: Option<PathBuf>,
 }
 
 /// A background listing task with cancellation support.
@@ -487,8 +510,8 @@ impl ConfigBrowserState {
             }
         }
 
-        dirs.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
-        files.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        dirs.sort_by_key(|a| a.name.to_lowercase());
+        files.sort_by_key(|a| a.name.to_lowercase());
 
         // Always prepend . and .. navigation entries so the user sees
         // where they are—even in empty directories.
@@ -604,6 +627,11 @@ pub struct ForensicsContext {
 
 /// Core application state container
 pub struct App {
+    pub shutdown: Arc<AtomicBool>,
+    pub case_name: String,
+    pub case_output_dir: PathBuf,
+    pub acquisition: Option<AcquisitionSource>,
+    pub config_snapshot: Option<ConfigSnapshot>,
     /// Current application state
     pub state: AppState,
     /// Main menu items
@@ -646,6 +674,7 @@ pub struct App {
     pub authenticated_remotes: Vec<(String, String)>,
     /// Whether a combine remote was created (needs cleanup on exit)
     pub combine_remote_created: bool,
+    pub generated_combines: Vec<(PathBuf, String)>,
     /// Provider selection state
     pub provider: ProviderSelection,
     /// Browser selection state
@@ -669,6 +698,35 @@ pub struct App {
 }
 
 impl App {
+    pub fn set_shutdown_flag(&mut self, shutdown: Arc<AtomicBool>) {
+        self.shutdown = shutdown;
+    }
+    pub fn with_case_settings(name: String, output_dir: PathBuf) -> Self {
+        let mut app = Self::new();
+        app.case_name = name;
+        app.case_output_dir = output_dir;
+        app
+    }
+
+    pub fn rebuild_file_index(&mut self) {
+        self.files.total_entries = None;
+        self.files.index = self
+            .files
+            .entries
+            .iter()
+            .enumerate()
+            .map(|(index, display)| (display.clone(), index))
+            .collect();
+    }
+
+    pub fn cancel_listing(&mut self) {
+        if let Some(task) = self.listing_task.take() {
+            task.cancel
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+            let _ = task.handle.join();
+        }
+    }
+
     /// Create a new app with the initial state
     pub fn new() -> Self {
         // Capture initial system state before any operations
@@ -688,6 +746,11 @@ impl App {
         let browser_list = crate::providers::auth::get_available_browsers();
 
         Self {
+            shutdown: Arc::new(AtomicBool::new(false)),
+            case_name: String::new(),
+            case_output_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            acquisition: None,
+            config_snapshot: None,
             state: AppState::MainMenu,
             menu_items,
             menu_selected: 0,
@@ -710,6 +773,7 @@ impl App {
             web_gui_process: None,
             authenticated_remotes: Vec::new(),
             combine_remote_created: false,
+            generated_combines: Vec::new(),
             provider: ProviderSelection {
                 entries: providers,
                 selected: 0,
@@ -742,6 +806,9 @@ impl App {
                 entries_full: Vec::new(),
                 selected: 0,
                 to_download: Vec::new(),
+                index: HashMap::new(),
+                search: String::new(),
+                total_entries: None,
             },
             download: DownloadProgress {
                 status: String::new(),
@@ -982,7 +1049,7 @@ impl App {
         if self.forensics.case.is_some() {
             return Ok(());
         }
-        let case = Case::new("", output_dir)?;
+        let case = Case::new(&self.case_name, output_dir)?;
         let directories = crate::case::directory::create_case_directories(&case)?;
 
         // Track created directories
@@ -1100,6 +1167,17 @@ impl App {
     /// state from a previous "Retrieve list" / "Authenticate" / etc. flow
     /// does not leak into the new action.
     pub fn reset_flow_state(&mut self) {
+        self.cancel_listing();
+        self.cleanup_combine_remote();
+        self.acquisition = None;
+        self.config_snapshot = None;
+        self.files.entries.clear();
+        self.files.entries_full.clear();
+        self.files.total_entries = None;
+        self.files.to_download.clear();
+        self.files.index.clear();
+        self.files.selected = 0;
+        self.files.search.clear();
         self.config_browser.selected_config = None;
         self.config_browser.last_error = None;
         self.config_browser.status.clear();
@@ -1594,12 +1672,32 @@ impl App {
         }
     }
 
+    pub fn find_next_file(&mut self, query: &str) -> bool {
+        self.files.search = query.to_string();
+        let query = query.to_lowercase();
+        let len = self.files.entries.len();
+        if query.is_empty() || len == 0 {
+            return false;
+        }
+        for step in 1..=len {
+            let index = (self.files.selected + step) % len;
+            if self.files.entries[index].to_lowercase().contains(&query) {
+                self.files.selected = index;
+                return true;
+            }
+        }
+        false
+    }
+
     /// Toggle whether the current file is selected for download
     pub fn toggle_file_download(&mut self) {
         if self.state != AppState::FileList || self.files.entries.is_empty() {
             return;
         }
         if let Some(path) = self.files.entries.get(self.files.selected).cloned() {
+            if self.get_file_entry(&path).is_some_and(|entry| entry.is_dir) {
+                return;
+            }
             if self.files.to_download.contains(&path) {
                 self.files.to_download.retain(|p| p != &path);
             } else {
@@ -1613,21 +1711,21 @@ impl App {
     /// Searches by raw path first. Falls back to matching display entries
     /// by index (for multi-remote `[remote] path` display strings).
     pub fn get_file_entry(&self, display_path: &str) -> Option<&crate::files::FileEntry> {
-        // Direct match by raw path
-        if let Some(entry) = self
-            .files
-            .entries_full
-            .iter()
-            .find(|e| e.path == display_path)
-        {
-            return Some(entry);
+        if let Some(index) = self.files.index.get(display_path) {
+            return self.files.entries_full.get(*index);
         }
-        // Index-based match: find position in display entries, return corresponding full entry
+        // Display identity wins over a raw-path fallback for combined inventories.
         self.files
             .entries
             .iter()
             .position(|e| e == display_path)
             .and_then(|idx| self.files.entries_full.get(idx))
+            .or_else(|| {
+                self.files
+                    .entries_full
+                    .iter()
+                    .find(|e| e.path == display_path)
+            })
     }
 
     /// Path to selection file for GUI-based selection
@@ -1648,9 +1746,20 @@ impl App {
             .as_ref()
             .map(|m| m.mount_point().to_path_buf());
 
+        let available = self
+            .files
+            .entries
+            .iter()
+            .map(|path| {
+                (
+                    path.as_str(),
+                    !self.get_file_entry(path).is_some_and(|entry| entry.is_dir),
+                )
+            })
+            .collect::<HashMap<_, _>>();
         let mut selected = Vec::new();
+        let mut seen = std::collections::HashSet::new();
         for line in content.lines() {
-            let line = line.trim();
             if line.is_empty() {
                 continue;
             }
@@ -1669,7 +1778,7 @@ impl App {
                 }
             }
 
-            if self.files.entries.contains(&candidate) {
+            if available.get(candidate.as_str()) == Some(&true) && seen.insert(candidate.clone()) {
                 selected.push(candidate);
             }
         }
@@ -1687,14 +1796,10 @@ impl App {
 
     /// Remove the auto-generated combine remote from the config (cleanup on exit).
     pub fn cleanup_combine_remote(&mut self) {
-        if !self.combine_remote_created {
-            return;
-        }
-        if let Some(ref dirs) = self.forensics.directories {
-            let config_path = dirs.config.join("rclone.conf");
-            if config_path.exists() {
-                if let Ok(config) = crate::rclone::RcloneConfig::open_existing(&config_path) {
-                    let _ = crate::rclone::combine::remove_combine_remote(&config);
+        for (config_path, name) in std::mem::take(&mut self.generated_combines) {
+            if let Ok(config) = crate::rclone::RcloneConfig::open_existing(&config_path) {
+                if let Err(error) = config.remove_remote(&name) {
+                    self.log_error(format!("Could not remove generated remote {name}: {error}"));
                 }
             }
         }
@@ -1706,13 +1811,27 @@ impl App {
         if self.state != AppState::FileList {
             return;
         }
-        self.files.to_download = self.files.entries.clone();
+        self.files.to_download = self
+            .files
+            .entries
+            .iter()
+            .filter(|path| !self.get_file_entry(path).is_some_and(|entry| entry.is_dir))
+            .cloned()
+            .collect();
     }
 }
 
 impl Default for App {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl Drop for App {
+    fn drop(&mut self) {
+        self.cancel_listing();
+        self.unmount_remote();
+        self.cleanup_combine_remote();
     }
 }
 
@@ -1860,6 +1979,44 @@ mod tests {
         // Toggle again to deselect
         app.toggle_file_download();
         assert!(app.files.to_download.is_empty());
+    }
+
+    #[test]
+    fn selection_excludes_directories_preserves_whitespace_and_search_wraps() {
+        let mut app = App::new();
+        app.state = AppState::FileList;
+        for (path, is_dir) in [
+            ("folder", true),
+            (" leading.txt ", false),
+            ("other.TXT", false),
+        ] {
+            app.files.entries.push(path.into());
+            app.files.entries_full.push(crate::files::FileEntry {
+                path: path.into(),
+                size: None,
+                modified: None,
+                is_dir,
+                hash: None,
+                hash_type: None,
+                remote_name: None,
+            });
+        }
+        app.rebuild_file_index();
+        app.toggle_file_download();
+        assert!(app.files.to_download.is_empty());
+        app.select_all_files();
+        assert_eq!(app.files.to_download, vec![" leading.txt ", "other.TXT"]);
+        assert!(app.find_next_file("TXT"));
+        assert_eq!(app.files.selected, 1);
+        assert!(app.find_next_file("TXT"));
+        assert_eq!(app.files.selected, 2);
+        assert!(app.find_next_file("TXT"));
+        assert_eq!(app.files.selected, 1);
+        let temp = tempfile::tempdir().unwrap();
+        let selection = temp.path().join("selection.txt");
+        std::fs::write(&selection, "folder\n leading.txt \n leading.txt \n").unwrap();
+        assert_eq!(app.load_selection_from_file(&selection).unwrap(), 1);
+        assert_eq!(app.files.to_download, vec![" leading.txt "]);
     }
 
     #[test]
@@ -2149,7 +2306,7 @@ mod tests {
         let mut app = App::new();
         app.files.entries_full = vec![crate::files::FileEntry {
             path: "file.txt".to_string(),
-            size: 42,
+            size: Some(42),
             modified: None,
             is_dir: false,
             hash: None,

@@ -52,7 +52,7 @@ impl ListPathOptions {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileEntry {
     pub path: String,
-    pub size: u64,
+    pub size: Option<u64>,
     pub modified: Option<DateTime<Utc>>,
     pub is_dir: bool,
     pub hash: Option<String>,
@@ -85,8 +85,8 @@ struct RcloneLsJsonEntry {
     #[serde(rename = "Path")]
     path: String,
     #[serde(rename = "Size")]
-    size: u64,
-    #[serde(rename = "ModTime")]
+    size: i64,
+    #[serde(rename = "ModTime", default, deserialize_with = "deserialize_mod_time")]
     mod_time: Option<DateTime<Utc>>,
     #[serde(rename = "IsDir")]
     is_dir: bool,
@@ -94,12 +94,24 @@ struct RcloneLsJsonEntry {
     hashes: Option<HashMap<String, String>>,
 }
 
+fn deserialize_mod_time<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Option<DateTime<Utc>>, D::Error> {
+    let value = Option::<String>::deserialize(deserializer)?;
+    match value.as_deref() {
+        None | Some("") => Ok(None),
+        Some(value) => DateTime::parse_from_rfc3339(value)
+            .map(|time| Some(time.with_timezone(&Utc)))
+            .map_err(serde::de::Error::custom),
+    }
+}
+
 impl From<RcloneLsJsonEntry> for FileEntry {
     fn from(entry: RcloneLsJsonEntry) -> Self {
         let (hash, hash_type) = select_hash(entry.hashes.as_ref());
         Self {
             path: entry.path,
-            size: entry.size,
+            size: u64::try_from(entry.size).ok(),
             modified: entry.mod_time,
             is_dir: entry.is_dir,
             hash,
@@ -212,7 +224,7 @@ where
 /// The caller should poll `progress_rx` from the event loop and set `cancel`
 /// to `true` to abort.
 pub fn spawn_list_with_progress(
-    rclone_exe: PathBuf,
+    binary: crate::embedded::ExtractedBinary,
     config_path: PathBuf,
     target: String,
     options: ListPathOptions,
@@ -229,7 +241,9 @@ pub fn spawn_list_with_progress(
 
     let handle = thread::spawn(move || {
         let run = || -> Result<Vec<FileEntry>> {
-            let runner = RcloneRunner::new(&rclone_exe).with_config(&config_path);
+            let runner = RcloneRunner::new(binary.path())
+                .with_config(&config_path)
+                .with_cancel_flag(cancel_clone.clone());
             let args_owned =
                 build_lsjson_args_owned(&target, options.include_hashes, options.fast_list);
             let args: Vec<&str> = args_owned.iter().map(|s| s.as_str()).collect();
@@ -256,6 +270,9 @@ pub fn spawn_list_with_progress(
             let mut last_emit: usize = 0;
 
             let mut on_entry = |raw: RcloneLsJsonEntry| -> Result<()> {
+                if cancel_inner.load(Ordering::Relaxed) {
+                    bail!("Listing cancelled by user");
+                }
                 entries.push(FileEntry::from(raw));
                 count += 1;
                 if count - last_emit >= 100 {
@@ -333,6 +350,51 @@ pub fn spawn_list_with_progress(
     (handle, rx, cancel)
 }
 
+/// Background bounded-memory inventory. The worker owns the executable and
+/// cancellation kills a quiet child independently of stdout parsing.
+pub fn spawn_large_list_with_progress(
+    binary: crate::embedded::ExtractedBinary,
+    config_path: PathBuf,
+    target: String,
+    options: ListPathOptions,
+    csv_path: PathBuf,
+    max_in_memory: usize,
+) -> (
+    std::thread::JoinHandle<()>,
+    mpsc::Receiver<crate::ui::ListingProgress>,
+    Arc<AtomicBool>,
+) {
+    use crate::ui::ListingProgress;
+    let (tx, rx) = mpsc::channel();
+    let cancel = Arc::new(AtomicBool::new(false));
+    let worker_cancel = cancel.clone();
+    let handle = thread::spawn(move || {
+        let runner = RcloneRunner::new(binary.path())
+            .with_config(config_path)
+            .with_cancel_flag(worker_cancel.clone());
+        let result = list_path_large_to_csv_with_progress(
+            &runner,
+            &target,
+            options,
+            csv_path,
+            max_in_memory,
+            |count| {
+                let _ = tx.send(ListingProgress::Count(count));
+            },
+        );
+        let event = if worker_cancel.load(Ordering::Relaxed) {
+            ListingProgress::Error("Listing cancelled".into())
+        } else {
+            match result {
+                Ok(result) => ListingProgress::LargeDone(result),
+                Err(error) => ListingProgress::Error(format!("{error:#}")),
+            }
+        };
+        let _ = tx.send(event);
+    });
+    (handle, rx, cancel)
+}
+
 fn build_lsjson_args_owned(target: &str, include_hashes: bool, fast_list: bool) -> Vec<String> {
     let mut args = vec!["lsjson".to_string(), "-v".to_string()];
     if include_hashes {
@@ -342,6 +404,7 @@ fn build_lsjson_args_owned(target: &str, include_hashes: bool, fast_list: bool) 
     if fast_list {
         args.push("--fast-list".to_string());
     }
+    args.push("--".to_string());
     args.push(target.to_string());
     args
 }
@@ -528,6 +591,7 @@ fn build_lsjson_args(target: &str, include_hashes: bool, fast_list: bool) -> Vec
     if fast_list {
         args.push("--fast-list");
     }
+    args.push("--");
     args.push(target);
     args
 }
@@ -596,6 +660,9 @@ fn list_path_large_to_csv_inner(
 
     let mut entries: Vec<FileEntry> = Vec::new();
     let mut on_entry = |raw: RcloneLsJsonEntry| -> Result<()> {
+        if rclone.is_cancelled() {
+            bail!("Listing cancelled");
+        }
         let entry = FileEntry::from(raw);
         csv.write_entry(&entry)?;
         if entries.len() < max_in_memory {
@@ -701,7 +768,7 @@ fn run_lsjson_streaming<'a>(
         }
         if !stdout_prefix.trim().is_empty() {
             let prefix_truncated = if stdout_prefix.len() > 500 {
-                format!("{}...", &stdout_prefix[..500])
+                format!("{}...", stdout_prefix.chars().take(500).collect::<String>())
             } else {
                 stdout_prefix.to_string()
             };
@@ -768,7 +835,9 @@ fn stream_lsjson_entries_from_reader<'a, R: Read>(
     let skipped_prefix = json_reader.skipped_prefix().to_vec();
 
     // Drain remaining stdout bytes (e.g., noisy suffix logs) so the child can exit.
-    let _ = json_reader.drain_inner_to_end();
+    if count.is_ok() {
+        let _ = json_reader.drain_inner_to_end();
+    }
 
     LsjsonStreamResult {
         count,
@@ -977,11 +1046,11 @@ fn select_hash(hashes: Option<&HashMap<String, String>>) -> (Option<String>, Opt
         None => return (None, None),
     };
 
-    let preferred = ["sha256", "sha1", "md5", "quickxorhash", "dropbox"];
+    let preferred = ["sha256", "sha1", "md5", "quickxorhash", "dropboxhash"];
     for key in preferred.iter() {
         if let Some(value) = hashes
             .iter()
-            .find(|(k, _)| k.eq_ignore_ascii_case(key))
+            .find(|(k, _)| k.replace('-', "").eq_ignore_ascii_case(key))
             .map(|(_, v)| v)
         {
             return (Some(value.clone()), Some(key.to_string()));
@@ -998,15 +1067,12 @@ fn select_hash(hashes: Option<&HashMap<String, String>>) -> (Option<String>, Opt
 
 fn parse_lsf_ps_line(line: &str, hash_type: Option<&str>) -> Option<FileEntry> {
     let mut parts = line.split(PS_LSF_SEPARATOR);
-    let path = parts.next()?.trim().to_string();
+    let path = parts.next()?.to_string();
     if path.is_empty() {
         return None;
     }
 
-    let size = parts
-        .next()
-        .and_then(|s| s.trim().parse::<u64>().ok())
-        .unwrap_or(0);
+    let size = parts.next().and_then(|s| s.trim().parse::<u64>().ok());
 
     let modified = parts.next().and_then(|s| parse_lsf_modtime(s.trim()));
 
@@ -1124,7 +1190,7 @@ mod tests {
 
         let entry = parse_lsf_ps_line(&line, Some("MD5")).unwrap();
         assert_eq!(entry.path, "Documents/report.pdf");
-        assert_eq!(entry.size, 1024);
+        assert_eq!(entry.size, Some(1024));
         assert_eq!(entry.hash.as_deref(), Some("abc"));
         assert_eq!(entry.hash_type.as_deref(), Some("MD5"));
         assert!(!entry.is_dir);
@@ -1159,7 +1225,7 @@ mod tests {
         let mut entries = vec![
             FileEntry {
                 path: "gdrive/Documents/report.pdf".to_string(),
-                size: 100,
+                size: Some(100),
                 modified: None,
                 is_dir: false,
                 hash: None,
@@ -1168,7 +1234,7 @@ mod tests {
             },
             FileEntry {
                 path: "onedrive/Photos/pic.jpg".to_string(),
-                size: 200,
+                size: Some(200),
                 modified: None,
                 is_dir: false,
                 hash: None,
@@ -1177,7 +1243,7 @@ mod tests {
             },
             FileEntry {
                 path: "gdrive".to_string(),
-                size: 0,
+                size: Some(0),
                 modified: None,
                 is_dir: true,
                 hash: None,
@@ -1202,7 +1268,7 @@ mod tests {
     fn test_tag_entries_with_remote_ignores_non_matching() {
         let mut entries = vec![FileEntry {
             path: "other/file.txt".to_string(),
-            size: 50,
+            size: Some(50),
             modified: None,
             is_dir: false,
             hash: None,
@@ -1215,4 +1281,13 @@ mod tests {
         assert!(entries[0].remote_name.is_none());
         assert_eq!(entries[0].path, "other/file.txt");
     }
+}
+#[test]
+fn unknown_source_size_is_preserved() {
+    let entry: RcloneLsJsonEntry =
+        serde_json::from_str(r#"{"Path":"document.docx","Size":-1,"ModTime":null,"IsDir":false}"#)
+            .unwrap();
+    let file = FileEntry::from(entry);
+    assert_eq!(file.size, None);
+    assert_eq!(file.path, "document.docx");
 }

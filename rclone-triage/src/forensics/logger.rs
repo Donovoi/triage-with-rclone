@@ -1,35 +1,41 @@
-//! Forensic logger with hash chaining
-//!
-//! Provides tamper-evident logging by chaining SHA256 hashes of each entry.
-//!
-//! Each log entry includes:
-//! - Timestamp (ISO 8601)
-//! - Hash of current entry (SHA256 hex; 64 chars)
-//! - Hash of previous entry (SHA256 hex; 64 chars)
-//! - Log message
-//!
-//! Backwards compatibility:
-//! - Older logs may store only the first 16 hex chars for current/prev hash.
-
-use anyhow::{Context, Result};
+//! Versioned forensic hash chains. Version 2 stores canonical, escaped JSON records.
+//! Legacy pipe-delimited entries remain readable; unverified chains cannot be appended.
+use anyhow::{bail, Context, Result};
 use chrono::Utc;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs::{File, OpenOptions};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-/// Genesis hash for the first entry in a log chain
 const GENESIS_HASH: &str = "0000000000000000000000000000000000000000000000000000000000000000";
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LogCheckpoint {
+    pub hash: String,
+    pub entry_count: u64,
+}
+impl Default for LogCheckpoint {
+    fn default() -> Self {
+        Self {
+            hash: GENESIS_HASH.into(),
+            entry_count: 0,
+        }
+    }
+}
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Record {
+    version: u8,
+    timestamp: String,
+    current_hash: String,
+    prev_hash: String,
+    message: String,
+}
 fn is_hex_hash(s: &str) -> bool {
-    (s.len() == 16 || s.len() == 64) && s.chars().all(|c| c.is_ascii_hexdigit())
+    (s.len() == 16 || s.len() == 64) && s.bytes().all(|c| c.is_ascii_hexdigit())
 }
-
-fn is_genesis_hash(s: &str) -> bool {
-    (s.len() == 16 || s.len() == 64) && s.chars().all(|c| c == '0')
-}
-
 fn compute_entry_hash(prev_hash: &str, timestamp: &str, message: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(prev_hash.as_bytes());
@@ -37,245 +43,178 @@ fn compute_entry_hash(prev_hash: &str, timestamp: &str, message: &str) -> String
     hasher.update(message.as_bytes());
     hex::encode(hasher.finalize())
 }
-
-/// Forensic logger with hash chaining for tamper evidence
-pub struct ForensicLogger {
-    /// Path to the log file
-    path: PathBuf,
-    /// File handle for appending
-    file: Mutex<File>,
-    /// Hash of the last entry
-    last_hash: Mutex<String>,
+fn canonical_hash(prev: &str, timestamp: &str, message: &str) -> Result<String> {
+    let bytes = serde_json::to_vec(&(2u8, prev, timestamp, message))?;
+    Ok(hex::encode(Sha256::digest(bytes)))
+}
+fn advance_checkpoint(line: &str, state: &mut LogCheckpoint) -> Result<()> {
+    let (hash, prev, computed) = if line.starts_with('{') {
+        let entry: Record = serde_json::from_str(line)?;
+        if entry.version != 2 {
+            bail!("Unsupported forensic log version");
+        }
+        let computed = canonical_hash(&entry.prev_hash, &entry.timestamp, &entry.message)?;
+        (entry.current_hash, entry.prev_hash, computed)
+    } else {
+        let fields: Vec<_> = line.splitn(4, '|').collect();
+        if fields.len() != 4 {
+            bail!("Malformed legacy log record");
+        }
+        let computed = compute_entry_hash(fields[2], fields[0], fields[3]);
+        let computed = if fields[1].len() == 16 {
+            computed[..16].to_owned()
+        } else {
+            computed
+        };
+        (fields[1].to_owned(), fields[2].to_owned(), computed)
+    };
+    let genesis = state.entry_count == 0
+        && (prev.len() == 16 || prev.len() == 64)
+        && prev.bytes().all(|b| b == b'0');
+    if !is_hex_hash(&hash)
+        || !is_hex_hash(&prev)
+        || (!genesis && prev != state.hash)
+        || hash != computed
+    {
+        bail!("Forensic log hash chain mismatch");
+    }
+    state.hash = hash;
+    state.entry_count += 1;
+    Ok(())
+}
+fn read_checkpoint(path: &Path, count: Option<u64>) -> Result<LogCheckpoint> {
+    let reader = BufReader::new(File::open(path)?);
+    let mut state = LogCheckpoint::default();
+    for line in reader.lines() {
+        let line = line?;
+        if line.starts_with('#') || line.is_empty() {
+            continue;
+        }
+        if count == Some(state.entry_count) {
+            break;
+        }
+        advance_checkpoint(&line, &mut state)?;
+    }
+    if let Some(count) = count {
+        if state.entry_count != count {
+            bail!("Log truncated before checkpoint");
+        }
+    }
+    Ok(state)
 }
 
+pub struct ForensicLogger {
+    path: PathBuf,
+    file: Mutex<File>,
+    state: Mutex<LogCheckpoint>,
+}
 impl ForensicLogger {
-    /// Create a new forensic logger
-    ///
-    /// If the file exists, it reads the last entry to continue the hash chain.
-    /// If the file doesn't exist, a new log is started with a genesis entry.
     pub fn new(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
-
-        // Create parent directories if needed
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("Failed to create log directory: {:?}", parent))?;
+            std::fs::create_dir_all(parent)?;
         }
-
-        // Check if file exists and get last hash
-        let last_hash = if path.exists() {
-            Self::read_last_hash(&path)?
+        let state = if path.exists() {
+            read_checkpoint(&path, None).context("Refusing to append to an invalid forensic log")?
         } else {
-            GENESIS_HASH.to_string()
+            LogCheckpoint::default()
         };
-
-        // Open file for appending
-        let file = OpenOptions::new()
+        let mut file = OpenOptions::new()
             .create(true)
+            .read(true)
             .append(true)
-            .open(&path)
-            .with_context(|| format!("Failed to open log file: {:?}", path))?;
-
-        let logger = Self {
+            .open(&path)?;
+        if file.metadata()?.len() == 0 {
+            writeln!(file, "# rclone-triage Forensic Log\n# Format v2: JSON Lines; SHA256(JSON([2,prev_hash,timestamp,message]))")?;
+            file.sync_all()?;
+        } else {
+            file.seek(SeekFrom::End(-1))?;
+            let mut last = [0u8; 1];
+            file.read_exact(&mut last)?;
+            if last[0] != b'\n' {
+                // A valid final record need not have had a terminating newline.
+                file.write_all(b"\n")?;
+                file.sync_all()?;
+            }
+        }
+        Ok(Self {
             path,
             file: Mutex::new(file),
-            last_hash: Mutex::new(last_hash),
-        };
-
-        // Write header if new file
-        if logger
-            .last_hash
-            .lock()
-            .map_err(|e| anyhow::anyhow!("forensic logger mutex poisoned: {e}"))?
-            .as_str()
-            == GENESIS_HASH
-        {
-            logger.write_header()?;
-        }
-
-        Ok(logger)
+            state: Mutex::new(state),
+        })
     }
-
-    /// Write the log header
-    fn write_header(&self) -> Result<()> {
-        let mut file = self
-            .file
-            .lock()
-            .map_err(|e| anyhow::anyhow!("forensic logger mutex poisoned: {e}"))?;
-        writeln!(file, "# rclone-triage Forensic Log")?;
-        writeln!(file, "# Format: timestamp|current_hash|prev_hash|message")?;
-        writeln!(file, "# Hash chain provides tamper evidence")?;
-        writeln!(file, "#")?;
-        file.sync_all()?;
-        Ok(())
-    }
-
-    /// Read the hash from the last entry in an existing log file
-    fn read_last_hash(path: &Path) -> Result<String> {
-        let file = File::open(path)?;
-        let reader = BufReader::new(file);
-
-        let mut last_hash = GENESIS_HASH.to_string();
-
-        for line in reader.lines() {
-            let line = line?;
-            // Skip comments and empty lines
-            if line.starts_with('#') || line.is_empty() {
-                continue;
-            }
-            // Parse the current hash from the entry
-            // Format: timestamp|current_hash|prev_hash|message
-            if let Some(hash) = line.split('|').nth(1) {
-                last_hash = hash.to_string();
-            }
-        }
-
-        Ok(last_hash)
-    }
-
-    /// Log an event with hash chaining
-    ///
-    /// # Arguments
-    /// * `message` - The log message
     pub fn log(&self, message: impl AsRef<str>) -> Result<()> {
         let message = message.as_ref();
-        let timestamp = Utc::now();
-        let timestamp_str = timestamp.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
-
-        let mut last_hash = self
-            .last_hash
+        let timestamp = Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
+        let mut state = self
+            .state
             .lock()
             .map_err(|e| anyhow::anyhow!("forensic logger mutex poisoned: {e}"))?;
-
-        // Calculate new hash: SHA256(prev_hash || timestamp || message)
-        let current_hash = compute_entry_hash(&last_hash, &timestamp_str, message);
-
-        // Format entry
-        let entry = format!(
-            "{}|{}|{}|{}\n",
-            timestamp_str, current_hash, &*last_hash, message,
-        );
-
-        // Write to file
+        let hash = canonical_hash(&state.hash, &timestamp, message)?;
+        let entry = Record {
+            version: 2,
+            timestamp,
+            current_hash: hash.clone(),
+            prev_hash: state.hash.clone(),
+            message: message.into(),
+        };
+        let mut bytes = serde_json::to_vec(&entry)?;
+        bytes.push(b'\n');
         let mut file = self
             .file
             .lock()
             .map_err(|e| anyhow::anyhow!("forensic logger mutex poisoned: {e}"))?;
-        file.write_all(entry.as_bytes())?;
+        file.write_all(&bytes)?;
         file.sync_all()?;
-
-        // Update last hash
-        *last_hash = current_hash;
-
+        state.hash = hash;
+        state.entry_count += 1;
         Ok(())
     }
-
-    /// Log an event with a specific severity level
     pub fn log_level(&self, level: LogLevel, message: impl AsRef<str>) -> Result<()> {
         self.log(format!("[{}] {}", level, message.as_ref()))
     }
-
-    /// Log an info message
     pub fn info(&self, message: impl AsRef<str>) -> Result<()> {
         self.log_level(LogLevel::Info, message)
     }
-
-    /// Log a warning message
     pub fn warn(&self, message: impl AsRef<str>) -> Result<()> {
         self.log_level(LogLevel::Warn, message)
     }
-
-    /// Log an error message
     pub fn error(&self, message: impl AsRef<str>) -> Result<()> {
         self.log_level(LogLevel::Error, message)
     }
-
-    /// Log a debug message
     pub fn debug(&self, message: impl AsRef<str>) -> Result<()> {
         self.log_level(LogLevel::Debug, message)
     }
-
-    /// Get the path to the log file
     pub fn path(&self) -> &Path {
         &self.path
     }
-
-    /// Verify the integrity of the log file
-    ///
-    /// Returns Ok(true) if the hash chain is valid, Ok(false) if corrupted
     pub fn verify_integrity(&self) -> Result<bool> {
         Self::verify_log_file(&self.path)
     }
-
-    /// Verify the integrity of any forensic log file
     pub fn verify_log_file(path: &Path) -> Result<bool> {
-        let file = File::open(path)?;
-        let reader = BufReader::new(file);
-
-        let mut expected_prev_hash: Option<String> = None;
-
-        for line in reader.lines() {
-            let line = line?;
-
-            // Skip comments and empty lines
-            if line.starts_with('#') || line.is_empty() {
-                continue;
-            }
-
-            // Parse entry: timestamp|current_hash|prev_hash|message
-            let parts: Vec<&str> = line.splitn(4, '|').collect();
-            if parts.len() != 4 {
-                return Ok(false); // Malformed entry
-            }
-
-            let timestamp = parts[0];
-            let current_hash = parts[1];
-            let prev_hash = parts[2];
-            let message = parts[3];
-
-            if !is_hex_hash(current_hash) || !is_hex_hash(prev_hash) {
-                return Ok(false);
-            }
-
-            // Verify prev_hash matches expected
-            if let Some(expected) = expected_prev_hash.as_deref() {
-                if prev_hash != expected {
-                    return Ok(false); // Chain broken
-                }
-            } else if !is_genesis_hash(prev_hash) {
-                return Ok(false);
-            }
-
-            // Verify current_hash.
-            let computed_full = compute_entry_hash(prev_hash, timestamp, message);
-            if current_hash.len() == 16 {
-                if &computed_full[..16] != current_hash {
-                    return Ok(false);
-                }
-            } else if current_hash.len() == 64 {
-                if computed_full != current_hash {
-                    return Ok(false);
-                }
-            } else {
-                return Ok(false);
-            }
-
-            expected_prev_hash = Some(current_hash.to_string());
-        }
-
-        Ok(true)
+        // Preserve I/O errors while malformed/corrupt content is a failed verification.
+        File::open(path)?;
+        Ok(read_checkpoint(path, None).is_ok())
     }
-
-    /// Get the final hash of the log file (for including in reports)
-    pub fn final_hash(&self) -> Result<String> {
+    /// An explicit prefix anchor; later events do not invalidate this checkpoint.
+    pub fn checkpoint(&self) -> Result<LogCheckpoint> {
         Ok(self
-            .last_hash
+            .state
             .lock()
             .map_err(|e| anyhow::anyhow!("forensic logger mutex poisoned: {e}"))?
             .clone())
     }
+    pub fn verify_checkpoint(path: &Path, checkpoint: &LogCheckpoint) -> Result<bool> {
+        File::open(path)?;
+        Ok(read_checkpoint(path, Some(checkpoint.entry_count))
+            .map(|actual| actual == *checkpoint)
+            .unwrap_or(false))
+    }
+    /// Current chain hash, retained for compatibility. Prefer checkpoint() in reports.
+    pub fn final_hash(&self) -> Result<String> {
+        Ok(self.checkpoint()?.hash)
+    }
 }
-
 /// Log severity levels
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LogLevel {
@@ -300,6 +239,48 @@ impl std::fmt::Display for LogLevel {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn multiline_messages_round_trip_and_checkpoint_survives_later_events() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("events.log");
+        let logger = ForensicLogger::new(&path).unwrap();
+        logger
+            .log("error\r\nline 2 | Unicode é\n# comment-looking content")
+            .unwrap();
+        let checkpoint = logger.checkpoint().unwrap();
+        assert_eq!(checkpoint.entry_count, 1);
+        logger.log("later event").unwrap();
+        assert!(logger.verify_integrity().unwrap());
+        assert!(ForensicLogger::verify_checkpoint(&path, &checkpoint).unwrap());
+        drop(logger);
+        let logger = ForensicLogger::new(&path).unwrap();
+        assert_eq!(logger.checkpoint().unwrap().entry_count, 2);
+        logger.log("reopened").unwrap();
+        assert!(logger.verify_integrity().unwrap());
+    }
+
+    #[test]
+    fn legacy_records_can_be_verified_and_extended_without_rewriting() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("legacy.log");
+        let timestamp = "2026-01-01T00:00:00Z";
+        let hash = compute_entry_hash(GENESIS_HASH, timestamp, "legacy");
+        let old = format!("{timestamp}|{hash}|{GENESIS_HASH}|legacy");
+        std::fs::write(&path, &old).unwrap();
+        let logger = ForensicLogger::new(&path).unwrap();
+        logger.log("new\nrecord").unwrap();
+        assert!(logger.verify_integrity().unwrap());
+        assert!(std::fs::read_to_string(&path).unwrap().starts_with(&old));
+    }
+
+    #[test]
+    fn corrupted_chain_cannot_be_reopened_for_append() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("bad.log");
+        std::fs::write(&path, "broken entry\n").unwrap();
+        assert!(ForensicLogger::new(&path).is_err());
+    }
 
     #[test]
     fn test_new_logger_creates_file() {

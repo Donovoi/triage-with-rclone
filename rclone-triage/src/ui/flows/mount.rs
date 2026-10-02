@@ -4,7 +4,9 @@ use ratatui::Terminal;
 use crate::ui::render::render_state;
 use crate::ui::App;
 
-pub(crate) fn perform_mount_flow<B: ratatui::backend::Backend>(
+pub(crate) fn perform_mount_flow<
+    B: ratatui::backend::Backend<Error: std::error::Error + Send + Sync + 'static>,
+>(
     app: &mut App,
     terminal: &mut Terminal<B>,
 ) -> Result<()> {
@@ -76,6 +78,8 @@ pub(crate) fn perform_mount_flow<B: ratatui::backend::Backend>(
         let combine_name =
             crate::rclone::combine::create_combine_remote(&config, &app.remote.chosen_multiple)?;
         app.combine_remote_created = true;
+        app.generated_combines
+            .push((config.path().to_path_buf(), combine_name.clone()));
         app.log_info(format!(
             "Created combine remote '{}' for mount with upstreams: {}",
             combine_name,

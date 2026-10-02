@@ -3,6 +3,10 @@
 use anyhow::Result;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 
 /// Running rclone web GUI process
 pub struct WebGuiProcess {
@@ -20,6 +24,21 @@ impl WebGuiProcess {
     /// Wait for the web GUI process to exit
     pub fn wait(&mut self) -> Result<std::process::ExitStatus> {
         Ok(self.child.wait()?)
+    }
+
+    pub fn wait_cancellable(
+        &mut self,
+        cancel: &Arc<AtomicBool>,
+    ) -> Result<std::process::ExitStatus> {
+        loop {
+            if cancel.load(Ordering::Relaxed) {
+                let _ = self.child.kill();
+            }
+            if let Some(status) = self.child.try_wait()? {
+                return Ok(status);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
     }
 }
 
@@ -48,6 +67,7 @@ pub fn start_web_gui(
         .stdin(Stdio::null());
 
     if let Some(config) = config_path {
+        crate::rclone::process::isolate_rclone_environment(&mut cmd);
         cmd.arg("--config").arg(config);
     }
     if let Some(user) = user {

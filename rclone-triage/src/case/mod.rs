@@ -47,7 +47,11 @@ fn sanitize_session_id(input: &str) -> String {
     // Bound length to reduce path-length issues.
     const MAX_LEN: usize = 120;
     if out.len() > MAX_LEN {
-        out.truncate(MAX_LEN);
+        let mut boundary = MAX_LEN;
+        while !out.is_char_boundary(boundary) {
+            boundary -= 1;
+        }
+        out.truncate(boundary);
         out = out.trim_end_matches(['.', ' ']).to_string();
     }
 
@@ -182,5 +186,16 @@ mod tests {
         let case = Case::new("my-session", PathBuf::from("/tmp/case")).unwrap();
         let json = serde_json::to_string(&case).unwrap();
         assert!(json.contains("name"));
+    }
+
+    #[test]
+    fn long_unicode_names_are_truncated_on_a_character_boundary() {
+        for suffix in ["é", "漢", "🗂️"] {
+            let case =
+                Case::new(format!("{}{}", "a".repeat(119), suffix), PathBuf::from(".")).unwrap();
+            assert!(case.name.len() <= 120);
+            assert!(case.name.is_char_boundary(case.name.len()));
+            assert_eq!(case.name, "a".repeat(119));
+        }
     }
 }

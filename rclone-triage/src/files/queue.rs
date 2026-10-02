@@ -101,7 +101,6 @@ fn parse_record(record: &StringRecord, map: &HeaderMap) -> Option<DownloadQueueE
         .path
         .and_then(|idx| record.get(idx))
         .or_else(|| record.get(0))
-        .map(str::trim)
         .filter(|s| !s.is_empty())?
         .to_string();
 
@@ -137,14 +136,23 @@ fn parse_record(record: &StringRecord, map: &HeaderMap) -> Option<DownloadQueueE
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string());
 
+    let encoded = map.path_encoding.and_then(|i| record.get(i)) == Some("excel-safe-v1");
     Some(DownloadQueueEntry {
-        path,
+        path: decode_export_path(path, encoded),
         size,
         hash,
         hash_type,
         is_dir,
-        remote_name,
+        remote_name: remote_name.map(|v| decode_export_path(v, encoded)),
     })
+}
+
+fn decode_export_path(value: String, encoded: bool) -> String {
+    if encoded {
+        value.strip_prefix('\'').unwrap_or(&value).to_string()
+    } else {
+        value
+    }
 }
 
 fn parse_row(row: &[Data], map: &HeaderMap) -> Option<DownloadQueueEntry> {
@@ -153,7 +161,6 @@ fn parse_row(row: &[Data], map: &HeaderMap) -> Option<DownloadQueueEntry> {
         .and_then(|idx| row.get(idx))
         .map(cell_to_string)
         .or_else(|| row.first().map(cell_to_string))
-        .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())?;
 
     let is_dir = map
@@ -188,13 +195,19 @@ fn parse_row(row: &[Data], map: &HeaderMap) -> Option<DownloadQueueEntry> {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
 
+    let encoded = map
+        .path_encoding
+        .and_then(|i| row.get(i))
+        .map(cell_to_string)
+        .as_deref()
+        == Some("excel-safe-v1");
     Some(DownloadQueueEntry {
-        path,
+        path: decode_export_path(path, encoded),
         size,
         hash,
         hash_type,
         is_dir,
-        remote_name,
+        remote_name: remote_name.map(|value| decode_export_path(value, encoded)),
     })
 }
 
@@ -230,7 +243,9 @@ fn cell_to_u64(cell: &Data) -> Option<u64> {
     match cell {
         Data::Int(i) => (*i).try_into().ok(),
         Data::Float(f) => {
-            if *f >= 0.0 {
+            // Excel numbers beyond 2^53 are not reliable byte counts. The
+            // exporter writes decimal text for exact larger sizes.
+            if f.is_finite() && *f >= 0.0 && f.fract() == 0.0 && *f <= (1u64 << 53) as f64 {
                 Some(*f as u64)
             } else {
                 None
@@ -252,6 +267,7 @@ fn cell_to_bool(cell: &Data) -> bool {
 }
 
 struct HeaderMap {
+    path_encoding: Option<usize>,
     remote: Option<usize>,
     path: Option<usize>,
     size: Option<usize>,
@@ -280,6 +296,7 @@ impl HeaderMap {
     }
 
     fn from_map(map: &HashMap<String, usize>) -> Self {
+        let path_encoding = find_header(map, &["pathencoding"]);
         let remote = find_header(map, &["remote", "remotename"]);
         let path = find_header(map, &["path", "filepath", "file"]);
         let size = find_header(map, &["size", "sizebytes", "bytes"]);
@@ -288,6 +305,7 @@ impl HeaderMap {
         let is_dir = find_header(map, &["isdir", "is_dir", "directory", "isdirectory"]);
 
         Self {
+            path_encoding,
             remote,
             path,
             size,

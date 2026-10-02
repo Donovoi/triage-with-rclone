@@ -4,6 +4,7 @@
 
 pub mod case;
 pub mod cleanup;
+pub mod diagnostics;
 pub mod embedded;
 pub mod files;
 pub mod forensics;

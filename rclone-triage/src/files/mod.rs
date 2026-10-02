@@ -3,6 +3,7 @@
 pub mod download;
 pub mod export;
 pub mod listing;
+pub mod planner;
 pub mod queue;
 
 pub use download::{DownloadMode, DownloadPhase, DownloadQueue, DownloadRequest};

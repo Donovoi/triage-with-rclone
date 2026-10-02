@@ -9,6 +9,15 @@ use std::time::{Duration as StdDuration, Instant};
 
 use super::{config::ProviderConfig, credentials::custom_oauth_credentials_for, CloudProvider};
 
+fn oauth_agent() -> ureq::Agent {
+    ureq::AgentBuilder::new()
+        .timeout_connect(StdDuration::from_secs(10))
+        .timeout_read(StdDuration::from_secs(20))
+        .timeout_write(StdDuration::from_secs(20))
+        .timeout(StdDuration::from_secs(30))
+        .build()
+}
+
 #[derive(Debug, Deserialize)]
 struct TokenResponse {
     access_token: String,
@@ -102,9 +111,42 @@ pub fn exchange_code_for_token(
     client_id: &str,
     client_secret: Option<&str>,
 ) -> Result<Value> {
-    let body = build_token_request_body(code, redirect_uri, client_id, client_secret);
+    exchange_code_for_token_with_pkce(
+        token_url,
+        code,
+        redirect_uri,
+        client_id,
+        client_secret,
+        None,
+    )
+}
 
-    let response = ureq::post(token_url)
+fn token_body_with_pkce(
+    code: &str,
+    redirect_uri: &str,
+    client_id: &str,
+    client_secret: Option<&str>,
+    verifier: Option<&str>,
+) -> String {
+    let mut body = build_token_request_body(code, redirect_uri, client_id, client_secret);
+    if let Some(verifier) = verifier {
+        body.push_str(&format!("&code_verifier={}", urlencoded(verifier)));
+    }
+    body
+}
+
+pub fn exchange_code_for_token_with_pkce(
+    token_url: &str,
+    code: &str,
+    redirect_uri: &str,
+    client_id: &str,
+    client_secret: Option<&str>,
+    verifier: Option<&str>,
+) -> Result<Value> {
+    let body = token_body_with_pkce(code, redirect_uri, client_id, client_secret, verifier);
+
+    let response = oauth_agent()
+        .post(token_url)
         .set("Content-Type", "application/x-www-form-urlencoded")
         .send_string(&body);
 
@@ -182,7 +224,8 @@ pub fn request_device_code(config: &DeviceCodeConfig) -> Result<DeviceCodeInfo> 
         urlencoded(&config.scope)
     );
 
-    let response = ureq::post(&config.device_code_url)
+    let response = oauth_agent()
+        .post(&config.device_code_url)
         .set("Content-Type", "application/x-www-form-urlencoded")
         .send_string(&body);
 
@@ -225,7 +268,7 @@ pub fn poll_device_code_for_token(
     let mut interval = interval_secs.max(1);
 
     loop {
-        if start.elapsed() > StdDuration::from_secs(expires_in) {
+        if start.elapsed() >= StdDuration::from_secs(expires_in) {
             bail!("Device code expired before authorization completed");
         }
 
@@ -240,7 +283,13 @@ pub fn poll_device_code_for_token(
             }
         }
 
-        let response = ureq::post(&config.token_url)
+        let response = oauth_agent()
+            .post(&config.token_url)
+            .timeout(
+                StdDuration::from_secs(expires_in)
+                    .saturating_sub(start.elapsed())
+                    .min(StdDuration::from_secs(30)),
+            )
             .set("Content-Type", "application/x-www-form-urlencoded")
             .send_string(&body);
 
@@ -256,12 +305,22 @@ pub fn poll_device_code_for_token(
                     if let Some(err) = error_json.get("error").and_then(|v| v.as_str()) {
                         match err {
                             "authorization_pending" => {
-                                std::thread::sleep(StdDuration::from_secs(interval));
+                                std::thread::sleep(
+                                    StdDuration::from_secs(interval).min(
+                                        StdDuration::from_secs(expires_in)
+                                            .saturating_sub(start.elapsed()),
+                                    ),
+                                );
                                 continue;
                             }
                             "slow_down" => {
                                 interval = interval.saturating_add(5);
-                                std::thread::sleep(StdDuration::from_secs(interval));
+                                std::thread::sleep(
+                                    StdDuration::from_secs(interval).min(
+                                        StdDuration::from_secs(expires_in)
+                                            .saturating_sub(start.elapsed()),
+                                    ),
+                                );
                                 continue;
                             }
                             "access_denied" => bail!("User denied access"),
@@ -319,6 +378,20 @@ fn urlencoded(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn token_request_binds_code_to_proof_key() {
+        let body = token_body_with_pkce(
+            "authorization-code",
+            "http://localhost/",
+            "client",
+            None,
+            Some("verifier-private"),
+        );
+        assert!(body.contains("code_verifier=verifier-private"));
+        assert!(body.contains("code=authorization-code"));
+        assert!(!body.contains("client_secret"));
+    }
 
     #[test]
     fn test_build_token_request_body() {

@@ -740,6 +740,16 @@ pub fn render_state(frame: &mut Frame, app: &App) {
             frame.render_widget(footer, chunks[1]);
         }
         AppState::FileList => {
+            // Only allocate/wrap visible rows. Selection membership is linear once,
+            // rather than a vector scan for every entry in a large inventory.
+            let visible_rows = usize::from(area.height.saturating_sub(5)).max(1);
+            let first_visible = app.files.selected.saturating_sub(visible_rows / 2);
+            let selected_paths = app
+                .files
+                .to_download
+                .iter()
+                .map(String::as_str)
+                .collect::<std::collections::HashSet<_>>();
             let entries = if app.files.entries.is_empty() {
                 // Show status/error message so the user understands why the list is empty.
                 let status = if !app.auth_status.is_empty() {
@@ -755,8 +765,12 @@ pub fn render_state(frame: &mut Frame, app: &App) {
                 app.files
                     .entries
                     .iter()
+                    .skip(first_visible)
+                    .take(visible_rows)
                     .map(|e| {
-                        if app.files.to_download.contains(e) {
+                        if app.get_file_entry(e).is_some_and(|entry| entry.is_dir) {
+                            format!("[dir] {}", e)
+                        } else if selected_paths.contains(e.as_str()) {
                             format!("[x] {}", e)
                         } else {
                             format!("[ ] {}", e)
@@ -769,7 +783,7 @@ pub fn render_state(frame: &mut Frame, app: &App) {
                 .constraints([Constraint::Min(3), Constraint::Length(3)])
                 .split(area);
             let mut screen = FilesScreen::new(entries);
-            screen.tree.selected = app.files.selected;
+            screen.tree.selected = app.files.selected.saturating_sub(first_visible);
             screen.tree.animation_frame = app.animation_frame;
             frame.render_widget(&screen, chunks[0]);
 
@@ -786,15 +800,13 @@ pub fn render_state(frame: &mut Frame, app: &App) {
                     )
                 }
                 Some(crate::ui::MenuAction::RetrieveList) => (
-                    "Listing complete: select files to download or press Backspace to return."
-                        .to_string(),
-                    "Up/Down select • Space toggle • Enter download • Ctrl+E export • Backspace back • q quit"
+                    format!("{} of {} entries • {} selected • Source: {}", app.files.entries.len(), app.files.total_entries.unwrap_or(app.files.entries.len()), app.files.to_download.len(), app.acquisition.as_ref().map(|s| s.label.as_str()).unwrap_or("none")),
+                    "Up/Down select • Space toggle • / search • n next • Enter download • Backspace back • q quit"
                         .to_string(),
                 ),
                 _ => (
-                    "What happens now: select files (toggle) then press Enter to start download."
-                        .to_string(),
-                    "Up/Down select • Space toggle • Enter download • Ctrl+E export • Backspace back • q quit"
+                    format!("{} of {} entries • {} selected • Source: {}", app.files.entries.len(), app.files.total_entries.unwrap_or(app.files.entries.len()), app.files.to_download.len(), app.acquisition.as_ref().map(|s| s.label.as_str()).unwrap_or("none")),
+                    "Up/Down select • Space toggle • / search • n next • Enter download • Backspace back • q quit"
                         .to_string(),
                 ),
             };
@@ -867,7 +879,7 @@ pub fn render_state(frame: &mut Frame, app: &App) {
             frame.render_widget(&screen, chunks[0]);
 
             let hint =
-                "What happens now: downloads run sequentially; progress and logs update below.";
+                "Acquiring selected files • Esc cancel and keep completed evidence • Ctrl+C stop";
             let footer = Paragraph::new(vec![Line::from(Span::styled(hint, theme::hint_style()))])
                 .wrap(Wrap { trim: true });
             frame.render_widget(footer, chunks[1]);
@@ -1008,6 +1020,22 @@ mod tests {
 
     fn contains_qr_art(text: &str) -> bool {
         text.chars().any(|ch| matches!(ch, '▀' | '▄' | '█'))
+    }
+
+    #[test]
+    fn file_viewport_keeps_high_selection_visible_and_discloses_partial_inventory() {
+        let mut app = App::new();
+        app.state = AppState::FileList;
+        app.files.entries = (0..1000)
+            .map(|index| format!("item-{index:04}.txt"))
+            .collect();
+        app.files.selected = 750;
+        app.files.total_entries = Some(5000);
+        app.files.to_download = vec!["item-0750.txt".into()];
+        let rendered = export_screen_text(&app, 120, 30);
+        assert!(rendered.contains("[x] item-0750.txt"));
+        assert!(!rendered.contains("item-0000.txt"));
+        assert!(rendered.contains("1000 of 5000 entries"));
     }
 
     #[test]

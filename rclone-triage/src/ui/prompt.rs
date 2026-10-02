@@ -11,7 +11,9 @@ use crate::ui::{layout::centered_rect, render::render_state, App};
 /// Prompt for a single line of input without leaving the TUI.
 ///
 /// Returns `Ok(None)` if the user cancels with Esc.
-pub(crate) fn prompt_text_in_tui<B: ratatui::backend::Backend>(
+pub(crate) fn prompt_text_in_tui<
+    B: ratatui::backend::Backend<Error: std::error::Error + Send + Sync + 'static>,
+>(
     app: &mut App,
     terminal: &mut Terminal<B>,
     title: &str,
@@ -20,6 +22,9 @@ pub(crate) fn prompt_text_in_tui<B: ratatui::backend::Backend>(
     let mut input = String::new();
 
     loop {
+        if app.shutdown.load(std::sync::atomic::Ordering::Relaxed) {
+            return Ok(None);
+        }
         terminal.draw(|f| {
             render_state(f, app);
 
@@ -63,6 +68,15 @@ pub(crate) fn prompt_text_in_tui<B: ratatui::backend::Backend>(
                     continue;
                 }
                 match key.code {
+                    KeyCode::Char('c')
+                        if key
+                            .modifiers
+                            .contains(crossterm::event::KeyModifiers::CONTROL) =>
+                    {
+                        app.shutdown
+                            .store(true, std::sync::atomic::Ordering::Relaxed);
+                        return Ok(None);
+                    }
                     KeyCode::Esc => return Ok(None),
                     KeyCode::Enter => return Ok(Some(input.trim().to_string())),
                     KeyCode::Backspace => {

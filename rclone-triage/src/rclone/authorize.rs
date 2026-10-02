@@ -10,7 +10,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::rclone::process::{wait_with_timeout, RcloneRunner};
+use crate::rclone::process::RcloneRunner;
 
 /// Windows-specific: CREATE_NO_WINDOW flag
 #[cfg(windows)]
@@ -33,8 +33,14 @@ pub fn authorize_fallback(
     timeout: Duration,
 ) -> Result<AuthorizeFallbackResult> {
     let backend = normalize_backend(backend)?;
-    let args = ["authorize", backend.as_str(), "--auth-no-open-browser"];
-    let output = runner.run_with_timeout(&args, Some(timeout))?;
+    let envs = authorization_env(&backend)?;
+    let env_refs: Vec<_> = envs
+        .iter()
+        .map(|(key, value)| (key.as_str(), value.as_str()))
+        .collect();
+    let mut args = vec!["authorize", backend.as_str(), "--auth-no-open-browser"];
+    args.extend(read_only_scope_args(&backend));
+    let output = runner.run_with_timeout_env(&args, Some(timeout), &env_refs)?;
     let auth_url = extract_auth_url(&output.stdout, &output.stderr);
 
     Ok(AuthorizeFallbackResult {
@@ -45,6 +51,35 @@ pub fn authorize_fallback(
         status: output.status,
         timed_out: output.timed_out,
     })
+}
+
+fn read_only_scope_args(backend: &str) -> Vec<&'static str> {
+    match backend {
+        "drive" => vec!["--drive-scope", "drive.readonly"],
+        "onedrive" => vec![
+            "--onedrive-access-scopes",
+            "Files.Read Files.Read.All Sites.Read.All offline_access",
+        ],
+        "google photos" | "gphotos" => vec!["--gphotos-read-only"],
+        _ => Vec::new(),
+    }
+}
+
+fn authorization_env(backend: &str) -> Result<Vec<(String, String)>> {
+    use crate::providers::CloudProvider;
+    let (provider, prefix) = match backend {
+        "drive" => (CloudProvider::GoogleDrive, "RCLONE_DRIVE"),
+        "google photos" | "gphotos" => (CloudProvider::GooglePhotos, "RCLONE_GPHOTOS"),
+        _ => return Ok(Vec::new()),
+    };
+    crate::providers::auth::ensure_new_auth_credentials(provider)?;
+    let creds = crate::providers::credentials::custom_oauth_credentials_for(provider)?
+        .context("Custom OAuth credentials unavailable")?;
+    let mut envs = vec![(format!("{prefix}_CLIENT_ID"), creds.client_id)];
+    if let Some(secret) = creds.client_secret {
+        envs.push((format!("{prefix}_CLIENT_SECRET"), secret));
+    }
+    Ok(envs)
 }
 
 pub fn normalize_backend(backend: &str) -> Result<String> {
@@ -111,6 +146,7 @@ pub enum AuthorizeOutputStream {
 
 #[derive(Debug)]
 pub struct RunningAuthorize {
+    runner: RcloneRunner,
     backend: String,
     child: Child,
     rx: mpsc::Receiver<(AuthorizeOutputStream, String)>,
@@ -163,6 +199,11 @@ impl RunningAuthorize {
 
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
+            if self.runner.is_cancelled() {
+                let _ = self.child.kill();
+                let _ = self.child.wait();
+                bail!("Authorization cancelled");
+            }
             let remaining = deadline.saturating_duration_since(Instant::now());
             let chunk = remaining.min(Duration::from_millis(200));
             match self.rx.recv_timeout(chunk) {
@@ -182,9 +223,18 @@ impl RunningAuthorize {
 
     /// Wait for the authorize process to exit and return combined output + parsed token JSON.
     pub fn wait(mut self, timeout: Option<Duration>) -> Result<AuthorizeInteractiveResult> {
-        let (status, timed_out) = match timeout {
-            Some(timeout) => wait_with_timeout(&mut self.child, timeout)?,
-            None => (self.child.wait()?, false),
+        let started = Instant::now();
+        let mut timed_out = false;
+        let status = loop {
+            if self.runner.is_cancelled() || timeout.is_some_and(|t| started.elapsed() >= t) {
+                timed_out = !self.runner.is_cancelled();
+                let _ = self.child.kill();
+                break self.child.wait()?;
+            }
+            if let Some(status) = self.child.try_wait()? {
+                break status;
+            }
+            thread::sleep(Duration::from_millis(25));
         };
 
         // Ensure readers are done so the channel is fully populated.
@@ -204,16 +254,29 @@ impl RunningAuthorize {
         let token_json = extract_token_json(&self.stdout, &self.stderr);
 
         Ok(AuthorizeInteractiveResult {
-            backend: self.backend,
-            auth_url: self.auth_url,
-            redirect_uri: self.redirect_uri,
-            expected_state: self.expected_state,
+            backend: std::mem::take(&mut self.backend),
+            auth_url: self.auth_url.take(),
+            redirect_uri: self.redirect_uri.take(),
+            expected_state: self.expected_state.take(),
             token_json,
-            stdout: self.stdout,
-            stderr: self.stderr,
+            stdout: std::mem::take(&mut self.stdout),
+            stderr: std::mem::take(&mut self.stderr),
             status: status.code().unwrap_or(-1),
             timed_out,
         })
+    }
+}
+
+impl Drop for RunningAuthorize {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        if let Some(handle) = self.stdout_handle.take() {
+            let _ = handle.join();
+        }
+        if let Some(handle) = self.stderr_handle.take() {
+            let _ = handle.join();
+        }
     }
 }
 
@@ -319,13 +382,20 @@ pub fn spawn_authorize(
     backend: &str,
     auth_no_open_browser: bool,
 ) -> Result<RunningAuthorize> {
+    if runner.is_cancelled() {
+        bail!("Authorization cancelled");
+    }
     let backend = normalize_backend(backend)?;
+    let envs = authorization_env(&backend)?;
 
     let mut cmd = Command::new(runner.exe_path());
     if let Some(config) = runner.config_path() {
+        crate::rclone::process::isolate_rclone_environment(&mut cmd);
         cmd.arg("--config").arg(config);
     }
+    cmd.envs(envs);
     cmd.arg("authorize").arg(&backend);
+    cmd.args(read_only_scope_args(&backend));
     if auth_no_open_browser {
         cmd.arg("--auth-no-open-browser");
     }
@@ -373,6 +443,7 @@ pub fn spawn_authorize(
     });
 
     Ok(RunningAuthorize {
+        runner: runner.clone(),
         backend,
         child,
         rx,

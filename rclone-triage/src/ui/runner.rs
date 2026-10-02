@@ -13,7 +13,7 @@ use crossterm::terminal::{
 };
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::io::stdout;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
@@ -173,13 +173,9 @@ fn score_queue_name(name: &str) -> i32 {
 }
 
 fn normalize_queue_path(path: &str, remote_name: &str) -> String {
-    let mut candidate = path.trim().to_string();
     let remote = remote_name.trim_end_matches(':');
     let prefix = format!("{}:", remote);
-    if candidate.to_lowercase().starts_with(&prefix.to_lowercase()) {
-        candidate = candidate[prefix.len()..].to_string();
-    }
-    candidate.trim_start_matches(['/', '\\']).to_string()
+    path.strip_prefix(&prefix).unwrap_or(path).to_string()
 }
 
 fn apply_queue_entries(
@@ -187,23 +183,33 @@ fn apply_queue_entries(
     entries: Vec<crate::files::DownloadQueueEntry>,
     remote_name: &str,
 ) -> Result<usize> {
-    let mut seen = HashSet::new();
+    let mut seen = HashMap::new();
     let mut full_entries = Vec::new();
 
     for entry in entries {
-        let normalized = normalize_queue_path(&entry.path, remote_name);
-        if normalized.is_empty() || !seen.insert(normalized.clone()) {
+        let remote = entry.remote_name.as_deref().unwrap_or(remote_name);
+        let normalized = normalize_queue_path(&entry.path, remote);
+        if entry.is_dir || normalized.is_empty() {
+            continue;
+        }
+        let metadata = (entry.size, entry.hash.clone(), entry.hash_type.clone());
+        if let Some(previous) =
+            seen.insert((remote.to_string(), normalized.clone()), metadata.clone())
+        {
+            if previous != metadata {
+                bail!("Conflicting queue metadata for {remote}:{normalized}");
+            }
             continue;
         }
 
         full_entries.push(crate::files::FileEntry {
             path: normalized,
-            size: entry.size.unwrap_or(0),
+            size: entry.size,
             modified: None,
             is_dir: false,
             hash: entry.hash,
             hash_type: entry.hash_type,
-            remote_name: entry.remote_name,
+            remote_name: Some(remote.to_string()),
         });
     }
 
@@ -212,9 +218,19 @@ fn apply_queue_entries(
     }
 
     app.files.entries_full = full_entries.clone();
-    app.files.entries = full_entries.iter().map(|e| e.path.clone()).collect();
+    app.files.entries = full_entries
+        .iter()
+        .map(|e| {
+            format!(
+                "[{}] {}",
+                e.remote_name.as_deref().unwrap_or(remote_name),
+                e.path
+            )
+        })
+        .collect();
     app.files.to_download = app.files.entries.clone();
     app.files.selected = 0;
+    app.rebuild_file_index();
 
     Ok(app.files.to_download.len())
 }
@@ -272,7 +288,9 @@ fn try_refresh_providers(app: &mut App) {
     apply_discovered_providers(app, discovery);
 }
 
-fn perform_csv_download_flow<B: ratatui::backend::Backend>(
+fn perform_csv_download_flow<
+    B: ratatui::backend::Backend<Error: std::error::Error + Send + Sync + 'static>,
+>(
     app: &mut App,
     terminal: &mut Terminal<B>,
 ) -> Result<()> {
@@ -345,6 +363,11 @@ fn perform_csv_download_flow<B: ratatui::backend::Backend>(
         };
 
     app.remote.chosen = Some(remote_name.clone());
+    app.acquisition = Some(crate::ui::AcquisitionSource {
+        config_path: config.path().to_path_buf(),
+        default_remote: remote_name.clone(),
+        label: provider.display_name().to_string(),
+    });
     let count = match apply_queue_entries(app, queue_entries, &remote_name) {
         Ok(count) => count,
         Err(e) => {
@@ -365,7 +388,9 @@ fn perform_csv_download_flow<B: ratatui::backend::Backend>(
     Ok(())
 }
 
-fn perform_web_gui_flow<B: ratatui::backend::Backend>(
+fn perform_web_gui_flow<
+    B: ratatui::backend::Backend<Error: std::error::Error + Send + Sync + 'static>,
+>(
     app: &mut App,
     terminal: &mut Terminal<B>,
 ) -> Result<()> {
@@ -418,7 +443,9 @@ fn perform_web_gui_flow<B: ratatui::backend::Backend>(
     Ok(())
 }
 
-fn perform_update_tools_flow<B: ratatui::backend::Backend>(
+fn perform_update_tools_flow<
+    B: ratatui::backend::Backend<Error: std::error::Error + Send + Sync + 'static>,
+>(
     app: &mut App,
     terminal: &mut Terminal<B>,
 ) -> Result<()> {
@@ -479,7 +506,9 @@ fn perform_update_tools_flow<B: ratatui::backend::Backend>(
     Ok(())
 }
 
-fn perform_configure_oauth_flow<B: ratatui::backend::Backend>(
+fn perform_configure_oauth_flow<
+    B: ratatui::backend::Backend<Error: std::error::Error + Send + Sync + 'static>,
+>(
     app: &mut App,
     terminal: &mut Terminal<B>,
 ) -> Result<()> {
@@ -557,7 +586,9 @@ fn perform_configure_oauth_flow<B: ratatui::backend::Backend>(
     Ok(())
 }
 
-fn perform_onedrive_vault_flow<B: ratatui::backend::Backend>(
+fn perform_onedrive_vault_flow<
+    B: ratatui::backend::Backend<Error: std::error::Error + Send + Sync + 'static>,
+>(
     app: &mut App,
     terminal: &mut Terminal<B>,
 ) -> Result<()> {
@@ -670,6 +701,10 @@ pub fn run_loop(app: &mut App) -> Result<()> {
     let mut needs_redraw = true;
 
     loop {
+        if app.shutdown.load(std::sync::atomic::Ordering::Relaxed) {
+            app.cancel_listing();
+            break;
+        }
         if needs_redraw {
             app.advance_animation();
             terminal.draw(|f| {
@@ -698,12 +733,15 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                     crate::ui::ListingProgress::Done(entries) => {
                         crate::ui::flows::list::finalize_listing(app, entries);
                     }
+                    crate::ui::ListingProgress::LargeDone(result) => {
+                        crate::ui::flows::list::finalize_large_listing(app, result);
+                    }
                     crate::ui::ListingProgress::Error(e) => {
                         let error_detail = format!("Listing failed: {}", e);
                         app.config_browser.status = error_detail.clone();
                         app.config_browser.last_error = Some(error_detail.clone());
                         app.log_error(error_detail);
-                        app.listing_task = None;
+                        app.cancel_listing();
                         app.state = crate::ui::AppState::ConfigBrowser;
                     }
                 }
@@ -719,6 +757,15 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                 Event::Key(key) => {
                     needs_redraw = true;
                     if !should_handle_key(&key) {
+                        continue;
+                    }
+                    if key.code == KeyCode::Char('c')
+                        && key
+                            .modifiers
+                            .contains(crossterm::event::KeyModifiers::CONTROL)
+                    {
+                        app.shutdown
+                            .store(true, std::sync::atomic::Ordering::Relaxed);
                         continue;
                     }
                     let now = Instant::now();
@@ -769,11 +816,7 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                                 app.config_browser.selected_config = None;
                                 app.state = crate::ui::AppState::MainMenu;
                             } else if app.state == crate::ui::AppState::Listing {
-                                if let Some(ref task) = app.listing_task {
-                                    task.cancel
-                                        .store(true, std::sync::atomic::Ordering::Relaxed);
-                                }
-                                app.listing_task = None;
+                                app.cancel_listing();
                                 app.config_browser.status = "Listing cancelled.".to_string();
                                 app.state = crate::ui::AppState::ConfigBrowser;
                             } else if app.state == crate::ui::AppState::Mounted {
@@ -791,6 +834,7 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                                 break;
                             }
                         }
+                        KeyCode::Enter if app.state == crate::ui::AppState::Listing => {}
                         KeyCode::Enter => {
                             if app.state == crate::ui::AppState::MainMenu {
                                 if handle_main_menu_enter(app) {
@@ -1146,18 +1190,16 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                             }
                         }
                         KeyCode::Backspace => {
-                            if app.state == crate::ui::AppState::ReviewDetectedAccounts
+                            if app.state == crate::ui::AppState::Complete {
+                                app.state = crate::ui::AppState::FileList;
+                            } else if app.state == crate::ui::AppState::ReviewDetectedAccounts
                                 || app.state == crate::ui::AppState::DetectingAccounts
                             {
                                 app.state = crate::ui::AppState::MainMenu;
                             } else if app.state == crate::ui::AppState::ConfigBrowser {
                                 app.config_browser.go_parent();
                             } else if app.state == crate::ui::AppState::Listing {
-                                if let Some(ref task) = app.listing_task {
-                                    task.cancel
-                                        .store(true, std::sync::atomic::Ordering::Relaxed);
-                                }
-                                app.listing_task = None;
+                                app.cancel_listing();
                                 app.config_browser.status = "Listing cancelled.".to_string();
                                 app.state = crate::ui::AppState::ConfigBrowser;
                             } else if app.state == crate::ui::AppState::RemoteSelect {
@@ -1282,152 +1324,165 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                                 )?;
                             }
                         }
-                        KeyCode::Char('m') => {
-                            if app.state == crate::ui::AppState::FileList {
-                                if app.mounted_remote.is_some() {
-                                    app.log_info("Remote already mounted for GUI selection");
+                        KeyCode::Char('m') if app.state == crate::ui::AppState::FileList => {
+                            if app.mounted_remote.is_some() {
+                                app.log_info("Remote already mounted for GUI selection");
+                                continue;
+                            }
+
+                            let binary = match crate::embedded::ExtractedBinary::extract() {
+                                Ok(binary) => binary,
+                                Err(e) => {
+                                    app.log_error(format!("Mount failed (extract): {}", e));
                                     continue;
                                 }
+                            };
+                            app.cleanup_track_file(binary.path());
+                            if let Some(dir) = binary.temp_dir() {
+                                app.cleanup_track_dir(dir);
+                            }
 
-                                let binary = match crate::embedded::ExtractedBinary::extract() {
-                                    Ok(binary) => binary,
-                                    Err(e) => {
-                                        app.log_error(format!("Mount failed (extract): {}", e));
-                                        continue;
-                                    }
-                                };
-                                app.cleanup_track_file(binary.path());
-                                if let Some(dir) = binary.temp_dir() {
-                                    app.cleanup_track_dir(dir);
-                                }
-
-                                let config_dir = app
-                                    .config_dir()
-                                    .unwrap_or_else(|| std::path::PathBuf::from("."));
-                                app.track_env_var("RCLONE_CONFIG", "Set RCLONE_CONFIG for mount");
-                                let config =
-                                    match crate::rclone::RcloneConfig::for_case(&config_dir) {
-                                        Ok(config) => config,
-                                        Err(e) => {
-                                            app.log_error(format!("Mount failed (config): {}", e));
-                                            continue;
-                                        }
-                                    };
-                                app.cleanup_track_env_value("RCLONE_CONFIG", config.original_env());
-
-                                let remote_name = app.remote.chosen.clone().or_else(|| {
-                                    app.provider
-                                        .chosen
-                                        .as_ref()
-                                        .map(|p| p.short_name().to_string())
-                                });
-                                let Some(remote_name) = remote_name else {
-                                    app.log_error("Mount failed: no remote selected");
+                            let config_dir = app
+                                .config_dir()
+                                .unwrap_or_else(|| std::path::PathBuf::from("."));
+                            app.track_env_var("RCLONE_CONFIG", "Set RCLONE_CONFIG for mount");
+                            let config_result = if let Some(source) = &app.acquisition {
+                                crate::rclone::RcloneConfig::open_existing(&source.config_path)
+                            } else {
+                                crate::rclone::RcloneConfig::for_case(&config_dir)
+                            };
+                            let config = match config_result {
+                                Ok(config) => config,
+                                Err(e) => {
+                                    app.log_error(format!("Mount failed (config): {}", e));
                                     continue;
-                                };
-
-                                let mut manager =
-                                    match crate::rclone::MountManager::new(binary.path()) {
-                                        Ok(manager) => manager.with_config(config.path()),
-                                        Err(e) => {
-                                            app.log_error(format!("Mount failed: {}", e));
-                                            continue;
-                                        }
-                                    };
-
-                                // Keep mount points and caches inside the case directory to reduce system footprint.
-                                if let Some(ref dirs) = app.forensics.directories {
-                                    let mount_base = dirs.base.join("mounts");
-                                    let cache_dir = dirs.base.join("cache").join("rclone");
-
-                                    if let Err(e) = std::fs::create_dir_all(&mount_base) {
-                                        app.log_error(format!(
-                                            "Mount failed (mount dir {:?}): {}",
-                                            mount_base, e
-                                        ));
-                                        continue;
-                                    }
-                                    app.track_file(
-                                        &mount_base,
-                                        "Created mount base directory inside case",
-                                    );
-
-                                    if let Err(e) = std::fs::create_dir_all(&cache_dir) {
-                                        app.log_error(format!(
-                                            "Mount failed (cache dir {:?}): {}",
-                                            cache_dir, e
-                                        ));
-                                        continue;
-                                    }
-                                    app.track_file(
-                                        &cache_dir,
-                                        "Created rclone cache directory inside case",
-                                    );
-
-                                    manager = manager
-                                        .with_mount_base(&mount_base)
-                                        .with_cache_dir(&cache_dir);
                                 }
+                            };
+                            app.cleanup_track_env_value("RCLONE_CONFIG", config.original_env());
 
-                                match manager.mount_and_explore(&remote_name, None) {
-                                    Ok(mounted) => {
-                                        let mount_path = mounted.mount_point().to_path_buf();
-                                        app.mounted_remote = Some(mounted);
-                                        app.log_info(format!("Mounted remote at {:?}", mount_path));
-                                        if let Some(path) = app.selection_file_path() {
-                                            app.log_info(format!(
+                            let remote_name = app.remote.chosen.clone().or_else(|| {
+                                app.provider
+                                    .chosen
+                                    .as_ref()
+                                    .map(|p| p.short_name().to_string())
+                            });
+                            let Some(remote_name) = remote_name else {
+                                app.log_error("Mount failed: no remote selected");
+                                continue;
+                            };
+
+                            let mut manager = match crate::rclone::MountManager::new(binary.path())
+                            {
+                                Ok(manager) => manager.with_config(config.path()),
+                                Err(e) => {
+                                    app.log_error(format!("Mount failed: {}", e));
+                                    continue;
+                                }
+                            };
+
+                            // Keep mount points and caches inside the case directory to reduce system footprint.
+                            if let Some(ref dirs) = app.forensics.directories {
+                                let mount_base = dirs.base.join("mounts");
+                                let cache_dir = dirs.base.join("cache").join("rclone");
+
+                                if let Err(e) = std::fs::create_dir_all(&mount_base) {
+                                    app.log_error(format!(
+                                        "Mount failed (mount dir {:?}): {}",
+                                        mount_base, e
+                                    ));
+                                    continue;
+                                }
+                                app.track_file(
+                                    &mount_base,
+                                    "Created mount base directory inside case",
+                                );
+
+                                if let Err(e) = std::fs::create_dir_all(&cache_dir) {
+                                    app.log_error(format!(
+                                        "Mount failed (cache dir {:?}): {}",
+                                        cache_dir, e
+                                    ));
+                                    continue;
+                                }
+                                app.track_file(
+                                    &cache_dir,
+                                    "Created rclone cache directory inside case",
+                                );
+
+                                manager = manager
+                                    .with_mount_base(&mount_base)
+                                    .with_cache_dir(&cache_dir);
+                            }
+
+                            match manager.mount_and_explore(&remote_name, None) {
+                                Ok(mounted) => {
+                                    let mount_path = mounted.mount_point().to_path_buf();
+                                    app.mounted_remote = Some(mounted);
+                                    app.log_info(format!("Mounted remote at {:?}", mount_path));
+                                    if let Some(path) = app.selection_file_path() {
+                                        app.log_info(format!(
                                             "Create selection file at {:?} (one path per line), then press 'i' to load.",
                                             path
                                         ));
-                                        } else {
-                                            app.log_info("No selection file path available");
-                                        }
+                                    } else {
+                                        app.log_info("No selection file path available");
+                                    }
+                                }
+                                Err(e) => {
+                                    app.log_error(format!("Mount failed: {}", e));
+                                }
+                            }
+                        }
+                        KeyCode::Char('u')
+                            if app.state == crate::ui::AppState::FileList
+                                || app.state == crate::ui::AppState::Mounted =>
+                        {
+                            app.unmount_remote();
+                            app.log_info("Unmounted remote");
+                            if app.state == crate::ui::AppState::Mounted {
+                                if matches!(
+                                    app.selected_action,
+                                    Some(crate::ui::MenuAction::MountProvider)
+                                ) {
+                                    app.state = crate::ui::AppState::ProviderSelect;
+                                } else {
+                                    app.state = crate::ui::AppState::PostAuthChoice;
+                                }
+                            }
+                        }
+                        KeyCode::Char('i') if app.state == crate::ui::AppState::FileList => {
+                            if let Some(path) = app.selection_file_path() {
+                                match app.load_selection_from_file(&path) {
+                                    Ok(count) => {
+                                        app.log_info(format!(
+                                            "Loaded {} selected files from {:?}",
+                                            count, path
+                                        ));
                                     }
                                     Err(e) => {
-                                        app.log_error(format!("Mount failed: {}", e));
+                                        app.log_error(format!(
+                                            "Failed to load selection from {:?}: {}",
+                                            path, e
+                                        ));
                                     }
                                 }
+                            } else {
+                                app.log_error("Selection file path not available");
                             }
                         }
-                        KeyCode::Char('u') => {
-                            if app.state == crate::ui::AppState::FileList
-                                || app.state == crate::ui::AppState::Mounted
-                            {
-                                app.unmount_remote();
-                                app.log_info("Unmounted remote");
-                                if app.state == crate::ui::AppState::Mounted {
-                                    if matches!(
-                                        app.selected_action,
-                                        Some(crate::ui::MenuAction::MountProvider)
-                                    ) {
-                                        app.state = crate::ui::AppState::ProviderSelect;
-                                    } else {
-                                        app.state = crate::ui::AppState::PostAuthChoice;
-                                    }
-                                }
+                        KeyCode::Char('/') if app.state == crate::ui::AppState::FileList => {
+                            if let Some(query) = crate::ui::prompt::prompt_text_in_tui(
+                                app,
+                                &mut terminal,
+                                "Find file",
+                                "Path or remote name (n finds next match)",
+                            )? {
+                                app.find_next_file(&query);
                             }
                         }
-                        KeyCode::Char('i') => {
-                            if app.state == crate::ui::AppState::FileList {
-                                if let Some(path) = app.selection_file_path() {
-                                    match app.load_selection_from_file(&path) {
-                                        Ok(count) => {
-                                            app.log_info(format!(
-                                                "Loaded {} selected files from {:?}",
-                                                count, path
-                                            ));
-                                        }
-                                        Err(e) => {
-                                            app.log_error(format!(
-                                                "Failed to load selection from {:?}: {}",
-                                                path, e
-                                            ));
-                                        }
-                                    }
-                                } else {
-                                    app.log_error("Selection file path not available");
-                                }
-                            }
+                        KeyCode::Char('n') if app.state == crate::ui::AppState::FileList => {
+                            let query = app.files.search.clone();
+                            app.find_next_file(&query);
                         }
                         KeyCode::Char(' ') => {
                             // Space toggles file selection
@@ -1501,7 +1556,9 @@ fn should_handle_key(key: &KeyEvent) -> bool {
 ///
 /// Writes to `<case_logs>/screen_export.txt` if a case is active,
 /// otherwise falls back to `./screen_export.txt` in the current directory.
-fn handle_export_screen<B: ratatui::backend::Backend>(
+fn handle_export_screen<
+    B: ratatui::backend::Backend<Error: std::error::Error + Send + Sync + 'static>,
+>(
     app: &mut App,
     terminal: &ratatui::Terminal<B>,
 ) {
@@ -1550,8 +1607,7 @@ fn handle_main_menu_enter(app: &mut App) -> bool {
         }
         _ => {
             // Initialize case and go directly to provider selection.
-            let output_dir =
-                std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+            let output_dir = app.case_output_dir.clone();
             if let Err(e) = app.init_case(output_dir) {
                 app.auth_status = format!("Failed to create case: {}", e);
                 app.menu_status = format!("Failed to create case: {}", e);
@@ -1602,7 +1658,9 @@ fn handle_main_menu_enter(app: &mut App) -> bool {
     }
 }
 
-fn resume_remote_flow<B: ratatui::backend::Backend>(
+fn resume_remote_flow<
+    B: ratatui::backend::Backend<Error: std::error::Error + Send + Sync + 'static>,
+>(
     app: &mut App,
     terminal: &mut Terminal<B>,
 ) -> Result<()> {
@@ -1661,168 +1719,44 @@ fn handle_provider_help_key(app: &mut App, key: &KeyEvent) -> bool {
 ///
 /// When multiple remotes have been authenticated (via "Add another provider"),
 /// a combine remote is created so all files appear under one listing.
-fn perform_post_auth_list<B: ratatui::backend::Backend>(
+fn perform_post_auth_list<
+    B: ratatui::backend::Backend<Error: std::error::Error + Send + Sync + 'static>,
+>(
     app: &mut App,
     terminal: &mut Terminal<B>,
 ) -> Result<()> {
     let Some(remote_name) = app.remote.chosen.clone() else {
-        app.auth_status = "No remote available. Try authenticating again.".to_string();
-        app.advance(); // → FileList (empty)
+        app.auth_status = "No remote available. Authenticate again.".into();
         return Ok(());
     };
-    let provider = app.provider.chosen.clone();
-
-    // Record the current remote if not already tracked
     if !app
         .authenticated_remotes
         .iter()
-        .any(|(r, _)| r == &remote_name)
+        .any(|(name, _)| name == &remote_name)
     {
-        let pname = provider
-            .as_ref()
-            .map(|p| p.display_name().to_string())
-            .unwrap_or_else(|| "Unknown".to_string());
-        app.authenticated_remotes.push((remote_name.clone(), pname));
+        app.authenticated_remotes
+            .push((remote_name.clone(), remote_name.clone()));
     }
-
-    app.auth_status = "Extracting rclone...".to_string();
-    terminal.draw(|f| crate::ui::render::render_state(f, app))?;
-
-    let binary = crate::embedded::ExtractedBinary::extract()?;
-    app.cleanup_track_file(binary.path());
-    if let Some(dir) = binary.temp_dir() {
-        app.cleanup_track_dir(dir);
-    }
-
     let config_dir = app
         .config_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("."));
-    let config = crate::rclone::RcloneConfig::for_case(&config_dir)?;
-
-    // Determine whether to create a combine remote
-    let (target, short, combine_remotes) = if app.authenticated_remotes.len() > 1 {
-        let remote_names: Vec<String> = app
-            .authenticated_remotes
-            .iter()
-            .map(|(r, _)| r.clone())
-            .collect();
-        let combine_name = crate::rclone::combine::create_combine_remote(&config, &remote_names)?;
-        app.combine_remote_created = true;
-        app.log_info(format!(
-            "Created combine remote '{}' with upstreams: {}",
-            combine_name,
-            remote_names.join(", ")
-        ));
-        let label = remote_names.join("+");
-        (format!("{}:", combine_name), label, remote_names)
-    } else {
-        let short = provider
-            .as_ref()
-            .map(|p| p.short_name().to_string())
-            .unwrap_or_else(|| remote_name.clone());
-        (format!("{}:", remote_name), short, Vec::new())
-    };
-
-    let runner = crate::rclone::RcloneRunner::new(binary.path()).with_config(config.path());
-
-    let (hash_type, is_onedrive) = if combine_remotes.is_empty() {
-        resolve_provider_hash_info(provider.as_ref())
-    } else {
-        (None, false) // combine remotes mix hash types
-    };
-
-    let max_in_memory: usize = std::env::var("RCLONE_TRIAGE_LARGE_LISTING_IN_MEMORY")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(50_000);
-
-    app.auth_status = "Listing files... (0 found)".to_string();
-    terminal.draw(|f| crate::ui::render::render_state(f, app))?;
-
-    if let Some(ref dirs) = app.forensics.directories {
-        let csv_path = dirs.listings.join(format!("{}_files.csv", short));
-
-        let listing_result = crate::files::listing::list_path_large_lsf_to_ps_csv_with_progress(
-            &runner,
-            &target,
-            hash_type.as_deref(),
-            is_onedrive,
-            &csv_path,
-            max_in_memory,
-            |count| {
-                app.auth_status = format!("Listing files... ({} found)", count);
-                let _ = terminal.draw(|f| crate::ui::render::render_state(f, app));
-            },
-        );
-
-        match listing_result {
-            Ok(result) => {
-                populate_listing_results(app, &result, &csv_path, &short, &combine_remotes);
-            }
-            Err(e) => {
-                app.log_error(format!("File listing failed: {}", e));
-                app.auth_status = format!("Listing failed: {}", e);
-            }
-        }
-    } else {
-        // No case directories — use a temp file for lsf output.
-        let tmp_dir = std::env::temp_dir();
-        let csv_path = tmp_dir.join(format!("{}_files.csv", short));
-
-        let listing_result = crate::files::listing::list_path_large_lsf_to_ps_csv_with_progress(
-            &runner,
-            &target,
-            hash_type.as_deref(),
-            is_onedrive,
-            &csv_path,
-            max_in_memory,
-            |count| {
-                app.auth_status = format!("Listing files... ({} found)", count);
-                let _ = terminal.draw(|f| crate::ui::render::render_state(f, app));
-            },
-        );
-
-        match listing_result {
-            Ok(result) => {
-                let mut entries = result.entries.clone();
-                if !combine_remotes.is_empty() {
-                    crate::files::listing::tag_entries_with_remote(&mut entries, &combine_remotes);
-                }
-                app.files.entries_full = entries.clone();
-                app.files.entries = entries
-                    .iter()
-                    .map(|e| {
-                        if let Some(ref rn) = e.remote_name {
-                            if e.path.is_empty() {
-                                format!("[{}]", rn)
-                            } else {
-                                format!("[{}] {}", rn, e.path)
-                            }
-                        } else {
-                            e.path.clone()
-                        }
-                    })
-                    .collect();
-                app.auth_status = format!("Found {} files", app.files.entries.len());
-                // Best-effort cleanup of temp file
-                let _ = std::fs::remove_file(&csv_path);
-            }
-            Err(e) => {
-                app.log_error(format!("File listing failed: {}", e));
-                app.auth_status = format!("Listing failed: {}", e);
-            }
-        }
-    }
-
-    app.advance(); // PostAuthChoice → FileList
-    Ok(())
+        .ok_or_else(|| anyhow::anyhow!("Case is not initialized"))?;
+    let config = crate::rclone::RcloneConfig::for_case(config_dir)?;
+    let path = config.path().to_path_buf();
+    app.remote.chosen_multiple = app
+        .authenticated_remotes
+        .iter()
+        .map(|(name, _)| name.clone())
+        .collect();
+    app.config_snapshot = None;
+    crate::ui::flows::list::perform_list_flow_from_config(app, terminal, &path)
 }
-
 /// Execute the "Mount as drive" post-auth action using the already-authenticated remote.
 ///
 /// When multiple remotes have been authenticated, a combine remote is created
 /// so all files appear under one mount point with per-remote subdirectories.
-fn perform_post_auth_mount<B: ratatui::backend::Backend>(
+fn perform_post_auth_mount<
+    B: ratatui::backend::Backend<Error: std::error::Error + Send + Sync + 'static>,
+>(
     app: &mut App,
     terminal: &mut Terminal<B>,
 ) -> Result<()> {
@@ -1870,6 +1804,8 @@ fn perform_post_auth_mount<B: ratatui::backend::Backend>(
             .collect();
         let combine_name = crate::rclone::combine::create_combine_remote(&config, &remote_names)?;
         app.combine_remote_created = true;
+        app.generated_combines
+            .push((config.path().to_path_buf(), combine_name.clone()));
         app.log_info(format!(
             "Created combine remote '{}' for mount with upstreams: {}",
             combine_name,
@@ -1952,74 +1888,6 @@ fn perform_post_auth_mount<B: ratatui::backend::Backend>(
 /// Extract the preferred hash type and OneDrive flag from a chosen provider.
 ///
 /// Returns `(hash_type, is_onedrive)` for use with `rclone lsf` listing.
-fn resolve_provider_hash_info(
-    provider: Option<&crate::providers::ProviderEntry>,
-) -> (Option<String>, bool) {
-    let known = provider.and_then(|p| p.known);
-    let hash_type = known
-        .and_then(|k: crate::providers::CloudProvider| k.hash_types().first().copied())
-        .map(|s: &str| s.to_string());
-    let is_onedrive = known
-        .map(|k| k == crate::providers::CloudProvider::OneDrive)
-        .unwrap_or(false);
-    (hash_type, is_onedrive)
-}
-
-/// Populate app state from a large listing result, including CSV/XLSX export tracking.
-///
-/// When `combine_remotes` is non-empty, entries are tagged with their remote name
-/// and display paths include a `[remote]` prefix.
-fn populate_listing_results(
-    app: &mut App,
-    result: &crate::files::listing::LargeListingResult,
-    csv_path: &std::path::Path,
-    short: &str,
-    combine_remotes: &[String],
-) {
-    app.log_info(format!("Exported listing to {:?}", csv_path));
-    app.track_file(csv_path, "Exported file listing CSV");
-
-    let mut entries = result.entries.clone();
-    if !combine_remotes.is_empty() {
-        crate::files::listing::tag_entries_with_remote(&mut entries, combine_remotes);
-    }
-    app.files.entries_full = entries.clone();
-    app.files.entries = entries
-        .iter()
-        .map(|e| {
-            if let Some(ref rn) = e.remote_name {
-                if e.path.is_empty() {
-                    format!("[{}]", rn)
-                } else {
-                    format!("[{}] {}", rn, e.path)
-                }
-            } else {
-                e.path.clone()
-            }
-        })
-        .collect();
-
-    if let Some(ref dirs) = app.forensics.directories {
-        let xlsx_path = dirs.listings.join(format!("{}_files.xlsx", short));
-        if let Err(e) = crate::files::export::export_listing_xlsx(&result.entries, &xlsx_path) {
-            app.log_error(format!("Excel export failed: {}", e));
-        } else {
-            app.log_info(format!("Exported listing to {:?}", xlsx_path));
-            app.track_file(&xlsx_path, "Exported file listing Excel");
-        }
-    }
-
-    let shown = app.files.entries.len();
-    if result.truncated {
-        app.auth_status = format!(
-            "Found {} files (showing first {}). CSV: {:?}",
-            result.total_entries, shown, csv_path
-        );
-    } else {
-        app.auth_status = format!("Found {} files. CSV: {:?}", result.total_entries, csv_path);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2172,7 +2040,7 @@ mod tests {
         );
         assert_eq!(
             normalize_queue_path("/Documents/file.txt", "drive"),
-            "Documents/file.txt"
+            "/Documents/file.txt"
         );
         assert_eq!(
             normalize_queue_path("Documents/file.txt", "drive"),
@@ -2180,14 +2048,14 @@ mod tests {
         );
         assert_eq!(
             normalize_queue_path("  drive:file.txt  ", "drive"),
-            "file.txt"
+            "  drive:file.txt  "
         );
     }
 
     #[test]
     fn test_normalize_queue_path_empty() {
         assert_eq!(normalize_queue_path("", "drive"), "");
-        assert_eq!(normalize_queue_path("   ", "drive"), "");
+        assert_eq!(normalize_queue_path("   ", "drive"), "   ");
     }
 
     #[test]
@@ -2198,6 +2066,60 @@ mod tests {
         assert!(score_queue_name("queue.xlsx") > score_queue_name("queue.csv"));
         // .xlsx gets +1 bonus
         assert!(score_queue_name("files.xlsx") > score_queue_name("files.csv"));
+    }
+
+    #[test]
+    fn imported_queue_preserves_remote_and_exact_path_identity() {
+        let mut app = App::new();
+        let make = |remote: &str, path: &str, is_dir| crate::files::DownloadQueueEntry {
+            path: path.into(),
+            size: None,
+            hash: None,
+            hash_type: None,
+            is_dir,
+            remote_name: Some(remote.into()),
+        };
+        let count = apply_queue_entries(
+            &mut app,
+            vec![
+                make("a", "same.txt", false),
+                make("b", "same.txt", false),
+                make("a", " same.txt", false),
+                make("a", "directory", true),
+                make("a", "same.txt", false),
+            ],
+            "a",
+        )
+        .unwrap();
+        assert_eq!(count, 3);
+        assert_eq!(
+            app.get_file_entry("[b] same.txt")
+                .unwrap()
+                .remote_name
+                .as_deref(),
+            Some("b")
+        );
+        assert_eq!(
+            app.get_file_entry("[a]  same.txt").unwrap().path,
+            " same.txt"
+        );
+        assert_eq!(app.files.entries_full[0].size, None);
+    }
+
+    #[test]
+    fn imported_queue_rejects_conflicting_duplicate_metadata() {
+        let mut app = App::new();
+        let first = crate::files::DownloadQueueEntry {
+            path: "same.txt".into(),
+            size: Some(1),
+            hash: None,
+            hash_type: None,
+            is_dir: false,
+            remote_name: Some("a".into()),
+        };
+        let mut second = first.clone();
+        second.size = Some(2);
+        assert!(apply_queue_entries(&mut app, vec![first, second], "a").is_err());
     }
 
     #[test]

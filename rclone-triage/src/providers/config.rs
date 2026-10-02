@@ -105,10 +105,10 @@ impl ProviderConfig {
                 client_secret: "X4Z3ca8xfWDb1Voo-F9a7ZxJ",
                 auth_url: "https://accounts.google.com/o/oauth2/auth",
                 token_url: "https://oauth2.googleapis.com/token",
-                scopes: &["https://www.googleapis.com/auth/drive"],
+                scopes: &["https://www.googleapis.com/auth/drive.readonly"],
             },
             // rclone requires 'scope' in config to know which Drive API scope to use
-            rclone_options: &[("scope", "drive")],
+            rclone_options: &[("scope", "drive.readonly")],
         }
     }
 
@@ -124,13 +124,15 @@ impl ProviderConfig {
                 token_url: "https://login.microsoftonline.com/common/oauth2/v2.0/token",
                 scopes: &[
                     "Files.Read",
-                    "Files.ReadWrite",
                     "Files.Read.All",
-                    "Files.ReadWrite.All",
+                    "Sites.Read.All",
                     "offline_access",
                 ],
             },
-            rclone_options: &[],
+            rclone_options: &[(
+                "access_scopes",
+                "Files.Read Files.Read.All Sites.Read.All offline_access",
+            )],
         }
     }
 
@@ -196,13 +198,9 @@ impl ProviderConfig {
                 // The default auth path is handled via `rclone authorize`, but keeping these
                 // scopes current avoids prompting for the legacy blocked scope when a custom
                 // client ID/secret is configured.
-                scopes: &[
-                    "https://www.googleapis.com/auth/photoslibrary.appendonly",
-                    "https://www.googleapis.com/auth/photoslibrary.readonly.appcreateddata",
-                    "https://www.googleapis.com/auth/photoslibrary.edit.appcreateddata",
-                ],
+                scopes: &["https://www.googleapis.com/auth/photoslibrary.readonly.appcreateddata"],
             },
-            rclone_options: &[],
+            rclone_options: &[("read_only", "true")],
         }
     }
 
@@ -499,8 +497,29 @@ mod tests {
         let config = ProviderConfig::for_provider(CloudProvider::GooglePhotos);
         let scopes = config.oauth.scopes.join(" ");
 
-        assert!(scopes.contains("photoslibrary.appendonly"));
+        assert!(!scopes.contains("photoslibrary.appendonly"));
         assert!(scopes.contains("photoslibrary.readonly.appcreateddata"));
-        assert!(scopes.contains("photoslibrary.edit.appcreateddata"));
+        assert!(!scopes.contains("photoslibrary.edit.appcreateddata"));
+    }
+
+    #[test]
+    fn acquisition_scopes_do_not_request_cloud_writes() {
+        for provider in [
+            CloudProvider::GoogleDrive,
+            CloudProvider::OneDrive,
+            CloudProvider::GooglePhotos,
+        ] {
+            let config = ProviderConfig::for_provider(provider);
+            let scopes = config.oauth.scopes.join(" ").to_ascii_lowercase();
+            assert!(!scopes.contains("readwrite"));
+            assert!(!scopes.contains("appendonly"));
+            assert!(!scopes.contains("edit.appcreateddata"));
+        }
+        assert!(ProviderConfig::for_provider(CloudProvider::GoogleDrive)
+            .rclone_options
+            .contains(&("scope", "drive.readonly")));
+        assert!(ProviderConfig::for_provider(CloudProvider::GooglePhotos)
+            .rclone_options
+            .contains(&("read_only", "true")));
     }
 }
