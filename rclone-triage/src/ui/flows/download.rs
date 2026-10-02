@@ -462,13 +462,30 @@ case "$1" in
     else
       printf '[{"Path":"accountA/same.txt","Size":5,"IsDir":false},{"Path":"accountB/same.txt","Size":4,"IsDir":false},{"Path":"accountA","Size":0,"IsDir":true}]'
     fi ;;
-  copyto)
-    case "$2" in
-      accountA:*) printf alpha > "$3" ;;
-      accountB:*) printf beta > "$3" ;;
-      *) exit 7 ;;
-    esac ;;
-  *) exit 8 ;;
+  rc)
+    [ "${2-}" = "--loopback" ] && [ "${3-}" = "operations/copyfile" ] || {
+      printf 'unsupported RC operation\n' >&2; exit 7;
+    }
+    shift 3
+    src_fs= src_remote= dst_fs= dst_remote=
+    for argument do
+      case "$argument" in
+        srcFs=*) src_fs=${argument#srcFs=} ;;
+        srcRemote=*) src_remote=${argument#srcRemote=} ;;
+        dstFs=*) dst_fs=${argument#dstFs=} ;;
+        dstRemote=*) dst_remote=${argument#dstRemote=} ;;
+      esac
+    done
+    [ "$src_remote" = 'same.txt' ] && [ "$dst_remote" = 'payload' ] && [ -d "$dst_fs" ] || {
+      printf 'invalid object or staging destination\n' >&2; exit 7;
+    }
+    case "$src_fs" in
+      accountA:) printf alpha > "$dst_fs/$dst_remote" ;;
+      accountB:) printf beta > "$dst_fs/$dst_remote" ;;
+      *) printf 'unknown source filesystem\n' >&2; exit 7 ;;
+    esac
+    printf '{}\n' ;;
+  *) printf 'unexpected rclone operation\n' >&2; exit 8 ;;
 esac
 "#).unwrap();
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -520,16 +537,21 @@ esac
         let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
         execute_plan(&mut app, &mut terminal, plan, runner, binary, false).unwrap();
         assert_eq!(app.state, AppState::Complete);
-        assert!(app.download.failures.is_empty());
-        assert_eq!(std::fs::read(&destinations[0]).unwrap(), b"alpha");
-        assert_eq!(std::fs::read(&destinations[1]).unwrap(), b"beta");
-        assert_eq!(std::fs::read(&source_config).unwrap(), original);
         let dirs = app.forensics.directories.as_ref().unwrap();
-        assert_eq!(dirs.base, temp.path().join("cases").join("named-case"));
         let manifest: serde_json::Value = serde_json::from_slice(
             &std::fs::read(dirs.base.join("acquisition-manifest.json")).unwrap(),
         )
         .unwrap();
+        assert!(
+            app.download.failures.is_empty(),
+            "Failed files: {:?}; outcomes: {}",
+            app.download.failures,
+            manifest["results"]
+        );
+        assert_eq!(std::fs::read(&destinations[0]).unwrap(), b"alpha");
+        assert_eq!(std::fs::read(&destinations[1]).unwrap(), b"beta");
+        assert_eq!(std::fs::read(&source_config).unwrap(), original);
+        assert_eq!(dirs.base, temp.path().join("cases").join("named-case"));
         assert_eq!(manifest["results"].as_array().unwrap().len(), 2);
         assert!(manifest["results"][0]["local_sha256"].is_string());
         let checkpoint: crate::forensics::logger::LogCheckpoint =
