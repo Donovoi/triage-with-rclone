@@ -1179,6 +1179,236 @@ class KoofrHandler(SeafileHandler):
     do_DELETE = dispatch
 
 
+class PixeldrainState(State):
+    """One synthetic filesystem; configured-key Basic auth, no token grant."""
+    root = "me"
+    modified = "2024-01-01T00:00:00.123Z"
+    created = "2023-12-31T00:00:00Z"
+    missing_path = "missing-synthetic-object.bin"
+    denied_path = "README-synthetic.txt"
+
+    def __init__(self, api_key, mode="normal", *, wrong_key="wrong-synthetic-key"):
+        if (mode not in ("normal", "member_denied") or not isinstance(api_key, str)
+                or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", api_key)
+                or not isinstance(wrong_key, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", wrong_key)
+                or wrong_key == api_key):
+            raise ValueError("invalid_pixeldrain_fixture")
+        super().__init__("", api_key)
+        self.api_key, self.wrong_key, self.mode = api_key, wrong_key, mode
+        self.deadline = time.monotonic() + 60
+        self.request_timeout, self.request_limit = 3, 128
+        self.byte_limit, self.response_bytes = 128 * 1024, 0
+        self.authenticated = self.auth_denied = self.member_denied = self.missing = 0
+        self.unexpected = self.rejected_payload_bytes = 0
+        self.budget_exceeded = self.user_checked = False
+        self.root_stats = 0
+        self.events, self.details = [], set()
+        self.accepted_connections = self.admission_denied = 0
+        self.connection_limit, self.active_connection_limit = 64, 4
+
+    def node(self, member):
+        if member not in self.files and not is_directory(member, self.files):
+            raise ValueError("invalid_pixeldrain_member")
+        payload = self.files.get(member)
+        return {"type": "file" if payload is not None else "dir", "path": "/me/" + member,
+                "name": member.rsplit("/", 1)[-1] if member else "me", "created": self.created,
+                "modified": self.modified, "mode_octal": "0644" if payload is not None else "0755",
+                "file_size": len(payload) if payload is not None else 0,
+                "file_type": "application/octet-stream" if payload is not None else "inode/directory",
+                "sha256_sum": hashlib.sha256(payload).hexdigest() if payload is not None else ""}
+
+    def envelope(self, member):
+        lineage = [""] + (["/".join(member.split("/")[:i + 1]) for i in range(len(member.split("/")))] if member else [])
+        result = {"path": [self.node(name) for name in lineage], "base_index": len(lineage) - 1,
+                  "children": [self.node(name) for name in children(member, self.files)] if is_directory(member, self.files) else []}
+        if not pixeldrain_envelope_valid(result, member, self.files, self.modified, self.created):
+            raise ValueError("invalid_pixeldrain_envelope")
+        return result
+
+
+def pixeldrain_envelope_valid(value, member, files, modified, created):
+    """Guard the fixture's unchecked upstream BaseIndex and prefix contract."""
+    if (not isinstance(member, str) or member not in files and not is_directory(member, files)
+            or not isinstance(value, dict) or set(value) != {"path", "base_index", "children"}
+            or not isinstance(value["path"], list) or not isinstance(value["children"], list)
+            or type(value["base_index"]) is not int or not 0 <= value["base_index"] < len(value["path"])):
+        return False
+    lineage = [""] + (["/".join(member.split("/")[:i + 1]) for i in range(len(member.split("/")))] if member else [])
+    descendants = children(member, files) if is_directory(member, files) else []
+    if value["base_index"] != len(lineage) - 1:
+        return False
+    fields = {"type", "path", "name", "created", "modified", "mode_octal", "file_size", "file_type", "sha256_sum"}
+    for nodes, names in ((value["path"], lineage), (value["children"], descendants)):
+        if len(nodes) != len(names):
+            return False
+        for node, name in zip(nodes, names):
+            data = files.get(name)
+            is_file = data is not None
+            if (not isinstance(node, dict) or set(node) != fields or node["path"] != "/me/" + name
+                    or node["name"] != (name.rsplit("/", 1)[-1] if name else "me")
+                    or node["type"] != ("file" if is_file else "dir") or node["modified"] != modified
+                    or node["created"] != created or node["mode_octal"] != ("0644" if is_file else "0755")
+                    or type(node["file_size"]) is not int or node["file_size"] != (len(data) if is_file else 0)
+                    or node["file_type"] != ("application/octet-stream" if is_file else "inode/directory")
+                    or node["sha256_sum"] != (hashlib.sha256(data).hexdigest() if is_file else "")):
+                return False
+    return True
+
+
+class PixeldrainFixture(SeafileFixture):
+    def __init__(self, state):
+        self.state = state
+        HTTPServer.__init__(self, ("127.0.0.1", 0), PixeldrainHandler)
+
+
+class PixeldrainHandler(SeafileHandler):
+    # Only reuse bounded transport/admission/error accounting, not another API.
+    def error(self, status, value):
+        messages = {"authentication_failed": "Synthetic authentication failed", "permission_denied": "Synthetic permission denied",
+                    "path_not_found": "Synthetic path not found", "fixture_read_only": "Synthetic fixture is read only"}
+        self.json_reply(status, {"value": value, "message": messages.get(value, "Synthetic request rejected")})
+
+    def reject(self, status=400):
+        self.server.state.unexpected += 1
+        self.error(status, "fixture_request_rejected")
+
+    def send_error(self, code, message=None, explain=None):
+        with self.server.state.lock:
+            self.reject(code)
+
+    def dispatch(self):
+        with self.server.state.lock:
+            state = self.server.state
+            state.requests += 1
+            if state.requests > state.request_limit or time.monotonic() > state.deadline:
+                state.budget_exceeded = True
+                self.error(429, "fixture_request_limit")
+                return
+            headers = list(self.headers.items())
+            lowered = [name.lower() for name, _ in headers]
+            try:
+                wire = self.raw_requestline.rstrip(b"\r\n").split(b" ")
+                if (len(wire) != 3 or wire[1].decode("ascii") != self.path or len(self.path) > 2048
+                        or not self.path.startswith("/") or any(ord(c) <= 32 or ord(c) >= 127 for c in self.path)
+                        or self.headers.get_all("Host") != [f"127.0.0.1:{self.server.server_address[1]}"]
+                        or len(lowered) != len(set(lowered)) or sum(len(k) + len(v) for k, v in headers) > 16384
+                        or any("\r" in v or "\n" in v for _, v in headers)
+                        or self.headers.get("Transfer-Encoding") is not None or self.headers.get("Content-Length", "0") != "0"):
+                    raise ValueError("invalid_request")
+                url = urllib.parse.urlsplit(self.path)
+                if url.scheme or url.netloc or "#" in self.path:
+                    raise ValueError("invalid_target")
+                if self.path == "/api/user":
+                    route, member = "user", ""
+                else:
+                    prefix = "/api/filesystem/me/"
+                    if not url.path.startswith(prefix) or url.query not in ("", "stat=") or "?" in self.path and url.query == "":
+                        raise ValueError("invalid_route")
+                    encoded = url.path[len(prefix):]
+                    parts = [urllib.parse.unquote(p, encoding="utf-8", errors="strict") for p in encoded.split("/")]
+                    if any("/" in p or "\\" in p or "%" in p or any(ord(c) < 32 or 127 <= ord(c) <= 159 for c in p) for p in parts):
+                        raise ValueError("invalid_member")
+                    member = "/".join(parts)
+                    if (member and any(p in ("", ".", "..") for p in parts)
+                            or "/".join(urllib.parse.quote(p, safe="-._~") for p in parts) != encoded):
+                        raise ValueError("noncanonical_member")
+                    route = "stat" if url.query == "stat=" else "delete" if self.command == "DELETE" else "content"
+                if (self.command != ("DELETE" if route == "delete" else "GET")
+                        or self.headers.get("Range") is not None and route != "content"):
+                    raise ValueError("invalid_method_or_range")
+            except (ValueError, UnicodeError):
+                self.reject()
+                return
+            wanted = "Basic " + base64.b64encode((":" + state.api_key).encode()).decode()
+            actual = self.headers.get("Authorization", "").encode()
+            if not hmac.compare_digest(actual, wanted.encode()):
+                wrong = "Basic " + base64.b64encode((":" + state.wrong_key).encode()).decode()
+                if route == "user" and hmac.compare_digest(actual, wrong.encode()):
+                    state.auth_denied += 1
+                    state.events.append(("auth_denied", ""))
+                else:
+                    state.unexpected += 1
+                self.error(401, "authentication_failed")
+                return
+            state.authenticated += 1
+            if route == "user":
+                if state.user_checked:
+                    self.reject()
+                    return
+                state.user_checked = True
+                state.events.append(("user_info", ""))
+                self.json_reply(200, {"username": "synthetic-user", "subscription": {"name": "synthetic-plan", "storage_space": 1048576},
+                                      "storage_space_used": 0})
+                return
+            if not state.user_checked:
+                self.reject()
+                return
+            if route == "stat" and member == "":
+                if state.root_stats >= 2 or state.details:
+                    self.reject()
+                    return
+                state.root_stats += 1
+                state.events.append(("root_stat", "/"))
+                self.json_reply(200, state.envelope(""))
+                return
+            if not state.root_stats:
+                self.reject()
+                return
+            if route == "delete":
+                if member != state.denied_path or member not in state.details:
+                    self.reject()
+                    return
+                state.rejected_mutations += 1
+                state.events.append(("write_denied", member))
+                self.error(405, "fixture_read_only")
+                return
+            if route == "stat" and member == state.denied_path and state.mode == "member_denied":
+                state.member_denied += 1
+                state.events.append(("member_denied", member))
+                self.error(403, "permission_denied")
+                return
+            if member == state.missing_path and route in ("stat", "content"):
+                state.missing += 1
+                state.events.append(("file_missing" if route == "stat" else "content_missing", member))
+                self.error(404, "path_not_found")
+                return
+            if route == "stat" and member in state.files:
+                state.details.add(member)
+                state.events.append(("member_stat", member))
+                self.json_reply(200, state.envelope(member))
+                return
+            if route == "stat" and member and is_directory(member, state.files) and state.root_stats == 2:
+                state.events.append(("directory_stat", member))
+                self.json_reply(200, state.envelope(member))
+                return
+            if route != "content" or member not in state.files or member not in state.details:
+                self.reject()
+                return
+            payload, code = state.files[member], 200
+            response_headers = {"Content-Type": "application/octet-stream"}
+            requested = self.headers.get("Range")
+            if requested is not None:
+                match = re.fullmatch(r"bytes=([0-9]{1,19})-([0-9]{0,19})", requested)
+                if not match:
+                    self.reject(416)
+                    return
+                start, end = int(match[1]), int(match[2]) if match[2] else len(payload) - 1
+                if start >= len(payload) or start > end:
+                    self.reject(416)
+                    return
+                end = min(end, len(payload) - 1)
+                response_headers["Content-Range"] = f"bytes {start}-{end}/{len(payload)}"
+                payload, code = payload[start:end + 1], 206
+            state.events.append(("content", member))
+            self.reply(code, payload, response_headers, object_payload=True)
+
+    do_GET = dispatch
+    do_HEAD = dispatch
+    do_POST = dispatch
+    do_PUT = dispatch
+    do_DELETE = dispatch
+
+
 class B2State(State):
     """Synthetic native B2 v4 authorization/v1 reads, restricted to one bucket."""
     bucket = "synthetic-bucket"
@@ -1808,7 +2038,7 @@ def serve(kind, state):
     server = (FtpFixture(state) if kind == "ftp" else SwiftFixture(state) if kind == "swift"
               else B2Fixture(state) if kind == "b2" else AzureBlobFixture(state) if kind == "azureblob"
               else AzureFilesFixture(state) if kind == "azurefiles" else SeafileFixture(state) if kind == "seafile"
-              else KoofrFixture(state) if kind == "koofr" else HttpFixture(state))
+              else KoofrFixture(state) if kind == "koofr" else PixeldrainFixture(state) if kind == "pixeldrain" else HttpFixture(state))
     thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05})
     thread.start()
     try:
