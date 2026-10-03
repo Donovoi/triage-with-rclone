@@ -392,6 +392,45 @@
         "reauthentication"
       ]
     },
+    "koofr-basic-read-fixture": {
+      "required": {
+        "application": [
+          "listing",
+          "download_hash",
+          "manifest_integrity",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation"
+        ],
+        "vendor": [
+          "listing",
+          "download_hash",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation"
+        ],
+        "local_protocol": [
+          "listing",
+          "download_hash",
+          "missing_object_rejection",
+          "authentication_rejection",
+          "source_preservation",
+          "config_preservation",
+          "fixture_write_rejection",
+          "cleanup"
+        ]
+      },
+      "review_required": false,
+      "unresolved_applicability": [
+        "reauthentication"
+      ]
+    },
     "seafile-account-token-fixture": {
       "required": {
         "application": [
@@ -1913,17 +1952,24 @@
     "koofr": {
       "canonical_name": "koofr",
       "schema_sha256": "70c2ac0923959ac5c8e384b6fba8807eb96668ab39dbd72df55219dc60efcc67",
-      "profile": "hosted-static-credentials-session-review",
+      "profile": "koofr-basic-read-fixture",
       "notes": [
         "Koofr-compatible account and generated application password; separate provider variants must not inherit acceptance automatically.",
         "Free account/API eligibility: review_required",
         "Scoped to the configured Basic-auth route. Any claimed additional white-label or future auth mode must be reviewed separately; transport reconnect is not token renewal.",
-        "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension."
+        "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension.",
+        "The local fixture uses provider=other, an explicit owned loopback endpoint, generated Basic credentials, one selected non-primary synthetic mount and three nonempty files. Read metadata with setmtime=true must retain a nonzero millisecond timestamp and MD5; independent local SHA256 verifies bytes. This does not exercise remote mtime writes.",
+        "Wrong-password rejection must be observed at mount inventory. A separate correct-credential known-member denial follows successful mount/root setup, so an ignored root-file probe or malformed empty success cannot qualify a negative. Exact missing-object, fixture write rejection, source/config preservation and owned cleanup remain required.",
+        "This synthetic Basic read fixture provides no hosted account login, token acquisition, OAuth refresh, revocation, general session recovery, application acquisition or alternate-provider acceptance. Existing application/vendor and lifecycle obligations remain independent."
       ],
       "source_links": [
         "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/koofr.md",
         "https://github.com/rclone/rclone/blob/v1.75.1/backend/koofr/koofr.go#L315-L327",
-        "https://rclone.org/koofr/"
+        "https://rclone.org/koofr/",
+        "https://github.com/rclone/rclone/blob/v1.75.1/backend/koofr/koofr.go#L267-L367",
+        "https://github.com/koofr/go-koofrclient/blob/cbd7fc9ad6a6/client_files.go#L16-L61",
+        "https://github.com/koofr/go-koofrclient/blob/cbd7fc9ad6a6/client_files.go#L197-L229",
+        "https://github.com/koofr/go-httpclient/blob/e20f8f203988/httpclient.go#L74-L116"
       ],
       "renewal_modes": [
         {
