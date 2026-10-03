@@ -25,7 +25,7 @@ The runtime's SHA256 is checked before execution, its version must match the bui
 
 `provider-coverage-policy.json` records the reviewed baseline plan and option-contract hash for each selectable backend. It is a plan, not a table of successful logins. The default baseline does not cover every enterprise account type, deployment, authentication mode, region or backend option. Add distinct acceptance cases before broadening those claims. Eight non-selectable wrapper backends remain outside this catalog.
 
-The contract hash covers canonical name/prefix and option names, provider selectors, required/password/advanced/exclusive flags. Help text, examples and defaults are excluded because they can include platform-specific paths. A runtime change still invalidates fixture receipts through the executable hash; a matching plan hash does not establish unchanged service behavior or permissions.
+The contract hash covers canonical name/prefix and option names, provider selectors, required/password/advanced/exclusive flags. Help text, examples and defaults are excluded because they can include platform-specific paths. Explicit platform hashes cover reviewed structural differences: the pinned local backend marks `nounc` advanced on Linux but ordinary on Windows. An unreviewed platform cannot inherit another platform's hash. A runtime change still invalidates fixture receipts through the executable hash; a matching plan hash does not establish unchanged service behavior or permissions.
 
 `scripts/provider_coverage.py` queries the verified native runtime with an empty private config and produces these separate layers:
 
