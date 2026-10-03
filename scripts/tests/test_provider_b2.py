@@ -295,8 +295,8 @@ class B2ServerTests(unittest.TestCase):
                 try:
                     try:
                         self.assertEqual(client.recv(1024), b"")
-                    except ConnectionResetError:
-                        pass  # A peer may reset when a final feed byte races close.
+                    except (ConnectionResetError, ConnectionAbortedError):
+                        pass  # A final feed byte racing close can reset or abort on Windows.
                     self.assertLess(time.monotonic() - started, 1.5)
                 finally:
                     stop.set()

@@ -994,6 +994,191 @@ class SeafileHandler(AzureBlobHandler):
     do_DELETE = dispatch
 
 
+class KoofrState(State):
+    """One synthetic non-primary mount; Basic reads, never account login."""
+    mount_id = "synthetic-mount"
+    modified_ms = 1704067200123
+    missing_path = "/missing-synthetic-object.bin"
+    denied_path = "/README-synthetic.txt"
+
+    def __init__(self, user, password, mode="normal", *, wrong_password="wrong-synthetic-password"):
+        super().__init__(user, password)
+        if mode not in ("normal", "member_denied") or wrong_password == password:
+            raise ValueError("invalid_koofr_fixture_mode")
+        self.mode, self.wrong_password = mode, wrong_password
+        self.deadline = time.monotonic() + 60
+        self.request_timeout, self.request_limit = 3, 128
+        self.byte_limit, self.response_bytes = 128 * 1024, 0
+        self.authenticated = self.auth_denied = self.member_denied = self.missing = 0
+        self.unexpected = self.rejected_payload_bytes = 0
+        self.budget_exceeded = False
+        self.events, self.details, self.listed = [], set(), set()
+        self.mounted = self.root_checked = False
+        self.accepted_connections = self.admission_denied = 0
+        self.connection_limit, self.active_connection_limit = 64, 4
+
+
+class KoofrFixture(SeafileFixture):
+    # Reuse only connection admission and exception accounting, not its API.
+    def __init__(self, state):
+        self.state = state
+        HTTPServer.__init__(self, ("127.0.0.1", 0), KoofrHandler)
+
+
+class KoofrHandler(SeafileHandler):
+    # Reuse bounded transport/static JSON/error accounting only. The Koofr
+    # routes and authentication below are independent of Seafile's token API.
+    def dispatch(self):
+        with self.server.state.lock:
+            state = self.server.state
+            state.requests += 1
+            if state.requests > state.request_limit or time.monotonic() > state.deadline:
+                state.budget_exceeded = True
+                self.json_reply(429, {"detail": "synthetic request limit"})
+                return
+            headers = list(self.headers.items())
+            lowered = [name.lower() for name, _ in headers]
+            host = f"127.0.0.1:{self.server.server_address[1]}"
+            base = "/api/v2/mounts/" + state.mount_id
+            routes = {"/api/v2/mounts": "mounts", base + "/files/info": "info", base + "/files/list": "list",
+                      "/content/api/v2/mounts/" + state.mount_id + "/files/get": "content", base + "/files/remove": "remove"}
+            try:
+                wire = self.raw_requestline.rstrip(b"\r\n").split(b" ")
+                if (len(wire) != 3 or wire[1].decode("ascii") != self.path or len(self.path) > 2048
+                        or not self.path.startswith("/") or any(ord(char) <= 32 or ord(char) >= 127 for char in self.path)
+                        or self.headers.get_all("Host") != [host] or len(lowered) != len(set(lowered))
+                        or sum(len(name) + len(value) for name, value in headers) > 16384
+                        or any("\r" in value or "\n" in value for _, value in headers)
+                        or self.headers.get("Transfer-Encoding") is not None
+                        or self.headers.get("Content-Length", "0") != "0"
+                        or re.search(r"%(?![0-9a-fA-F]{2})", self.path)):
+                    raise ValueError("invalid_request")
+                url = urllib.parse.urlsplit(self.path)
+                if url.scheme or url.netloc or url.fragment or url.path not in routes:
+                    raise ValueError("invalid_route")
+                pairs = urllib.parse.parse_qsl(url.query, keep_blank_values=True, strict_parsing=True,
+                                              max_num_fields=2, encoding="utf-8", errors="strict")
+                query = dict(pairs)
+                route = routes[url.path]
+                if len(pairs) != len(query) or set(query) != (set() if route == "mounts" else {"path"}):
+                    raise ValueError("invalid_query")
+                absolute = query.get("path", "")
+                if route != "mounts" and (not absolute.startswith("/") or "\\" in absolute or "%" in absolute
+                        or any(ord(char) < 32 or 127 <= ord(char) <= 159 for char in absolute)
+                        or (absolute != "/" and any(part in ("", ".", "..") for part in absolute[1:].split("/")))):
+                    raise ValueError("invalid_member")
+                if (self.command != ("DELETE" if route == "remove" else "GET")
+                        or self.headers.get("Range") is not None and route != "content"):
+                    raise ValueError("unsupported_method_or_range")
+            except (ValueError, UnicodeError):
+                self.reject()
+                return
+            wanted = "Basic " + base64.b64encode((state.user + ":" + state.password).encode()).decode()
+            authorization = self.headers.get("Authorization", "")
+            if not hmac.compare_digest(authorization.encode(), wanted.encode()):
+                wrong = "Basic " + base64.b64encode((state.user + ":" + state.wrong_password).encode()).decode()
+                if route == "mounts" and hmac.compare_digest(authorization.encode(), wrong.encode()):
+                    state.auth_denied += 1
+                    state.events.append(("auth_denied", ""))
+                else:
+                    state.unexpected += 1
+                self.json_reply(401, {"detail": "synthetic credentials denied"})
+                return
+            state.authenticated += 1
+            if route == "mounts":
+                if state.mounted:
+                    self.reject()
+                    return
+                state.mounted = True
+                state.events.append(("mounts", ""))
+                self.json_reply(200, {"mounts": [{"id": state.mount_id, "name": "Synthetic fixture", "type": "device", "isPrimary": False}]})
+                return
+            if not state.mounted:
+                self.reject()
+                return
+            if route == "info" and absolute == "/":
+                if state.root_checked:
+                    self.reject()
+                    return
+                state.root_checked = True
+                state.events.append(("root_info", "/"))
+                self.json_reply(200, self.entry("/"))
+                return
+            if not state.root_checked:
+                self.reject()
+                return
+            name = absolute[1:]
+            if route == "remove":
+                if absolute != state.denied_path:
+                    self.reject()
+                    return
+                state.rejected_mutations += 1
+                state.events.append(("write_denied", absolute))
+                self.json_reply(405, {"detail": "synthetic fixture is read-only"})
+                return
+            if route == "info" and state.mode == "member_denied" and absolute == state.denied_path:
+                state.member_denied += 1
+                state.events.append(("member_denied", absolute))
+                self.json_reply(401, {"detail": "synthetic member access denied"})
+                return
+            if absolute == state.missing_path and route in ("info", "content"):
+                state.missing += 1
+                state.events.append(("file_missing" if route == "info" else "content_missing", absolute))
+                self.json_reply(404, {"detail": "synthetic object missing"})
+                return
+            if route == "list":
+                if not is_directory(name, state.files) or absolute != "/" and "/" not in state.listed:
+                    self.reject()
+                    return
+                state.listed.add(absolute)
+                state.events.append(("list", absolute))
+                self.json_reply(200, {"files": [self.entry("/" + child) for child in children(name, state.files)]})
+                return
+            if route == "info" and (name in state.files or is_directory(name, state.files)):
+                state.details.add(absolute)
+                state.events.append(("member_info", absolute))
+                self.json_reply(200, self.entry(absolute))
+                return
+            if route != "content" or name not in state.files or absolute not in state.details:
+                self.reject()
+                return
+            payload = state.files[name]
+            result_headers, code = {"Content-Type": "application/octet-stream"}, 200
+            requested = self.headers.get("Range")
+            if requested is not None:
+                # Reject oversized numbers before integer conversion; malformed
+                # ranges remain a bounded, observable 416 response.
+                match = re.fullmatch(r"bytes=([0-9]{1,19})-([0-9]{0,19})", requested)
+                if not match:
+                    self.reject(416)
+                    return
+                start = int(match[1])
+                end = int(match[2]) if match[2] else len(payload) - 1
+                if start >= len(payload) or start > end:
+                    self.reject(416)
+                    return
+                end = min(end, len(payload) - 1)
+                result_headers["Content-Range"] = f"bytes {start}-{end}/{len(payload)}"
+                payload, code = payload[start:end + 1], 206
+            state.events.append(("content", absolute))
+            self.reply(code, payload, result_headers, object_payload=True)
+
+    def entry(self, absolute):
+        state = self.server.state
+        name = absolute[1:]
+        payload = state.files.get(name)
+        return {"name": posixpath.basename(name) if name else "/", "type": "file" if payload is not None else "dir",
+                "modified": state.modified_ms, "size": len(payload) if payload is not None else 0,
+                "contentType": "application/octet-stream" if payload is not None else "",
+                "path": absolute, "hash": hashlib.md5(payload).hexdigest() if payload is not None else ""}
+
+    do_GET = dispatch
+    do_HEAD = dispatch
+    do_POST = dispatch
+    do_PUT = dispatch
+    do_DELETE = dispatch
+
+
 class B2State(State):
     """Synthetic native B2 v4 authorization/v1 reads, restricted to one bucket."""
     bucket = "synthetic-bucket"
@@ -1622,7 +1807,8 @@ class FtpHandler(socketserver.StreamRequestHandler):
 def serve(kind, state):
     server = (FtpFixture(state) if kind == "ftp" else SwiftFixture(state) if kind == "swift"
               else B2Fixture(state) if kind == "b2" else AzureBlobFixture(state) if kind == "azureblob"
-              else AzureFilesFixture(state) if kind == "azurefiles" else SeafileFixture(state) if kind == "seafile" else HttpFixture(state))
+              else AzureFilesFixture(state) if kind == "azurefiles" else SeafileFixture(state) if kind == "seafile"
+              else KoofrFixture(state) if kind == "koofr" else HttpFixture(state))
     thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05})
     thread.start()
     try:
