@@ -983,6 +983,186 @@ class ProviderLabTests(unittest.TestCase):
             else:
                 self.assertIn("azurefiles_source_changed" if mutation == "source" else "azurefiles_config_changed", row["errors"])
 
+    @staticmethod
+    def seafile_trace(tail, payload=0):
+        state = FIXTURES.SeafileState("synthetic", "synthetic-password")
+        state.events = [("server_info", ""), ("auth_granted", ""), ("libraries", "")] + tail
+        state.requests = len(state.events)
+        state.login_attempts = state.grants = 1
+        state.token = "synthetic-issued-token"
+        state.auth_uses = state.requests - 2
+        state.payload_bytes = payload
+        return state
+
+    def test_seafile_options_require_fresh_password_login_to_exact_library(self):
+        state = FIXTURES.SeafileState("synthetic", "synthetic-password")
+        self.assertEqual(LAB.seafile_options(state, 12345, "synthetic-obscured"), {
+            "type": "seafile", "url": "http://127.0.0.1:12345/", "user": "synthetic",
+            "pass": "synthetic-obscured", "2fa": "false", "library": "Synthetic Library",
+            "create_library": "false"})
+
+    def test_seafile_positive_verdict_requires_login_then_exact_member_link_and_payload(self):
+        name = "nested/space name.txt"
+        tail = [("file_detail", name), ("link_issued", name), ("payload", name)]
+        size = len(FIXTURES.FILES[name])
+        self.assertTrue(LAB.seafile_flow_matches(self.seafile_trace(tail, size), "download", name, size))
+        for mutation in ("no_login", "two_grants", "no_token", "wrong_member", "wrong_order", "wrong_bytes",
+                         "hidden_request", "unexpected", "budget", "rejected_payload", "mutation", "extra_event"):
+            with self.subTest(mutation=mutation):
+                state = self.seafile_trace(tail, size)
+                if mutation == "no_login": state.login_attempts = 0
+                elif mutation == "two_grants": state.grants = 2
+                elif mutation == "no_token": state.token = None
+                elif mutation == "wrong_member": state.events[3] = ("file_detail", "README-synthetic.txt")
+                elif mutation == "wrong_order": state.events[3:5] = list(reversed(state.events[3:5]))
+                elif mutation == "wrong_bytes": state.payload_bytes -= 1
+                elif mutation == "hidden_request": state.requests += 1
+                elif mutation == "unexpected": state.unexpected = 1
+                elif mutation == "budget": state.budget_exceeded = True
+                elif mutation == "rejected_payload": state.rejected_payload_bytes = 1
+                elif mutation == "mutation": state.rejected_mutations = 1
+                elif mutation == "extra_event":
+                    state.events.append(("file_detail", name))
+                    state.requests += 1
+                    state.auth_uses += 1
+                self.assertFalse(LAB.seafile_flow_matches(state, "download", name, size))
+
+    def test_seafile_listing_and_stat_require_observed_authenticated_metadata(self):
+        self.assertTrue(LAB.seafile_flow_matches(self.seafile_trace([("directory_list", "")]), "listing"))
+        self.assertFalse(LAB.seafile_flow_matches(self.seafile_trace([("directory_list", "nested")]), "listing"))
+        member = "README-synthetic.txt"
+        self.assertTrue(LAB.seafile_flow_matches(self.seafile_trace([("file_detail", member)]), "stat", member))
+        self.assertFalse(LAB.seafile_flow_matches(self.seafile_trace([("link_issued", member)]), "stat", member))
+        state = self.seafile_trace([("directory_list", "")], 1)
+        self.assertFalse(LAB.seafile_flow_matches(state, "listing"))
+
+    def test_seafile_missing_verdict_cannot_be_satisfied_by_link_or_directory_404(self):
+        member = "absent-synthetic.txt"
+        self.assertTrue(LAB.seafile_flow_matches(self.seafile_trace([("file_missing", member)]), "missing", member))
+        for event, name in (("link_missing", member), ("directory_missing", member),
+                            ("file_missing", "wrong-member"), ("token_denied", "")):
+            self.assertFalse(LAB.seafile_flow_matches(self.seafile_trace([(event, name)]), "missing", member))
+
+    def test_seafile_password_and_cached_token_denials_are_distinct_without_login_fallback(self):
+        for kind, event in (("wrong_password", "auth_denied"), ("cached_token", "cached_denied")):
+            state = FIXTURES.SeafileState("synthetic", "synthetic-password")
+            state.events = [("server_info", ""), (event, "")]
+            state.requests = 2
+            state.login_attempts = state.auth_denied = int(kind == "wrong_password")
+            state.cached_denied = int(kind == "cached_token")
+            self.assertTrue(LAB.seafile_flow_matches(state, kind))
+            self.assertFalse(LAB.seafile_flow_matches(state, "cached_token" if kind == "wrong_password" else "wrong_password"))
+            state.grants = 1
+            self.assertFalse(LAB.seafile_flow_matches(state, kind))
+        state.grants = 0
+        state.login_attempts = 1
+        self.assertFalse(LAB.seafile_flow_matches(state, "cached_token"))
+
+    def test_seafile_case_requires_exactly_one_child(self):
+        runtime = mock.Mock(sequence=4)
+        for count in (0, 1, 2):
+            def action():
+                runtime.sequence += count
+                return "synthetic-result"
+            if count == 1:
+                self.assertEqual(LAB.seafile_one_process(runtime, action), "synthetic-result")
+            else:
+                with self.assertRaisesRegex(LAB.LabError, "not_single_process"):
+                    LAB.seafile_one_process(runtime, action)
+
+    def test_seafile_exact_stat_requires_file_only_and_precise_detail_timestamp(self):
+        item = LAB.fixture_manifest()[0]
+        entry = {"Path": item["path"], "Size": item["size"], "IsDir": False, "ModTime": "2024-01-01T00:00:00Z"}
+        runtime = mock.Mock()
+        runtime.run.return_value = (0, json.dumps({"item": entry}).encode(), b"")
+        LAB.seafile_exact_stat(runtime, self.root / "synthetic.conf", item)
+        args = runtime.run.call_args.args[0]
+        self.assertEqual(args[:5], ["rc", "--loopback", "operations/stat", "fs=Synthetic:", "remote=" + item["path"]])
+        self.assertEqual(json.loads(args[5].removeprefix("opt=")), {"noModTime": False, "noMimeType": True, "filesOnly": True})
+        runtime.run.return_value = (0, json.dumps({"item": dict(entry, ModTime="2024-01-01T11:00:00+11:00")}).encode(), b"")
+        LAB.seafile_exact_stat(runtime, self.root / "synthetic.conf", item)
+        for key, value in (("Path", "wrong-member"), ("Size", True), ("Size", item["size"] + 1),
+                           ("IsDir", True), ("ModTime", "2024-01-01T00:00:00.0000001Z"),
+                           ("ModTime", "2024-01-02T00:00:00Z")):
+            changed = dict(entry, **{key: value})
+            runtime.run.return_value = (0, json.dumps({"item": changed}).encode(), b"")
+            with self.assertRaisesRegex(LAB.LabError, "metadata_mismatch"):
+                LAB.seafile_exact_stat(runtime, self.root / "synthetic.conf", item)
+
+    def test_seafile_timestamps_accept_equivalent_instants_without_relaxing_azurefiles(self):
+        expected = LAB.fixture_manifest()
+        for timestamp in ("2024-01-01T00:00:00Z", "2024-01-01T00:00:00.000000000+00:00",
+                          "2024-01-01T11:00:00+11:00", "2023-12-31T19:00:00.0000000-05:00",
+                          "2024-01-01T05:30:00+05:30"):
+            rows = [{"Path": item["path"], "Size": item["size"], "IsDir": False, "ModTime": timestamp}
+                    for item in expected]
+            with self.subTest(timestamp=timestamp):
+                self.assertTrue(LAB.seafile_listing_matches(json.dumps(rows), expected))
+        self.assertFalse(LAB.azurefiles_listing_matches(json.dumps(rows), expected))
+
+    def test_seafile_timestamps_reject_drift_naive_and_invalid_offset_normalization(self):
+        expected = LAB.fixture_manifest()
+        for timestamp in ("2024-01-01T00:00:01Z", "2024-01-01T00:00:00", "2024-01-01T00:00:00.0000001Z",
+                          "2024-01-01T11:00:00.000000001+11:00", "2024-01-01T11:00:00.0000000000+11:00",
+                          "2024-01-01T00:60:00+01:00", "2024-01-01T01:00:00+00:60", "2024-01-02T00:00:00+24:00",
+                          "2024-01-01T00:00:00-00:00", "2024-01-01T00:00:00+00", "2024-01-01T00:00:00+0000",
+                          "2024-01-01T00:00:00+00:00:00", "2024-01-01 00:00:00Z", "2024-02-30T00:00:00Z"):
+            rows = [{"Path": item["path"], "Size": item["size"], "IsDir": False, "ModTime": timestamp}
+                    for item in expected]
+            with self.subTest(timestamp=timestamp):
+                self.assertFalse(LAB.seafile_listing_matches(json.dumps(rows), expected))
+
+    def test_seafile_incidental_auth_failure_cannot_pass_negative_or_claim_extra_capabilities(self):
+        state = FIXTURES.SeafileState("synthetic", "synthetic-password")
+        @contextmanager
+        def fake_serve(kind, supplied):
+            self.assertEqual(kind, "seafile")
+            try:
+                yield 12345
+            finally:
+                supplied.cleanup_complete = True
+        runtime = mock.Mock(sequence=0)
+        def run(args, config=None):
+            runtime.sequence += 1
+            if args[0] == "obscure": return 0, b"synthetic-obscured", b""
+            return 1, b"", b"synthetic unrelated startup failure"
+        runtime.run.side_effect = run
+        with mock.patch.object(LAB, "SeafileState", return_value=state), mock.patch.object(LAB, "serve", fake_serve), \
+                mock.patch.object(LAB, "listener_closed", return_value=True):
+            row = LAB.run_backend(runtime, "seafile", self.root / "case")
+        self.assertIn("seafile_wrong_password_denial_not_observed", row["errors"])
+        self.assertNotEqual(row["capabilities"]["authentication_rejection"], "passed")
+        self.assertEqual(set(row["capabilities"]), {"listing", "download_hash", "missing_object_rejection",
+            "authentication_rejection", "source_preservation", "config_preservation", "fixture_write_rejection", "cleanup"})
+
+    def test_seafile_early_failure_preserves_source_config_and_cleanup_failure_evidence(self):
+        for mutation in ("source", "config", "listener", "teardown"):
+            state = FIXTURES.SeafileState("synthetic", "synthetic-password")
+            root = self.root / mutation
+            @contextmanager
+            def fake_serve(kind, supplied):
+                try:
+                    yield 12345
+                finally:
+                    if mutation == "teardown": raise RuntimeError("fixture_cleanup_failed")
+                    supplied.cleanup_complete = True
+            runtime = mock.Mock(sequence=0)
+            def run(args, config=None):
+                runtime.sequence += 1
+                if args[0] == "obscure": return 0, b"synthetic-obscured", b""
+                if mutation == "source": state.files["README-synthetic.txt"] = b"changed"
+                if mutation == "config": Path(config).write_bytes(b"changed")
+                raise LAB.LabError("synthetic_early_failure")
+            runtime.run.side_effect = run
+            with mock.patch.object(LAB, "SeafileState", return_value=state), mock.patch.object(LAB, "serve", fake_serve), \
+                    mock.patch.object(LAB, "listener_closed", return_value=mutation != "listener"):
+                row = LAB.run_backend(runtime, "seafile", root)
+            self.assertTrue(row["errors"])
+            if mutation in ("listener", "teardown"):
+                self.assertEqual(row["capabilities"]["cleanup"], "failed")
+            else:
+                self.assertIn("seafile_source_changed" if mutation == "source" else "seafile_config_changed", row["errors"])
+
     def test_timeout_kills_and_reaps_exact_owned_process(self):
         runtime = object.__new__(LAB.Runtime)
         process = mock.Mock()
