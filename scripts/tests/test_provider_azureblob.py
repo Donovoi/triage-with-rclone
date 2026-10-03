@@ -192,6 +192,34 @@ def independent_sign(method, target, headers, key=KEY):
 
 
 class AzureBlobServerTests(unittest.TestCase):
+    def test_raw_socket_signed_target_cannot_alias_normalized_leading_slashes(self):
+        state = FIXTURES.AzureBlobState(KEY64, utc_now=lambda: NOW)
+        with FIXTURES.serve("azureblob", state) as self.port:
+            for target, expected in ((README, EXPECTED["README-synthetic.txt"]),
+                                     (BASE + "/nested%2Fspace%20name.txt", EXPECTED["nested/space name.txt"])):
+                signed = self.signed_headers("GET", target)
+                for extra_slashes in (0, 1, 2):
+                    with self.subTest(target=target, extra_slashes=extra_slashes):
+                        before = (state.authenticated, state.payload_bytes, state.unexpected)
+                        wire_target = "/" * extra_slashes + target
+                        request = ("GET " + wire_target + " HTTP/1.1\r\nHost: 127.0.0.1:" + str(self.port) + "\r\n"
+                                   + "".join(name + ": " + value + "\r\n" for name, value in signed.items()) + "\r\n")
+                        with socket.create_connection(("127.0.0.1", self.port), timeout=3) as client:
+                            client.sendall(request.encode("ascii"))
+                            with http.client.HTTPResponse(client) as response:
+                                response.begin()
+                                result = response.status, dict(response.getheaders()), response.read(16385)
+                        if extra_slashes:
+                            self.assert_error(result, 400, "InvalidQueryParameterValue")
+                            self.assertEqual((state.authenticated, state.payload_bytes, state.unexpected),
+                                             (before[0], before[1], before[2] + 1))
+                        else:
+                            self.assertEqual(result[0], 200)
+                            self.assertEqual(result[2], expected)
+                            self.assertEqual((state.authenticated, state.payload_bytes, state.unexpected),
+                                             (before[0] + 1, before[1] + len(expected), before[2]))
+        self.assertTrue(state.cleanup_complete)
+
     def test_independent_fixed_canonical_and_hmac_vectors(self):
         for vector in SIGNING_VECTORS:
             with self.subTest(vector=vector["name"]):
