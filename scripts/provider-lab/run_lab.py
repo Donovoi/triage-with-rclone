@@ -11,6 +11,7 @@ import base64
 from contextlib import contextmanager
 from datetime import datetime, timezone
 import hashlib
+import hmac
 import http.client
 import io
 import json
@@ -28,10 +29,11 @@ import uuid
 import zipfile
 import zlib
 
-from fixture_servers import FILES, State, SwiftState, B2State, probe_write_rejection, serve
+from fixture_servers import FILES, State, SwiftState, B2State, AzureBlobState, azure_string_to_sign, probe_write_rejection, serve
+from email.utils import format_datetime
 
 
-BACKENDS = ("local", "http", "webdav", "ftp", "sftp", "s3", "archive", "swift", "b2")
+BACKENDS = ("local", "http", "webdav", "ftp", "sftp", "s3", "archive", "swift", "b2", "azureblob")
 HARNESS_FILES = ("fixture_servers.py", "run_lab.py")
 MAX_OUTPUT = 2 * 1024 * 1024
 COMMAND_TIMEOUT = 20
@@ -834,9 +836,99 @@ def b2_checks(runtime, root, row, expected):
         caps["config_preservation"] = "passed"
 
 
+def azureblob_options(state, port):
+    return {"type": "azureblob", "env_auth": "false", "use_emulator": "true", "account": state.account,
+            "key": state.password, "endpoint": f"http://127.0.0.1:{port}/{state.account}", "use_arrow_list": "false"}
+
+
+def azureblob_checks(runtime, root, row, expected):
+    caps, preserved = row["capabilities"], {}
+    state = AzureBlobState(base64.b64encode(os.urandom(32)).decode())
+    port = None
+
+    def save_config(name, options):
+        path = config_file(root, name, options)
+        data = path.read_bytes()
+        preserved[path] = (data, hashlib.sha256(data).hexdigest())
+        return path
+
+    try:
+        with serve("azureblob", state) as port:
+            opts = azureblob_options(state, port)
+            good = save_config("azureblob-baseline.conf", opts)
+            wrong_key = base64.b64encode(bytes(value ^ 1 for value in state.key_bytes)).decode()
+            bad = save_config("azureblob-denied.conf", dict(opts, key=wrong_key))
+            code, output, _ = runtime.run(["cat", "Synthetic:synthetic-container/README-synthetic.txt"], bad)
+            check(code != 0 and not output and state.auth_denied > 0 and state.authenticated == 0
+                  and state.payload_bytes == 0, "azureblob_bad_auth_not_observed")
+            denied_before = state.auth_denied
+            caps["authentication_rejection"] = "passed"
+            code, output, _ = runtime.run(["lsjson", "--recursive", "--files-only", "--no-modtime",
+                                            "--no-mimetype", "Synthetic:synthetic-container"], good)
+            check(code == 0, "azureblob_listing_failed")
+            try:
+                got = sorted((entry["Path"], entry["Size"], entry["IsDir"]) for entry in json.loads(output))
+            except (KeyError, TypeError, ValueError):
+                raise LabError("azureblob_listing_invalid") from None
+            check(got == [(item["path"], item["size"], False) for item in expected], "azureblob_listing_mismatch")
+            caps["listing"] = "passed"
+            downloads = root / "downloads"
+            downloads.mkdir(mode=0o700)
+            for index, item in enumerate(expected):
+                exact_file_stat(runtime, good, "Synthetic:synthetic-container", item["path"], item["size"])
+                destination = downloads / f"verified-{index}"
+                code, _, _ = exact_copy(runtime, good, "Synthetic:synthetic-container", item["path"],
+                                        downloads.as_posix(), destination.name)
+                check(code == 0 and destination.is_file() and destination.stat().st_size == item["size"]
+                      and digest(destination) == item["sha256"], "azureblob_download_mismatch")
+            caps["download_hash"] = "passed"
+            missing = "absent-synthetic.txt"
+            code, output, _ = runtime.run(["rc", "--loopback", "operations/stat", "fs=Synthetic:synthetic-container",
+                "remote=" + missing, 'opt={"noModTime":true,"noMimeType":true,"filesOnly":true}'], good)
+            check(code == 0 and json.loads(output) == {"item": None}, "azureblob_missing_stat_mismatch")
+            destination = downloads / "missing-must-not-exist"
+            code, output, error = exact_copy(runtime, good, "Synthetic:synthetic-container", missing,
+                                            downloads.as_posix(), destination.name)
+            check(code != 0 and not list(downloads.glob(destination.name + "*")) and state.missing >= 2
+                  and b"object not found" in (output + error).lower(), "azureblob_missing_object_accepted")
+            caps["missing_object_rejection"] = "passed"
+            check(state.rejected_mutations == 0 and state.auth_denied == denied_before,
+                  "azureblob_unexpected_native_denial_or_mutation")
+            # This request only exercises the fixture's mutation guard. Native
+            # read/auth acceptance above remains independent of this signer.
+            target = f"/{state.account}/{state.container}/write-must-not-exist.txt"
+            headers = {"x-ms-date": format_datetime(datetime.now(timezone.utc), usegmt=True),
+                       "x-ms-version": "2026-06-06", "Content-Length": "0"}
+            signed = azure_string_to_sign(state.account, "PUT", target, headers.items())
+            signature = base64.b64encode(hmac.new(state.key_bytes, signed.encode(), hashlib.sha256).digest()).decode()
+            headers["Authorization"] = f"SharedKey {state.account}:{signature}"
+            client = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
+            try:
+                client.request("PUT", target, body=b"", headers=headers)
+                response = client.getresponse()
+                body = response.read(4097)
+                check(response.status == 403 and response.getheader("x-ms-error-code") == "AuthorizationPermissionMismatch"
+                      and len(body) <= 4096 and state.rejected_mutations == 1
+                      and state.auth_denied == denied_before, "azureblob_write_guard_not_observed")
+            finally:
+                client.close()
+            caps["fixture_write_rejection"] = "passed"
+    finally:
+        closed = state.cleanup_complete and (port is None or listener_closed(port))
+        caps["cleanup"] = "passed" if closed else "failed"
+        check(closed, "azureblob_listener_cleanup_failed")
+        check(not state.budget_exceeded and not state.unexpected and not state.rejected_payload_bytes,
+              "azureblob_unexpected_request_or_budget")
+        check(served_source_unchanged(state, expected), "azureblob_source_changed")
+        caps["source_preservation"] = "passed"
+        check(all(path.is_file() and path.read_bytes() == data and digest(path) == sha256
+                  for path, (data, sha256) in preserved.items()), "azureblob_config_changed")
+        caps["config_preservation"] = "passed"
+
+
 def run_backend(runtime, backend, root):
     root.mkdir(mode=0o700)
-    independent = backend in ("http", "webdav", "ftp", "swift", "b2")
+    independent = backend in ("http", "webdav", "ftp", "swift", "b2", "azureblob")
     row = {"backend": backend,
            "fixture_kind": "local" if backend in ("local", "archive") else "independent_loopback" if independent else "rclone_loopback",
            "capabilities": {key: "not_run" for key in (
@@ -855,6 +947,8 @@ def run_backend(runtime, backend, root):
         row["capabilities"].update(config_preservation="not_run", service_token_reacquisition="not_run", renewal_denial="not_run")
     if backend == "b2":
         row["capabilities"].update(config_preservation="not_run", account_token_reacquisition="not_run", renewal_denial="not_run")
+    if backend == "azureblob":
+        row["capabilities"]["config_preservation"] = "not_run"
     if backend in ("http", "webdav"):
         row["capabilities"].update(truncated_download_rejection="not_run", cancellation_cleanup="not_run")
     source = root / "source"
@@ -869,6 +963,9 @@ def run_backend(runtime, backend, root):
         prepare_files(files_root)
     port = None
     try:
+        if backend == "azureblob":
+            azureblob_checks(runtime, root, row, expected)
+            return row
         if backend == "b2":
             b2_checks(runtime, root, row, expected)
             return row
