@@ -40,26 +40,33 @@ ARCHIVE_CAPABILITIES = {
     "archive_crc32", "directory_as_file_rejection", "corrupt_member_rejection",
     "truncated_archive_rejection", "config_preservation",
 }
+ARCHIVE_ONLY_CAPABILITIES = ARCHIVE_CAPABILITIES - {"config_preservation"}
 ARCHIVE_REQUIRED_CAPABILITIES = ARCHIVE_CAPABILITIES | {
     "listing", "download_hash", "missing_object_rejection", "source_preservation",
     "cleanup", "authentication_rejection", "fixture_write_rejection",
+}
+SWIFT_ONLY_CAPABILITIES = {"service_token_reacquisition", "renewal_denial"}
+SWIFT_REQUIRED_CAPABILITIES = SWIFT_ONLY_CAPABILITIES | {
+    "listing", "download_hash", "missing_object_rejection", "authentication_rejection",
+    "source_preservation", "config_preservation", "cleanup", "fixture_write_rejection",
 }
 CAPABILITIES = {
     "authentication", "listing", "download_hash", "manifest_integrity",
     "source_preservation", "cleanup", "refresh", "reauthentication", "cancellation", "denial",
     "revocation", "missing_object_rejection", "authentication_rejection",
     "truncated_download_rejection", "cancellation_cleanup", "fixture_write_rejection", "host_key_rejection",
-} | ARCHIVE_CAPABILITIES
+} | ARCHIVE_CAPABILITIES | SWIFT_ONLY_CAPABILITIES
 FIXTURE_KINDS = {
     "http": "independent_loopback", "webdav": "independent_loopback",
     "ftp": "independent_loopback", "sftp": "rclone_loopback",
     "s3": "rclone_loopback", "local": "local", "archive": "local",
+    "swift": "independent_loopback",
 }
 FIXTURE_CAPABILITIES = {
     "listing", "download_hash", "missing_object_rejection", "source_preservation",
     "authentication_rejection", "cleanup", "truncated_download_rejection",
     "cancellation_cleanup", "fixture_write_rejection", "host_key_rejection",
-} | ARCHIVE_CAPABILITIES
+} | ARCHIVE_CAPABILITIES | SWIFT_ONLY_CAPABILITIES
 HARNESSES = ("fixture_servers.py", "run_lab.py")
 HASH_PATTERN = re.compile(r"[a-f0-9]{64}")
 ID_PATTERN = re.compile(r"[a-z0-9_]{1,80}")
@@ -416,9 +423,11 @@ def validate_receipt(receipt, runtime, harness_sha256, now, max_age_hours=MAX_AG
         if not isinstance(capabilities, dict) or not capabilities or set(capabilities) - FIXTURE_CAPABILITIES:
             fail("invalid_fixture_capability")
         if (backend not in ("http", "webdav") and set(capabilities) & {"truncated_download_rejection", "cancellation_cleanup"}
-                or backend not in ("http", "webdav", "ftp", "archive") and "fixture_write_rejection" in capabilities
+                or backend not in ("http", "webdav", "ftp", "archive", "swift") and "fixture_write_rejection" in capabilities
                 or backend != "sftp" and "host_key_rejection" in capabilities
-                or backend != "archive" and set(capabilities) & ARCHIVE_CAPABILITIES):
+                or backend != "archive" and set(capabilities) & ARCHIVE_ONLY_CAPABILITIES
+                or backend not in ("archive", "swift") and "config_preservation" in capabilities
+                or backend != "swift" and set(capabilities) & SWIFT_ONLY_CAPABILITIES):
             fail("invalid_fixture_capability")
         if any(value not in ("passed", "failed", "not_run", "not_applicable") for value in capabilities.values()):
             fail("invalid_fixture_outcome")
@@ -427,6 +436,10 @@ def validate_receipt(receipt, runtime, harness_sha256, now, max_age_hours=MAX_AG
             fail("invalid_fixture_not_applicable")
         if backend == "archive" and (set(capabilities) != ARCHIVE_REQUIRED_CAPABILITIES
                                      or capabilities["authentication_rejection"] != "not_applicable"):
+            fail("invalid_fixture_capability")
+        # This exact contract attests only the reviewed Swift v1 forced-401
+        # fixture. It is neither OAuth refresh nor general reauthentication.
+        if backend == "swift" and set(capabilities) != SWIFT_REQUIRED_CAPABILITIES:
             fail("invalid_fixture_capability")
         errors = row.get("errors")
         if not isinstance(errors, list) or len(errors) > 32 or any(not isinstance(code, str) or not re.fullmatch(r"[a-z][a-z0-9_]{0,80}", code) for code in errors):

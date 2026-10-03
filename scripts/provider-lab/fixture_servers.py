@@ -3,13 +3,19 @@
 import base64
 from contextlib import contextmanager
 import ftplib
+import hashlib
+import hmac
 import html
 import http.client
+import json
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import posixpath
+import re
+import secrets
 import socket
 import socketserver
 import threading
+import time
 import urllib.parse
 from xml.sax.saxutils import escape
 
@@ -53,6 +59,7 @@ class State:
         self.stopping = threading.Event()
         self.sockets = set()
         self.lock = threading.Lock()
+        self.cleanup_complete = False
 
 
 class LoopbackThreads(socketserver.ThreadingMixIn):
@@ -191,6 +198,229 @@ class HttpHandler(BaseHTTPRequestHandler):
     do_COPY = do_PUT
 
 
+class SwiftState(State):
+    """Only synthetic Swift v1 keys/tokens; never serialized into receipts."""
+    account = "/v1/AUTH_synthetic"
+    container = "synthetic-bucket"
+
+    def __init__(self, user, password, mode="normal"):
+        super().__init__(user, password)
+        if mode not in ("normal", "renew", "deny"):
+            raise ValueError("invalid_swift_fixture_mode")
+        self.mode = mode
+        self.deadline = time.monotonic() + 60
+        self.request_limit = 128
+        self.generation = 0
+        self.token = None
+        self.tokens = set()
+        self.revoked = set()
+        self.events = []
+        self.forced_401 = 0
+        self.auth_denied = 0
+        self.renewal_denied = 0
+        self.storage_denied = 0
+        self.missing = 0
+        self.unexpected = 0
+        self.budget_exceeded = False
+        self.rejected_payload_bytes = 0
+
+
+class SwiftFixture(LoopbackThreads, HTTPServer):
+    def __init__(self, state):
+        self.state = state
+        super().__init__(("127.0.0.1", 0), SwiftHandler)
+
+
+class SwiftHandler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.0"
+
+    def log_message(self, *args):
+        pass
+
+    def reply(self, status, body=b"", headers=None, size=None):
+        self.close_connection = True
+        self.send_response(status)
+        self.send_header("Content-Length", str(len(body) if size is None else size))
+        for key, value in (headers or {}).items():
+            self.send_header(key, value)
+        self.end_headers()
+        if self.command != "HEAD":
+            if status >= 400:
+                self.server.state.rejected_payload_bytes += len(body)
+            self.wfile.write(body)
+
+    def reject(self, status=400):
+        self.server.state.unexpected += 1
+        self.reply(status)
+
+    def dispatch(self):
+        # State transitions and the bounded response are serialized. Sockets
+        # have a five-second timeout; fixture shutdown also closes owned sockets.
+        with self.server.state.lock:
+            state = self.server.state
+            state.requests += 1
+            if state.requests > state.request_limit or time.monotonic() > state.deadline:
+                state.budget_exceeded = True
+                self.reply(429)
+                return
+            host = f"127.0.0.1:{self.server.server_address[1]}"
+            if (self.headers.get_all("Host") != [host] or len(self.path) > 2048
+                    or sum(len(key) + len(value) for key, value in self.headers.items()) > 8192
+                    or self.headers.get("Transfer-Encoding") is not None):
+                self.reject()
+                return
+            lengths = self.headers.get_all("Content-Length", [])
+            if len(lengths) > 1 or (lengths and (not lengths[0].isdigit() or int(lengths[0]) > 4096)):
+                self.reject()
+                return
+            if self.command in ("GET", "HEAD") and lengths and int(lengths[0]) != 0:
+                self.reject()
+                return
+            url = urllib.parse.urlsplit(self.path)
+            if url.scheme or url.netloc or url.fragment:
+                self.reject()
+                return
+            try:
+                path = "/" + safe_path(self.path)
+                query = urllib.parse.parse_qs(url.query, keep_blank_values=True, max_num_fields=8)
+            except ValueError:
+                self.reject()
+                return
+            if path == "/auth/v1.0":
+                if self.command != "GET" or query:
+                    self.reject()
+                    return
+                if (self.headers.get_all("X-Auth-User") != [state.user]
+                        or len(self.headers.get_all("X-Auth-Key", [])) != 1
+                        or not hmac.compare_digest(self.headers.get("X-Auth-Key", ""), state.password)):
+                    state.denied += 1
+                    state.auth_denied += 1
+                    state.events.append(("auth_denied", state.generation))
+                    self.reply(401)
+                    return
+                if state.mode == "deny" and state.forced_401:
+                    state.renewal_denied += 1
+                    state.events.append(("renewal_denied", state.generation))
+                    self.reply(403)
+                    return
+                state.generation += 1
+                state.token = "synthetic-" + secrets.token_hex(24)
+                state.tokens.add(state.token)
+                state.events.append(("grant", state.generation))
+                self.reply(200, headers={"X-Auth-Token": state.token,
+                    "X-Storage-Url": f"http://{host}{state.account}"})
+                return
+            base = state.account + "/" + state.container
+            if path != base and not path.startswith(base + "/"):
+                self.reject(404)
+                return
+            token = self.headers.get("X-Auth-Token", "")
+            if (len(self.headers.get_all("X-Auth-Token", [])) != 1 or state.token is None
+                    or token in state.revoked or not hmac.compare_digest(token, state.token)):
+                state.storage_denied += 1
+                state.events.append(("storage_denied", state.generation))
+                self.reply(401)
+                return
+            if self.command not in ("GET", "HEAD"):
+                if self.command not in ("PUT", "POST", "DELETE", "COPY") or query:
+                    self.reject(405)
+                    return
+                state.rejected_mutations += 1
+                self.reply(405)
+                return
+            if path == base:
+                if self.command == "HEAD":
+                    if query:
+                        self.reject()
+                        return
+                    self.reply(204, headers={"X-Container-Object-Count": str(len(state.files)),
+                        "X-Container-Bytes-Used": str(sum(map(len, state.files.values()))), "X-Storage-Policy": "synthetic"})
+                else:
+                    self.list_objects(query)
+                return
+            if query:
+                self.reject()
+                return
+            name = path[len(base) + 1:]
+            if name not in state.files:
+                state.missing += 1
+                self.reply(404)
+                return
+            body = state.files[name]
+            headers = {"Content-Type": "application/octet-stream", "Last-Modified": STAMP,
+                       "Etag": hashlib.md5(body).hexdigest(), "Accept-Ranges": "bytes"}
+            if self.command == "HEAD":
+                state.events.append(("head", state.generation))
+                self.reply(200, headers=headers, size=len(body))
+                return
+            if state.mode in ("renew", "deny") and state.generation == 1 and not state.forced_401:
+                if ("head", 1) not in state.events or name != "README-synthetic.txt":
+                    self.reject()
+                    return
+                state.revoked.add(token)
+                state.forced_401 += 1
+                state.events.append(("get_401", 1))
+                self.reply(401)
+                return
+            code = 200
+            ranges = self.headers.get_all("Range", [])
+            if ranges:
+                match = re.fullmatch(r"bytes=(\d+)-(\d*)", ranges[0]) if len(ranges) == 1 else None
+                if not match:
+                    self.reject(416)
+                    return
+                start = int(match[1])
+                end = int(match[2]) if match[2] else len(body) - 1
+                if start > end or end >= len(body):
+                    self.reject(416)
+                    return
+                headers["Content-Range"] = f"bytes {start}-{end}/{len(body)}"
+                body = body[start:end + 1]
+                code = 206
+            state.events.append(("get", state.generation))
+            state.payload_bytes += len(body)
+            self.reply(code, body, headers)
+
+    def list_objects(self, query):
+        state = self.server.state
+        allowed = {"format", "prefix", "delimiter", "marker", "end_marker", "limit"}
+        if set(query) - allowed or any(len(values) != 1 for values in query.values()) or query.get("format") != ["json"]:
+            self.reject()
+            return
+        values = {key: value[0] for key, value in query.items()}
+        prefix, delimiter = values.get("prefix", ""), values.get("delimiter", "")
+        limit = values.get("limit", "1000")
+        if delimiter not in ("", "/") or not limit.isdigit() or not 1 <= int(limit) <= 1000:
+            self.reject()
+            return
+        for key in ("prefix", "marker", "end_marker"):
+            value = values.get(key, "")
+            if "\\" in value or "\x00" in value or ".." in value.split("/"):
+                self.reject()
+                return
+        rows = {}
+        for name, body in sorted(state.files.items()):
+            if not name.startswith(prefix):
+                continue
+            tail = name[len(prefix):]
+            if delimiter and delimiter in tail:
+                child = prefix + tail.split(delimiter, 1)[0] + delimiter
+                rows[child] = {"subdir": child}
+            else:
+                rows[name] = {"name": name, "bytes": len(body), "hash": hashlib.md5(body).hexdigest(),
+                              "content_type": "application/octet-stream", "last_modified": "2024-01-01T00:00:00.000000"}
+        selected = [row for name, row in sorted(rows.items()) if name > values.get("marker", "")
+                    and (not values.get("end_marker") or name < values["end_marker"])][:int(limit)]
+        self.reply(200, json.dumps(selected, separators=(",", ":")).encode(), {"Content-Type": "application/json"})
+
+    do_GET = dispatch
+    do_HEAD = dispatch
+    do_PUT = dispatch
+    do_POST = dispatch
+    do_DELETE = dispatch
+    do_COPY = dispatch
+
+
 class FtpFixture(LoopbackThreads, socketserver.TCPServer):
     def __init__(self, state):
         self.state = state
@@ -318,7 +548,7 @@ class FtpHandler(socketserver.StreamRequestHandler):
 
 @contextmanager
 def serve(kind, state):
-    server = FtpFixture(state) if kind == "ftp" else HttpFixture(state)
+    server = FtpFixture(state) if kind == "ftp" else SwiftFixture(state) if kind == "swift" else HttpFixture(state)
     thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05})
     thread.start()
     try:
@@ -337,6 +567,7 @@ def serve(kind, state):
         thread.join(5)
         if thread.is_alive():
             raise RuntimeError("fixture_cleanup_failed")
+        state.cleanup_complete = True
 
 
 def probe_write_rejection(kind, port, state):
