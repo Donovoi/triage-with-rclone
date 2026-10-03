@@ -370,6 +370,36 @@
         "reauthentication"
       ]
     },
+    "seafile-account-token-fixture": {
+      "required": {
+        "application": [
+          "listing",
+          "download_hash",
+          "manifest_integrity",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation",
+          "refresh"
+        ],
+        "local_protocol": [
+          "listing",
+          "download_hash",
+          "missing_object_rejection",
+          "source_preservation",
+          "cleanup",
+          "authentication_rejection",
+          "config_preservation",
+          "fixture_write_rejection"
+        ]
+      },
+      "review_required": false,
+      "unresolved_applicability": [
+        "reauthentication"
+      ]
+    },
     "seafile-renewal-plan-session-review": {
       "required": {
         "application": [
@@ -2639,12 +2669,14 @@
     "seafile": {
       "canonical_name": "seafile",
       "schema_sha256": "5996f3d999e1c1b3e29012211bd1cbf314efcd865d248c7976f9aa36e8fdfd95",
-      "profile": "seafile-renewal-plan-session-review",
+      "profile": "seafile-account-token-fixture",
       "notes": [
         "Owned free Community Edition server and account credentials, or supported account token. Library API token is unsupported; 2FA/encrypted libraries are separate profiles.",
         "Free account/API eligibility: no_vendor_account_needed",
         "Account-token validity is controlled by the actual server. A short app subprocess cannot prove a 45-minute renewal path; a backend harness is only protocol evidence unless the production path also runs.",
-        "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension."
+        "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension.",
+        "Local protocol plan: independent loopback HTTP API for one synthetic unencrypted library, generated username/password, no saved token in the positive profile, no 2FA or library password, and no library creation. The native fixture shared manifest contains three nonempty files; empty-file native acquisition is not covered.",
+        "Positive listing/download verdicts require observed JSON account-token acquisition followed by use of that exact token. Wrong-password and invalid cached-token rejection are separate negative checks. Relative payload links remain on the owned listener. These checks establish neither vendor login nor account-token refresh, encrypted-library authorization renewal, session recovery, application acceptance, or coverage of other Seafile versions."
       ],
       "source_links": [
         "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/seafile.md",
@@ -2652,7 +2684,11 @@
         "https://github.com/rclone/rclone/blob/v1.75.1/backend/seafile/seafile.go#L235-L282",
         "https://github.com/rclone/rclone/blob/v1.75.1/backend/seafile/webapi.go#L33-L72",
         "https://github.com/rclone/rclone/blob/v1.75.1/backend/seafile/webapi.go#L86-L96",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/seafile/renew.go#L18-L53"
+        "https://github.com/rclone/rclone/blob/v1.75.1/backend/seafile/renew.go#L18-L53",
+        "https://github.com/rclone/rclone/blob/v1.75.1/backend/seafile/webapi.go#L247-L298",
+        "https://github.com/rclone/rclone/blob/v1.75.1/backend/seafile/webapi.go#L489-L650",
+        "https://github.com/rclone/rclone/blob/v1.75.1/backend/seafile/api/types.go#L7-L93",
+        "https://github.com/rclone/rclone/blob/v1.75.1/lib/rest/rest.go#L334-L407"
       ],
       "renewal_modes": [
         {

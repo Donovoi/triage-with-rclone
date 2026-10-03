@@ -92,7 +92,7 @@ jobs:
           python -B ../scripts/provider_coverage.py --rclone "$PROVIDER_BINARY" \
             --report "$RUNNER_TEMP/provider-evidence.json" \
             --fixture-receipt "$RUNNER_TEMP/provider-fixtures.json" \
-            --require-plans --require-fixtures local,archive,http,webdav,ftp,sftp,s3,swift,b2,azureblob,azurefiles
+            --require-plans --require-fixtures local,archive,http,webdav,ftp,sftp,s3,swift,b2,azureblob,azurefiles,seafile
       - name: Retain sanitized protocol evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

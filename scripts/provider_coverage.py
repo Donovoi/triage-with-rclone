@@ -60,9 +60,14 @@ AZUREBLOB_REQUIRED_CAPABILITIES = {
     "source_preservation", "config_preservation", "cleanup", "fixture_write_rejection",
 }
 AZUREFILES_REQUIRED_CAPABILITIES = frozenset(AZUREBLOB_REQUIRED_CAPABILITIES)
-AZURE_FIXTURE_CONTRACTS = {
+SEAFILE_REQUIRED_CAPABILITIES = frozenset({
+    "listing", "download_hash", "missing_object_rejection", "authentication_rejection",
+    "source_preservation", "config_preservation", "cleanup", "fixture_write_rejection",
+})
+READ_FIXTURE_CONTRACTS = {
     "azureblob": AZUREBLOB_REQUIRED_CAPABILITIES,
     "azurefiles": AZUREFILES_REQUIRED_CAPABILITIES,
+    "seafile": SEAFILE_REQUIRED_CAPABILITIES,
 }
 CAPABILITIES = {
     "authentication", "listing", "download_hash", "manifest_integrity",
@@ -75,7 +80,7 @@ FIXTURE_KINDS = {
     "ftp": "independent_loopback", "sftp": "rclone_loopback",
     "s3": "rclone_loopback", "local": "local", "archive": "local",
     "swift": "independent_loopback", "b2": "independent_loopback", "azureblob": "independent_loopback",
-    "azurefiles": "independent_loopback",
+    "azurefiles": "independent_loopback", "seafile": "independent_loopback",
 }
 FIXTURE_CAPABILITIES = {
     "listing", "download_hash", "missing_object_rejection", "source_preservation",
@@ -438,10 +443,10 @@ def validate_receipt(receipt, runtime, harness_sha256, now, max_age_hours=MAX_AG
         if not isinstance(capabilities, dict) or not capabilities or set(capabilities) - FIXTURE_CAPABILITIES:
             fail("invalid_fixture_capability")
         if (backend not in ("http", "webdav") and set(capabilities) & {"truncated_download_rejection", "cancellation_cleanup"}
-                or backend not in ("http", "webdav", "ftp", "archive", "swift", "b2", "azureblob", "azurefiles") and "fixture_write_rejection" in capabilities
+                or backend not in ("http", "webdav", "ftp", "archive", "swift", "b2", "azureblob", "azurefiles", "seafile") and "fixture_write_rejection" in capabilities
                 or backend != "sftp" and "host_key_rejection" in capabilities
                 or backend != "archive" and set(capabilities) & ARCHIVE_ONLY_CAPABILITIES
-                or backend not in ("archive", "swift", "b2", "azureblob", "azurefiles") and "config_preservation" in capabilities
+                or backend not in ("archive", "swift", "b2", "azureblob", "azurefiles", "seafile") and "config_preservation" in capabilities
                 or backend != "swift" and set(capabilities) & SWIFT_ONLY_CAPABILITIES
                 or backend != "b2" and set(capabilities) & B2_ONLY_CAPABILITIES
                 or backend not in ("swift", "b2") and "renewal_denial" in capabilities):
@@ -462,9 +467,9 @@ def validate_receipt(receipt, runtime, harness_sha256, now, max_age_hours=MAX_AG
         # contract. Never alias it to Swift, OAuth or session evidence.
         if backend == "b2" and set(capabilities) != B2_REQUIRED_CAPABILITIES:
             fail("invalid_fixture_capability")
-        # Each independent static Shared Key fixture proves only its exact
-        # read/denial contract, never other services, auth modes or lifecycle.
-        if backend in AZURE_FIXTURE_CONTRACTS and set(capabilities) != AZURE_FIXTURE_CONTRACTS[backend]:
+        # These independent fixtures share capability names, not protocol or
+        # auth semantics. No result proves another service, mode or lifecycle.
+        if backend in READ_FIXTURE_CONTRACTS and set(capabilities) != READ_FIXTURE_CONTRACTS[backend]:
             fail("invalid_fixture_capability")
         errors = row.get("errors")
         if not isinstance(errors, list) or len(errors) > 32 or any(not isinstance(code, str) or not re.fullmatch(r"[a-z][a-z0-9_]{0,80}", code) for code in errors):

@@ -690,6 +690,300 @@ class AzureFilesHandler(AzureBlobHandler):
     do_DELETE = dispatch
 
 
+class SeafileState(State):
+    library_id = "11111111-2222-4333-8444-555555555555"
+    library_name = "Synthetic Library"
+    invalid_cached_token = "invalid-synthetic-cached-token"
+
+    def __init__(self, user, password):
+        super().__init__(user, password)
+        self.deadline = time.monotonic() + 60
+        self.request_timeout = 3
+        self.request_limit = 64
+        self.byte_limit = 128 * 1024
+        self.response_bytes = 0
+        self.token = None
+        self.login_attempts = self.grants = self.auth_uses = 0
+        self.auth_denied = self.cached_denied = self.missing = 0
+        self.unexpected = self.rejected_payload_bytes = 0
+        self.budget_exceeded = False
+        self.events = []
+        self.details = set()
+        self.links = {}
+        self.accepted_connections = self.admission_denied = 0
+        self.connection_limit = 64
+        self.active_connection_limit = 4
+
+
+class SeafileFixture(LoopbackThreads, HTTPServer):
+    def __init__(self, state):
+        self.state = state
+        super().__init__(("127.0.0.1", 0), SeafileHandler)
+
+    def get_request(self):
+        conn, address = super().get_request()
+        state = self.state
+        with state.lock:
+            state.accepted_connections += 1
+            if state.accepted_connections > state.connection_limit or len(state.sockets) > state.active_connection_limit:
+                state.budget_exceeded = True
+                state.unexpected += 1
+                state.admission_denied += 1
+                state.sockets.discard(conn)
+                conn.close()
+                raise OSError("synthetic_connection_limit")
+        return conn, address
+
+    def handle_error(self, request, client_address):
+        # An unhandled handler failure must never be mistaken for a clean trace.
+        with self.state.lock:
+            self.state.unexpected += 1
+
+
+class SeafileHandler(AzureBlobHandler):
+    # The inherited whole-request timer closes only this accepted socket and
+    # joins its timer on every exit; all HTTP/API semantics below are Seafile.
+    def reply(self, status, body=b"", headers=None, object_payload=False):
+        state = self.server.state
+        if state.response_bytes + len(body) > state.byte_limit:
+            state.budget_exceeded = True
+            status, body, object_payload = 429, b'{"detail":"fixture byte limit"}', False
+        state.response_bytes += len(body)
+        self.close_connection = True
+        self.send_response(status)
+        self.send_header("Content-Length", str(len(body)))
+        for name, value in (headers or {}).items():
+            self.send_header(name, value)
+        self.end_headers()
+        if self.command != "HEAD":
+            if object_payload:
+                if status >= 400:
+                    state.rejected_payload_bytes += len(body)
+                else:
+                    state.payload_bytes += len(body)
+            self.wfile.write(body)
+
+    def json_reply(self, status, value):
+        self.reply(status, json.dumps(value, separators=(",", ":")).encode(), {"Content-Type": "application/json"})
+
+    def reject(self, status=400):
+        self.server.state.unexpected += 1
+        self.json_reply(status, {"detail": "synthetic request rejected"})
+
+    def send_error(self, code, message=None, explain=None):
+        # BaseHTTPRequestHandler handles unknown methods and parse errors here.
+        # They must not disappear from evidence or reflect attacker input.
+        with self.server.state.lock:
+            self.server.state.unexpected += 1
+            self.json_reply(code, {"detail": "synthetic malformed request"})
+
+    def dispatch(self):
+        with self.server.state.lock:
+            state = self.server.state
+            state.requests += 1
+            if state.requests > state.request_limit or time.monotonic() > state.deadline:
+                state.budget_exceeded = True
+                self.json_reply(429, {"detail": "synthetic request limit"})
+                return
+            host = f"127.0.0.1:{self.server.server_address[1]}"
+            headers = list(self.headers.items())
+            lowered = [name.lower() for name, _ in headers]
+            try:
+                wire_parts = self.raw_requestline.rstrip(b"\r\n").split(b" ")
+                if (len(wire_parts) != 3 or wire_parts[1].decode("ascii") != self.path
+                        or self.headers.get_all("Host") != [host] or len(self.path) > 2048
+                        or len(set(lowered)) != len(lowered) or sum(len(k) + len(v) for k, v in headers) > 8192
+                        or any("\r" in value or "\n" in value for _, value in headers)
+                        or self.headers.get("Transfer-Encoding") is not None or self.headers.get("X-SEAFILE-OTP") is not None
+                        or not self.path.startswith("/") or any(ord(char) <= 32 or ord(char) >= 127 for char in self.path)
+                        or re.search(r"%(?![0-9A-Fa-f]{2})", self.path)):
+                    raise ValueError("invalid_request")
+                length = self.headers.get("Content-Length", "0")
+                if not length.isdigit() or int(length) > 4096 or (self.command in ("GET", "HEAD") and int(length)):
+                    raise ValueError("invalid_length")
+                url = urllib.parse.urlsplit(self.path)
+                if url.scheme or url.netloc or url.fragment or "%" in url.path or "//" in url.path:
+                    raise ValueError("invalid_route")
+                pairs = urllib.parse.parse_qsl(url.query, keep_blank_values=True, strict_parsing=True,
+                                              max_num_fields=4, encoding="utf-8", errors="strict")
+                query = dict(pairs)
+                if len(query) != len(pairs):
+                    raise ValueError("duplicate_query")
+            except (ValueError, UnicodeError):
+                self.reject()
+                return
+            path = url.path
+            api = "/api2/repos/" + state.library_id
+            directory = "/api/v2.1/repos/" + state.library_id + "/dir/"
+            payload_route = bool(re.fullmatch(r"/fixture-download/[0-9a-f]{32}", path))
+            if self.headers.get("Range") is not None and not payload_route:
+                self.reject()
+                return
+            if path == "/api2/server-info/":
+                if self.command != "GET" or query or self.headers.get("Authorization") is not None or state.events:
+                    self.reject()
+                    return
+                state.events.append(("server_info", ""))
+                self.json_reply(200, {"version": "7.0.0"})
+                return
+            if path == "/api2/auth-token/":
+                if (self.command != "POST" or query or self.headers.get("Authorization") is not None
+                        or self.headers.get("Content-Type") != "application/json" or not self.headers.get("Content-Length")
+                        or state.events != [("server_info", "")] or state.login_attempts):
+                    self.reject()
+                    return
+                try:
+                    raw = self.rfile.read(int(length))  # The owned whole-request timer bounds slow feeds.
+                    if len(raw) != int(length):
+                        raise ValueError("incomplete_body")
+                    body = json.loads(raw.decode("utf-8"), object_pairs_hook=B2Handler.unique_object)
+                    if (not isinstance(body, dict) or set(body) != {"username", "password"}
+                            or any(not isinstance(value, str) for value in body.values())):
+                        raise ValueError("invalid_auth_body")
+                    given_user, given_password = body["username"].encode("utf-8"), body["password"].encode("utf-8")
+                except (ValueError, UnicodeError, OSError):
+                    self.reject()
+                    return
+                state.login_attempts += 1
+                if not hmac.compare_digest(given_user, state.user.encode()) or not hmac.compare_digest(given_password, state.password.encode()):
+                    state.auth_denied += 1
+                    state.events.append(("auth_denied", ""))
+                    self.json_reply(400, {"non_field_errors": ["fixture authentication denied"]})
+                    return
+                state.token = "synthetic-" + secrets.token_hex(24)
+                state.grants += 1
+                state.events.append(("auth_granted", ""))
+                self.json_reply(200, {"token": state.token})
+                return
+            if path not in ("/api2/repos/", directory, api + "/file/detail/", api + "/file/") and not payload_route:
+                self.reject()
+                return
+            if not state.events or state.events[0] != ("server_info", ""):
+                self.reject()
+                return
+            authorization = self.headers.get("Authorization", "")
+            if state.token is None or not hmac.compare_digest(authorization.encode(), ("Token " + state.token).encode()):
+                if (path == "/api2/repos/" and self.command == "GET" and not query
+                        and hmac.compare_digest(authorization.encode(), ("Token " + state.invalid_cached_token).encode())):
+                    state.cached_denied += 1
+                    state.events.append(("cached_denied", ""))
+                else:
+                    state.unexpected += 1
+                    state.events.append(("token_denied", ""))
+                self.json_reply(403, {"detail": "fixture token denied"})
+                return
+            state.auth_uses += 1
+            if path == "/api2/repos/":
+                if self.command != "GET" or query or state.events != [("server_info", ""), ("auth_granted", "")]:
+                    self.reject()
+                    return
+                state.events.append(("libraries", ""))
+                self.json_reply(200, [{"encrypted": False, "id": state.library_id, "name": state.library_name,
+                                      "size": sum(map(len, state.files.values())), "mtime": 1704067200}])
+                return
+            if ("libraries", "") not in state.events:
+                self.reject()
+                return
+            if payload_route:
+                if self.command != "GET" or query or path[1:] not in state.links:
+                    self.reject()
+                    return
+                name, issuing_token = state.links[path[1:]]
+                if not hmac.compare_digest(issuing_token, state.token):
+                    self.reject()
+                    return
+                payload = state.files[name]
+                response_headers = {"Content-Type": "application/octet-stream"}
+                code = 200
+                requested_range = self.headers.get("Range")
+                if requested_range is not None:
+                    match = re.fullmatch(r"bytes=(\d+)-(\d*)", requested_range)
+                    if not match:
+                        self.reject(416)
+                        return
+                    start, end = int(match[1]), int(match[2]) if match[2] else len(payload) - 1
+                    if start > end or end >= len(payload):
+                        self.reject(416)
+                        return
+                    response_headers["Content-Range"] = f"bytes {start}-{end}/{len(payload)}"
+                    payload, code = payload[start:end + 1], 206
+                state.events.append(("payload", name))
+                self.reply(code, payload, response_headers, object_payload=True)
+                return
+            allowed_query = {"p", "recursive"} if path == directory else {"p"}
+            absolute = query.get("p", "")
+            if (set(query) != allowed_query or not absolute.startswith("/") or "\\" in absolute or "%" in absolute
+                    or any(ord(char) < 32 or 127 <= ord(char) <= 159 for char in absolute)
+                    or (absolute != "/" and any(part in ("", ".", "..") for part in absolute[1:].split("/")))):
+                self.reject()
+                return
+            name = absolute[1:]
+            if self.command in ("DELETE", "PUT", "POST"):
+                if path != api + "/file/" or name not in state.files:
+                    self.reject()
+                    return
+                state.rejected_mutations += 1
+                state.events.append(("write_denied", name))
+                self.json_reply(403, {"detail": "fixture is read-only"})
+                return
+            if self.command != "GET":
+                self.reject()
+                return
+            if path == directory:
+                if query["recursive"] not in ("0", "1"):
+                    self.reject()
+                    return
+                if not is_directory(name, state.files):
+                    state.missing += 1
+                    state.events.append(("directory_missing", name))
+                    self.json_reply(404, {"detail": "fixture directory missing"})
+                    return
+                prefix = name + "/" if name else ""
+                names = set(state.files)
+                for member in state.files:
+                    parent = posixpath.dirname(member)
+                    while parent:
+                        names.add(parent)
+                        parent = posixpath.dirname(parent)
+                selected = sorted(item for item in names if item.startswith(prefix) and item != name
+                                  and (query["recursive"] == "1" or "/" not in item[len(prefix):]))
+                state.events.append(("directory_list", name))
+                self.json_reply(200, {"dirent_list": [self.entry(item) for item in selected]})
+                return
+            if name not in state.files:
+                state.missing += 1
+                state.events.append(("file_missing" if path.endswith("/file/detail/") else "link_missing", name))
+                self.json_reply(404, {"detail": "fixture file missing"})
+                return
+            if path.endswith("/file/detail/"):
+                state.details.add(name)
+                state.events.append(("file_detail", name))
+                result = self.entry(name)
+                result.pop("mtime")
+                result["last_modified"] = "2024-01-01T00:00:00Z"
+                self.json_reply(200, result)
+                return
+            if name not in state.details:
+                self.reject()
+                return
+            link = "fixture-download/" + secrets.token_hex(16)
+            state.links[link] = (name, state.token)
+            state.events.append(("link_issued", name))
+            self.json_reply(200, link)
+
+    def entry(self, name):
+        state = self.server.state
+        return {"id": hashlib.sha256(name.encode()).hexdigest()[:32], "type": "file" if name in state.files else "dir",
+                "name": posixpath.basename(name), "parent_dir": posixpath.dirname("/" + name),
+                "size": len(state.files[name]) if name in state.files else 0, "mtime": 1704067200}
+
+    do_GET = dispatch
+    do_HEAD = dispatch
+    do_POST = dispatch
+    do_PUT = dispatch
+    do_DELETE = dispatch
+
+
 class B2State(State):
     """Synthetic native B2 v4 authorization/v1 reads, restricted to one bucket."""
     bucket = "synthetic-bucket"
@@ -1318,7 +1612,7 @@ class FtpHandler(socketserver.StreamRequestHandler):
 def serve(kind, state):
     server = (FtpFixture(state) if kind == "ftp" else SwiftFixture(state) if kind == "swift"
               else B2Fixture(state) if kind == "b2" else AzureBlobFixture(state) if kind == "azureblob"
-              else AzureFilesFixture(state) if kind == "azurefiles" else HttpFixture(state))
+              else AzureFilesFixture(state) if kind == "azurefiles" else SeafileFixture(state) if kind == "seafile" else HttpFixture(state))
     thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05})
     thread.start()
     try:
