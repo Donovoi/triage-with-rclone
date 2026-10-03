@@ -22,17 +22,20 @@ import sys
 import tempfile
 import threading
 import time
+from urllib.parse import urlsplit
 
 
 ROOT = Path(__file__).resolve().parents[1]
 WRAPPERS = {"alias", "cache", "chunker", "combine", "compress", "crypt", "hasher", "union"}
 TIERS = ("local_protocol", "application", "vendor")
 PLATFORMS = frozenset(("windows", "linux"))
+AUTH_APPLICABILITY = frozenset(("none", "credentials", "oauth", "provider_specific"))
+REFRESH_APPLICABILITY = frozenset(("required", "not_applicable", "review_required"))
 CAPABILITIES = {
     "authentication", "listing", "download_hash", "manifest_integrity",
     "source_preservation", "cleanup", "refresh", "cancellation", "denial",
     "revocation", "missing_object_rejection", "authentication_rejection",
-    "truncated_download_rejection", "cancellation_cleanup", "fixture_write_rejection",
+    "truncated_download_rejection", "cancellation_cleanup", "fixture_write_rejection", "host_key_rejection",
 }
 FIXTURE_KINDS = {
     "http": "independent_loopback", "webdav": "independent_loopback",
@@ -42,7 +45,7 @@ FIXTURE_KINDS = {
 FIXTURE_CAPABILITIES = {
     "listing", "download_hash", "missing_object_rejection", "source_preservation",
     "authentication_rejection", "cleanup", "truncated_download_rejection",
-    "cancellation_cleanup", "fixture_write_rejection",
+    "cancellation_cleanup", "fixture_write_rejection", "host_key_rejection",
 }
 HARNESSES = ("fixture_servers.py", "run_lab.py")
 HASH_PATTERN = re.compile(r"[a-f0-9]{64}")
@@ -138,12 +141,15 @@ def canonical_schema(provider):
         if not isinstance(option, dict):
             fail("invalid_catalog")
         option_name = _text(option.get("Name"))
+        option_type = _text(option.get("Type"))
         selector = _text(option.get("Provider", ""), 1024)
         identity = (option_name, selector)
         if not re.fullmatch(r"[A-Za-z0-9_]{1,100}", option_name) or identity in seen:
             fail("invalid_catalog")
+        if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*(?:\|[A-Za-z][A-Za-z0-9_]*)*", option_type):
+            fail("invalid_catalog")
         seen.add(identity)
-        entry = {"Name": option_name, "Provider": selector}
+        entry = {"Name": option_name, "Type": option_type, "Provider": selector}
         for key in ("Required", "IsPassword", "Advanced", "Exclusive"):
             value = option.get(key, False)
             if type(value) is not bool:
@@ -214,6 +220,76 @@ def compute_fixture_manifest_sha256(root):
     return sha256_bytes(json.dumps(manifest, separators=(",", ":")).encode("utf-8"))
 
 
+def _policy_text(value, maximum=4096):
+    if (not isinstance(value, str) or not value.strip() or len(value) > maximum
+            or any(ord(character) < 32 for character in value)):
+        fail("invalid_policy")
+    return value
+
+
+def validate_plan_metadata(entry, profile):
+    auth = entry.get("auth_applicability")
+    refresh = entry.get("refresh_applicability")
+    if not isinstance(auth, str) or auth not in AUTH_APPLICABILITY:
+        fail("invalid_policy")
+    if not isinstance(refresh, str) or refresh not in REFRESH_APPLICABILITY:
+        fail("invalid_policy")
+    sources = entry.get("source_links")
+    if not isinstance(sources, list) or not 1 <= len(sources) <= 20:
+        fail("invalid_policy")
+    for source in sources:
+        _policy_text(source)
+        try:
+            url = urlsplit(source)
+            if (url.scheme != "https" or not url.hostname or url.username is not None
+                    or url.password is not None or "\\" in source or any(c.isspace() for c in source)):
+                fail("invalid_policy")
+            # Parsing .port also rejects malformed or out-of-range ports.
+            _ = url.port
+        except ValueError:
+            fail("invalid_policy")
+    modes = entry.get("renewal_modes")
+    if not isinstance(modes, list) or not 1 <= len(modes) <= 32:
+        fail("invalid_policy")
+    fields = {"auth_mode", "refresh_capability_requirement", "renewal_kind",
+              "source_supported_behavior", "required_lifecycle_scenarios"}
+    seen, requirements = set(), set()
+    for mode in modes:
+        if not isinstance(mode, dict) or set(mode) != fields:
+            fail("invalid_policy")
+        identity = _policy_text(mode["auth_mode"], 256).strip().casefold()
+        if identity in seen:
+            fail("invalid_policy")
+        seen.add(identity)
+        renewal_kind = _policy_text(mode["renewal_kind"], 80)
+        if not re.fullmatch(r"[a-z][a-z0-9_]{0,79}", renewal_kind):
+            fail("invalid_policy")
+        _policy_text(mode["source_supported_behavior"])
+        scenarios = mode["required_lifecycle_scenarios"]
+        if not isinstance(scenarios, list) or not 1 <= len(scenarios) <= 20:
+            fail("invalid_policy")
+        for scenario in scenarios:
+            _policy_text(scenario, 512)
+        requirement = mode["refresh_capability_requirement"]
+        if not isinstance(requirement, str) or requirement not in REFRESH_APPLICABILITY:
+            fail("invalid_policy")
+        requirements.add(requirement)
+    aggregate = ("review_required" if "review_required" in requirements else
+                 "required" if "required" in requirements else "not_applicable")
+    if refresh != aggregate or (("refresh" in profile.get("unresolved_applicability", [])) != (refresh == "review_required")):
+        fail("invalid_policy")
+    for tier in ("application", "vendor"):
+        capabilities = profile["required"].get(tier)
+        if capabilities is None:
+            continue
+        if auth != "none" and "authentication" not in capabilities:
+            fail("invalid_policy")
+        if "required" in requirements and "refresh" not in capabilities:
+            fail("invalid_policy")
+        if refresh == "not_applicable" and "refresh" in capabilities:
+            fail("invalid_policy")
+
+
 def validate_policy(policy):
     if not isinstance(policy, dict) or type(policy.get("schema_version")) is not int or policy["schema_version"] != 1:
         fail("invalid_policy")
@@ -224,7 +300,7 @@ def validate_policy(policy):
         if not re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", key) or not isinstance(profile, dict):
             fail("invalid_policy")
         required = profile.get("required")
-        if not isinstance(required, dict) or not required or set(required) - set(TIERS):
+        if not isinstance(required, dict) or "application" not in required or set(required) - set(TIERS):
             fail("invalid_policy")
         if type(profile.get("review_required", False)) is not bool:
             fail("invalid_policy")
@@ -255,11 +331,11 @@ def validate_policy(policy):
                 fail("invalid_policy")
         if entry.get("profile") not in profiles:
             fail("invalid_policy")
-        for field in ("notes", "source_links"):
-            if field in entry:
-                values = entry[field] if isinstance(entry[field], list) else [entry[field]]
-                if len(values) > 20 or any(not isinstance(value, str) or len(value) > 4096 for value in values):
-                    fail("invalid_policy")
+        validate_plan_metadata(entry, profiles[entry["profile"]])
+        if "notes" in entry:
+            values = entry["notes"] if isinstance(entry["notes"], list) else [entry["notes"]]
+            if len(values) > 20 or any(not isinstance(value, str) or len(value) > 4096 for value in values):
+                fail("invalid_policy")
     return policy
 
 
@@ -320,7 +396,8 @@ def validate_receipt(receipt, runtime, harness_sha256, now, max_age_hours=MAX_AG
         if not isinstance(capabilities, dict) or not capabilities or set(capabilities) - FIXTURE_CAPABILITIES:
             fail("invalid_fixture_capability")
         if (backend not in ("http", "webdav") and set(capabilities) & {"truncated_download_rejection", "cancellation_cleanup"}
-                or backend not in ("http", "webdav", "ftp") and "fixture_write_rejection" in capabilities):
+                or backend not in ("http", "webdav", "ftp") and "fixture_write_rejection" in capabilities
+                or backend != "sftp" and "host_key_rejection" in capabilities):
             fail("invalid_fixture_capability")
         if any(value not in ("passed", "failed", "not_run", "not_applicable") for value in capabilities.values()):
             fail("invalid_fixture_outcome")

@@ -1,6 +1,7 @@
 """Account-free fixture/harness regressions; native rclone requires explicit lab CLI."""
 
 import ftplib
+import base64
 import hashlib
 import http.client
 import importlib.util
@@ -221,6 +222,92 @@ class ProviderLabTests(unittest.TestCase):
         lines = path.read_text().splitlines()
         self.assertEqual(len(lines), 3)
         self.assertTrue(all(line.startswith("[127.0.0.1]:12345 ") for line in lines))
+
+    def sftp_options(self):
+        blob = b"\x00\x00\x00\x0bssh-ed25519\x00\x00\x00\x20" + bytes(range(32))
+        known = self.root / "known_hosts"
+        known.write_text("[127.0.0.1]:12345 ssh-ed25519 " + base64.b64encode(blob).decode() + "\n")
+        return {"type": "sftp", "host": "127.0.0.1", "port": "12345", "user": "synthetic",
+                "pass": "synthetic-obscured", "known_hosts_file": str(known),
+                "key_use_agent": "false", "disable_hashcheck": "true", "shell_type": "none"}
+
+    def test_sftp_mismatch_is_valid_wire_key_for_same_host_without_changing_pin(self):
+        options = self.sftp_options()
+        known = Path(options["known_hosts_file"])
+        original = known.read_bytes()
+        mismatch = LAB.mismatched_sftp_key(known, 12345, self.root)
+        entries = mismatch.read_text().splitlines()
+        self.assertEqual(len(entries), 1)
+        host, algorithm, key = entries[0].split()
+        self.assertEqual((host, algorithm), ("[127.0.0.1]:12345", "ssh-ed25519"))
+        changed = base64.b64decode(key, validate=True)
+        expected = base64.b64decode(original.split()[2], validate=True)
+        self.assertEqual(len(changed), 51)
+        self.assertEqual(changed[:-1], expected[:-1])
+        self.assertNotEqual(changed[-1], expected[-1])
+        self.assertEqual(known.read_bytes(), original)
+
+    def test_sftp_mismatch_refuses_missing_or_malformed_owned_key(self):
+        known = self.root / "known_hosts"
+        for value in ("", "[127.0.0.1]:9999 ssh-ed25519 c3ludGhldGlj\n",
+                      "[127.0.0.1]:12345 ssh-ed25519 invalid*\n",
+                      "[127.0.0.1]:12345 ssh-ed25519 c3ludGhldGlj\n"):
+            with self.subTest(value=value):
+                known.write_text(value)
+                with self.assertRaises(LAB.LabError):
+                    LAB.mismatched_sftp_key(known, 12345, self.root)
+                self.assertFalse((self.root / "mismatched_known_hosts").exists())
+
+    def test_sftp_host_key_rejection_keeps_correct_credentials_and_checks_read_and_copy(self):
+        options = self.sftp_options()
+        runtime = mock.Mock()
+        runtime.run.return_value = (1, b"", b"ssh: handshake failed: knownhosts: key mismatch")
+        row = {"capabilities": {}}
+        LAB.sftp_host_key_check(runtime, self.root, options, "Synthetic:", row)
+        self.assertEqual(row["capabilities"], {"host_key_rejection": "passed"})
+        self.assertEqual(runtime.run.call_count, 2)
+        config = self.root / "mismatched-host.conf"
+        expected = dict(options, known_hosts_file=str(self.root / "mismatched_known_hosts"))
+        self.assertEqual(config.read_text(), "[Synthetic]\n" + "".join(f"{key} = {value}\n" for key, value in expected.items()))
+        calls = runtime.run.call_args_list
+        self.assertEqual(calls[0].args, (["cat", "Synthetic:README-synthetic.txt"], config))
+        self.assertEqual(calls[1].args, (["copyto", "Synthetic:README-synthetic.txt",
+                                        str(self.root / "host-key-mismatch-must-not-exist")], config))
+
+    def test_sftp_host_key_verdict_rejects_unrelated_failure_success_or_payload(self):
+        cases = ((1, b"", b"unrelated startup error"),
+                 (1, b"", b"knownhosts: key is unknown"),
+                 (1, b"", b"unable to authenticate"),
+                 (0, b"", b"knownhosts: key mismatch"),
+                 (1, b"fixture bytes", b"knownhosts: key mismatch"))
+        for result in cases:
+            with self.subTest(result=result), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                known = root / "known_hosts"
+                known.write_text("synthetic")
+                runtime = mock.Mock()
+                runtime.run.return_value = result
+                row = {"capabilities": {}}
+                with mock.patch.object(LAB, "mismatched_sftp_key", return_value=root / "wrong-key"):
+                    with self.assertRaises(LAB.LabError):
+                        LAB.sftp_host_key_check(runtime, root, {"port": "12345", "known_hosts_file": str(known)},
+                                                "Synthetic:", row)
+                self.assertNotIn("host_key_rejection", row["capabilities"])
+
+    def test_sftp_host_key_verdict_rejects_partial_destination(self):
+        options = self.sftp_options()
+        runtime = mock.Mock()
+
+        def result(args, config):
+            if args[0] == "copyto":
+                Path(args[-1]).write_bytes(b"partial")
+            return 1, b"", b"knownhosts: key mismatch"
+
+        runtime.run.side_effect = result
+        row = {"capabilities": {}}
+        with self.assertRaisesRegex(LAB.LabError, "host_key_mismatch_returned_data"):
+            LAB.sftp_host_key_check(runtime, self.root, options, "Synthetic:", row)
+        self.assertNotIn("host_key_rejection", row["capabilities"])
 
     def test_wrong_auth_exit_without_server_rejection_cannot_pass(self):
         runtime = mock.Mock()
