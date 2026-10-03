@@ -1,0 +1,2426 @@
+{
+  "schema_version": 1,
+  "scope": "Selectable backend baseline plans; a plan is not acceptance evidence or coverage of all account types and configuration modes.",
+  "reviewed_runtime_version": "1.75.1",
+  "renewal_rule": "Refresh includes OAuth grants, service-session reauthentication, library authorization renewal and SDK credential reacquisition where supported. Unknown applicability blocks complete qualification. Auth modes with no automatic renewal still require expiry/revocation denial and explicit recovery cases.",
+  "profiles": {
+    "local-storage": {
+      "required": {
+        "application": [
+          "listing",
+          "download_hash",
+          "manifest_integrity",
+          "source_preservation",
+          "cancellation",
+          "cleanup"
+        ],
+        "local_protocol": [
+          "listing",
+          "download_hash",
+          "missing_object_rejection",
+          "source_preservation",
+          "cleanup"
+        ]
+      },
+      "review_required": false,
+      "unresolved_applicability": []
+    },
+    "hosted-renewal-review": {
+      "required": {
+        "application": [
+          "listing",
+          "download_hash",
+          "manifest_integrity",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation"
+        ],
+        "vendor": [
+          "listing",
+          "download_hash",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation"
+        ]
+      },
+      "review_required": false,
+      "unresolved_applicability": [
+        "refresh"
+      ]
+    },
+    "hosted-static-credentials": {
+      "required": {
+        "application": [
+          "listing",
+          "download_hash",
+          "manifest_integrity",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation"
+        ],
+        "vendor": [
+          "listing",
+          "download_hash",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation"
+        ]
+      },
+      "review_required": false,
+      "unresolved_applicability": []
+    },
+    "hosted-renewal": {
+      "required": {
+        "application": [
+          "listing",
+          "download_hash",
+          "manifest_integrity",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation",
+          "refresh"
+        ],
+        "vendor": [
+          "listing",
+          "download_hash",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation",
+          "refresh"
+        ]
+      },
+      "review_required": false,
+      "unresolved_applicability": []
+    },
+    "public-read": {
+      "required": {
+        "application": [
+          "listing",
+          "download_hash",
+          "manifest_integrity",
+          "source_preservation",
+          "cancellation",
+          "cleanup"
+        ],
+        "vendor": [
+          "listing",
+          "download_hash",
+          "source_preservation",
+          "cancellation",
+          "cleanup"
+        ]
+      },
+      "review_required": false,
+      "unresolved_applicability": []
+    },
+    "network-credentials": {
+      "required": {
+        "application": [
+          "listing",
+          "download_hash",
+          "manifest_integrity",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation"
+        ],
+        "local_protocol": [
+          "listing",
+          "download_hash",
+          "missing_object_rejection",
+          "source_preservation",
+          "cleanup",
+          "authentication_rejection"
+        ]
+      },
+      "review_required": false,
+      "unresolved_applicability": []
+    },
+    "network-renewal-review": {
+      "required": {
+        "application": [
+          "listing",
+          "download_hash",
+          "manifest_integrity",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation"
+        ],
+        "local_protocol": [
+          "listing",
+          "download_hash",
+          "missing_object_rejection",
+          "source_preservation",
+          "cleanup",
+          "authentication_rejection"
+        ]
+      },
+      "review_required": false,
+      "unresolved_applicability": [
+        "refresh"
+      ]
+    },
+    "http-fixture": {
+      "required": {
+        "application": [
+          "listing",
+          "download_hash",
+          "manifest_integrity",
+          "source_preservation",
+          "cancellation",
+          "cleanup"
+        ],
+        "local_protocol": [
+          "listing",
+          "download_hash",
+          "missing_object_rejection",
+          "source_preservation",
+          "cleanup",
+          "authentication_rejection",
+          "truncated_download_rejection",
+          "cancellation_cleanup",
+          "fixture_write_rejection"
+        ]
+      },
+      "review_required": false,
+      "unresolved_applicability": []
+    },
+    "hosted-protocol-renewal": {
+      "required": {
+        "application": [
+          "listing",
+          "download_hash",
+          "manifest_integrity",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation",
+          "refresh"
+        ],
+        "local_protocol": [
+          "listing",
+          "download_hash",
+          "missing_object_rejection",
+          "source_preservation",
+          "cleanup",
+          "authentication_rejection"
+        ],
+        "vendor": [
+          "listing",
+          "download_hash",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation",
+          "refresh"
+        ]
+      },
+      "review_required": false,
+      "unresolved_applicability": []
+    },
+    "azureblob-renewal-plan": {
+      "required": {
+        "application": [
+          "listing",
+          "download_hash",
+          "manifest_integrity",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation",
+          "refresh"
+        ],
+        "local_protocol": [
+          "listing",
+          "download_hash",
+          "missing_object_rejection",
+          "source_preservation",
+          "cleanup",
+          "authentication_rejection"
+        ],
+        "vendor": [
+          "listing",
+          "download_hash",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation",
+          "refresh"
+        ]
+      },
+      "review_required": false,
+      "unresolved_applicability": [
+        "refresh"
+      ]
+    },
+    "azurefiles-renewal-plan": {
+      "required": {
+        "application": [
+          "listing",
+          "download_hash",
+          "manifest_integrity",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation",
+          "refresh"
+        ],
+        "vendor": [
+          "listing",
+          "download_hash",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation",
+          "refresh"
+        ]
+      },
+      "review_required": false,
+      "unresolved_applicability": [
+        "refresh"
+      ]
+    },
+    "ftp-renewal-plan": {
+      "required": {
+        "application": [
+          "listing",
+          "download_hash",
+          "manifest_integrity",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation"
+        ],
+        "local_protocol": [
+          "listing",
+          "download_hash",
+          "missing_object_rejection",
+          "source_preservation",
+          "cleanup",
+          "authentication_rejection",
+          "fixture_write_rejection"
+        ]
+      },
+      "review_required": false,
+      "unresolved_applicability": [
+        "refresh"
+      ]
+    },
+    "seafile-renewal-plan": {
+      "required": {
+        "application": [
+          "listing",
+          "download_hash",
+          "manifest_integrity",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation",
+          "refresh"
+        ],
+        "local_protocol": [
+          "listing",
+          "download_hash",
+          "missing_object_rejection",
+          "source_preservation",
+          "cleanup",
+          "authentication_rejection"
+        ]
+      },
+      "review_required": false,
+      "unresolved_applicability": []
+    },
+    "webdav-renewal-plan": {
+      "required": {
+        "application": [
+          "listing",
+          "download_hash",
+          "manifest_integrity",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation"
+        ],
+        "local_protocol": [
+          "listing",
+          "download_hash",
+          "missing_object_rejection",
+          "source_preservation",
+          "cleanup",
+          "authentication_rejection",
+          "truncated_download_rejection",
+          "cancellation_cleanup",
+          "fixture_write_rejection"
+        ]
+      },
+      "review_required": false,
+      "unresolved_applicability": [
+        "refresh"
+      ]
+    },
+    "sftp-fixture": {
+      "required": {
+        "application": [
+          "listing",
+          "download_hash",
+          "manifest_integrity",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation"
+        ],
+        "local_protocol": [
+          "listing",
+          "download_hash",
+          "missing_object_rejection",
+          "source_preservation",
+          "cleanup",
+          "authentication_rejection",
+          "host_key_rejection"
+        ]
+      },
+      "review_required": false,
+      "unresolved_applicability": [
+        "refresh"
+      ]
+    }
+  },
+  "providers": {
+    "archive": {
+      "canonical_name": "archive",
+      "schema_sha256": "b1c83fa1e965a7eeadf9febf7409d32be3c42e356dfe81bdec1a203550ce0b54",
+      "profile": "local-storage",
+      "notes": [
+        "Read-only archive view over another filesystem; use a local archive. Any remote upstream has its own separate authentication obligation.",
+        "Free account/API eligibility: no_vendor_account_needed",
+        "This baseline uses a local archive. A remote source requires separate upstream-provider acceptance."
+      ],
+      "source_links": [
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/archive.md"
+      ],
+      "auth_applicability": "none",
+      "refresh_applicability": "not_applicable",
+      "renewal_modes": [
+        {
+          "auth_mode": "Local or public anonymous source baseline",
+          "refresh_capability_requirement": "not_applicable",
+          "renewal_kind": "none",
+          "source_supported_behavior": "Read-only archive view over another filesystem; use a local archive. Any remote upstream has its own separate authentication obligation.",
+          "required_lifecycle_scenarios": [
+            "Configure and acquire a nonempty synthetic source without borrowing any ambient account credentials.",
+            "Preserve source bytes and validate cancellation and cleanup; separately qualify any authenticated upstream source."
+          ]
+        }
+      ]
+    },
+    "azureblob": {
+      "canonical_name": "azureblob",
+      "schema_sha256": "10ab09ca8da4216f95dc3cdd7c0421f8e04fbb61691e8153f8809732d382c0f0",
+      "profile": "azureblob-renewal-plan",
+      "notes": [
+        "Azurite provides a credentialed Blob emulator. Real Azure account, storage resource and approved credential or identity needed for vendor acceptance; emulator does not prove Entra identity flows.",
+        "Free account/API eligibility: no_vendor_account_needed",
+        "Local protocol fixtures do not establish hosted service or workload identity acceptance.",
+        "Anonymous public Blob access is a separate no-auth profile. Azurite shared-key coverage does not cover Entra or workload identities.",
+        "An unconstrained DefaultAzureCredential chain is not one reviewed profile: select and record its actual provider."
+      ],
+      "source_links": [
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/azureblob.md",
+        "https://learn.microsoft.com/en-us/azure/storage/common/storage-use-azurite",
+        "https://github.com/rclone/rclone/blob/v1.75.1/backend/azureblob/auth/auth.go#L347-L550",
+        "https://github.com/rclone/rclone/blob/v1.75.1/backend/azureblob/auth/auth.go#L570-L587",
+        "https://pkg.go.dev/github.com/Azure/azure-sdk-for-go/sdk/azidentity@v1.14.0",
+        "https://github.com/rclone/rclone/blob/v1.75.1/backend/azureblob/azureblob.go#L705-L727"
+      ],
+      "renewal_modes": [
+        {
+          "auth_mode": "account shared key / emulator shared key",
+          "refresh_capability_requirement": "not_applicable",
+          "renewal_kind": "none",
+          "source_supported_behavior": "SharedKeyCredential signs requests; no access/refresh-token exchange.",
+          "required_lifecycle_scenarios": [
+            "valid scoped read",
+            "invalid/revoked credential denied",
+            "no silent fallback"
+          ]
+        },
+        {
+          "auth_mode": "SAS URL / static key or SAS connection string",
+          "refresh_capability_requirement": "not_applicable",
+          "renewal_kind": "externally_reissued",
+          "source_supported_behavior": "The configured SAS or connection string is handed to the SDK unchanged; this route has no renewal callback. An expiring SAS is not a refreshable credential.",
+          "required_lifecycle_scenarios": [
+            "expired SAS denied",
+            "separately supplied replacement SAS succeeds",
+            "do not call replacement an automatic refresh"
+          ]
+        },
+        {
+          "auth_mode": "explicit Entra client secret/certificate or service-principal file",
+          "refresh_capability_requirement": "required",
+          "renewal_kind": "sdk_token_reacquisition",
+          "source_supported_behavior": "The shared helper builds an azidentity TokenCredential used by the service client. New access-token acquisition is relevant; a client-credentials grant is not an OAuth refresh-token grant.",
+          "required_lifecycle_scenarios": [
+            "access-token expiry and subsequent successful SDK token acquisition",
+            "no credential-mode fallback",
+            "credential revocation denied"
+          ]
+        },
+        {
+          "auth_mode": "DefaultAzureCredential / managed identity / federated managed identity / Azure CLI",
+          "refresh_capability_requirement": "required",
+          "renewal_kind": "selected_identity_provider_reacquisition",
+          "source_supported_behavior": "The configured SDK identity provider supplies tokens. Record the selected provider; its prerequisites and reacquisition behavior are different from a static key.",
+          "required_lifecycle_scenarios": [
+            "identify selected provider without exposing identity",
+            "observe token reacquisition for that provider",
+            "upstream credential expiry/denial handled"
+          ]
+        },
+        {
+          "auth_mode": "Unresolved identity-provider or authentication variant",
+          "refresh_capability_requirement": "review_required",
+          "renewal_kind": "unresolved",
+          "source_supported_behavior": "An unconstrained DefaultAzureCredential chain is not one reviewed profile: select and record its actual provider.",
+          "required_lifecycle_scenarios": [
+            "Select and document the exact authentication variant before assigning renewal applicability."
+          ]
+        }
+      ],
+      "auth_applicability": "credentials",
+      "refresh_applicability": "review_required"
+    },
+    "azurefiles": {
+      "canonical_name": "azurefiles",
+      "schema_sha256": "f00e34022122401b53463984bc6c65269d81f326ad2121eeb0fdd05f99d92375",
+      "profile": "azurefiles-renewal-plan",
+      "notes": [
+        "Azure storage account and file share, key/SAS or supported identity configuration. Azurite does not implement Azure Files.",
+        "Free account/API eligibility: review_required",
+        "Uses the same auth helper as Blob; Files sets backup intent for token credentials. Do not carry Blob emulator or public-container acceptance into Azure Files.",
+        "Identity permission/backup-intent prerequisites and actual DefaultAzureCredential provider remain deployment-specific."
+      ],
+      "source_links": [
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/azurefiles.md",
+        "https://github.com/rclone/rclone/blob/v1.75.1/backend/azureblob/auth/auth.go#L347-L550",
+        "https://github.com/rclone/rclone/blob/v1.75.1/backend/azureblob/auth/auth.go#L570-L587",
+        "https://pkg.go.dev/github.com/Azure/azure-sdk-for-go/sdk/azidentity@v1.14.0",
+        "https://github.com/rclone/rclone/blob/v1.75.1/backend/azurefiles/azurefiles.go#L168-L185"
+      ],
+      "renewal_modes": [
+        {
+          "auth_mode": "account shared key / emulator shared key",
+          "refresh_capability_requirement": "not_applicable",
+          "renewal_kind": "none",
+          "source_supported_behavior": "SharedKeyCredential signs requests; no access/refresh-token exchange.",
+          "required_lifecycle_scenarios": [
+            "valid scoped read",
+            "invalid/revoked credential denied",
+            "no silent fallback"
+          ]
+        },
+        {
+          "auth_mode": "SAS URL / static key or SAS connection string",
+          "refresh_capability_requirement": "not_applicable",
+          "renewal_kind": "externally_reissued",
+          "source_supported_behavior": "The configured SAS or connection string is handed to the SDK unchanged; this route has no renewal callback. An expiring SAS is not a refreshable credential.",
+          "required_lifecycle_scenarios": [
+            "expired SAS denied",
+            "separately supplied replacement SAS succeeds",
+            "do not call replacement an automatic refresh"
+          ]
+        },
+        {
+          "auth_mode": "explicit Entra client secret/certificate or service-principal file",
+          "refresh_capability_requirement": "required",
+          "renewal_kind": "sdk_token_reacquisition",
+          "source_supported_behavior": "The shared helper builds an azidentity TokenCredential used by the service client. New access-token acquisition is relevant; a client-credentials grant is not an OAuth refresh-token grant.",
+          "required_lifecycle_scenarios": [
+            "access-token expiry and subsequent successful SDK token acquisition",
+            "no credential-mode fallback",
+            "credential revocation denied"
+          ]
+        },
+        {
+          "auth_mode": "DefaultAzureCredential / managed identity / federated managed identity / Azure CLI",
+          "refresh_capability_requirement": "required",
+          "renewal_kind": "selected_identity_provider_reacquisition",
+          "source_supported_behavior": "The configured SDK identity provider supplies tokens. Record the selected provider; its prerequisites and reacquisition behavior are different from a static key.",
+          "required_lifecycle_scenarios": [
+            "identify selected provider without exposing identity",
+            "observe token reacquisition for that provider",
+            "upstream credential expiry/denial handled"
+          ]
+        },
+        {
+          "auth_mode": "Unresolved identity-provider or authentication variant",
+          "refresh_capability_requirement": "review_required",
+          "renewal_kind": "unresolved",
+          "source_supported_behavior": "Identity permission/backup-intent prerequisites and actual DefaultAzureCredential provider remain deployment-specific.",
+          "required_lifecycle_scenarios": [
+            "Select and document the exact authentication variant before assigning renewal applicability."
+          ]
+        }
+      ],
+      "auth_applicability": "credentials",
+      "refresh_applicability": "review_required"
+    },
+    "b2": {
+      "canonical_name": "b2",
+      "schema_sha256": "167bb01c79938f14881de50f95857feda1bf39ef7e6e8451ab7110d917bec2d1",
+      "profile": "hosted-renewal",
+      "notes": [
+        "Backblaze account, bucket and restricted application key. Do not substitute S3-compatibility tests for the native B2 API.",
+        "Free account/API eligibility: review_required",
+        "Native B2 exchanges a static application key for a temporary authorization token and requires authorization-token renewal coverage."
+      ],
+      "source_links": [
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/b2.md",
+        "https://github.com/rclone/rclone/blob/v1.75.1/backend/b2/b2.go#L448-L458",
+        "https://github.com/rclone/rclone/blob/v1.75.1/backend/b2/b2.go#L651-L672",
+        "https://www.backblaze.com/apidocs/b2-authorize-account"
+      ],
+      "renewal_modes": [
+        {
+          "auth_mode": "native B2 application key exchanged for authorization token",
+          "refresh_capability_requirement": "required",
+          "renewal_kind": "application_key_reauthorization",
+          "source_supported_behavior": "The static application key obtains a temporary authorization token. B2 documents a maximum 24-hour token lifetime; pinned shouldRetry reauthorizes on HTTP401 and updates the API endpoint/header.",
+          "required_lifecycle_scenarios": [
+            "owned expired authorization token triggers b2_authorize_account",
+            "new authorization token is used on the subsequent scoped read",
+            "revoked application key fails boundedly",
+            "do not confuse native B2 and S3-compatible auth"
+          ]
+        }
+      ],
+      "auth_applicability": "credentials",
+      "refresh_applicability": "required"
+    },
+    "box": {
+      "canonical_name": "box",
+      "schema_sha256": "085c64cbf6031a6db88dc9e0d4dd16c1b74dc26310dcf52c93f8ab35ec85529a",
+      "profile": "hosted-renewal",
+      "notes": [
+        "Box account and approved OAuth app/consent; JWT/service-account alternatives require distinct profiles and organization permissions.",
+        "Free account/API eligibility: review_required"
+      ],
+      "source_links": [
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/box.md"
+      ],
+      "auth_applicability": "oauth",
+      "refresh_applicability": "required",
+      "renewal_modes": [
+        {
+          "auth_mode": "Documented browser OAuth credentials",
+          "refresh_capability_requirement": "required",
+          "renewal_kind": "oauth_refresh_token",
+          "source_supported_behavior": "The documented token-based authentication requires a renewal acceptance case. Select the exact account/authentication variant and observe the actual renewal exchange; a saved-token listing is insufficient.",
+          "required_lifecycle_scenarios": [
+            "Fresh setup and authentication in the chosen variant.",
+            "Expired access or session credential triggers the documented successful renewal exchange.",
+            "Verify the replacement credential and persistence where applicable, then read only the approved synthetic scope.",
+            "Denial, revocation and cancellation remain bounded and preserve the source."
+          ]
+        }
+      ]
+    },
+    "cloudinary": {
+      "canonical_name": "cloudinary",
+      "schema_sha256": "d1fd1c22bd060df4a51ee9338ff5590d1371bd04e4fe7297bb47f1ce89576ac0",
+      "profile": "hosted-renewal-review",
+      "notes": [
+        "Cloudinary account/environment, cloud name and API key/secret; media resource types require scoped fixtures.",
+        "Free account/API eligibility: review_required",
+        "Renewal applicability is unreviewed: static input credentials alone do not rule out temporary service sessions. Trace the selected auth mode before qualification."
+      ],
+      "source_links": [
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/cloudinary.md"
+      ],
+      "auth_applicability": "credentials",
+      "refresh_applicability": "review_required",
+      "renewal_modes": [
+        {
+          "auth_mode": "Provider authentication mode awaiting lifecycle review",
+          "refresh_capability_requirement": "review_required",
+          "renewal_kind": "unresolved",
+          "source_supported_behavior": "The documented configuration supplies credentials, but derived session expiry and renewal have not been traced for the selected mode. Static input credentials do not establish renewal N/A.",
+          "required_lifecycle_scenarios": [
+            "Trace the selected credential mode and any derived service sessions.",
+            "Test renewal where supported, or expiry denial and explicit credential recovery where renewal is external."
+          ]
+        }
+      ]
+    },
+    "doi": {
+      "canonical_name": "doi",
+      "schema_sha256": "bf1688a020f582f70c21120e596325f8f84f03877b8e70cc1ef79d870a8217f0",
+      "profile": "public-read",
+      "notes": [
+        "Public read-only DOI dataset from a supported InvenioRDM or Dataverse host. Publishing a permanent DOI solely for a test is not automatically authorized; use approved reusable fixture.",
+        "Free account/API eligibility: public_read_no_account"
+      ],
+      "source_links": [
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/doi.md"
+      ],
+      "auth_applicability": "none",
+      "refresh_applicability": "not_applicable",
+      "renewal_modes": [
+        {
+          "auth_mode": "Local or public anonymous source baseline",
+          "refresh_capability_requirement": "not_applicable",
+          "renewal_kind": "none",
+          "source_supported_behavior": "Public read-only DOI dataset from a supported InvenioRDM or Dataverse host. Publishing a permanent DOI solely for a test is not automatically authorized; use approved reusable fixture.",
+          "required_lifecycle_scenarios": [
+            "Configure and acquire a nonempty synthetic source without borrowing any ambient account credentials.",
+            "Preserve source bytes and validate cancellation and cleanup; separately qualify any authenticated upstream source."
+          ]
+        }
+      ]
+    },
+    "drime": {
+      "canonical_name": "drime",
+      "schema_sha256": "cd0ba59125a275a34e1dd420cf738bec010098cf49cb5ecb4b75c0476bcd5efc",
+      "profile": "hosted-renewal-review",
+      "notes": [
+        "Drime account and developer API token from account settings; free and paid tiers are documented, current API entitlement still needs verification.",
+        "Free account/API eligibility: free_plan_documented_api_entitlement_review_required",
+        "Renewal applicability is unreviewed: static input credentials alone do not rule out temporary service sessions. Trace the selected auth mode before qualification."
+      ],
+      "source_links": [
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/drime.md",
+        "https://rclone.org/drime/"
+      ],
+      "auth_applicability": "credentials",
+      "refresh_applicability": "review_required",
+      "renewal_modes": [
+        {
+          "auth_mode": "Provider authentication mode awaiting lifecycle review",
+          "refresh_capability_requirement": "review_required",
+          "renewal_kind": "unresolved",
+          "source_supported_behavior": "The documented configuration supplies credentials, but derived session expiry and renewal have not been traced for the selected mode. Static input credentials do not establish renewal N/A.",
+          "required_lifecycle_scenarios": [
+            "Trace the selected credential mode and any derived service sessions.",
+            "Test renewal where supported, or expiry denial and explicit credential recovery where renewal is external."
+          ]
+        }
+      ]
+    },
+    "drive": {
+      "canonical_name": "drive",
+      "schema_sha256": "db7ad3ed79d3cfb34c893823e6b49240882f6e20b022463080db6dbd5b4dbe57",
+      "profile": "hosted-renewal",
+      "notes": [
+        "Google account, authorized custom OAuth client and Drive API consent; personal/My Drive/shared-drive variants have distinct scope and root requirements.",
+        "Free account/API eligibility: review_required"
+      ],
+      "source_links": [
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/drive.md"
+      ],
+      "auth_applicability": "oauth",
+      "refresh_applicability": "required",
+      "renewal_modes": [
+        {
+          "auth_mode": "Documented browser OAuth credentials",
+          "refresh_capability_requirement": "required",
+          "renewal_kind": "oauth_refresh_token",
+          "source_supported_behavior": "The documented token-based authentication requires a renewal acceptance case. Select the exact account/authentication variant and observe the actual renewal exchange; a saved-token listing is insufficient.",
+          "required_lifecycle_scenarios": [
+            "Fresh setup and authentication in the chosen variant.",
+            "Expired access or session credential triggers the documented successful renewal exchange.",
+            "Verify the replacement credential and persistence where applicable, then read only the approved synthetic scope.",
+            "Denial, revocation and cancellation remain bounded and preserve the source."
+          ]
+        }
+      ]
+    },
+    "dropbox": {
+      "canonical_name": "dropbox",
+      "schema_sha256": "6dbc094f6cb9508f225149ffdefe0158c5b4bf69e658cc5a8cd1c713142534d7",
+      "profile": "hosted-renewal",
+      "notes": [
+        "Dropbox account and OAuth app/consent; app-folder and full-account/team access need distinct profiles.",
+        "Free account/API eligibility: review_required"
+      ],
+      "source_links": [
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/dropbox.md",
+        "https://docs.dropboxapi.com/dropbox-api/docs/oauth"
+      ],
+      "auth_applicability": "oauth",
+      "refresh_applicability": "required",
+      "renewal_modes": [
+        {
+          "auth_mode": "Documented browser OAuth credentials",
+          "refresh_capability_requirement": "required",
+          "renewal_kind": "oauth_refresh_token",
+          "source_supported_behavior": "The documented token-based authentication requires a renewal acceptance case. Select the exact account/authentication variant and observe the actual renewal exchange; a saved-token listing is insufficient.",
+          "required_lifecycle_scenarios": [
+            "Fresh setup and authentication in the chosen variant.",
+            "Expired access or session credential triggers the documented successful renewal exchange.",
+            "Verify the replacement credential and persistence where applicable, then read only the approved synthetic scope.",
+            "Denial, revocation and cancellation remain bounded and preserve the source."
+          ]
+        }
+      ]
+    },
+    "fichier": {
+      "canonical_name": "fichier",
+      "schema_sha256": "2a2a198b60eda98fae0324220a518d975c98fb8ec2122661bcea3821ae5025e6",
+      "profile": "hosted-renewal-review",
+      "notes": [
+        "1Fichier account and API key; rclone documents Premium subscription for API use. Shared-folder access is a separate restricted profile.",
+        "Free account/API eligibility: paid_api_required",
+        "Renewal applicability is unreviewed: static input credentials alone do not rule out temporary service sessions. Trace the selected auth mode before qualification."
+      ],
+      "source_links": [
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/fichier.md",
+        "https://rclone.org/fichier/"
+      ],
+      "auth_applicability": "credentials",
+      "refresh_applicability": "review_required",
+      "renewal_modes": [
+        {
+          "auth_mode": "Provider authentication mode awaiting lifecycle review",
+          "refresh_capability_requirement": "review_required",
+          "renewal_kind": "unresolved",
+          "source_supported_behavior": "The documented configuration supplies credentials, but derived session expiry and renewal have not been traced for the selected mode. Static input credentials do not establish renewal N/A.",
+          "required_lifecycle_scenarios": [
+            "Trace the selected credential mode and any derived service sessions.",
+            "Test renewal where supported, or expiry denial and explicit credential recovery where renewal is external."
+          ]
+        }
+      ]
+    },
+    "filefabric": {
+      "canonical_name": "filefabric",
+      "schema_sha256": "043189412a12be7db296a53f98592cf7191c2e63b1a165679ff8f695b77755f4",
+      "profile": "hosted-renewal",
+      "notes": [
+        "Enterprise File Fabric endpoint and permanent authentication token; derived session token expiry is documented. Local installation is not evidence of free licensing.",
+        "Free account/API eligibility: review_required"
+      ],
+      "source_links": [
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/filefabric.md"
+      ],
+      "auth_applicability": "provider_specific",
+      "refresh_applicability": "required",
+      "renewal_modes": [
+        {
+          "auth_mode": "Documented provider token or service-identity credentials",
+          "refresh_capability_requirement": "required",
+          "renewal_kind": "provider_credential_renewal",
+          "source_supported_behavior": "The documented token-based authentication requires a renewal acceptance case. Select the exact account/authentication variant and observe the actual renewal exchange; a saved-token listing is insufficient.",
+          "required_lifecycle_scenarios": [
+            "Fresh setup and authentication in the chosen variant.",
+            "Expired access or session credential triggers the documented successful renewal exchange.",
+            "Verify the replacement credential and persistence where applicable, then read only the approved synthetic scope.",
+            "Denial, revocation and cancellation remain bounded and preserve the source."
+          ]
+        }
+      ]
+    },
+    "filelu": {
+      "canonical_name": "filelu",
+      "schema_sha256": "3132176f6e982f9796404b8203b0120e1ba99987fe9e2a316c457e6978185943",
+      "profile": "hosted-renewal-review",
+      "notes": [
+        "FileLu account and FileLu-specific Rclone Key; FileLu S5 is a different S3 profile, not evidence for this backend.",
+        "Free account/API eligibility: review_required",
+        "Renewal applicability is unreviewed: static input credentials alone do not rule out temporary service sessions. Trace the selected auth mode before qualification."
+      ],
+      "source_links": [
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/filelu.md"
+      ],
+      "auth_applicability": "credentials",
+      "refresh_applicability": "review_required",
+      "renewal_modes": [
+        {
+          "auth_mode": "Provider authentication mode awaiting lifecycle review",
+          "refresh_capability_requirement": "review_required",
+          "renewal_kind": "unresolved",
+          "source_supported_behavior": "The documented configuration supplies credentials, but derived session expiry and renewal have not been traced for the selected mode. Static input credentials do not establish renewal N/A.",
+          "required_lifecycle_scenarios": [
+            "Trace the selected credential mode and any derived service sessions.",
+            "Test renewal where supported, or expiry denial and explicit credential recovery where renewal is external."
+          ]
+        }
+      ]
+    },
+    "filen": {
+      "canonical_name": "filen",
+      "schema_sha256": "86aa5f400c10830baff61d83178a4195551f3be5fc956ed85746f5316299e582",
+      "profile": "hosted-static-credentials",
+      "notes": [
+        "Filen account email/password and API key exported through official Filen CLI; changing password requires re-export. Encryption metadata is part of setup.",
+        "Free account/API eligibility: review_required",
+        "A Bearer header does not by itself imply OAuth or refresh capability."
+      ],
+      "source_links": [
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/filen.md",
+        "https://github.com/rclone/rclone/blob/v1.75.1/backend/filen/filen.go#L116-L145",
+        "https://github.com/FilenCloudDienste/filen-sdk-go/blob/v0.0.39/filen/filen.go#L84-L104",
+        "https://github.com/FilenCloudDienste/filen-sdk-go/blob/v0.0.39/filen/client/client.go#L116-L153",
+        "https://rclone.org/filen/"
+      ],
+      "renewal_modes": [
+        {
+          "auth_mode": "exported API key with password/decryption material or internal TS config",
+          "refresh_capability_requirement": "not_applicable",
+          "renewal_kind": "static_api_key",
+          "source_supported_behavior": "Rclone passes the supplied key to the pinned Filen SDK, whose request methods attach that key as Bearer authentication. No refresh-grant flow is configured on this route.",
+          "required_lifecycle_scenarios": [
+            "valid exported key works",
+            "revoked key denied",
+            "password change requires documented re-export"
+          ]
+        }
+      ],
+      "auth_applicability": "provider_specific",
+      "refresh_applicability": "not_applicable"
+    },
+    "filescom": {
+      "canonical_name": "filescom",
+      "schema_sha256": "246a33a5fba09043e8f7269fbeb825f30142458a631b69abb973fe7cedacb16e",
+      "profile": "hosted-renewal-review",
+      "notes": [
+        "Files.com site subdomain plus account credentials or API key. Trial/API entitlement unresolved; credential-login session lifecycle needs separate review.",
+        "Free account/API eligibility: review_required",
+        "API key revocation and user-session revocation are different; ending a login session is not proof an independent API key was revoked.",
+        "Pinned Files.com SDK session expiration/automatic renewal behavior not fully traced."
+      ],
+      "source_links": [
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/filescom.md",
+        "https://github.com/rclone/rclone/blob/v1.75.1/backend/filescom/filescom.go#L247-L295",
+        "https://www.developers.files.com/rest/overview/authentication/",
+        "https://www.files.com/docs/security-reference/authentication-and-sessions/access-revocation"
+      ],
+      "renewal_modes": [
+        {
+          "auth_mode": "API key",
+          "refresh_capability_requirement": "not_applicable",
+          "renewal_kind": "static_api_key",
+          "source_supported_behavior": "Backend selects APIKey directly and returns without account-session login.",
+          "required_lifecycle_scenarios": [
+            "valid scoped read",
+            "invalid/revoked credential denied",
+            "no silent fallback"
+          ]
+        },
+        {
+          "auth_mode": "username/password session",
+          "refresh_capability_requirement": "review_required",
+          "renewal_kind": "session_login_sdk_lifetime_unresolved",
+          "source_supported_behavior": "Backend creates a session once and stores only SessionId in SDK configuration; it configures no explicit renewal callback. A universal session refresh/N/A conclusion needs the pinned SDK session lifecycle checked.",
+          "required_lifecycle_scenarios": [
+            "fresh session login",
+            "session expiration/denial",
+            "inspect SDK before claiming automatic renewal"
+          ]
+        }
+      ],
+      "auth_applicability": "credentials",
+      "refresh_applicability": "review_required"
+    },
+    "ftp": {
+      "canonical_name": "ftp",
+      "schema_sha256": "26e93c41c8a91de0ddf814af9c64ff891b143cc579f0544d29fad29c024c95b4",
+      "profile": "ftp-renewal-plan",
+      "notes": [
+        "Owned local FTP/FTPS server and test login; anonymous mode is separate. Loopback coverage does not prove any hosted service or TLS deployment.",
+        "Free account/API eligibility: no_vendor_account_needed",
+        "Renewal applicability is unreviewed: static input credentials alone do not rule out temporary service sessions. Trace the selected auth mode before qualification."
+      ],
+      "source_links": [
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/ftp.md",
+        "https://pyftpdlib.readthedocs.io/en/latest/"
+      ],
+      "auth_applicability": "credentials",
+      "refresh_applicability": "review_required",
+      "renewal_modes": [
+        {
+          "auth_mode": "Provider authentication mode awaiting lifecycle review",
+          "refresh_capability_requirement": "review_required",
+          "renewal_kind": "unresolved",
+          "source_supported_behavior": "The documented configuration supplies credentials, but derived session expiry and renewal have not been traced for the selected mode. Static input credentials do not establish renewal N/A.",
+          "required_lifecycle_scenarios": [
+            "Trace the selected credential mode and any derived service sessions.",
+            "Test renewal where supported, or expiry denial and explicit credential recovery where renewal is external."
+          ]
+        }
+      ]
+    },
+    "gcs": {
+      "canonical_name": "google cloud storage",
+      "schema_sha256": "35f3d13d23fd498bb3ea4fbd72acf1b7c2f0717fc18e5e77669821675606b236",
+      "profile": "hosted-renewal",
+      "notes": [
+        "Google Cloud project/bucket, authorized OAuth client or service-account/identity profile and IAM. No official storage emulator is established by this research.",
+        "Free account/API eligibility: review_required"
+      ],
+      "source_links": [
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/googlecloudstorage.md"
+      ],
+      "auth_applicability": "provider_specific",
+      "refresh_applicability": "required",
+      "renewal_modes": [
+        {
+          "auth_mode": "Documented provider token or service-identity credentials",
+          "refresh_capability_requirement": "required",
+          "renewal_kind": "provider_credential_renewal",
+          "source_supported_behavior": "The documented token-based authentication requires a renewal acceptance case. Select the exact account/authentication variant and observe the actual renewal exchange; a saved-token listing is insufficient.",
+          "required_lifecycle_scenarios": [
+            "Fresh setup and authentication in the chosen variant.",
+            "Expired access or session credential triggers the documented successful renewal exchange.",
+            "Verify the replacement credential and persistence where applicable, then read only the approved synthetic scope.",
+            "Denial, revocation and cancellation remain bounded and preserve the source."
+          ]
+        }
+      ]
+    },
+    "gofile": {
+      "canonical_name": "gofile",
+      "schema_sha256": "eb62e6039489d3bae732c6811a5192069ba52e26522b6b9547c403f1286682f7",
+      "profile": "hosted-renewal-review",
+      "notes": [
+        "Gofile account API token; rclone explicitly requires premium account despite free file-sharing offering.",
+        "Free account/API eligibility: paid_api_required",
+        "Renewal applicability is unreviewed: static input credentials alone do not rule out temporary service sessions. Trace the selected auth mode before qualification."
+      ],
+      "source_links": [
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/gofile.md",
+        "https://rclone.org/gofile/"
+      ],
+      "auth_applicability": "credentials",
+      "refresh_applicability": "review_required",
+      "renewal_modes": [
+        {
+          "auth_mode": "Provider authentication mode awaiting lifecycle review",
+          "refresh_capability_requirement": "review_required",
+          "renewal_kind": "unresolved",
+          "source_supported_behavior": "The documented configuration supplies credentials, but derived session expiry and renewal have not been traced for the selected mode. Static input credentials do not establish renewal N/A.",
+          "required_lifecycle_scenarios": [
+            "Trace the selected credential mode and any derived service sessions.",
+            "Test renewal where supported, or expiry denial and explicit credential recovery where renewal is external."
+          ]
+        }
+      ]
+    },
+    "gphotos": {
+      "canonical_name": "google photos",
+      "schema_sha256": "d62d321238a77057998a0c02f35882ddf00a77319d91e32f2f8c39ccc1aeb138",
+      "profile": "hosted-renewal",
+      "notes": [
+        "Google account and own OAuth client/project; current API permits app-created media only. Fixture must be created through the authorized app, not arbitrary library photos.",
+        "Free account/API eligibility: review_required"
+      ],
+      "source_links": [
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/googlephotos.md",
+        "https://developers.google.com/photos/support/updates"
+      ],
+      "auth_applicability": "oauth",
+      "refresh_applicability": "required",
+      "renewal_modes": [
+        {
+          "auth_mode": "Documented browser OAuth credentials",
+          "refresh_capability_requirement": "required",
+          "renewal_kind": "oauth_refresh_token",
+          "source_supported_behavior": "The documented token-based authentication requires a renewal acceptance case. Select the exact account/authentication variant and observe the actual renewal exchange; a saved-token listing is insufficient.",
+          "required_lifecycle_scenarios": [
+            "Fresh setup and authentication in the chosen variant.",
+            "Expired access or session credential triggers the documented successful renewal exchange.",
+            "Verify the replacement credential and persistence where applicable, then read only the approved synthetic scope.",
+            "Denial, revocation and cancellation remain bounded and preserve the source."
+          ]
+        }
+      ]
+    },
+    "hdfs": {
+      "canonical_name": "hdfs",
+      "schema_sha256": "cb51953f32a7a3f4b8024e5cec913e108729143883a2ae17d07bea1beb671bee",
+      "profile": "network-credentials",
+      "notes": [
+        "Owned Hadoop/HDFS installation and configured user; secure Kerberos deployment is a separate authentication profile, not proven by simple-mode tests.",
+        "Free account/API eligibility: no_vendor_account_needed",
+        "Do not use the same repository tag root client/client.go: that is a different module generation. The dependency is the v8 subtree."
+      ],
+      "source_links": [
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/hdfs.md",
+        "https://hadoop.apache.org/docs/stable/hadoop-project-dist/hadoop-common/SingleCluster.html",
+        "https://github.com/rclone/rclone/blob/v1.75.1/backend/hdfs/fs.go#L43-L111",
+        "https://github.com/jcmturner/gokrb5/blob/v8.4.4/v8/client/client.go#L62-L111"
+      ],
+      "renewal_modes": [
+        {
+          "auth_mode": "simple mode username",
+          "refresh_capability_requirement": "not_applicable",
+          "renewal_kind": "none",
+          "source_supported_behavior": "No Kerberos client is supplied; User is the configured username.",
+          "required_lifecycle_scenarios": [
+            "simple-mode permission behavior",
+            "do not claim authenticated login from identity assertion"
+          ]
+        },
+        {
+          "auth_mode": "Kerberos FILE credential cache",
+          "refresh_capability_requirement": "not_applicable",
+          "renewal_kind": "external_ticket_renewal",
+          "source_supported_behavior": "Backend loads a CCache using gokrb5/v8 NewFromCCache. Pinned v8.4.4 explicitly does not automatically renew its TGT.",
+          "required_lifecycle_scenarios": [
+            "expired ticket denied",
+            "external ticket renewal/new process tested separately",
+            "no silent downgrade to simple mode"
+          ]
+        }
+      ],
+      "auth_applicability": "provider_specific",
+      "refresh_applicability": "not_applicable"
+    },
+    "hidrive": {
+      "canonical_name": "hidrive",
+      "schema_sha256": "5170bdd6ed2be46aa6d09a4ad70ba0251db0d979b06710feca5977789338fd3c",
+      "profile": "hosted-renewal",
+      "notes": [
+        "HiDrive account and approved OAuth app/consent with read-only scope; product/API entitlement unresolved.",
+        "Free account/API eligibility: review_required"
+      ],
+      "source_links": [
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/hidrive.md"
+      ],
+      "auth_applicability": "oauth",
+      "refresh_applicability": "required",
+      "renewal_modes": [
+        {
+          "auth_mode": "Documented browser OAuth credentials",
+          "refresh_capability_requirement": "required",
+          "renewal_kind": "oauth_refresh_token",
+          "source_supported_behavior": "The documented token-based authentication requires a renewal acceptance case. Select the exact account/authentication variant and observe the actual renewal exchange; a saved-token listing is insufficient.",
+          "required_lifecycle_scenarios": [
+            "Fresh setup and authentication in the chosen variant.",
+            "Expired access or session credential triggers the documented successful renewal exchange.",
+            "Verify the replacement credential and persistence where applicable, then read only the approved synthetic scope.",
+            "Denial, revocation and cancellation remain bounded and preserve the source."
+          ]
+        }
+      ]
+    },
+    "http": {
+      "canonical_name": "http",
+      "schema_sha256": "240243f6cecefd033d700a864e8b13732db488b075467033e2981d9bc21c8b2c",
+      "profile": "http-fixture",
+      "notes": [
+        "Owned HTTP directory-listing server and immutable fixture. Public profile has no login; authenticated reverse-proxy/header variants need separate denial coverage.",
+        "Free account/API eligibility: no_vendor_account_needed"
+      ],
+      "source_links": [
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/http.md",
+        "https://docs.python.org/3/library/http.server.html"
+      ],
+      "auth_applicability": "none",
+      "refresh_applicability": "not_applicable",
+      "renewal_modes": [
+        {
+          "auth_mode": "Local or public anonymous source baseline",
+          "refresh_capability_requirement": "not_applicable",
+          "renewal_kind": "none",
+          "source_supported_behavior": "Owned HTTP directory-listing server and immutable fixture. Public profile has no login; authenticated reverse-proxy/header variants need separate denial coverage.",
+          "required_lifecycle_scenarios": [
+            "Configure and acquire a nonempty synthetic source without borrowing any ambient account credentials.",
+            "Preserve source bytes and validate cancellation and cleanup; separately qualify any authenticated upstream source."
+          ]
+        }
+      ]
+    },
+    "huaweidrive": {
+      "canonical_name": "huaweidrive",
+      "schema_sha256": "7b3f82fc4028d3ff742942fb5bdee6a859e6c804523621095a2f489d53466d4c",
+      "profile": "hosted-renewal",
+      "notes": [
+        "Huawei account, Drive service access and OAuth token/client setup; availability/region and app approval unresolved.",
+        "Free account/API eligibility: review_required"
+      ],
+      "source_links": [
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/huaweidrive.md"
+      ],
+      "auth_applicability": "oauth",
+      "refresh_applicability": "required",
+      "renewal_modes": [
+        {
+          "auth_mode": "Documented browser OAuth credentials",
+          "refresh_capability_requirement": "required",
+          "renewal_kind": "oauth_refresh_token",
+          "source_supported_behavior": "The documented token-based authentication requires a renewal acceptance case. Select the exact account/authentication variant and observe the actual renewal exchange; a saved-token listing is insufficient.",
+          "required_lifecycle_scenarios": [
+            "Fresh setup and authentication in the chosen variant.",
+            "Expired access or session credential triggers the documented successful renewal exchange.",
+            "Verify the replacement credential and persistence where applicable, then read only the approved synthetic scope.",
+            "Denial, revocation and cancellation remain bounded and preserve the source."
+          ]
+        }
+      ]
+    },
+    "iclouddrive": {
+      "canonical_name": "iclouddrive",
+      "schema_sha256": "af856d4a4bd3e9d5ac84065f48234f746832ad3852d6b1748c6e77fb0c8fc9bf",
+      "profile": "hosted-renewal",
+      "notes": [
+        "Apple account with iCloud Drive and regular password plus trusted-device/phone 2FA; app-specific passwords are not accepted. Trust/session renewal differs from OAuth refresh grant.",
+        "Free account/API eligibility: review_required",
+        "This proves code intent, not successful recovery. Cached-cookie fast paths are counterevidence against assuming every retry performs fresh authentication; observe the actual exchange."
+      ],
+      "source_links": [
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/iclouddrive.md",
+        "https://github.com/rclone/rclone/blob/v1.75.1/backend/iclouddrive/api/client.go#L85-L156",
+        "https://rclone.org/iclouddrive/"
+      ],
+      "renewal_modes": [
+        {
+          "auth_mode": "cached Apple session with trust token",
+          "refresh_capability_requirement": "required",
+          "renewal_kind": "provider_session_reauthentication",
+          "source_supported_behavior": "The client attempts Authenticate and retries requests on 401/421/423; the implementation includes cache reuse and sign-in paths.",
+          "required_lifecycle_scenarios": [
+            "induce owned session expiry",
+            "observe actual successful session reauthentication rather than retry alone",
+            "persist usable trust/cookie state if changed"
+          ]
+        },
+        {
+          "auth_mode": "expired trust requiring 2FA",
+          "refresh_capability_requirement": "not_applicable",
+          "renewal_kind": "interactive_reauthentication",
+          "source_supported_behavior": "The request path reports that reauthentication is needed when Requires2FA remains true; docs describe trust expiry and interactive reconnect.",
+          "required_lifecycle_scenarios": [
+            "clear actionable reauth failure",
+            "approved fresh 2FA login separately",
+            "bounded cancel"
+          ]
+        }
+      ],
+      "auth_applicability": "provider_specific",
+      "refresh_applicability": "required"
+    },
+    "imagekit": {
+      "canonical_name": "imagekit",
+      "schema_sha256": "c24131ed423e1772b2edcd5ebc8cb375574c4986c2e56428e25bd2342f3967e8",
+      "profile": "hosted-renewal-review",
+      "notes": [
+        "ImageKit account with public/private API keys. Rclone documents a free plan; current API entitlement and limits must be confirmed before account creation.",
+        "Free account/API eligibility: free_plan_documented_api_entitlement_review_required",
+        "Renewal applicability is unreviewed: static input credentials alone do not rule out temporary service sessions. Trace the selected auth mode before qualification."
+      ],
+      "source_links": [
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/imagekit.md",
+        "https://rclone.org/imagekit/"
+      ],
+      "auth_applicability": "credentials",
+      "refresh_applicability": "review_required",
+      "renewal_modes": [
+        {
+          "auth_mode": "Provider authentication mode awaiting lifecycle review",
+          "refresh_capability_requirement": "review_required",
+          "renewal_kind": "unresolved",
+          "source_supported_behavior": "The documented configuration supplies credentials, but derived session expiry and renewal have not been traced for the selected mode. Static input credentials do not establish renewal N/A.",
+          "required_lifecycle_scenarios": [
+            "Trace the selected credential mode and any derived service sessions.",
+            "Test renewal where supported, or expiry denial and explicit credential recovery where renewal is external."
+          ]
+        }
+      ]
+    },
+    "internetarchive": {
+      "canonical_name": "internetarchive",
+      "schema_sha256": "85443e0c86eee55520acbfad45c2603e36ea8d8ea5329de3b1f1b8ed6958d095",
+      "profile": "hosted-renewal-review",
+      "notes": [
+        "Internet Archive account and IAS3 access/secret keys for task-owned item fixture. Public item reads are a separate anonymous profile, not account-login evidence.",
+        "Free account/API eligibility: review_required",
+        "Renewal applicability is unreviewed: static input credentials alone do not rule out temporary service sessions. Trace the selected auth mode before qualification."
+      ],
+      "source_links": [
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/internetarchive.md"
+      ],
+      "auth_applicability": "credentials",
+      "refresh_applicability": "review_required",
+      "renewal_modes": [
+        {
+          "auth_mode": "Provider authentication mode awaiting lifecycle review",
+          "refresh_capability_requirement": "review_required",
+          "renewal_kind": "unresolved",
+          "source_supported_behavior": "The documented configuration supplies credentials, but derived session expiry and renewal have not been traced for the selected mode. Static input credentials do not establish renewal N/A.",
+          "required_lifecycle_scenarios": [
+            "Trace the selected credential mode and any derived service sessions.",
+            "Test renewal where supported, or expiry denial and explicit credential recovery where renewal is external."
+          ]
+        }
+      ]
+    },
+    "internxt": {
+      "canonical_name": "internxt",
+      "schema_sha256": "3d2e23e5013354519fee1751f4ed55d4f06ec0e2cf187aff8ae994f746495a96",
+      "profile": "hosted-renewal",
+      "notes": [
+        "Internxt account credentials; rclone warns compatibility depends on subscription/account type. Current eligible plan and session lifecycle unresolved.",
+        "Free account/API eligibility: review_required",
+        "Changed token from ordinary user-info rotation does not by itself prove the particular expired-token renewal path was exercised."
+      ],
+      "source_links": [
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/internxt.md",
+        "https://github.com/rclone/rclone/blob/v1.75.1/backend/internxt/internxt.go#L304-L315",
+        "https://github.com/rclone/rclone/blob/v1.75.1/backend/internxt/internxt.go#L334-L399"
+      ],
+      "renewal_modes": [
+        {
+          "auth_mode": "stored JWT/token and credential fallback",
+          "refresh_capability_requirement": "required",
+          "renewal_kind": "provider_rotating_token_and_relogin",
+          "source_supported_behavior": "Backend uses the provider refresh endpoint, calls refreshOrReLogin on unauthorized access, persists rotated token returned by user-info, and starts a token renewer.",
+          "required_lifecycle_scenarios": [
+            "observe actual provider renewal and rotated token persistence",
+            "distinguish password fallback from refresh",
+            "2FA-blocked fallback fails honestly",
+            "serialize rotation tests"
+          ]
+        }
+      ],
+      "auth_applicability": "provider_specific",
+      "refresh_applicability": "required"
+    },
+    "jottacloud": {
+      "canonical_name": "jottacloud",
+      "schema_sha256": "bde03a6302cb03653897492aaf4fad9a49d7a077b8e6a5a8cc8935824c127d31",
+      "profile": "hosted-renewal",
+      "notes": [
+        "Jottacloud or supported white-label account and provider-specific login/token setup. Rotating refresh tokens and reuse detection require serialized, isolated tests.",
+        "Free account/API eligibility: review_required"
+      ],
+      "source_links": [
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/jottacloud.md"
+      ],
+      "auth_applicability": "provider_specific",
+      "refresh_applicability": "required",
+      "renewal_modes": [
+        {
+          "auth_mode": "Documented provider token or service-identity credentials",
+          "refresh_capability_requirement": "required",
+          "renewal_kind": "provider_credential_renewal",
+          "source_supported_behavior": "The documented token-based authentication requires a renewal acceptance case. Select the exact account/authentication variant and observe the actual renewal exchange; a saved-token listing is insufficient.",
+          "required_lifecycle_scenarios": [
+            "Fresh setup and authentication in the chosen variant.",
+            "Expired access or session credential triggers the documented successful renewal exchange.",
+            "Verify the replacement credential and persistence where applicable, then read only the approved synthetic scope.",
+            "Denial, revocation and cancellation remain bounded and preserve the source."
+          ]
+        }
+      ]
+    },
+    "koofr": {
+      "canonical_name": "koofr",
+      "schema_sha256": "70c2ac0923959ac5c8e384b6fba8807eb96668ab39dbd72df55219dc60efcc67",
+      "profile": "hosted-static-credentials",
+      "notes": [
+        "Koofr-compatible account and generated application password; separate provider variants must not inherit acceptance automatically.",
+        "Free account/API eligibility: review_required",
+        "Scoped to the configured Basic-auth route. Any claimed additional white-label or future auth mode must be reviewed separately; transport reconnect is not token renewal."
+      ],
+      "source_links": [
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/koofr.md",
+        "https://github.com/rclone/rclone/blob/v1.75.1/backend/koofr/koofr.go#L315-L327",
+        "https://rclone.org/koofr/"
+      ],
+      "renewal_modes": [
+        {
+          "auth_mode": "configured account/application password over HTTP Basic",
+          "refresh_capability_requirement": "not_applicable",
+          "renewal_kind": "static_basic_auth",
+          "source_supported_behavior": "Pinned backend constructs a constant Basic authorization header from configured user/password and calls the API with it; it does not invoke an account-token login flow in this setup path.",
+          "required_lifecycle_scenarios": [
+            "valid scoped read",
+            "invalid/revoked credential denied",
+            "no silent fallback"
+          ]
+        }
+      ],
+      "auth_applicability": "credentials",
+      "refresh_applicability": "not_applicable"
+    },
+    "linkbox": {
+      "canonical_name": "linkbox",
+      "schema_sha256": "1ebfd137bed095822e22a7ea7c9b07e5b62d6f815c4693355dd58bbf89f4d9b2",
+      "profile": "hosted-renewal",
+      "notes": [
+        "Linkbox account email/password plus API token: pinned rclone requires credentials for reads and token for modifications. Token-only setup is insufficient.",
+        "Free account/API eligibility: review_required",
+        "Web API errors are broader than expiration. Only an intentionally expired-session scenario proves that cause; raw URLs contain credentials and must never be evidence output."
+      ],
+      "source_links": [
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/linkbox.md",
+        "https://github.com/rclone/rclone/blob/v1.75.1/backend/linkbox/linkbox.go#L166-L175",
+        "https://github.com/rclone/rclone/blob/v1.75.1/backend/linkbox/linkbox.go#L219-L275"
+      ],
+      "renewal_modes": [
+        {
+          "auth_mode": "static API token",
+          "refresh_capability_requirement": "not_applicable",
+          "renewal_kind": "static_api_key",
+          "source_supported_behavior": "Configured API token is distinct from web-login token; do not treat one as renewal of the other.",
+          "required_lifecycle_scenarios": [
+            "valid scoped read",
+            "invalid/revoked credential denied",
+            "no silent fallback"
+          ]
+        },
+        {
+          "auth_mode": "cached web token + account credentials",
+          "refresh_capability_requirement": "required",
+          "renewal_kind": "password_relogin",
+          "source_supported_behavior": "On a web API error, shouldRetryWeb performs login again, persists web_token and updates retry parameters.",
+          "required_lifecycle_scenarios": [
+            "expired web token triggers successful re-login",
+            "returned token persists and scoped read succeeds",
+            "bad password fails without leaking query parameters"
+          ]
+        }
+      ],
+      "auth_applicability": "provider_specific",
+      "refresh_applicability": "required"
+    },
+    "local": {
+      "canonical_name": "local",
+      "schema_sha256_by_platform": {
+        "windows": "f99eb9bf2ab8d3a4af2234b84e22db1f9a5d57b7b3b931e912a2a269a351d67c",
+        "linux": "a901743e50c3c5839c644f8fef3d77c525d4d2b9909ca894c7dc8449e73256fb"
+      },
+      "profile": "local-storage",
+      "notes": [
+        "Task-owned filesystem tree; no vendor account/login. Include Windows path/permissions and source-preservation evidence.",
+        "Free account/API eligibility: no_vendor_account_needed"
+      ],
+      "source_links": [
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/local.md",
+        "https://github.com/rclone/rclone/blob/v1.75.1/backend/local/local.go#L85-L88"
+      ],
+      "auth_applicability": "none",
+      "refresh_applicability": "not_applicable",
+      "renewal_modes": [
+        {
+          "auth_mode": "Local or public anonymous source baseline",
+          "refresh_capability_requirement": "not_applicable",
+          "renewal_kind": "none",
+          "source_supported_behavior": "Task-owned filesystem tree; no vendor account/login. Include Windows path/permissions and source-preservation evidence.",
+          "required_lifecycle_scenarios": [
+            "Configure and acquire a nonempty synthetic source without borrowing any ambient account credentials.",
+            "Preserve source bytes and validate cancellation and cleanup; separately qualify any authenticated upstream source."
+          ]
+        }
+      ]
+    },
+    "mailru": {
+      "canonical_name": "mailru",
+      "schema_sha256": "5b5e693f6b6186cb6ea9f0230f7f5502eac4706fe5143ab609ef7380e34a1173",
+      "profile": "hosted-renewal",
+      "notes": [
+        "Mail.ru account and generated app password; normal account password is not supported. Session/token behavior requires provider-specific renewal review.",
+        "Free account/API eligibility: review_required",
+        "Access tokens are passed in query parameters by this API; record allowlisted counters/outcomes, never raw URLs."
+      ],
+      "source_links": [
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/mailru.md",
+        "https://github.com/rclone/rclone/blob/v1.75.1/backend/mailru/mailru.go#L430-L518",
+        "https://rclone.org/mailru/"
+      ],
+      "renewal_modes": [
+        {
+          "auth_mode": "app password plus stored OAuth token",
+          "refresh_capability_requirement": "required",
+          "renewal_kind": "oauth_refresh_with_password_fallback",
+          "source_supported_behavior": "Valid tokens must contain RefreshToken. oauthutil supplies refresh; absent/invalid token invokes password credentials, and 403 can trigger one password reauthorization.",
+          "required_lifecycle_scenarios": [
+            "expired access token uses refresh grant",
+            "distinguish password grant fallback",
+            "rotated token saved",
+            "invalid app password/refresh denied"
+          ]
+        }
+      ],
+      "auth_applicability": "provider_specific",
+      "refresh_applicability": "required"
+    },
+    "mega": {
+      "canonical_name": "mega",
+      "schema_sha256": "5d632ce556fc276b934125a3f91dacd5b82e2da95c5071b90c8b4b70ea157732",
+      "profile": "hosted-static-credentials",
+      "notes": [
+        "MEGA account credentials and any applicable account verification; account/session behavior and current free-plan limits need confirmation.",
+        "Free account/API eligibility: review_required",
+        "No OAuth refresh grant is exposed. This finding does not assert a vendor session lifetime or prove that any automatic upstream session renewal works."
+      ],
+      "source_links": [
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/mega.md",
+        "https://github.com/rclone/rclone/blob/v1.75.1/backend/mega/mega.go#L248-L292"
+      ],
+      "renewal_modes": [
+        {
+          "auth_mode": "username/password and optional 2FA when no cached session",
+          "refresh_capability_requirement": "not_applicable",
+          "renewal_kind": "fresh_session_login",
+          "source_supported_behavior": "MultiFactorLogin creates a session and persists session ID/master key.",
+          "required_lifecycle_scenarios": [
+            "fresh login creates usable protected session",
+            "denied credentials and applicable MFA handled"
+          ]
+        },
+        {
+          "auth_mode": "stored session_id + master_key",
+          "refresh_capability_requirement": "not_applicable",
+          "renewal_kind": "reuse_without_backend_automatic_renewal",
+          "source_supported_behavior": "LoginWithKeys reuses the session; failure returns an error. This branch does not fall back to password login.",
+          "required_lifecycle_scenarios": [
+            "valid stored session read",
+            "invalidated session denied",
+            "explicit fresh login recovery tested separately"
+          ]
+        }
+      ],
+      "auth_applicability": "credentials",
+      "refresh_applicability": "not_applicable"
+    },
+    "memory": {
+      "canonical_name": "memory",
+      "schema_sha256": "a4a54d1dee0b2b10c1e2e0c990826a8237b2d65c89f4cbd8f8ee33616d5f3e00",
+      "profile": "local-storage",
+      "notes": [
+        "In-process RAM filesystem, lost at process exit. A subprocess-per-operation application cannot acquire prior-process memory objects; require explicit unsupported-lifecycle verdict or same-process harness.",
+        "Free account/API eligibility: no_vendor_account_needed",
+        "Memory storage is process-local. A usable source lifecycle across the application's separate rclone invocations is unresolved; an empty listing cannot qualify this backend."
+      ],
+      "source_links": [
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/memory.md"
+      ],
+      "auth_applicability": "none",
+      "refresh_applicability": "not_applicable",
+      "renewal_modes": [
+        {
+          "auth_mode": "Local or public anonymous source baseline",
+          "refresh_capability_requirement": "not_applicable",
+          "renewal_kind": "none",
+          "source_supported_behavior": "In-process RAM filesystem, lost at process exit. A subprocess-per-operation application cannot acquire prior-process memory objects; require explicit unsupported-lifecycle verdict or same-process harness.",
+          "required_lifecycle_scenarios": [
+            "Configure and acquire a nonempty synthetic source without borrowing any ambient account credentials.",
+            "Preserve source bytes and validate cancellation and cleanup; separately qualify any authenticated upstream source."
+          ]
+        }
+      ]
+    },
+    "netstorage": {
+      "canonical_name": "netstorage",
+      "schema_sha256": "3f6f4e5ec0fccd9e1c5efae3df6b5b388d2c541b24fb5a5aba7f496ddf95539a",
+      "profile": "hosted-renewal-review",
+      "notes": [
+        "Akamai NetStorage account/provisioned group, host and authentication secret. Enterprise provisioning and pricing unresolved.",
+        "Free account/API eligibility: review_required",
+        "Renewal applicability is unreviewed: static input credentials alone do not rule out temporary service sessions. Trace the selected auth mode before qualification."
+      ],
+      "source_links": [
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/netstorage.md"
+      ],
+      "auth_applicability": "credentials",
+      "refresh_applicability": "review_required",
+      "renewal_modes": [
+        {
+          "auth_mode": "Provider authentication mode awaiting lifecycle review",
+          "refresh_capability_requirement": "review_required",
+          "renewal_kind": "unresolved",
+          "source_supported_behavior": "The documented configuration supplies credentials, but derived session expiry and renewal have not been traced for the selected mode. Static input credentials do not establish renewal N/A.",
+          "required_lifecycle_scenarios": [
+            "Trace the selected credential mode and any derived service sessions.",
+            "Test renewal where supported, or expiry denial and explicit credential recovery where renewal is external."
+          ]
+        }
+      ]
+    },
+    "onedrive": {
+      "canonical_name": "onedrive",
+      "schema_sha256": "1e1d68a0f4adc8099fe074ccea8a914f128f26bd87bec4b86a0af37d3abd99d5",
+      "profile": "hosted-renewal",
+      "notes": [
+        "Microsoft account or tenant account, own registered app/consent and exact approved drive/root; personal and business variants need separate evidence.",
+        "Free account/API eligibility: review_required"
+      ],
+      "source_links": [
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/onedrive.md"
+      ],
+      "auth_applicability": "oauth",
+      "refresh_applicability": "required",
+      "renewal_modes": [
+        {
+          "auth_mode": "Documented browser OAuth credentials",
+          "refresh_capability_requirement": "required",
+          "renewal_kind": "oauth_refresh_token",
+          "source_supported_behavior": "The documented token-based authentication requires a renewal acceptance case. Select the exact account/authentication variant and observe the actual renewal exchange; a saved-token listing is insufficient.",
+          "required_lifecycle_scenarios": [
+            "Fresh setup and authentication in the chosen variant.",
+            "Expired access or session credential triggers the documented successful renewal exchange.",
+            "Verify the replacement credential and persistence where applicable, then read only the approved synthetic scope.",
+            "Denial, revocation and cancellation remain bounded and preserve the source."
+          ]
+        }
+      ]
+    },
+    "oos": {
+      "canonical_name": "oracleobjectstorage",
+      "schema_sha256": "f7b3829c078c04a2fb3588393140a1ce6b6a082275c8ae9af43aa4850480f196",
+      "profile": "hosted-renewal-review",
+      "notes": [
+        "OCI tenancy, bucket, namespace and approved user-key/instance/resource/workload identity. Anonymous public buckets are separate; free-tier eligibility and identity renewal remain profile-specific.",
+        "Free account/API eligibility: review_required",
+        "Do not mark all OCI modes N/A because an API signing-key mode has no renewal.",
+        "SDK principal and possible security-token-file modes require profile-specific follow-up."
+      ],
+      "source_links": [
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/oracleobjectstorage/_index.md",
+        "https://github.com/rclone/rclone/blob/v1.75.1/backend/oracleobjectstorage/client.go#L39-L68",
+        "https://docs.oracle.com/en-us/iaas/tools/go/65.99.0/common/auth/index.html"
+      ],
+      "renewal_modes": [
+        {
+          "auth_mode": "user principal API signing key",
+          "refresh_capability_requirement": "not_applicable",
+          "renewal_kind": "static_signing_key",
+          "source_supported_behavior": "CustomProfileConfigProvider supplies user signing configuration; ordinary API-key profile has no OAuth refresh grant.",
+          "required_lifecycle_scenarios": [
+            "valid scoped read",
+            "invalid/revoked credential denied",
+            "no silent fallback"
+          ]
+        },
+        {
+          "auth_mode": "anonymous public bucket",
+          "refresh_capability_requirement": "not_applicable",
+          "renewal_kind": "none",
+          "source_supported_behavior": "Backend has explicit no_auth configuration.",
+          "required_lifecycle_scenarios": [
+            "public scoped read",
+            "private data denied"
+          ]
+        },
+        {
+          "auth_mode": "instance/resource/workload principal and default config variants",
+          "refresh_capability_requirement": "review_required",
+          "renewal_kind": "sdk_identity_refresh",
+          "source_supported_behavior": "Backend delegates to OCI SDK principal providers. Provider selection is established; exact expiring security-token behavior is not traced for every principal/config variant.",
+          "required_lifecycle_scenarios": [
+            "pin the chosen principal provider",
+            "trace its SDK refresh contract",
+            "observe expiry reacquisition or expected failure"
+          ]
+        }
+      ],
+      "auth_applicability": "credentials",
+      "refresh_applicability": "review_required"
+    },
+    "opendrive": {
+      "canonical_name": "opendrive",
+      "schema_sha256": "931c49268bae34c6aae5f91fd3110c081e3ab9b9912271423cff2d81b2c12f5a",
+      "profile": "hosted-static-credentials",
+      "notes": [
+        "OpenDrive account username/password; current API/free-plan eligibility requires confirmation. The pinned backend creates a session during initialization and has no automatic renewal path.",
+        "Free account/API eligibility: review_required",
+        "Source indicates an unsupported automatic-recovery path; N/A for a refresh-grant test must not be presented as transparent session-renewal support."
+      ],
+      "source_links": [
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/opendrive.md",
+        "https://github.com/rclone/rclone/blob/v1.75.1/backend/opendrive/opendrive.go#L218-L233",
+        "https://github.com/rclone/rclone/blob/v1.75.1/backend/opendrive/opendrive.go#L743-L761"
+      ],
+      "renewal_modes": [
+        {
+          "auth_mode": "account password creating session at Fs initialization",
+          "refresh_capability_requirement": "not_applicable",
+          "renewal_kind": "fresh_session_login_without_backend_renewal",
+          "source_supported_behavior": "NewFs creates one session. The 401-expired-token status is retryable, but shouldRetry only repeats the request and does not create a new session.",
+          "required_lifecycle_scenarios": [
+            "fresh login/read",
+            "expired session fails boundedly",
+            "new Fs/new process obtains a new session",
+            "no false automatic-renewal success"
+          ]
+        }
+      ],
+      "auth_applicability": "credentials",
+      "refresh_applicability": "not_applicable"
+    },
+    "pcloud": {
+      "canonical_name": "pcloud",
+      "schema_sha256": "4c3f969b6f5f1dc69f7d4912adb7c6bcec2da68bd84a75f14822597d29246b00",
+      "profile": "hosted-renewal-review",
+      "notes": [
+        "pCloud account and OAuth consent with region hostname retained. Pinned docs show a non-expiring token; token revocation/denial still required, not invented refresh-grant coverage.",
+        "Free account/API eligibility: review_required",
+        "Renewal applicability is unreviewed: static input credentials alone do not rule out temporary service sessions. Trace the selected auth mode before qualification."
+      ],
+      "source_links": [
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/pcloud.md"
+      ],
+      "auth_applicability": "oauth",
+      "refresh_applicability": "review_required",
+      "renewal_modes": [
+        {
+          "auth_mode": "Provider authentication mode awaiting lifecycle review",
+          "refresh_capability_requirement": "review_required",
+          "renewal_kind": "unresolved",
+          "source_supported_behavior": "The documented configuration supplies credentials, but derived session expiry and renewal have not been traced for the selected mode. Static input credentials do not establish renewal N/A.",
+          "required_lifecycle_scenarios": [
+            "Trace the selected credential mode and any derived service sessions.",
+            "Test renewal where supported, or expiry denial and explicit credential recovery where renewal is external."
+          ]
+        }
+      ]
+    },
+    "pikpak": {
+      "canonical_name": "pikpak",
+      "schema_sha256": "f468524aa9c7b491142fa17e41c0bb549bb84bb67135eceddd5ef6ffcf126abb",
+      "profile": "hosted-renewal",
+      "notes": [
+        "PikPak account credentials; device/captcha handling can require interactive provider setup. Free/API eligibility and renewal semantics unresolved.",
+        "Free account/API eligibility: review_required",
+        "An invalid_grant recovery through password is not a successful refresh grant."
+      ],
+      "source_links": [
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/pikpak.md",
+        "https://github.com/rclone/rclone/blob/v1.75.1/backend/pikpak/pikpak.go#L88-L141",
+        "https://github.com/rclone/rclone/blob/v1.75.1/backend/pikpak/pikpak.go#L409-L455",
+        "https://github.com/rclone/rclone/blob/v1.75.1/backend/pikpak/pikpak.go#L521-L522"
+      ],
+      "renewal_modes": [
+        {
+          "auth_mode": "password/device login then stored OAuth token",
+          "refresh_capability_requirement": "required",
+          "renewal_kind": "oauth_refresh_with_password_fallback",
+          "source_supported_behavior": "Sign-in stores access/refresh/expiry. oauthutil handles tokens; invalid_grant can initiate provider-specific sign-in again.",
+          "required_lifecycle_scenarios": [
+            "actual refresh grant succeeds",
+            "distinguish re-login fallback",
+            "persist rotated credentials",
+            "concurrent-token rotation and captcha/MFA failures handled"
+          ]
+        }
+      ],
+      "auth_applicability": "provider_specific",
+      "refresh_applicability": "required"
+    },
+    "pixeldrain": {
+      "canonical_name": "pixeldrain",
+      "schema_sha256": "777c2f50c34b0e79c6ab7de3fff3f6d484c42a87ffcde39cd579027dae34c24b",
+      "profile": "hosted-renewal-review",
+      "notes": [
+        "Pixeldrain filesystem API key requires Pro/subscription or Prepaid plan; the free file-sharing product does not qualify.",
+        "Free account/API eligibility: paid_api_required",
+        "Renewal applicability is unreviewed: static input credentials alone do not rule out temporary service sessions. Trace the selected auth mode before qualification."
+      ],
+      "source_links": [
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/pixeldrain.md",
+        "https://rclone.org/pixeldrain/"
+      ],
+      "auth_applicability": "credentials",
+      "refresh_applicability": "review_required",
+      "renewal_modes": [
+        {
+          "auth_mode": "Provider authentication mode awaiting lifecycle review",
+          "refresh_capability_requirement": "review_required",
+          "renewal_kind": "unresolved",
+          "source_supported_behavior": "The documented configuration supplies credentials, but derived session expiry and renewal have not been traced for the selected mode. Static input credentials do not establish renewal N/A.",
+          "required_lifecycle_scenarios": [
+            "Trace the selected credential mode and any derived service sessions.",
+            "Test renewal where supported, or expiry denial and explicit credential recovery where renewal is external."
+          ]
+        }
+      ]
+    },
+    "premiumizeme": {
+      "canonical_name": "premiumizeme",
+      "schema_sha256": "12b5ad80d88d34c7913d81bd059e240b998b4bb2267225ccade7935fe3f36acd",
+      "profile": "hosted-renewal",
+      "notes": [
+        "Premiumize account and browser OAuth token; current storage/API entitlement unresolved.",
+        "Free account/API eligibility: review_required"
+      ],
+      "source_links": [
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/premiumizeme.md"
+      ],
+      "auth_applicability": "oauth",
+      "refresh_applicability": "required",
+      "renewal_modes": [
+        {
+          "auth_mode": "Documented browser OAuth credentials",
+          "refresh_capability_requirement": "required",
+          "renewal_kind": "oauth_refresh_token",
+          "source_supported_behavior": "The documented token-based authentication requires a renewal acceptance case. Select the exact account/authentication variant and observe the actual renewal exchange; a saved-token listing is insufficient.",
+          "required_lifecycle_scenarios": [
+            "Fresh setup and authentication in the chosen variant.",
+            "Expired access or session credential triggers the documented successful renewal exchange.",
+            "Verify the replacement credential and persistence where applicable, then read only the approved synthetic scope.",
+            "Denial, revocation and cancellation remain bounded and preserve the source."
+          ]
+        }
+      ]
+    },
+    "protondrive": {
+      "canonical_name": "protondrive",
+      "schema_sha256": "0f64740c69164940921e914b38f0f96f19f695d377fc23de3af90497b8e951c0",
+      "profile": "hosted-renewal",
+      "notes": [
+        "Proton account credentials and applicable 2FA/mailbox password. Rclone uses an undocumented API and warns of account compatibility limits.",
+        "Free account/API eligibility: review_required",
+        "These are source-supported client behaviors for an undocumented vendor API, not vendor support guarantees or live acceptance."
+      ],
+      "source_links": [
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/protondrive.md",
+        "https://github.com/rclone/rclone/blob/v1.75.1/backend/protondrive/protondrive.go#L342-L362",
+        "https://github.com/rclone/rclone/blob/v1.75.1/backend/protondrive/protondrive.go#L483-L532",
+        "https://github.com/rclone/go-proton-api/blob/v1.0.4/client.go#L142-L150",
+        "https://github.com/rclone/go-proton-api/blob/v1.0.4/client.go#L174-L210",
+        "https://github.com/rclone/go-proton-api/blob/v1.0.4/manager_auth.go#L105-L124"
+      ],
+      "renewal_modes": [
+        {
+          "auth_mode": "cached access/refresh credentials with password fallback",
+          "refresh_capability_requirement": "required",
+          "renewal_kind": "provider_refresh_token",
+          "source_supported_behavior": "Pinned go-proton-api reacts to 401 by posting GrantType refresh_token to /auth/v4/refresh, updates access/refresh pair and calls handlers; rclone persists that pair. Failed cached initialization may fall back to fresh password login.",
+          "required_lifecycle_scenarios": [
+            "observe actual refresh grant",
+            "match saved response credentials",
+            "differentiate password fallback",
+            "revoked refresh and cancellation handled"
+          ]
+        }
+      ],
+      "auth_applicability": "provider_specific",
+      "refresh_applicability": "required"
+    },
+    "putio": {
+      "canonical_name": "putio",
+      "schema_sha256": "79f056951ddacb4371d2b56ba8becb6ef0e6493531811f99e7cd5c2bc6e086a3",
+      "profile": "hosted-renewal-review",
+      "notes": [
+        "put.io account and browser OAuth token; pinned docs show a non-expiring token. Revoke/denial applies; refresh grant is not presumed.",
+        "Free account/API eligibility: review_required",
+        "Renewal applicability is unreviewed: static input credentials alone do not rule out temporary service sessions. Trace the selected auth mode before qualification."
+      ],
+      "source_links": [
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/putio.md"
+      ],
+      "auth_applicability": "oauth",
+      "refresh_applicability": "review_required",
+      "renewal_modes": [
+        {
+          "auth_mode": "Provider authentication mode awaiting lifecycle review",
+          "refresh_capability_requirement": "review_required",
+          "renewal_kind": "unresolved",
+          "source_supported_behavior": "The documented configuration supplies credentials, but derived session expiry and renewal have not been traced for the selected mode. Static input credentials do not establish renewal N/A.",
+          "required_lifecycle_scenarios": [
+            "Trace the selected credential mode and any derived service sessions.",
+            "Test renewal where supported, or expiry denial and explicit credential recovery where renewal is external."
+          ]
+        }
+      ]
+    },
+    "qingstor": {
+      "canonical_name": "qingstor",
+      "schema_sha256": "7bebff45a7b8bc30d64ddf8c4c9f75040c65778b139b50561cec8528e856f4c3",
+      "profile": "hosted-renewal-review",
+      "notes": [
+        "QingCloud/QingStor account, bucket/zone and access/secret key. Public anonymous buckets are separate; free/API entitlement unresolved.",
+        "Free account/API eligibility: review_required",
+        "Renewal applicability is unreviewed: static input credentials alone do not rule out temporary service sessions. Trace the selected auth mode before qualification."
+      ],
+      "source_links": [
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/qingstor.md"
+      ],
+      "auth_applicability": "credentials",
+      "refresh_applicability": "review_required",
+      "renewal_modes": [
+        {
+          "auth_mode": "Provider authentication mode awaiting lifecycle review",
+          "refresh_capability_requirement": "review_required",
+          "renewal_kind": "unresolved",
+          "source_supported_behavior": "The documented configuration supplies credentials, but derived session expiry and renewal have not been traced for the selected mode. Static input credentials do not establish renewal N/A.",
+          "required_lifecycle_scenarios": [
+            "Trace the selected credential mode and any derived service sessions.",
+            "Test renewal where supported, or expiry denial and explicit credential recovery where renewal is external."
+          ]
+        }
+      ]
+    },
+    "quatrix": {
+      "canonical_name": "quatrix",
+      "schema_sha256": "f90fa0650d2d29240abe716966a00a67fe2cbebb8c11404c719867ee814a8b49",
+      "profile": "hosted-renewal-review",
+      "notes": [
+        "Quatrix endpoint/account and profile API key; enterprise/trial entitlement unresolved.",
+        "Free account/API eligibility: review_required",
+        "Renewal applicability is unreviewed: static input credentials alone do not rule out temporary service sessions. Trace the selected auth mode before qualification."
+      ],
+      "source_links": [
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/quatrix.md"
+      ],
+      "auth_applicability": "credentials",
+      "refresh_applicability": "review_required",
+      "renewal_modes": [
+        {
+          "auth_mode": "Provider authentication mode awaiting lifecycle review",
+          "refresh_capability_requirement": "review_required",
+          "renewal_kind": "unresolved",
+          "source_supported_behavior": "The documented configuration supplies credentials, but derived session expiry and renewal have not been traced for the selected mode. Static input credentials do not establish renewal N/A.",
+          "required_lifecycle_scenarios": [
+            "Trace the selected credential mode and any derived service sessions.",
+            "Test renewal where supported, or expiry denial and explicit credential recovery where renewal is external."
+          ]
+        }
+      ]
+    },
+    "s3": {
+      "canonical_name": "s3",
+      "schema_sha256": "312b7a3b86663318d016bd7fc00fcdabede1c9ca5507a636400bd9af2d97751d",
+      "profile": "azureblob-renewal-plan",
+      "notes": [
+        "Owned S3-compatible server and scoped key can cover protocol contract. Every claimed AWS/vendor, signing/region/STS/auth profile still needs its own acceptance; long-lived keys alone need no refresh.",
+        "Free account/API eligibility: no_vendor_account_needed",
+        "Local protocol fixtures do not establish hosted service or workload identity acceptance.",
+        "Do not label all S3 refreshable or all S3 non-refreshable; vendor, SDK credential provider and signing mode are part of the profile.",
+        "IBM IAM and unselected workload/SSO/external-process provider variants are not individually resolved."
+      ],
+      "source_links": [
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/s3.md",
+        "https://garagehq.deuxfleurs.fr/documentation/quick-start/",
+        "https://github.com/rclone/rclone/blob/v1.75.1/backend/s3/s3.go#L1501-L1579",
+        "https://docs.aws.amazon.com/sdk-for-go/v2/developer-guide/configure-gosdk.html"
+      ],
+      "renewal_modes": [
+        {
+          "auth_mode": "explicit long-lived access_key_id + secret_access_key",
+          "refresh_capability_requirement": "not_applicable",
+          "renewal_kind": "none",
+          "source_supported_behavior": "StaticCredentialsProvider; no token source.",
+          "required_lifecycle_scenarios": [
+            "valid scoped read",
+            "invalid/revoked credential denied",
+            "no silent fallback"
+          ]
+        },
+        {
+          "auth_mode": "explicit access/secret + session_token",
+          "refresh_capability_requirement": "not_applicable",
+          "renewal_kind": "externally_reissued",
+          "source_supported_behavior": "Still StaticCredentialsProvider. Pasted temporary credentials are not automatically renewed.",
+          "required_lifecycle_scenarios": [
+            "expired temporary credential denied",
+            "external replacement tested separately"
+          ]
+        },
+        {
+          "auth_mode": "anonymous",
+          "refresh_capability_requirement": "not_applicable",
+          "renewal_kind": "none",
+          "source_supported_behavior": "No key/secret with environment auth disabled selects anonymous credentials.",
+          "required_lifecycle_scenarios": [
+            "public fixture read",
+            "private fixture denied"
+          ]
+        },
+        {
+          "auth_mode": "role_arn / selected expiring AWS SDK provider in env_auth chain",
+          "refresh_capability_requirement": "required",
+          "renewal_kind": "sdk_temporary_credential_reacquisition",
+          "source_supported_behavior": "role_arn uses STS AssumeRole in CredentialsCache; env_auth loads the AWS SDK default chain. Static environment keys remain static, so the chain must be resolved to a concrete provider.",
+          "required_lifecycle_scenarios": [
+            "observe STS/metadata/provider acquisition after expiry",
+            "record actual mode",
+            "expired or revoked upstream authority denied"
+          ]
+        },
+        {
+          "auth_mode": "IBM IAM or other provider-specific extensions",
+          "refresh_capability_requirement": "review_required",
+          "renewal_kind": "provider_specific",
+          "source_supported_behavior": "The S3 backend contains a distinct IBM IAM path and many provider variants; standard SigV4 static-key evidence does not settle them.",
+          "required_lifecycle_scenarios": [
+            "review chosen provider source and credential lifecycle before qualification"
+          ]
+        }
+      ],
+      "auth_applicability": "credentials",
+      "refresh_applicability": "review_required"
+    },
+    "seafile": {
+      "canonical_name": "seafile",
+      "schema_sha256": "5996f3d999e1c1b3e29012211bd1cbf314efcd865d248c7976f9aa36e8fdfd95",
+      "profile": "seafile-renewal-plan",
+      "notes": [
+        "Owned free Community Edition server and account credentials, or supported account token. Library API token is unsupported; 2FA/encrypted libraries are separate profiles.",
+        "Free account/API eligibility: no_vendor_account_needed",
+        "Account-token validity is controlled by the actual server. A short app subprocess cannot prove a 45-minute renewal path; a backend harness is only protocol evidence unless the production path also runs."
+      ],
+      "source_links": [
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/seafile.md",
+        "https://rclone.org/seafile/",
+        "https://github.com/rclone/rclone/blob/v1.75.1/backend/seafile/seafile.go#L235-L282",
+        "https://github.com/rclone/rclone/blob/v1.75.1/backend/seafile/webapi.go#L33-L72",
+        "https://github.com/rclone/rclone/blob/v1.75.1/backend/seafile/webapi.go#L86-L96",
+        "https://github.com/rclone/rclone/blob/v1.75.1/backend/seafile/renew.go#L18-L53"
+      ],
+      "renewal_modes": [
+        {
+          "auth_mode": "account username/password without saved auth_token",
+          "refresh_capability_requirement": "not_applicable",
+          "renewal_kind": "fresh_session_login",
+          "source_supported_behavior": "Backend POSTs to api2/auth-token/ during initialization; this is account authentication, not OAuth refresh.",
+          "required_lifecycle_scenarios": [
+            "fresh account login",
+            "invalid account rejected"
+          ]
+        },
+        {
+          "auth_mode": "saved account auth_token including token from 2FA setup",
+          "refresh_capability_requirement": "not_applicable",
+          "renewal_kind": "reuse_without_backend_automatic_renewal",
+          "source_supported_behavior": "Configured token is preferred. Permission failures are reported; the encrypted-library timer is not account-token refresh.",
+          "required_lifecycle_scenarios": [
+            "valid cached account token",
+            "revoked/expired token denied",
+            "explicit reconfiguration if needed"
+          ]
+        },
+        {
+          "auth_mode": "encrypted library password authorization",
+          "refresh_capability_requirement": "required",
+          "renewal_kind": "library_authorization_renewal",
+          "source_supported_behavior": "Backend authorizes the encrypted library and repeats that authorization every 45 minutes through Renew.",
+          "required_lifecycle_scenarios": [
+            "library authorization renewed during long-lived session",
+            "bad library password rejected",
+            "renewer stops on shutdown"
+          ]
+        }
+      ],
+      "auth_applicability": "credentials",
+      "refresh_applicability": "required"
+    },
+    "sftp": {
+      "canonical_name": "sftp",
+      "schema_sha256": "9369cf94169fb2724666847dfabba07cddc83a8ee1cf75e33d25206efcfa24f2",
+      "profile": "sftp-fixture",
+      "notes": [
+        "Owned SSH/SFTP server, pinned host key and test password/key. Host-key rejection is required alongside invalid credentials.",
+        "Free account/API eligibility: no_vendor_account_needed",
+        "Renewal applicability is unreviewed: static input credentials alone do not rule out temporary service sessions. Trace the selected auth mode before qualification."
+      ],
+      "source_links": [
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/sftp.md",
+        "https://www.openssh.com/"
+      ],
+      "auth_applicability": "credentials",
+      "refresh_applicability": "review_required",
+      "renewal_modes": [
+        {
+          "auth_mode": "Provider authentication mode awaiting lifecycle review",
+          "refresh_capability_requirement": "review_required",
+          "renewal_kind": "unresolved",
+          "source_supported_behavior": "The documented configuration supplies credentials, but derived session expiry and renewal have not been traced for the selected mode. Static input credentials do not establish renewal N/A.",
+          "required_lifecycle_scenarios": [
+            "Trace the selected credential mode and any derived service sessions.",
+            "Test renewal where supported, or expiry denial and explicit credential recovery where renewal is external."
+          ]
+        }
+      ]
+    },
+    "shade": {
+      "canonical_name": "shade",
+      "schema_sha256": "11fae1d2dbe98923f926912b19dde9d1e24390d55e89d65eb642d30675f41621",
+      "profile": "hosted-renewal-review",
+      "notes": [
+        "Shade account, API key and Drive ID. Rclone documents a free account; current API entitlement/availability requires confirmation.",
+        "Free account/API eligibility: free_plan_documented_api_entitlement_review_required",
+        "Renewal applicability is unreviewed: static input credentials alone do not rule out temporary service sessions. Trace the selected auth mode before qualification."
+      ],
+      "source_links": [
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/shade.md",
+        "https://rclone.org/shade/"
+      ],
+      "auth_applicability": "credentials",
+      "refresh_applicability": "review_required",
+      "renewal_modes": [
+        {
+          "auth_mode": "Provider authentication mode awaiting lifecycle review",
+          "refresh_capability_requirement": "review_required",
+          "renewal_kind": "unresolved",
+          "source_supported_behavior": "The documented configuration supplies credentials, but derived session expiry and renewal have not been traced for the selected mode. Static input credentials do not establish renewal N/A.",
+          "required_lifecycle_scenarios": [
+            "Trace the selected credential mode and any derived service sessions.",
+            "Test renewal where supported, or expiry denial and explicit credential recovery where renewal is external."
+          ]
+        }
+      ]
+    },
+    "sharefile": {
+      "canonical_name": "sharefile",
+      "schema_sha256": "93f298c423ecefef1f719c07812642728abd3c8fb4e741194b3167a70e8aeccf",
+      "profile": "hosted-renewal",
+      "notes": [
+        "ShareFile tenant/account and OAuth app setup; callback tenant/API metadata must be retained. Enterprise/trial entitlement unresolved.",
+        "Free account/API eligibility: review_required"
+      ],
+      "source_links": [
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/sharefile.md"
+      ],
+      "auth_applicability": "oauth",
+      "refresh_applicability": "required",
+      "renewal_modes": [
+        {
+          "auth_mode": "Documented browser OAuth credentials",
+          "refresh_capability_requirement": "required",
+          "renewal_kind": "oauth_refresh_token",
+          "source_supported_behavior": "The documented token-based authentication requires a renewal acceptance case. Select the exact account/authentication variant and observe the actual renewal exchange; a saved-token listing is insufficient.",
+          "required_lifecycle_scenarios": [
+            "Fresh setup and authentication in the chosen variant.",
+            "Expired access or session credential triggers the documented successful renewal exchange.",
+            "Verify the replacement credential and persistence where applicable, then read only the approved synthetic scope.",
+            "Denial, revocation and cancellation remain bounded and preserve the source."
+          ]
+        }
+      ]
+    },
+    "sia": {
+      "canonical_name": "sia",
+      "schema_sha256": "d867d95aab13cd2c5127a23b6a16898b30aaf01f5e27a41abf2af7fa435d1409",
+      "profile": "hosted-static-credentials",
+      "notes": [
+        "Rclone targets legacy Sia siad daemon API, not arbitrary current renter software. Local daemon API can be mocked, but real storage needs compatible network/contracts; free usable acceptance is not established.",
+        "Free account/API eligibility: review_required",
+        "Decentralized storage contracts, wallet funding and legacy-daemon compatibility remain separate feasibility issues."
+      ],
+      "source_links": [
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/sia.md",
+        "https://github.com/rclone/rclone/blob/v1.75.1/backend/sia/sia.go#L43-L62",
+        "https://github.com/rclone/rclone/blob/v1.75.1/backend/sia/sia.go#L469-L474"
+      ],
+      "renewal_modes": [
+        {
+          "auth_mode": "daemon API password or local unsecured daemon profile",
+          "refresh_capability_requirement": "not_applicable",
+          "renewal_kind": "static_basic_auth_or_none",
+          "source_supported_behavior": "Backend uses configured daemon URL and, when present, static HTTP Basic password. No session/token refresh mechanism is configured.",
+          "required_lifecycle_scenarios": [
+            "correct daemon credential works",
+            "wrong password denied on secured profile",
+            "do not label unsecured local mode a login"
+          ]
+        }
+      ],
+      "auth_applicability": "credentials",
+      "refresh_applicability": "not_applicable"
+    },
+    "smb": {
+      "canonical_name": "smb",
+      "schema_sha256": "13ac5be8f660e4d7b60ed1dd5f6b15c4bff9d674823144b752f7371d4d6b1e9e",
+      "profile": "network-renewal-review",
+      "notes": [
+        "Owned SMB server/share and test account. Guest access/domain/Kerberos variants are not established by a simple local password test.",
+        "Free account/API eligibility: no_vendor_account_needed",
+        "Renewal applicability is unreviewed: static input credentials alone do not rule out temporary service sessions. Trace the selected auth mode before qualification."
+      ],
+      "source_links": [
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/smb.md",
+        "https://www.samba.org/"
+      ],
+      "auth_applicability": "credentials",
+      "refresh_applicability": "review_required",
+      "renewal_modes": [
+        {
+          "auth_mode": "Provider authentication mode awaiting lifecycle review",
+          "refresh_capability_requirement": "review_required",
+          "renewal_kind": "unresolved",
+          "source_supported_behavior": "The documented configuration supplies credentials, but derived session expiry and renewal have not been traced for the selected mode. Static input credentials do not establish renewal N/A.",
+          "required_lifecycle_scenarios": [
+            "Trace the selected credential mode and any derived service sessions.",
+            "Test renewal where supported, or expiry denial and explicit credential recovery where renewal is external."
+          ]
+        }
+      ]
+    },
+    "storj": {
+      "canonical_name": "storj",
+      "schema_sha256": "555914b6a0451bb93df8f0d4541578fe63162f6e5daa4c033cb539d0a0c4aaf1",
+      "profile": "hosted-renewal-review",
+      "notes": [
+        "Storj satellite/project, access grant or API key plus encryption passphrase and bucket; current trial/paid entitlement unresolved. Native backend differs from Storj S3 gateway.",
+        "Free account/API eligibility: review_required",
+        "Renewal applicability is unreviewed: static input credentials alone do not rule out temporary service sessions. Trace the selected auth mode before qualification."
+      ],
+      "source_links": [
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/storj.md"
+      ],
+      "auth_applicability": "credentials",
+      "refresh_applicability": "review_required",
+      "renewal_modes": [
+        {
+          "auth_mode": "Provider authentication mode awaiting lifecycle review",
+          "refresh_capability_requirement": "review_required",
+          "renewal_kind": "unresolved",
+          "source_supported_behavior": "The documented configuration supplies credentials, but derived session expiry and renewal have not been traced for the selected mode. Static input credentials do not establish renewal N/A.",
+          "required_lifecycle_scenarios": [
+            "Trace the selected credential mode and any derived service sessions.",
+            "Test renewal where supported, or expiry denial and explicit credential recovery where renewal is external."
+          ]
+        }
+      ]
+    },
+    "sugarsync": {
+      "canonical_name": "sugarsync",
+      "schema_sha256": "02a4bd83f7809c79f3d41071b1f63c2699f4a72a8117863a86caecf6703232bb",
+      "profile": "hosted-renewal",
+      "notes": [
+        "SugarSync account credentials used to obtain application authorization/refresh token; setup and renewal are provider-specific, not generic browser OAuth.",
+        "Free account/API eligibility: review_required"
+      ],
+      "source_links": [
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/sugarsync.md"
+      ],
+      "auth_applicability": "provider_specific",
+      "refresh_applicability": "required",
+      "renewal_modes": [
+        {
+          "auth_mode": "Documented provider token or service-identity credentials",
+          "refresh_capability_requirement": "required",
+          "renewal_kind": "provider_credential_renewal",
+          "source_supported_behavior": "The documented token-based authentication requires a renewal acceptance case. Select the exact account/authentication variant and observe the actual renewal exchange; a saved-token listing is insufficient.",
+          "required_lifecycle_scenarios": [
+            "Fresh setup and authentication in the chosen variant.",
+            "Expired access or session credential triggers the documented successful renewal exchange.",
+            "Verify the replacement credential and persistence where applicable, then read only the approved synthetic scope.",
+            "Denial, revocation and cancellation remain bounded and preserve the source."
+          ]
+        }
+      ]
+    },
+    "swift": {
+      "canonical_name": "swift",
+      "schema_sha256": "50da68737fff6f01d1b1b5a3efbbc865db77171220d5fbcc3e79628d59e4e9c2",
+      "profile": "hosted-protocol-renewal",
+      "notes": [
+        "Owned OpenStack Swift/Keystone deployment and scoped test account. Temporary auth tokens require renewal coverage; public/no-auth endpoints are separate profiles.",
+        "Free account/API eligibility: no_vendor_account_needed",
+        "Local protocol fixtures do not establish hosted service or workload identity acceptance."
+      ],
+      "source_links": [
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/swift.md",
+        "https://docs.openstack.org/swift/latest/development_saio.html"
+      ],
+      "auth_applicability": "provider_specific",
+      "refresh_applicability": "required",
+      "renewal_modes": [
+        {
+          "auth_mode": "Documented provider token or service-identity credentials",
+          "refresh_capability_requirement": "required",
+          "renewal_kind": "provider_credential_renewal",
+          "source_supported_behavior": "The documented token-based authentication requires a renewal acceptance case. Select the exact account/authentication variant and observe the actual renewal exchange; a saved-token listing is insufficient.",
+          "required_lifecycle_scenarios": [
+            "Fresh setup and authentication in the chosen variant.",
+            "Expired access or session credential triggers the documented successful renewal exchange.",
+            "Verify the replacement credential and persistence where applicable, then read only the approved synthetic scope.",
+            "Denial, revocation and cancellation remain bounded and preserve the source."
+          ]
+        }
+      ]
+    },
+    "tardigrade": {
+      "canonical_name": "tardigrade",
+      "schema_sha256": "945f2719cbae169a6a397c67e8cc109fcc2147f8e5a1ff1780c2e91898d2a385",
+      "profile": "hosted-renewal-review",
+      "notes": [
+        "Legacy registration alias of Storj. Reuse implementation evidence only with explicit alias-resolution test; retain catalog row and same external prerequisites.",
+        "Free account/API eligibility: review_required",
+        "Alias of storj; keep an explicit test case for this configured backend ID.",
+        "Renewal applicability is unreviewed: static input credentials alone do not rule out temporary service sessions. Trace the selected auth mode before qualification."
+      ],
+      "source_links": [
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/storj.md",
+        "https://github.com/rclone/rclone/blob/v1.75.1/backend/storj/fs.go"
+      ],
+      "auth_applicability": "credentials",
+      "refresh_applicability": "review_required",
+      "renewal_modes": [
+        {
+          "auth_mode": "Provider authentication mode awaiting lifecycle review",
+          "refresh_capability_requirement": "review_required",
+          "renewal_kind": "unresolved",
+          "source_supported_behavior": "The documented configuration supplies credentials, but derived session expiry and renewal have not been traced for the selected mode. Static input credentials do not establish renewal N/A.",
+          "required_lifecycle_scenarios": [
+            "Trace the selected credential mode and any derived service sessions.",
+            "Test renewal where supported, or expiry denial and explicit credential recovery where renewal is external."
+          ]
+        }
+      ]
+    },
+    "ulozto": {
+      "canonical_name": "ulozto",
+      "schema_sha256": "cc97bb23b537f0e6ffe00f1c7c5e6866db69f7acc458a6437f12e4439e13134a",
+      "profile": "hosted-renewal",
+      "notes": [
+        "Uloz.to account credentials and application API token from docs/support; current eligible plan, app approval and renewal semantics unresolved.",
+        "Free account/API eligibility: review_required",
+        "Account/session API availability and plan eligibility still require separate vendor acceptance."
+      ],
+      "source_links": [
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/ulozto.md",
+        "https://github.com/rclone/rclone/blob/v1.75.1/backend/ulozto/ulozto.go#L220-L276"
+      ],
+      "renewal_modes": [
+        {
+          "auth_mode": "static application token plus account session token",
+          "refresh_capability_requirement": "required",
+          "renewal_kind": "password_session_reauthentication",
+          "source_supported_behavior": "On HTTP401 plus API error70001, retry can authenticate again. authenticate uses account password to obtain a new X-User-Token; this is a session login, not OAuth refresh_token.",
+          "required_lifecycle_scenarios": [
+            "expired session causes successful new session request",
+            "scoped retry succeeds",
+            "invalid account fails boundedly",
+            "do not confuse upload-session renewal with account renewal"
+          ]
+        }
+      ],
+      "auth_applicability": "provider_specific",
+      "refresh_applicability": "required"
+    },
+    "webdav": {
+      "canonical_name": "webdav",
+      "schema_sha256": "1984c500cd47601130b6cc506a99e7a630992d5d8b1a2917e77ac2372207ba93",
+      "profile": "webdav-renewal-plan",
+      "notes": [
+        "Owned WebDAV server and scoped test login. Generic protocol result does not prove Nextcloud/SharePoint or other vendor-specific auth/features.",
+        "Free account/API eligibility: no_vendor_account_needed",
+        "Renewal applicability is unreviewed: static input credentials alone do not rule out temporary service sessions. Trace the selected auth mode before qualification."
+      ],
+      "source_links": [
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/webdav.md",
+        "https://httpd.apache.org/docs/2.4/mod/mod_dav.html"
+      ],
+      "auth_applicability": "credentials",
+      "refresh_applicability": "review_required",
+      "renewal_modes": [
+        {
+          "auth_mode": "Provider authentication mode awaiting lifecycle review",
+          "refresh_capability_requirement": "review_required",
+          "renewal_kind": "unresolved",
+          "source_supported_behavior": "The documented configuration supplies credentials, but derived session expiry and renewal have not been traced for the selected mode. Static input credentials do not establish renewal N/A.",
+          "required_lifecycle_scenarios": [
+            "Trace the selected credential mode and any derived service sessions.",
+            "Test renewal where supported, or expiry denial and explicit credential recovery where renewal is external."
+          ]
+        }
+      ]
+    },
+    "yandex": {
+      "canonical_name": "yandex",
+      "schema_sha256": "0df499a1f485652942a454429225675b64391f533143d73328a046da5c145116",
+      "profile": "hosted-renewal",
+      "notes": [
+        "Yandex Disk account and browser OAuth token; the pinned backend requires a refresh token. Actual renewal success remains a separate vendor acceptance check.",
+        "Free account/API eligibility: review_required",
+        "A token serialization/type migration is not proof of a successful refresh grant."
+      ],
+      "source_links": [
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/yandex.md",
+        "https://github.com/rclone/rclone/blob/v1.75.1/backend/yandex/yandex.go#L286-L303",
+        "https://github.com/rclone/rclone/blob/v1.75.1/lib/oauthutil/oauthutil.go#L270-L340"
+      ],
+      "renewal_modes": [
+        {
+          "auth_mode": "pinned browser OAuth token",
+          "refresh_capability_requirement": "required",
+          "renewal_kind": "oauth_refresh_token",
+          "source_supported_behavior": "NewFs refuses a token without RefreshToken, normalizes token type, then builds oauthutil.NewClient. Old access-token-only documentation examples do not override this current source requirement.",
+          "required_lifecycle_scenarios": [
+            "expired access credential causes successful renewal request",
+            "updated credential matches response and persists where applicable",
+            "subsequent exact-scope read succeeds",
+            "renewal failure and cancellation remain bounded"
+          ]
+        }
+      ],
+      "auth_applicability": "oauth",
+      "refresh_applicability": "required"
+    },
+    "zoho": {
+      "canonical_name": "zoho",
+      "schema_sha256": "4c64da1eeacac9968bc54a32f502d0dc386bbb6ae78f908097fd116c95b9768d",
+      "profile": "hosted-renewal",
+      "notes": [
+        "Zoho WorkDrive account/team, app consent and correct region/root setup. Regional endpoint and token-type handling are required; paid/free entitlement unresolved.",
+        "Free account/API eligibility: review_required"
+      ],
+      "source_links": [
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/zoho.md"
+      ],
+      "auth_applicability": "oauth",
+      "refresh_applicability": "required",
+      "renewal_modes": [
+        {
+          "auth_mode": "Documented browser OAuth credentials",
+          "refresh_capability_requirement": "required",
+          "renewal_kind": "oauth_refresh_token",
+          "source_supported_behavior": "The documented token-based authentication requires a renewal acceptance case. Select the exact account/authentication variant and observe the actual renewal exchange; a saved-token listing is insufficient.",
+          "required_lifecycle_scenarios": [
+            "Fresh setup and authentication in the chosen variant.",
+            "Expired access or session credential triggers the documented successful renewal exchange.",
+            "Verify the replacement credential and persistence where applicable, then read only the approved synthetic scope.",
+            "Denial, revocation and cancellation remain bounded and preserve the source."
+          ]
+        }
+      ]
+    }
+  }
+}

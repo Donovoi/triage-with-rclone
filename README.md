@@ -75,7 +75,9 @@ The Windows forensic access-point controller owns its WLAN session and temporary
 
 Equivalent crate commands are `cargo fmt --all -- --check`, `cargo clippy --locked --all-targets --all-features -- -D warnings`, and `cargo test --locked --release -- --test-threads=1`. Live cloud tests are ignored by default; see [provider testing](rclone-triage/tests/provider_testing.md) for explicit opt-in and acceptance limits.
 
-CI checks every curated provider contract and every selectable backend in the actual pinned runtime, plus local login-protocol fixtures. Nightly provider reports show missing credentials explicitly and can require complete live coverage. Saved-credential access tests do not establish fresh login or token refresh.
+CI checks every curated provider contract and every selectable backend in the actual pinned runtime, plus local login-protocol fixtures. It also exercises real rclone local, HTTP, WebDAV, FTP, SFTP and S3 backends against isolated synthetic sources. A versioned [coverage policy](provider-coverage-policy.json) and [evidence ledger](rclone-triage/tests/provider_testing.md#layered-provider-evidence) keep protocol tests, application acceptance and real service acceptance separate. Missing/new/changed provider plans fail CI; missing acceptance stays visible in the ledger.
+
+Nightly reports show missing credentials explicitly and can require selected-account read access for every backend. Saved-credential access tests do not establish fresh login or token refresh. The stricter evidence ledger remains incomplete until all applicable acceptance checks are verified.
 
 For acceptance of the downloaded Windows executable in a disposable, disconnected guest, use the [CLI and TUI acceptance harnesses](scripts/acceptance/windows/README.md). They exercise synthetic local sources and retain machine-readable results; they do not establish live-provider or physical-device compatibility.
 

@@ -1,0 +1,721 @@
+#!/usr/bin/env python3
+"""Build a sanitized, current-runtime provider evidence ledger.
+
+Only `version` and `config providers` are executed, against a verified explicit
+native rclone and empty private configuration. Fixture receipts are reports from
+the current harness, not cryptographic attestations or hosted-account evidence.
+"""
+
+import argparse
+from datetime import datetime, timedelta, timezone
+import hashlib
+import importlib.util
+import json
+import os
+from pathlib import Path
+import platform as platform_module
+import re
+import shutil
+import stat
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+from urllib.parse import urlsplit
+
+
+ROOT = Path(__file__).resolve().parents[1]
+WRAPPERS = {"alias", "cache", "chunker", "combine", "compress", "crypt", "hasher", "union"}
+TIERS = ("local_protocol", "application", "vendor")
+PLATFORMS = frozenset(("windows", "linux"))
+AUTH_APPLICABILITY = frozenset(("none", "credentials", "oauth", "provider_specific"))
+REFRESH_APPLICABILITY = frozenset(("required", "not_applicable", "review_required"))
+CAPABILITIES = {
+    "authentication", "listing", "download_hash", "manifest_integrity",
+    "source_preservation", "cleanup", "refresh", "cancellation", "denial",
+    "revocation", "missing_object_rejection", "authentication_rejection",
+    "truncated_download_rejection", "cancellation_cleanup", "fixture_write_rejection", "host_key_rejection",
+}
+FIXTURE_KINDS = {
+    "http": "independent_loopback", "webdav": "independent_loopback",
+    "ftp": "independent_loopback", "sftp": "rclone_loopback",
+    "s3": "rclone_loopback", "local": "local",
+}
+FIXTURE_CAPABILITIES = {
+    "listing", "download_hash", "missing_object_rejection", "source_preservation",
+    "authentication_rejection", "cleanup", "truncated_download_rejection",
+    "cancellation_cleanup", "fixture_write_rejection", "host_key_rejection",
+}
+HARNESSES = ("fixture_servers.py", "run_lab.py")
+HASH_PATTERN = re.compile(r"[a-f0-9]{64}")
+ID_PATTERN = re.compile(r"[a-z0-9_]{1,80}")
+MAX_JSON = 32 * 1024 * 1024
+MAX_RECEIPT = 1024 * 1024
+MAX_AGE_HOURS = 24
+MAX_RUN_MINUTES = 30
+
+
+class CoverageError(Exception):
+    """Static, non-secret diagnostic code only."""
+
+
+def fail(code):
+    raise CoverageError(code)
+
+
+def sha256_bytes(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def compact_json(value):
+    return json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+
+def _unique_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            fail("duplicate_json_key")
+        result[key] = value
+    return result
+
+
+def read_json(path, limit=MAX_JSON):
+    try:
+        path = plain_path(path)
+        with path.open("rb") as source:
+            data = source.read(limit + 1)
+        if len(data) > limit:
+            fail("json_size_limit")
+        return json.loads(data.decode("utf-8"), object_pairs_hook=_unique_object)
+    except CoverageError:
+        raise
+    except (OSError, ValueError, UnicodeError):
+        fail("invalid_json_input")
+
+
+def plain_path(path, allow_missing_leaf=False):
+    path = Path(path)
+    if not path.is_absolute():
+        fail("absolute_path_required")
+    for part in (path, *path.parents):
+        try:
+            info = part.lstat()
+        except FileNotFoundError:
+            if part == path and allow_missing_leaf:
+                continue
+            fail("input_unavailable")
+        if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
+            fail("reparse_path_rejected")
+    return path
+
+
+def valid_hash(value):
+    return isinstance(value, str) and HASH_PATTERN.fullmatch(value) is not None
+
+
+def _text(value, maximum=200):
+    if not isinstance(value, str) or len(value) > maximum or any(ord(c) < 32 for c in value):
+        fail("invalid_catalog")
+    return value
+
+
+def canonical_schema(provider):
+    """Stable contract only: help/default/example and machine paths are omitted."""
+    if not isinstance(provider, dict):
+        fail("invalid_catalog")
+    name = _text(provider.get("Name")).strip()
+    prefix = _text(provider.get("Prefix", "")).strip().lower()
+    if not name or not re.fullmatch(r"[A-Za-z0-9_. -]{1,80}", name):
+        fail("invalid_catalog")
+    if prefix and not ID_PATTERN.fullmatch(prefix):
+        fail("invalid_catalog")
+    options = provider.get("Options", [])
+    if options is None:
+        options = []
+    if not isinstance(options, list) or len(options) > 2048:
+        fail("invalid_catalog")
+    normalized, seen = [], set()
+    for option in options:
+        if not isinstance(option, dict):
+            fail("invalid_catalog")
+        option_name = _text(option.get("Name"))
+        option_type = _text(option.get("Type"))
+        selector = _text(option.get("Provider", ""), 1024)
+        identity = (option_name, selector)
+        if not re.fullmatch(r"[A-Za-z0-9_]{1,100}", option_name) or identity in seen:
+            fail("invalid_catalog")
+        if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*(?:\|[A-Za-z][A-Za-z0-9_]*)*", option_type):
+            fail("invalid_catalog")
+        seen.add(identity)
+        entry = {"Name": option_name, "Type": option_type, "Provider": selector}
+        for key in ("Required", "IsPassword", "Advanced", "Exclusive"):
+            value = option.get(key, False)
+            if type(value) is not bool:
+                fail("invalid_catalog")
+            entry[key] = value
+        normalized.append(entry)
+    return {"Name": name, "Prefix": prefix, "Options": sorted(normalized, key=lambda v: (v["Name"], v["Provider"]))}
+
+
+def schema_digest(provider):
+    return sha256_bytes(compact_json(canonical_schema(provider)))
+
+
+def catalog_from_schemas(schemas):
+    if not isinstance(schemas, list) or not schemas or len(schemas) > 2048:
+        fail("invalid_catalog")
+    result, seen = [], set()
+    for provider in schemas:
+        canonical = canonical_schema(provider)
+        backend = canonical["Prefix"] or canonical["Name"].lower()
+        if not ID_PATTERN.fullmatch(backend) or backend in seen:
+            fail("invalid_catalog")
+        seen.add(backend)
+        if backend in WRAPPERS or canonical["Name"].lower() in WRAPPERS:
+            continue
+        result.append({"backend": backend, "canonical_name": canonical["Name"],
+                       "schema_sha256": sha256_bytes(compact_json(canonical))})
+    if not result:
+        fail("empty_catalog")
+    return sorted(result, key=lambda value: value["backend"])
+
+
+def compute_harness_sha256(root):
+    """Same fixed file framing as the producer, with no receipt-supplied paths."""
+    digest = hashlib.sha256()
+    for filename in sorted(HARNESSES):
+        path = plain_path(Path(root).absolute() / filename)
+        data = path.read_bytes()
+        if len(data) > MAX_RECEIPT:
+            fail("harness_size_limit")
+        digest.update(filename.encode("utf-8") + b"\0" + data + b"\0")
+    return digest.hexdigest()
+
+
+def compute_fixture_manifest_sha256(root):
+    """Read the current repository fixture definition, never a receipt path.
+
+    Importing this reviewed module defines fixture classes only; it starts no
+    listeners or subprocesses. Recompute the producer's framing independently.
+    """
+    path = plain_path(Path(root).absolute() / "fixture_servers.py")
+    try:
+        spec = importlib.util.spec_from_file_location("coverage_fixture_definitions", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        files = module.FILES
+    except (ImportError, OSError, SyntaxError, AttributeError, TypeError):
+        fail("invalid_fixture_definition")
+    if not isinstance(files, dict) or not files or len(files) > 100:
+        fail("invalid_fixture_definition")
+    manifest = []
+    for name, content in sorted(files.items()):
+        if (not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9_. /-]{1,200}", name)
+                or name.startswith("/") or any(part in ("", ".", "..") for part in name.split("/"))
+                or not isinstance(content, bytes) or len(content) > MAX_RECEIPT):
+            fail("invalid_fixture_definition")
+        manifest.append({"path": name, "size": len(content), "sha256": sha256_bytes(content)})
+    return sha256_bytes(json.dumps(manifest, separators=(",", ":")).encode("utf-8"))
+
+
+def _policy_text(value, maximum=4096):
+    if (not isinstance(value, str) or not value.strip() or len(value) > maximum
+            or any(ord(character) < 32 for character in value)):
+        fail("invalid_policy")
+    return value
+
+
+def validate_plan_metadata(entry, profile):
+    auth = entry.get("auth_applicability")
+    refresh = entry.get("refresh_applicability")
+    if not isinstance(auth, str) or auth not in AUTH_APPLICABILITY:
+        fail("invalid_policy")
+    if not isinstance(refresh, str) or refresh not in REFRESH_APPLICABILITY:
+        fail("invalid_policy")
+    sources = entry.get("source_links")
+    if not isinstance(sources, list) or not 1 <= len(sources) <= 20:
+        fail("invalid_policy")
+    for source in sources:
+        _policy_text(source)
+        try:
+            url = urlsplit(source)
+            if (url.scheme != "https" or not url.hostname or url.username is not None
+                    or url.password is not None or "\\" in source or any(c.isspace() for c in source)):
+                fail("invalid_policy")
+            # Parsing .port also rejects malformed or out-of-range ports.
+            _ = url.port
+        except ValueError:
+            fail("invalid_policy")
+    modes = entry.get("renewal_modes")
+    if not isinstance(modes, list) or not 1 <= len(modes) <= 32:
+        fail("invalid_policy")
+    fields = {"auth_mode", "refresh_capability_requirement", "renewal_kind",
+              "source_supported_behavior", "required_lifecycle_scenarios"}
+    seen, requirements = set(), set()
+    for mode in modes:
+        if not isinstance(mode, dict) or set(mode) != fields:
+            fail("invalid_policy")
+        identity = _policy_text(mode["auth_mode"], 256).strip().casefold()
+        if identity in seen:
+            fail("invalid_policy")
+        seen.add(identity)
+        renewal_kind = _policy_text(mode["renewal_kind"], 80)
+        if not re.fullmatch(r"[a-z][a-z0-9_]{0,79}", renewal_kind):
+            fail("invalid_policy")
+        _policy_text(mode["source_supported_behavior"])
+        scenarios = mode["required_lifecycle_scenarios"]
+        if not isinstance(scenarios, list) or not 1 <= len(scenarios) <= 20:
+            fail("invalid_policy")
+        for scenario in scenarios:
+            _policy_text(scenario, 512)
+        requirement = mode["refresh_capability_requirement"]
+        if not isinstance(requirement, str) or requirement not in REFRESH_APPLICABILITY:
+            fail("invalid_policy")
+        requirements.add(requirement)
+    aggregate = ("review_required" if "review_required" in requirements else
+                 "required" if "required" in requirements else "not_applicable")
+    if refresh != aggregate or (("refresh" in profile.get("unresolved_applicability", [])) != (refresh == "review_required")):
+        fail("invalid_policy")
+    for tier in ("application", "vendor"):
+        capabilities = profile["required"].get(tier)
+        if capabilities is None:
+            continue
+        if auth != "none" and "authentication" not in capabilities:
+            fail("invalid_policy")
+        if "required" in requirements and "refresh" not in capabilities:
+            fail("invalid_policy")
+        if refresh == "not_applicable" and "refresh" in capabilities:
+            fail("invalid_policy")
+
+
+def validate_policy(policy):
+    if not isinstance(policy, dict) or type(policy.get("schema_version")) is not int or policy["schema_version"] != 1:
+        fail("invalid_policy")
+    profiles, providers = policy.get("profiles"), policy.get("providers")
+    if not isinstance(profiles, dict) or not profiles or not isinstance(providers, dict):
+        fail("invalid_policy")
+    for key, profile in profiles.items():
+        if not re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", key) or not isinstance(profile, dict):
+            fail("invalid_policy")
+        required = profile.get("required")
+        if not isinstance(required, dict) or "application" not in required or set(required) - set(TIERS):
+            fail("invalid_policy")
+        if type(profile.get("review_required", False)) is not bool:
+            fail("invalid_policy")
+        unresolved = profile.get("unresolved_applicability", [])
+        if not isinstance(unresolved, list) or any(not isinstance(value, str) or value not in CAPABILITIES for value in unresolved) or len(unresolved) != len(set(unresolved)):
+            fail("invalid_policy")
+        for capabilities in required.values():
+            if not isinstance(capabilities, list) or not capabilities or any(
+                not isinstance(capability, str) or capability not in CAPABILITIES for capability in capabilities
+            ) or len(capabilities) != len(set(capabilities)):
+                fail("invalid_policy")
+    for backend, entry in providers.items():
+        if not ID_PATTERN.fullmatch(backend) or not isinstance(entry, dict):
+            fail("invalid_policy")
+        if not isinstance(entry.get("canonical_name"), str):
+            fail("invalid_policy")
+        # A platform variant is a separately reviewed full contract. Never
+        # accept either platform's digest as a fallback for the other one.
+        if ("schema_sha256" in entry) == ("schema_sha256_by_platform" in entry):
+            fail("invalid_policy")
+        if "schema_sha256" in entry:
+            if not valid_hash(entry["schema_sha256"]):
+                fail("invalid_policy")
+        else:
+            variants = entry["schema_sha256_by_platform"]
+            if (not isinstance(variants, dict) or not variants or set(variants) - PLATFORMS
+                    or any(not valid_hash(value) for value in variants.values())):
+                fail("invalid_policy")
+        if entry.get("profile") not in profiles:
+            fail("invalid_policy")
+        validate_plan_metadata(entry, profiles[entry["profile"]])
+        if "notes" in entry:
+            values = entry["notes"] if isinstance(entry["notes"], list) else [entry["notes"]]
+            if len(values) > 20 or any(not isinstance(value, str) or len(value) > 4096 for value in values):
+                fail("invalid_policy")
+    return policy
+
+
+def utc_text(value):
+    return value.astimezone(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def parse_utc(value):
+    if not isinstance(value, str) or not re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,6})?Z", value):
+        fail("invalid_receipt_time")
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        fail("invalid_receipt_time")
+
+
+def validate_receipt(receipt, runtime, harness_sha256, now, max_age_hours=MAX_AGE_HOURS,
+                     fixture_manifest_sha256=None):
+    if (not isinstance(receipt, dict) or type(receipt.get("schema_version")) is not int
+            or receipt["schema_version"] != 1 or receipt.get("scope") != "rclone_backend_protocol_fixture"):
+        fail("unknown_receipt_schema")
+    if not isinstance(receipt.get("runtime"), dict) or any(
+        receipt["runtime"].get(key) != runtime[key] for key in ("version", "sha256")
+    ) or receipt.get("platform") != runtime["platform"]:
+        fail("receipt_runtime_mismatch")
+    if not valid_hash(harness_sha256) or receipt.get("harness_sha256") != harness_sha256:
+        fail("receipt_harness_mismatch")
+    if not valid_hash(fixture_manifest_sha256) or receipt.get("fixture_manifest_sha256") != fixture_manifest_sha256:
+        fail("receipt_fixture_manifest_mismatch")
+    start, finish = parse_utc(receipt.get("started_utc")), parse_utc(receipt.get("finished_utc"))
+    if finish < start or finish - start > timedelta(minutes=MAX_RUN_MINUTES):
+        fail("invalid_receipt_duration")
+    if start > now or finish > now:
+        fail("future_receipt")
+    if now - finish > timedelta(hours=max_age_hours):
+        fail("expired_receipt")
+    if type(receipt.get("success")) is not bool or type(receipt.get("cleanup_passed")) is not bool:
+        fail("invalid_receipt_outcome")
+    errors = receipt.get("errors")
+    if not isinstance(errors, list) or len(errors) > 32 or any(
+        not isinstance(code, str) or not re.fullmatch(r"[a-z][a-z0-9_]{0,80}", code) for code in errors
+    ):
+        fail("invalid_fixture_errors")
+    if receipt["success"] and errors:
+        fail("inconsistent_fixture_success")
+    backends = receipt.get("backends")
+    if not isinstance(backends, list) or not backends or len(backends) > len(FIXTURE_KINDS):
+        fail("invalid_receipt_backends")
+    seen = set()
+    for row in backends:
+        if not isinstance(row, dict):
+            fail("invalid_receipt_backends")
+        backend = row.get("backend")
+        if not isinstance(backend, str) or backend not in FIXTURE_KINDS or backend in seen or row.get("fixture_kind") != FIXTURE_KINDS[backend]:
+            fail("unknown_fixture_backend")
+        seen.add(backend)
+        capabilities = row.get("capabilities")
+        if not isinstance(capabilities, dict) or not capabilities or set(capabilities) - FIXTURE_CAPABILITIES:
+            fail("invalid_fixture_capability")
+        if (backend not in ("http", "webdav") and set(capabilities) & {"truncated_download_rejection", "cancellation_cleanup"}
+                or backend not in ("http", "webdav", "ftp") and "fixture_write_rejection" in capabilities
+                or backend != "sftp" and "host_key_rejection" in capabilities):
+            fail("invalid_fixture_capability")
+        if any(value not in ("passed", "failed", "not_run", "not_applicable") for value in capabilities.values()):
+            fail("invalid_fixture_outcome")
+        # The only current N/A emitted by the lab is local filesystem auth.
+        if any(value == "not_applicable" and (backend != "local" or key != "authentication_rejection") for key, value in capabilities.items()):
+            fail("invalid_fixture_not_applicable")
+        errors = row.get("errors")
+        if not isinstance(errors, list) or len(errors) > 32 or any(not isinstance(code, str) or not re.fullmatch(r"[a-z][a-z0-9_]{0,80}", code) for code in errors):
+            fail("invalid_fixture_errors")
+        if receipt["success"] and (errors or any(value in ("failed", "not_run") for value in capabilities.values())
+                                   or capabilities.get("cleanup") != "passed"):
+            fail("inconsistent_fixture_success")
+    if receipt["success"] and not receipt["cleanup_passed"]:
+        fail("inconsistent_fixture_success")
+    return receipt
+
+
+def evaluate(catalog, policy, runtime, receipts, harness_sha256, now=None, max_age_hours=MAX_AGE_HOURS,
+             fixture_manifest_sha256=None):
+    """Receipts are explicit batch inputs. Failed current evidence stays failed."""
+    now = now or datetime.now(timezone.utc)
+    validate_policy(policy)
+    if not isinstance(runtime.get("platform"), str) or runtime["platform"] not in PLATFORMS:
+        fail("unsupported_runtime_platform")
+    if not 1 <= max_age_hours <= 168:
+        fail("invalid_freshness_window")
+    report = {
+        "schema_version": 1, "generated_utc": utc_text(now), "runtime": dict(runtime),
+        "catalog_sha256": sha256_bytes(compact_json(catalog)),
+        "policy_sha256": sha256_bytes(compact_json(policy)),
+        "harness_sha256": harness_sha256, "fixture_max_age_hours": max_age_hours,
+        "fixture_manifest_sha256": fixture_manifest_sha256,
+        "evidence_trust": "harness_report_not_cryptographic_attestation",
+        "scope": "current_runtime_catalog_and_layered_evidence",
+        "all_plans_current": False, "all_complete": False, "providers": [], "errors": [],
+        "retired_policy_backends": sorted(set(policy["providers"]) - {entry["backend"] for entry in catalog}),
+    }
+    observations = {}
+    for receipt in receipts:
+        try:
+            validate_receipt(receipt, runtime, harness_sha256, now, max_age_hours, fixture_manifest_sha256)
+            for row in receipt["backends"]:
+                if row["backend"] not in {entry["backend"] for entry in catalog}:
+                    fail("fixture_backend_absent_from_catalog")
+            for row in receipt["backends"]:
+                observed = observations.setdefault(row["backend"], {"capabilities": {}, "failed": False, "runs": []})
+                if not receipt["success"] or not receipt["cleanup_passed"] or row["errors"]:
+                    observed["failed"] = True
+                observed["runs"].append({
+                    "receipt_sha256": sha256_bytes(compact_json(receipt)),
+                    "finished_utc": receipt["finished_utc"],
+                    "expires_utc": utc_text(parse_utc(receipt["finished_utc"]) + timedelta(hours=max_age_hours)),
+                    "fixture_kind": row["fixture_kind"],
+                    "fixture_manifest_sha256": receipt["fixture_manifest_sha256"],
+                })
+                for capability, status in row["capabilities"].items():
+                    prior = observed["capabilities"].get(capability)
+                    if status == "failed" or prior == "failed":
+                        observed["capabilities"][capability] = "failed"
+                    elif status == "passed" or prior != "passed":
+                        observed["capabilities"][capability] = status
+        except CoverageError as error:
+            report["errors"].append(str(error))
+    for entry in catalog:
+        backend = entry["backend"]
+        planned = policy["providers"].get(backend)
+        profile = None
+        if planned is None:
+            policy_status = "missing_plan"
+        elif ("schema_sha256_by_platform" in planned
+              and runtime["platform"] not in planned["schema_sha256_by_platform"]):
+            policy_status = "unreviewed_platform"
+        elif (planned["canonical_name"] != entry["canonical_name"]
+              or planned.get("schema_sha256", planned.get("schema_sha256_by_platform", {}).get(runtime["platform"])) != entry["schema_sha256"]):
+            policy_status = "stale_schema"
+        else:
+            profile = policy["profiles"][planned["profile"]]
+            policy_status = "review_required" if profile.get("review_required", False) else "current"
+        unresolved = sorted(profile.get("unresolved_applicability", [])) if profile else []
+        row = dict(entry, catalog_status="discovered", policy_status=policy_status, evidence={}, complete=False,
+                   capability_applicability_review_required=unresolved)
+        observed = observations.get(backend)
+        for tier in TIERS:
+            if policy_status != "current":
+                row["evidence"][tier] = {"status": "not_verified", "capabilities": {}}
+                continue
+            needed = profile["required"].get(tier)
+            if needed is None:
+                row["evidence"][tier] = {"status": "not_applicable", "capabilities": {}}
+                continue
+            capabilities = {capability: "not_verified" for capability in needed}
+            evidence = {"status": "not_verified", "capabilities": capabilities}
+            if tier == "local_protocol" and observed:
+                for capability in needed:
+                    value = observed["capabilities"].get(capability)
+                    if value in ("passed", "failed"):
+                        capabilities[capability] = value
+                evidence["runs"] = observed["runs"]
+                if observed["failed"] or "failed" in capabilities.values():
+                    evidence["status"] = "failed"
+                elif all(value == "passed" for value in capabilities.values()):
+                    evidence["status"] = "passed"
+            row["evidence"][tier] = evidence
+        row["complete"] = policy_status == "current" and not unresolved and all(
+            evidence["status"] in ("passed", "not_applicable") for evidence in row["evidence"].values()
+        )
+        report["providers"].append(row)
+    report["errors"] = sorted(set(report["errors"]))
+    report["all_plans_current"] = bool(catalog) and not report["retired_policy_backends"] and all(row["policy_status"] == "current" for row in report["providers"])
+    report["all_complete"] = report["all_plans_current"] and not report["errors"] and all(row["complete"] for row in report["providers"])
+    return report
+
+
+def gate_errors(report, require_plans=False, require_fixtures=(), require_complete=False):
+    errors = list(report["errors"])
+    if require_plans and not report["all_plans_current"]:
+        errors.append("provider_plans_incomplete")
+    rows = {row["backend"]: row for row in report["providers"]}
+    for backend in require_fixtures:
+        if backend not in rows or rows[backend]["evidence"]["local_protocol"]["status"] != "passed":
+            errors.append("required_fixture_not_verified")
+    if require_complete and not report["all_complete"]:
+        errors.append("provider_coverage_incomplete")
+    return sorted(set(errors))
+
+
+def isolated_environment(root):
+    # Allow only process-launch essentials, never inherited cloud/SSH/rclone/proxy settings.
+    allowed = {"SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT", "PATH", "LANG", "LC_ALL"}
+    environment = {key: value for key, value in os.environ.items() if key.upper() in allowed}
+    for key in ("HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "TMP", "TEMP", "TMPDIR"):
+        environment[key] = str(root)
+    return environment
+
+
+def run_metadata(binary, arguments, config, environment):
+    """Bound time and pipe memory, keeping raw diagnostics entirely private."""
+    command = [str(binary), "--config", str(config), *arguments]
+    options = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
+    try:
+        child = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                 stderr=subprocess.PIPE, env=environment, **options)
+    except OSError:
+        fail("metadata_start_failed")
+    buffers = [bytearray(), bytearray()]
+    exceeded = threading.Event()
+
+    def collect(pipe, output, limit):
+        try:
+            while True:
+                chunk = pipe.read(8192)
+                if not chunk:
+                    return
+                if len(output) + len(chunk) > limit:
+                    exceeded.set()
+                    return
+                output.extend(chunk)
+        except OSError:
+            exceeded.set()
+        finally:
+            pipe.close()
+
+    workers = [threading.Thread(target=collect, args=(child.stdout, buffers[0], MAX_JSON), daemon=True),
+               threading.Thread(target=collect, args=(child.stderr, buffers[1], MAX_RECEIPT), daemon=True)]
+    for worker in workers:
+        worker.start()
+    timed_out = False
+    deadline = time.monotonic() + 30
+    try:
+        while child.poll() is None:
+            if exceeded.is_set() or time.monotonic() >= deadline:
+                timed_out = not exceeded.is_set()
+                child.kill()
+                break
+            time.sleep(0.02)
+        child.wait(timeout=5)
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.wait(timeout=5)
+        for worker in workers:
+            worker.join(timeout=5)
+    if timed_out or exceeded.is_set() or any(worker.is_alive() for worker in workers):
+        fail("metadata_bound_exceeded")
+    if child.returncode != 0:
+        fail("metadata_command_failed")
+    return bytes(buffers[0])
+
+
+def query_runtime(binary, manifest_path):
+    binary = plain_path(binary)
+    if not binary.is_file() or binary.stat().st_size > 512 * 1024 * 1024:
+        fail("invalid_runtime_file")
+    system = platform_module.system().lower()
+    key = {"windows": "RCLONE_EXE_SHA256", "linux": "RCLONE_LINUX_EXE_SHA256"}.get(system)
+    if key is None:
+        fail("unsupported_runtime_platform")
+    try:
+        manifest = {}
+        for line in plain_path(manifest_path).read_text(encoding="utf-8").splitlines():
+            if not line or line.startswith("#"):
+                continue
+            name, separator, value = line.partition("=")
+            if not separator or name in manifest:
+                fail("invalid_runtime_manifest")
+            manifest[name] = value
+        expected, version = manifest.get(key), manifest.get("RCLONE_VERSION")
+        if not valid_hash(expected) or not isinstance(version, str) or not re.fullmatch(r"\d+\.\d+\.\d+", version):
+            fail("invalid_runtime_manifest")
+        with binary.open("rb") as source:
+            actual = hashlib.file_digest(source, "sha256").hexdigest()
+        if actual != expected:
+            fail("runtime_hash_mismatch")
+    except CoverageError:
+        raise
+    except (OSError, ValueError):
+        fail("runtime_verification_failed")
+    with tempfile.TemporaryDirectory(prefix="triage-catalog-") as temporary:
+        root = Path(temporary)
+        root.chmod(0o700)
+        # Run an independently rehashed owned copy, preventing replacement of
+        # the supplied executable between verification and the metadata calls.
+        executable = root / ("rclone.exe" if system == "windows" else "rclone")
+        shutil.copyfile(binary, executable)
+        executable.chmod(0o700)
+        with executable.open("rb") as source:
+            if hashlib.file_digest(source, "sha256").hexdigest() != actual:
+                fail("runtime_copy_hash_mismatch")
+        config = root / "empty.conf"
+        fd = os.open(config, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        os.close(fd)
+        environment = isolated_environment(root)
+        reported = run_metadata(executable, ["version"], config, environment)
+        if reported.splitlines()[:1] != [f"rclone v{version}".encode("ascii")]:
+            fail("runtime_version_mismatch")
+        raw = run_metadata(executable, ["config", "providers"], config, environment)
+        try:
+            catalog = catalog_from_schemas(json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_object))
+        except (ValueError, UnicodeError):
+            fail("invalid_catalog")
+    return {"version": version, "sha256": actual, "platform": system}, catalog
+
+
+def write_report(report, destination):
+    destination = plain_path(destination, allow_missing_leaf=True)
+    data = json.dumps(report, sort_keys=True, indent=2, ensure_ascii=False).encode("utf-8") + b"\n"
+    try:
+        fd = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "wb") as output:
+            output.write(data)
+            output.flush()
+            os.fsync(output.fileno())
+    except FileExistsError:
+        fail("report_already_exists")
+    except OSError:
+        fail("report_write_failed")
+
+
+def parse_required(raw):
+    if not raw:
+        return []
+    parts = raw.split(",")
+    if any(not ID_PATTERN.fullmatch(part.strip()) for part in parts):
+        fail("invalid_required_fixture")
+    return sorted(set(part.strip() for part in parts))
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--rclone", required=True, type=Path)
+    parser.add_argument("--manifest", type=Path, default=ROOT / "rclone-version.env")
+    parser.add_argument("--policy", type=Path, default=ROOT / "provider-coverage-policy.json")
+    parser.add_argument("--report", required=True, type=Path)
+    parser.add_argument("--fixture-receipt", action="append", type=Path, default=[])
+    parser.add_argument("--max-age-hours", type=int, default=MAX_AGE_HOURS)
+    parser.add_argument("--require-plans", action="store_true")
+    parser.add_argument("--require-fixtures", default="")
+    parser.add_argument("--require-complete", action="store_true")
+    args = parser.parse_args(argv)
+    report = {"schema_version": 1, "all_plans_current": False, "all_complete": False,
+              "providers": [], "errors": []}
+    try:
+        required = parse_required(args.require_fixtures)
+        runtime, catalog = query_runtime(args.rclone, args.manifest)
+        # Even a malformed/missing policy must leave every discovered backend in
+        # the failure receipt; a policy failure cannot erase the coverage gap.
+        unreviewed = {"schema_version": 1, "profiles": {"unreviewed": {
+            "required": {"application": ["cleanup"]}, "review_required": True}}, "providers": {}}
+        report = evaluate(catalog, unreviewed, runtime, [], None)
+        policy = read_json(args.policy)
+        harness_sha = compute_harness_sha256(ROOT / "scripts" / "provider-lab") if args.fixture_receipt else None
+        fixture_sha = compute_fixture_manifest_sha256(ROOT / "scripts" / "provider-lab") if args.fixture_receipt else None
+        receipts, receipt_errors = [], []
+        for path in args.fixture_receipt:
+            try:
+                receipts.append(read_json(path, MAX_RECEIPT))
+            except CoverageError as error:
+                receipt_errors.append(str(error))
+        report = evaluate(catalog, policy, runtime, receipts, harness_sha, max_age_hours=args.max_age_hours,
+                          fixture_manifest_sha256=fixture_sha)
+        report["errors"] = sorted(set(report["errors"] + receipt_errors))
+        report["all_complete"] = report["all_complete"] and not report["errors"]
+        report["gate_errors"] = gate_errors(report, args.require_plans, required, args.require_complete)
+    except CoverageError as error:
+        report["errors"].append(str(error))
+        report["gate_errors"] = list(report["errors"])
+    except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError):
+        report["errors"].append("coverage_input_failed")
+        report["gate_errors"] = list(report["errors"])
+    try:
+        write_report(report, args.report)
+    except (CoverageError, OSError):
+        print("Provider coverage report could not be saved.", file=sys.stderr)
+        return 2
+    passed = not report.get("gate_errors")
+    print("Provider coverage report saved; gates " + ("passed." if passed else "failed."))
+    return 0 if passed else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
