@@ -30,23 +30,36 @@ WRAPPERS = {"alias", "cache", "chunker", "combine", "compress", "crypt", "hasher
 TIERS = ("local_protocol", "application", "vendor")
 PLATFORMS = frozenset(("windows", "linux"))
 AUTH_APPLICABILITY = frozenset(("none", "credentials", "oauth", "provider_specific"))
-REFRESH_APPLICABILITY = frozenset(("required", "not_applicable", "review_required"))
+LIFECYCLE_APPLICABILITY = frozenset(("required", "not_applicable", "review_required"))
+LIFECYCLE_DIMENSIONS = {
+    "refresh": ("refresh_applicability", "credential_renewal_requirement", "credential_renewal"),
+    "reauthentication": ("reauthentication_applicability", "connection_session_reauthentication_requirement",
+                         "connection_session_reauthentication"),
+}
+ARCHIVE_CAPABILITIES = {
+    "archive_crc32", "directory_as_file_rejection", "corrupt_member_rejection",
+    "truncated_archive_rejection", "config_preservation",
+}
+ARCHIVE_REQUIRED_CAPABILITIES = ARCHIVE_CAPABILITIES | {
+    "listing", "download_hash", "missing_object_rejection", "source_preservation",
+    "cleanup", "authentication_rejection", "fixture_write_rejection",
+}
 CAPABILITIES = {
     "authentication", "listing", "download_hash", "manifest_integrity",
-    "source_preservation", "cleanup", "refresh", "cancellation", "denial",
+    "source_preservation", "cleanup", "refresh", "reauthentication", "cancellation", "denial",
     "revocation", "missing_object_rejection", "authentication_rejection",
     "truncated_download_rejection", "cancellation_cleanup", "fixture_write_rejection", "host_key_rejection",
-}
+} | ARCHIVE_CAPABILITIES
 FIXTURE_KINDS = {
     "http": "independent_loopback", "webdav": "independent_loopback",
     "ftp": "independent_loopback", "sftp": "rclone_loopback",
-    "s3": "rclone_loopback", "local": "local",
+    "s3": "rclone_loopback", "local": "local", "archive": "local",
 }
 FIXTURE_CAPABILITIES = {
     "listing", "download_hash", "missing_object_rejection", "source_preservation",
     "authentication_rejection", "cleanup", "truncated_download_rejection",
     "cancellation_cleanup", "fixture_write_rejection", "host_key_rejection",
-}
+} | ARCHIVE_CAPABILITIES
 HARNESSES = ("fixture_servers.py", "run_lab.py")
 HASH_PATTERN = re.compile(r"[a-f0-9]{64}")
 ID_PATTERN = re.compile(r"[a-z0-9_]{1,80}")
@@ -229,11 +242,12 @@ def _policy_text(value, maximum=4096):
 
 def validate_plan_metadata(entry, profile):
     auth = entry.get("auth_applicability")
-    refresh = entry.get("refresh_applicability")
     if not isinstance(auth, str) or auth not in AUTH_APPLICABILITY:
         fail("invalid_policy")
-    if not isinstance(refresh, str) or refresh not in REFRESH_APPLICABILITY:
-        fail("invalid_policy")
+    for entry_field, _, _ in LIFECYCLE_DIMENSIONS.values():
+        value = entry.get(entry_field)
+        if not isinstance(value, str) or value not in LIFECYCLE_APPLICABILITY:
+            fail("invalid_policy")
     sources = entry.get("source_links")
     if not isinstance(sources, list) or not 1 <= len(sources) <= 20:
         fail("invalid_policy")
@@ -251,9 +265,10 @@ def validate_plan_metadata(entry, profile):
     modes = entry.get("renewal_modes")
     if not isinstance(modes, list) or not 1 <= len(modes) <= 32:
         fail("invalid_policy")
-    fields = {"auth_mode", "refresh_capability_requirement", "renewal_kind",
+    fields = {"auth_mode", "credential_renewal_requirement", "connection_session_reauthentication_requirement", "renewal_kind",
               "source_supported_behavior", "required_lifecycle_scenarios"}
-    seen, requirements = set(), set()
+    seen = set()
+    requirements = {capability: set() for capability in LIFECYCLE_DIMENSIONS}
     for mode in modes:
         if not isinstance(mode, dict) or set(mode) != fields:
             fail("invalid_policy")
@@ -270,28 +285,33 @@ def validate_plan_metadata(entry, profile):
             fail("invalid_policy")
         for scenario in scenarios:
             _policy_text(scenario, 512)
-        requirement = mode["refresh_capability_requirement"]
-        if not isinstance(requirement, str) or requirement not in REFRESH_APPLICABILITY:
+        for capability, (_, mode_field, _) in LIFECYCLE_DIMENSIONS.items():
+            requirement = mode[mode_field]
+            if not isinstance(requirement, str) or requirement not in LIFECYCLE_APPLICABILITY:
+                fail("invalid_policy")
+            requirements[capability].add(requirement)
+    for capability, (entry_field, _, _) in LIFECYCLE_DIMENSIONS.items():
+        decisions = requirements[capability]
+        aggregate = ("review_required" if "review_required" in decisions else
+                     "required" if "required" in decisions else "not_applicable")
+        if (entry[entry_field] != aggregate
+                or ((capability in profile.get("unresolved_applicability", [])) != (aggregate == "review_required"))):
             fail("invalid_policy")
-        requirements.add(requirement)
-    aggregate = ("review_required" if "review_required" in requirements else
-                 "required" if "required" in requirements else "not_applicable")
-    if refresh != aggregate or (("refresh" in profile.get("unresolved_applicability", [])) != (refresh == "review_required")):
-        fail("invalid_policy")
     for tier in ("application", "vendor"):
         capabilities = profile["required"].get(tier)
         if capabilities is None:
             continue
         if auth != "none" and "authentication" not in capabilities:
             fail("invalid_policy")
-        if "required" in requirements and "refresh" not in capabilities:
-            fail("invalid_policy")
-        if refresh == "not_applicable" and "refresh" in capabilities:
-            fail("invalid_policy")
+        for capability, (entry_field, _, _) in LIFECYCLE_DIMENSIONS.items():
+            if "required" in requirements[capability] and capability not in capabilities:
+                fail("invalid_policy")
+            if entry[entry_field] == "not_applicable" and capability in capabilities:
+                fail("invalid_policy")
 
 
 def validate_policy(policy):
-    if not isinstance(policy, dict) or type(policy.get("schema_version")) is not int or policy["schema_version"] != 1:
+    if not isinstance(policy, dict) or type(policy.get("schema_version")) is not int or policy["schema_version"] != 2:
         fail("invalid_policy")
     profiles, providers = policy.get("profiles"), policy.get("providers")
     if not isinstance(profiles, dict) or not profiles or not isinstance(providers, dict):
@@ -396,14 +416,18 @@ def validate_receipt(receipt, runtime, harness_sha256, now, max_age_hours=MAX_AG
         if not isinstance(capabilities, dict) or not capabilities or set(capabilities) - FIXTURE_CAPABILITIES:
             fail("invalid_fixture_capability")
         if (backend not in ("http", "webdav") and set(capabilities) & {"truncated_download_rejection", "cancellation_cleanup"}
-                or backend not in ("http", "webdav", "ftp") and "fixture_write_rejection" in capabilities
-                or backend != "sftp" and "host_key_rejection" in capabilities):
+                or backend not in ("http", "webdav", "ftp", "archive") and "fixture_write_rejection" in capabilities
+                or backend != "sftp" and "host_key_rejection" in capabilities
+                or backend != "archive" and set(capabilities) & ARCHIVE_CAPABILITIES):
             fail("invalid_fixture_capability")
         if any(value not in ("passed", "failed", "not_run", "not_applicable") for value in capabilities.values()):
             fail("invalid_fixture_outcome")
-        # The only current N/A emitted by the lab is local filesystem auth.
-        if any(value == "not_applicable" and (backend != "local" or key != "authentication_rejection") for key, value in capabilities.items()):
+        # Only the reviewed local filesystem/archive fixtures have no auth.
+        if any(value == "not_applicable" and (backend not in ("local", "archive") or key != "authentication_rejection") for key, value in capabilities.items()):
             fail("invalid_fixture_not_applicable")
+        if backend == "archive" and (set(capabilities) != ARCHIVE_REQUIRED_CAPABILITIES
+                                     or capabilities["authentication_rejection"] != "not_applicable"):
+            fail("invalid_fixture_capability")
         errors = row.get("errors")
         if not isinstance(errors, list) or len(errors) > 32 or any(not isinstance(code, str) or not re.fullmatch(r"[a-z][a-z0-9_]{0,80}", code) for code in errors):
             fail("invalid_fixture_errors")
@@ -428,12 +452,15 @@ def evaluate(catalog, policy, runtime, receipts, harness_sha256, now=None, max_a
         "schema_version": 1, "generated_utc": utc_text(now), "runtime": dict(runtime),
         "catalog_sha256": sha256_bytes(compact_json(catalog)),
         "policy_sha256": sha256_bytes(compact_json(policy)),
+        "policy_schema_version": policy["schema_version"],
         "harness_sha256": harness_sha256, "fixture_max_age_hours": max_age_hours,
         "fixture_manifest_sha256": fixture_manifest_sha256,
         "evidence_trust": "harness_report_not_cryptographic_attestation",
         "scope": "current_runtime_catalog_and_layered_evidence",
         "all_plans_current": False, "all_complete": False, "providers": [], "errors": [],
         "retired_policy_backends": sorted(set(policy["providers"]) - {entry["backend"] for entry in catalog}),
+        "applicability_summary": {label: {state: 0 for state in (*sorted(LIFECYCLE_APPLICABILITY), "not_verified")}
+                                  for _, _, label in LIFECYCLE_DIMENSIONS.values()},
     }
     observations = {}
     for receipt in receipts:
@@ -478,7 +505,11 @@ def evaluate(catalog, policy, runtime, receipts, harness_sha256, now=None, max_a
             policy_status = "review_required" if profile.get("review_required", False) else "current"
         unresolved = sorted(profile.get("unresolved_applicability", [])) if profile else []
         row = dict(entry, catalog_status="discovered", policy_status=policy_status, evidence={}, complete=False,
-                   capability_applicability_review_required=unresolved)
+                   capability_applicability_review_required=unresolved, lifecycle_applicability={})
+        for entry_field, _, label in LIFECYCLE_DIMENSIONS.values():
+            decision = planned[entry_field] if policy_status == "current" else "not_verified"
+            row["lifecycle_applicability"][label] = decision
+            report["applicability_summary"][label][decision] += 1
         observed = observations.get(backend)
         for tier in TIERS:
             if policy_status != "current":
@@ -684,7 +715,7 @@ def main(argv=None):
         runtime, catalog = query_runtime(args.rclone, args.manifest)
         # Even a malformed/missing policy must leave every discovered backend in
         # the failure receipt; a policy failure cannot erase the coverage gap.
-        unreviewed = {"schema_version": 1, "profiles": {"unreviewed": {
+        unreviewed = {"schema_version": 2, "profiles": {"unreviewed": {
             "required": {"application": ["cleanup"]}, "review_required": True}}, "providers": {}}
         report = evaluate(catalog, unreviewed, runtime, [], None)
         policy = read_json(args.policy)
