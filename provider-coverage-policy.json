@@ -593,6 +593,49 @@
         "refresh",
         "reauthentication"
       ]
+    },
+    "b2-native-fixture": {
+      "required": {
+        "application": [
+          "listing",
+          "download_hash",
+          "manifest_integrity",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation",
+          "refresh"
+        ],
+        "vendor": [
+          "listing",
+          "download_hash",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation",
+          "refresh"
+        ],
+        "local_protocol": [
+          "listing",
+          "download_hash",
+          "missing_object_rejection",
+          "authentication_rejection",
+          "source_preservation",
+          "config_preservation",
+          "cleanup",
+          "fixture_write_rejection",
+          "account_token_reacquisition",
+          "renewal_denial"
+        ]
+      },
+      "review_required": false,
+      "unresolved_applicability": [
+        "reauthentication"
+      ]
     }
   },
   "providers": {
@@ -806,30 +849,49 @@
     "b2": {
       "canonical_name": "b2",
       "schema_sha256": "167bb01c79938f14881de50f95857feda1bf39ef7e6e8451ab7110d917bec2d1",
-      "profile": "hosted-renewal-session-review",
+      "profile": "b2-native-fixture",
       "notes": [
-        "Backblaze account, bucket and restricted application key. Do not substitute S3-compatibility tests for the native B2 API.",
-        "Free account/API eligibility: review_required",
-        "Native B2 exchanges a static application key for a temporary authorization token and requires authorization-token renewal coverage.",
-        "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension."
+        "Hosted native B2 acceptance still requires an owned Backblaze account, restricted bucket and application key. Do not substitute S3-compatibility tests for the native B2 API.",
+        "Free hosted account/API eligibility: review_required. The independent loopback fixture needs no vendor account.",
+        "The local fixture covers rclone v1.75.1 native B2 application-key authorization at an explicit literal-loopback endpoint. The v4 authorization response supplies the same owned API/download origin and a single allowed bucket; all operations use that bucket-rooted filesystem. External endpoints, redirects, account-wide discovery, download_url overrides and environment-provided credentials are outside the fixture.",
+        "Pinned authorization uses /b2api/v4/b2_authorize_account, while listing uses /b2api/v1/b2_list_file_names and its legacy size field. Exact-object copy obtains metadata by HEAD by name, then downloads by fileId; current generic API examples alone are not an adequate fixture contract.",
+        "Account-token reacquisition requires one copy invocation with ordered initial grant, same-object metadata, injected expired_auth_token HTTP 401 with no object bytes, distinct replacement grant and accepted replacement-token read with independent SHA256 and size. Separate fresh logins or a successful second authorization without a completed retry do not pass.",
+        "The lifecycle fixture needs an explicit bounded two-attempt low-level retry budget, retaining one high-level attempt. Authorization itself retries HTTP 401, so denied replacement authentication may occur repeatedly; require observed bounded denial, no replacement grant, no object payload or destination artifacts and owned cleanup.",
+        "Forced HTTP 401 tests account authorization-token reacquisition and injected renewal denial, not elapsed expiry, actual key revocation, OAuth refresh or a connection/session recovery case. Runtime tokens are held in memory; config preservation does not establish persisted-token replacement.",
+        "The local receipt does not qualify hosted-service behavior, TLS, S3-compatible authentication, multipart or upload implementation, encryption, version history, application cancellation or application/vendor lifecycle acceptance. A direct authenticated write rejection establishes only the fixture guard.",
+        "Connection/session reauthentication remains unresolved; the account-token fixture does not settle this independent lifecycle dimension."
       ],
       "source_links": [
         "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/b2.md",
         "https://github.com/rclone/rclone/blob/v1.75.1/backend/b2/b2.go#L448-L458",
         "https://github.com/rclone/rclone/blob/v1.75.1/backend/b2/b2.go#L651-L672",
-        "https://www.backblaze.com/apidocs/b2-authorize-account"
+        "https://www.backblaze.com/apidocs/b2-authorize-account",
+        "https://rclone.org/b2/#b2-endpoint",
+        "https://github.com/rclone/rclone/blob/v1.75.1/backend/b2/b2.go#L550-L560",
+        "https://github.com/rclone/rclone/blob/v1.75.1/backend/b2/b2.go#L606-L634",
+        "https://github.com/rclone/rclone/blob/v1.75.1/backend/b2/b2.go#L803-L854",
+        "https://github.com/rclone/rclone/blob/v1.75.1/backend/b2/b2.go#L2000-L2103",
+        "https://github.com/rclone/rclone/blob/v1.75.1/backend/b2/api/types.go#L125-L191",
+        "https://github.com/rclone/rclone/blob/v1.75.1/fs/pacer.go#L22-L33",
+        "https://github.com/rclone/rclone/blob/v1.75.1/lib/pacer/pacer.go#L220-L247",
+        "https://www.backblaze.com/apidocs/b2-list-file-names",
+        "https://www.backblaze.com/apidocs/b2-download-file-by-id"
       ],
       "renewal_modes": [
         {
           "auth_mode": "native B2 application key exchanged for authorization token",
           "renewal_kind": "application_key_reauthorization",
-          "source_supported_behavior": "The static application key obtains a temporary authorization token. B2 documents a maximum 24-hour token lifetime; pinned shouldRetry reauthorizes on HTTP401 and updates the API endpoint/header. Connection/session reauthentication applicability is not established by the credential-renewal review.",
+          "source_supported_behavior": "The static application key obtains a temporary account authorization token. Pinned shouldRetry reauthorizes on any HTTP 401 and updates the API root and per-request Authorization header. The bounded low-level pacer must allow a subsequent attempt for the original operation to use the new token. Download metadata uses HEAD by name and subsequent object GET can use its fileId. The loopback fixture injects expired_auth_token; it does not establish clock expiry, live key revocation, OAuth refresh, persisted credentials or connection/session reauthentication.",
           "required_lifecycle_scenarios": [
             "owned expired authorization token triggers b2_authorize_account",
             "new authorization token is used on the subsequent scoped read",
             "revoked application key fails boundedly",
             "do not confuse native B2 and S3-compatible auth",
-            "Review and qualify connection/session reauthentication for this exact mode; do not infer applicability from credential renewal or a fresh login."
+            "Review and qualify connection/session reauthentication for this exact mode; do not infer applicability from credential renewal or a fresh login.",
+            "For the independent native API fixture, bind the same owned loopback origin for initial authorization, returned API and download URLs, and the exact single approved bucket.",
+            "Observe initial grant, same-object metadata, injected expired-token GET rejection with zero object payload, distinct replacement grant and accepted retry within one process.",
+            "Check independent full-file SHA256 and size, unchanged served source bytes and original config, and bounded owned process/listener cleanup.",
+            "After injected token rejection, deny replacement authorization and verify bounded non-success with no accepted payload, grant or destination artifacts; do not infer live revocation."
           ],
           "credential_renewal_requirement": "required",
           "connection_session_reauthentication_requirement": "review_required"

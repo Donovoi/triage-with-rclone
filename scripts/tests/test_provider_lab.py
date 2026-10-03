@@ -529,6 +529,7 @@ class ProviderLabTests(unittest.TestCase):
             state.token = "synthetic-token-two"
             state.events += [("grant", 2), ("get", 2)]
             state.payload_bytes = len(FIXTURES.FILES["README-synthetic.txt"])
+        state.requests = len(state.events)
         return state
 
     def test_swift_options_cannot_override_refreshed_token_or_enable_environment_auth(self):
@@ -649,6 +650,174 @@ class ProviderLabTests(unittest.TestCase):
             else:
                 self.assertIn("swift_source_changed" if mutation == "source" else "swift_config_changed", row["errors"])
             self.assertNotEqual(row["capabilities"]["service_token_reacquisition"], "passed")
+
+    def completed_b2_state(self, denial=False, groups=2):
+        state = FIXTURES.B2State("synthetic", "synthetic-key", "deny" if denial else "renew")
+        state.forced_401 = 1
+        state.expired_gets = groups if denial else 1
+        state.events = [("grant", 1), ("head", 1), ("get_401", 1)]
+        state.revoked = {"synthetic-token-one"}
+        if denial:
+            state.generation = 1
+            state.tokens = {"synthetic-token-one"}
+            state.token = "synthetic-token-one"
+            state.events += [("renewal_denied", 1)] * 2
+            for _ in range(groups - 1):
+                state.events += [("expired_retry", 1)] + [("renewal_denied", 1)] * 2
+            state.renewal_denied = groups * 2
+        else:
+            state.generation = 2
+            state.tokens = {"synthetic-token-one", "synthetic-token-two"}
+            state.token = "synthetic-token-two"
+            state.events += [("grant", 2), ("get", 2)]
+            state.payload_bytes = len(FIXTURES.FILES["README-synthetic.txt"])
+        state.requests = len(state.events)
+        return state
+
+    def test_b2_options_close_all_endpoints_and_do_not_override_tokens(self):
+        self.assertEqual(LAB.b2_options(FIXTURES.B2State("synthetic-id", "synthetic-key"), 12345),
+                         {"type": "b2", "account": "synthetic-id", "key": "synthetic-key",
+                          "endpoint": "http://127.0.0.1:12345"})
+
+    def test_b2_renewal_verdict_requires_exact_order_distinct_grant_and_payload(self):
+        size = len(FIXTURES.FILES["README-synthetic.txt"])
+        self.assertTrue(LAB.b2_renewal_matches(self.completed_b2_state(), False, size))
+        changes = {
+            "no_expiry": lambda state: setattr(state, "forced_401", 0),
+            "no_metadata": lambda state: state.events.remove(("head", 1)),
+            "wrong_order": lambda state: state.events.reverse(),
+            "old_read": lambda state: state.events.append(("get", 1)),
+            "extra_grant": lambda state: state.events.append(("grant", 3)),
+            "same_token": lambda state: setattr(state, "tokens", {"synthetic-token-one"}),
+            "not_revoked": lambda state: state.revoked.clear(),
+            "rejected_bytes": lambda state: setattr(state, "rejected_payload_bytes", 1),
+            "wrong_bytes": lambda state: setattr(state, "payload_bytes", size + 1),
+            "other_auth": lambda state: setattr(state, "storage_denied", 1),
+            "unrecognized_route": lambda state: setattr(state, "unexpected", 1),
+            "too_many_requests": lambda state: setattr(state, "requests", 15),
+            "silent_request": lambda state: setattr(state, "requests", len(state.events) + 1),
+            "budget": lambda state: setattr(state, "budget_exceeded", True),
+        }
+        for name, change in changes.items():
+            with self.subTest(name=name):
+                state = self.completed_b2_state()
+                change(state)
+                self.assertFalse(LAB.b2_renewal_matches(state, False, size))
+
+    def test_b2_denial_requires_bounded_retry_groups_and_matching_observations(self):
+        for groups in (1, 2, 4):
+            self.assertTrue(LAB.b2_renewal_matches(self.completed_b2_state(True, groups), True, 62))
+        self.assertFalse(LAB.b2_renewal_matches(self.completed_b2_state(True, 5), True, 62))
+        mutations = (
+            lambda state: setattr(state, "renewal_denied", 0),
+            lambda state: setattr(state, "expired_gets", 3),
+            lambda state: state.events.append(("renewal_denied", 1)),
+            lambda state: state.events.insert(3, ("expired_retry", 1)),
+            lambda state: state.events.append(("get", 1)),
+            lambda state: setattr(state, "payload_bytes", 1),
+            lambda state: setattr(state, "generation", 2),
+        )
+        for mutation in mutations:
+            state = self.completed_b2_state(True)
+            mutation(state)
+            self.assertFalse(LAB.b2_renewal_matches(state, True, 62))
+
+    def test_b2_renewal_case_uses_one_copy_with_two_attempts_and_independent_hash(self):
+        payload = FIXTURES.FILES["README-synthetic.txt"]
+        for index, (processes, data, expected_error) in enumerate(((1, payload, None),
+                (2, payload, "b2_renewal_not_single_process"), (1, b"wrong", "b2_renewed_download_mismatch"))):
+            root = self.root / str(index)
+            root.mkdir()
+            runtime = mock.Mock(sequence=3)
+
+            def run(args, config, **kwargs):
+                self.assertEqual(kwargs, {"low_level_attempts": 2})
+                self.assertEqual(args[:3], ["rc", "--loopback", "operations/copyfile"])
+                self.assertIn("srcFs=Synthetic:synthetic-bucket", args)
+                self.assertIn("srcRemote=README-synthetic.txt", args)
+                runtime.sequence += processes
+                (root / "renewed-verified").write_bytes(data)
+                return 0, b"{}", b""
+
+            runtime.run.side_effect = run
+            row = {"capabilities": {}}
+            if expected_error:
+                with self.assertRaisesRegex(LAB.LabError, expected_error):
+                    LAB.b2_renewal_case(runtime, root, self.completed_b2_state(), "synthetic.conf", row)
+            else:
+                LAB.b2_renewal_case(runtime, root, self.completed_b2_state(), "synthetic.conf", row)
+                self.assertEqual(row["capabilities"], {"account_token_reacquisition": "passed"})
+            runtime.run.assert_called_once()
+
+    def test_b2_denial_rejects_final_or_partial_destination(self):
+        for name in ("denied-must-not-exist", "denied-must-not-exist.partial"):
+            with self.subTest(name=name):
+                root = self.root / name
+                root.mkdir()
+                runtime = mock.Mock(sequence=0)
+
+                def run(*args, **kwargs):
+                    runtime.sequence += 1
+                    (root / name).write_bytes(b"unaccepted partial")
+                    return 1, b"synthetic protocol error JSON", b""
+
+                runtime.run.side_effect = run
+                with self.assertRaisesRegex(LAB.LabError, "b2_denied_renewal_returned_data"):
+                    LAB.b2_renewal_case(runtime, root, self.completed_b2_state(True), "synthetic.conf", {"capabilities": {}})
+
+    def test_runtime_default_attempt_budget_is_one_and_explicit_two_is_bounded(self):
+        runtime = object.__new__(LAB.Runtime)
+        runtime.root, runtime.binary, runtime.config = self.root, self.root / "synthetic", self.root / "empty"
+        runtime.cache, runtime.env, runtime.sequence, runtime.children = self.root / "cache", {}, 0, []
+        with mock.patch.object(LAB.subprocess, "Popen") as popen:
+            for budget in (1, 2):
+                runtime.start(["synthetic"], low_level_attempts=budget)
+                command = popen.call_args.args[0]
+                self.assertEqual(command[command.index("--low-level-retries") + 1], str(budget))
+                self.assertEqual(command[command.index("--retries") + 1], "1")
+            runtime.start(["synthetic"])
+            command = popen.call_args.args[0]
+            self.assertEqual(command[command.index("--low-level-retries") + 1], "1")
+            for budget in (0, 3, True, "2"):
+                with self.assertRaisesRegex(LAB.LabError, "invalid_attempt_budget"):
+                    runtime.start(["synthetic"], low_level_attempts=budget)
+            self.assertEqual(popen.call_count, 3)
+        mocked = mock.Mock()
+        LAB.exact_copy(mocked, "synthetic.conf", "source", "file", "dest", "file")
+        self.assertEqual(mocked.run.call_args.kwargs, {})
+
+    def test_b2_failure_still_checks_source_config_and_inner_cleanup(self):
+        for mutation in ("source", "config", "listener", "teardown"):
+            state = FIXTURES.B2State("synthetic", "synthetic")
+            root = self.root / mutation
+
+            @contextmanager
+            def fake_serve(kind, supplied):
+                self.assertEqual(kind, "b2")
+                try:
+                    yield 12345
+                finally:
+                    if mutation == "teardown":
+                        raise RuntimeError("fixture_cleanup_failed")
+                    supplied.cleanup_complete = True
+
+            def run(*args, **kwargs):
+                if mutation == "source":
+                    state.files["README-synthetic.txt"] = b"changed"
+                if mutation == "config":
+                    (root / "b2-baseline.conf").write_bytes(b"changed")
+                raise LAB.LabError("synthetic_early_failure")
+
+            runtime = mock.Mock()
+            runtime.run.side_effect = run
+            with mock.patch.object(LAB, "B2State", return_value=state), mock.patch.object(LAB, "serve", fake_serve), \
+                    mock.patch.object(LAB, "listener_closed", return_value=mutation != "listener"):
+                row = LAB.run_backend(runtime, "b2", root)
+            self.assertTrue(row["errors"])
+            if mutation in ("listener", "teardown"):
+                self.assertEqual(row["capabilities"]["cleanup"], "failed")
+            else:
+                self.assertIn("b2_source_changed" if mutation == "source" else "b2_config_changed", row["errors"])
 
     def test_timeout_kills_and_reaps_exact_owned_process(self):
         runtime = object.__new__(LAB.Runtime)
