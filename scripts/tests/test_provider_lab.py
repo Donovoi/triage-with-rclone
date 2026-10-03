@@ -893,6 +893,96 @@ class ProviderLabTests(unittest.TestCase):
             else:
                 self.assertIn("azureblob_source_changed" if mutation == "source" else "azureblob_config_changed", row["errors"])
 
+    def test_azurefiles_config_fixes_share_and_static_key_without_emulator_or_identity(self):
+        key = base64.b64encode(bytes(range(32))).decode()
+        state = FIXTURES.AzureFilesState(key)
+        self.assertEqual(LAB.azurefiles_options(state, 12345), {
+            "type": "azurefiles", "env_auth": "false", "use_emulator": "false", "account": "syntheticaccount",
+            "key": key, "endpoint": "http://127.0.0.1:12345/syntheticaccount", "share_name": "synthetic-share"})
+
+    def test_azurefiles_listing_requires_exact_files_and_100ns_timestamp(self):
+        expected = LAB.fixture_manifest()
+        rows = [{"Path": item["path"], "Size": item["size"], "IsDir": False, "ModTime": "2024-01-01T00:00:00Z"}
+                for item in expected]
+        for timestamp in ("2024-01-01T00:00:00Z", "2024-01-01T00:00:00.0000000Z", "2024-01-01T00:00:00+00:00"):
+            rows[0]["ModTime"] = timestamp
+            self.assertTrue(LAB.azurefiles_listing_matches(json.dumps(rows), expected))
+        for timestamp in ("2024-01-01T00:00:00.0000001Z", "2024-01-02T00:00:00Z", "2024-01-01T00:00:00", "invalid"):
+            rows[0]["ModTime"] = timestamp
+            self.assertFalse(LAB.azurefiles_listing_matches(json.dumps(rows), expected))
+        rows[0]["ModTime"] = "2024-01-01T00:00:00Z"
+        for changed in (rows[:-1], rows + [rows[0]], [dict(rows[0], IsDir=True), *rows[1:]],
+                        [dict(rows[0], Size=True), *rows[1:]], [dict(rows[0], Path="wrong"), *rows[1:]]):
+            self.assertFalse(LAB.azurefiles_listing_matches(json.dumps(changed), expected))
+
+    def test_azurefiles_wrong_key_cannot_pass_from_ignored_root_probe_alone(self):
+        for cause in ("no_request", "root_probe_only", "served_data", "authenticated"):
+            state = FIXTURES.AzureFilesState(base64.b64encode(bytes(range(32))).decode())
+            root = self.root / cause
+
+            @contextmanager
+            def fake_serve(kind, supplied):
+                self.assertEqual(kind, "azurefiles")
+                try:
+                    yield 12345
+                finally:
+                    supplied.cleanup_complete = True
+
+            def run(args, config):
+                self.assertEqual(args, ["cat", "Synthetic:README-synthetic.txt"])
+                content = Path(config).read_text()
+                wrong = next(line.split("=", 1)[1].strip() for line in content.splitlines() if line.startswith("key"))
+                self.assertEqual(len(base64.b64decode(wrong, validate=True)), 32)
+                self.assertNotEqual(wrong, state.password)
+                state.auth_denied = 0 if cause == "no_request" else 1
+                state.root_probe_denied = 1 if cause == "root_probe_only" else 0
+                state.read_auth_denied = 1 if cause in ("served_data", "authenticated") else 0
+                state.payload_bytes = 1 if cause == "served_data" else 0
+                state.authenticated = 1 if cause == "authenticated" else 0
+                return 1, b"", b"synthetic later failure is not denied-member evidence"
+
+            runtime = mock.Mock()
+            runtime.run.side_effect = run
+            with mock.patch.object(LAB, "AzureFilesState", return_value=state), mock.patch.object(LAB, "serve", fake_serve), \
+                    mock.patch.object(LAB, "listener_closed", return_value=True):
+                row = LAB.run_backend(runtime, "azurefiles", root)
+            self.assertIn("azurefiles_bad_auth_not_observed", row["errors"])
+            self.assertNotEqual(row["capabilities"]["authentication_rejection"], "passed")
+            self.assertEqual(set(row["capabilities"]), {"listing", "download_hash", "missing_object_rejection",
+                "authentication_rejection", "source_preservation", "config_preservation", "fixture_write_rejection", "cleanup"})
+
+    def test_azurefiles_early_failure_keeps_source_config_and_cleanup_failures_visible(self):
+        for mutation in ("source", "config", "listener", "teardown"):
+            state = FIXTURES.AzureFilesState(base64.b64encode(bytes(range(32))).decode())
+            root = self.root / mutation
+
+            @contextmanager
+            def fake_serve(kind, supplied):
+                try:
+                    yield 12345
+                finally:
+                    if mutation == "teardown":
+                        raise RuntimeError("fixture_cleanup_failed")
+                    supplied.cleanup_complete = True
+
+            def run(*args, **kwargs):
+                if mutation == "source":
+                    state.files["README-synthetic.txt"] = b"changed"
+                if mutation == "config":
+                    (root / "azurefiles-baseline.conf").write_bytes(b"changed")
+                raise LAB.LabError("synthetic_early_failure")
+
+            runtime = mock.Mock()
+            runtime.run.side_effect = run
+            with mock.patch.object(LAB, "AzureFilesState", return_value=state), mock.patch.object(LAB, "serve", fake_serve), \
+                    mock.patch.object(LAB, "listener_closed", return_value=mutation != "listener"):
+                row = LAB.run_backend(runtime, "azurefiles", root)
+            self.assertTrue(row["errors"])
+            if mutation in ("listener", "teardown"):
+                self.assertEqual(row["capabilities"]["cleanup"], "failed")
+            else:
+                self.assertIn("azurefiles_source_changed" if mutation == "source" else "azurefiles_config_changed", row["errors"])
+
     def test_timeout_kills_and_reaps_exact_owned_process(self):
         runtime = object.__new__(LAB.Runtime)
         process = mock.Mock()

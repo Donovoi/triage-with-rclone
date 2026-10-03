@@ -88,12 +88,20 @@ def b2_receipt():
     return candidate
 
 
-def azureblob_receipt():
-    candidate = receipt("azureblob")
+def azure_receipt(backend):
+    candidate = receipt(backend)
     candidate["backends"][0]["capabilities"] = {
-        capability: "passed" for capability in coverage.AZUREBLOB_REQUIRED_CAPABILITIES
+        capability: "passed" for capability in coverage.AZURE_FIXTURE_CONTRACTS[backend]
     }
     return candidate
+
+
+def azureblob_receipt():
+    return azure_receipt("azureblob")
+
+
+def azurefiles_receipt():
+    return azure_receipt("azurefiles")
 
 
 class CoverageTests(unittest.TestCase):
@@ -711,7 +719,8 @@ class CoverageTests(unittest.TestCase):
         for backend in coverage.FIXTURE_KINDS:
             catalog = coverage.catalog_from_schemas([schema(backend)])
             policy = policy_for(catalog)
-            candidate = {"swift": swift_receipt, "b2": b2_receipt, "azureblob": azureblob_receipt}.get(backend, lambda: receipt(backend))()
+            candidate = {"swift": swift_receipt, "b2": b2_receipt, "azureblob": azureblob_receipt,
+                         "azurefiles": azurefiles_receipt}.get(backend, lambda: receipt(backend))()
             if backend == "archive":
                 candidate["backends"][0]["capabilities"] = {
                     key: "passed" for key in coverage.ARCHIVE_REQUIRED_CAPABILITIES
@@ -720,7 +729,7 @@ class CoverageTests(unittest.TestCase):
             candidate["backends"][0]["capabilities"]["config_preservation"] = "passed"
             report = self.evaluate([candidate], policy, catalog)
             with self.subTest(backend=backend):
-                if backend in ("archive", "swift", "b2", "azureblob"):
+                if backend in ("archive", "swift", "b2", "azureblob", "azurefiles"):
                     self.assertEqual(report["providers"][0]["evidence"]["local_protocol"]["status"], "passed")
                 else:
                     self.assertIn("invalid_fixture_capability", report["errors"])
@@ -800,7 +809,8 @@ class CoverageTests(unittest.TestCase):
             for capability, allowed in (("account_token_reacquisition", {"b2"}),
                                         ("service_token_reacquisition", {"swift"}),
                                         ("renewal_denial", {"swift", "b2"})):
-                candidate = {"swift": swift_receipt, "b2": b2_receipt, "azureblob": azureblob_receipt}.get(backend, lambda: receipt(backend))()
+                candidate = {"swift": swift_receipt, "b2": b2_receipt, "azureblob": azureblob_receipt,
+                             "azurefiles": azurefiles_receipt}.get(backend, lambda: receipt(backend))()
                 if backend == "archive":
                     candidate["backends"][0]["capabilities"] = {
                         key: "passed" for key in coverage.ARCHIVE_REQUIRED_CAPABILITIES
@@ -865,105 +875,105 @@ class CoverageTests(unittest.TestCase):
         self.assertIn("invalid_fixture_errors", result["errors"])
         self.assertNotIn(canary, json.dumps(result))
 
-    def test_azureblob_fixture_never_qualifies_other_modes_or_acceptance_tiers(self):
-        catalog = coverage.catalog_from_schemas([schema("azureblob")])
+    def assert_azure_fixture_never_qualifies_other_modes_or_acceptance_tiers(self, backend):
+        catalog = coverage.catalog_from_schemas([schema(backend)])
         policy = policy_for(catalog)
         profile = policy["profiles"]["test"]
-        profile["required"]["local_protocol"] = sorted(coverage.AZUREBLOB_REQUIRED_CAPABILITIES)
+        profile["required"]["local_protocol"] = sorted(coverage.AZURE_FIXTURE_CONTRACTS[backend])
         profile["unresolved_applicability"] = ["refresh", "reauthentication"]
-        entry = policy["providers"]["azureblob"]
+        entry = policy["providers"][backend]
         entry["refresh_applicability"] = entry["reauthentication_applicability"] = "review_required"
         entry["renewal_modes"] = [renewal_mode("not_applicable"), renewal_mode("required"),
                                   renewal_mode("review_required", "review_required")]
         for mode, name in zip(entry["renewal_modes"], ("static key", "renewable credential", "unreviewed alternative")):
             mode["auth_mode"] = name
-        result = self.evaluate([azureblob_receipt()], policy, catalog)
+        result = self.evaluate([azure_receipt(backend)], policy, catalog)
         row = result["providers"][0]
         evidence = row["evidence"]
         self.assertEqual(evidence["local_protocol"]["status"], "passed")
-        self.assertEqual(set(evidence["local_protocol"]["capabilities"]), coverage.AZUREBLOB_REQUIRED_CAPABILITIES)
+        self.assertEqual(set(evidence["local_protocol"]["capabilities"]), coverage.AZURE_FIXTURE_CONTRACTS[backend])
         for tier in ("application", "vendor"):
             self.assertEqual(evidence[tier]["status"], "not_verified")
             for capability in ("authentication", "refresh"):
                 self.assertEqual(evidence[tier]["capabilities"][capability], "not_verified")
-        self.assertEqual(coverage.gate_errors(result, require_plans=True, require_fixtures=["azureblob"]), [])
+        self.assertEqual(coverage.gate_errors(result, require_plans=True, require_fixtures=[backend]), [])
         self.assertIn("provider_coverage_incomplete", coverage.gate_errors(result, require_complete=True))
         self.assertEqual(row["capability_applicability_review_required"], ["reauthentication", "refresh"])
         self.assertEqual(row["lifecycle_applicability"], {
             "credential_renewal": "review_required", "connection_session_reauthentication": "review_required"})
 
-    def test_azureblob_requires_exact_capabilities_despite_weaker_policy(self):
-        catalog = coverage.catalog_from_schemas([schema("azureblob")])
+    def assert_azure_requires_exact_capabilities_despite_weaker_policy(self, backend):
+        catalog = coverage.catalog_from_schemas([schema(backend)])
         policy = policy_for(catalog)
-        for capability in coverage.AZUREBLOB_REQUIRED_CAPABILITIES:
-            candidate = azureblob_receipt()
+        for capability in coverage.AZURE_FIXTURE_CONTRACTS[backend]:
+            candidate = azure_receipt(backend)
             del candidate["backends"][0]["capabilities"][capability]
             result = self.evaluate([candidate], policy, catalog)
             with self.subTest(omitted=capability):
                 self.assertIn("invalid_fixture_capability", result["errors"])
-                self.assertIn("required_fixture_not_verified", coverage.gate_errors(result, require_fixtures=["azureblob"]))
-        for capability in coverage.CAPABILITIES - coverage.AZUREBLOB_REQUIRED_CAPABILITIES:
-            candidate = azureblob_receipt()
+                self.assertIn("required_fixture_not_verified", coverage.gate_errors(result, require_fixtures=[backend]))
+        for capability in coverage.CAPABILITIES - coverage.AZURE_FIXTURE_CONTRACTS[backend]:
+            candidate = azure_receipt(backend)
             candidate["backends"][0]["capabilities"][capability] = "passed"
             with self.subTest(extra=capability):
                 self.assertIn("invalid_fixture_capability", self.evaluate([candidate], policy, catalog)["errors"])
 
-    def test_azureblob_requires_executed_typed_outcomes_and_independent_kind(self):
-        catalog = coverage.catalog_from_schemas([schema("azureblob")])
+    def assert_azure_requires_executed_typed_outcomes_and_independent_kind(self, backend):
+        catalog = coverage.catalog_from_schemas([schema(backend)])
         policy = policy_for(catalog)
-        for capability in coverage.AZUREBLOB_REQUIRED_CAPABILITIES:
+        for capability in coverage.AZURE_FIXTURE_CONTRACTS[backend]:
             for value, error in (("not_applicable", "invalid_fixture_not_applicable"),
                                  (True, "invalid_fixture_outcome"), (None, "invalid_fixture_outcome"),
                                  ("failed", "inconsistent_fixture_success"),
                                  ("not_run", "inconsistent_fixture_success")):
-                candidate = azureblob_receipt()
+                candidate = azure_receipt(backend)
                 candidate["backends"][0]["capabilities"][capability] = value
                 with self.subTest(capability=capability, value=value):
                     self.assertIn(error, self.evaluate([candidate], policy, catalog)["errors"])
         for kind in ("local", "rclone_loopback", "vendor"):
-            candidate = azureblob_receipt()
+            candidate = azure_receipt(backend)
             candidate["backends"][0]["fixture_kind"] = kind
             self.assertIn("unknown_fixture_backend", self.evaluate([candidate], policy, catalog)["errors"])
 
-    def test_azureblob_requires_current_runtime_harness_manifest_and_time(self):
-        catalog = coverage.catalog_from_schemas([schema("azureblob")])
+    def assert_azure_requires_current_runtime_harness_manifest_and_time(self, backend):
+        catalog = coverage.catalog_from_schemas([schema(backend)])
         policy = policy_for(catalog)
         cases = []
         for field in ("version", "sha256"):
-            candidate = azureblob_receipt()
+            candidate = azure_receipt(backend)
             candidate["runtime"][field] = "1.75.2" if field == "version" else "d" * 64
             cases.append((candidate, "receipt_runtime_mismatch"))
         for field, value, error in (("platform", "windows", "receipt_runtime_mismatch"),
                                     ("harness_sha256", "d" * 64, "receipt_harness_mismatch"),
                                     ("fixture_manifest_sha256", "d" * 64, "receipt_fixture_manifest_mismatch"),
                                     ("finished_utc", coverage.utc_text(NOW + timedelta(seconds=1)), "future_receipt")):
-            candidate = azureblob_receipt()
+            candidate = azure_receipt(backend)
             candidate[field] = value
             cases.append((candidate, error))
-        candidate = azureblob_receipt()
+        candidate = azure_receipt(backend)
         candidate["started_utc"] = coverage.utc_text(NOW - timedelta(days=2, minutes=1))
         candidate["finished_utc"] = coverage.utc_text(NOW - timedelta(days=2))
         cases.append((candidate, "expired_receipt"))
         for candidate, error in cases:
             result = self.evaluate([candidate], policy, catalog)
             self.assertIn(error, result["errors"])
-            self.assertIn("required_fixture_not_verified", coverage.gate_errors(result, require_fixtures=["azureblob"]))
+            self.assertIn("required_fixture_not_verified", coverage.gate_errors(result, require_fixtures=[backend]))
 
-    def test_azureblob_failures_are_sticky_and_private_fields_omitted(self):
-        catalog = coverage.catalog_from_schemas([schema("azureblob")])
+    def assert_azure_failures_are_sticky_and_private_fields_omitted(self, backend):
+        catalog = coverage.catalog_from_schemas([schema(backend)])
         policy = policy_for(catalog)
-        policy["profiles"]["test"]["required"]["local_protocol"] = sorted(coverage.AZUREBLOB_REQUIRED_CAPABILITIES)
-        for capability in coverage.AZUREBLOB_REQUIRED_CAPABILITIES:
-            failed = azureblob_receipt()
+        policy["profiles"]["test"]["required"]["local_protocol"] = sorted(coverage.AZURE_FIXTURE_CONTRACTS[backend])
+        for capability in coverage.AZURE_FIXTURE_CONTRACTS[backend]:
+            failed = azure_receipt(backend)
             failed["success"] = False
             failed["backends"][0]["capabilities"][capability] = "failed"
-            for batch in ([failed, azureblob_receipt()], [azureblob_receipt(), failed]):
+            for batch in ([failed, azure_receipt(backend)], [azure_receipt(backend), failed]):
                 result = self.evaluate(batch, policy, catalog)
                 evidence = result["providers"][0]["evidence"]["local_protocol"]
                 self.assertEqual(evidence["status"], "failed")
                 self.assertEqual(evidence["capabilities"][capability], "failed")
         canary = "PRIVATE_AZURE_SHAREDKEY_SIGNATURE_https://private.invalid/account"
-        candidate = azureblob_receipt()
+        candidate = azure_receipt(backend)
         candidate["raw_stderr"] = canary
         candidate["backends"][0]["Authorization"] = canary
         self.assertNotIn(canary, json.dumps(self.evaluate([candidate], policy, catalog)))
@@ -971,6 +981,46 @@ class CoverageTests(unittest.TestCase):
         result = self.evaluate([candidate], policy, catalog)
         self.assertIn("invalid_fixture_errors", result["errors"])
         self.assertNotIn(canary, json.dumps(result))
+
+    def test_azureblob_fixture_never_qualifies_other_modes_or_acceptance_tiers(self):
+        self.assert_azure_fixture_never_qualifies_other_modes_or_acceptance_tiers("azureblob")
+
+    def test_azureblob_requires_exact_capabilities_despite_weaker_policy(self):
+        self.assert_azure_requires_exact_capabilities_despite_weaker_policy("azureblob")
+
+    def test_azureblob_requires_executed_typed_outcomes_and_independent_kind(self):
+        self.assert_azure_requires_executed_typed_outcomes_and_independent_kind("azureblob")
+
+    def test_azureblob_requires_current_runtime_harness_manifest_and_time(self):
+        self.assert_azure_requires_current_runtime_harness_manifest_and_time("azureblob")
+
+    def test_azureblob_failures_are_sticky_and_private_fields_omitted(self):
+        self.assert_azure_failures_are_sticky_and_private_fields_omitted("azureblob")
+
+    def test_azurefiles_fixture_never_qualifies_other_modes_or_acceptance_tiers(self):
+        self.assert_azure_fixture_never_qualifies_other_modes_or_acceptance_tiers("azurefiles")
+
+    def test_azurefiles_requires_exact_capabilities_despite_weaker_policy(self):
+        self.assert_azure_requires_exact_capabilities_despite_weaker_policy("azurefiles")
+
+    def test_azurefiles_requires_executed_typed_outcomes_and_independent_kind(self):
+        self.assert_azure_requires_executed_typed_outcomes_and_independent_kind("azurefiles")
+
+    def test_azurefiles_requires_current_runtime_harness_manifest_and_time(self):
+        self.assert_azure_requires_current_runtime_harness_manifest_and_time("azurefiles")
+
+    def test_azurefiles_failures_are_sticky_and_private_fields_omitted(self):
+        self.assert_azure_failures_are_sticky_and_private_fields_omitted("azurefiles")
+
+    def test_azure_services_never_inherit_each_others_fixture_result(self):
+        catalog = coverage.catalog_from_schemas([schema("azureblob"), schema("azurefiles")])
+        policy = policy_for(catalog)
+        policy["profiles"]["test"]["required"]["local_protocol"] = sorted(coverage.AZUREFILES_REQUIRED_CAPABILITIES)
+        for backend, other in (("azureblob", "azurefiles"), ("azurefiles", "azureblob")):
+            result = self.evaluate([azure_receipt(backend)], policy, catalog)
+            statuses = {row["backend"]: row["evidence"]["local_protocol"]["status"] for row in result["providers"]}
+            self.assertEqual(statuses, {backend: "passed", other: "not_verified"})
+            self.assertIn("required_fixture_not_verified", coverage.gate_errors(result, require_fixtures=[other]))
 
     def test_not_applicable_only_from_reviewed_policy(self):
         policy = policy_for(self.catalog, application=False, vendor=False)
