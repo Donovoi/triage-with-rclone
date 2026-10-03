@@ -439,7 +439,8 @@
           "authentication",
           "denial",
           "revocation",
-          "reauthentication"
+          "reauthentication",
+          "refresh"
         ],
         "local_protocol": [
           "listing",
@@ -517,6 +518,33 @@
           "truncated_download_rejection",
           "cancellation_cleanup",
           "fixture_write_rejection"
+        ]
+      },
+      "review_required": false,
+      "unresolved_applicability": []
+    },
+    "hdfs-lifecycle-plan": {
+      "required": {
+        "application": [
+          "listing",
+          "download_hash",
+          "manifest_integrity",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation",
+          "refresh",
+          "reauthentication"
+        ],
+        "local_protocol": [
+          "listing",
+          "download_hash",
+          "missing_object_rejection",
+          "source_preservation",
+          "cleanup",
+          "authentication_rejection"
         ]
       },
       "review_required": false,
@@ -1276,49 +1304,54 @@
     "hdfs": {
       "canonical_name": "hdfs",
       "schema_sha256": "cb51953f32a7a3f4b8024e5cec913e108729143883a2ae17d07bea1beb671bee",
-      "profile": "network-credentials-session-review",
+      "profile": "hdfs-lifecycle-plan",
       "notes": [
         "Owned Hadoop/HDFS installation and configured user; secure Kerberos deployment is a separate authentication profile, not proven by simple-mode tests.",
         "Free account/API eligibility: no_vendor_account_needed",
         "Do not use the same repository tag root client/client.go: that is a different module generation. The dependency is the v8 subtree.",
-        "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension."
+        "Service-ticket renewal/reacquisition and RPC connection authentication are required and distinct from external CCache TGT renewal. These source-backed requirements do not claim a successful Kerberos deployment or automatic TGT extension."
       ],
       "source_links": [
         "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/hdfs.md",
         "https://hadoop.apache.org/docs/stable/hadoop-project-dist/hadoop-common/SingleCluster.html",
         "https://github.com/rclone/rclone/blob/v1.75.1/backend/hdfs/fs.go#L43-L111",
-        "https://github.com/jcmturner/gokrb5/blob/v8.4.4/v8/client/client.go#L62-L111"
+        "https://github.com/jcmturner/gokrb5/blob/v8.4.4/v8/client/client.go#L62-L111",
+        "https://github.com/colinmarc/hdfs/blob/v2.4.0/internal/rpc/namenode.go#L145-L164",
+        "https://github.com/colinmarc/hdfs/blob/v2.4.0/internal/rpc/namenode.go#L245-L274",
+        "https://github.com/colinmarc/hdfs/blob/v2.4.0/internal/rpc/kerberos.go#L175-L185",
+        "https://github.com/jcmturner/gokrb5/blob/v8.4.4/v8/client/cache.go#L99-L132",
+        "https://github.com/jcmturner/gokrb5/blob/v8.4.4/v8/client/TGSExchange.go#L84-L107"
       ],
       "renewal_modes": [
         {
           "auth_mode": "simple mode username",
           "renewal_kind": "none",
-          "source_supported_behavior": "No Kerberos client is supplied; User is the configured username. Connection/session reauthentication applicability is not established by the credential-renewal review.",
+          "source_supported_behavior": "No Kerberos client is supplied; User is the configured username. The pinned RPC client selects the none authentication protocol and transmits an asserted username, not a cryptographic account login.",
           "required_lifecycle_scenarios": [
             "simple-mode permission behavior",
-            "do not claim authenticated login from identity assertion",
-            "Review and qualify connection/session reauthentication for this exact mode; do not infer applicability from credential renewal or a fresh login."
+            "do not claim authenticated login from identity assertion"
           ],
           "credential_renewal_requirement": "not_applicable",
-          "connection_session_reauthentication_requirement": "review_required"
+          "connection_session_reauthentication_requirement": "not_applicable"
         },
         {
           "auth_mode": "Kerberos FILE credential cache",
-          "renewal_kind": "external_ticket_renewal",
-          "source_supported_behavior": "Backend loads a CCache using gokrb5/v8 NewFromCCache. Pinned v8.4.4 explicitly does not automatically renew its TGT. Connection/session reauthentication applicability is not established by the credential-renewal review.",
+          "renewal_kind": "service_ticket_renewal_with_external_tgt",
+          "source_supported_behavior": "The backend passes a CCache-loaded Kerberos client into the HDFS RPC client. Each new NameNode connection performs a SASL handshake and calls GetServiceTicket. Pinned gokrb5 reuses valid service tickets, renews expired renewable tickets, or obtains a service ticket through TGS using retained TGT/session material. NewFromCCache does not automatically renew the TGT itself.",
           "required_lifecycle_scenarios": [
-            "expired ticket denied",
-            "external ticket renewal/new process tested separately",
-            "no silent downgrade to simple mode",
-            "Review and qualify connection/session reauthentication for this exact mode; do not infer applicability from credential renewal or a fresh login."
+            "owned expired renewable service ticket obtains a replacement through the KDC and authenticates the scoped RPC connection",
+            "missing or nonrenewable expired service ticket is reacquired while a usable TGT and KDC policy permit it",
+            "new connection after owned session loss performs the Kerberos handshake or fails explicitly",
+            "expired TGT or denied KDC renewal fails without downgrade to simple mode",
+            "external TGT/cache replacement and a new client are tested separately; do not infer automatic TGT renewal"
           ],
-          "credential_renewal_requirement": "not_applicable",
-          "connection_session_reauthentication_requirement": "review_required"
+          "credential_renewal_requirement": "required",
+          "connection_session_reauthentication_requirement": "required"
         }
       ],
       "auth_applicability": "provider_specific",
-      "refresh_applicability": "not_applicable",
-      "reauthentication_applicability": "review_required"
+      "refresh_applicability": "required",
+      "reauthentication_applicability": "required"
     },
     "hidrive": {
       "canonical_name": "hidrive",
@@ -2604,7 +2637,7 @@
       "notes": [
         "Owned SMB server/share and test account. Guest access/domain/Kerberos variants are not established by a simple local password test.",
         "Free account/API eligibility: no_vendor_account_needed",
-        "Cache reload is automatic consumption of an external replacement, not automatic KDC ticket renewal. A live session does not necessarily reauthenticate merely because the file changed.",
+        "Cache reload consumes an external replacement, while service-ticket renewal/reacquisition can independently occur through the KDC; neither proves automatic TGT renewal. A live session does not necessarily reauthenticate merely because the file changed.",
         "The current local protocol requirements do not attest connection recovery, replacement-credential renewal, or vendor-specific modes. Required application lifecycle cases remain unverified until separate evidence is supplied."
       ],
       "source_links": [
@@ -2612,10 +2645,13 @@
         "https://www.samba.org/",
         "https://github.com/rclone/rclone/blob/v1.75.1/backend/smb/connpool.go#L24-L70",
         "https://github.com/rclone/rclone/blob/v1.75.1/backend/smb/kerberos.go#L18-L99",
-        "https://github.com/jcmturner/gokrb5/blob/v8.4.4/v8/client/client.go#L62-L111"
+        "https://github.com/jcmturner/gokrb5/blob/v8.4.4/v8/client/client.go#L62-L111",
+        "https://github.com/cloudsoda/go-smb2/blob/d8c5600d73b8/krb5.go#L35-L49",
+        "https://github.com/jcmturner/gokrb5/blob/v8.4.4/v8/client/cache.go#L99-L132",
+        "https://github.com/jcmturner/gokrb5/blob/v8.4.4/v8/client/TGSExchange.go#L84-L107"
       ],
       "auth_applicability": "credentials",
-      "refresh_applicability": "not_applicable",
+      "refresh_applicability": "required",
       "renewal_modes": [
         {
           "auth_mode": "NTLM username/password/domain",
@@ -2632,15 +2668,16 @@
         },
         {
           "auth_mode": "Kerberos credential cache",
-          "credential_renewal_requirement": "not_applicable",
-          "renewal_kind": "external_ticket_replacement_and_reload",
+          "credential_renewal_requirement": "required",
+          "renewal_kind": "service_ticket_renewal_with_external_tgt",
           "connection_session_reauthentication_requirement": "required",
-          "source_supported_behavior": "New connections obtain a Kerberos client from the cache factory. It reloads a changed credential-cache file; pinned gokrb5 NewFromCCache does not automatically renew TGTs.",
+          "source_supported_behavior": "New connections use the cached CCache-loaded Kerberos client and the pinned SMB initiator calls GetServiceTicket. Gokrb5 renews expired renewable service tickets or acquires a replacement through TGS using retained TGT/session material. The factory reloads an externally changed credential-cache file; NewFromCCache does not automatically renew TGTs.",
           "required_lifecycle_scenarios": [
-            "expired TGT rejected",
+            "owned expired renewable service ticket obtains a replacement through the KDC and authenticates the scoped SMB session",
+            "missing or nonrenewable expired service ticket is reacquired while a usable TGT and KDC policy permit it",
+            "expired TGT or denied KDC renewal fails without NTLM downgrade",
             "externally renewed cache is reloaded on subsequent dial",
-            "no NTLM downgrade",
-            "session reconnection verified"
+            "connection recovery and mutual Kerberos authentication are verified"
           ]
         }
       ],

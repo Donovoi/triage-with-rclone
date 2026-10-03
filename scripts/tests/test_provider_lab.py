@@ -389,6 +389,10 @@ class ProviderLabTests(unittest.TestCase):
                 if config.name == "truncated.conf":
                     return 1, b"", b"zip: not a valid zip file"
                 return 0, json.dumps(self.archive_entries()).encode(), b""
+            if args[:3] == ["rc", "--loopback", "operations/stat"]:
+                options = dict(argument.split("=", 1) for argument in args[3:])
+                name = options["remote"]
+                return 0, json.dumps({"item": {"Path": name, "IsDir": False, "Size": len(FIXTURES.FILES[name])}}).encode(), b""
             self.assertEqual(args[:3], ["rc", "--loopback", "operations/copyfile"])
             options = dict(argument.split("=", 1) for argument in args[3:])
             if options["dstFs"] == "Synthetic:":
@@ -416,6 +420,65 @@ class ProviderLabTests(unittest.TestCase):
         self.assertTrue(all(value == "passed" for key, value in row["capabilities"].items()
                             if key != "authentication_rejection"))
         self.assertTrue(all(call.args[0][0] in ("lsjson", "rc") for call in runtime.run.call_args_list))
+        stats = [call.args[0] for call in runtime.run.call_args_list if call.args[0][:3] == ["rc", "--loopback", "operations/stat"]]
+        self.assertEqual(len(stats), len(FIXTURES.FILES))
+
+    def test_exact_stat_requires_expected_file_identity_and_size(self):
+        runtime = mock.Mock()
+        runtime.run.return_value = (0, b'{"item":{"Path":"nested/file.txt","Size":7,"IsDir":false}}', b"")
+        LAB.exact_file_stat(runtime, "synthetic.conf", "Synthetic:fixture-root/", "nested/file.txt", 7)
+        runtime.run.assert_called_once_with(["rc", "--loopback", "operations/stat", "fs=Synthetic:fixture-root/",
+                                            "remote=nested/file.txt", 'opt={"noModTime":true,"noMimeType":true,"filesOnly":true}'], "synthetic.conf")
+        for payload in (b'{"item":null}', b'{"item":{"Path":"nested/file.txt","Size":7,"IsDir":true}}',
+                        b'{"item":{"Path":"other.txt","Size":7,"IsDir":false}}',
+                        b'{"item":{"Path":"nested/file.txt","Size":true,"IsDir":false}}',
+                        b'{"item":{"Path":"nested/file.txt","Size":8,"IsDir":false}}',
+                        b'{"item":{"Path":"nested/file.txt","Size":-1,"IsDir":false}}', b'{}', b'[]', b'not json'):
+            with self.subTest(payload=payload):
+                runtime.run.return_value = (0, payload, b"")
+                with self.assertRaises(LAB.LabError):
+                    LAB.exact_file_stat(runtime, "synthetic.conf", "Synthetic:", "nested/file.txt", 7)
+        runtime.run.return_value = (1, b'{"item":{"Path":"nested/file.txt","Size":7,"IsDir":false}}', b"")
+        with self.assertRaisesRegex(LAB.LabError, "exact_stat_failed"):
+            LAB.exact_file_stat(runtime, "synthetic.conf", "Synthetic:", "nested/file.txt", 7)
+
+    def test_common_fixture_refuses_transfer_after_stat_returns_directory(self):
+        runtime = mock.Mock()
+        listing = [{"Path": name, "Size": len(body), "IsDir": False} for name, body in FIXTURES.FILES.items()]
+        runtime.run.side_effect = [(0, json.dumps(listing).encode(), b""),
+                                   (0, b'{"item":{"Path":"README-synthetic.txt","IsDir":true,"Size":-1}}', b"")]
+        row = {"capabilities": {}}
+        with self.assertRaisesRegex(LAB.LabError, "exact_stat_not_file"):
+            LAB.common_checks(runtime, self.root, "good", None, "Synthetic:", row)
+        self.assertTrue(all(call.args[0][0] != "copyto" for call in runtime.run.call_args_list))
+        self.assertNotIn("download_hash", row["capabilities"])
+
+    def test_common_stat_uses_exact_app_split_with_full_local_or_bucket_prefix(self):
+        for index, prefix in enumerate(("C:/owned/fixture/", "synthetic-bucket/", "local/source/files/")):
+            with self.subTest(prefix=prefix):
+                root = self.root / str(index)
+                root.mkdir()
+                runtime = mock.Mock()
+                runtime.run.side_effect = [(0, b'[{"Path":"file.txt","Size":2,"IsDir":false}]', b""),
+                                           (0, b'{"item":null}', b"")]
+                expected = [{"path": "file.txt", "size": 2, "sha256": "0" * 64}]
+                with self.assertRaisesRegex(LAB.LabError, "exact_stat_not_file"):
+                    LAB.common_checks(runtime, root, "good", None, "Synthetic:" + prefix, {"capabilities": {}}, expected=expected)
+                args = runtime.run.call_args_list[1].args[0]
+                self.assertIn("fs=Synthetic:", args)
+                self.assertIn("remote=" + prefix + "file.txt", args)
+                self.assertIn('opt={"noModTime":true,"noMimeType":true,"filesOnly":true}', args)
+
+    def test_local_fixture_uses_owned_relative_source_and_rejects_escape_or_root(self):
+        source = self.root / "local" / "source" / "files"
+        source.mkdir(parents=True)
+        runtime = mock.Mock(root=self.root)
+        self.assertEqual(LAB.local_fixture_target(runtime, source), "Synthetic:local/source/files/")
+        with self.assertRaisesRegex(LAB.LabError, "invalid_local_fixture_root"):
+            LAB.local_fixture_target(runtime, self.root)
+        with tempfile.TemporaryDirectory() as outside:
+            with self.assertRaisesRegex(LAB.LabError, "local_source_outside_owned_root"):
+                LAB.local_fixture_target(runtime, Path(outside))
 
     def test_archive_corruption_requires_crc_error_and_absent_destination(self):
         cases = ((1, b"", b"unrelated failure"), (0, b"", b"zip: checksum error"))

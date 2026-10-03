@@ -261,6 +261,21 @@ class CoverageTests(unittest.TestCase):
             with self.assertRaisesRegex(coverage.CoverageError, "invalid_policy"):
                 coverage.validate_policy(broken)
 
+    def test_pinned_kerberos_service_ticket_obligations_are_not_waived_by_external_tgt_lifecycle(self):
+        # Both pinned adapters call gokrb5/v8 GetServiceTicket: v8.4.4's
+        # cache.go:99-132 can renew a service ticket, and TGSExchange.go:84-107
+        # can acquire another using the session TGT. NewFromCCache's lack of
+        # automatic TGT renewal must not erase these distinct obligations.
+        policy = coverage.read_json(ROOT / "provider-coverage-policy.json")
+        for backend, name in (("hdfs", "Kerberos FILE credential cache"),
+                              ("smb", "Kerberos credential cache")):
+            entry = policy["providers"][backend]
+            mode = next(mode for mode in entry["renewal_modes"] if mode["auth_mode"] == name)
+            self.assertEqual(mode["credential_renewal_requirement"], "required")
+            self.assertEqual(mode["connection_session_reauthentication_requirement"], "required")
+            required = policy["profiles"][entry["profile"]]["required"]["application"]
+            self.assertTrue({"refresh", "reauthentication"}.issubset(required))
+
     def test_unknown_session_modes_block_completion_without_waiving_known_modes(self):
         policy = copy.deepcopy(self.policy)
         entry = policy["providers"]["http"]

@@ -70,7 +70,11 @@ impl Fixture {
         let mut fixture = Self::new();
         let source = fixture.temp.path().join("synthetic.zip");
         fs::write(&source, bytes).unwrap();
-        fixture.original = format!("[Archive]\ntype = archive\nremote = {}\n", source.display());
+        // The pinned archive backend requires slash-separated upstream paths.
+        fixture.original = format!(
+            "[Archive]\ntype = archive\nremote = {}\n",
+            source.to_string_lossy().replace('\\', "/")
+        );
         fs::write(&fixture.config, &fixture.original).unwrap();
         fixture
     }
@@ -229,10 +233,17 @@ fn cli_archive_acquires_exact_members_with_crc32_and_independent_sha256() {
     assert_eq!(manifest["complete"], true);
     let results = manifest["results"].as_array().unwrap();
     assert_eq!(results.len(), 2);
-    for (result, expected) in results.iter().zip([
-        b"SYNTHETIC ROOT\n".as_slice(),
-        b"SYNTHETIC NESTED\n".as_slice(),
-    ]) {
+    for (source, expected) in [
+        ("Archive:root.txt", b"SYNTHETIC ROOT\n".as_slice()),
+        (
+            "Archive:nested/space name.txt",
+            b"SYNTHETIC NESTED\n".as_slice(),
+        ),
+    ] {
+        let result = results
+            .iter()
+            .find(|result| result["source"] == source)
+            .unwrap();
         let acquired = fs::read(result["destination"].as_str().unwrap()).unwrap();
         assert_eq!(acquired, expected);
         assert_eq!(
@@ -259,14 +270,27 @@ fn cli_archive_rejects_missing_directory_corrupt_and_truncated_sources() {
         .unwrap();
     corrupt[payload_offset] ^= 1; // Keep the original central-directory CRC32.
     let truncated = bytes[..bytes.len() - 22].to_vec(); // Remove the ZIP end record.
-    for (source, csv) in [
-        (&bytes, "Path,Remote\nmissing.txt,Archive\n"),
-        (&bytes, "Path,Remote\nnested,Archive\n"),
+    for (source, csv, expected_error) in [
+        (
+            &bytes,
+            "Path,Remote\nmissing.txt,Archive\n",
+            "Source was not found",
+        ),
+        (
+            &bytes,
+            "Path,Remote\nnested,Archive\n",
+            "is not a regular file",
+        ),
         (
             &corrupt,
             "Path,Remote,Size,Hash,HashType\nroot.txt,Archive,15,0227bd4a,CRC32\n",
+            "zip: checksum error",
         ),
-        (&truncated, "Path,Remote\nroot.txt,Archive\n"),
+        (
+            &truncated,
+            "Path,Remote\nroot.txt,Archive\n",
+            "zip: not a valid zip file",
+        ),
     ] {
         let fixture = Fixture::archive(source);
         let output = fixture.acquire(csv);
@@ -276,6 +300,11 @@ fn cli_archive_rejects_missing_directory_corrupt_and_truncated_sources() {
         let results = manifest["results"].as_array().unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0]["success"], false);
+        assert!(results[0]["error"]
+            .as_str()
+            .unwrap()
+            .contains(expected_error));
+        assert!(!Path::new(results[0]["destination"].as_str().unwrap()).exists());
         assert!(!files(&fixture.temp.path().join("output"))
             .iter()
             .any(|path| path.file_name().unwrap() == "space name.txt"));
