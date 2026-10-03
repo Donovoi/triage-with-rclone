@@ -819,6 +819,80 @@ class ProviderLabTests(unittest.TestCase):
             else:
                 self.assertIn("b2_source_changed" if mutation == "source" else "b2_config_changed", row["errors"])
 
+    def test_azureblob_config_uses_explicit_synthetic_shared_key_and_owned_endpoint_only(self):
+        key = base64.b64encode(bytes(range(32))).decode()
+        state = FIXTURES.AzureBlobState(key)
+        self.assertEqual(LAB.azureblob_options(state, 12345), {
+            "type": "azureblob", "env_auth": "false", "use_emulator": "true", "account": "syntheticaccount",
+            "key": key, "endpoint": "http://127.0.0.1:12345/syntheticaccount", "use_arrow_list": "false"})
+
+    def test_azureblob_bad_auth_requires_observed_denial_with_no_data(self):
+        for cause in ("no_request", "served_data", "authenticated"):
+            state = FIXTURES.AzureBlobState(base64.b64encode(bytes(range(32))).decode())
+            root = self.root / cause
+
+            @contextmanager
+            def fake_serve(kind, supplied):
+                self.assertEqual(kind, "azureblob")
+                try:
+                    yield 12345
+                finally:
+                    supplied.cleanup_complete = True
+
+            def run(args, config):
+                self.assertEqual(args, ["cat", "Synthetic:synthetic-container/README-synthetic.txt"])
+                content = Path(config).read_text()
+                wrong = next(line.split("=", 1)[1].strip() for line in content.splitlines() if line.startswith("key"))
+                self.assertEqual(len(base64.b64decode(wrong, validate=True)), 32)
+                self.assertNotEqual(wrong, state.password)
+                state.auth_denied = 0 if cause == "no_request" else 1
+                state.payload_bytes = 1 if cause == "served_data" else 0
+                state.authenticated = 1 if cause == "authenticated" else 0
+                return 1, b"", b"synthetic startup error is insufficient"
+
+            runtime = mock.Mock()
+            runtime.run.side_effect = run
+            with mock.patch.object(LAB, "AzureBlobState", return_value=state), mock.patch.object(LAB, "serve", fake_serve), \
+                    mock.patch.object(LAB, "listener_closed", return_value=True):
+                row = LAB.run_backend(runtime, "azureblob", root)
+            self.assertIn("azureblob_bad_auth_not_observed", row["errors"])
+            self.assertNotEqual(row["capabilities"]["authentication_rejection"], "passed")
+            self.assertEqual(set(row["capabilities"]), {"listing", "download_hash", "missing_object_rejection",
+                "authentication_rejection", "source_preservation", "config_preservation", "fixture_write_rejection", "cleanup"})
+            self.assertEqual(row["fixture_kind"], "independent_loopback")
+
+    def test_azureblob_early_failure_still_checks_source_config_and_cleanup(self):
+        for mutation in ("source", "config", "listener", "teardown"):
+            state = FIXTURES.AzureBlobState(base64.b64encode(bytes(range(32))).decode())
+            root = self.root / mutation
+
+            @contextmanager
+            def fake_serve(kind, supplied):
+                try:
+                    yield 12345
+                finally:
+                    if mutation == "teardown":
+                        raise RuntimeError("fixture_cleanup_failed")
+                    supplied.cleanup_complete = True
+
+            def run(*args, **kwargs):
+                if mutation == "source":
+                    state.files["README-synthetic.txt"] = b"changed"
+                if mutation == "config":
+                    (root / "azureblob-baseline.conf").write_bytes(b"changed")
+                raise LAB.LabError("synthetic_early_failure")
+
+            runtime = mock.Mock()
+            runtime.run.side_effect = run
+            with mock.patch.object(LAB, "AzureBlobState", return_value=state), mock.patch.object(LAB, "serve", fake_serve), \
+                    mock.patch.object(LAB, "listener_closed", return_value=mutation != "listener"):
+                row = LAB.run_backend(runtime, "azureblob", root)
+            self.assertTrue(row["errors"])
+            if mutation in ("listener", "teardown"):
+                self.assertEqual(row["capabilities"]["cleanup"], "failed")
+            else:
+                self.assertIn("azureblob_source_changed" if mutation == "source" else "azureblob_config_changed", row["errors"])
+
     def test_timeout_kills_and_reaps_exact_owned_process(self):
         runtime = object.__new__(LAB.Runtime)
         process = mock.Mock()

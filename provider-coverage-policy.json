@@ -636,6 +636,48 @@
       "unresolved_applicability": [
         "reauthentication"
       ]
+    },
+    "azureblob-shared-key-fixture": {
+      "required": {
+        "application": [
+          "listing",
+          "download_hash",
+          "manifest_integrity",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation",
+          "refresh"
+        ],
+        "local_protocol": [
+          "listing",
+          "download_hash",
+          "missing_object_rejection",
+          "authentication_rejection",
+          "source_preservation",
+          "config_preservation",
+          "fixture_write_rejection",
+          "cleanup"
+        ],
+        "vendor": [
+          "listing",
+          "download_hash",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation",
+          "refresh"
+        ]
+      },
+      "review_required": false,
+      "unresolved_applicability": [
+        "refresh",
+        "reauthentication"
+      ]
     }
   },
   "providers": {
@@ -673,14 +715,19 @@
     "azureblob": {
       "canonical_name": "azureblob",
       "schema_sha256": "10ab09ca8da4216f95dc3cdd7c0421f8e04fbb61691e8153f8809732d382c0f0",
-      "profile": "azureblob-renewal-plan-session-review",
+      "profile": "azureblob-shared-key-fixture",
       "notes": [
-        "Azurite provides a credentialed Blob emulator. Real Azure account, storage resource and approved credential or identity needed for vendor acceptance; emulator does not prove Entra identity flows.",
-        "Free account/API eligibility: no_vendor_account_needed",
-        "Local protocol fixtures do not establish hosted service or workload identity acceptance.",
-        "Anonymous public Blob access is a separate no-auth profile. Azurite shared-key coverage does not cover Entra or workload identities.",
-        "An unconstrained DefaultAzureCredential chain is not one reviewed profile: select and record its actual provider.",
-        "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension."
+        "The independent HTTP fixture implements a bounded Azure Blob emulator/shared-key subset without an Azure account or Azurite installation. Hosted vendor acceptance still requires an owned Azure storage resource and approved credential or identity.",
+        "Free local fixture eligibility: no_vendor_account_needed. Local protocol fixtures do not establish hosted service or workload identity acceptance.",
+        "The fixture selects env_auth=false, use_emulator=true and use_arrow_list=false with an explicit synthetic account and generated base64 key and an owned literal-loopback endpoint. No public default emulator key, fixed default port, SAS, connection string, MSI, Azure CLI, service-principal input, redirects or external discovery is included.",
+        "Every native operation is rooted at the one synthetic container. The independent server must verify SharedKey HMAC over the encoded URI, canonical query and x-ms headers; signature presence alone is insufficient. The emulator account prefix appears twice in the canonical resource. Wrong valid-base64 credentials must reach the server and be denied.",
+        "Require one parseable UTC/GMT x-ms-date and reject correctly signed requests older than 900 seconds using an independently controlled clock in synthetic tests. The fixture conservatively rejects future timestamps without claiming Azure positive-clock-skew behavior. Fresh and exact-boundary signature vectors must remain distinct from malformed-signature failures.",
+        "The bounded XML listing supports one complete page only: reject nonempty markers and any effective maxresults smaller than the complete filtered and delimiter-collapsed result count, including BlobPrefix rows. Empty NextMarker may only accompany all matching rows; pagination is unqualified.",
+        "Exact stat/download use immutable ordinary small blobs, base64 Content-MD5 metadata, independently frozen SHA256 and size, and strictly bounded x-ms-range handling. Preserve the actual source map and original config bytes/hash; verify owned process, socket and thread cleanup on both success and failure.",
+        "The local receipt qualifies neither credential renewal nor connection/session recovery. Static SharedKey signs each request without an access-token or refresh-token grant; repeated signatures, new connections, retries and config preservation must not be presented as renewal evidence.",
+        "Anonymous public Blob access, SAS, Entra, managed/workload identity and other authentication variants retain their separate requirements. An unconstrained DefaultAzureCredential chain is not one reviewed profile: select and record its actual provider.",
+        "No hosted-service, TLS, Azure Files, uploads/multipart, leases, encryption, versions, snapshots, Arrow, actual key revocation, OAuth, application cancellation or app/vendor acceptance follows from this fixture. A direct authenticated write rejection proves the fixture guard only.",
+        "Connection/session reauthentication remains unresolved; the shared-key fixture does not settle this independent lifecycle dimension or waive other credential-renewal obligations."
       ],
       "source_links": [
         "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/azureblob.md",
@@ -688,7 +735,20 @@
         "https://github.com/rclone/rclone/blob/v1.75.1/backend/azureblob/auth/auth.go#L347-L550",
         "https://github.com/rclone/rclone/blob/v1.75.1/backend/azureblob/auth/auth.go#L570-L587",
         "https://pkg.go.dev/github.com/Azure/azure-sdk-for-go/sdk/azidentity@v1.14.0",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/azureblob/azureblob.go#L705-L727"
+        "https://github.com/rclone/rclone/blob/v1.75.1/backend/azureblob/azureblob.go#L705-L727",
+        "https://rclone.org/azureblob/#azure-storage-emulator-support",
+        "https://github.com/rclone/rclone/blob/v1.75.1/backend/azureblob/auth/auth.go#L347-L386",
+        "https://github.com/rclone/rclone/blob/v1.75.1/backend/azureblob/auth/auth.go#L556-L585",
+        "https://github.com/rclone/rclone/blob/v1.75.1/backend/azureblob/azureblob.go#L1191-L1214",
+        "https://github.com/Azure/azure-sdk-for-go/blob/sdk/storage/azblob/v1.8.0/sdk/storage/azblob/service/client.go#L73-L91",
+        "https://github.com/Azure/azure-sdk-for-go/blob/sdk/storage/azblob/v1.8.0/sdk/storage/azblob/service/client.go#L151-L160",
+        "https://github.com/Azure/azure-sdk-for-go/blob/sdk/storage/azblob/v1.8.0/sdk/storage/azblob/container/client.go#L142-L149",
+        "https://github.com/Azure/azure-sdk-for-go/blob/sdk/storage/azblob/v1.8.0/sdk/storage/azblob/internal/exported/shared_key_credential.go#L64-L94",
+        "https://github.com/Azure/azure-sdk-for-go/blob/sdk/storage/azblob/v1.8.0/sdk/storage/azblob/internal/exported/shared_key_credential.go#L227-L319",
+        "https://learn.microsoft.com/en-us/rest/api/storageservices/authorize-with-shared-key",
+        "https://learn.microsoft.com/en-us/rest/api/storageservices/list-blobs",
+        "https://learn.microsoft.com/en-us/rest/api/storageservices/get-blob-properties",
+        "https://learn.microsoft.com/en-us/rest/api/storageservices/get-blob"
       ],
       "renewal_modes": [
         {
