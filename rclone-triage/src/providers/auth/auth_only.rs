@@ -35,10 +35,7 @@ pub fn authenticate_only(
         |settings, provider_config| {
             match flow {
                 AuthOnlyFlow::DeviceCode => {
-                    let device = device_code_config_with_credentials(provider, custom.clone())?
-                        .ok_or_else(|| {
-                            anyhow::anyhow!("Device code flow is unavailable for {}", provider)
-                        })?;
+                    let device = auth_only_device_config(provider_config, custom.clone())?;
                     authorize_device_only(&device, cancel)
                 }
                 AuthOnlyFlow::SystemBrowser | AuthOnlyFlow::ManualBrowser => {
@@ -81,6 +78,34 @@ pub fn authenticate_only(
     )
 }
 
+fn auth_only_provider_config(provider: CloudProvider) -> ProviderConfig {
+    let mut config = ProviderConfig::for_provider(provider);
+    if provider == CloudProvider::OneDrive {
+        // Reading the user's own drive needs neither shared-file nor SharePoint
+        // discovery permissions. Keep refresh requests at the same scope too.
+        config.oauth.scopes = &["Files.Read", "offline_access"];
+        config.rclone_options = &[("access_scopes", "Files.Read offline_access")];
+    }
+    config
+}
+
+fn auth_only_device_config(
+    provider_config: &ProviderConfig,
+    custom: Option<OAuthCredentials>,
+) -> Result<DeviceCodeConfig> {
+    let mut device = device_code_config_with_credentials(provider_config.provider, custom)?
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Device code flow is unavailable for {}",
+                provider_config.provider
+            )
+        })?;
+    // The ordinary device flow retains its discovery scopes. This explicit
+    // override keeps auth-only device consent aligned with browser consent.
+    device.scope = provider_config.oauth.scopes.join(" ");
+    Ok(device)
+}
+
 fn authorize_device_only(device: &DeviceCodeConfig, cancel: &AtomicBool) -> Result<String> {
     check_cancel(cancel)?;
     let challenge = request_device_code(device)?;
@@ -117,7 +142,7 @@ where
         bail!("--auth-only currently supports Google Drive and OneDrive");
     }
     ensure_new_auth_credentials_with_custom(provider, custom)?;
-    let provider_config = ProviderConfig::for_provider(provider);
+    let provider_config = auth_only_provider_config(provider);
     if provider == CloudProvider::OneDrive
         && !custom.is_some_and(|credentials| {
             !credentials.client_id.trim().is_empty()
@@ -230,7 +255,20 @@ mod tests {
             |settings, provider| {
                 assert_eq!(settings.client_id, "test-public-client");
                 assert_eq!(settings.client_secret, None);
-                assert!(provider.oauth.scopes.contains(&"Files.Read"));
+                assert_eq!(provider.oauth.scopes, ["Files.Read", "offline_access"]);
+                let url = provider.build_auth_url_with_client_id(
+                    &settings.client_id,
+                    "http://localhost:53682/",
+                    Some("synthetic-state"),
+                );
+                let scopes: Vec<_> = url
+                    .split_once('?')
+                    .unwrap()
+                    .1
+                    .split('&')
+                    .filter_map(|field| field.strip_prefix("scope="))
+                    .collect();
+                assert_eq!(scopes, ["Files.Read%20offline_access"]);
                 Ok(
                     r#"{"access_token":"synthetic-access","refresh_token":"synthetic-refresh"}"#
                         .into(),
@@ -246,6 +284,46 @@ mod tests {
         assert!(!saved.contains("client_secret"));
         assert!(!saved.contains("drive_id"));
         assert!(!saved.contains("drive_type"));
+        assert_eq!(
+            config
+                .get_remote_option("onedrive-test", "access_scopes")
+                .unwrap(),
+            Some("Files.Read offline_access".into())
+        );
+    }
+
+    #[test]
+    fn auth_only_does_not_change_normal_discovery_or_google_scopes() {
+        let custom = OAuthCredentials {
+            client_id: "synthetic-own-client".into(),
+            client_secret: None,
+        };
+        let normal = ProviderConfig::for_provider(CloudProvider::OneDrive);
+        let normal_scope = "Files.Read Files.Read.All Sites.Read.All offline_access";
+        assert_eq!(normal.oauth.scopes.join(" "), normal_scope);
+        assert_eq!(normal.rclone_options, [("access_scopes", normal_scope)]);
+        assert_eq!(
+            device_code_config_with_credentials(CloudProvider::OneDrive, Some(custom.clone()))
+                .unwrap()
+                .unwrap()
+                .scope,
+            normal_scope
+        );
+
+        let google = auth_only_provider_config(CloudProvider::GoogleDrive);
+        let normal_google = ProviderConfig::for_provider(CloudProvider::GoogleDrive);
+        assert_eq!(google.oauth.scopes, normal_google.oauth.scopes);
+        assert_eq!(google.rclone_options, normal_google.rclone_options);
+        let google_custom = OAuthCredentials {
+            client_id: "synthetic-google-client".into(),
+            client_secret: Some("synthetic-google-secret".into()),
+        };
+        assert_eq!(
+            auth_only_device_config(&google, Some(google_custom))
+                .unwrap()
+                .scope,
+            normal_google.oauth.scopes.join(" ")
+        );
     }
 
     #[test]
@@ -304,6 +382,13 @@ mod tests {
                 request.as_reader().read_to_string(&mut body).unwrap();
                 assert!(body.contains("client_id=test-public-client"));
                 assert!(!body.contains("client_secret"));
+                if request.url() == "/devicecode" {
+                    let scopes: Vec<_> = body
+                        .split('&')
+                        .filter_map(|field| field.strip_prefix("scope="))
+                        .collect();
+                    assert_eq!(scopes, ["Files.Read%20offline_access"]);
+                }
                 request
                     .respond(tiny_http::Response::from_string(response))
                     .unwrap();
@@ -322,22 +407,22 @@ mod tests {
             "onedrive-test",
             Some(&custom),
             &AtomicBool::new(false),
-            |settings, provider| {
-                authorize_device_only(
-                    &DeviceCodeConfig {
-                        device_code_url: format!("http://{address}/devicecode"),
-                        token_url: format!("http://{address}/token"),
-                        client_id: settings.client_id.clone(),
-                        client_secret: settings.client_secret.clone(),
-                        scope: provider.oauth.scopes.join(" "),
-                    },
-                    &AtomicBool::new(false),
-                )
+            |_, provider| {
+                let mut device = auth_only_device_config(provider, Some(custom.clone()))?;
+                device.device_code_url = format!("http://{address}/devicecode");
+                device.token_url = format!("http://{address}/token");
+                authorize_device_only(&device, &AtomicBool::new(false))
             },
         )
         .unwrap();
         assert_eq!(fixture.join().unwrap(), ["/devicecode", "/token"]);
         assert!(config.has_remote(&result.remote_name).unwrap());
+        assert_eq!(
+            config
+                .get_remote_option(&result.remote_name, "access_scopes")
+                .unwrap(),
+            Some("Files.Read offline_access".into())
+        );
         assert_eq!(
             config
                 .get_remote_option(&result.remote_name, "drive_id")
