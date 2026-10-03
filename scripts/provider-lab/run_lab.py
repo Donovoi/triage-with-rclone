@@ -11,22 +11,26 @@ import base64
 from contextlib import contextmanager
 from datetime import datetime, timezone
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
 import re
 import shutil
 import socket
+import struct
 import subprocess
 import sys
 import tempfile
 import time
 import uuid
+import zipfile
+import zlib
 
 from fixture_servers import FILES, State, probe_write_rejection, serve
 
 
-BACKENDS = ("local", "http", "webdav", "ftp", "sftp", "s3")
+BACKENDS = ("local", "http", "webdav", "ftp", "sftp", "s3", "archive")
 HARNESS_FILES = ("fixture_servers.py", "run_lab.py")
 MAX_OUTPUT = 2 * 1024 * 1024
 COMMAND_TIMEOUT = 20
@@ -397,16 +401,145 @@ def common_checks(runtime, root, good, bad, target, row, state=None, auth_marker
         caps["cancellation_cleanup"] = "passed"
 
 
+def archive_zip(payloads):
+    """Reproducible bounded ZIP: no compression, external paths or timestamps."""
+    directories = {"/".join(name.split("/")[:index]) + "/"
+                   for name in payloads for index in range(1, len(name.split("/")))}
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_STORED, allowZip64=False) as archive:
+        for name in sorted(set(payloads) | directories):
+            entry = zipfile.ZipInfo(name, date_time=(2024, 1, 1, 0, 0, 0))
+            entry.create_system = 3
+            entry.compress_type = zipfile.ZIP_STORED
+            entry.external_attr = ((0o40755 << 16) | 0x10) if name in directories else (0o100644 << 16)
+            archive.writestr(entry, b"" if name in directories else payloads[name])
+    return output.getvalue()
+
+
+def corrupt_archive_member(original, name):
+    # Corrupt only one stored member byte, leaving its recorded CRC and ZIP
+    # directory intact. This must exercise CRC checking, not a parser failure.
+    with zipfile.ZipFile(io.BytesIO(original)) as archive:
+        entry = archive.getinfo(name)
+        check(entry.compress_type == zipfile.ZIP_STORED and entry.file_size > 0, "invalid_archive_fixture")
+        offset = entry.header_offset
+    check(original[offset:offset + 4] == b"PK\x03\x04", "invalid_archive_fixture")
+    name_size, extra_size = struct.unpack_from("<HH", original, offset + 26)
+    start = offset + 30 + name_size + extra_size
+    changed = bytearray(original)
+    changed[start] ^= 1
+    return bytes(changed)
+
+
+def archive_inventory(output, payloads):
+    """Validate exact entry identity, type, size and independently computed CRC."""
+    directories = {"/".join(name.split("/")[:index])
+                   for name in payloads for index in range(1, len(name.split("/")))}
+    try:
+        entries = json.loads(output)
+        check(isinstance(entries, list), "archive_listing_invalid")
+        check(len(entries) == len(payloads) + len(directories), "archive_listing_mismatch")
+        seen = set()
+        for entry in entries:
+            name = entry["Path"]
+            check(name not in seen, "archive_listing_mismatch")
+            seen.add(name)
+            if name in directories:
+                check(entry["IsDir"] is True, "archive_listing_mismatch")
+            else:
+                check(name in payloads and entry["IsDir"] is False, "archive_listing_mismatch")
+                check(type(entry["Size"]) is int and entry["Size"] == len(payloads[name]), "archive_listing_mismatch")
+                check(entry["Hashes"]["crc32"] == f"{zlib.crc32(payloads[name]):08x}", "archive_crc32_mismatch")
+        check(seen == set(payloads) | directories, "archive_listing_mismatch")
+    except (KeyError, TypeError, ValueError):
+        raise LabError("archive_listing_invalid") from None
+
+
+def exact_copy(runtime, config, source_fs, source_name, destination_fs, destination_name):
+    # In-process loopback RC opens one object; no network RC listener and no
+    # copyto fallback that might recursively acquire a directory.
+    return runtime.run(["rc", "--loopback", "operations/copyfile", f"srcFs={source_fs}",
+                        f"srcRemote={source_name}", f"dstFs={destination_fs}",
+                        f"dstRemote={destination_name}"], config)
+
+
+def archive_checks(runtime, root, row):
+    caps = row["capabilities"]
+    payloads = dict(FILES)
+    expected = {name: (len(body), hashlib.sha256(body).hexdigest()) for name, body in payloads.items()}
+    original = archive_zip(payloads)
+    check(original[-22:-18] == b"PK\x05\x06", "invalid_archive_fixture")
+    containers = {"original": original,
+                  "corrupt": corrupt_archive_member(original, "README-synthetic.txt"),
+                  "truncated": original[:-22]}
+    configs, preserved = {}, {}
+    for kind, contents in containers.items():
+        path = root / f"{kind}.zip"
+        write_private(path, contents)
+        config = config_file(root, f"{kind}.conf", {"type": "archive", "remote": path.as_posix()})
+        configs[kind] = config
+        preserved[path] = (contents, hashlib.sha256(contents).hexdigest())
+        data = config.read_bytes()
+        preserved[config] = (data, hashlib.sha256(data).hexdigest())
+    good = configs["original"]
+    downloads = root / "downloads"
+    downloads.mkdir(mode=0o700)
+    try:
+        code, output, _ = runtime.run(["lsjson", "--recursive", "--hash", "--no-modtime", "--no-mimetype", "Synthetic:"], good)
+        check(code == 0, "archive_listing_failed")
+        archive_inventory(output, payloads)
+        caps.update(listing="passed", archive_crc32="passed")
+        for index, (name, (size, expected_hash)) in enumerate(sorted(expected.items())):
+            destination = downloads / f"verified-{index}"
+            code, _, _ = exact_copy(runtime, good, "Synthetic:", name, downloads.as_posix(), destination.name)
+            check(code == 0 and destination.is_file(), "archive_download_failed")
+            check(destination.stat().st_size == size and digest(destination) == expected_hash, "archive_download_hash_mismatch")
+        caps["download_hash"] = "passed"
+        for name, capability, marker in (("absent-synthetic.txt", "missing_object_rejection", b"object not found"),
+                                         ("nested", "directory_as_file_rejection", b"is not a regular file")):
+            destination = downloads / f"{capability}-must-not-exist"
+            code, output, error = exact_copy(runtime, good, "Synthetic:", name, downloads.as_posix(), destination.name)
+            check(code != 0 and not destination.exists(), "archive_invalid_object_accepted")
+            check(marker in (output + error).lower(), "archive_object_rejection_not_observed")
+            caps[capability] = "passed"
+        destination = downloads / "corrupt-must-not-exist"
+        code, output, error = exact_copy(runtime, configs["corrupt"], "Synthetic:", "README-synthetic.txt",
+                                         downloads.as_posix(), destination.name)
+        check(code != 0 and not destination.exists(), "corrupt_archive_member_accepted")
+        check(b"zip: checksum error" in (output + error).lower(), "archive_crc_rejection_not_observed")
+        caps["corrupt_member_rejection"] = "passed"
+        code, output, error = runtime.run(["lsjson", "--recursive", "Synthetic:"], configs["truncated"])
+        check(code != 0 and b"zip: not a valid zip file" in (output + error).lower(), "truncated_archive_accepted")
+        caps["truncated_archive_rejection"] = "passed"
+        upload = root / "synthetic-write.txt"
+        write_private(upload, b"Synthetic rejected archive write.\n")
+        code, output, error = exact_copy(runtime, good, root.as_posix(), upload.name,
+                                         "Synthetic:", "write-must-not-exist.txt")
+        check(code != 0 and b"read only file system" in (output + error).lower(), "archive_write_rejection_not_observed")
+        code, output, _ = runtime.run(["lsjson", "--recursive", "--hash", "--no-modtime", "--no-mimetype", "Synthetic:"], good)
+        check(code == 0, "archive_post_write_listing_failed")
+        archive_inventory(output, payloads)
+        caps["fixture_write_rejection"] = "passed"
+    finally:
+        for path, (contents, sha256) in preserved.items():
+            check(path.is_file() and path.read_bytes() == contents and digest(path) == sha256,
+                  "archive_config_changed" if path.suffix == ".conf" else "archive_container_changed")
+        caps.update(source_preservation="passed", config_preservation="passed")
+
+
 def run_backend(runtime, backend, root):
     root.mkdir(mode=0o700)
     independent = backend in ("http", "webdav", "ftp")
     row = {"backend": backend,
-           "fixture_kind": "local" if backend == "local" else "independent_loopback" if independent else "rclone_loopback",
+           "fixture_kind": "local" if backend in ("local", "archive") else "independent_loopback" if independent else "rclone_loopback",
            "capabilities": {key: "not_run" for key in (
                "listing", "download_hash", "missing_object_rejection", "source_preservation", "authentication_rejection", "cleanup")},
            "errors": []}
-    if backend == "local":
+    if backend in ("local", "archive"):
         row["capabilities"]["authentication_rejection"] = "not_applicable"
+    if backend == "archive":
+        row["capabilities"].update({key: "not_run" for key in ("archive_crc32", "directory_as_file_rejection",
+            "corrupt_member_rejection", "truncated_archive_rejection", "fixture_write_rejection", "config_preservation")})
     if backend == "sftp":
         row["capabilities"]["host_key_rejection"] = "not_run"
     if independent:
@@ -420,11 +553,14 @@ def run_backend(runtime, backend, root):
     # Serve S3 exposes child directories as buckets, keeping this bucket wholly
     # synthetic and excluding any host data outside the fresh fixture root.
     files_root = source / "synthetic-bucket" if backend == "s3" else source / "files"
-    if not independent:
+    if not independent and backend != "archive":
         source.mkdir(mode=0o700)
         prepare_files(files_root)
     port = None
     try:
+        if backend == "archive":
+            archive_checks(runtime, root, row)
+            return row
         user, password = "synthetic", "synthetic-" + uuid.uuid4().hex
         code, obscured, _ = runtime.run(["obscure", password])
         check(code == 0, "fixture_password_setup_failed")
