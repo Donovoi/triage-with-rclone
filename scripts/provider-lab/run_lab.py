@@ -11,6 +11,7 @@ import base64
 from contextlib import contextmanager
 from datetime import datetime, timezone
 import hashlib
+import http.client
 import io
 import json
 import os
@@ -27,10 +28,10 @@ import uuid
 import zipfile
 import zlib
 
-from fixture_servers import FILES, State, SwiftState, probe_write_rejection, serve
+from fixture_servers import FILES, State, SwiftState, B2State, probe_write_rejection, serve
 
 
-BACKENDS = ("local", "http", "webdav", "ftp", "sftp", "s3", "archive", "swift")
+BACKENDS = ("local", "http", "webdav", "ftp", "sftp", "s3", "archive", "swift", "b2")
 HARNESS_FILES = ("fixture_servers.py", "run_lab.py")
 MAX_OUTPUT = 2 * 1024 * 1024
 COMMAND_TIMEOUT = 20
@@ -152,14 +153,15 @@ class Runtime:
         self.cache = root / "cache"
         self.cache.mkdir(mode=0o700)
 
-    def start(self, args, config=None, notice=False):
+    def start(self, args, config=None, notice=False, low_level_attempts=1):
+        check(type(low_level_attempts) is int and low_level_attempts in (1, 2), "invalid_attempt_budget")
         self.sequence += 1
         prefix = self.root / f"process-{self.sequence}"
         stdout = prefix.with_suffix(".out")
         stderr = prefix.with_suffix(".err")
         command = [str(self.binary), "--config", str(config or self.config),
                    "--cache-dir", str(self.cache), "--log-level", "NOTICE" if notice else "ERROR",
-                   "--stats", "0", "--retries", "1", "--low-level-retries", "1",
+                   "--stats", "0", "--retries", "1", "--low-level-retries", str(low_level_attempts),
                    "--contimeout", "3s", "--timeout", "5s", *args]
         with stdout.open("xb") as out, stderr.open("xb") as err:
             process = subprocess.Popen(command, cwd=self.root, env=self.env,
@@ -182,8 +184,8 @@ class Runtime:
                 process.wait(3)
         return process.returncode
 
-    def run(self, args, config=None, timeout=COMMAND_TIMEOUT):
-        record = self.start(args, config)
+    def run(self, args, config=None, timeout=COMMAND_TIMEOUT, low_level_attempts=1):
+        record = self.start(args, config, low_level_attempts=low_level_attempts)
         process, stdout, stderr = record
         deadline = time.monotonic() + timeout
         try:
@@ -460,12 +462,13 @@ def archive_inventory(output, payloads):
         raise LabError("archive_listing_invalid") from None
 
 
-def exact_copy(runtime, config, source_fs, source_name, destination_fs, destination_name):
+def exact_copy(runtime, config, source_fs, source_name, destination_fs, destination_name, *, low_level_attempts=1):
     # In-process loopback RC opens one object; no network RC listener and no
     # copyto fallback that might recursively acquire a directory.
+    budget = {} if low_level_attempts == 1 else {"low_level_attempts": low_level_attempts}
     return runtime.run(["rc", "--loopback", "operations/copyfile", f"srcFs={source_fs}",
                         f"srcRemote={source_name}", f"dstFs={destination_fs}",
-                        f"dstRemote={destination_name}"], config)
+                        f"dstRemote={destination_name}"], config, **budget)
 
 
 def exact_file_stat(runtime, config, source_fs, source_name, expected_size):
@@ -692,9 +695,148 @@ def swift_checks(runtime, root, row, expected):
         caps["config_preservation"] = "passed"
 
 
+def b2_options(state, port):
+    return {"type": "b2", "account": state.user, "key": state.password,
+            "endpoint": f"http://127.0.0.1:{port}"}
+
+
+def b2_renewal_matches(state, denial, size):
+    if (state.mode != ("deny" if denial else "renew") or state.forced_401 != 1
+            or state.budget_exceeded or state.unexpected or state.auth_denied or state.storage_denied
+            or state.rejected_payload_bytes or state.rejected_mutations or state.missing
+            or len(state.revoked) != 1 or state.requests > 14 or state.requests != len(state.events)):
+        return False
+    prefix = [("grant", 1), ("head", 1), ("get_401", 1)]
+    if state.events[:3] != prefix:
+        return False
+    if denial:
+        tail = state.events[3:]
+        # The pinned Copy retry wraps the two-attempt B2 pacer: at most four
+        # expired GETs, each followed by up to two denied authorization calls.
+        groups = [[]]
+        for event in tail:
+            if event == ("expired_retry", 1) and len(groups) < 4 and groups[-1]:
+                groups.append([])
+            elif event == ("renewal_denied", 1):
+                groups[-1].append(event)
+            else:
+                return False
+        return (all(1 <= len(group) <= 2 for group in groups) and state.expired_gets == len(groups)
+                and state.renewal_denied == sum(map(len, groups)) and state.generation == 1
+                and len(state.tokens) == 1 and state.token in state.revoked and state.payload_bytes == 0)
+    return (state.events == prefix + [("grant", 2), ("get", 2)]
+            and state.expired_gets == 1 and state.renewal_denied == 0 and state.generation == 2
+            and len(state.tokens) == 2 and state.token not in state.revoked and state.payload_bytes == size)
+
+
+def b2_renewal_case(runtime, root, state, config, row):
+    denial = state.mode == "deny"
+    payload = FILES["README-synthetic.txt"]
+    expected_sha = hashlib.sha256(payload).hexdigest()
+    destination = root / ("denied-must-not-exist" if denial else "renewed-verified")
+    before = runtime.sequence
+    code, output, _ = exact_copy(runtime, config, "Synthetic:synthetic-bucket", "README-synthetic.txt",
+                                 root.as_posix(), destination.name, low_level_attempts=2)
+    check(runtime.sequence == before + 1, "b2_renewal_not_single_process")
+    check(b2_renewal_matches(state, denial, len(payload)), "b2_renewal_sequence_mismatch")
+    if denial:
+        check(code != 0 and not destination.exists() and payload not in output
+              and not list(root.glob(destination.name + "*")), "b2_denied_renewal_returned_data")
+        row["capabilities"]["renewal_denial"] = "passed"
+    else:
+        check(code == 0 and destination.is_file() and destination.stat().st_size == len(payload)
+              and digest(destination) == expected_sha, "b2_renewed_download_mismatch")
+        row["capabilities"]["account_token_reacquisition"] = "passed"
+
+
+def b2_checks(runtime, root, row, expected):
+    caps, states, ports, preserved = row["capabilities"], [], [], {}
+
+    def save_config(name, options):
+        path = config_file(root, name, options)
+        data = path.read_bytes()
+        preserved[path] = (data, hashlib.sha256(data).hexdigest())
+        return path
+
+    try:
+        baseline = B2State("synthetic-" + uuid.uuid4().hex, "synthetic-" + uuid.uuid4().hex)
+        states.append(baseline)
+        with serve("b2", baseline) as port:
+            ports.append(port)
+            opts = b2_options(baseline, port)
+            good = save_config("b2-baseline.conf", opts)
+            bad = save_config("b2-denied.conf", dict(opts, key="wrong-synthetic-key"))
+            code, output, _ = runtime.run(["cat", "Synthetic:synthetic-bucket/README-synthetic.txt"], bad)
+            check(code != 0 and not output and baseline.auth_denied > 0 and baseline.generation == 0
+                  and baseline.payload_bytes == 0, "b2_bad_auth_not_observed")
+            caps["authentication_rejection"] = "passed"
+            code, output, _ = runtime.run(["lsjson", "--recursive", "--files-only", "--no-modtime",
+                                            "--no-mimetype", "Synthetic:synthetic-bucket"], good)
+            check(code == 0, "b2_listing_failed")
+            try:
+                got = sorted((entry["Path"], entry["Size"], entry["IsDir"]) for entry in json.loads(output))
+            except (KeyError, TypeError, ValueError):
+                raise LabError("b2_listing_invalid") from None
+            check(got == [(item["path"], item["size"], False) for item in expected], "b2_listing_mismatch")
+            caps["listing"] = "passed"
+            downloads = root / "downloads"
+            downloads.mkdir(mode=0o700)
+            for index, item in enumerate(expected):
+                exact_file_stat(runtime, good, "Synthetic:synthetic-bucket", item["path"], item["size"])
+                destination = downloads / f"verified-{index}"
+                code, _, _ = exact_copy(runtime, good, "Synthetic:synthetic-bucket", item["path"],
+                                        downloads.as_posix(), destination.name)
+                check(code == 0 and destination.is_file() and destination.stat().st_size == item["size"]
+                      and digest(destination) == item["sha256"], "b2_download_mismatch")
+            caps["download_hash"] = "passed"
+            missing = "absent-synthetic.txt"
+            code, output, _ = runtime.run(["rc", "--loopback", "operations/stat", "fs=Synthetic:synthetic-bucket",
+                "remote=" + missing, 'opt={"noModTime":true,"noMimeType":true,"filesOnly":true}'], good)
+            check(code == 0 and json.loads(output) == {"item": None}, "b2_missing_stat_mismatch")
+            destination = downloads / "missing-must-not-exist"
+            code, output, error = exact_copy(runtime, good, "Synthetic:synthetic-bucket", missing,
+                                            downloads.as_posix(), destination.name)
+            check(code != 0 and not list(downloads.glob(destination.name + "*")) and baseline.missing >= 2
+                  and b"object not found" in (output + error).lower(), "b2_missing_object_accepted")
+            caps["missing_object_rejection"] = "passed"
+            check(baseline.rejected_mutations == 0, "b2_unexpected_mutation")
+            # This proves only the independent fixture write guard. No upload
+            # implementation or native/vendor write-path acceptance is implied.
+            client = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
+            try:
+                client.request("POST", "/b2api/v1/b2_get_upload_url",
+                    body=json.dumps({"bucketId": baseline.bucket_id}),
+                    headers={"Authorization": baseline.token, "Content-Type": "application/json"})
+                response = client.getresponse()
+                body = response.read(4097)
+                check(response.status == 403 and len(body) <= 4096 and baseline.rejected_mutations == 1
+                      and json.loads(body).get("code") == "unauthorized", "b2_write_guard_not_observed")
+            finally:
+                client.close()
+            caps["fixture_write_rejection"] = "passed"
+        for mode in ("renew", "deny"):
+            state = B2State("synthetic-" + uuid.uuid4().hex, "synthetic-" + uuid.uuid4().hex, mode)
+            states.append(state)
+            with serve("b2", state) as port:
+                ports.append(port)
+                config = save_config(f"b2-{mode}.conf", b2_options(state, port))
+                b2_renewal_case(runtime, root, state, config, row)
+    finally:
+        closed = all(state.cleanup_complete for state in states) and all(listener_closed(port) for port in ports)
+        caps["cleanup"] = "passed" if closed else "failed"
+        check(closed, "b2_listener_cleanup_failed")
+        check(all(not state.budget_exceeded and not state.unexpected and not state.rejected_payload_bytes
+                  and not state.storage_denied for state in states), "b2_unexpected_request_or_budget")
+        check(all(served_source_unchanged(state, expected) for state in states), "b2_source_changed")
+        caps["source_preservation"] = "passed"
+        check(all(path.is_file() and path.read_bytes() == data and digest(path) == sha256
+                  for path, (data, sha256) in preserved.items()), "b2_config_changed")
+        caps["config_preservation"] = "passed"
+
+
 def run_backend(runtime, backend, root):
     root.mkdir(mode=0o700)
-    independent = backend in ("http", "webdav", "ftp", "swift")
+    independent = backend in ("http", "webdav", "ftp", "swift", "b2")
     row = {"backend": backend,
            "fixture_kind": "local" if backend in ("local", "archive") else "independent_loopback" if independent else "rclone_loopback",
            "capabilities": {key: "not_run" for key in (
@@ -711,6 +853,8 @@ def run_backend(runtime, backend, root):
         row["capabilities"]["fixture_write_rejection"] = "not_run"
     if backend == "swift":
         row["capabilities"].update(config_preservation="not_run", service_token_reacquisition="not_run", renewal_denial="not_run")
+    if backend == "b2":
+        row["capabilities"].update(config_preservation="not_run", account_token_reacquisition="not_run", renewal_denial="not_run")
     if backend in ("http", "webdav"):
         row["capabilities"].update(truncated_download_rejection="not_run", cancellation_cleanup="not_run")
     source = root / "source"
@@ -725,6 +869,9 @@ def run_backend(runtime, backend, root):
         prepare_files(files_root)
     port = None
     try:
+        if backend == "b2":
+            b2_checks(runtime, root, row, expected)
+            return row
         if backend == "swift":
             swift_checks(runtime, root, row, expected)
             return row

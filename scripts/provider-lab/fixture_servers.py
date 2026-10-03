@@ -198,6 +198,282 @@ class HttpHandler(BaseHTTPRequestHandler):
     do_COPY = do_PUT
 
 
+class B2State(State):
+    """Synthetic native B2 v4 authorization/v1 reads, restricted to one bucket."""
+    bucket = "synthetic-bucket"
+    bucket_id = "synthetic-bucket-id"
+
+    def __init__(self, user, password, mode="normal"):
+        super().__init__(user, password)
+        if mode not in ("normal", "renew", "deny"):
+            raise ValueError("invalid_b2_fixture_mode")
+        self.mode = mode
+        self.deadline = time.monotonic() + 60
+        self.request_limit = 128
+        self.generation = 0
+        self.token = None
+        self.tokens, self.revoked = set(), set()
+        self.events = []
+        self.forced_401 = self.expired_gets = 0
+        self.auth_denied = self.renewal_denied = self.storage_denied = 0
+        self.missing = self.unexpected = self.rejected_payload_bytes = 0
+        self.budget_exceeded = False
+        self.ids = {name: "synthetic-file-" + str(index) for index, name in enumerate(sorted(self.files))}
+
+
+class B2Fixture(LoopbackThreads, HTTPServer):
+    def __init__(self, state):
+        self.state = state
+        super().__init__(("127.0.0.1", 0), B2Handler)
+
+
+class B2Handler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.0"
+
+    def log_message(self, *args):
+        pass
+
+    def reply(self, status, body=b"", headers=None, size=None, object_payload=False):
+        self.close_connection = True
+        self.send_response(status)
+        self.send_header("Content-Length", str(len(body) if size is None else size))
+        for key, value in (headers or {}).items():
+            self.send_header(key, value)
+        self.end_headers()
+        if self.command != "HEAD":
+            if object_payload:
+                if status >= 400:
+                    self.server.state.rejected_payload_bytes += len(body)
+                else:
+                    self.server.state.payload_bytes += len(body)
+            self.wfile.write(body)
+
+    def json_reply(self, status, value):
+        self.reply(status, json.dumps(value, separators=(",", ":")).encode(), {"Content-Type": "application/json"})
+
+    def error(self, status, code):
+        # Protocol error JSON is not object payload; neither credentials nor
+        # request values are reflected into responses or durable receipts.
+        self.json_reply(status, {"status": status, "code": code, "message": "synthetic fixture response"})
+
+    def reject(self, status=400):
+        self.server.state.unexpected += 1
+        self.error(status, "bad_request")
+
+    @staticmethod
+    def unique_object(pairs):
+        value = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError("duplicate_json_key")
+            value[key] = item
+        return value
+
+    def read_body(self, length):
+        # Socket timeouts alone only bound inactivity; slow drip feeds must not
+        # hold the shared state/cleanup lock indefinitely. read1 performs at
+        # most one underlying read before the absolute deadline is checked.
+        state = self.server.state
+        deadline = min(state.deadline, time.monotonic() + 3)
+        body = bytearray()
+        while len(body) < length:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("body_deadline")
+            self.connection.settimeout(remaining)
+            chunk = self.rfile.read1(length - len(body))
+            if not chunk:
+                raise ValueError("short_body")
+            body.extend(chunk)
+        self.connection.settimeout(5)
+        return bytes(body)
+
+    def dispatch(self):
+        with self.server.state.lock:
+            state = self.server.state
+            state.requests += 1
+            if state.requests > state.request_limit or time.monotonic() > state.deadline:
+                state.budget_exceeded = True
+                self.error(429, "request_limit")
+                return
+            host = f"127.0.0.1:{self.server.server_address[1]}"
+            lengths = self.headers.get_all("Content-Length", [])
+            if (self.headers.get_all("Host") != [host] or len(self.path) > 2048
+                    or sum(len(key) + len(value) for key, value in self.headers.items()) > 8192
+                    or self.headers.get("Transfer-Encoding") is not None or len(lengths) > 1
+                    or (lengths and (not lengths[0].isdigit() or int(lengths[0]) > 4096))):
+                self.reject()
+                return
+            length = int(lengths[0]) if lengths else 0
+            if (self.command in ("GET", "HEAD") and length) or (self.command == "POST" and not lengths):
+                self.reject()
+                return
+            try:
+                url = urllib.parse.urlsplit(self.path)
+                path = "/" + safe_path(self.path)
+                query = urllib.parse.parse_qs(url.query, keep_blank_values=True, max_num_fields=4)
+            except ValueError:
+                self.reject()
+                return
+            if (url.scheme or url.netloc or url.fragment or url.path.endswith("/")
+                    or url.path != urllib.parse.quote(path, safe="/._-~!$'()*;=:@")
+                    or any(part in (".", "..", "") for part in path[1:].split("/"))
+                    or (self.headers.get("Range") is not None
+                        and (self.command != "GET" or path != "/b2api/v1/b2_download_file_by_id"))):
+                self.reject()
+                return
+            if path == "/b2api/v4/b2_authorize_account":
+                if self.command != "GET" or query:
+                    self.reject()
+                    return
+                expected = "Basic " + base64.b64encode(f"{state.user}:{state.password}".encode()).decode()
+                if (len(self.headers.get_all("Authorization", [])) != 1
+                        or not hmac.compare_digest(self.headers.get("Authorization", ""), expected)):
+                    state.auth_denied += 1
+                    state.events.append(("auth_denied", state.generation))
+                    self.error(401, "unauthorized")
+                    return
+                if state.mode == "deny" and state.forced_401:
+                    state.renewal_denied += 1
+                    state.events.append(("renewal_denied", state.generation))
+                    self.error(401, "unauthorized")
+                    return
+                state.generation += 1
+                state.token = "synthetic-" + secrets.token_hex(24)
+                state.tokens.add(state.token)
+                state.events.append(("grant", state.generation))
+                self.json_reply(200, {"accountId": "synthetic-account", "authorizationToken": state.token,
+                    "apiInfo": {"storageApi": {"apiUrl": f"http://{host}", "downloadUrl": f"http://{host}",
+                        "absoluteMinimumPartSize": 5000000, "recommendedPartSize": 100000000,
+                        "allowed": {"buckets": [{"id": state.bucket_id, "name": state.bucket}],
+                                    "capabilities": ["listFiles", "readFiles"], "namePrefix": None}}}})
+                return
+            token = self.headers.get("Authorization", "")
+            authorized = (len(self.headers.get_all("Authorization", [])) == 1 and state.token is not None
+                          and hmac.compare_digest(token, state.token))
+            download = path == "/b2api/v1/b2_download_file_by_id" and self.command == "GET"
+            if authorized and token in state.revoked and download and state.mode == "deny":
+                if query != {"fileId": [state.ids["README-synthetic.txt"]]}:
+                    self.reject()
+                    return
+                state.expired_gets += 1
+                state.events.append(("expired_retry", 1))
+                self.error(401, "expired_auth_token")
+                return
+            if not authorized or token in state.revoked:
+                state.storage_denied += 1
+                state.events.append(("storage_denied", state.generation))
+                self.error(401, "unauthorized")
+                return
+            if self.command == "POST":
+                if query or self.headers.get("Content-Type", "").split(";", 1)[0] != "application/json":
+                    self.reject()
+                    return
+                try:
+                    raw = self.read_body(length)
+                    body = json.loads(raw, object_pairs_hook=self.unique_object)
+                    if not isinstance(body, dict):
+                        raise ValueError("non_object")
+                except (ValueError, UnicodeError):
+                    self.reject()
+                    return
+                except (TimeoutError, OSError):
+                    state.unexpected += 1
+                    state.budget_exceeded = True
+                    self.close_connection = True
+                    return
+                if path == "/b2api/v1/b2_list_file_names":
+                    self.list_files(body)
+                elif path == "/b2api/v1/b2_get_upload_url" and body == {"bucketId": state.bucket_id}:
+                    state.rejected_mutations += 1
+                    self.error(403, "unauthorized")
+                else:
+                    self.reject()
+                return
+            if self.command == "HEAD" and path.startswith("/file/" + state.bucket + "/") and not query:
+                name = path[len("/file/" + state.bucket + "/"):]
+            elif download and set(query) == {"fileId"} and len(query["fileId"]) == 1:
+                name = next((name for name, value in state.ids.items() if value == query["fileId"][0]), None)
+            else:
+                self.reject()
+                return
+            if name not in state.files:
+                state.missing += 1
+                self.error(404, "file_not_present")
+                return
+            payload = state.files[name]
+            headers = {"Content-Type": "application/octet-stream", "X-Bz-File-Id": state.ids[name],
+                "X-Bz-File-Name": urllib.parse.quote(name, safe=""), "X-Bz-Content-Sha1": hashlib.sha1(payload).hexdigest(),
+                "X-Bz-Upload-Timestamp": "1704067200000", "X-Bz-Info-src_last_modified_millis": "1704067200000"}
+            if self.command == "HEAD":
+                if state.mode in ("renew", "deny") and name != "README-synthetic.txt":
+                    self.reject()
+                    return
+                state.events.append(("head", state.generation))
+                self.reply(200, headers=headers, size=len(payload))
+                return
+            if state.mode in ("renew", "deny"):
+                if name != "README-synthetic.txt" or ("head", 1) not in state.events:
+                    self.reject()
+                    return
+                if not state.forced_401:
+                    state.revoked.add(token)
+                    state.forced_401 = state.expired_gets = 1
+                    state.events.append(("get_401", 1))
+                    self.error(401, "expired_auth_token")
+                    return
+            code = 200
+            ranges = self.headers.get_all("Range", [])
+            if ranges:
+                match = re.fullmatch(r"bytes=(\d+)-(\d*)", ranges[0]) if len(ranges) == 1 else None
+                if not match:
+                    self.reject(416)
+                    return
+                start, end = int(match[1]), int(match[2]) if match[2] else len(payload) - 1
+                if start > end or end >= len(payload):
+                    self.reject(416)
+                    return
+                headers["Content-Range"] = f"bytes {start}-{end}/{len(payload)}"
+                payload, code = payload[start:end + 1], 206
+            state.events.append(("get", state.generation))
+            self.reply(code, payload, headers, object_payload=True)
+
+    def list_files(self, body):
+        state = self.server.state
+        if (state.mode != "normal" or set(body) - {"bucketId", "maxFileCount", "prefix", "startFileName", "delimiter"}
+                or body.get("bucketId") != state.bucket_id or type(body.get("maxFileCount", 100)) is not int
+                or not 1 <= body.get("maxFileCount", 100) <= 1000
+                or body.get("delimiter", "") not in ("", "/")):
+            self.reject()
+            return
+        prefix, marker, delimiter = body.get("prefix", ""), body.get("startFileName", ""), body.get("delimiter", "")
+        if any(not isinstance(value, str) or "\\" in value or "\x00" in value or ".." in value.split("/")
+               for value in (prefix, marker)):
+            self.reject()
+            return
+        rows = {}
+        for name, payload in sorted(state.files.items()):
+            if not name.startswith(prefix):
+                continue
+            if delimiter and "/" in name[len(prefix):]:
+                folder = prefix + name[len(prefix):].split("/", 1)[0] + "/"
+                rows[folder] = {"fileName": folder, "action": "folder"}
+            else:
+                rows[name] = {"fileId": state.ids[name], "fileName": name, "action": "upload", "size": len(payload),
+                    "uploadTimestamp": 1704067200000, "contentSha1": hashlib.sha1(payload).hexdigest(),
+                    "contentType": "application/octet-stream", "fileInfo": {"src_last_modified_millis": "1704067200000"}}
+        names = [name for name in sorted(rows) if name >= marker]
+        limit = body.get("maxFileCount", 100)
+        self.json_reply(200, {"files": [rows[name] for name in names[:limit]],
+                              "nextFileName": names[limit] if len(names) > limit else None})
+
+    do_GET = dispatch
+    do_HEAD = dispatch
+    do_POST = dispatch
+    do_PUT = dispatch
+    do_DELETE = dispatch
+
+
 class SwiftState(State):
     """Only synthetic Swift v1 keys/tokens; never serialized into receipts."""
     account = "/v1/AUTH_synthetic"
@@ -548,7 +824,8 @@ class FtpHandler(socketserver.StreamRequestHandler):
 
 @contextmanager
 def serve(kind, state):
-    server = FtpFixture(state) if kind == "ftp" else SwiftFixture(state) if kind == "swift" else HttpFixture(state)
+    server = (FtpFixture(state) if kind == "ftp" else SwiftFixture(state) if kind == "swift"
+              else B2Fixture(state) if kind == "b2" else HttpFixture(state))
     thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05})
     thread.start()
     try:
