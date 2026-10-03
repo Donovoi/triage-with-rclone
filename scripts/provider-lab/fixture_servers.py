@@ -2,6 +2,8 @@
 
 import base64
 from contextlib import contextmanager
+from datetime import datetime, timezone
+from email.utils import format_datetime, parsedate_to_datetime
 import ftplib
 import hashlib
 import hmac
@@ -17,6 +19,7 @@ import socketserver
 import threading
 import time
 import urllib.parse
+import xml.etree.ElementTree as ET
 from xml.sax.saxutils import escape
 
 
@@ -196,6 +199,282 @@ class HttpHandler(BaseHTTPRequestHandler):
     do_MKCOL = do_PUT
     do_MOVE = do_PUT
     do_COPY = do_PUT
+
+
+def azure_string_to_sign(account, method, target, headers):
+    """Documented SharedKey subset: preserve escaped URI, reject duplicates."""
+    if not target.startswith("/") or any(ord(char) <= 32 or ord(char) >= 127 for char in target):
+        raise ValueError("invalid_raw_signed_target")
+    values = {}
+    for name, value in headers:
+        name = name.lower()
+        if name in values or not re.fullmatch(r"[a-z0-9-]+", name) or "\r" in value or "\n" in value:
+            raise ValueError("ambiguous_signed_header")
+        values[name] = value.strip()
+    url = urllib.parse.urlsplit(target)
+    if url.scheme or url.netloc or url.fragment or re.search(r"%(?![0-9A-Fa-f]{2})", target):
+        raise ValueError("invalid_signed_target")
+    pairs = urllib.parse.parse_qsl(url.query, keep_blank_values=True, strict_parsing=True, max_num_fields=8)
+    query = {}
+    for name, value in pairs:
+        name = name.lower()
+        if name in query or not re.fullmatch(r"[a-z0-9-]+", name) or "\r" in value or "\n" in value:
+            raise ValueError("ambiguous_signed_query")
+        query[name] = value
+    length = values.get("content-length", "")
+    fields = [method, values.get("content-encoding", ""), values.get("content-language", ""),
+              "" if length == "0" else length, values.get("content-md5", ""), values.get("content-type", ""), "",
+              *(values.get(name, "") for name in ("if-modified-since", "if-match", "if-none-match", "if-unmodified-since", "range"))]
+    fields.append("\n".join(name + ":" + values[name] for name in sorted(values) if name.startswith("x-ms-")))
+    resource = "/" + account + (url.path or "/")
+    resource += "".join("\n" + name + ":" + query[name] for name in sorted(query))
+    fields.append(resource)
+    return "\n".join(fields)
+
+
+class AzureBlobState(State):
+    account = "syntheticaccount"
+    container = "synthetic-container"
+
+    def __init__(self, key, utc_now=None):
+        super().__init__(self.account, key)
+        self.key_bytes = base64.b64decode(key, validate=True)
+        if len(self.key_bytes) != 32:
+            raise ValueError("invalid_synthetic_azure_key")
+        self.utc_now = utc_now or (lambda: datetime.now(timezone.utc))
+        self.deadline = time.monotonic() + 60
+        self.request_limit = 128
+        self.request_timeout = 3
+        self.auth_denied = self.stale_denied = self.authenticated = 0
+        self.missing = self.unexpected = self.rejected_payload_bytes = 0
+        self.budget_exceeded = False
+
+
+class AzureBlobFixture(LoopbackThreads, HTTPServer):
+    def __init__(self, state):
+        self.state = state
+        super().__init__(("127.0.0.1", 0), AzureBlobHandler)
+
+
+class AzureBlobHandler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.0"
+
+    def log_message(self, *args):
+        pass
+
+    def handle(self):
+        # Bound the whole request, including slow request-line/header/body
+        # feeds. The timer owns only this accepted socket and is always joined.
+        state = self.server.state
+        expired = threading.Event()
+
+        def close_expired():
+            expired.set()
+            try:
+                self.connection.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+
+        timer = threading.Timer(max(0.001, min(state.request_timeout, state.deadline - time.monotonic())), close_expired)
+        timer.start()
+        try:
+            super().handle()
+        finally:
+            timer.cancel()
+            timer.join()
+            if expired.is_set():
+                with state.lock:
+                    state.budget_exceeded = True
+                    state.unexpected += 1
+
+    def reply(self, status, body=b"", headers=None, size=None, object_payload=False):
+        self.close_connection = True
+        self.send_response(status)
+        self.send_header("Content-Length", str(len(body) if size is None else size))
+        self.send_header("x-ms-request-id", "synthetic-request")
+        for name, value in (headers or {}).items():
+            self.send_header(name, value)
+        self.end_headers()
+        if self.command != "HEAD":
+            if object_payload:
+                if status >= 400:
+                    self.server.state.rejected_payload_bytes += len(body)
+                else:
+                    self.server.state.payload_bytes += len(body)
+            self.wfile.write(body)
+
+    def error(self, status, code):
+        body = (f'<Error><Code>{code}</Code><Message>Synthetic fixture response.</Message></Error>').encode()
+        self.reply(status, body, {"Content-Type": "application/xml", "x-ms-error-code": code})
+
+    def reject(self, code="InvalidQueryParameterValue"):
+        self.server.state.unexpected += 1
+        self.error(400, code)
+
+    def dispatch(self):
+        with self.server.state.lock:
+            state = self.server.state
+            state.requests += 1
+            if state.requests > state.request_limit or time.monotonic() > state.deadline:
+                state.budget_exceeded = True
+                self.error(429, "ServerBusy")
+                return
+            host = f"127.0.0.1:{self.server.server_address[1]}"
+            if (self.headers.get_all("Host") != [host] or len(self.path) > 2048
+                    or sum(len(name) + len(value) for name, value in self.headers.items()) > 8192
+                    or self.headers.get("Transfer-Encoding") is not None):
+                self.reject()
+                return
+            try:
+                signed = azure_string_to_sign(state.account, self.command, self.path, self.headers.items())
+                length = self.headers.get("Content-Length", "0")
+                if not length.isdigit() or int(length) > 4096 or (self.command in ("GET", "HEAD") and int(length)):
+                    raise ValueError("invalid_body_length")
+                url = urllib.parse.urlsplit(self.path)
+                query = dict(urllib.parse.parse_qsl(url.query, keep_blank_values=True, strict_parsing=True, max_num_fields=8))
+                base = "/" + state.account + "/" + state.container
+                # The SDK escapes nested separators in blob names. Preserve
+                # those bytes when signing, then decode exactly once for lookup.
+                if url.path != base and not url.path.startswith(base + "/"):
+                    raise ValueError("unowned_path")
+                name = urllib.parse.unquote(url.path[len(base) + 1:], errors="strict") if url.path != base else ""
+                if url.path != base and not name:
+                    raise ValueError("empty_member")
+                if name and ("\\" in name or "\x00" in name or "%" in name
+                             or any(part in ("", ".", "..") for part in name.split("/"))):
+                    raise ValueError("invalid_member")
+                if self.headers.get("Date") is not None:
+                    raise ValueError("ambiguous_date")
+                allowed_xms = {"x-ms-date", "x-ms-version", "x-ms-client-request-id", "x-ms-range"}
+                if any(key.lower().startswith("x-ms-") and key.lower() not in allowed_xms for key in self.headers):
+                    raise ValueError("unsupported_header")
+                if any(self.headers.get(key) is not None for key in ("If-Modified-Since", "If-None-Match", "If-Unmodified-Since")):
+                    raise ValueError("unsupported_condition")
+            except (ValueError, UnicodeError):
+                self.reject()
+                return
+            signature = base64.b64encode(hmac.new(state.key_bytes, signed.encode(), hashlib.sha256).digest()).decode()
+            expected = f"SharedKey {state.account}:{signature}"
+            try:
+                date = self.headers.get("x-ms-date", "")
+                instant = parsedate_to_datetime(date)
+                datetime.strptime(self.headers.get("x-ms-version", ""), "%Y-%m-%d")
+                if (instant.tzinfo is None or instant.utcoffset().total_seconds() != 0
+                        or format_datetime(instant, usegmt=True) != date
+                        or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", self.headers.get("x-ms-version", ""))):
+                    raise ValueError("invalid_date_version")
+                age = (state.utc_now() - instant).total_seconds()
+                valid_signature = hmac.compare_digest(self.headers.get("Authorization", ""), expected)
+                valid_date = 0 <= age <= 900
+            except (ValueError, TypeError, OverflowError):
+                valid_signature = valid_date = False
+            if not valid_signature or not valid_date:
+                state.auth_denied += 1
+                if valid_signature and not valid_date:
+                    state.stale_denied += 1
+                self.error(403, "AuthenticationFailed")
+                return
+            state.authenticated += 1
+            if self.command in ("PUT", "DELETE", "POST"):
+                if not name or query:
+                    self.reject()
+                    return
+                state.rejected_mutations += 1
+                self.error(403, "AuthorizationPermissionMismatch")
+                return
+            if self.command not in ("HEAD", "GET"):
+                self.reject()
+                return
+            if not name:
+                if self.command != "GET" or self.headers.get("Range") is not None or self.headers.get("x-ms-range") is not None:
+                    self.reject()
+                    return
+                self.list_blobs(query)
+                return
+            if query:
+                self.reject()
+                return
+            if name not in state.files:
+                state.missing += 1
+                self.error(404, "BlobNotFound")
+                return
+            payload = state.files[name]
+            etag = '"synthetic-' + hashlib.md5(payload).hexdigest() + '"'
+            if self.headers.get("If-Match") not in (None, etag, "*"):
+                self.error(412, "ConditionNotMet")
+                return
+            headers = {"Content-Type": "application/octet-stream", "ETag": etag, "Last-Modified": STAMP,
+                       "Content-MD5": base64.b64encode(hashlib.md5(payload).digest()).decode(),
+                       "x-ms-blob-type": "BlockBlob", "x-ms-meta-mtime": "2024-01-01T00:00:00Z"}
+            standard_range, azure_range = self.headers.get("Range"), self.headers.get("x-ms-range")
+            if standard_range is not None or (azure_range is not None and self.command != "GET"):
+                self.reject()
+                return
+            if self.command == "HEAD":
+                self.reply(200, headers=headers, size=len(payload))
+                return
+            code = 200
+            if azure_range is not None:
+                match = re.fullmatch(r"bytes=(\d+)-(\d*)", azure_range)
+                if not match:
+                    self.reject("InvalidRange")
+                    return
+                start, end = int(match[1]), int(match[2]) if match[2] else len(payload) - 1
+                if start > end or end >= len(payload):
+                    self.reject("InvalidRange")
+                    return
+                headers["Content-Range"] = f"bytes {start}-{end}/{len(payload)}"
+                headers["x-ms-blob-content-md5"] = headers["Content-MD5"]
+                payload, code = payload[start:end + 1], 206
+                headers["Content-MD5"] = base64.b64encode(hashlib.md5(payload).digest()).decode()
+            self.reply(code, payload, headers, object_payload=True)
+
+    def list_blobs(self, query):
+        state = self.server.state
+        if (set(query) - {"restype", "comp", "delimiter", "prefix", "marker", "maxresults", "include"}
+                or query.get("restype") != "container" or query.get("comp") != "list"
+                or query.get("include") not in (None, "metadata") or query.get("delimiter", "") not in ("", "/")
+                or query.get("marker", "") != "" or not re.fullmatch(r"[0-9]+", query.get("maxresults", "5000"))
+                or not 1 <= int(query.get("maxresults", "5000")) <= 5000):
+            self.reject()
+            return
+        prefix, delimiter = query.get("prefix", ""), query.get("delimiter", "")
+        if "\\" in prefix or "\x00" in prefix or any(part in (".", "..") for part in prefix.split("/")):
+            self.reject()
+            return
+        rows = {}
+        for name in sorted(state.files):
+            if name.startswith(prefix):
+                if delimiter and "/" in name[len(prefix):]:
+                    rows[prefix + name[len(prefix):].split("/", 1)[0] + "/"] = False
+                else:
+                    rows[name] = True
+        if len(rows) > int(query.get("maxresults", "5000")):
+            self.reject("UnsupportedPagination")
+            return
+        root = ET.Element("EnumerationResults", {"ServiceEndpoint": f"http://127.0.0.1:{self.server.server_address[1]}/{state.account}",
+                                                 "ContainerName": state.container})
+        blobs = ET.SubElement(root, "Blobs")
+        for name, is_file in sorted(rows.items()):
+            entry = ET.SubElement(blobs, "Blob" if is_file else "BlobPrefix")
+            ET.SubElement(entry, "Name").text = name
+            if is_file:
+                payload = state.files[name]
+                props = ET.SubElement(entry, "Properties")
+                for key, value in {"Content-Length": str(len(payload)), "Content-Type": "application/octet-stream",
+                                   "Content-MD5": base64.b64encode(hashlib.md5(payload).digest()).decode(),
+                                   "Last-Modified": STAMP, "Etag": '"synthetic-' + hashlib.md5(payload).hexdigest() + '"',
+                                   "BlobType": "BlockBlob"}.items():
+                    ET.SubElement(props, key).text = value
+                ET.SubElement(ET.SubElement(entry, "Metadata"), "mtime").text = "2024-01-01T00:00:00Z"
+        ET.SubElement(root, "NextMarker")
+        self.reply(200, ET.tostring(root, encoding="utf-8", xml_declaration=True), {"Content-Type": "application/xml"})
+
+    do_GET = dispatch
+    do_HEAD = dispatch
+    do_PUT = dispatch
+    do_POST = dispatch
+    do_DELETE = dispatch
 
 
 class B2State(State):
@@ -825,7 +1104,7 @@ class FtpHandler(socketserver.StreamRequestHandler):
 @contextmanager
 def serve(kind, state):
     server = (FtpFixture(state) if kind == "ftp" else SwiftFixture(state) if kind == "swift"
-              else B2Fixture(state) if kind == "b2" else HttpFixture(state))
+              else B2Fixture(state) if kind == "b2" else AzureBlobFixture(state) if kind == "azureblob" else HttpFixture(state))
     thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05})
     thread.start()
     try:
