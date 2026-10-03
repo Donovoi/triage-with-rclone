@@ -108,6 +108,15 @@ def seafile_receipt():
     return read_fixture_receipt("seafile")
 
 
+def memory_receipt():
+    candidate = receipt("memory")
+    candidate["backends"][0]["capabilities"] = {
+        capability: "passed" for capability in coverage.MEMORY_REQUIRED_CAPABILITIES
+    }
+    candidate["backends"][0]["capabilities"]["authentication_rejection"] = "not_applicable"
+    return candidate
+
+
 class CoverageTests(unittest.TestCase):
     def setUp(self):
         self.catalog = coverage.catalog_from_schemas([schema()])
@@ -622,7 +631,7 @@ class CoverageTests(unittest.TestCase):
                 candidate = receipt(backend)
                 candidate["backends"][0]["capabilities"][capability] = "passed"
                 self.assertIn("invalid_fixture_capability", self.evaluate([candidate], policy, catalog)["errors"])
-            if backend != "local":
+            if backend not in ("local", "memory"):
                 candidate = receipt(backend)
                 candidate["backends"][0]["capabilities"]["authentication_rejection"] = "not_applicable"
                 self.assertIn("invalid_fixture_not_applicable", self.evaluate([candidate], policy, catalog)["errors"])
@@ -724,7 +733,8 @@ class CoverageTests(unittest.TestCase):
             catalog = coverage.catalog_from_schemas([schema(backend)])
             policy = policy_for(catalog)
             candidate = {"swift": swift_receipt, "b2": b2_receipt, "azureblob": azureblob_receipt,
-                         "azurefiles": azurefiles_receipt, "seafile": seafile_receipt}.get(backend, lambda: receipt(backend))()
+                         "azurefiles": azurefiles_receipt, "seafile": seafile_receipt,
+                         "memory": memory_receipt}.get(backend, lambda: receipt(backend))()
             if backend == "archive":
                 candidate["backends"][0]["capabilities"] = {
                     key: "passed" for key in coverage.ARCHIVE_REQUIRED_CAPABILITIES
@@ -733,7 +743,7 @@ class CoverageTests(unittest.TestCase):
             candidate["backends"][0]["capabilities"]["config_preservation"] = "passed"
             report = self.evaluate([candidate], policy, catalog)
             with self.subTest(backend=backend):
-                if backend in ("archive", "swift", "b2", "azureblob", "azurefiles", "seafile"):
+                if backend in ("archive", "memory", "swift", "b2", "azureblob", "azurefiles", "seafile"):
                     self.assertEqual(report["providers"][0]["evidence"]["local_protocol"]["status"], "passed")
                 else:
                     self.assertIn("invalid_fixture_capability", report["errors"])
@@ -1043,6 +1053,134 @@ class CoverageTests(unittest.TestCase):
             self.assertEqual(statuses, {backend: "passed", **{other: "not_verified" for other in others}})
             for other in others:
                 self.assertIn("required_fixture_not_verified", coverage.gate_errors(result, require_fixtures=[other]))
+
+    def test_memory_receipt_is_local_only_and_never_qualifies_other_acceptance(self):
+        catalog = coverage.catalog_from_schemas([schema("memory")])
+        policy = policy_for(catalog)
+        observed = coverage.MEMORY_REQUIRED_CAPABILITIES - {"authentication_rejection"}
+        policy["profiles"]["test"]["required"]["local_protocol"] = sorted(observed)
+        result = self.evaluate([memory_receipt()], policy, catalog)
+        evidence = result["providers"][0]["evidence"]
+        self.assertEqual(evidence["local_protocol"]["status"], "passed")
+        self.assertEqual(set(evidence["local_protocol"]["capabilities"]), observed)
+        for tier in ("application", "vendor"):
+            self.assertEqual(evidence[tier]["status"], "not_verified")
+            self.assertEqual(evidence[tier]["capabilities"]["authentication"], "not_verified")
+            self.assertEqual(evidence[tier]["capabilities"]["refresh"], "not_verified")
+        self.assertEqual(coverage.gate_errors(result, require_plans=True, require_fixtures=["memory"]), [])
+        self.assertIn("provider_coverage_incomplete", coverage.gate_errors(result, require_complete=True))
+
+    def test_memory_requires_exact_seven_capabilities_even_under_weaker_policy(self):
+        catalog = coverage.catalog_from_schemas([schema("memory")])
+        policy = policy_for(catalog)
+        for omitted in coverage.MEMORY_REQUIRED_CAPABILITIES:
+            candidate = memory_receipt()
+            del candidate["backends"][0]["capabilities"][omitted]
+            result = self.evaluate([candidate], policy, catalog)
+            with self.subTest(omitted=omitted):
+                self.assertIn("invalid_fixture_capability", result["errors"])
+                self.assertIn("required_fixture_not_verified", coverage.gate_errors(result, require_fixtures=["memory"]))
+        for extra in coverage.CAPABILITIES - coverage.MEMORY_REQUIRED_CAPABILITIES | {"unknown_capability"}:
+            candidate = memory_receipt()
+            candidate["backends"][0]["capabilities"][extra] = "passed"
+            with self.subTest(extra=extra):
+                self.assertIn("invalid_fixture_capability", self.evaluate([candidate], policy, catalog)["errors"])
+
+    def test_memory_auth_is_only_na_and_observed_capabilities_require_typed_execution(self):
+        catalog = coverage.catalog_from_schemas([schema("memory")])
+        policy = policy_for(catalog)
+        for capability in coverage.MEMORY_REQUIRED_CAPABILITIES:
+            cases = [(True, "invalid_fixture_outcome"), (None, "invalid_fixture_outcome"),
+                     (1, "invalid_fixture_outcome"), ({}, "invalid_fixture_outcome")]
+            if capability == "authentication_rejection":
+                cases += [(value, "invalid_fixture_capability") for value in ("passed", "failed", "not_run")]
+            else:
+                cases += [("not_applicable", "invalid_fixture_not_applicable"),
+                          ("failed", "inconsistent_fixture_success"), ("not_run", "inconsistent_fixture_success")]
+            for value, error in cases:
+                candidate = memory_receipt()
+                candidate["backends"][0]["capabilities"][capability] = value
+                with self.subTest(capability=capability, value=value):
+                    self.assertIn(error, self.evaluate([candidate], policy, catalog)["errors"])
+        for kind in ("independent_loopback", "rclone_loopback", "vendor", None):
+            candidate = memory_receipt()
+            candidate["backends"][0]["fixture_kind"] = kind
+            self.assertIn("unknown_fixture_backend", self.evaluate([candidate], policy, catalog)["errors"])
+
+    def test_memory_requires_current_runtime_harness_manifest_and_fresh_evidence(self):
+        catalog = coverage.catalog_from_schemas([schema("memory")])
+        policy = policy_for(catalog)
+        cases = []
+        for key, value in (("version", "1.75.2"), ("sha256", "d" * 64)):
+            candidate = memory_receipt()
+            candidate["runtime"][key] = value
+            cases.append((candidate, "receipt_runtime_mismatch"))
+        for key, value, error in (("platform", "windows", "receipt_runtime_mismatch"),
+                                 ("harness_sha256", "d" * 64, "receipt_harness_mismatch"),
+                                 ("fixture_manifest_sha256", "d" * 64, "receipt_fixture_manifest_mismatch"),
+                                 ("finished_utc", coverage.utc_text(NOW + timedelta(seconds=1)), "future_receipt")):
+            candidate = memory_receipt()
+            candidate[key] = value
+            cases.append((candidate, error))
+        candidate = memory_receipt()
+        candidate["started_utc"] = coverage.utc_text(NOW - timedelta(days=2, minutes=1))
+        candidate["finished_utc"] = coverage.utc_text(NOW - timedelta(days=2))
+        cases.append((candidate, "expired_receipt"))
+        for candidate, error in cases:
+            result = self.evaluate([candidate], policy, catalog)
+            self.assertIn(error, result["errors"])
+            self.assertIn("required_fixture_not_verified", coverage.gate_errors(result, require_fixtures=["memory"]))
+
+    def test_memory_failures_stick_in_either_order_and_never_export_private_echoes(self):
+        catalog = coverage.catalog_from_schemas([schema("memory")])
+        policy = policy_for(catalog)
+        observed = coverage.MEMORY_REQUIRED_CAPABILITIES - {"authentication_rejection"}
+        policy["profiles"]["test"]["required"]["local_protocol"] = sorted(observed)
+        for capability in observed:
+            failed = memory_receipt()
+            failed["success"] = False
+            failed["backends"][0]["capabilities"][capability] = "failed"
+            for batch in ([failed, memory_receipt()], [memory_receipt(), failed]):
+                result = self.evaluate(batch, policy, catalog)
+                evidence = result["providers"][0]["evidence"]["local_protocol"]
+                self.assertEqual(evidence["status"], "failed")
+                self.assertEqual(evidence["capabilities"][capability], "failed")
+        for level in ("receipt", "backend"):
+            failed = memory_receipt()
+            failed["success"] = False
+            target = failed if level == "receipt" else failed["backends"][0]
+            target["errors"] = ["synthetic_batch_error"]
+            result = self.evaluate([memory_receipt(), failed], policy, catalog)
+            self.assertEqual(result["providers"][0]["evidence"]["local_protocol"]["status"], "failed")
+        candidate = memory_receipt()
+        canary = "PRIVATE_MEMORY_PATH_C:/private-owner/job/123"
+        candidate["raw_stderr"] = canary
+        candidate["backends"][0]["input"] = {"srcFs": canary}
+        self.assertNotIn(canary, json.dumps(self.evaluate([candidate], policy, catalog)))
+        candidate["backends"][0]["errors"] = [canary]
+        result = self.evaluate([candidate], policy, catalog)
+        self.assertIn("invalid_fixture_errors", result["errors"])
+        self.assertNotIn(canary, json.dumps(result))
+
+    def test_memory_and_other_local_or_authenticated_services_do_not_inherit_results(self):
+        backends = ("memory", "local", "archive", "seafile")
+        catalog = coverage.catalog_from_schemas([schema(backend) for backend in backends])
+        policy = policy_for(catalog)
+        for candidate in (memory_receipt(), receipt("local"), seafile_receipt()):
+            accepted_backend = candidate["backends"][0]["backend"]
+            result = self.evaluate([candidate], policy, catalog)
+            statuses = {row["backend"]: row["evidence"]["local_protocol"]["status"] for row in result["providers"]}
+            self.assertEqual(statuses, {backend: "passed" if backend == accepted_backend else "not_verified"
+                                        for backend in backends})
+        for backend in coverage.FIXTURE_KINDS:
+            if backend == "memory":
+                continue
+            candidate = memory_receipt()
+            candidate["backends"][0]["backend"] = backend
+            candidate["backends"][0]["fixture_kind"] = coverage.FIXTURE_KINDS[backend]
+            single = coverage.catalog_from_schemas([schema(backend)])
+            with self.subTest(relabeled=backend):
+                self.assertTrue(self.evaluate([candidate], policy_for(single), single)["errors"])
 
     def test_not_applicable_only_from_reviewed_policy(self):
         policy = policy_for(self.catalog, application=False, vendor=False)

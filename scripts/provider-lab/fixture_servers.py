@@ -326,6 +326,11 @@ class AzureBlobHandler(BaseHTTPRequestHandler):
                 self.reject()
                 return
             try:
+                # BaseHTTPRequestHandler normalizes a leading // to /. Signed
+                # paths must retain the exact target bytes received on the wire.
+                wire_parts = self.raw_requestline.rstrip(b"\r\n").split(b" ")
+                if len(wire_parts) != 3 or wire_parts[1].decode("ascii") != self.path:
+                    raise ValueError("normalized_signed_target")
                 signed = azure_string_to_sign(state.account, self.command, self.path, self.headers.items())
                 length = self.headers.get("Content-Length", "0")
                 if not length.isdigit() or int(length) > 4096 or (self.command in ("GET", "HEAD") and int(length)):
@@ -515,6 +520,11 @@ class AzureFilesHandler(AzureBlobHandler):
                 self.reject()
                 return
             try:
+                # FileREST signs the original escaped path, never the HTTP
+                # parser's normalized spelling of that path.
+                wire_parts = self.raw_requestline.rstrip(b"\r\n").split(b" ")
+                if len(wire_parts) != 3 or wire_parts[1].decode("ascii") != self.path:
+                    raise ValueError("normalized_signed_target")
                 signed = azure_string_to_sign(state.account, self.command, self.path, self.headers.items())
                 length = self.headers.get("Content-Length", "0")
                 if not length.isdigit() or int(length) > 4096 or (self.command in ("GET", "HEAD") and int(length)):
