@@ -20,7 +20,7 @@ try {
     else { cargo test --locked --release -- --test-threads=1 }
     if ($LASTEXITCODE -ne 0) { throw 'Tests failed' }
     $env:RCLONE_PROVIDER_SCHEMA_BINARY = Join-Path $crateDir 'assets/rclone.exe'
-    $profileArgs = if ($Debug) { @() } else { @('--release') }
+    [string[]]$profileArgs = if ($Debug) { @() } else { @('--release') }
     cargo test --locked @profileArgs --test provider_matrix pinned_rclone_catalog_matches_provider_contracts -- --ignored --exact --test-threads=1
     if ($LASTEXITCODE -ne 0) { throw 'Pinned provider catalog failed' }
 } finally {
