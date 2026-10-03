@@ -108,6 +108,10 @@ def seafile_receipt():
     return read_fixture_receipt("seafile")
 
 
+def koofr_receipt():
+    return read_fixture_receipt("koofr")
+
+
 def memory_receipt():
     candidate = receipt("memory")
     candidate["backends"][0]["capabilities"] = {
@@ -734,7 +738,7 @@ class CoverageTests(unittest.TestCase):
             policy = policy_for(catalog)
             candidate = {"swift": swift_receipt, "b2": b2_receipt, "azureblob": azureblob_receipt,
                          "azurefiles": azurefiles_receipt, "seafile": seafile_receipt,
-                         "memory": memory_receipt}.get(backend, lambda: receipt(backend))()
+                         "memory": memory_receipt, "koofr": koofr_receipt}.get(backend, lambda: receipt(backend))()
             if backend == "archive":
                 candidate["backends"][0]["capabilities"] = {
                     key: "passed" for key in coverage.ARCHIVE_REQUIRED_CAPABILITIES
@@ -743,7 +747,7 @@ class CoverageTests(unittest.TestCase):
             candidate["backends"][0]["capabilities"]["config_preservation"] = "passed"
             report = self.evaluate([candidate], policy, catalog)
             with self.subTest(backend=backend):
-                if backend in ("archive", "memory", "swift", "b2", "azureblob", "azurefiles", "seafile"):
+                if backend in ("archive", "memory", "swift", "b2", "azureblob", "azurefiles", "seafile", "koofr"):
                     self.assertEqual(report["providers"][0]["evidence"]["local_protocol"]["status"], "passed")
                 else:
                     self.assertIn("invalid_fixture_capability", report["errors"])
@@ -1041,8 +1045,27 @@ class CoverageTests(unittest.TestCase):
     def test_seafile_failures_are_sticky_and_private_fields_omitted(self):
         self.assert_read_fixture_failures_are_sticky_and_private_fields_omitted("seafile")
 
+    def test_koofr_fixture_never_qualifies_other_modes_or_acceptance_tiers(self):
+        self.assert_read_fixture_never_qualifies_other_modes_or_acceptance_tiers("koofr")
+
+    def test_koofr_requires_exact_capabilities_despite_weaker_policy(self):
+        self.assert_read_fixture_requires_exact_capabilities_despite_weaker_policy("koofr")
+        catalog = coverage.catalog_from_schemas([schema("koofr")])
+        candidate = koofr_receipt()
+        candidate["backends"][0]["capabilities"]["account_login"] = "passed"
+        self.assertIn("invalid_fixture_capability", self.evaluate([candidate], policy_for(catalog), catalog)["errors"])
+
+    def test_koofr_requires_executed_typed_outcomes_and_independent_kind(self):
+        self.assert_read_fixture_requires_executed_typed_outcomes_and_independent_kind("koofr")
+
+    def test_koofr_requires_current_runtime_harness_manifest_and_time(self):
+        self.assert_read_fixture_requires_current_runtime_harness_manifest_and_time("koofr")
+
+    def test_koofr_failures_are_sticky_and_private_fields_omitted(self):
+        self.assert_read_fixture_failures_are_sticky_and_private_fields_omitted("koofr")
+
     def test_read_fixture_services_never_inherit_each_others_result(self):
-        backends = ("azureblob", "azurefiles", "seafile")
+        backends = ("azureblob", "azurefiles", "seafile", "koofr")
         catalog = coverage.catalog_from_schemas([schema(backend) for backend in backends])
         policy = policy_for(catalog)
         policy["profiles"]["test"]["required"]["local_protocol"] = sorted(coverage.SEAFILE_REQUIRED_CAPABILITIES)
