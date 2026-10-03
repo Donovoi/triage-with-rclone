@@ -64,6 +64,10 @@ SEAFILE_REQUIRED_CAPABILITIES = frozenset({
     "listing", "download_hash", "missing_object_rejection", "authentication_rejection",
     "source_preservation", "config_preservation", "cleanup", "fixture_write_rejection",
 })
+KOOFR_REQUIRED_CAPABILITIES = frozenset({
+    "listing", "download_hash", "missing_object_rejection", "authentication_rejection",
+    "source_preservation", "config_preservation", "cleanup", "fixture_write_rejection",
+})
 MEMORY_REQUIRED_CAPABILITIES = frozenset({
     "listing", "download_hash", "missing_object_rejection", "authentication_rejection",
     "source_preservation", "config_preservation", "cleanup",
@@ -72,6 +76,7 @@ READ_FIXTURE_CONTRACTS = {
     "azureblob": AZUREBLOB_REQUIRED_CAPABILITIES,
     "azurefiles": AZUREFILES_REQUIRED_CAPABILITIES,
     "seafile": SEAFILE_REQUIRED_CAPABILITIES,
+    "koofr": KOOFR_REQUIRED_CAPABILITIES,
 }
 CAPABILITIES = {
     "authentication", "listing", "download_hash", "manifest_integrity",
@@ -84,7 +89,7 @@ FIXTURE_KINDS = {
     "ftp": "independent_loopback", "sftp": "rclone_loopback",
     "s3": "rclone_loopback", "local": "local", "archive": "local", "memory": "local",
     "swift": "independent_loopback", "b2": "independent_loopback", "azureblob": "independent_loopback",
-    "azurefiles": "independent_loopback", "seafile": "independent_loopback",
+    "azurefiles": "independent_loopback", "seafile": "independent_loopback", "koofr": "independent_loopback",
 }
 FIXTURE_CAPABILITIES = {
     "listing", "download_hash", "missing_object_rejection", "source_preservation",
@@ -447,10 +452,10 @@ def validate_receipt(receipt, runtime, harness_sha256, now, max_age_hours=MAX_AG
         if not isinstance(capabilities, dict) or not capabilities or set(capabilities) - FIXTURE_CAPABILITIES:
             fail("invalid_fixture_capability")
         if (backend not in ("http", "webdav") and set(capabilities) & {"truncated_download_rejection", "cancellation_cleanup"}
-                or backend not in ("http", "webdav", "ftp", "archive", "swift", "b2", "azureblob", "azurefiles", "seafile") and "fixture_write_rejection" in capabilities
+                or backend not in ("http", "webdav", "ftp", "archive", "swift", "b2", "azureblob", "azurefiles", "seafile", "koofr") and "fixture_write_rejection" in capabilities
                 or backend != "sftp" and "host_key_rejection" in capabilities
                 or backend != "archive" and set(capabilities) & ARCHIVE_ONLY_CAPABILITIES
-                or backend not in ("archive", "memory", "swift", "b2", "azureblob", "azurefiles", "seafile") and "config_preservation" in capabilities
+                or backend not in ("archive", "memory", "swift", "b2", "azureblob", "azurefiles", "seafile", "koofr") and "config_preservation" in capabilities
                 or backend != "swift" and set(capabilities) & SWIFT_ONLY_CAPABILITIES
                 or backend != "b2" and set(capabilities) & B2_ONLY_CAPABILITIES
                 or backend not in ("swift", "b2") and "renewal_denial" in capabilities):

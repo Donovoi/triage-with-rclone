@@ -30,11 +30,11 @@ import uuid
 import zipfile
 import zlib
 
-from fixture_servers import FILES, State, SwiftState, B2State, AzureBlobState, AzureFilesState, SeafileState, azure_string_to_sign, probe_write_rejection, serve
+from fixture_servers import FILES, State, SwiftState, B2State, AzureBlobState, AzureFilesState, SeafileState, KoofrState, azure_string_to_sign, probe_write_rejection, serve
 from email.utils import format_datetime
 
 
-BACKENDS = ("local", "http", "webdav", "ftp", "sftp", "s3", "archive", "swift", "b2", "azureblob", "azurefiles", "seafile", "memory")
+BACKENDS = ("local", "http", "webdav", "ftp", "sftp", "s3", "archive", "swift", "b2", "azureblob", "azurefiles", "seafile", "memory", "koofr")
 HARNESS_FILES = ("fixture_servers.py", "run_lab.py")
 MAX_OUTPUT = 2 * 1024 * 1024
 COMMAND_TIMEOUT = 20
@@ -1423,9 +1423,229 @@ def memory_checks(runtime, root, row, expected):
         caps["cleanup"] = "passed" if normal_exit and len(records) == 1 and records[0][0].poll() == 0 else "failed"
 
 
+KOOFR_MISSING = "missing-synthetic-object.bin"
+KOOFR_MEMBER = "README-synthetic.txt"
+
+
+def koofr_options(state, port, obscured_password):
+    check(type(port) is int and 0 < port < 65536 and state.mount_id == "synthetic-mount"
+          and type(state.modified_ms) is int and state.modified_ms == 1704067200123, "koofr_invalid_fixture")
+    return {"type": "koofr", "provider": "other", "endpoint": f"http://127.0.0.1:{port}",
+            "mountid": "synthetic-mount", "user": state.user, "password": obscured_password, "setmtime": "true"}
+
+
+def koofr_metadata_matches(output, expected, *, stat_result=False):
+    try:
+        data = memory_json(output)  # Strict UTF-8/duplicate-key/non-finite JSON rejection.
+        key = "item" if stat_result else "list"
+        if not isinstance(data, dict) or set(data) != {key}:
+            return False
+        entries = [data[key]] if stat_result else data[key]
+        if not isinstance(entries, list) or len(entries) != len(expected):
+            return False
+        actual = []
+        for entry in entries:
+            if (not isinstance(entry, dict) or set(entry) != {"Path", "Name", "Size", "ModTime", "IsDir", "Hashes"}
+                    or not isinstance(entry["Path"], str) or entry["Name"] != entry["Path"].rsplit("/", 1)[-1]
+                    or type(entry["Size"]) is not int or entry["IsDir"] is not False
+                    or not isinstance(entry["Hashes"], dict) or set(entry["Hashes"]) != {"md5"}
+                    or not isinstance(entry["ModTime"], str)):
+                return False
+            # Koofr stores milliseconds. Do not truncate unverified nanosecond
+            # drift when normalizing an equivalent local-zone timestamp.
+            match = re.fullmatch(r"([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})"
+                                 r"\.([0-9]{1,9})(Z|[+-](?:[01][0-9]|2[0-3]):[0-5][0-9])", entry["ModTime"])
+            if not match or match[2].ljust(9, "0") != "123000000" or match[3] == "-00:00":
+                return False
+            instant = datetime.fromisoformat(match[1] + match[3].replace("Z", "+00:00"))
+            if instant.astimezone(timezone.utc) != datetime(2024, 1, 1, tzinfo=timezone.utc):
+                return False
+            actual.append((entry["Path"], entry["Size"], entry["Hashes"]["md5"]))
+        return sorted(actual) == [(item["path"], item["size"], item["md5"]) for item in expected]
+    except (LabError, ValueError, TypeError, KeyError, OverflowError):
+        return False
+
+
+def koofr_absent_mount_error_matches(output):
+    try:
+        data = memory_json(output)
+        # RC loopback writes call failures to stdout, independently of stderr.
+        return (isinstance(data, dict) and set(data) == {"error", "path", "status"}
+                and type(data["status"]) is int and data["status"] == 500
+                and data["path"] == "operations/copyfile"
+                and data["error"] == "loopback: call failed: failed to find mount absent-synthetic-mount")
+    except LabError:
+        return False
+
+
+def koofr_flow_matches(state, kind, member="", size=0):
+    counts = ("requests", "authenticated", "auth_denied", "member_denied", "missing", "rejected_mutations",
+              "payload_bytes", "unexpected", "rejected_payload_bytes")
+    if (any(type(getattr(state, name)) is not int or getattr(state, name) < 0 for name in counts)
+            or state.unexpected or state.budget_exceeded or state.rejected_payload_bytes
+            or state.requests != len(state.events)):
+        return False
+    setup = [("mounts", ""), ("root_info", "/")]
+    events, auth_denied, member_denied, missing, writes, payload = [], 0, 0, 0, 0, 0
+    if kind == "listing":
+        events = setup + [("list", "/"), ("list", "/nested")]
+    elif kind in ("stat", "download") and member in FILES:
+        events = setup + [("member_info", "/" + member)]
+        if kind == "download":
+            if type(size) is not int or size != len(FILES[member]):
+                return False
+            events += [("content", "/" + member)]
+            payload = size
+    elif kind == "missing" and member == KOOFR_MISSING:
+        events, missing = setup + [("file_missing", "/" + KOOFR_MISSING)], 1
+    elif kind == "wrong_password":
+        events, auth_denied = [("auth_denied", "")], 1
+    elif kind == "member_denied":
+        events, member_denied = setup + [("member_denied", "/" + KOOFR_MEMBER)], 1
+    elif kind == "absent_mount":
+        events = [("mounts", "")]
+    elif kind == "write":
+        events, writes = setup + [("member_info", "/" + KOOFR_MEMBER), ("write_denied", "/" + KOOFR_MEMBER)], 1
+    else:
+        return False
+    return (state.events == events and state.authenticated == len(events) - auth_denied
+            and state.auth_denied == auth_denied and state.member_denied == member_denied
+            and state.missing == missing and state.rejected_mutations == writes and state.payload_bytes == payload)
+
+
+def koofr_one_process(runtime, action):
+    before = len(runtime.children)
+    result = action()
+    records = runtime.children[before:]
+    check(len(records) == 1 and type(result[0]) is int and result[0] >= 0
+          and type(records[0][0].poll()) is int and records[0][0].poll() == result[0], "koofr_child_not_completed")
+    return result
+
+
+def koofr_metadata_args(kind, member=""):
+    check((kind == "list" and member == "") or (kind == "stat" and member in (*FILES, KOOFR_MISSING)), "koofr_invalid_read")
+    options = {"filesOnly": True, "showHash": True, "hashTypes": ["MD5"], "noModTime": False, "noMimeType": True}
+    if kind == "list":
+        options["recurse"] = True
+    return ["rc", "--loopback", "operations/" + kind, "--json",
+            json.dumps({"fs": "Synthetic:", "remote": member, "opt": options}, separators=(",", ":"))]
+
+
+def koofr_checks(runtime, root, row, expected):
+    caps, states, ports, preserved, empty_directories = row["capabilities"], [], [], {}, []
+    before, completed = len(runtime.children), False
+    user, password = "synthetic-" + uuid.uuid4().hex, "synthetic-" + uuid.uuid4().hex
+    wrong_password = "wrong-synthetic-password"
+    metadata = [dict(item, md5=hashlib.md5(FILES[item["path"]]).hexdigest()) for item in expected]
+
+    @contextmanager
+    def case(label, mode="normal"):
+        state = KoofrState(user, password, mode="member_denied" if mode == "member_denied" else "normal",
+                           wrong_password=wrong_password)
+        states.append(state)
+        with serve("koofr", state) as port:
+            ports.append(port)
+            options = koofr_options(state, port, wrong_obscured if mode == "wrong_password" else obscured)
+            if mode == "absent_mount":
+                options["mountid"] = "absent-synthetic-mount"
+            config = config_file(root, "koofr-" + label + ".conf", options)
+            data = config.read_bytes()
+            preserved[config] = (data, hashlib.sha256(data).hexdigest())
+            yield state, config, port
+
+    def negative_directory(name):
+        directory = root / ("negative-" + name)
+        directory.mkdir(mode=0o700)
+        empty_directories.append(directory)
+        return directory
+
+    try:
+        check(memory_plain_path(root), "koofr_unsafe_root")
+        obscured_values = []
+        for value in (password, wrong_password):
+            code, output, _ = koofr_one_process(runtime, lambda: runtime.run(["obscure", value]))
+            check(code == 0 and re.fullmatch(rb"[A-Za-z0-9_-]{22,512}", output.strip()), "koofr_password_setup_failed")
+            obscured_values.append(output.decode("ascii").strip())
+        obscured, wrong_obscured = obscured_values
+        downloads = root / "downloads"
+        downloads.mkdir(mode=0o700)
+        for phase in ("initial", "final"):
+            # Final listing uses a fresh instance, not a renewal test. Every
+            # earlier served state is also compared with the source snapshot.
+            with case("listing-" + phase) as (state, config, _):
+                code, output, _ = koofr_one_process(runtime, lambda: runtime.run(koofr_metadata_args("list"), config))
+                check(code == 0 and koofr_metadata_matches(output, metadata) and koofr_flow_matches(state, "listing"),
+                      "koofr_listing_mismatch")
+            if phase == "final":
+                break
+            for index, item in enumerate(metadata):
+                with case("stat-" + str(index)) as (state, config, _):
+                    code, output, _ = koofr_one_process(runtime, lambda: runtime.run(koofr_metadata_args("stat", item["path"]), config))
+                    check(code == 0 and koofr_metadata_matches(output, [item], stat_result=True)
+                          and koofr_flow_matches(state, "stat", item["path"]), "koofr_stat_mismatch")
+                with case("download-" + str(index)) as (state, config, _):
+                    code, _, _ = koofr_one_process(runtime, lambda: exact_copy(runtime, config, "Synthetic:", item["path"],
+                                                                               str(downloads), item["path"]))
+                    check(code == 0 and memory_tree_matches(downloads, expected[:index + 1])
+                          and koofr_flow_matches(state, "download", item["path"], item["size"]), "koofr_download_mismatch")
+            with case("missing-stat") as (state, config, _):
+                code, output, _ = koofr_one_process(runtime, lambda: runtime.run(koofr_metadata_args("stat", KOOFR_MISSING), config))
+                check(code == 0 and memory_json(output) == {"item": None} and koofr_flow_matches(state, "missing", KOOFR_MISSING),
+                      "koofr_missing_stat_mismatch")
+            with case("missing-copy") as (state, config, _):
+                destination = negative_directory("missing")
+                code, output, error = koofr_one_process(runtime, lambda: exact_copy(runtime, config, "Synthetic:", KOOFR_MISSING,
+                                                                                   str(destination), KOOFR_MISSING))
+                check(code > 0 and b"object not found" in (output + error).lower() and memory_tree_matches(destination, [])
+                      and koofr_flow_matches(state, "missing", KOOFR_MISSING), "koofr_missing_copy_mismatch")
+            for mode in ("wrong_password", "member_denied", "absent_mount"):
+                with case(mode, mode) as (state, config, _):
+                    destination = negative_directory(mode)
+                    code, output, _ = koofr_one_process(runtime, lambda: exact_copy(runtime, config, "Synthetic:", KOOFR_MEMBER,
+                                                                                   str(destination), KOOFR_MEMBER))
+                    check(code > 0 and memory_tree_matches(destination, []) and koofr_flow_matches(state, mode),
+                          "koofr_" + mode + "_not_observed")
+                    if mode == "absent_mount":
+                        check(koofr_absent_mount_error_matches(output), "koofr_wrong_mount_error")
+            with case("write-guard") as (state, config, port):
+                item = next(item for item in metadata if item["path"] == KOOFR_MEMBER)
+                code, output, _ = koofr_one_process(runtime, lambda: runtime.run(koofr_metadata_args("stat", KOOFR_MEMBER), config))
+                check(code == 0 and koofr_metadata_matches(output, [item], stat_result=True)
+                      and koofr_flow_matches(state, "stat", KOOFR_MEMBER), "koofr_write_setup_failed")
+                client = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
+                try:
+                    token = base64.b64encode((user + ":" + password).encode()).decode()
+                    client.request("DELETE", "/api/v2/mounts/synthetic-mount/files/remove?path=%2FREADME-synthetic.txt",
+                                   headers={"Authorization": "Basic " + token})
+                    response = client.getresponse()
+                    check(response.status == 405 and len(response.read(1025)) <= 1024 and koofr_flow_matches(state, "write"),
+                          "koofr_write_guard_not_observed")
+                finally:
+                    client.close()
+        check(memory_tree_matches(downloads, expected) and all(memory_tree_matches(path, []) for path in empty_directories),
+              "koofr_final_inventory_changed")
+        completed = True
+    finally:
+        closed = (all(state.cleanup_complete for state in states) and all(listener_closed(port) for port in ports)
+                  and all(record[0].poll() is not None for record in runtime.children[before:]))
+        caps["cleanup"] = "passed" if closed else "failed"
+        check(closed, "koofr_cleanup_failed")
+        check(all(not state.unexpected and not state.budget_exceeded and not state.rejected_payload_bytes for state in states),
+              "koofr_unexpected_request_or_budget")
+        check(all(served_source_unchanged(state, expected) and state.modified_ms == 1704067200123
+                  and state.mount_id == "synthetic-mount" and state.user == user and state.password == password
+                  and state.wrong_password == wrong_password for state in states), "koofr_source_changed")
+        check(all(memory_plain_path(path) and path.is_file() and path.stat().st_nlink == 1
+                  and path.read_bytes() == data and digest(path) == sha256 for path, (data, sha256) in preserved.items()),
+              "koofr_config_changed")
+        if completed:
+            for name in caps:
+                caps[name] = "passed"
+
+
 def run_backend(runtime, backend, root):
     root.mkdir(mode=0o700)
-    independent = backend in ("http", "webdav", "ftp", "swift", "b2", "azureblob", "azurefiles", "seafile")
+    independent = backend in ("http", "webdav", "ftp", "swift", "b2", "azureblob", "azurefiles", "seafile", "koofr")
     row = {"backend": backend,
            "fixture_kind": "local" if backend in ("local", "archive", "memory") else "independent_loopback" if independent else "rclone_loopback",
            "capabilities": {key: "not_run" for key in (
@@ -1444,7 +1664,7 @@ def run_backend(runtime, backend, root):
         row["capabilities"].update(config_preservation="not_run", service_token_reacquisition="not_run", renewal_denial="not_run")
     if backend == "b2":
         row["capabilities"].update(config_preservation="not_run", account_token_reacquisition="not_run", renewal_denial="not_run")
-    if backend in ("azureblob", "azurefiles", "seafile", "memory"):
+    if backend in ("azureblob", "azurefiles", "seafile", "memory", "koofr"):
         row["capabilities"]["config_preservation"] = "not_run"
     if backend in ("http", "webdav"):
         row["capabilities"].update(truncated_download_rejection="not_run", cancellation_cleanup="not_run")
@@ -1460,6 +1680,9 @@ def run_backend(runtime, backend, root):
         prepare_files(files_root)
     port = None
     try:
+        if backend == "koofr":
+            koofr_checks(runtime, root, row, expected)
+            return row
         if backend == "memory":
             memory_checks(runtime, root, row, expected)
             return row
