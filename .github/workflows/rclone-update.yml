@@ -1,0 +1,127 @@
+name: Propose latest stable rclone
+on:
+  schedule:
+    - cron: '23 5 * * *'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: rclone-stable-update
+  cancel-in-progress: false
+jobs:
+  propose:
+    # Always load trusted default-branch updater code, including manual runs.
+    if: github.repository == 'Donovoi/triage-with-rclone'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      UPDATE_BRANCH: automation/rclone-stable
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: Test updater without network or executables
+        run: python3 -B -m unittest discover -s scripts/tests -p 'test_*.py'
+      - name: Verify latest stable release
+        id: candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -B scripts/update-rclone.py --write > "$RUNNER_TEMP/rclone-update.json"
+          cat "$RUNNER_TEMP/rclone-update.json"
+          changed=$(jq -r '.changed' "$RUNNER_TEMP/rclone-update.json")
+          version=$(jq -r '.version' "$RUNNER_TEMP/rclone-update.json")
+          [[ "$changed" == true || "$changed" == false ]]
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          echo "changed=$changed" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          cp rclone-version.env "$RUNNER_TEMP/verified-rclone-version.env"
+      - name: Reuse guarded update branch and PR
+        if: steps.candidate.outputs.changed == 'true'
+        id: proposal
+        env:
+          RCLONE_VERSION: ${{ steps.candidate.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          # Refuse an unrelated PR/branch; never reset or force-push it.
+          prs=$(gh pr list --repo "$GH_REPO" --head "$UPDATE_BRANCH" --base main --state open --json number,author,headRepository,headRepositoryOwner,isCrossRepository)
+          count=$(jq 'length' <<< "$prs")
+          [[ "$count" -le 1 ]]
+          if [[ "$count" == 1 ]]; then
+            jq -e '.[0] | .author.login == "app/github-actions" or .author.login == "github-actions[bot]"' <<< "$prs" >/dev/null
+            jq -e '.[0].isCrossRepository == false' <<< "$prs" >/dev/null
+          fi
+          git restore --source=HEAD -- rclone-version.env
+          remote_sha=$(git ls-remote --heads origin "refs/heads/$UPDATE_BRANCH" | cut -f1)
+          if [[ -n "$remote_sha" ]]; then
+            [[ "$remote_sha" =~ ^[a-f0-9]{40}$ ]]
+            git fetch origin "refs/heads/$UPDATE_BRANCH:refs/remotes/origin/$UPDATE_BRANCH"
+            [[ "$(git rev-parse "origin/$UPDATE_BRANCH")" == "$remote_sha" ]]
+            changes=$(git diff --name-only "origin/main...origin/$UPDATE_BRANCH")
+            [[ -z "$changes" || "$changes" == rclone-version.env ]]
+            # An interrupted first create can leave a branch without a PR.
+            # Require every branch-only commit to use this bot's fixed identity.
+            authors=$(git log --format='%ae' "origin/main..origin/$UPDATE_BRANCH" | sort -u)
+            [[ -z "$authors" || "$authors" == '41898282+github-actions[bot]@users.noreply.github.com' ]]
+            branch_version=$(git show "origin/$UPDATE_BRANCH:rclone-version.env" | sed -n 's/^RCLONE_VERSION=//p')
+            [[ "$branch_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+            python3 -c 'import sys; old,new=(tuple(map(int,v.split("."))) for v in sys.argv[1:]); sys.exit(0 if new >= old else 1)' "$branch_version" "$RCLONE_VERSION"
+            git checkout -b "$UPDATE_BRANCH" "origin/$UPDATE_BRANCH"
+            if ! git merge --no-edit origin/main; then
+              conflicts=$(git diff --name-only --diff-filter=U)
+              [[ "$conflicts" == rclone-version.env ]]
+              cp "$RUNNER_TEMP/verified-rclone-version.env" rclone-version.env
+              git add -- rclone-version.env
+              git commit --no-edit
+            fi
+          else
+            [[ "$count" == 0 ]]
+            git checkout -b "$UPDATE_BRANCH" origin/main
+          fi
+          # Only the independently verified manifest may differ from main.
+          cp "$RUNNER_TEMP/verified-rclone-version.env" rclone-version.env
+          git add -- rclone-version.env
+          if ! git diff --cached --quiet; then
+            git commit -m "build: update verified rclone to $RCLONE_VERSION"
+          fi
+          [[ "$(git diff --name-only origin/main HEAD)" == rclone-version.env ]]
+          git push origin "HEAD:refs/heads/$UPDATE_BRANCH"
+          head=$(git rev-parse HEAD)
+          # Use a file so exact newlines and literal text survive shell parsing.
+          cat > "$RUNNER_TEMP/rclone-pr-body.md" <<EOF
+          Update the embedded Windows runtime and Linux test runtime to rclone $RCLONE_VERSION.
+
+          The updater verified both official archive SHA256 values and hashed each extracted executable without running it. The manifest is the only change from main. Source: https://downloads.rclone.org/v$RCLONE_VERSION/SHA256SUMS
+
+          Full Windows/Linux CI is explicitly dispatched for commit $head; bot-created PR events alone are insufficient for unattended validation. Merge only after that commit passes CI and review. This workflow does not enable automatic merging.
+          EOF
+          if [[ "$count" == 0 ]]; then
+            gh pr create --repo "$GH_REPO" --base main --head "$UPDATE_BRANCH" --title "build: update verified rclone to $RCLONE_VERSION" --body-file "$RUNNER_TEMP/rclone-pr-body.md"
+          else
+            number=$(jq -r '.[0].number' <<< "$prs")
+            gh pr edit "$number" --repo "$GH_REPO" --title "build: update verified rclone to $RCLONE_VERSION" --body-file "$RUNNER_TEMP/rclone-pr-body.md"
+          fi
+          echo "head=$head" >> "$GITHUB_OUTPUT"
+      - name: Explicitly validate the proposed commit
+        if: steps.candidate.outputs.changed == 'true'
+        env:
+          EXPECTED_SHA: ${{ steps.proposal.outputs.head }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_SHA" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$(git ls-remote --heads origin "refs/heads/$UPDATE_BRANCH" | cut -f1)" == "$EXPECTED_SHA" ]]
+          # workflow_dispatch runs with GITHUB_TOKEN; ordinary bot push/PR
+          # events do not automatically start unapproved validation runs.
+          gh workflow run ci.yml --repo "$GH_REPO" --ref "$UPDATE_BRANCH" -f expected_sha="$EXPECTED_SHA"
+          echo "Validation dispatched for $EXPECTED_SHA; this updater never merges the PR." >> "$GITHUB_STEP_SUMMARY"

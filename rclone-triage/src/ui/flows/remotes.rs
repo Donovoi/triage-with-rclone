@@ -8,8 +8,9 @@ pub(crate) fn resolve_provider_remotes(
 ) -> Result<Vec<String>> {
     let parsed = config.parse()?;
     let remotes = parsed
-        .remotes_by_type(provider.short_name())
-        .into_iter()
+        .remotes
+        .iter()
+        .filter(|remote| provider.matches_rclone_type(&remote.remote_type))
         .map(|remote| remote.name.clone())
         .collect();
     Ok(remotes)
