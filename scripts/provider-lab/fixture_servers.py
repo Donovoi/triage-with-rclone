@@ -477,6 +477,219 @@ class AzureBlobHandler(BaseHTTPRequestHandler):
     do_DELETE = dispatch
 
 
+class AzureFilesState(AzureBlobState):
+    """Native FileREST SharedKey fixture; no Blob/emulator route semantics."""
+    share = "synthetic-share"
+    file_time = "2024-01-01T00:00:00.0000000Z"
+    # Deliberately different from LastWriteTime: the native listing must use
+    # the Files timestamp, not silently fall back to the HTTP modified time.
+    last_modified = "Tue, 02 Jan 2024 00:00:00 GMT"
+
+    def __init__(self, key, utc_now=None):
+        super().__init__(key, utc_now)
+        self.read_auth_denied = self.root_probe_denied = 0
+        self.root_file_probes = self.directory_properties = self.directory_lists = 0
+
+
+class AzureFilesFixture(LoopbackThreads, HTTPServer):
+    def __init__(self, state):
+        self.state = state
+        super().__init__(("127.0.0.1", 0), AzureFilesHandler)
+
+
+class AzureFilesHandler(AzureBlobHandler):
+    # Reuse only the reviewed transport deadline/reply and signing primitives;
+    # directory/file routes, response types and timestamps are Files-specific.
+    def dispatch(self):
+        with self.server.state.lock:
+            state = self.server.state
+            state.requests += 1
+            if state.requests > state.request_limit or time.monotonic() > state.deadline:
+                state.budget_exceeded = True
+                self.error(429, "ServerBusy")
+                return
+            host = f"127.0.0.1:{self.server.server_address[1]}"
+            if (self.headers.get_all("Host") != [host] or len(self.path) > 2048
+                    or sum(len(name) + len(value) for name, value in self.headers.items()) > 8192
+                    or self.headers.get("Transfer-Encoding") is not None):
+                self.reject()
+                return
+            try:
+                signed = azure_string_to_sign(state.account, self.command, self.path, self.headers.items())
+                length = self.headers.get("Content-Length", "0")
+                if not length.isdigit() or int(length) > 4096 or (self.command in ("GET", "HEAD") and int(length)):
+                    raise ValueError("invalid_body_length")
+                url = urllib.parse.urlsplit(self.path)
+                query = dict(urllib.parse.parse_qsl(url.query, keep_blank_values=True, strict_parsing=True, max_num_fields=8))
+                base = "/" + state.account + "/" + state.share
+                if not url.path.startswith(base + "/"):
+                    raise ValueError("unowned_path")
+                name = urllib.parse.unquote(url.path[len(base) + 1:], errors="strict")
+                if name and ("\\" in name or "\x00" in name or "%" in name
+                             or any(part in ("", ".", "..") for part in name.split("/"))):
+                    raise ValueError("invalid_member")
+                if self.headers.get("Date") is not None:
+                    raise ValueError("ambiguous_date")
+                allowed_xms = {"x-ms-date", "x-ms-version", "x-ms-client-request-id", "x-ms-range", "x-ms-file-request-intent"}
+                if any(key.lower().startswith("x-ms-") and key.lower() not in allowed_xms for key in self.headers):
+                    raise ValueError("unsupported_header")
+                if self.headers.get("x-ms-file-request-intent") != "backup":
+                    raise ValueError("unsupported_request_intent")
+                if any(self.headers.get(key) is not None for key in ("If-Modified-Since", "If-Match", "If-None-Match", "If-Unmodified-Since")):
+                    raise ValueError("unsupported_condition")
+            except (ValueError, UnicodeError):
+                self.reject()
+                return
+            signature = base64.b64encode(hmac.new(state.key_bytes, signed.encode(), hashlib.sha256).digest()).decode()
+            expected = f"SharedKey {state.account}:{signature}"
+            try:
+                date = self.headers.get("x-ms-date", "")
+                instant = parsedate_to_datetime(date)
+                datetime.strptime(self.headers.get("x-ms-version", ""), "%Y-%m-%d")
+                if (instant.tzinfo is None or instant.utcoffset().total_seconds() != 0
+                        or format_datetime(instant, usegmt=True) != date
+                        or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", self.headers.get("x-ms-version", ""))):
+                    raise ValueError("invalid_date_version")
+                age = (state.utc_now() - instant).total_seconds()
+                valid_signature = hmac.compare_digest(self.headers.get("Authorization", ""), expected)
+                valid_date = 0 <= age <= 900
+            except (ValueError, TypeError, OverflowError):
+                valid_signature = valid_date = False
+            if not valid_signature or not valid_date:
+                state.auth_denied += 1
+                if valid_signature and not valid_date:
+                    state.stale_denied += 1
+                if self.command in ("GET", "HEAD") and name in state.files and not query:
+                    state.read_auth_denied += 1
+                if self.command == "HEAD" and not name and not query:
+                    state.root_probe_denied += 1
+                self.error(403, "AuthenticationFailed")
+                return
+            state.authenticated += 1
+            if self.command in ("PUT", "DELETE", "POST"):
+                if not name or query:
+                    self.reject()
+                    return
+                state.rejected_mutations += 1
+                self.error(403, "AuthorizationPermissionMismatch")
+                return
+            if self.command not in ("HEAD", "GET"):
+                self.reject()
+                return
+            azure_range = self.headers.get("x-ms-range")
+            if self.headers.get("Range") is not None or (azure_range is not None and (self.command != "GET" or query)):
+                self.reject()
+                return
+            if query:
+                if self.command != "GET" or query.get("restype") != "directory":
+                    self.reject()
+                    return
+                if query == {"restype": "directory"}:
+                    if not is_directory(name, state.files):
+                        state.missing += 1
+                        self.error(404, "ResourceNotFound")
+                        return
+                    state.directory_properties += 1
+                    self.reply(200, headers=self.metadata(name, directory=True))
+                elif query.get("comp") == "list":
+                    self.list_directory(name, query)
+                else:
+                    self.reject()
+                return
+            if not name:
+                if self.command != "HEAD":
+                    self.reject()
+                    return
+                # The backend deliberately probes a file at the share root
+                # during construction and ignores failure. It is not a file.
+                state.root_file_probes += 1
+                self.error(404, "ResourceNotFound")
+                return
+            if name not in state.files:
+                state.missing += 1
+                self.error(404, "ResourceNotFound")
+                return
+            payload = state.files[name]
+            headers = self.metadata(name)
+            if self.command == "HEAD":
+                self.reply(200, headers=headers, size=len(payload))
+                return
+            code = 200
+            if azure_range is not None:
+                match = re.fullmatch(r"bytes=(\d+)-(\d*)", azure_range)
+                if not match:
+                    self.reject("InvalidRange")
+                    return
+                start, end = int(match[1]), int(match[2]) if match[2] else len(payload) - 1
+                if start > end or end >= len(payload):
+                    self.reject("InvalidRange")
+                    return
+                headers["Content-Range"] = f"bytes {start}-{end}/{len(payload)}"
+                headers["x-ms-content-md5"] = headers.pop("Content-MD5")
+                payload, code = payload[start:end + 1], 206
+            self.reply(code, payload, headers, object_payload=True)
+
+    def metadata(self, name, directory=False):
+        state = self.server.state
+        identity = hashlib.sha256(name.encode()).hexdigest()[:16]
+        headers = {"ETag": '"synthetic-' + identity + '"', "Last-Modified": state.last_modified,
+                   "x-ms-file-last-write-time": state.file_time, "x-ms-file-creation-time": state.file_time,
+                   "x-ms-file-change-time": state.file_time,
+                   "x-ms-file-attributes": "Directory" if directory else "Archive", "x-ms-file-id": identity}
+        if not directory:
+            headers.update({"Content-Type": "application/octet-stream",
+                            "Content-MD5": base64.b64encode(hashlib.md5(state.files[name]).digest()).decode()})
+        return headers
+
+    def list_directory(self, name, query):
+        state = self.server.state
+        if (set(query) - {"restype", "comp", "prefix", "marker", "maxresults", "include"}
+                or query.get("include") not in (None, "Timestamps") or query.get("marker", "") != ""
+                or not re.fullmatch(r"[0-9]+", query.get("maxresults", "5000"))
+                or not 1 <= int(query.get("maxresults", "5000")) <= 5000):
+            self.reject()
+            return
+        prefix = query.get("prefix", "")
+        if "\\" in prefix or "\x00" in prefix or any(part in (".", "..") for part in prefix.split("/")):
+            self.reject()
+            return
+        if not is_directory(name, state.files):
+            state.missing += 1
+            self.error(404, "ResourceNotFound")
+            return
+        directory_prefix = name + "/" if name else ""
+        names = [item for item in children(name, state.files) if item[len(directory_prefix):].startswith(prefix)]
+        if len(names) > int(query.get("maxresults", "5000")):
+            self.reject("UnsupportedPagination")
+            return
+        state.directory_lists += 1
+        root = ET.Element("EnumerationResults", {"ServiceEndpoint": f"http://127.0.0.1:{self.server.server_address[1]}/{state.account}",
+                                                 "ShareName": state.share, "DirectoryPath": name})
+        ET.SubElement(root, "Prefix").text = prefix
+        ET.SubElement(root, "Marker")
+        ET.SubElement(root, "MaxResults").text = query.get("maxresults", "5000")
+        entries = ET.SubElement(root, "Entries")
+        for path in names:
+            is_file = path in state.files
+            entry = ET.SubElement(entries, "File" if is_file else "Directory")
+            ET.SubElement(entry, "Name").text = path[len(directory_prefix):]
+            ET.SubElement(entry, "FileId").text = hashlib.sha256(path.encode()).hexdigest()[:16]
+            props = ET.SubElement(entry, "Properties")
+            for key, value in {"Content-Length": str(len(state.files[path])) if is_file else "0",
+                               "CreationTime": state.file_time, "LastWriteTime": state.file_time,
+                               "ChangeTime": state.file_time, "Last-Modified": state.last_modified,
+                               "Etag": self.metadata(path, not is_file)["ETag"]}.items():
+                ET.SubElement(props, key).text = value
+        ET.SubElement(root, "NextMarker")
+        self.reply(200, ET.tostring(root, encoding="utf-8", xml_declaration=True), {"Content-Type": "application/xml"})
+
+    do_GET = dispatch
+    do_HEAD = dispatch
+    do_PUT = dispatch
+    do_POST = dispatch
+    do_DELETE = dispatch
+
+
 class B2State(State):
     """Synthetic native B2 v4 authorization/v1 reads, restricted to one bucket."""
     bucket = "synthetic-bucket"
@@ -1104,7 +1317,8 @@ class FtpHandler(socketserver.StreamRequestHandler):
 @contextmanager
 def serve(kind, state):
     server = (FtpFixture(state) if kind == "ftp" else SwiftFixture(state) if kind == "swift"
-              else B2Fixture(state) if kind == "b2" else AzureBlobFixture(state) if kind == "azureblob" else HttpFixture(state))
+              else B2Fixture(state) if kind == "b2" else AzureBlobFixture(state) if kind == "azureblob"
+              else AzureFilesFixture(state) if kind == "azurefiles" else HttpFixture(state))
     thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05})
     thread.start()
     try:
