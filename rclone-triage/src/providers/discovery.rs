@@ -107,7 +107,15 @@ pub fn providers_from_rclone_json(json: &str) -> Result<ProviderDiscoveryResult>
             continue;
         }
 
-        let known = CloudProvider::from_str(&id).ok();
+        let known = CloudProvider::from_str(&id).ok().or_else(|| {
+            name.as_deref()
+                .and_then(|name| CloudProvider::from_str(name).ok())
+        });
+        let backend_name = name.clone().unwrap_or_else(|| {
+            known
+                .map(|provider| provider.rclone_name().to_string())
+                .unwrap_or_else(|| id.clone())
+        });
         // Option names and prose cannot prove that our browser OAuth flow works:
         // Mail.ru exposes OAuth options but requires a username/app password;
         // Jottacloud has a separate personal-token protocol. Unknown backends
@@ -136,6 +144,7 @@ pub fn providers_from_rclone_json(json: &str) -> Result<ProviderDiscoveryResult>
 
         entries.push(ProviderEntry {
             id,
+            backend_name,
             name: display,
             description,
             known,

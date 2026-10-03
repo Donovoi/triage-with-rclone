@@ -106,7 +106,7 @@ fn requested_backends(raw: &str) -> Result<HashSet<String>> {
 }
 
 fn matches_request(remote: &SmokeRemote, entry: &ProviderEntry, requested: &str) -> bool {
-    requested == remote.backend
+    entry.matches_rclone_type(requested)
         || requested.eq_ignore_ascii_case(&remote.remote_name)
         || entry
             .known
@@ -132,7 +132,10 @@ fn collect_smoke_remotes(
         if names[&remote.name.to_ascii_lowercase()] != 1 {
             bail!("Duplicate or case-aliased Test remote");
         }
-        let Some(provider) = catalog.iter().find(|p| p.id == remote.remote_type) else {
+        let Some(provider) = catalog
+            .iter()
+            .find(|p| p.matches_rclone_type(&remote.remote_type))
+        else {
             bail!("Test remote has an unavailable or excluded backend");
         };
         remotes.push(SmokeRemote {
@@ -236,6 +239,22 @@ fn env_flag(name: &str) -> Result<bool> {
     }
 }
 
+fn write_inventory_report(
+    report: &mut CoverageReport,
+    path: Option<&Path>,
+    require_all: bool,
+) -> Result<()> {
+    if require_all {
+        report.errors.push("full_coverage_not_run");
+    }
+    write_report(report, path)?;
+    println!("Live provider access NOT RUN: report-only mode uses no account configuration.");
+    if require_all {
+        bail!("Report-only mode cannot satisfy required full live coverage");
+    }
+    Ok(())
+}
+
 fn verify_runtime(path: &Path) -> Result<PathBuf> {
     if !path.is_absolute() || !path.is_file() {
         bail!("An absolute native runtime file path is required");
@@ -292,9 +311,9 @@ fn test_configured_provider_remotes_smoke() {
     let mut report = CoverageReport::new(&catalog, version);
     let report_path =
         std::env::var_os("RCLONE_PROVIDER_SMOKE_REPORT").map(std::path::PathBuf::from);
+    let require_all = env_flag("RCLONE_PROVIDER_SMOKE_REQUIRE_ALL").unwrap();
     if env_flag("RCLONE_PROVIDER_SMOKE_REPORT_ONLY").unwrap() {
-        write_report(&report, report_path.as_deref()).expect("Cannot save coverage report");
-        println!("Live provider access NOT RUN: report-only mode uses no account configuration.");
+        write_inventory_report(&mut report, report_path.as_deref(), require_all).unwrap();
         return;
     }
     let result = (|| -> Result<()> {
@@ -327,11 +346,7 @@ fn test_configured_provider_remotes_smoke() {
         if selected.is_empty() {
             bail!("No matching Test remotes");
         }
-        require_full_selection(
-            &catalog,
-            &selected,
-            env_flag("RCLONE_PROVIDER_SMOKE_REQUIRE_ALL")?,
-        )?;
+        require_full_selection(&catalog, &selected, require_all)?;
         let runner = RcloneRunner::new(&binary)
             .with_config(config.path())
             .with_timeout(Duration::from_secs(60));
@@ -366,6 +381,7 @@ mod tests {
             ProviderEntry::from_known(CloudProvider::S3),
             ProviderEntry {
                 id: "newbackend".into(),
+                backend_name: "future cloud storage".into(),
                 name: "New backend".into(),
                 description: None,
                 known: None,
@@ -386,6 +402,28 @@ mod tests {
                 remote_name: "TestNew".into()
             }]
         );
+    }
+
+    #[test]
+    fn canonical_names_and_prefixes_select_the_same_discovered_backend() {
+        let catalog = catalog();
+        for remote_type in ["future cloud storage", "futurecloudstorage", "newbackend"] {
+            let parsed = ParsedConfig::parse(&format!("[TestNew]\ntype = {remote_type}\n"));
+            let remotes = collect_smoke_remotes(&parsed, &catalog).unwrap();
+            assert_eq!(remotes[0].backend, "newbackend");
+            for request in ["future cloud storage", "futurecloudstorage", "newbackend"] {
+                assert_eq!(
+                    select_smoke_remotes(&remotes, &catalog, &requested_backends(request).unwrap())
+                        .unwrap()
+                        .len(),
+                    1
+                );
+            }
+        }
+        let oracle = ProviderEntry::from_known(CloudProvider::OracleObjectStorage);
+        let parsed = ParsedConfig::parse("[TestOracle]\ntype = oracleobjectstorage\n");
+        let remotes = collect_smoke_remotes(&parsed, &[oracle]).unwrap();
+        assert_eq!(remotes.len(), 1);
     }
 
     #[test]
@@ -443,6 +481,32 @@ mod tests {
     fn bare_or_relative_runtime_cannot_resolve_to_a_different_path_binary() {
         assert!(verify_runtime(Path::new("rclone")).is_err());
         assert!(verify_runtime(Path::new("./rclone")).is_err());
+    }
+
+    #[test]
+    fn report_only_writes_missing_inventory_but_cannot_satisfy_full_coverage() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("report.json");
+        let mut report = CoverageReport::new(&catalog(), "test".into());
+        assert!(write_inventory_report(&mut report, Some(&path), true).is_err());
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        assert_eq!(saved["all_discovered_providers_passed"], false);
+        assert_eq!(
+            saved["errors"],
+            serde_json::json!(["full_coverage_not_run"])
+        );
+        assert_eq!(
+            saved["providers"].as_array().unwrap().len(),
+            catalog().len()
+        );
+        assert!(saved["providers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|row| row["status"] == "not_configured"));
+        let mut optional = CoverageReport::new(&catalog(), "test".into());
+        assert!(write_inventory_report(&mut optional, None, false).is_ok());
     }
 
     #[test]

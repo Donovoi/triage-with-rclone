@@ -143,10 +143,7 @@ pub(crate) fn perform_list_flow<
 
     // Spawn listing in background thread so the TUI stays responsive
     let target = format!("{}:", remote_name);
-    let remote_type = provider
-        .known
-        .map(|k| format!("{:?}", k).to_lowercase())
-        .unwrap_or_else(|| provider.short_name().to_string());
+    let remote_type = provider.backend_name().to_string();
     app.log_info(format!("Starting background listing of {}", target));
 
     let listing_csv = if large_listing {

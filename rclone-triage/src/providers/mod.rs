@@ -36,7 +36,11 @@ pub enum ProviderAuthKind {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderEntry {
+    /// Stable selection identifier (the option prefix for discovered backends).
     pub id: String,
+    /// rclone registry Name, which can differ from the option Prefix and label.
+    #[serde(default)]
+    pub backend_name: String,
     pub name: String,
     pub description: Option<String>,
     pub known: Option<CloudProvider>,
@@ -62,10 +66,35 @@ impl ProviderEntry {
         &self.id
     }
 
+    /// Canonical name to write as the remote's `type`.
+    pub fn backend_name(&self) -> &str {
+        if !self.backend_name.is_empty() {
+            &self.backend_name
+        } else if let Some(provider) = self.known {
+            provider.rclone_name()
+        } else {
+            &self.id
+        }
+    }
+
+    /// Match registry Name, option Prefix, or the space-free FileName alias.
+    /// These are the forms accepted by rclone's fs.Find; display labels are not.
+    pub fn matches_rclone_type(&self, remote_type: &str) -> bool {
+        backend_matches(self.backend_name(), &self.id, remote_type)
+            || self.known.is_some_and(|provider| {
+                backend_matches(
+                    provider.rclone_name(),
+                    provider.rclone_prefix(),
+                    remote_type,
+                )
+            })
+    }
+
     pub fn from_known(provider: CloudProvider) -> Self {
         let auth_kind = provider.auth_kind();
         Self {
             id: provider.rclone_type().to_string(),
+            backend_name: provider.rclone_name().to_string(),
             name: provider.display_name().to_string(),
             description: None,
             known: Some(provider),
@@ -81,6 +110,14 @@ impl ProviderEntry {
             left.cmp(&right).then_with(|| a.id.cmp(&b.id))
         });
     }
+}
+
+pub(crate) fn backend_matches(name: &str, prefix: &str, candidate: &str) -> bool {
+    let candidate = candidate.trim();
+    !candidate.is_empty()
+        && (name.eq_ignore_ascii_case(candidate)
+            || prefix.eq_ignore_ascii_case(candidate)
+            || name.replace(' ', "").eq_ignore_ascii_case(candidate))
 }
 
 // Keep the enum and its iterable catalog in one declaration. An added variant
@@ -222,6 +259,23 @@ cloud_providers! {
 }
 
 impl CloudProvider {
+    /// Canonical rclone registry name, as emitted in `config providers` Name.
+    pub fn rclone_name(&self) -> &'static str {
+        match self {
+            CloudProvider::GoogleCloudStorage => "google cloud storage",
+            CloudProvider::GooglePhotos => "google photos",
+            _ => self.rclone_type(),
+        }
+    }
+
+    /// Prefix used by backend flags and the provider option schema.
+    pub fn rclone_prefix(&self) -> &'static str {
+        match self {
+            CloudProvider::OracleObjectStorage => "oos",
+            _ => self.rclone_type(),
+        }
+    }
+
     /// Supported authentication route. OAuth means a browser authorization-code
     /// flow is supported, not merely that the backend stores an OAuth token.
     pub fn auth_kind(&self) -> ProviderAuthKind {
@@ -608,7 +662,7 @@ impl FromStr for CloudProvider {
             "filescom" | "files.com" | "files_com" => Ok(CloudProvider::FilesCom),
             "ftp" => Ok(CloudProvider::Ftp),
             "gofile" => Ok(CloudProvider::Gofile),
-            "gcs" | "googlecloudstorage" | "google_cloud_storage" => {
+            "gcs" | "googlecloudstorage" | "google_cloud_storage" | "google cloud storage" => {
                 Ok(CloudProvider::GoogleCloudStorage)
             }
             "hdfs" => Ok(CloudProvider::Hdfs),
