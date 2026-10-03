@@ -678,6 +678,48 @@
         "refresh",
         "reauthentication"
       ]
+    },
+    "azurefiles-shared-key-fixture": {
+      "required": {
+        "application": [
+          "listing",
+          "download_hash",
+          "manifest_integrity",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation",
+          "refresh"
+        ],
+        "vendor": [
+          "listing",
+          "download_hash",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation",
+          "refresh"
+        ],
+        "local_protocol": [
+          "listing",
+          "download_hash",
+          "missing_object_rejection",
+          "authentication_rejection",
+          "source_preservation",
+          "config_preservation",
+          "fixture_write_rejection",
+          "cleanup"
+        ]
+      },
+      "review_required": false,
+      "unresolved_applicability": [
+        "refresh",
+        "reauthentication"
+      ]
     }
   },
   "providers": {
@@ -822,20 +864,32 @@
     "azurefiles": {
       "canonical_name": "azurefiles",
       "schema_sha256": "f00e34022122401b53463984bc6c65269d81f326ad2121eeb0fdd05f99d92375",
-      "profile": "azurefiles-renewal-plan-session-review",
+      "profile": "azurefiles-shared-key-fixture",
       "notes": [
         "Azure storage account and file share, key/SAS or supported identity configuration. Azurite does not implement Azure Files.",
         "Free account/API eligibility: review_required",
         "Uses the same auth helper as Blob; Files sets backup intent for token credentials. Do not carry Blob emulator or public-container acceptance into Azure Files.",
         "Identity permission/backup-intent prerequisites and actual DefaultAzureCredential provider remain deployment-specific.",
-        "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension."
+        "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension.",
+        "The independent HTTP FileREST fixture uses only an explicit synthetic account, generated shared key, fixed synthetic share_name, env_auth=false, use_emulator=false and an owned literal-loopback endpoint. It is not Blob, Azurite, SMB/NFS, TLS, hosted Azure or application acceptance.",
+        "FileREST directory properties use GET with restype=directory in the pinned SDK; file properties use HEAD. Directory listing uses Entries/File and Entries/Directory with Timestamps, distinct from Blob XML. Missing root-as-file probes during backend initialization cannot alone establish authentication rejection.",
+        "The pinned rclone path supplies FileRequestIntent=backup and azfile preserves it even with SharedKey. The signed x-ms-file-request-intent header is therefore not proof of an OAuth or identity flow.",
+        "The bounded fixture verifies real SharedKey HMAC against encoded paths and UTC freshness; complete single-page directory listings or explicit unsupported-pagination errors; exact file bytes, independent SHA256 and FileREST MD5/time metadata; rejected mutations; unchanged source/config and bounded cleanup.",
+        "The eight local capabilities do not establish credential renewal, general connection/session reauthentication, SAS, Entra ID, MSI, workload identity, share permissions, leases, hosted Azure, application behavior or uploads. Existing application/vendor obligations and unresolved authentication variants remain unchanged."
       ],
       "source_links": [
         "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/azurefiles.md",
         "https://github.com/rclone/rclone/blob/v1.75.1/backend/azureblob/auth/auth.go#L347-L550",
         "https://github.com/rclone/rclone/blob/v1.75.1/backend/azureblob/auth/auth.go#L570-L587",
         "https://pkg.go.dev/github.com/Azure/azure-sdk-for-go/sdk/azidentity@v1.14.0",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/azurefiles/azurefiles.go#L168-L185"
+        "https://github.com/rclone/rclone/blob/v1.75.1/backend/azurefiles/azurefiles.go#L168-L185",
+        "https://github.com/rclone/rclone/blob/v1.75.1/backend/azurefiles/azurefiles.go",
+        "https://github.com/Azure/azure-sdk-for-go/blob/sdk/storage/azfile/v1.7.0/sdk/storage/azfile/service/client.go",
+        "https://github.com/Azure/azure-sdk-for-go/blob/sdk/storage/azfile/v1.7.0/sdk/storage/azfile/internal/generated/zz_directory_client.go",
+        "https://github.com/Azure/azure-sdk-for-go/blob/sdk/storage/azfile/v1.7.0/sdk/storage/azfile/internal/generated/zz_file_client.go",
+        "https://github.com/Azure/azure-sdk-for-go/blob/sdk/storage/azfile/v1.7.0/sdk/storage/azfile/internal/exported/shared_key_credential.go",
+        "https://learn.microsoft.com/en-us/rest/api/storageservices/list-directories-and-files",
+        "https://learn.microsoft.com/en-us/rest/api/storageservices/get-file"
       ],
       "renewal_modes": [
         {
