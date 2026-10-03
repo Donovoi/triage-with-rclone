@@ -30,11 +30,11 @@ import uuid
 import zipfile
 import zlib
 
-from fixture_servers import FILES, State, SwiftState, B2State, AzureBlobState, AzureFilesState, SeafileState, KoofrState, azure_string_to_sign, probe_write_rejection, serve
+from fixture_servers import FILES, State, SwiftState, B2State, AzureBlobState, AzureFilesState, SeafileState, KoofrState, PixeldrainState, azure_string_to_sign, probe_write_rejection, serve
 from email.utils import format_datetime
 
 
-BACKENDS = ("local", "http", "webdav", "ftp", "sftp", "s3", "archive", "swift", "b2", "azureblob", "azurefiles", "seafile", "memory", "koofr")
+BACKENDS = ("local", "http", "webdav", "ftp", "sftp", "s3", "archive", "swift", "b2", "azureblob", "azurefiles", "seafile", "memory", "koofr", "pixeldrain")
 HARNESS_FILES = ("fixture_servers.py", "run_lab.py")
 MAX_OUTPUT = 2 * 1024 * 1024
 COMMAND_TIMEOUT = 20
@@ -1643,9 +1643,214 @@ def koofr_checks(runtime, root, row, expected):
                 caps[name] = "passed"
 
 
+PIXELDRAIN_MEMBER = "README-synthetic.txt"
+PIXELDRAIN_MISSING = "missing-synthetic-object.bin"
+
+
+def pixeldrain_options(state, port, *, wrong_key=False):
+    check(type(port) is int and 0 < port < 65536 and type(wrong_key) is bool
+          and state.root == "me" and state.modified == "2024-01-01T00:00:00.123Z"
+          and state.created == "2023-12-31T00:00:00Z", "pixeldrain_invalid_fixture")
+    return {"type": "pixeldrain", "api_url": f"http://127.0.0.1:{port}/api", "root_folder_id": "me",
+            "api_key": state.wrong_key if wrong_key else state.api_key}
+
+
+def pixeldrain_metadata_matches(output, expected, *, stat_result=False):
+    try:
+        data = memory_json(output)
+        key = "item" if stat_result else "list"
+        if not isinstance(data, dict) or set(data) != {key}:
+            return False
+        entries = [data[key]] if stat_result else data[key]
+        if not isinstance(entries, list) or len(entries) != len(expected):
+            return False
+        actual = []
+        for entry in entries:
+            if (not isinstance(entry, dict) or set(entry) != {"Path", "Name", "Size", "ModTime", "IsDir", "Hashes"}
+                    or not isinstance(entry["Path"], str) or entry["Name"] != entry["Path"].rsplit("/", 1)[-1]
+                    or type(entry["Size"]) is not int or entry["IsDir"] is not False
+                    or not isinstance(entry["Hashes"], dict) or set(entry["Hashes"]) != {"sha256"}
+                    or not isinstance(entry["ModTime"], str)):
+                return False
+            match = re.fullmatch(r"([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})"
+                                 r"\.([0-9]{1,9})(Z|[+-](?:[01][0-9]|2[0-3]):[0-5][0-9])", entry["ModTime"])
+            if not match or match[2].ljust(9, "0") != "123000000" or match[3] == "-00:00":
+                return False
+            instant = datetime.fromisoformat(match[1] + match[3].replace("Z", "+00:00"))
+            if instant.astimezone(timezone.utc) != datetime(2024, 1, 1, tzinfo=timezone.utc):
+                return False
+            actual.append((entry["Path"], entry["Size"], entry["Hashes"]["sha256"]))
+        return sorted(actual) == [(item["path"], item["size"], item["sha256"]) for item in expected]
+    except (LabError, ValueError, TypeError, KeyError, OverflowError):
+        return False
+
+
+def pixeldrain_error_matches(output, kind):
+    # Pinned API error translation -> NewFs/NewObject -> RC loopback errorf.
+    causes = {"missing": "object not found", "member_denied": "permission denied",
+              "wrong_key": "failed to get user data: pd api: authentication failed"}
+    if kind not in causes:
+        return False
+    try:
+        data = memory_json(output)
+        return (isinstance(data, dict) and set(data) == {"error", "path", "status"}
+                and type(data["status"]) is int and data["status"] == 500
+                and data["path"] == "operations/copyfile"
+                and data["error"] == "loopback: call failed: " + causes[kind])
+    except LabError:
+        return False
+
+
+def pixeldrain_flow_matches(state, kind, member="", size=0):
+    counts = ("requests", "authenticated", "auth_denied", "member_denied", "missing", "rejected_mutations",
+              "payload_bytes", "unexpected", "rejected_payload_bytes", "root_stats")
+    if any(type(getattr(state, key)) is not int or getattr(state, key) < 0 for key in counts):
+        return False
+    if state.budget_exceeded or state.unexpected or state.rejected_payload_bytes or type(size) is not int or size < 0:
+        return False
+    setup = [("user_info", ""), ("root_stat", "/")]
+    auth_denied = denied = missing = writes = payload = 0
+    roots, user_checked = 1, True
+    if kind == "listing":
+        events, roots = setup + [("root_stat", "/"), ("directory_stat", "nested")], 2
+    elif kind in ("stat", "download") and member in FILES:
+        events = setup + [("member_stat", member)]
+        if kind == "download":
+            events += [("content", member)]
+            payload = size
+    elif kind == "missing" and member == PIXELDRAIN_MISSING:
+        events, missing = setup + [("file_missing", PIXELDRAIN_MISSING)], 1
+    elif kind == "wrong_key":
+        events, auth_denied, roots, user_checked = [("auth_denied", "")], 1, 0, False
+    elif kind == "member_denied":
+        events, denied = setup + [("member_denied", PIXELDRAIN_MEMBER)], 1
+    elif kind == "write":
+        events = setup + [("member_stat", PIXELDRAIN_MEMBER), ("write_denied", PIXELDRAIN_MEMBER)]
+        writes = 1
+    else:
+        return False
+    return (state.events == events and state.requests == len(events)
+            and state.authenticated == len(events) - auth_denied and state.auth_denied == auth_denied
+            and state.member_denied == denied and state.missing == missing and state.rejected_mutations == writes
+            and state.payload_bytes == payload and state.root_stats == roots and state.user_checked is user_checked)
+
+
+def pixeldrain_one_process(runtime, action):
+    before = len(runtime.children)
+    result = action()
+    check(len(runtime.children) == before + 1 and type(result[0]) is int and result[0] >= 0,
+          "pixeldrain_process_count_or_exit")
+    observed_exit = runtime.children[-1][0].poll()
+    check(type(observed_exit) is int and observed_exit == result[0], "pixeldrain_process_not_reaped")
+    return result
+
+
+def pixeldrain_metadata_args(kind, member=""):
+    check((kind == "list" and member == "") or (kind == "stat" and member in (*FILES, PIXELDRAIN_MISSING)),
+          "pixeldrain_invalid_metadata_request")
+    options = {"filesOnly": True, "showHash": True, "hashTypes": ["sha256"], "noModTime": False, "noMimeType": True}
+    if kind == "list":
+        options["recurse"] = True
+    return ["rc", "--loopback", "operations/" + kind, "--json",
+            json.dumps({"fs": "Synthetic:", "remote": member, "opt": options}, separators=(",", ":"))]
+
+
+def pixeldrain_checks(runtime, root, row, expected):
+    caps, states, ports, preserved, empty_directories = row["capabilities"], [], [], {}, []
+    before, completed = len(runtime.children), False
+    api_key, wrong_key = "synthetic-" + uuid.uuid4().hex, "wrong-synthetic-key"
+
+    @contextmanager
+    def case(label, mode="normal"):
+        state = PixeldrainState(api_key, mode="member_denied" if mode == "member_denied" else "normal", wrong_key=wrong_key)
+        states.append(state)
+        with serve("pixeldrain", state) as port:
+            ports.append(port)
+            config = config_file(root, "pixeldrain-" + label + ".conf", pixeldrain_options(state, port, wrong_key=mode == "wrong_key"))
+            data = config.read_bytes()
+            preserved[config] = (data, hashlib.sha256(data).hexdigest())
+            yield state, config, port
+
+    def negative_directory(name):
+        directory = root / ("negative-" + name)
+        directory.mkdir(mode=0o700)
+        empty_directories.append(directory)
+        return directory
+
+    try:
+        check(memory_plain_path(root), "pixeldrain_unsafe_root")
+        downloads = root / "downloads"
+        downloads.mkdir(mode=0o700)
+        for phase in ("initial", "final"):
+            with case("listing-" + phase) as (state, config, _):
+                code, output, _ = pixeldrain_one_process(runtime, lambda: runtime.run(pixeldrain_metadata_args("list"), config))
+                check(code == 0 and pixeldrain_metadata_matches(output, expected) and pixeldrain_flow_matches(state, "listing"),
+                      "pixeldrain_listing_mismatch")
+            if phase == "final":
+                break
+            for index, item in enumerate(expected):
+                with case("stat-" + str(index)) as (state, config, _):
+                    code, output, _ = pixeldrain_one_process(runtime, lambda: runtime.run(pixeldrain_metadata_args("stat", item["path"]), config))
+                    check(code == 0 and pixeldrain_metadata_matches(output, [item], stat_result=True)
+                          and pixeldrain_flow_matches(state, "stat", item["path"]), "pixeldrain_stat_mismatch")
+                with case("download-" + str(index)) as (state, config, _):
+                    code, _, _ = pixeldrain_one_process(runtime, lambda: exact_copy(runtime, config, "Synthetic:", item["path"],
+                                                                                    str(downloads), item["path"]))
+                    check(code == 0 and memory_tree_matches(downloads, expected[:index + 1])
+                          and pixeldrain_flow_matches(state, "download", item["path"], item["size"]), "pixeldrain_download_mismatch")
+            with case("missing-stat") as (state, config, _):
+                code, output, _ = pixeldrain_one_process(runtime, lambda: runtime.run(pixeldrain_metadata_args("stat", PIXELDRAIN_MISSING), config))
+                check(code == 0 and memory_json(output) == {"item": None}
+                      and pixeldrain_flow_matches(state, "missing", PIXELDRAIN_MISSING), "pixeldrain_missing_stat_mismatch")
+            for label, kind, member in (("missing-copy", "missing", PIXELDRAIN_MISSING),
+                                        ("wrong_key", "wrong_key", PIXELDRAIN_MEMBER),
+                                        ("member_denied", "member_denied", PIXELDRAIN_MEMBER)):
+                with case(label, kind) as (state, config, _):
+                    destination = negative_directory(kind)
+                    code, output, _ = pixeldrain_one_process(runtime, lambda: exact_copy(runtime, config, "Synthetic:", member,
+                                                                                        str(destination), member))
+                    check(code > 0 and pixeldrain_error_matches(output, kind) and memory_tree_matches(destination, [])
+                          and pixeldrain_flow_matches(state, kind, member), "pixeldrain_" + kind + "_not_observed")
+            with case("write-guard") as (state, config, port):
+                item = next(item for item in expected if item["path"] == PIXELDRAIN_MEMBER)
+                code, output, _ = pixeldrain_one_process(runtime, lambda: runtime.run(pixeldrain_metadata_args("stat", PIXELDRAIN_MEMBER), config))
+                check(code == 0 and pixeldrain_metadata_matches(output, [item], stat_result=True)
+                      and pixeldrain_flow_matches(state, "stat", PIXELDRAIN_MEMBER), "pixeldrain_write_setup_failed")
+                client = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
+                try:
+                    token = base64.b64encode((":" + api_key).encode()).decode()
+                    client.request("DELETE", "/api/filesystem/me/README-synthetic.txt", headers={"Authorization": "Basic " + token})
+                    response = client.getresponse()
+                    body = response.read(1025)
+                    check(response.status == 405 and len(body) <= 1024
+                          and memory_json(body) == {"value": "fixture_read_only", "message": "Synthetic fixture is read only"}
+                          and pixeldrain_flow_matches(state, "write"), "pixeldrain_write_guard_not_observed")
+                finally:
+                    client.close()
+        check(memory_tree_matches(downloads, expected) and all(memory_tree_matches(path, []) for path in empty_directories),
+              "pixeldrain_final_inventory_changed")
+        completed = True
+    finally:
+        closed = (all(state.cleanup_complete for state in states) and all(listener_closed(port) for port in ports)
+                  and all(record[0].poll() is not None for record in runtime.children[before:]))
+        caps["cleanup"] = "passed" if closed else "failed"
+        check(closed, "pixeldrain_cleanup_failed")
+        check(all(not state.unexpected and not state.budget_exceeded and not state.rejected_payload_bytes for state in states),
+              "pixeldrain_unexpected_request_or_budget")
+        check(all(served_source_unchanged(state, expected) and state.root == "me"
+                  and state.modified == "2024-01-01T00:00:00.123Z" and state.created == "2023-12-31T00:00:00Z"
+                  and state.api_key == api_key and state.wrong_key == wrong_key for state in states), "pixeldrain_source_changed")
+        check(all(memory_plain_path(path) and path.is_file() and path.stat().st_nlink == 1
+                  and path.read_bytes() == data and digest(path) == sha256 for path, (data, sha256) in preserved.items()),
+              "pixeldrain_config_changed")
+        if completed:
+            for name in caps:
+                caps[name] = "passed"
+
+
 def run_backend(runtime, backend, root):
     root.mkdir(mode=0o700)
-    independent = backend in ("http", "webdav", "ftp", "swift", "b2", "azureblob", "azurefiles", "seafile", "koofr")
+    independent = backend in ("http", "webdav", "ftp", "swift", "b2", "azureblob", "azurefiles", "seafile", "koofr", "pixeldrain")
     row = {"backend": backend,
            "fixture_kind": "local" if backend in ("local", "archive", "memory") else "independent_loopback" if independent else "rclone_loopback",
            "capabilities": {key: "not_run" for key in (
@@ -1664,7 +1869,7 @@ def run_backend(runtime, backend, root):
         row["capabilities"].update(config_preservation="not_run", service_token_reacquisition="not_run", renewal_denial="not_run")
     if backend == "b2":
         row["capabilities"].update(config_preservation="not_run", account_token_reacquisition="not_run", renewal_denial="not_run")
-    if backend in ("azureblob", "azurefiles", "seafile", "memory", "koofr"):
+    if backend in ("azureblob", "azurefiles", "seafile", "memory", "koofr", "pixeldrain"):
         row["capabilities"]["config_preservation"] = "not_run"
     if backend in ("http", "webdav"):
         row["capabilities"].update(truncated_download_rejection="not_run", cancellation_cleanup="not_run")
@@ -1680,6 +1885,9 @@ def run_backend(runtime, backend, root):
         prepare_files(files_root)
     port = None
     try:
+        if backend == "pixeldrain":
+            pixeldrain_checks(runtime, root, row, expected)
+            return row
         if backend == "koofr":
             koofr_checks(runtime, root, row, expected)
             return row
