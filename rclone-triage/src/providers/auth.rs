@@ -20,6 +20,8 @@ use serde::Deserialize;
 use std::time::Duration;
 
 mod auth_only;
+#[cfg(test)]
+mod protocol_tests;
 pub use auth_only::{authenticate_only, AuthOnlyFlow};
 
 const INTERACTIVE_AUTH_TIMEOUT: Duration = Duration::from_secs(300);
@@ -52,18 +54,12 @@ pub struct SsoStatus {
     pub recommended_browser: Option<Browser>,
 }
 
-fn resolve_custom_oauth(provider: CloudProvider) -> Option<OAuthCredentials> {
-    match custom_oauth_credentials_for(provider) {
-        Ok(Some(creds)) => {
-            tracing::info!("Using custom OAuth credentials for {}", provider);
-            Some(creds)
-        }
-        Ok(None) => None,
-        Err(e) => {
-            tracing::warn!("Failed to load custom OAuth credentials: {}", e);
-            None
-        }
+fn resolve_custom_oauth(provider: CloudProvider) -> Result<Option<OAuthCredentials>> {
+    let credentials = custom_oauth_credentials_for(provider)?;
+    if credentials.is_some() {
+        tracing::info!("Using custom OAuth credentials for {}", provider);
     }
+    Ok(credentials)
 }
 
 fn non_empty_owned(value: &str) -> Option<String> {
@@ -119,7 +115,7 @@ enum BrowserAuthStrategy {
     ViaRcloneAuthorize,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 struct ResolvedBrowserAuthSettings {
     client_id: String,
     client_secret: Option<String>,
@@ -197,16 +193,47 @@ fn resolve_browser_auth_settings_with_custom(
 fn resolve_browser_auth_settings(
     provider: CloudProvider,
     provider_config: &ProviderConfig,
-) -> ResolvedBrowserAuthSettings {
-    resolve_browser_auth_settings_with_custom(provider_config, resolve_custom_oauth(provider))
+) -> Result<ResolvedBrowserAuthSettings> {
+    Ok(resolve_browser_auth_settings_with_custom(
+        provider_config,
+        resolve_custom_oauth(provider)?,
+    ))
 }
 
-fn build_rclone_auth_args(
+struct RcloneAuthCommand {
+    args: Vec<String>,
+    env: Vec<(String, String)>,
+    // Backend environment overrides are deliberately not persisted by rclone.
+    // Save the issuing client with the resulting token before using that remote.
+    credentials: Option<OAuthCredentials>,
+}
+
+fn build_rclone_auth_command(
     provider: CloudProvider,
     remote_name: &str,
     non_interactive: bool,
-) -> Result<Vec<String>> {
-    ensure_new_auth_credentials(provider)?;
+) -> Result<RcloneAuthCommand> {
+    build_rclone_auth_command_with_custom(
+        provider,
+        remote_name,
+        non_interactive,
+        resolve_custom_oauth(provider)?,
+    )
+}
+
+fn build_rclone_auth_command_with_custom(
+    provider: CloudProvider,
+    remote_name: &str,
+    non_interactive: bool,
+    custom: Option<OAuthCredentials>,
+) -> Result<RcloneAuthCommand> {
+    ensure_new_auth_credentials_with_custom(provider, custom.as_ref())?;
+    if !ProviderConfig::for_provider(provider).uses_oauth() {
+        bail!(
+            "{} requires provider-specific setup: use 'rclone config', including region/endpoint/root choices, then import the completed config",
+            provider
+        );
+    }
     let mut args = vec![
         "config".to_string(),
         "create".to_string(),
@@ -219,43 +246,42 @@ fn build_rclone_auth_args(
         args.push((*value).to_owned());
     }
 
-    if let Some(creds) = resolve_custom_oauth(provider) {
-        if !creds.client_id.trim().is_empty() {
-            args.push("client_id".to_string());
-            args.push(creds.client_id);
-        }
-        if let Some(secret) = creds.client_secret {
-            if !secret.trim().is_empty() {
-                args.push("client_secret".to_string());
-                args.push(secret);
-            }
-        }
+    let mut env = Vec::new();
+    if let Some(creds) = custom.as_ref() {
+        let prefix = format!("RCLONE_{}", provider.rclone_type().to_ascii_uppercase());
+        env.push((format!("{prefix}_CLIENT_ID"), creds.client_id.clone()));
+        // An explicit public client must not inherit an unrelated host secret.
+        env.push((
+            format!("{prefix}_CLIENT_SECRET"),
+            creds.client_secret.clone().unwrap_or_default(),
+        ));
     }
 
     if non_interactive {
         args.push("--non-interactive".to_string());
     }
 
-    Ok(args)
+    Ok(RcloneAuthCommand {
+        args,
+        env,
+        credentials: custom,
+    })
 }
 
 fn run_rclone_with_browser_env(
     browser: &Browser,
     rclone: &RcloneRunner,
-    args: &[&str],
+    command: &RcloneAuthCommand,
 ) -> Result<crate::rclone::process::RcloneOutput> {
+    let args: Vec<&str> = command.args.iter().map(String::as_str).collect();
+    let mut envs = command.env.clone();
     if let Some(ref path) = browser.executable_path {
         let path_str = path.to_string_lossy().to_string();
-        let envs = [
-            ("BROWSER".to_string(), path_str.clone()),
-            ("RCLONE_BROWSER".to_string(), path_str),
-        ];
-        let envs_ref: Vec<(&str, &str)> =
-            envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
-        return rclone.run_with_env(args, &envs_ref);
+        envs.push(("BROWSER".to_string(), path_str.clone()));
+        envs.push(("RCLONE_BROWSER".to_string(), path_str));
     }
-
-    rclone.run(args)
+    let envs_ref: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    rclone.run_with_timeout_env(&args, Some(INTERACTIVE_AUTH_TIMEOUT), &envs_ref)
 }
 
 pub fn user_identifier_from_config(
@@ -287,8 +313,8 @@ struct OneDriveDriveResponse {
 }
 
 fn parse_onedrive_drive_selection_response(body: &str) -> Result<OneDriveDriveSelection> {
-    let response: OneDriveDriveResponse =
-        serde_json::from_str(body).context("Failed to parse OneDrive drive discovery response")?;
+    let response: OneDriveDriveResponse = serde_json::from_str(body)
+        .map_err(|_| anyhow::anyhow!("Invalid OneDrive drive discovery response"))?;
 
     if response.id.trim().is_empty() {
         bail!("OneDrive drive discovery response did not include a drive id");
@@ -308,6 +334,7 @@ fn resolve_onedrive_drive_selection(access_token: &str) -> Result<OneDriveDriveS
         .timeout_connect(Duration::from_secs(5))
         .timeout_read(Duration::from_secs(15))
         .timeout_write(Duration::from_secs(15))
+        .redirects(0)
         .build();
 
     let response = match agent
@@ -317,17 +344,19 @@ fn resolve_onedrive_drive_selection(access_token: &str) -> Result<OneDriveDriveS
         .call()
     {
         Ok(response) => response,
-        Err(ureq::Error::Status(code, response)) => {
-            let body = response.into_string().unwrap_or_default();
-            bail!("OneDrive drive discovery failed (HTTP {}): {}", code, body);
+        Err(ureq::Error::Status(code, _)) => {
+            bail!("OneDrive drive discovery failed (HTTP {})", code);
         }
-        Err(error) => return Err(error.into()),
+        Err(_) => bail!("OneDrive drive discovery transport failed"),
     };
-
-    let body = response
-        .into_string()
-        .context("Failed to read OneDrive drive discovery response")?;
-    parse_onedrive_drive_selection_response(&body)
+    if !(200..300).contains(&response.status()) {
+        bail!(
+            "OneDrive drive discovery failed (HTTP {})",
+            response.status()
+        );
+    }
+    let body: serde_json::Value = super::mobile::read_oauth_response(response)?;
+    parse_onedrive_drive_selection_response(&body.to_string())
 }
 
 fn persist_remote_option_updates(
@@ -363,6 +392,21 @@ fn persist_remote_option_updates(
         .collect();
 
     config.set_remote(remote_name, &remote.remote_type, &options_ref)
+}
+
+fn persist_auth_client(
+    config: &RcloneConfig,
+    remote_name: &str,
+    credentials: Option<&OAuthCredentials>,
+) -> Result<()> {
+    if let Some(credentials) = credentials {
+        let mut updates = vec![("client_id".to_string(), credentials.client_id.clone())];
+        if let Some(secret) = credentials.client_secret.as_ref() {
+            updates.push(("client_secret".to_string(), secret.clone()));
+        }
+        persist_remote_option_updates(config, remote_name, updates)?;
+    }
+    Ok(())
 }
 
 fn complete_onedrive_remote_setup_with_resolver<F>(
@@ -464,9 +508,15 @@ pub fn authenticate_with_rclone(
 ) -> Result<AuthResult> {
     // Use rclone config create with a timeout. Without --non-interactive, rclone may
     // hang on post-OAuth interactive prompts when stdin is /dev/null.
-    let args = build_rclone_auth_args(provider, remote_name, false)?;
-    let args_ref: Vec<&str> = args.iter().map(String::as_str).collect();
-    let output = rclone.run_with_timeout(&args_ref, Some(INTERACTIVE_AUTH_TIMEOUT))?;
+    let command = build_rclone_auth_command(provider, remote_name, false)?;
+    let args_ref: Vec<&str> = command.args.iter().map(String::as_str).collect();
+    let env_ref: Vec<(&str, &str)> = command
+        .env
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
+    let output =
+        rclone.run_with_timeout_env(&args_ref, Some(INTERACTIVE_AUTH_TIMEOUT), &env_ref)?;
 
     // If rclone hung (e.g., waiting for interactive prompts with stdin piped to null),
     // fall through to the authorize fallback.
@@ -479,7 +529,6 @@ pub fn authenticate_with_rclone(
     }
 
     if !output.success() {
-        let primary_error = output.stderr_string();
         match authenticate_with_authorize_fallback(provider, rclone, config, remote_name) {
             Ok(result) => {
                 tracing::warn!(
@@ -490,9 +539,9 @@ pub fn authenticate_with_rclone(
             }
             Err(fallback_error) => {
                 bail!(
-                    "Failed to authenticate with {}: {} (fallback failed: {})",
+                    "Failed to authenticate with {} (rclone exit {}; fallback failed: {})",
                     provider,
-                    primary_error,
+                    output.status,
                     fallback_error
                 );
             }
@@ -503,6 +552,8 @@ pub fn authenticate_with_rclone(
     if !config.has_remote(remote_name)? {
         bail!("Remote {} was not created", remote_name);
     }
+
+    persist_auth_client(config, remote_name, command.credentials.as_ref())?;
 
     complete_provider_remote_setup(provider, config, remote_name)?;
 
@@ -562,12 +613,12 @@ where
 
     if !provider_config.uses_oauth() {
         bail!(
-            "{} does not use OAuth. Manual configuration required.",
+            "{} requires provider-specific setup. Use rclone config, then import the completed config.",
             provider
         );
     }
 
-    let custom = resolve_custom_oauth(provider);
+    let custom = resolve_custom_oauth(provider)?;
     let client_id = custom
         .as_ref()
         .map(|c| c.client_id.as_str())
@@ -670,11 +721,14 @@ pub fn authenticate_with_device_code(
     config: &RcloneConfig,
     remote_name: &str,
 ) -> Result<AuthResult> {
+    if provider != CloudProvider::OneDrive {
+        bail!("Device code flow is not supported for {}; use browser authorization or import a completed config", provider);
+    }
     ensure_new_auth_credentials(provider)?;
     let provider_config = ProviderConfig::for_provider(provider);
     if !provider_config.uses_oauth() {
         bail!(
-            "{} does not use OAuth. Manual configuration required.",
+            "{} requires provider-specific setup. Use rclone config, then import the completed config.",
             provider
         );
     }
@@ -765,12 +819,12 @@ pub fn authenticate_with_browser(
 
     if !provider_config.uses_oauth() {
         bail!(
-            "{} does not use OAuth. Manual configuration required.",
+            "{} requires provider-specific setup. Use rclone config, then import the completed config.",
             provider.display_name()
         );
     }
 
-    let auth_settings = resolve_browser_auth_settings(provider, &provider_config);
+    let auth_settings = resolve_browser_auth_settings(provider, &provider_config)?;
 
     let (token_str, used_rclone_authorize) = match auth_settings.strategy {
         BrowserAuthStrategy::DirectCodeExchange => (
@@ -881,12 +935,12 @@ pub fn authenticate_with_system_browser(
 
     if !provider_config.uses_oauth() {
         bail!(
-            "{} does not use OAuth. Manual configuration required.",
+            "{} requires provider-specific setup. Use rclone config, then import the completed config.",
             provider.display_name()
         );
     }
 
-    let auth_settings = resolve_browser_auth_settings(provider, &provider_config);
+    let auth_settings = resolve_browser_auth_settings(provider, &provider_config)?;
 
     let (token_str, used_rclone_authorize) = match auth_settings.strategy {
         BrowserAuthStrategy::DirectCodeExchange => (
@@ -994,15 +1048,8 @@ fn authenticate_with_browser_via_rclone(
                 details.push(format!("exit status {}", finished.status));
             }
 
-            let stderr = finished.stderr.join("\n").trim().to_string();
-            if !stderr.is_empty() {
-                details.push(format!("stderr: {}", stderr));
-            }
-
-            let stdout = finished.stdout.join("\n").trim().to_string();
-            if !stdout.is_empty() {
-                details.push(format!("stdout: {}", stdout));
-            }
+            // Child output can include tokens, authorization URLs and provider
+            // error bodies. Keep those out of user-visible errors and logs.
 
             if details.is_empty() {
                 bail!(
@@ -1037,11 +1084,9 @@ fn authenticate_with_browser_via_rclone(
     }
 
     finished.token_json.ok_or_else(|| {
-        let stderr = finished.stderr.join("\n");
         anyhow::anyhow!(
-            "Failed to extract token from rclone authorize for {}. stderr: {}",
-            provider.display_name(),
-            stderr
+            "Failed to extract token from rclone authorize for {}",
+            provider.display_name()
         )
     })
 }
@@ -1055,6 +1100,35 @@ fn authenticate_with_browser_direct(
     client_secret: Option<&str>,
 ) -> Result<String> {
     let oauth = OAuthFlow::new().with_timeout(INTERACTIVE_AUTH_TIMEOUT);
+    authorize_browser_with_opener(
+        provider_config,
+        client_id,
+        client_secret,
+        &oauth,
+        &std::sync::atomic::AtomicBool::new(false),
+        |url| open_browser_to_url(browser, url),
+    )
+    .with_context(|| {
+        format!(
+            "OAuth authentication failed for {}",
+            provider.display_name()
+        )
+    })
+}
+
+/// Shared callback and exchange path for ordinary browser and auth-only login.
+/// The opener is injected so tests exercise the real listener and HTTP exchange.
+fn authorize_browser_with_opener<F>(
+    provider_config: &ProviderConfig,
+    client_id: &str,
+    client_secret: Option<&str>,
+    oauth: &OAuthFlow,
+    cancel: &std::sync::atomic::AtomicBool,
+    opener: F,
+) -> Result<String>
+where
+    F: FnOnce(&str) -> Result<()>,
+{
     let redirect_uri = oauth.redirect_uri();
     let state = OAuthFlow::generate_state();
     let pkce = Pkce::new();
@@ -1064,14 +1138,10 @@ fn authenticate_with_browser_direct(
         Some(&state),
     ));
 
-    let result = oauth
-        .run_with_opener(&auth_url, |url| open_browser_to_url(browser, url))
-        .with_context(|| {
-            format!(
-                "OAuth authentication failed for {}",
-                provider.display_name()
-            )
-        })?;
+    let result = oauth.run_with_opener_cancellable(&auth_url, cancel, opener)?;
+    if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+        bail!("Authorization cancelled");
+    }
 
     let token_json = exchange_code_for_token_with_pkce(
         provider_config.oauth.token_url,
@@ -1228,16 +1298,15 @@ pub fn authenticate_with_sso(
 
     // Use rclone config create - the browser already has the session,
     // so OAuth should complete quickly/silently
-    let args = build_rclone_auth_args(provider, &remote_name, false)?;
-    let args_ref: Vec<&str> = args.iter().map(String::as_str).collect();
-    let output = run_rclone_with_browser_env(browser, rclone, &args_ref)?;
+    let command = build_rclone_auth_command(provider, &remote_name, false)?;
+    let output = run_rclone_with_browser_env(browser, rclone, &command)?;
 
     if !output.success() {
         bail!(
-            "SSO authentication failed for {} with {}: {}",
+            "SSO authentication failed for {} with {} (rclone exit {})",
             provider,
             browser.display_name(),
-            output.stderr_string()
+            output.status
         );
     }
 
@@ -1245,6 +1314,8 @@ pub fn authenticate_with_sso(
     if !config.has_remote(&remote_name)? {
         bail!("Remote {} was not created", remote_name);
     }
+
+    persist_auth_client(config, &remote_name, command.credentials.as_ref())?;
 
     complete_provider_remote_setup(provider, config, &remote_name)?;
 

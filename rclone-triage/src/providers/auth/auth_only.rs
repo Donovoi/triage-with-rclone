@@ -23,6 +23,12 @@ pub fn authenticate_only(
     remote_name: &str,
     cancel: &AtomicBool,
 ) -> Result<AuthResult> {
+    if matches!(flow, AuthOnlyFlow::DeviceCode) && provider != CloudProvider::OneDrive {
+        bail!(
+            "Device code flow is not supported for {}; use browser authorization",
+            provider
+        );
+    }
     // Load once and propagate errors: malformed custom credentials must never
     // silently select a different OAuth registration.
     let custom = custom_oauth_credentials_for(provider)?;
@@ -42,36 +48,24 @@ pub fn authenticate_only(
                     // This path deliberately owns its listener instead of invoking
                     // rclone authorize or trying browser/profile SSO discovery.
                     let oauth = OAuthFlow::new().with_timeout(INTERACTIVE_AUTH_TIMEOUT);
-                    let redirect_uri = oauth.redirect_uri();
-                    let state = OAuthFlow::generate_state();
-                    let pkce = Pkce::new();
-                    let auth_url =
-                        pkce.authorize_url(&provider_config.build_auth_url_with_client_id(
-                            &settings.client_id,
-                            &redirect_uri,
-                            Some(&state),
-                        ));
-                    let response = oauth.run_with_opener_cancellable(&auth_url, cancel, |url| {
-                        if matches!(flow, AuthOnlyFlow::ManualBrowser) {
-                            // Bind precedes this output. The URL includes one-time
-                            // state; callers must keep captured stdout private.
-                            println!("Open authorization URL: {}", url);
-                            println!("Waiting for authorization callback...");
-                            Ok(())
-                        } else {
-                            open_browser_to_url(None, url)
-                        }
-                    })?;
-                    check_cancel(cancel)?;
-                    let token = exchange_code_for_token_with_pkce(
-                        provider_config.oauth.token_url,
-                        &response.code,
-                        &redirect_uri,
+                    authorize_browser_with_opener(
+                        provider_config,
                         &settings.client_id,
                         settings.client_secret.as_deref(),
-                        Some(pkce.verifier()),
-                    )?;
-                    serde_json::to_string(&token).context("Failed to serialize token")
+                        &oauth,
+                        cancel,
+                        |url| {
+                            if matches!(flow, AuthOnlyFlow::ManualBrowser) {
+                                // Bind precedes this output. The URL includes one-time
+                                // state; callers must keep captured stdout private.
+                                println!("Open authorization URL: {}", url);
+                                println!("Waiting for authorization callback...");
+                                Ok(())
+                            } else {
+                                open_browser_to_url(None, url)
+                            }
+                        },
+                    )
                 }
             }
         },
@@ -157,6 +151,15 @@ where
     let settings = resolve_browser_auth_settings_with_custom(&provider_config, custom.cloned());
     let token = authorize(&settings, &provider_config)?;
     check_cancel(cancel)?;
+    let parsed: serde_json::Value = serde_json::from_str(&token)
+        .map_err(|_| anyhow::anyhow!("Invalid authorization token JSON"))?;
+    if parsed
+        .get("access_token")
+        .and_then(|value| value.as_str())
+        .is_none_or(|value| value.trim().is_empty())
+    {
+        bail!("Authorization response did not include an access token");
+    }
     let mut options: Vec<(&str, &str)> = provider_config.rclone_options.to_vec();
     options.push(("client_id", settings.client_id.as_str()));
     if let Some(secret) = settings.client_secret.as_deref() {
@@ -184,6 +187,73 @@ fn check_cancel(cancel: &AtomicBool) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn auth_only_real_callback_exchange_persists_only_successful_tokens() {
+        for provider in [CloudProvider::GoogleDrive, CloudProvider::OneDrive] {
+            let custom = OAuthCredentials {
+                client_id: "synthetic-own-client".into(),
+                client_secret: (provider == CloudProvider::GoogleDrive)
+                    .then(|| "synthetic-own-secret".into()),
+            };
+            for (status, response, succeeds) in [
+                (
+                    200,
+                    r#"{"access_token":"synthetic-access","refresh_token":"synthetic-refresh"}"#,
+                    true,
+                ),
+                (
+                    400,
+                    r#"{"error":"invalid_grant","error_description":"SYNTHETIC_PRIVATE_ERROR"}"#,
+                    false,
+                ),
+                (200, r#"{"access_token":""}"#, false),
+                (
+                    200,
+                    r#"{"access_token":{"SYNTHETIC_PRIVATE_ERROR":"value"}}"#,
+                    false,
+                ),
+            ] {
+                let dir = tempfile::tempdir().unwrap();
+                let config = RcloneConfig::new(dir.path().join("rclone.conf")).unwrap();
+                let result = authenticate_only_with(
+                    provider,
+                    &config,
+                    "test",
+                    Some(&custom),
+                    &AtomicBool::new(false),
+                    |settings, config| {
+                        super::super::protocol_tests::exchange_through_loopback(
+                            config,
+                            &settings.client_id,
+                            settings.client_secret.as_deref(),
+                            response,
+                            status,
+                        )
+                    },
+                );
+                assert_eq!(result.is_ok(), succeeds);
+                assert_eq!(config.has_remote("test").unwrap(), succeeds);
+                if let Err(error) = result {
+                    assert!(!format!("{error:#}").contains("SYNTHETIC_PRIVATE_ERROR"));
+                }
+                if succeeds {
+                    assert_eq!(
+                        config.get_remote_option("test", "client_id").unwrap(),
+                        Some(custom.client_id.clone())
+                    );
+                    assert_eq!(
+                        config.get_remote_option("test", "client_secret").unwrap(),
+                        custom.client_secret
+                    );
+                    assert!(config
+                        .get_remote_option("test", "drive_id")
+                        .unwrap()
+                        .is_none());
+                }
+            }
+        }
+    }
 
     #[test]
     fn auth_only_requires_own_onedrive_client_before_authorization() {
@@ -318,12 +388,7 @@ mod tests {
             client_id: "synthetic-google-client".into(),
             client_secret: Some("synthetic-google-secret".into()),
         };
-        assert_eq!(
-            auth_only_device_config(&google, Some(google_custom))
-                .unwrap()
-                .scope,
-            normal_google.oauth.scopes.join(" ")
-        );
+        assert!(auth_only_device_config(&google, Some(google_custom)).is_err());
     }
 
     #[test]
