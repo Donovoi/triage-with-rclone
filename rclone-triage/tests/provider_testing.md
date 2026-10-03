@@ -95,6 +95,14 @@ whose upstream rclone backend needs provider-specific ignores or workarounds.
 
 ## How the live smoke test is configured
 
+### Restrict a OneDrive personal acceptance case to its synthetic folder
+
+For the pinned rclone 1.75.1 runtime, retain the verified drive ID and raw folder item ID separately in private test approvals, then set the working configuration's `root_folder_id` to `<drive-id>#<folder-item-id>`. A raw item ID alone can make top-level file metadata lookup fall back to the drive root, even when nested files work. This follows the pinned backend's [path resolution](https://github.com/rclone/rclone/blob/v1.75.1/backend/onedrive/onedrive.go#L2951-L3027) and [item ID normalization](https://github.com/rclone/rclone/blob/v1.75.1/backend/onedrive/api/types.go#L436-L442). Verify the exact approved drive/folder pair; reject aliases, mismatched prefixes and extra separators. Preserve the original authenticated configuration.
+
+Set `delta = false`: [OneDrive delta listing](https://rclone.org/onedrive/#onedrive-delta) traverses from the drive root even for a subfolder request. Start with one known synthetic file directly under the configured folder, then verify both root and nested file acquisitions against independent expected hashes. Do not treat a successful nested-file download as proof that the root is configured correctly. Folder selection controls these test requests; the OAuth grant remains account-wide.
+
+### Run the opt-in smoke test
+
 The live test is ignored by default and requires an explicit
 `RCLONE_PROVIDER_SMOKE_CONFIG` path. It refuses fallback credential stores.
 An unreadable config, missing runtime, or empty matching Test-remote set fails
