@@ -367,7 +367,12 @@ def common_checks(runtime, root, good, bad, target, row, state=None, auth_marker
     caps["listing"] = "passed"
     downloads = root / "downloads"
     downloads.mkdir(mode=0o700)
+    source_fs, separator, source_prefix = target.partition(":")
+    check(separator == ":" and bool(source_fs), "invalid_fixture_source")
     for index, item in enumerate(expected):
+        # Match the application's split, including an absolute local path or
+        # bucket prefix in the object name. Never list this broader fs root.
+        exact_file_stat(runtime, good, source_fs + ":", source_prefix + item["path"], item["size"])
         destination = downloads / f"verified-{index}"
         code, _, _ = runtime.run(["copyto", target + item["path"], str(destination)], good)
         check(code == 0 and destination.is_file(), "download_failed")
@@ -463,6 +468,22 @@ def exact_copy(runtime, config, source_fs, source_name, destination_fs, destinat
                         f"dstRemote={destination_name}"], config)
 
 
+def exact_file_stat(runtime, config, source_fs, source_name, expected_size):
+    # Keep the filesystem root separate from the object. lsjson --stat combines
+    # them before NewFs, which breaks archive members even with valid ZIP paths.
+    code, output, _ = runtime.run(["rc", "--loopback", "operations/stat", f"fs={source_fs}",
+                                   f"remote={source_name}", 'opt={"noModTime":true,"noMimeType":true,"filesOnly":true}'], config)
+    check(code == 0, "exact_stat_failed")
+    try:
+        result = json.loads(output)
+        item = result["item"]
+        check(isinstance(item, dict) and item.get("IsDir") is False, "exact_stat_not_file")
+        check(item.get("Path") == source_name, "exact_stat_path_mismatch")
+        check(type(item.get("Size")) is int and item["Size"] == expected_size, "exact_stat_size_mismatch")
+    except (KeyError, TypeError, ValueError):
+        raise LabError("exact_stat_invalid") from None
+
+
 def archive_checks(runtime, root, row):
     caps = row["capabilities"]
     payloads = dict(FILES)
@@ -490,6 +511,7 @@ def archive_checks(runtime, root, row):
         archive_inventory(output, payloads)
         caps.update(listing="passed", archive_crc32="passed")
         for index, (name, (size, expected_hash)) in enumerate(sorted(expected.items())):
+            exact_file_stat(runtime, good, "Synthetic:", name, size)
             destination = downloads / f"verified-{index}"
             code, _, _ = exact_copy(runtime, good, "Synthetic:", name, downloads.as_posix(), destination.name)
             check(code == 0 and destination.is_file(), "archive_download_failed")
@@ -525,6 +547,18 @@ def archive_checks(runtime, root, row):
             check(path.is_file() and path.read_bytes() == contents and digest(path) == sha256,
                   "archive_config_changed" if path.suffix == ".conf" else "archive_container_changed")
         caps.update(source_preservation="passed", config_preservation="passed")
+
+
+def local_fixture_target(runtime, files_root):
+    # Named local remotes accept relative object names. Absolute drive objects
+    # are rejected by the app planner and are not this fixture's contract.
+    # Runtime.start always sets cwd to this private owned root.
+    try:
+        relative = files_root.resolve(strict=True).relative_to(runtime.root.resolve(strict=True))
+    except ValueError:
+        raise LabError("local_source_outside_owned_root") from None
+    check(bool(relative.parts) and files_root.is_dir(), "invalid_local_fixture_root")
+    return "Synthetic:" + relative.as_posix() + "/"
 
 
 def run_backend(runtime, backend, root):
@@ -568,7 +602,7 @@ def run_backend(runtime, backend, root):
         check(code == 0, "fixture_password_setup_failed")
         if backend == "local":
             config = config_file(root, "local.conf", {"type": "local"})
-            common_checks(runtime, root, config, None, "Synthetic:" + files_root.as_posix() + "/", row, expected=expected)
+            common_checks(runtime, root, config, None, local_fixture_target(runtime, files_root), row, expected=expected)
         elif independent:
             state = State(user, password)
             with serve(backend, state) as port:
