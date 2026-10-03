@@ -62,6 +62,9 @@ jobs:
         with:
           toolchain: 1.95.0
           components: rustfmt, clippy
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: rclone-triage -> target
@@ -73,8 +76,33 @@ jobs:
         if: runner.os == 'Linux'
         shell: bash
         run: bash ../scripts/download-rclone.sh --linux "$RUNNER_TEMP/rclone-native"
-      - name: Runtime updater regression tests
-        run: python -m unittest discover -s ../scripts/tests -p "test_*.py"
+      - name: Runtime updater and provider evidence regressions
+        run: python -B -m unittest discover -s ../scripts/tests -p "test_*.py"
+      - name: Isolated backend protocol fixtures
+        env:
+          PROVIDER_BINARY: ${{ runner.os == 'Windows' && format('{0}/rclone-triage/assets/rclone.exe', github.workspace) || format('{0}/rclone-native', runner.temp) }}
+        shell: bash
+        run: python -B ../scripts/provider-lab/run_lab.py --rclone "$PROVIDER_BINARY" --report "$RUNNER_TEMP/provider-fixtures.json"
+      - name: Require current provider plans and protocol evidence
+        if: ${{ !cancelled() }}
+        env:
+          PROVIDER_BINARY: ${{ runner.os == 'Windows' && format('{0}/rclone-triage/assets/rclone.exe', github.workspace) || format('{0}/rclone-native', runner.temp) }}
+        shell: bash
+        run: |
+          python -B ../scripts/provider_coverage.py --rclone "$PROVIDER_BINARY" \
+            --report "$RUNNER_TEMP/provider-evidence.json" \
+            --fixture-receipt "$RUNNER_TEMP/provider-fixtures.json" \
+            --require-plans --require-fixtures local,http,webdav,ftp,sftp,s3
+      - name: Retain sanitized protocol evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: provider-evidence-${{ runner.os }}
+          path: |
+            ${{ runner.temp }}/provider-fixtures.json
+            ${{ runner.temp }}/provider-evidence.json
+          if-no-files-found: warn
+          retention-days: 14
       - name: Formatting
         run: cargo fmt --all -- --check
       - name: Validate Windows acceptance harnesses

@@ -16,6 +16,9 @@ on:
     - cron: '35 7 * * *'
 permissions:
   contents: read
+concurrency:
+  group: provider-smoke
+  cancel-in-progress: false
 jobs:
   provider-smoke-linux:
     runs-on: ubuntu-latest
@@ -25,6 +28,9 @@ jobs:
         working-directory: rclone-triage
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
       - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067
         with:
           toolchain: 1.95.0
@@ -36,6 +42,17 @@ jobs:
         run: |
           bash ../scripts/download-rclone.sh
           bash ../scripts/download-rclone.sh --linux "$RUNNER_TEMP/rclone-smoke"
+      - name: Provider evidence regressions
+        run: python -B -m unittest discover -s ../scripts/tests -p 'test_*.py'
+      - name: Isolated backend protocol fixtures
+        run: python -B ../scripts/provider-lab/run_lab.py --rclone "$RUNNER_TEMP/rclone-smoke" --report "$RUNNER_TEMP/provider-fixtures.json"
+      - name: Require current provider plans and protocol evidence
+        if: ${{ !cancelled() }}
+        run: |
+          python -B ../scripts/provider_coverage.py --rclone "$RUNNER_TEMP/rclone-smoke" \
+            --report "$RUNNER_TEMP/provider-evidence.json" \
+            --fixture-receipt "$RUNNER_TEMP/provider-fixtures.json" \
+            --require-plans --require-fixtures local,http,webdav,ftp,sftp,s3
       - name: Offline provider contracts
         run: cargo test --locked --release --test provider_smoke --test provider_matrix -- --test-threads=1
       - name: Login and credential regressions without accounts
@@ -122,7 +139,10 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: provider-coverage
-          path: ${{ runner.temp }}/provider-coverage.json
+          path: |
+            ${{ runner.temp }}/provider-coverage.json
+            ${{ runner.temp }}/provider-fixtures.json
+            ${{ runner.temp }}/provider-evidence.json
           if-no-files-found: warn
           retention-days: 14
       - name: Remove temporary credentials
