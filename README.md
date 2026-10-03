@@ -1,6 +1,6 @@
 # triage-with-rclone
 
-Windows cloud acquisition CLI and terminal UI, built in Rust with a verified rclone runtime embedded in the executable. The current development version is **0.2.0**, embedding **rclone 1.75.1**. Windows 10/11 are the deployment targets; Linux CI exercises the portable library and mocked integrations.
+Windows cloud acquisition CLI and terminal UI, built in Rust with a verified rclone runtime embedded in the executable. The current development version is **0.2.0**; [rclone-version.env](rclone-version.env) records the embedded runtime version and hashes. Windows 10/11 are the deployment targets; Linux CI exercises the portable library and mocked integrations.
 
 ## Build and run
 
@@ -13,7 +13,7 @@ cargo build --locked --release
 ./target/release/rclone-triage.exe --name investigation-001 --output-dir C:/Cases
 ```
 
-The bootstrap checks both the downloaded archive and extracted executable against [rclone-version.env](rclone-version.env). Linux contributors must also prepare the embedded Windows asset with `bash scripts/download-rclone.sh` before compiling. Runtime updates require replacing the reviewed version and hashes in that manifest.
+The bootstrap checks both the downloaded archive and extracted executable against [rclone-version.env](rclone-version.env). Linux contributors must also prepare the embedded Windows asset with `bash scripts/download-rclone.sh` before compiling. A daily workflow checks the official stable release and proposes verified runtime updates; see [runtime maintenance](#runtime-maintenance).
 
 The UI supports authentication, existing-config selection, listing, CSV/XLSX queue import, and file acquisition. Case name and output directory apply to both CLI and UI. `/` searches the inventory and `n` advances between matches. Source config files are copied into private working snapshots inside the case; originals are preserved even when rclone refreshes tokens or creates a combined listing remote.
 
@@ -50,7 +50,7 @@ Backend discovery comes from the pinned runtime. A discovered backend or success
 
 New Google Drive/Photos authorization requires your own OAuth client; see [rclone's Google Drive client instructions](https://rclone.org/drive/#making-your-own-client-id). New Drive/OneDrive authorization requests read-only file access. Existing remote credentials retain the permissions previously granted by their provider. Google Photos API access is limited by Google's app-created-data policy and is not an unrestricted photo-library export.
 
-For Google Drive and OneDrive, `--provider NAME --auth-only` saves authentication without SSO/profile inspection, account/drive discovery, connectivity probes, or file listing. This mode requires your own OAuth client registration for either provider; it does not borrow the bundled OneDrive registration's secret. `--no-browser` prints the authorization URL after the application has bound its loopback listener, so another browser can complete the flow. The callback still goes to `http://localhost:53682/`; opening the URL on a different machine requires a controlled relay back to that listener. Alternatively, use `--auth-only --device-code` with a registration that supports device authorization. Ordinary `--provider` behavior still authenticates and lists the remote.
+For Google Drive and OneDrive, `--provider NAME --auth-only` saves authentication without SSO/profile inspection, account/drive discovery, connectivity probes, or file listing. This mode requires your own OAuth client registration for either provider; it does not borrow the bundled OneDrive registration's secret. `--no-browser` prints the authorization URL after the application has bound its loopback listener, so another browser can complete the flow. The callback still goes to `http://localhost:53682/`; opening the URL on a different machine requires a controlled relay back to that listener. OneDrive also supports `--auth-only --device-code` with a suitable registration. Google requires browser authorization for the requested read-only scopes. Ordinary `--provider` behavior still authenticates and lists the remote.
 
 OneDrive auth-only requests exactly `Files.Read offline_access` in browser and device-code flows and saves the same `access_scopes` for refresh. This is intended for reading the signed-in user's own drive: Microsoft documents `Files.Read` as sufficient for [listing](https://learn.microsoft.com/en-us/graph/api/driveitem-list-children?view=graph-rest-1.0) and [downloading](https://learn.microsoft.com/en-us/graph/api/driveitem-get-content?view=graph-rest-1.0). It does not request `Files.Read.All` or `Sites.Read.All`, and does not perform SharePoint discovery. This is not a drive or folder permission boundary: for personal accounts, [`Files.Read` also permits reading shared files](https://learn.microsoft.com/en-us/graph/permissions-reference#filesread). Ordinary OneDrive authorization retains its broader discovery permissions. A narrower request does not revoke permissions previously granted to the OAuth client.
 
@@ -75,10 +75,20 @@ The Windows forensic access-point controller owns its WLAN session and temporary
 
 Equivalent crate commands are `cargo fmt --all -- --check`, `cargo clippy --locked --all-targets --all-features -- -D warnings`, and `cargo test --locked --release -- --test-threads=1`. Live cloud tests are ignored by default; see [provider testing](rclone-triage/tests/provider_testing.md) for explicit opt-in and acceptance limits.
 
+CI checks every curated provider contract and every selectable backend in the actual pinned runtime, plus local login-protocol fixtures. Nightly provider reports show missing credentials explicitly and can require complete live coverage. Saved-credential access tests do not establish fresh login or token refresh.
+
 For acceptance of the downloaded Windows executable in a disposable, disconnected guest, use the [CLI and TUI acceptance harnesses](scripts/acceptance/windows/README.md). They exercise synthetic local sources and retain machine-readable results; they do not establish live-provider or physical-device compatibility.
 
 CI gates prereleases on both Windows and Linux checks. Release assets include executable SHA256 checksums, the runtime manifest, a Cargo dependency inventory, and GitHub build provenance. Verify downloaded binaries with `gh attestation verify rclone-triage.exe --repo Donovoi/triage-with-rclone` and compare `SHA256SUMS`. A dependency inventory is not a complete SBOM for the embedded Go runtime.
 
 See [the hardening record](HARDENING.md) for the reviewed failures, regression coverage, and remaining acceptance work. Inventory entries remain memory-resident; million-object cases require capacity measurements before use. The legacy PowerShell coverage document is historical, not a current parity guarantee.
+
+## Runtime maintenance
+
+The daily `Propose latest stable rclone` workflow reads [the official stable version](https://downloads.rclone.org/version.txt), verifies Windows/Linux archives against the official SHA256SUMS, and pins each extracted executable's hash. It downloads candidates for verification without executing them. Checksums are trusted through the official HTTPS origin; the updater does not independently verify their PGP signature.
+
+Updates use one guarded `automation/rclone-stable` branch and a reviewable PR. The workflow explicitly dispatches Windows/Linux CI for the exact proposed commit, including native provider-catalog checks, because bot-created PR events alone do not guarantee CI runs. Updates require passing checks and review before merge. Failed downloads, changed checksums or provider contracts keep the current pin intact. Daily scheduling and review introduce delay after an upstream release; the embedded runtime never silently self-updates.
+
+Run `python scripts/update-rclone.py` for a dry run, or `python scripts/update-rclone.py --write` to prepare the verified manifest change locally. Use `--refresh-current` to reverify the pinned release. Run the offline updater regressions with `python -m unittest discover -s scripts/tests -p 'test_*.py'`. Both bootstraps and CI consume the same manifest.
 
 Licensed under [Apache-2.0](LICENSE).

@@ -1,235 +1,74 @@
-# Provider Testing Strategy
+# Provider testing
 
-## Overview
+## Coverage enforced in CI
 
-`rclone-triage` should follow the same broad pattern as upstream rclone:
+The pinned runtime supplies the complete backend catalog. The curated provider enum and `CloudProvider::all()` are generated together; adding a variant also requires an exhaustive, independently asserted schema contract in `tests/provider_matrix.rs`.
 
-- keep **always-on contract tests** for every provider known to the program
-- run **mock and emulator-backed integration tests** in normal CI
-- run **credentialed smoke tests** only for explicitly configured test remotes
-- reserve **manual/release validation** for the providers with the hardest auth flows
+Every Windows and Linux CI run checks:
 
-The source of truth for supported providers is `src/providers/mod.rs` via
-`CloudProvider::all()`, not this document.
+- Contracts for all 58 curated providers: backend identity, required options, authentication classification, OAuth parameters, configuration and hashes.
+- The verified native rclone executable's actual `config providers` output: currently 69 schemas and 61 selectable backends. Eight wrapper backends are intentionally excluded. Newly discovered backends use manual configuration until their authentication route is explicitly supported.
+- Local synthetic login protocols, credential parsing, callback state validation, PKCE and token exchange. All nine generic OAuth routes use the actual callback and exchange code against local fixtures. Drive/OneDrive auth-only tests also verify persistence and failure rollback. These tests do not establish vendor acceptance of a login or refresh grant.
+- Existing integration tests for inventory parsing, queues, downloads, reporting, config isolation and integrity checks, plus updater regression tests.
 
-## Testing Layers
+Run the normal suite with `cargo test --locked --release -- --test-threads=1` from the crate directory. For the metadata-only runtime check, bootstrap the native runtime and set `RCLONE_PROVIDER_SCHEMA_BINARY` to its absolute path, then run:
 
-### 1. Provider contract tests (always on)
+```powershell
+$env:RCLONE_PROVIDER_SCHEMA_BINARY = (Resolve-Path ./assets/rclone.exe).Path
+cargo test --locked --release --test provider_matrix pinned_rclone_catalog_matches_provider_contracts -- --ignored --exact --test-threads=1
+```
 
-These tests run without credentials or network access and should cover **every**
-provider in `CloudProvider::all()`.
+The runtime's SHA256 is checked before execution, its version must match the build, and discovery uses an empty isolated config. Linux CI prepares its native binary using `scripts/download-rclone.sh --linux <absolute-output-path>`.
 
-Current coverage lives in:
+## Authentication boundaries
 
-- `tests/provider_matrix.rs`
-- `src/providers/mod.rs` unit tests
-- `src/providers/config.rs` unit tests
+Generic OAuth coverage applies to Drive, OneDrive, Dropbox, Box, Google Photos, HiDrive, Premiumize, Putio and Yandex. Mailru, PikPak, SugarSync, Jottacloud and ShareFile require provider-specific protocols. pCloud additionally needs its regional hostname, while Zoho requires region, token-type and root configuration. These seven providers use manual setup or import of a complete rclone config, instead of the application's generic OAuth exchange. Unknown discovered providers also use manual setup.
 
-These checks validate things like:
+Device-code authorization is exposed for OneDrive only. Google's limited-input device flow does not support the read-only Drive/Photos scopes this application needs; use browser authorization with an appropriate client registration. See the [Google scope restrictions](https://developers.google.com/identity/protocols/oauth2/limited-input-device#allowedscopes).
 
-- unique `rclone_type`, `short_name`, and display names
-- default auth classification (`OAuth`, `KeyBased`, `UserPass`)
-- OAuth config completeness for OAuth-capable backends
-- hash type normalization and uniqueness
-- `ProviderEntry::from_known(...)` consistency
+Malformed or ambiguous custom OAuth JSON fails closed. Custom secrets are passed to child rclone processes through their environment, not command arguments. Test configurations, tokens, account identities and raw service responses must stay outside the repository and public CI artifacts.
 
-This layer is the minimum safety net for every pull request.
+## Explicit live access checks
 
-### 2. Mock integration tests (always on)
+`tests/provider_smoke.rs` is ignored by default. It requires an explicit config and an absolute, hash-verified native rclone path. It reads only remotes whose names begin with the exact prefix `Test`; every selected backend must exist in the discovered catalog. Duplicate or case-aliased Test names fail. No default credential store is used.
 
-These tests exercise the app’s rclone wrapper logic with a fake rclone binary.
+The test performs `listremotes` and one shallow `lsjson --max-depth 1 --hash` per selected remote. It issues no remote write commands. Use dedicated synthetic folders and a disposable private copy of the config, because rclone may refresh tokens in that copy. Scope the remote before running: an unrestricted remote would list the account root. A successful listing verifies existing-credential read access only; it does not prove a new login, a refresh grant, downloads or remote-source preservation.
 
-Current coverage lives in:
+```powershell
+$env:RCLONE_PROVIDER_SMOKE_CONFIG = 'C:/PrivateTests/working-rclone.conf'
+$env:RCLONE_PROVIDER_SMOKE_RCLONE = (Resolve-Path ./assets/rclone.exe).Path
+$env:RCLONE_PROVIDER_SMOKE_BACKENDS = 'drive,onedrive'
+$env:RCLONE_PROVIDER_SMOKE_REPORT = 'C:/PrivateTests/provider-coverage-new.json'
+cargo test --locked --release --test provider_smoke test_configured_provider_remotes_smoke -- --ignored --exact --nocapture --test-threads=1
+```
 
-- `tests/integration.rs`
-- `tests/provider_integration.rs`
+Optional controls:
 
-These validate:
+| Variable | Behavior |
+|---|---|
+| `RCLONE_PROVIDER_SMOKE_BACKENDS` | Comma-separated backend IDs, curated short names or Test remote names. Blank selects all Test remotes. Every requested item must match; typos, partially met filters and comma-only filters fail. |
+| `RCLONE_PROVIDER_SMOKE_REQUIRE_ALL` | `true` or `1` requires a selected account for every discovered backend. `false`, `0` or unset permits partial coverage. Other values fail. |
+| `RCLONE_PROVIDER_SMOKE_REPORT` | A new JSON output path; existing files are never overwritten. |
+| `RCLONE_PROVIDER_SMOKE_REPORT_ONLY` | `true` or `1` produces the complete missing-coverage inventory without reading any account config. It makes no live-access claim. |
 
-- `lsjson` parsing
-- download queue behavior
-- report generation
-- connectivity checks
-- config handling
-- hash verification workflows
+Every discovered backend gets a row: `not_configured`, `not_requested`, `not_run`, `passed` or `failed`. One successful account cannot hide another account's failure. The report contains backend IDs, authentication categories, counts and statuses; it omits remote names, account identities, filenames, credentials and raw provider errors. `fresh_login_verified` and `refresh_grant_verified` remain false in this harness. `all_discovered_providers_passed` becomes true only when every row passed and there were no errors.
 
-This layer ensures the wrapper logic works even when a real cloud account is not available.
+## Scheduled checks
 
-### 3. Live provider smoke tests (opt-in)
+`.github/workflows/provider-smoke.yml` runs nightly and on manual dispatch. It always checks offline contracts, login regressions and the actual runtime catalog. Without test credentials it publishes the full `not_configured` inventory and explicitly states that live access did not run. The sanitized JSON is retained for 14 days. Missing prerequisites are reported as unavailable coverage, never as a live pass.
 
-These are lightweight, read-only tests against **explicitly named test remotes**.
+To opt in to cloud access on GitHub-hosted runners, provision a dedicated synthetic-test config through the repository secret `RCLONE_PROVIDER_SMOKE_CONFIG`. Keep the source credentials in the operator's vault; do not commit them. The workflow creates a private temporary config and removes it after the run. Refreshed tokens in that temporary copy are not exported or written back to the secret; providers that rotate refresh tokens may require deliberate credential renewal.
 
-Current coverage lives in:
+Scheduled runs use repository variables `RCLONE_PROVIDER_SMOKE_BACKENDS` and `RCLONE_PROVIDER_SMOKE_REQUIRE_ALL`. Manual inputs override those defaults, including explicit false or an empty filter. `require_all` fails when credentials are absent or any backend lacks selected coverage. Pull-request CI never requires cloud secrets.
 
-- `tests/provider_smoke.rs`
-
-The live smoke test intentionally only uses remotes that:
-
-- exist in the chosen rclone config
-- have names starting with `Test`
-- use a backend type that maps to a known `CloudProvider`
-
-This mirrors rclone’s upstream convention of `TestDrive`, `TestOneDrive`, etc.
-
-The smoke test performs:
-
-- `rclone listremotes`
-- shallow connectivity (`lsjson --max-depth 1`)
-- shallow top-level `lsjson`
-- `--hash` on providers that advertise hash support
-
-It does **not** create, modify, or delete remote data.
-
-### 4. Release validation (manual)
-
-Some providers still need manual or semi-manual verification before release,
-especially when they depend on:
-
-- MFA or interactive browser flows
-- cookies or session reuse
-- enterprise-only account variants
-- brittle/rate-limited vendor APIs
-
-Examples include iCloud, Google Photos, OneDrive Business variants, and any provider
-whose upstream rclone backend needs provider-specific ignores or workarounds.
-
-## How the live smoke test is configured
-
-### Restrict a OneDrive personal acceptance case to its synthetic folder
+## Restrict a OneDrive personal acceptance case to its synthetic folder
 
 For the pinned rclone 1.75.1 runtime, retain the verified drive ID and raw folder item ID separately in private test approvals, then set the working configuration's `root_folder_id` to `<drive-id>#<folder-item-id>`. A raw item ID alone can make top-level file metadata lookup fall back to the drive root, even when nested files work. This follows the pinned backend's [path resolution](https://github.com/rclone/rclone/blob/v1.75.1/backend/onedrive/onedrive.go#L2951-L3027) and [item ID normalization](https://github.com/rclone/rclone/blob/v1.75.1/backend/onedrive/api/types.go#L436-L442). Verify the exact approved drive/folder pair; reject aliases, mismatched prefixes and extra separators. Preserve the original authenticated configuration.
 
 Set `delta = false`: [OneDrive delta listing](https://rclone.org/onedrive/#onedrive-delta) traverses from the drive root even for a subfolder request. Start with one known synthetic file directly under the configured folder, then verify both root and nested file acquisitions against independent expected hashes. Do not treat a successful nested-file download as proof that the root is configured correctly. Folder selection controls these test requests; the OAuth grant remains account-wide.
 
-### Run the opt-in smoke test
+## New providers and release acceptance
 
-The live test is ignored by default and requires an explicit
-`RCLONE_PROVIDER_SMOKE_CONFIG` path. It refuses fallback credential stores.
-An unreadable config, missing runtime, or empty matching Test-remote set fails
-the explicitly requested test rather than returning a passing skip.
+For a curated provider, update metadata, its independent schema contract, configuration and authentication tests. A new backend appearing in rclone automatically enters discovery and the live coverage report; it does not automatically acquire a tested login implementation or credentials.
 
-```powershell
-$env:RCLONE_PROVIDER_SMOKE_CONFIG = 'C:/TestAccounts/rclone.conf'
-$env:RCLONE_PROVIDER_SMOKE_RCLONE = (Resolve-Path ./assets/rclone.exe).Path
-cargo test --locked --release --test provider_smoke test_configured_provider_remotes_smoke -- --ignored --exact --nocapture --test-threads=1
-```
-
-Use a disposable working copy of the config: rclone can refresh tokens in it.
-These commands run from the crate directory after the runtime bootstrap.
-The GitHub workflow creates a private temporary config, prepares both pinned
-runtime assets, and removes the config after the run. Without credentials its
-summary explicitly states that live acceptance was not run.
-
-Optional environment variables:
-
-- `RCLONE_PROVIDER_SMOKE_RCLONE` — path to the rclone binary to use
-- `RCLONE_PROVIDER_SMOKE_BACKENDS` — comma-separated backend filter such as `drive,s3,onedrive`
-
-For GitHub Actions, the easiest setup is to store the full contents of an
-`rclone.conf` file in a repository secret named `RCLONE_PROVIDER_SMOKE_CONFIG`.
-That single secret can contain many `Test*` remotes, so you do **not** need one
-workflow input per account.
-
-Recommended naming convention for live test remotes:
-
-- `TestDrive`
-- `TestOneDrive`
-- `TestDropbox`
-- `TestS3`
-- `TestAzureBlob`
-
-Keep these remotes small and disposable. The smoke tests are read-only, but small remotes keep
-nightly runs fast and predictable.
-
-## Recommended CI split
-
-### Pull requests
-
-Run:
-
-- provider contract tests
-- all existing mock/unit/integration tests
-
-Do **not** require real provider credentials for PR validation.
-
-### Nightly / scheduled
-
-Run:
-
-- the full Rust test suite
-- the live smoke test against configured `Test*` remotes
-
-The repository workflow for this is:
-
-- `.github/workflows/provider-smoke.yml`
-
-It runs on a nightly schedule and via manual dispatch.
-
-Optional repository variable:
-
-- `RCLONE_PROVIDER_SMOKE_BACKENDS` — default backend filter for the workflow
-
-Suggested nightly provider set:
-
-- Google Drive
-- OneDrive
-- Dropbox
-- Box
-- Google Photos
-- pCloud
-- S3
-- Backblaze B2
-- Azure Blob
-- Google Cloud Storage
-- WebDAV
-- SFTP
-
-Expand gradually; do not try to light up every provider on day one.
-
-### Release gate
-
-Before release, manually validate:
-
-- OAuth/browser auth flows still complete
-- config-browser import works for representative providers
-- list/download/hash verification works end-to-end
-- error messages remain informative on failed auth/list operations
-
-## Why not test every provider on every PR?
-
-Because upstream rclone doesn’t do that either.
-
-Real provider testing has unavoidable constraints:
-
-- credentials and secret rotation
-- rate limits
-- provider-specific feature gaps
-- eventual consistency
-- unstable or region-specific APIs
-- business/personal account differences
-
-Upstream rclone handles this with a dedicated backend test harness, configured `Test*`
-remotes, per-provider ignores, and daily integration runs. `rclone-triage` should keep
-the same philosophy while focusing on the parts this application owns.
-
-## Adding or updating a provider
-
-When a provider is added or changed:
-
-1. Update `CloudProvider` metadata in `src/providers/mod.rs`
-2. Update `ProviderConfig` in `src/providers/config.rs`
-3. Add or update contract assertions in `tests/provider_matrix.rs`
-4. Add mock/integration coverage if the wrapper behavior changed
-5. Add a `Test*` remote and nightly smoke coverage if the provider matters for production use
-6. Update this document if the workflow changed
-
-## Practical goal
-
-The realistic goal is **broad automated confidence plus targeted live validation**.
-
-That means:
-
-- every declared provider is checked structurally
-- major provider families are tested behaviorally
-- live remotes are validated safely and repeatedly
-- the app stays reliable without pretending we can fully emulate the entire cloud industry in CI
+For each real account type, separately verify browser/MFA login, listing, sample acquisition and independent hashes, refresh, denial/cancellation and cleanup. Enterprise variants, Shared Drives and Google Photos restrictions need their own cases. Record the exact tested binary, scope and outcome without account information. See [HARDENING.md](../../HARDENING.md) for completed live acceptance and outstanding gaps. Synthetic tests and schema checks do not replace those account-level results.

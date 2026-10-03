@@ -54,6 +54,14 @@ OneDrive also passed an instrumented refresh-and-read case. A successful Microso
 
 Account identifiers, cloud root identifiers, credentials and raw transcripts are excluded from this repository. Dedicated client credentials and successful working configurations are retained in the operator's credential vault. These results apply to the explicitly identified binaries and account types; Workspace My Drive does not establish Shared Drive compatibility. No before/after remote inventory or version comparison was collected to independently establish remote-source preservation.
 
+## Provider coverage and runtime maintenance (2026-10-03)
+
+Provider enumeration and exhaustive independent schema contracts now cover every curated provider. Windows/Linux CI also inspects the hash-verified native rclone catalog with an empty config, including newly discovered backends and their manual setup schemas. Synthetic login fixtures exercise the production loopback callback, state checks, PKCE and token exchange for every supported generic OAuth route. Auth-only tests verify successful persistence and failure rollback. These are protocol tests, not vendor login acceptance.
+
+Review removed seven incompatible generic OAuth routes in favor of manual setup/config import, including pCloud's regional-host requirements and Zoho's region/root setup. Google device-code authorization is unavailable because its permitted scopes do not include the required read-only Drive/Photos access. Custom OAuth config errors now fail closed, credentials stay out of rclone arguments, and callback/token failures suppress provider-supplied private diagnostics.
+
+Nightly access checks report every discovered backend, including missing credentials, and optionally require complete live coverage. Reports contain only backend categories, counts and statuses; they never treat saved-credential listing as proof of fresh login or refresh. The daily runtime updater verifies official release archives and extracted executables before proposing a manifest-only PR, then dispatches CI for that exact commit. Updates remain reviewable and do not change the running application's embedded runtime automatically. See [provider testing](rclone-triage/tests/provider_testing.md) and [runtime maintenance](README.md#runtime-maintenance).
+
 ## Acceptance still required
 
 The provider results above cover only the named account types and scenarios. For remaining providers, run configured Test remotes using the explicit smoke workflow, then verify auth, listing, sample download, token refresh, and cleanup. Live cloud TUI acquisition, Shared Drives, actual grant revocation and mid-download cloud cancellation remain unverified. AP hardware, real browser encryption, and vault accessibility need dedicated Windows lab acceptance. Abrupt process/OS termination is not equivalent to graceful cleanup; retain manifests and inspect partial files after interruption.

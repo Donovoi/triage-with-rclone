@@ -483,6 +483,16 @@ fn maybe_fallback_to_onedrive_device_code<
     }
 }
 
+fn require_browser_auth_provider(provider: &crate::providers::ProviderEntry) -> Result<()> {
+    if provider.auth_kind() != crate::providers::ProviderAuthKind::OAuth {
+        bail!(
+            "Backend '{}' requires manual configuration or an existing rclone config; browser/mobile OAuth is not supported.",
+            provider.short_name()
+        );
+    }
+    Ok(())
+}
+
 fn build_auth_tasks(app: &App) -> Result<Vec<AuthBatchTask>> {
     if matches!(app.selected_action, Some(MenuAction::AutoDetectAccounts)) {
         return crate::ui::flows::auto_detect::build_auth_tasks_from_detected_accounts(app);
@@ -508,6 +518,16 @@ fn build_auth_tasks(app: &App) -> Result<Vec<AuthBatchTask>> {
 
     let mut tasks = Vec::new();
     for provider in providers {
+        require_browser_auth_provider(&provider)?;
+        if app.selected_action == Some(MenuAction::MobileAuth)
+            && app.mobile_auth_flow == Some(crate::ui::MobileAuthFlow::DeviceCode)
+            && provider.known != Some(crate::providers::CloudProvider::OneDrive)
+        {
+            bail!(
+                "Device-code authentication is not supported for '{}'; use browser redirect authentication.",
+                provider.short_name()
+            );
+        }
         let requires_browser = matches!(app.selected_action, Some(MenuAction::Authenticate))
             && provider.known.is_some()
             && matches!(
@@ -871,6 +891,7 @@ fn perform_single_auth_task<
     task: &AuthBatchTask,
 ) -> Result<AuthOutcome> {
     let provider = task.provider.clone();
+    require_browser_auth_provider(&provider)?;
     let batch_label = format_batch_progress(app, task);
 
     let mut fallback_base: Option<String> = None;
@@ -1011,24 +1032,6 @@ fn perform_single_auth_task<
             )
         }
     } else {
-        match provider.auth_kind() {
-            crate::providers::ProviderAuthKind::KeyBased
-            | crate::providers::ProviderAuthKind::UserPass => {
-                bail!(
-                    "Backend '{}' does not appear to use OAuth (detected: {:?}). rclone-triage cannot auto-authenticate it yet. Configure it in an rclone config and use Retrieve List / Mount / Download from CSV.",
-                    provider.short_name(),
-                    provider.auth_kind()
-                );
-            }
-            crate::providers::ProviderAuthKind::Unknown => {
-                app.log_info(format!(
-                    "Backend '{}' auth type unknown; attempting OAuth via rclone authorize (best effort).",
-                    provider.short_name()
-                ));
-            }
-            crate::providers::ProviderAuthKind::OAuth => {}
-        }
-
         let base = provider.short_name();
         let remote_name = config.next_available_remote_name(base)?;
         fallback_base = Some(base.to_string());
@@ -1424,6 +1427,61 @@ mod tests {
     use crate::providers::session::BrowserSession;
     use crate::providers::{CloudProvider, ProviderEntry};
     use anyhow::Context;
+
+    #[test]
+    fn google_mobile_auth_preserves_redirect_but_rejects_device_code_tasks() {
+        for provider in [CloudProvider::GoogleDrive, CloudProvider::GooglePhotos] {
+            let mut app = App::new();
+            app.selected_action = Some(MenuAction::MobileAuth);
+            app.provider.chosen = Some(ProviderEntry::from_known(provider));
+            app.mobile_auth_flow = Some(crate::ui::MobileAuthFlow::DeviceCode);
+            assert!(build_auth_tasks(&app)
+                .unwrap_err()
+                .to_string()
+                .contains("Device-code"));
+            app.mobile_auth_flow = Some(crate::ui::MobileAuthFlow::Redirect);
+            assert_eq!(build_auth_tasks(&app).unwrap().len(), 1);
+        }
+    }
+
+    #[test]
+    fn backend_specific_and_unknown_protocols_cannot_create_oauth_tasks() {
+        let mut providers = [
+            CloudProvider::Jottacloud,
+            CloudProvider::PCloud,
+            CloudProvider::ShareFile,
+            CloudProvider::Zoho,
+            CloudProvider::Mailru,
+            CloudProvider::PikPak,
+            CloudProvider::SugarSync,
+        ]
+        .into_iter()
+        .map(ProviderEntry::from_known)
+        .collect::<Vec<_>>();
+        providers.extend(
+            crate::providers::discovery::providers_from_rclone_json(
+                r#"[{"Prefix":"future_backend","Options":[{"Name":"token_url"}]}]"#,
+            )
+            .unwrap()
+            .providers,
+        );
+        for action in [
+            MenuAction::Authenticate,
+            MenuAction::SmartAuth,
+            MenuAction::MobileAuth,
+        ] {
+            for provider in &providers {
+                let mut app = App::new();
+                app.selected_action = Some(action);
+                app.provider.chosen = Some(provider.clone());
+                let error = build_auth_tasks(&app).unwrap_err();
+                assert!(
+                    error.to_string().contains("manual configuration"),
+                    "{provider:?}: {error}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn access_point_guard_stops_on_terminal_early_return() {

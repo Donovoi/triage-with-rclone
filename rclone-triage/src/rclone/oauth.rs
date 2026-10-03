@@ -253,24 +253,23 @@ impl OAuthFlow {
                     let _ = request.respond(response);
                     continue;
                 }
-                CallbackParse::Error { error, description } => {
+                CallbackParse::Error { error, .. } => {
                     let response = Response::from_string(format!(
                         r#"<html>
                         <head><title>Authentication Failed</title></head>
                         <body>
                         <h1>Authentication Failed</h1>
                         <p>Error: {}</p>
-                        <p>{}</p>
+                        <p>Authorization was not completed.</p>
                         <p>You can close this window.</p>
                         </body>
                         </html>"#,
-                        escape_html(&error),
-                        escape_html(&description)
+                        safe_oauth_error_code(&error)
                     ))
                     .with_header(content_type_header());
                     let _ = request.respond(response);
 
-                    bail!("OAuth error: {} - {}", error, description);
+                    bail!("OAuth error: {}", safe_oauth_error_code(&error));
                 }
                 CallbackParse::Success { code, state } => {
                     let response = Response::from_string(
@@ -413,12 +412,17 @@ fn content_type_header() -> tiny_http::Header {
     tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..]).unwrap()
 }
 
-fn escape_html(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&#x27;")
+fn safe_oauth_error_code(error: &str) -> &'static str {
+    match error {
+        "access_denied" => "access_denied",
+        "invalid_request" => "invalid_request",
+        "unauthorized_client" => "unauthorized_client",
+        "unsupported_response_type" => "unsupported_response_type",
+        "invalid_scope" => "invalid_scope",
+        "server_error" => "server_error",
+        "temporarily_unavailable" => "temporarily_unavailable",
+        _ => "authorization_failed",
+    }
 }
 
 /// Extract a query parameter from a URL
@@ -476,6 +480,31 @@ pub(crate) fn urldecoded(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn callback_errors_never_echo_provider_supplied_diagnostics() {
+        for (code, expected) in [
+            ("access_denied", "access_denied"),
+            ("PRIVATE_ERROR", "authorization_failed"),
+        ] {
+            let reserve = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = reserve.local_addr().unwrap().port();
+            drop(reserve);
+            let flow = super::OAuthFlow::new()
+                .with_port(port)
+                .with_timeout(std::time::Duration::from_secs(3));
+            let mut worker = None;
+            let error = flow.run_with_opener("https://example.invalid/authorize?state=synthetic-state", |_| {
+                worker = Some(std::thread::spawn(move || {
+                    let response = ureq::get(&format!("http://127.0.0.1:{port}/?state=synthetic-state&error={code}&error_description=PRIVATE_DESCRIPTION"))
+                        .timeout(std::time::Duration::from_secs(3)).call().unwrap().into_string().unwrap();
+                    assert!(!response.contains("PRIVATE_"));
+                }));
+                Ok(())
+            }).unwrap_err();
+            worker.unwrap().join().unwrap();
+            assert_eq!(error.to_string(), format!("OAuth error: {expected}"));
+        }
+    }
     use super::*;
 
     #[test]

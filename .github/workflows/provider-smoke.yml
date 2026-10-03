@@ -6,6 +6,12 @@ on:
         description: Optional comma-separated backend or Test remote filter
         required: false
         default: ''
+        type: string
+      require_all:
+        description: Fail unless every discovered provider has a selected test account
+        required: false
+        default: false
+        type: boolean
   schedule:
     - cron: '35 7 * * *'
 permissions:
@@ -32,6 +38,12 @@ jobs:
           bash ../scripts/download-rclone.sh --linux "$RUNNER_TEMP/rclone-smoke"
       - name: Offline provider contracts
         run: cargo test --locked --release --test provider_smoke --test provider_matrix -- --test-threads=1
+      - name: Login and credential regressions without accounts
+        run: 'cargo test --locked --release --lib providers:: -- --test-threads=1'
+      - name: Validate every provider against the pinned runtime
+        env:
+          RCLONE_PROVIDER_SCHEMA_BINARY: ${{ runner.temp }}/rclone-smoke
+        run: cargo test --locked --release --test provider_matrix pinned_rclone_catalog_matches_provider_contracts -- --ignored --exact --test-threads=1
       - name: Prepare explicit smoke config
         id: config
         env:
@@ -39,19 +51,80 @@ jobs:
         run: |
           if [[ -z "$SMOKE_CONFIG" ]]; then
             echo 'configured=false' >> "$GITHUB_OUTPUT"
-            echo 'Live provider acceptance NOT RUN: no smoke credentials configured. Offline contracts only.' >> "$GITHUB_STEP_SUMMARY"
+            echo 'Live access NOT RUN: no smoke credentials configured. The coverage artifact will identify every unconfigured provider.' >> "$GITHUB_STEP_SUMMARY"
           else
             umask 077
             printf '%s\n' "$SMOKE_CONFIG" > "$RUNNER_TEMP/triage-smoke.conf"
             echo 'configured=true' >> "$GITHUB_OUTPUT"
           fi
-      - name: Live provider acceptance
+      - name: Inventory missing live coverage without reading credentials
+        if: steps.config.outputs.configured == 'false'
+        env:
+          RCLONE_PROVIDER_SMOKE_RCLONE: ${{ runner.temp }}/rclone-smoke
+          RCLONE_PROVIDER_SMOKE_REPORT: ${{ runner.temp }}/provider-coverage.json
+          RCLONE_PROVIDER_SMOKE_REPORT_ONLY: 'true'
+        run: cargo test --locked --release --test provider_smoke test_configured_provider_remotes_smoke -- --ignored --exact --nocapture --test-threads=1
+      - name: Configured provider read access
         if: steps.config.outputs.configured == 'true'
         env:
           RCLONE_PROVIDER_SMOKE_CONFIG: ${{ runner.temp }}/triage-smoke.conf
           RCLONE_PROVIDER_SMOKE_RCLONE: ${{ runner.temp }}/rclone-smoke
-          RCLONE_PROVIDER_SMOKE_BACKENDS: ${{ inputs.backends || vars.RCLONE_PROVIDER_SMOKE_BACKENDS }}
-        run: cargo test --locked --release --test provider_smoke test_configured_provider_remotes_smoke -- --ignored --exact --nocapture --test-threads=1
+          EVENT_NAME: ${{ github.event_name }}
+          MANUAL_BACKENDS: ${{ inputs.backends }}
+          MANUAL_REQUIRE_ALL: ${{ inputs.require_all }}
+          RCLONE_PROVIDER_SMOKE_BACKENDS: ${{ vars.RCLONE_PROVIDER_SMOKE_BACKENDS }}
+          RCLONE_PROVIDER_SMOKE_REQUIRE_ALL: ${{ vars.RCLONE_PROVIDER_SMOKE_REQUIRE_ALL }}
+          RCLONE_PROVIDER_SMOKE_REPORT: ${{ runner.temp }}/provider-coverage.json
+        run: |
+          if [[ "$EVENT_NAME" == 'workflow_dispatch' ]]; then
+            export RCLONE_PROVIDER_SMOKE_BACKENDS="$MANUAL_BACKENDS"
+            export RCLONE_PROVIDER_SMOKE_REQUIRE_ALL="$MANUAL_REQUIRE_ALL"
+          fi
+          cargo test --locked --release --test provider_smoke test_configured_provider_remotes_smoke -- --ignored --exact --nocapture --test-threads=1
+      - name: Require credentials when full live coverage was requested
+        if: steps.config.outputs.configured == 'false'
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          MANUAL_REQUIRE_ALL: ${{ inputs.require_all }}
+          REQUIRE_ALL: ${{ vars.RCLONE_PROVIDER_SMOKE_REQUIRE_ALL }}
+        run: |
+          if [[ "$EVENT_NAME" == 'workflow_dispatch' ]]; then
+            REQUIRE_ALL="$MANUAL_REQUIRE_ALL"
+          fi
+          case "$REQUIRE_ALL" in
+            true|1) echo 'Full live coverage requested but no account configuration exists.' >&2; exit 1 ;;
+            false|0|'') ;;
+            *) echo 'Invalid full-coverage option.' >&2; exit 1 ;;
+          esac
+      - name: Summarize sanitized provider coverage
+        if: always()
+        env:
+          COVERAGE_PATH: ${{ runner.temp }}/provider-coverage.json
+        run: |
+          python - <<'PY'
+          import json, os, pathlib, re
+          path = pathlib.Path(os.environ['COVERAGE_PATH'])
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as out:
+              out.write('\nFresh login and refresh grants are not established by saved-credential access tests.\n\n')
+              if not path.exists():
+                  out.write('Coverage report unavailable: a prerequisite did not complete.\n')
+              else:
+                  report = json.loads(path.read_text())
+                  out.write('| Backend | Live read access | Accounts checked |\n|---|---|---:|\n')
+                  for row in report['providers']:
+                      assert re.fullmatch(r'[a-z0-9_]+', row['backend'])
+                      assert row['status'] in ('not_configured', 'not_requested', 'not_run', 'passed', 'failed')
+                      assert isinstance(row['checked_remotes'], int) and row['checked_remotes'] >= 0
+                      out.write(f"| {row['backend']} | {row['status']} | {row['checked_remotes']} |\n")
+          PY
+      - name: Retain sanitized coverage only
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: provider-coverage
+          path: ${{ runner.temp }}/provider-coverage.json
+          if-no-files-found: warn
+          retention-days: 14
       - name: Remove temporary credentials
         if: always()
         run: rm -f -- "$RUNNER_TEMP/triage-smoke.conf"
