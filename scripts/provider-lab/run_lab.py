@@ -27,10 +27,10 @@ import uuid
 import zipfile
 import zlib
 
-from fixture_servers import FILES, State, probe_write_rejection, serve
+from fixture_servers import FILES, State, SwiftState, probe_write_rejection, serve
 
 
-BACKENDS = ("local", "http", "webdav", "ftp", "sftp", "s3", "archive")
+BACKENDS = ("local", "http", "webdav", "ftp", "sftp", "s3", "archive", "swift")
 HARNESS_FILES = ("fixture_servers.py", "run_lab.py")
 MAX_OUTPUT = 2 * 1024 * 1024
 COMMAND_TIMEOUT = 20
@@ -561,9 +561,140 @@ def local_fixture_target(runtime, files_root):
     return "Synthetic:" + relative.as_posix() + "/"
 
 
+def swift_options(state, port):
+    # Do not set auth_token/storage_url: those override renewed authorization.
+    return {"type": "swift", "env_auth": "false", "user": state.user, "key": state.password,
+            "auth": f"http://127.0.0.1:{port}/auth/v1.0", "auth_version": "1",
+            "endpoint_type": "public", "no_large_objects": "true"}
+
+
+def swift_renewal_matches(state, denial, size):
+    """Attest ordered server-observed replacement, not two separate logins."""
+    if (state.mode != ("deny" if denial else "renew") or state.forced_401 != 1
+            or state.budget_exceeded or state.unexpected or state.auth_denied or state.storage_denied
+            or state.rejected_payload_bytes or state.rejected_mutations or len(state.revoked) != 1):
+        return False
+    expected = [("grant", 1), ("head", 1), ("get_401", 1)]
+    expected += [("renewal_denied", 1)] if denial else [("grant", 2), ("get", 2)]
+    try:
+        positions = [state.events.index(event) for event in expected]
+    except ValueError:
+        return False
+    if positions != sorted(positions) or len(set(positions)) != len(positions):
+        return False
+    grants = [event for event in state.events if event[0] == "grant"]
+    gets = [event for event in state.events if event[0] == "get"]
+    if denial:
+        return (grants == [("grant", 1)] and not gets and state.generation == 1
+                and len(state.tokens) == 1 and state.token in state.revoked
+                and 1 <= state.renewal_denied <= 8 and state.payload_bytes == 0)
+    return (grants == [("grant", 1), ("grant", 2)] and gets == [("get", 2)]
+            and state.generation == 2 and len(state.tokens) == 2 and state.token not in state.revoked
+            and state.renewal_denied == 0 and state.payload_bytes == size)
+
+
+def swift_renewal_case(runtime, root, state, config, row):
+    denial = state.mode == "deny"
+    payload = FILES["README-synthetic.txt"]
+    expected_hash = hashlib.sha256(payload).hexdigest()
+    destination = root / ("denied-must-not-exist" if denial else "renewed-verified")
+    before = runtime.sequence
+    code, output, _ = exact_copy(runtime, config, "Synthetic:", "synthetic-bucket/README-synthetic.txt",
+                                root.as_posix(), destination.name)
+    check(runtime.sequence == before + 1, "swift_renewal_not_single_process")
+    check(swift_renewal_matches(state, denial, len(payload)), "swift_renewal_sequence_not_observed")
+    if denial:
+        # RC's stdout may contain an error JSON envelope; no file payload may
+        # be accepted. The server independently accounts for all payload bytes.
+        check(code != 0 and not destination.exists() and payload not in output, "swift_denied_renewal_returned_data")
+        row["capabilities"]["renewal_denial"] = "passed"
+    else:
+        check(code == 0 and destination.is_file() and destination.stat().st_size == len(payload)
+              and digest(destination) == expected_hash, "swift_renewed_download_mismatch")
+        row["capabilities"]["service_token_reacquisition"] = "passed"
+
+
+def swift_checks(runtime, root, row, expected):
+    caps = row["capabilities"]
+    states, ports, preserved = [], [], {}
+
+    def save_config(name, options):
+        path = config_file(root, name, options)
+        data = path.read_bytes()
+        preserved[path] = (data, hashlib.sha256(data).hexdigest())
+        return path
+
+    try:
+        baseline = SwiftState("synthetic", "synthetic-" + uuid.uuid4().hex)
+        states.append(baseline)
+        with serve("swift", baseline) as port:
+            ports.append(port)
+            opts = swift_options(baseline, port)
+            good = save_config("swift-baseline.conf", opts)
+            bad = save_config("swift-denied.conf", dict(opts, key="wrong-synthetic-key"))
+            code, output, _ = runtime.run(["cat", "Synthetic:synthetic-bucket/README-synthetic.txt"], bad)
+            check(code != 0 and not output and baseline.auth_denied > 0 and baseline.generation == 0
+                  and baseline.payload_bytes == 0, "swift_bad_auth_not_observed")
+            caps["authentication_rejection"] = "passed"
+            code, output, _ = runtime.run(["lsjson", "--recursive", "--files-only", "--no-modtime",
+                                            "--no-mimetype", "Synthetic:synthetic-bucket"], good)
+            check(code == 0, "swift_listing_failed")
+            try:
+                got = sorted((entry["Path"], entry["Size"], entry["IsDir"]) for entry in json.loads(output))
+            except (KeyError, TypeError, ValueError):
+                raise LabError("swift_listing_invalid") from None
+            check(got == [(item["path"], item["size"], False) for item in expected], "swift_listing_mismatch")
+            caps["listing"] = "passed"
+            downloads = root / "downloads"
+            downloads.mkdir(mode=0o700)
+            for index, item in enumerate(expected):
+                source = "synthetic-bucket/" + item["path"]
+                exact_file_stat(runtime, good, "Synthetic:", source, item["size"])
+                destination = downloads / f"verified-{index}"
+                code, _, _ = exact_copy(runtime, good, "Synthetic:", source, downloads.as_posix(), destination.name)
+                check(code == 0 and destination.is_file() and destination.stat().st_size == item["size"]
+                      and digest(destination) == item["sha256"], "swift_download_mismatch")
+            caps["download_hash"] = "passed"
+            missing = "synthetic-bucket/absent-synthetic.txt"
+            code, output, _ = runtime.run(["rc", "--loopback", "operations/stat", "fs=Synthetic:", "remote=" + missing,
+                'opt={"noModTime":true,"noMimeType":true,"filesOnly":true}'], good)
+            check(code == 0 and json.loads(output) == {"item": None}, "swift_missing_stat_mismatch")
+            destination = downloads / "missing-must-not-exist"
+            code, output, error = exact_copy(runtime, good, "Synthetic:", missing, downloads.as_posix(), destination.name)
+            check(code != 0 and not destination.exists() and baseline.missing >= 2
+                  and b"object not found" in (output + error).lower(), "swift_missing_object_accepted")
+            caps["missing_object_rejection"] = "passed"
+            check(baseline.rejected_mutations == 0, "swift_unexpected_mutation")
+            upload = root / "synthetic-write.txt"
+            write_private(upload, b"Synthetic rejected Swift write.\n")
+            code, _, _ = exact_copy(runtime, good, root.as_posix(), upload.name,
+                                    "Synthetic:", "synthetic-bucket/write-must-not-exist.txt")
+            check(code != 0 and 1 <= baseline.rejected_mutations <= 4, "swift_write_rejection_not_observed")
+            caps["fixture_write_rejection"] = "passed"
+        for mode in ("renew", "deny"):
+            state = SwiftState("synthetic", "synthetic-" + uuid.uuid4().hex, mode)
+            states.append(state)
+            with serve("swift", state) as port:
+                ports.append(port)
+                config = save_config(f"swift-{mode}.conf", swift_options(state, port))
+                swift_renewal_case(runtime, root, state, config, row)
+    finally:
+        closed = all(state.cleanup_complete for state in states) and all(listener_closed(port) for port in ports)
+        caps["cleanup"] = "passed" if closed else "failed"
+        check(closed, "swift_listener_cleanup_failed")
+        check(all(not state.budget_exceeded and not state.unexpected and not state.rejected_payload_bytes
+                  and not state.storage_denied for state in states),
+              "swift_unexpected_request_or_budget")
+        check(all(served_source_unchanged(state, expected) for state in states), "swift_source_changed")
+        caps["source_preservation"] = "passed"
+        check(all(path.is_file() and path.read_bytes() == data and digest(path) == sha256
+                  for path, (data, sha256) in preserved.items()), "swift_config_changed")
+        caps["config_preservation"] = "passed"
+
+
 def run_backend(runtime, backend, root):
     root.mkdir(mode=0o700)
-    independent = backend in ("http", "webdav", "ftp")
+    independent = backend in ("http", "webdav", "ftp", "swift")
     row = {"backend": backend,
            "fixture_kind": "local" if backend in ("local", "archive") else "independent_loopback" if independent else "rclone_loopback",
            "capabilities": {key: "not_run" for key in (
@@ -578,6 +709,8 @@ def run_backend(runtime, backend, root):
         row["capabilities"]["host_key_rejection"] = "not_run"
     if independent:
         row["capabilities"]["fixture_write_rejection"] = "not_run"
+    if backend == "swift":
+        row["capabilities"].update(config_preservation="not_run", service_token_reacquisition="not_run", renewal_denial="not_run")
     if backend in ("http", "webdav"):
         row["capabilities"].update(truncated_download_rejection="not_run", cancellation_cleanup="not_run")
     source = root / "source"
@@ -592,6 +725,9 @@ def run_backend(runtime, backend, root):
         prepare_files(files_root)
     port = None
     try:
+        if backend == "swift":
+            swift_checks(runtime, root, row, expected)
+            return row
         if backend == "archive":
             archive_checks(runtime, root, row)
             return row
@@ -649,7 +785,7 @@ def run_backend(runtime, backend, root):
     except (LabError, OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as error:
         row["errors"].append(str(error) if isinstance(error, LabError) else "fixture_error")
     finally:
-        closed = port is None or listener_closed(port)
+        closed = (port is None or listener_closed(port)) and row["capabilities"]["cleanup"] != "failed"
         if closed:
             row["capabilities"]["cleanup"] = "passed"
         else:
