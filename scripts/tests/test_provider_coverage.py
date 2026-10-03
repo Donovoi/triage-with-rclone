@@ -80,6 +80,14 @@ def swift_receipt():
     return candidate
 
 
+def b2_receipt():
+    candidate = receipt("b2")
+    candidate["backends"][0]["capabilities"] = {
+        capability: "passed" for capability in coverage.B2_REQUIRED_CAPABILITIES
+    }
+    return candidate
+
+
 class CoverageTests(unittest.TestCase):
     def setUp(self):
         self.catalog = coverage.catalog_from_schemas([schema()])
@@ -691,11 +699,11 @@ class CoverageTests(unittest.TestCase):
                 with self.subTest(backend=backend, capability=capability):
                     self.assertIn("invalid_fixture_capability", self.evaluate([candidate], policy, catalog)["errors"])
 
-    def test_config_preservation_supported_only_for_archive_and_swift(self):
+    def test_config_preservation_supported_only_for_archive_swift_and_b2(self):
         for backend in coverage.FIXTURE_KINDS:
             catalog = coverage.catalog_from_schemas([schema(backend)])
             policy = policy_for(catalog)
-            candidate = swift_receipt() if backend == "swift" else receipt(backend)
+            candidate = {"swift": swift_receipt, "b2": b2_receipt}.get(backend, lambda: receipt(backend))()
             if backend == "archive":
                 candidate["backends"][0]["capabilities"] = {
                     key: "passed" for key in coverage.ARCHIVE_REQUIRED_CAPABILITIES
@@ -704,7 +712,7 @@ class CoverageTests(unittest.TestCase):
             candidate["backends"][0]["capabilities"]["config_preservation"] = "passed"
             report = self.evaluate([candidate], policy, catalog)
             with self.subTest(backend=backend):
-                if backend in ("archive", "swift"):
+                if backend in ("archive", "swift", "b2"):
                     self.assertEqual(report["providers"][0]["evidence"]["local_protocol"]["status"], "passed")
                 else:
                     self.assertIn("invalid_fixture_capability", report["errors"])
@@ -712,7 +720,7 @@ class CoverageTests(unittest.TestCase):
     def test_swift_renewal_failure_is_sticky_and_current_provenance_required(self):
         catalog = coverage.catalog_from_schemas([schema("swift")])
         policy = policy_for(catalog)
-        for capability in coverage.SWIFT_ONLY_CAPABILITIES:
+        for capability in coverage.SWIFT_ONLY_CAPABILITIES | {"renewal_denial"}:
             failed = swift_receipt()
             failed["success"] = False
             failed["backends"][0]["capabilities"][capability] = "failed"
@@ -730,6 +738,124 @@ class CoverageTests(unittest.TestCase):
         candidate["started_utc"] = coverage.utc_text(NOW - timedelta(days=2, minutes=1))
         candidate["finished_utc"] = coverage.utc_text(NOW - timedelta(days=2))
         self.assertIn("expired_receipt", self.evaluate([candidate], policy, catalog)["errors"])
+
+    def test_b2_contract_never_qualifies_application_vendor_or_other_lifecycle(self):
+        catalog = coverage.catalog_from_schemas([schema("b2")])
+        policy = policy_for(catalog)
+        required = policy["profiles"]["test"]["required"]
+        required["local_protocol"] = sorted(coverage.B2_REQUIRED_CAPABILITIES)
+        for tier in ("application", "vendor"):
+            required[tier].append("reauthentication")
+        entry = policy["providers"]["b2"]
+        entry["reauthentication_applicability"] = "required"
+        entry["renewal_modes"][0]["connection_session_reauthentication_requirement"] = "required"
+        result = self.evaluate([b2_receipt()], policy, catalog)
+        evidence = result["providers"][0]["evidence"]
+        self.assertEqual(evidence["local_protocol"]["status"], "passed")
+        self.assertEqual(set(evidence["local_protocol"]["capabilities"]), coverage.B2_REQUIRED_CAPABILITIES)
+        for tier in ("application", "vendor"):
+            self.assertEqual(evidence[tier]["status"], "not_verified")
+            for capability in ("authentication", "refresh", "reauthentication"):
+                self.assertEqual(evidence[tier]["capabilities"][capability], "not_verified")
+        self.assertEqual(coverage.gate_errors(result, require_plans=True, require_fixtures=["b2"]), [])
+        self.assertIn("provider_coverage_incomplete", coverage.gate_errors(result, require_complete=True))
+
+    def test_b2_contract_requires_exact_capabilities_and_executed_outcomes(self):
+        catalog = coverage.catalog_from_schemas([schema("b2")])
+        # A weaker profile cannot bypass the producer's mandatory negative cases.
+        policy = policy_for(catalog)
+        for capability in coverage.B2_REQUIRED_CAPABILITIES:
+            for value, error in ((None, "invalid_fixture_capability"),
+                                 ("not_applicable", "invalid_fixture_not_applicable"),
+                                 (True, "invalid_fixture_outcome"),
+                                 ("failed", "inconsistent_fixture_success"),
+                                 ("not_run", "inconsistent_fixture_success")):
+                candidate = b2_receipt()
+                if value is None:
+                    del candidate["backends"][0]["capabilities"][capability]
+                else:
+                    candidate["backends"][0]["capabilities"][capability] = value
+                with self.subTest(capability=capability, value=value):
+                    result = self.evaluate([candidate], policy, catalog)
+                    self.assertIn(error, result["errors"])
+                    self.assertIn("required_fixture_not_verified", coverage.gate_errors(result, require_fixtures=["b2"]))
+        for capability in ("service_token_reacquisition", "refresh", "reauthentication", "archive_crc32",
+                           "host_key_rejection", "truncated_download_rejection", "cancellation_cleanup"):
+            candidate = b2_receipt()
+            candidate["backends"][0]["capabilities"][capability] = "passed"
+            self.assertIn("invalid_fixture_capability", self.evaluate([candidate], policy, catalog)["errors"])
+
+    def test_b2_and_shared_renewal_capabilities_are_backend_scoped(self):
+        for backend in coverage.FIXTURE_KINDS:
+            catalog = coverage.catalog_from_schemas([schema(backend)])
+            policy = policy_for(catalog)
+            for capability, allowed in (("account_token_reacquisition", {"b2"}),
+                                        ("service_token_reacquisition", {"swift"}),
+                                        ("renewal_denial", {"swift", "b2"})):
+                candidate = {"swift": swift_receipt, "b2": b2_receipt}.get(backend, lambda: receipt(backend))()
+                if backend == "archive":
+                    candidate["backends"][0]["capabilities"] = {
+                        key: "passed" for key in coverage.ARCHIVE_REQUIRED_CAPABILITIES
+                    }
+                    candidate["backends"][0]["capabilities"]["authentication_rejection"] = "not_applicable"
+                candidate["backends"][0]["capabilities"][capability] = "passed"
+                result = self.evaluate([candidate], policy, catalog)
+                with self.subTest(backend=backend, capability=capability):
+                    if backend in allowed:
+                        self.assertEqual(result["providers"][0]["evidence"]["local_protocol"]["status"], "passed")
+                    else:
+                        self.assertIn("invalid_fixture_capability", result["errors"])
+
+    def test_b2_requires_independent_fixture_and_current_runtime_harness_manifest(self):
+        catalog = coverage.catalog_from_schemas([schema("b2")])
+        policy = policy_for(catalog)
+        for kind in ("local", "rclone_loopback", "vendor"):
+            candidate = b2_receipt()
+            candidate["backends"][0]["fixture_kind"] = kind
+            self.assertIn("unknown_fixture_backend", self.evaluate([candidate], policy, catalog)["errors"])
+        cases = []
+        for field in ("version", "sha256"):
+            candidate = b2_receipt()
+            candidate["runtime"][field] = "1.75.2" if field == "version" else "d" * 64
+            cases.append((candidate, "receipt_runtime_mismatch"))
+        for field, value, error in (("platform", "windows", "receipt_runtime_mismatch"),
+                                    ("harness_sha256", "d" * 64, "receipt_harness_mismatch"),
+                                    ("fixture_manifest_sha256", "d" * 64, "receipt_fixture_manifest_mismatch"),
+                                    ("finished_utc", coverage.utc_text(NOW + timedelta(seconds=1)), "future_receipt")):
+            candidate = b2_receipt()
+            candidate[field] = value
+            cases.append((candidate, error))
+        candidate = b2_receipt()
+        candidate["started_utc"] = coverage.utc_text(NOW - timedelta(days=2, minutes=1))
+        candidate["finished_utc"] = coverage.utc_text(NOW - timedelta(days=2))
+        cases.append((candidate, "expired_receipt"))
+        for candidate, error in cases:
+            result = self.evaluate([candidate], policy, catalog)
+            self.assertIn(error, result["errors"])
+            self.assertIn("required_fixture_not_verified", coverage.gate_errors(result, require_fixtures=["b2"]))
+
+    def test_b2_renewal_failure_remains_failed_and_private_details_are_omitted(self):
+        catalog = coverage.catalog_from_schemas([schema("b2")])
+        policy = policy_for(catalog)
+        policy["profiles"]["test"]["required"]["local_protocol"] = sorted(coverage.B2_REQUIRED_CAPABILITIES)
+        for capability in ("account_token_reacquisition", "renewal_denial"):
+            failed = b2_receipt()
+            failed["success"] = False
+            failed["backends"][0]["capabilities"][capability] = "failed"
+            for batch in ([failed, b2_receipt()], [b2_receipt(), failed]):
+                result = self.evaluate(batch, policy, catalog)
+                evidence = result["providers"][0]["evidence"]["local_protocol"]
+                self.assertEqual(evidence["status"], "failed")
+                self.assertEqual(evidence["capabilities"][capability], "failed")
+        canary = "PRIVATE_B2_TOKEN_KEY_ACCOUNT_https://private.invalid"
+        candidate = b2_receipt()
+        candidate["raw_stderr"] = canary
+        candidate["backends"][0]["authorizationToken"] = canary
+        self.assertNotIn(canary, json.dumps(self.evaluate([candidate], policy, catalog)))
+        candidate["backends"][0]["errors"] = [canary]
+        result = self.evaluate([candidate], policy, catalog)
+        self.assertIn("invalid_fixture_errors", result["errors"])
+        self.assertNotIn(canary, json.dumps(result))
 
     def test_not_applicable_only_from_reviewed_policy(self):
         policy = policy_for(self.catalog, application=False, vendor=False)
