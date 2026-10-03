@@ -431,6 +431,43 @@
         "reauthentication"
       ]
     },
+    "pixeldrain-configured-key-fixture": {
+      "required": {
+        "application": [
+          "listing",
+          "download_hash",
+          "manifest_integrity",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation"
+        ],
+        "vendor": [
+          "listing",
+          "download_hash",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation"
+        ],
+        "local_protocol": [
+          "listing",
+          "download_hash",
+          "missing_object_rejection",
+          "authentication_rejection",
+          "source_preservation",
+          "config_preservation",
+          "fixture_write_rejection",
+          "cleanup"
+        ]
+      },
+      "review_required": false,
+      "unresolved_applicability": []
+    },
     "seafile-account-token-fixture": {
       "required": {
         "application": [
@@ -2431,16 +2468,25 @@
     "pixeldrain": {
       "canonical_name": "pixeldrain",
       "schema_sha256": "777c2f50c34b0e79c6ab7de3fff3f6d484c42a87ffcde39cd579027dae34c24b",
-      "profile": "hosted-static-credentials",
+      "profile": "pixeldrain-configured-key-fixture",
       "notes": [
         "Pixeldrain filesystem API key requires Pro/subscription or Prepaid plan; the free file-sharing product does not qualify.",
         "Free account/API eligibility: paid_api_required",
-        "Decision is for the pinned configured-key list/download route, not every vendor login method or future API. Expiring object URLs and transfer sessions need separate transfer-resilience tests."
+        "Decision is for the pinned configured-key list/download route, not every vendor login method or future API. Expiring object URLs and transfer sessions need separate transfer-resilience tests.",
+        "The independent loopback fixture covers only an explicit synthetic /api endpoint, root me and a generated API key sent as the Basic password with empty username. Required user-info and successful root-stat setup, exact member metadata/content and complete inventory distinguish accepted reads from tolerated initialization root absence.",
+        "Local evidence requires exact SHA256 and millisecond read metadata, a wrong-key user401 separately from a valid-key known-member403, specific missing-member metadata404, source/config preservation, authenticated fixture DELETE rejection and cleanup. Typed RC stdout errors supplement observed request traces, exit status and empty negative destinations; generic errors or malformed successful responses cannot qualify.",
+        "The native manifest contains three nonempty synthetic files. HTTP range/empty-file unit tests are separate evidence. This fixture does not attest hosted plan eligibility, anonymous shared roots, real login, credential replacement/revocation, OAuth or lifecycle behavior, production application acquisition, TLS or general writes. Existing application/vendor/lifecycle obligations remain unchanged."
       ],
       "source_links": [
         "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/pixeldrain.md",
         "https://rclone.org/pixeldrain/",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/pixeldrain/pixeldrain.go#L140-L145"
+        "https://github.com/rclone/rclone/blob/v1.75.1/backend/pixeldrain/pixeldrain.go#L140-L145",
+        "https://github.com/rclone/rclone/blob/v1.75.1/backend/pixeldrain/pixeldrain.go#L110-L178",
+        "https://github.com/rclone/rclone/blob/v1.75.1/backend/pixeldrain/pixeldrain.go#L191-L225",
+        "https://github.com/rclone/rclone/blob/v1.75.1/backend/pixeldrain/api_client.go#L18-L51",
+        "https://github.com/rclone/rclone/blob/v1.75.1/backend/pixeldrain/api_client.go#L175-L201",
+        "https://github.com/rclone/rclone/blob/v1.75.1/backend/pixeldrain/api_client.go#L233-L265",
+        "https://github.com/rclone/rclone/blob/v1.75.1/backend/pixeldrain/api_client.go#L386-L400"
       ],
       "auth_applicability": "credentials",
       "refresh_applicability": "not_applicable",
