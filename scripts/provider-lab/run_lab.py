@@ -29,11 +29,11 @@ import uuid
 import zipfile
 import zlib
 
-from fixture_servers import FILES, State, SwiftState, B2State, AzureBlobState, AzureFilesState, azure_string_to_sign, probe_write_rejection, serve
+from fixture_servers import FILES, State, SwiftState, B2State, AzureBlobState, AzureFilesState, SeafileState, azure_string_to_sign, probe_write_rejection, serve
 from email.utils import format_datetime
 
 
-BACKENDS = ("local", "http", "webdav", "ftp", "sftp", "s3", "archive", "swift", "b2", "azureblob", "azurefiles")
+BACKENDS = ("local", "http", "webdav", "ftp", "sftp", "s3", "archive", "swift", "b2", "azureblob", "azurefiles", "seafile")
 HARNESS_FILES = ("fixture_servers.py", "run_lab.py")
 MAX_OUTPUT = 2 * 1024 * 1024
 COMMAND_TIMEOUT = 20
@@ -1033,9 +1033,180 @@ def azurefiles_checks(runtime, root, row, expected):
         caps["config_preservation"] = "passed"
 
 
+def seafile_options(state, port, obscured_password):
+    return {"type": "seafile", "url": f"http://127.0.0.1:{port}/", "user": state.user, "pass": obscured_password,
+            "2fa": "false", "library": state.library_name, "create_library": "false"}
+
+
+def seafile_listing_matches(output, expected):
+    try:
+        rows = json.loads(output)
+        if not isinstance(rows, list):
+            return False
+        actual = []
+        for entry in rows:
+            if (not isinstance(entry, dict) or entry["IsDir"] is not False or type(entry["Size"]) is not int
+                    or not isinstance(entry["Path"], str) or not isinstance(entry["ModTime"], str)):
+                return False
+            # Unix mtimes may render in the host's local zone. Compare the
+            # instant, but reject subsecond drift before datetime truncates it.
+            value = entry["ModTime"]
+            if (not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}"
+                                 r"(?:\.0{1,9})?(?:Z|[+-](?:[01][0-9]|2[0-3]):[0-5][0-9])", value)
+                    or value.endswith("-00:00")):  # RFC3339's unknown local offset is not an observed zone.
+                return False
+            timestamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            if timestamp.astimezone(timezone.utc) != datetime(2024, 1, 1, tzinfo=timezone.utc):
+                return False
+            actual.append((entry["Path"], entry["Size"]))
+        return sorted(actual) == [(item["path"], item["size"]) for item in expected]
+    except (ValueError, TypeError, KeyError, OverflowError):
+        return False
+
+
+def seafile_flow_matches(state, kind, member="", expected_size=0):
+    if (state.unexpected or state.budget_exceeded or state.rejected_payload_bytes
+            or state.requests != len(state.events) or state.requests > 16):
+        return False
+    if kind == "wrong_password":
+        return (state.events == [("server_info", ""), ("auth_denied", "")] and state.login_attempts == 1
+                and state.auth_denied == 1 and state.grants == 0 and state.auth_uses == 0 and state.payload_bytes == 0)
+    if kind == "cached_token":
+        return (state.events == [("server_info", ""), ("cached_denied", "")] and state.login_attempts == 0
+                and state.cached_denied == 1 and state.grants == 0 and state.auth_uses == 0 and state.payload_bytes == 0)
+    if (state.events[:3] != [("server_info", ""), ("auth_granted", ""), ("libraries", "")]
+            or state.login_attempts != 1 or state.grants != 1 or not state.token
+            or state.auth_uses != state.requests - 2 or state.auth_denied or state.cached_denied or state.rejected_mutations):
+        return False
+    tail = state.events[3:]
+    if kind == "listing":
+        return (1 <= len(tail) <= 8 and all(event == "directory_list" for event, _ in tail)
+                and any(name == "" for _, name in tail) and state.payload_bytes == 0)
+    if kind in ("stat", "missing"):
+        event = "file_detail" if kind == "stat" else "file_missing"
+        return 1 <= len(tail) <= 4 and all(item == (event, member) for item in tail) and state.payload_bytes == 0
+    if kind == "download":
+        return (3 <= len(tail) <= 6 and all(item == ("file_detail", member) for item in tail[:-2])
+                and tail[-2:] == [("link_issued", member), ("payload", member)] and state.payload_bytes == expected_size)
+    return False
+
+
+def seafile_one_process(runtime, action):
+    before = runtime.sequence
+    result = action()
+    check(runtime.sequence == before + 1, "seafile_case_not_single_process")
+    return result
+
+
+def seafile_exact_stat(runtime, config, item):
+    code, output, _ = runtime.run(["rc", "--loopback", "operations/stat", "fs=Synthetic:", "remote=" + item["path"],
+                                  'opt={"noModTime":false,"noMimeType":true,"filesOnly":true}'], config)
+    try:
+        entry = json.loads(output)["item"]
+    except (KeyError, TypeError, ValueError):
+        raise LabError("seafile_stat_invalid") from None
+    check(code == 0 and seafile_listing_matches(json.dumps([entry]), [item]), "seafile_stat_metadata_mismatch")
+
+
+def seafile_checks(runtime, root, row, expected):
+    caps, states, ports, preserved = row["capabilities"], [], [], {}
+    user, password = "synthetic-" + uuid.uuid4().hex, "synthetic-" + uuid.uuid4().hex
+
+    @contextmanager
+    def case(label, mode="good"):
+        state = SeafileState(user, password)
+        states.append(state)
+        with serve("seafile", state) as port:
+            ports.append(port)
+            options = seafile_options(state, port, wrong_obscured if mode == "wrong_password" else obscured)
+            if mode == "cached_token":
+                options["auth_token"] = state.invalid_cached_token
+            config = config_file(root, "seafile-" + label + ".conf", options)
+            data = config.read_bytes()
+            preserved[config] = (data, hashlib.sha256(data).hexdigest())
+            yield state, config, port
+
+    try:
+        code, output, _ = runtime.run(["obscure", password])
+        check(code == 0 and output.strip(), "seafile_password_setup_failed")
+        obscured = output.decode().strip()
+        code, output, _ = runtime.run(["obscure", "wrong-synthetic-password"])
+        check(code == 0 and output.strip(), "seafile_password_setup_failed")
+        wrong_obscured = output.decode().strip()
+        downloads = root / "downloads"
+        downloads.mkdir(mode=0o700)
+        for mode in ("wrong_password", "cached_token"):
+            with case(mode, mode) as (state, config, _):
+                destination = downloads / (mode + "-must-not-exist")
+                code, output, _ = seafile_one_process(runtime, lambda: exact_copy(runtime, config, "Synthetic:",
+                    "README-synthetic.txt", downloads.as_posix(), destination.name))
+                check(code != 0 and not list(downloads.glob(destination.name + "*"))
+                      and FILES["README-synthetic.txt"] not in output and seafile_flow_matches(state, mode),
+                      "seafile_" + mode + "_denial_not_observed")
+        caps["authentication_rejection"] = "passed"
+        with case("listing") as (state, config, port):
+            code, output, _ = seafile_one_process(runtime, lambda: runtime.run(
+                ["lsjson", "--recursive", "--files-only", "--no-mimetype", "Synthetic:"], config))
+            # Both fixtures intentionally use the same fixed UTC instant. The
+            # validator checks exact names/sizes and rejects sub-microsecond drift.
+            check(code == 0 and seafile_listing_matches(output, expected) and seafile_flow_matches(state, "listing"),
+                  "seafile_listing_or_login_sequence_mismatch")
+            caps["listing"] = "passed"
+            client = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
+            try:
+                target = "/api2/repos/" + state.library_id + "/file/?p=%2FREADME-synthetic.txt"
+                client.request("DELETE", target, body=b"", headers={"Authorization": "Token " + state.token})
+                response = client.getresponse()
+                body = response.read(4097)
+                check(response.status == 403 and len(body) <= 4096 and state.rejected_mutations == 1
+                      and state.events[-1] == ("write_denied", "README-synthetic.txt"), "seafile_write_guard_not_observed")
+            finally:
+                client.close()
+            caps["fixture_write_rejection"] = "passed"
+        for index, item in enumerate(expected):
+            with case("stat-" + str(index)) as (state, config, _):
+                seafile_one_process(runtime, lambda: seafile_exact_stat(runtime, config, item))
+                check(seafile_flow_matches(state, "stat", item["path"]), "seafile_stat_login_sequence_mismatch")
+            with case("download-" + str(index)) as (state, config, _):
+                destination = downloads / ("verified-" + str(index))
+                code, _, _ = seafile_one_process(runtime, lambda: exact_copy(runtime, config, "Synthetic:", item["path"],
+                                                                             downloads.as_posix(), destination.name))
+                check(code == 0 and destination.is_file() and destination.stat().st_size == item["size"]
+                      and digest(destination) == item["sha256"]
+                      and seafile_flow_matches(state, "download", item["path"], item["size"]),
+                      "seafile_download_or_login_sequence_mismatch")
+        caps["download_hash"] = "passed"
+        missing = "absent-synthetic.txt"
+        with case("missing-stat") as (state, config, _):
+            code, output, _ = seafile_one_process(runtime, lambda: runtime.run(
+                ["rc", "--loopback", "operations/stat", "fs=Synthetic:", "remote=" + missing,
+                 'opt={"noModTime":true,"noMimeType":true,"filesOnly":true}'], config))
+            check(code == 0 and json.loads(output) == {"item": None} and seafile_flow_matches(state, "missing", missing),
+                  "seafile_missing_stat_mismatch")
+        with case("missing-copy") as (state, config, _):
+            destination = downloads / "missing-must-not-exist"
+            code, output, error = seafile_one_process(runtime, lambda: exact_copy(runtime, config, "Synthetic:", missing,
+                                                                                 downloads.as_posix(), destination.name))
+            check(code != 0 and not list(downloads.glob(destination.name + "*"))
+                  and b"object not found" in (output + error).lower() and seafile_flow_matches(state, "missing", missing),
+                  "seafile_missing_object_accepted")
+        caps["missing_object_rejection"] = "passed"
+    finally:
+        closed = all(state.cleanup_complete for state in states) and all(listener_closed(port) for port in ports)
+        caps["cleanup"] = "passed" if closed else "failed"
+        check(closed, "seafile_listener_cleanup_failed")
+        check(all(not state.budget_exceeded and not state.unexpected and not state.rejected_payload_bytes for state in states),
+              "seafile_unexpected_request_or_budget")
+        check(all(served_source_unchanged(state, expected) for state in states), "seafile_source_changed")
+        caps["source_preservation"] = "passed"
+        check(all(path.is_file() and path.read_bytes() == data and digest(path) == sha256
+                  for path, (data, sha256) in preserved.items()), "seafile_config_changed")
+        caps["config_preservation"] = "passed"
+
+
 def run_backend(runtime, backend, root):
     root.mkdir(mode=0o700)
-    independent = backend in ("http", "webdav", "ftp", "swift", "b2", "azureblob", "azurefiles")
+    independent = backend in ("http", "webdav", "ftp", "swift", "b2", "azureblob", "azurefiles", "seafile")
     row = {"backend": backend,
            "fixture_kind": "local" if backend in ("local", "archive") else "independent_loopback" if independent else "rclone_loopback",
            "capabilities": {key: "not_run" for key in (
@@ -1054,7 +1225,7 @@ def run_backend(runtime, backend, root):
         row["capabilities"].update(config_preservation="not_run", service_token_reacquisition="not_run", renewal_denial="not_run")
     if backend == "b2":
         row["capabilities"].update(config_preservation="not_run", account_token_reacquisition="not_run", renewal_denial="not_run")
-    if backend in ("azureblob", "azurefiles"):
+    if backend in ("azureblob", "azurefiles", "seafile"):
         row["capabilities"]["config_preservation"] = "not_run"
     if backend in ("http", "webdav"):
         row["capabilities"].update(truncated_download_rejection="not_run", cancellation_cleanup="not_run")
@@ -1070,6 +1241,9 @@ def run_backend(runtime, backend, root):
         prepare_files(files_root)
     port = None
     try:
+        if backend == "seafile":
+            seafile_checks(runtime, root, row, expected)
+            return row
         if backend == "azurefiles":
             azurefiles_checks(runtime, root, row, expected)
             return row
