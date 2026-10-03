@@ -64,6 +64,10 @@ SEAFILE_REQUIRED_CAPABILITIES = frozenset({
     "listing", "download_hash", "missing_object_rejection", "authentication_rejection",
     "source_preservation", "config_preservation", "cleanup", "fixture_write_rejection",
 })
+MEMORY_REQUIRED_CAPABILITIES = frozenset({
+    "listing", "download_hash", "missing_object_rejection", "authentication_rejection",
+    "source_preservation", "config_preservation", "cleanup",
+})
 READ_FIXTURE_CONTRACTS = {
     "azureblob": AZUREBLOB_REQUIRED_CAPABILITIES,
     "azurefiles": AZUREFILES_REQUIRED_CAPABILITIES,
@@ -78,7 +82,7 @@ CAPABILITIES = {
 FIXTURE_KINDS = {
     "http": "independent_loopback", "webdav": "independent_loopback",
     "ftp": "independent_loopback", "sftp": "rclone_loopback",
-    "s3": "rclone_loopback", "local": "local", "archive": "local",
+    "s3": "rclone_loopback", "local": "local", "archive": "local", "memory": "local",
     "swift": "independent_loopback", "b2": "independent_loopback", "azureblob": "independent_loopback",
     "azurefiles": "independent_loopback", "seafile": "independent_loopback",
 }
@@ -446,18 +450,23 @@ def validate_receipt(receipt, runtime, harness_sha256, now, max_age_hours=MAX_AG
                 or backend not in ("http", "webdav", "ftp", "archive", "swift", "b2", "azureblob", "azurefiles", "seafile") and "fixture_write_rejection" in capabilities
                 or backend != "sftp" and "host_key_rejection" in capabilities
                 or backend != "archive" and set(capabilities) & ARCHIVE_ONLY_CAPABILITIES
-                or backend not in ("archive", "swift", "b2", "azureblob", "azurefiles", "seafile") and "config_preservation" in capabilities
+                or backend not in ("archive", "memory", "swift", "b2", "azureblob", "azurefiles", "seafile") and "config_preservation" in capabilities
                 or backend != "swift" and set(capabilities) & SWIFT_ONLY_CAPABILITIES
                 or backend != "b2" and set(capabilities) & B2_ONLY_CAPABILITIES
                 or backend not in ("swift", "b2") and "renewal_denial" in capabilities):
             fail("invalid_fixture_capability")
         if any(value not in ("passed", "failed", "not_run", "not_applicable") for value in capabilities.values()):
             fail("invalid_fixture_outcome")
-        # Only the reviewed local filesystem/archive fixtures have no auth.
-        if any(value == "not_applicable" and (backend not in ("local", "archive") or key != "authentication_rejection") for key, value in capabilities.items()):
+        # Only the reviewed local filesystem/archive/memory fixtures have no auth.
+        if any(value == "not_applicable" and (backend not in ("local", "archive", "memory") or key != "authentication_rejection") for key, value in capabilities.items()):
             fail("invalid_fixture_not_applicable")
         if backend == "archive" and (set(capabilities) != ARCHIVE_REQUIRED_CAPABILITIES
                                      or capabilities["authentication_rejection"] != "not_applicable"):
+            fail("invalid_fixture_capability")
+        # Memory evidence covers one finite in-process batch, without network
+        # authentication, write rejection, persistence or lifecycle claims.
+        if backend == "memory" and (set(capabilities) != MEMORY_REQUIRED_CAPABILITIES
+                                    or capabilities["authentication_rejection"] != "not_applicable"):
             fail("invalid_fixture_capability")
         # This exact contract attests only the reviewed Swift v1 forced-401
         # fixture. It is neither OAuth refresh nor general reauthentication.

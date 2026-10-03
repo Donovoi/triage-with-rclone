@@ -20,6 +20,7 @@ from pathlib import Path
 import re
 import shutil
 import socket
+import stat
 import struct
 import subprocess
 import sys
@@ -33,7 +34,7 @@ from fixture_servers import FILES, State, SwiftState, B2State, AzureBlobState, A
 from email.utils import format_datetime
 
 
-BACKENDS = ("local", "http", "webdav", "ftp", "sftp", "s3", "archive", "swift", "b2", "azureblob", "azurefiles", "seafile")
+BACKENDS = ("local", "http", "webdav", "ftp", "sftp", "s3", "archive", "swift", "b2", "azureblob", "azurefiles", "seafile", "memory")
 HARNESS_FILES = ("fixture_servers.py", "run_lab.py")
 MAX_OUTPUT = 2 * 1024 * 1024
 COMMAND_TIMEOUT = 20
@@ -165,6 +166,10 @@ class Runtime:
                    "--cache-dir", str(self.cache), "--log-level", "NOTICE" if notice else "ERROR",
                    "--stats", "0", "--retries", "1", "--low-level-retries", str(low_level_attempts),
                    "--contimeout", "3s", "--timeout", "5s", *args]
+        # CreateProcess counts UTF-16 code units, including quoting and NUL.
+        if os.name == "nt":
+            check(len(subprocess.list2cmdline(command).encode("utf-16-le")) // 2 < 32767,
+                  "child_command_line_limit")
         with stdout.open("xb") as out, stderr.open("xb") as err:
             process = subprocess.Popen(command, cwd=self.root, env=self.env,
                                        stdin=subprocess.DEVNULL, stdout=out, stderr=err,
@@ -1204,15 +1209,229 @@ def seafile_checks(runtime, root, row, expected):
         caps["config_preservation"] = "passed"
 
 
+MEMORY_MTIME_NS = 1704067200 * 1_000_000_000
+MEMORY_MISSING = "missing-synthetic-object.bin"
+
+
+def memory_plain_path(path):
+    """Refuse links/reparse points, including ancestors, before following paths."""
+    path = Path(path)
+    if not path.is_absolute():
+        return False
+    try:
+        for part in (path, *path.parents):
+            info = part.lstat()
+            if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
+                return False
+        return True
+    except OSError:
+        return False
+
+
+def memory_tree_matches(root, expected, *, seed=False):
+    """Exact bounded inventories, not just hashes of whichever files exist."""
+    try:
+        if not memory_plain_path(root) or not root.is_dir():
+            return False
+        files, directories, pending = {}, set(), [root]
+        while pending:
+            directory = pending.pop()
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    path = Path(entry.path)
+                    # DirEntry.stat reports st_nlink=0 on Windows; lstat both
+                    # refuses reparse traversal and obtains the real link count.
+                    info = path.lstat()
+                    if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
+                        return False
+                    name = path.relative_to(root).as_posix()
+                    if stat.S_ISDIR(info.st_mode):
+                        directories.add(name)
+                        pending.append(path)
+                    elif stat.S_ISREG(info.st_mode) and info.st_nlink == 1:
+                        files[name] = info
+                    else:
+                        return False
+                    if len(files) + len(directories) > 32:
+                        return False
+        expected_dirs = {parent.as_posix() for item in expected for parent in Path(item["path"]).parents
+                         if parent != Path(".")}
+        if set(files) != {item["path"] for item in expected} or directories != expected_dirs:
+            return False
+        return all(files[item["path"]].st_size == item["size"]
+                   and (not seed or files[item["path"]].st_mtime_ns == MEMORY_MTIME_NS)
+                   and digest(root / item["path"]) == item["sha256"] for item in expected)
+    except OSError:
+        return False
+
+
+def memory_batch(root, bucket, expected):
+    """Only fixed generated calls: no arbitrary RC methods, options or paths."""
+    check(memory_plain_path(root) and root.is_dir(), "memory_unsafe_root")
+    check(isinstance(bucket, str) and re.fullmatch(r"synthetic-[0-9a-f]{32}", bucket), "memory_invalid_bucket")
+    # The shared three-file manifest is snapshotted before execution. No caller
+    # may use this fixture as a general RC request or local-path interface.
+    check(expected == fixture_manifest() and len(expected) == 3, "memory_invalid_manifest")
+    names = [item["path"] for item in expected]
+    fs = "Synthetic:" + bucket
+    file_options = {"filesOnly": True, "showHash": True, "hashTypes": ["MD5"],
+                    "noMimeType": True, "noModTime": False}
+    root_list = {"_path": "operations/list", "fs": "Synthetic:", "remote": "",
+                 "opt": {"dirsOnly": True, "noMimeType": True, "noModTime": True}}
+
+    def copy(source_fs, name, destination):
+        return {"_path": "operations/copyfile", "srcFs": source_fs, "srcRemote": name,
+                "dstFs": destination, "dstRemote": name}
+
+    def listing():
+        return {"_path": "operations/list", "fs": fs, "remote": "",
+                "opt": dict(file_options, recurse=True)}
+
+    calls = [{"_path": "core/pid"}, dict(root_list)]
+    calls += [copy(str(root / "seed"), name, fs) for name in names]
+    calls += [{"_path": "core/pid"}, listing()]
+    calls += [{"_path": "operations/stat", "fs": fs, "remote": name, "opt": dict(file_options)} for name in names]
+    calls += [copy(fs, name, str(root / "first")) for name in names]
+    calls += [{"_path": "operations/stat", "fs": fs, "remote": MEMORY_MISSING, "opt": dict(file_options)},
+              copy(fs, MEMORY_MISSING, str(root / "missing")), {"_path": "core/pid"}, listing()]
+    calls += [copy(fs, name, str(root / "audit")) for name in names]
+    calls += [dict(root_list), {"_path": "core/pid"}]
+    check(len(calls) == 22, "memory_invalid_batch_size")
+    return {"concurrency": 1, "inputs": calls}
+
+
+def memory_json(output):
+    def pairs(items):
+        result = {}
+        for key, value in items:
+            if key in result:
+                raise ValueError("duplicate key")
+            result[key] = value
+        return result
+
+    def invalid_constant(_):
+        raise ValueError("non-finite JSON")
+
+    check(isinstance(output, bytes) and len(output) <= MAX_OUTPUT, "memory_invalid_output")
+    try:
+        return json.loads(output.decode("utf-8"), object_pairs_hook=pairs, parse_constant=invalid_constant)
+    except (ValueError, UnicodeError, RecursionError):
+        raise LabError("memory_invalid_json") from None
+
+
+def memory_item_matches(item, expected):
+    if (not isinstance(item, dict) or set(item) != {"Path", "Name", "Size", "ModTime", "IsDir", "Hashes"}
+            or item["Path"] != expected["path"] or item["Name"] != expected["path"].rsplit("/", 1)[-1]
+            or type(item["Size"]) is not int or item["Size"] != expected["size"] or item["IsDir"] is not False
+            or item["Hashes"] != {"md5": expected["md5"]} or not isinstance(item["ModTime"], str)):
+        return False
+    value = item["ModTime"]
+    if (not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}"
+                         r"(?:\.0{1,9})?(?:Z|[+-](?:[01][0-9]|2[0-3]):[0-5][0-9])", value)
+            or value.endswith("-00:00")):
+        return False
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc) == datetime(2024, 1, 1, tzinfo=timezone.utc)
+    except (ValueError, OverflowError):
+        return False
+
+
+def memory_results_match(output, batch, bucket, expected, pid):
+    """Outer success never substitutes for the 22 individually typed results."""
+    data = memory_json(output)
+    check(type(pid) is int and pid > 0, "memory_invalid_child_pid")
+    check(isinstance(data, dict) and set(data) == {"results"} and isinstance(data["results"], list)
+          and len(data["results"]) == 22, "memory_invalid_results")
+    results = data["results"]
+    for index in (0, 5, 15, 21):
+        result = results[index]
+        check(isinstance(result, dict) and set(result) == {"pid"} and type(result["pid"]) is int
+              and result["pid"] == pid, "memory_pid_mismatch")
+    check(results[1] == {"list": []}, "memory_initial_state_not_empty")
+    for index in (2, 3, 4, 10, 11, 12, 17, 18, 19):
+        check(results[index] == {}, "memory_copy_not_completed")
+    for index in (6, 16):
+        result = results[index]
+        check(isinstance(result, dict) and set(result) == {"list"} and isinstance(result["list"], list)
+              and len(result["list"]) == 3, "memory_inventory_mismatch")
+        entries = result["list"]
+        check(all(isinstance(entry, dict) and isinstance(entry.get("Path"), str) for entry in entries), "memory_inventory_mismatch")
+        check(all(memory_item_matches(entry, item) for entry, item in zip(sorted(entries, key=lambda entry: entry["Path"]), expected)),
+              "memory_inventory_mismatch")
+    for index, item in zip((7, 8, 9), expected):
+        result = results[index]
+        check(isinstance(result, dict) and set(result) == {"item"} and memory_item_matches(result["item"], item),
+              "memory_stat_mismatch")
+    check(results[13] == {"item": None}, "memory_missing_stat_not_null")
+    error = results[14]
+    check(isinstance(error, dict) and set(error) == {"status", "error", "path", "input"}
+          and type(error["status"]) is int and error["status"] == 404 and error["error"] == "object not found"
+          and error["path"] == "operations/copyfile" and isinstance(error["input"], dict), "memory_wrong_missing_error")
+    echoed = dict(error["input"])
+    if "_group" in echoed:
+        group = echoed.pop("_group")
+        check(isinstance(group, str) and re.fullmatch(r"job/[1-9][0-9]{0,18}", group), "memory_wrong_error_group")
+    check(echoed == {key: value for key, value in batch["inputs"][14].items() if key != "_path"}, "memory_wrong_error_input")
+    # noModTime on root avoids making a claim about unknown bucket timestamps.
+    bucket_item = {"Path": bucket, "Name": bucket, "Size": -1, "ModTime": "", "IsDir": True, "IsBucket": True}
+    root_result = results[20]
+    check(root_result == {"list": [bucket_item]} and type(root_result["list"][0]["Size"]) is int
+          and root_result["list"][0]["IsDir"] is True and root_result["list"][0]["IsBucket"] is True,
+          "memory_root_inventory_mismatch")
+
+
+def memory_checks(runtime, root, row, expected):
+    caps = row["capabilities"]
+    before, normal_exit = len(runtime.children), False
+    try:
+        check(memory_plain_path(root), "memory_unsafe_root")
+        prepare_files(root / "seed")
+        for item in expected:
+            os.utime(root / "seed" / item["path"], ns=(MEMORY_MTIME_NS, MEMORY_MTIME_NS))
+        for name in ("first", "audit", "missing"):
+            (root / name).mkdir(mode=0o700)
+            check(memory_tree_matches(root / name, []), "memory_destination_not_empty")
+        check(memory_tree_matches(root / "seed", expected, seed=True), "memory_seed_invalid")
+        metadata = [dict(item, md5=hashlib.md5(FILES[item["path"]]).hexdigest()) for item in expected]
+        config = config_file(root, "memory.conf", {"type": "memory", "discard": "false"})
+        config_bytes, config_sha = config.read_bytes(), digest(config)
+        bucket = "synthetic-" + uuid.uuid4().hex
+        batch = memory_batch(root, bucket, expected)
+        encoded = json.dumps(batch, separators=(",", ":"), ensure_ascii=True)
+        check(len(encoded.encode()) <= 16 * 1024, "memory_batch_input_limit")
+        plan = root / "batch-input.json"
+        write_private(plan, encoded)
+        plan_sha = digest(plan)
+        code, output, _ = runtime.run(["rc", "--loopback", "job/batch", "--json", encoded], config)
+        records = runtime.children[before:]
+        check(len(records) == 1, "memory_not_single_process")
+        process = records[0][0]
+        normal_exit = type(code) is int and code == 0 and process.poll() == 0
+        check(normal_exit, "memory_batch_exit_failed")
+        memory_results_match(output, batch, bucket, metadata, process.pid)
+        check(memory_tree_matches(root / "first", expected) and memory_tree_matches(root / "audit", expected),
+              "memory_download_inventory_or_hash")
+        check(memory_tree_matches(root / "missing", []), "memory_missing_artifact")
+        check(memory_tree_matches(root / "seed", expected, seed=True), "memory_source_changed")
+        check(memory_plain_path(config) and config.is_file() and config.stat().st_nlink == 1
+              and config.read_bytes() == config_bytes and digest(config) == config_sha, "memory_config_changed")
+        check(memory_plain_path(plan) and digest(plan) == plan_sha, "memory_plan_changed")
+        for name in ("listing", "download_hash", "missing_object_rejection", "source_preservation", "config_preservation"):
+            caps[name] = "passed"
+    finally:
+        records = runtime.children[before:]
+        caps["cleanup"] = "passed" if normal_exit and len(records) == 1 and records[0][0].poll() == 0 else "failed"
+
+
 def run_backend(runtime, backend, root):
     root.mkdir(mode=0o700)
     independent = backend in ("http", "webdav", "ftp", "swift", "b2", "azureblob", "azurefiles", "seafile")
     row = {"backend": backend,
-           "fixture_kind": "local" if backend in ("local", "archive") else "independent_loopback" if independent else "rclone_loopback",
+           "fixture_kind": "local" if backend in ("local", "archive", "memory") else "independent_loopback" if independent else "rclone_loopback",
            "capabilities": {key: "not_run" for key in (
                "listing", "download_hash", "missing_object_rejection", "source_preservation", "authentication_rejection", "cleanup")},
            "errors": []}
-    if backend in ("local", "archive"):
+    if backend in ("local", "archive", "memory"):
         row["capabilities"]["authentication_rejection"] = "not_applicable"
     if backend == "archive":
         row["capabilities"].update({key: "not_run" for key in ("archive_crc32", "directory_as_file_rejection",
@@ -1225,7 +1444,7 @@ def run_backend(runtime, backend, root):
         row["capabilities"].update(config_preservation="not_run", service_token_reacquisition="not_run", renewal_denial="not_run")
     if backend == "b2":
         row["capabilities"].update(config_preservation="not_run", account_token_reacquisition="not_run", renewal_denial="not_run")
-    if backend in ("azureblob", "azurefiles", "seafile"):
+    if backend in ("azureblob", "azurefiles", "seafile", "memory"):
         row["capabilities"]["config_preservation"] = "not_run"
     if backend in ("http", "webdav"):
         row["capabilities"].update(truncated_download_rejection="not_run", cancellation_cleanup="not_run")
@@ -1236,11 +1455,14 @@ def run_backend(runtime, backend, root):
     # Serve S3 exposes child directories as buckets, keeping this bucket wholly
     # synthetic and excluding any host data outside the fresh fixture root.
     files_root = source / "synthetic-bucket" if backend == "s3" else source / "files"
-    if not independent and backend != "archive":
+    if not independent and backend not in ("archive", "memory"):
         source.mkdir(mode=0o700)
         prepare_files(files_root)
     port = None
     try:
+        if backend == "memory":
+            memory_checks(runtime, root, row, expected)
+            return row
         if backend == "seafile":
             seafile_checks(runtime, root, row, expected)
             return row
@@ -1318,7 +1540,7 @@ def run_backend(runtime, backend, root):
             row["capabilities"]["cleanup"] = "passed"
         else:
             row["capabilities"]["cleanup"] = "failed"
-            row["errors"].append("listener_still_open")
+            row["errors"].append("memory_child_cleanup_failed" if backend == "memory" else "listener_still_open")
     return row
 
 
