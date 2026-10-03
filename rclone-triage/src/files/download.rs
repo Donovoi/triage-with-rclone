@@ -1,6 +1,6 @@
 //! Download queue and file copy operations
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::VecDeque;
@@ -476,19 +476,33 @@ impl DownloadQueue {
             crate::utils::path::ensure_no_link_components(dest)?;
             // Give an early error for stale inventory or a caller bypassing the
             // planner. operations/copyfile also rejects directories at copy time.
+            // Keep the configured filesystem root separate from the member, as
+            // in the transfer below. Re-rooting lsjson at a member can fail for
+            // archive filesystems whose configured root is an archive file.
+            let (source_fs, source_remote) = split_object_path(&request.source, true);
             let stat = runner.run(&[
-                "lsjson",
-                "--stat",
-                "--no-modtime",
-                "--no-mimetype",
-                "--",
-                &request.source,
+                "rc",
+                "--loopback",
+                "operations/stat",
+                &format!("fs={source_fs}"),
+                &format!("remote={source_remote}"),
+                // Suppress directory/parent-list fallbacks for missing objects.
+                r#"opt={"noModTime":true,"noMimeType":true,"filesOnly":true}"#,
             ])?;
             if !stat.success() {
                 bail!("Cannot stat source: {}", stat.stderr_string());
             }
             let metadata: serde_json::Value = serde_json::from_str(&stat.stdout_string())?;
-            if metadata.get("IsDir").and_then(|v| v.as_bool()) != Some(false) {
+            let item = metadata
+                .get("item")
+                .context("Invalid source stat response: missing item")?;
+            if item.is_null() {
+                bail!(
+                    "Source was not found or is not an individual file: {}",
+                    request.source
+                );
+            }
+            if item.get("IsDir").and_then(|v| v.as_bool()) != Some(false) {
                 bail!("Source is not an individual file: {}", request.source);
             }
             Ok(())
