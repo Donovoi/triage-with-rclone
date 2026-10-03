@@ -95,7 +95,7 @@ jobs:
             --require-plans --require-fixtures local,archive,http,webdav,ftp,sftp,s3,swift,b2,azureblob,azurefiles,seafile,memory
       - name: Retain sanitized protocol evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: provider-evidence-${{ runner.os }}
           path: |
@@ -132,7 +132,7 @@ jobs:
         run: cargo metadata --locked --format-version 1 > target/release/dependencies.json
       - name: Upload checked Windows build
         if: runner.os == 'Windows'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: rclone-triage-windows
           path: |
