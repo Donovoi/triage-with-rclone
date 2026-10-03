@@ -11,7 +11,7 @@ $previousSchemaBinary = [Environment]::GetEnvironmentVariable('RCLONE_PROVIDER_S
 Push-Location $crateDir
 try {
     python -B -m unittest discover -s (Join-Path $PSScriptRoot 'tests') -p 'test_*.py'
-    if ($LASTEXITCODE -ne 0) { throw 'Runtime updater tests failed' }
+    if ($LASTEXITCODE -ne 0) { throw 'Python maintenance and provider evidence tests failed' }
     cargo fmt --all -- --check
     if ($LASTEXITCODE -ne 0) { throw 'Formatting failed' }
     cargo clippy --locked --all-targets --all-features -- -D warnings
