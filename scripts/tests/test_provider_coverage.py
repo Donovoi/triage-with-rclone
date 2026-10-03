@@ -39,17 +39,19 @@ def policy_for(catalog, application=True, vendor=True):
         if "authentication" not in required["application"]:
             required["application"].append("authentication")
     refresh = "required" if vendor else "not_applicable"
-    return {"schema_version": 1, "profiles": {"test": {"required": required}},
+    return {"schema_version": 2, "profiles": {"test": {"required": required}},
             "providers": {row["backend"]: {"canonical_name": row["canonical_name"],
                  "schema_sha256": row["schema_sha256"], "profile": "test",
                  "auth_applicability": "credentials" if application or vendor else "none",
                  "refresh_applicability": refresh,
+                 "reauthentication_applicability": "not_applicable",
                  "source_links": ["https://example.invalid/official-provider-documentation"],
                  "renewal_modes": [renewal_mode(refresh)]} for row in catalog}}
 
 
-def renewal_mode(requirement="required"):
-    return {"auth_mode": "synthetic reviewed mode", "refresh_capability_requirement": requirement,
+def renewal_mode(requirement="required", reauthentication="not_applicable"):
+    return {"auth_mode": "synthetic reviewed mode", "credential_renewal_requirement": requirement,
+            "connection_session_reauthentication_requirement": reauthentication,
             "renewal_kind": "provider_specific" if requirement == "review_required" else
                             "oauth_refresh_token" if requirement == "required" else "none",
             "source_supported_behavior": "Synthetic source-backed behavior for validation.",
@@ -125,7 +127,7 @@ class CoverageTests(unittest.TestCase):
             self.assertIn("provider_plans_incomplete", coverage.gate_errors(report, require_plans=True))
 
     def test_plan_requires_auth_refresh_sources_and_renewal_modes(self):
-        for field in ("auth_applicability", "refresh_applicability", "source_links", "renewal_modes"):
+        for field in ("auth_applicability", "refresh_applicability", "reauthentication_applicability", "source_links", "renewal_modes"):
             policy = copy.deepcopy(self.policy)
             del policy["providers"]["http"][field]
             with self.assertRaisesRegex(coverage.CoverageError, "invalid_policy"):
@@ -157,7 +159,8 @@ class CoverageTests(unittest.TestCase):
         invalid.append(missing)
         invalid.append(dict(renewal_mode(), ignored_decision="must not be silently ignored"))
         for field, value in (("auth_mode", ""), ("renewal_kind", "unknown kind"),
-                             ("source_supported_behavior", " "), ("refresh_capability_requirement", "maybe"),
+                             ("source_supported_behavior", " "), ("credential_renewal_requirement", "maybe"),
+                             ("connection_session_reauthentication_requirement", "maybe"),
                              ("required_lifecycle_scenarios", []), ("required_lifecycle_scenarios", "untyped"),
                              ("required_lifecycle_scenarios", [""]), ("required_lifecycle_scenarios", [False])):
             invalid.append(dict(renewal_mode(), **{field: value}))
@@ -179,7 +182,7 @@ class CoverageTests(unittest.TestCase):
             if requirement == "review_required":
                 policy["profiles"]["test"]["unresolved_applicability"] = ["refresh"]
             coverage.validate_policy(policy)
-            for wrong in coverage.REFRESH_APPLICABILITY - {requirement}:
+            for wrong in coverage.LIFECYCLE_APPLICABILITY - {requirement}:
                 entry["refresh_applicability"] = wrong
                 with self.assertRaisesRegex(coverage.CoverageError, "invalid_policy"):
                     coverage.validate_policy(policy)
@@ -218,6 +221,86 @@ class CoverageTests(unittest.TestCase):
         self.assertTrue(report["all_plans_current"])
         self.assertEqual(report["providers"][0]["evidence"]["local_protocol"]["status"], "not_applicable")
         self.assertFalse(report["all_complete"])
+
+    def test_policy_v1_and_conflated_mode_field_are_rejected(self):
+        old = copy.deepcopy(self.policy)
+        old["schema_version"] = 1
+        with self.assertRaisesRegex(coverage.CoverageError, "invalid_policy"):
+            coverage.validate_policy(old)
+        old = copy.deepcopy(self.policy)
+        mode = old["providers"]["http"]["renewal_modes"][0]
+        mode["refresh_capability_requirement"] = mode.pop("credential_renewal_requirement")
+        with self.assertRaisesRegex(coverage.CoverageError, "invalid_policy"):
+            coverage.validate_policy(old)
+        mode["credential_renewal_requirement"] = mode.pop("refresh_capability_requirement")
+        del mode["connection_session_reauthentication_requirement"]
+        with self.assertRaisesRegex(coverage.CoverageError, "invalid_policy"):
+            coverage.validate_policy(old)
+
+    def test_reauthentication_is_independent_of_credential_renewal(self):
+        policy = copy.deepcopy(self.policy)
+        entry = policy["providers"]["http"]
+        entry["refresh_applicability"] = "not_applicable"
+        entry["reauthentication_applicability"] = "required"
+        entry["renewal_modes"] = [renewal_mode("not_applicable", "required")]
+        for tier in ("application", "vendor"):
+            capabilities = policy["profiles"]["test"]["required"][tier]
+            capabilities.remove("refresh")
+            capabilities.append("reauthentication")
+        result = self.evaluate([receipt()], policy=policy)
+        self.assertTrue(result["all_plans_current"])
+        self.assertFalse(result["all_complete"])
+        self.assertEqual(result["policy_schema_version"], 2)
+        self.assertEqual(result["providers"][0]["lifecycle_applicability"], {
+            "credential_renewal": "not_applicable", "connection_session_reauthentication": "required"})
+        self.assertEqual(result["applicability_summary"]["credential_renewal"]["not_applicable"], 1)
+        self.assertEqual(result["applicability_summary"]["connection_session_reauthentication"]["required"], 1)
+        for tier in ("application", "vendor"):
+            broken = copy.deepcopy(policy)
+            broken["profiles"]["test"]["required"][tier].remove("reauthentication")
+            with self.assertRaisesRegex(coverage.CoverageError, "invalid_policy"):
+                coverage.validate_policy(broken)
+
+    def test_unknown_session_modes_block_completion_without_waiving_known_modes(self):
+        policy = copy.deepcopy(self.policy)
+        entry = policy["providers"]["http"]
+        entry["reauthentication_applicability"] = "review_required"
+        entry["renewal_modes"] = [renewal_mode("required", "required"),
+            dict(renewal_mode("required", "review_required"), auth_mode="session semantics unreviewed")]
+        profile = policy["profiles"]["test"]
+        profile["unresolved_applicability"] = ["reauthentication"]
+        for tier in ("application", "vendor"):
+            profile["required"][tier].append("reauthentication")
+        report = self.evaluate([receipt()], policy=policy)
+        self.assertEqual(coverage.gate_errors(report, require_plans=True), [])
+        self.assertFalse(report["all_complete"])
+        self.assertEqual(report["providers"][0]["capability_applicability_review_required"], ["reauthentication"])
+        self.assertEqual(report["applicability_summary"]["credential_renewal"]["required"], 1)
+        self.assertEqual(report["applicability_summary"]["connection_session_reauthentication"]["review_required"], 1)
+        for tier in ("application", "vendor"):
+            broken = copy.deepcopy(policy)
+            broken["profiles"]["test"]["required"][tier].remove("reauthentication")
+            with self.assertRaisesRegex(coverage.CoverageError, "invalid_policy"):
+                coverage.validate_policy(broken)
+        for decision in ("required", "not_applicable"):
+            broken = copy.deepcopy(policy)
+            broken["providers"]["http"]["reauthentication_applicability"] = decision
+            with self.assertRaisesRegex(coverage.CoverageError, "invalid_policy"):
+                coverage.validate_policy(broken)
+        profile["unresolved_applicability"] = []
+        with self.assertRaisesRegex(coverage.CoverageError, "invalid_policy"):
+            coverage.validate_policy(policy)
+
+    def test_stale_and_missing_plans_do_not_report_reviewed_lifecycle_decisions(self):
+        changed = schema()
+        changed["Options"][0]["Type"] = "Duration"
+        catalog = coverage.catalog_from_schemas([changed, schema("future")])
+        report = self.evaluate(catalog=catalog)
+        for summary in report["applicability_summary"].values():
+            self.assertEqual(summary["not_verified"], 2)
+            self.assertEqual(sum(summary[state] for state in coverage.LIFECYCLE_APPLICABILITY), 0)
+        for row in report["providers"]:
+            self.assertEqual(set(row["lifecycle_applicability"].values()), {"not_verified"})
 
     def test_provider_specific_options_can_share_a_name(self):
         native_shape = {"Name": "koofr", "Prefix": "koofr", "Options": [
@@ -450,6 +533,70 @@ class CoverageTests(unittest.TestCase):
                 self.assertFalse(report["all_complete"])
             else:
                 self.assertIn("invalid_fixture_capability", report["errors"])
+
+    def test_archive_protocol_receipt_is_bound_and_cannot_qualify_application(self):
+        catalog = coverage.catalog_from_schemas([schema("archive")])
+        policy = policy_for(catalog, application=False, vendor=False)
+        required = ["listing", "download_hash", "missing_object_rejection", "source_preservation",
+                    "cleanup", "fixture_write_rejection", *sorted(coverage.ARCHIVE_CAPABILITIES)]
+        policy["profiles"]["test"]["required"]["local_protocol"] = required
+        candidate = receipt("archive")
+        candidate["backends"][0]["capabilities"] = {capability: "passed" for capability in required}
+        candidate["backends"][0]["capabilities"]["authentication_rejection"] = "not_applicable"
+        report = self.evaluate([candidate], policy, catalog)
+        row = report["providers"][0]
+        self.assertEqual(row["evidence"]["local_protocol"]["status"], "passed")
+        self.assertEqual(row["evidence"]["application"]["status"], "not_verified")
+        self.assertFalse(report["all_complete"])
+        self.assertEqual(coverage.gate_errors(report, require_fixtures=["archive"]), [])
+        for capability in required:
+            incomplete = copy.deepcopy(candidate)
+            del incomplete["backends"][0]["capabilities"][capability]
+            result = self.evaluate([incomplete], policy, catalog)
+            self.assertIn("required_fixture_not_verified", coverage.gate_errors(result, require_fixtures=["archive"]))
+        failed = copy.deepcopy(candidate)
+        failed["success"] = False
+        failed["backends"][0]["capabilities"]["archive_crc32"] = "failed"
+        sticky = self.evaluate([failed, candidate], policy, catalog)
+        self.assertEqual(sticky["providers"][0]["evidence"]["local_protocol"]["status"], "failed")
+        forged = copy.deepcopy(candidate)
+        forged["backends"][0]["fixture_kind"] = "rclone_loopback"
+        self.assertIn("unknown_fixture_backend", self.evaluate([forged], policy, catalog)["errors"])
+
+    def test_archive_capabilities_and_auth_na_cannot_be_reused_by_other_backends(self):
+        for backend in set(coverage.FIXTURE_KINDS) - {"archive"}:
+            catalog = coverage.catalog_from_schemas([schema(backend)])
+            policy = policy_for(catalog)
+            for capability in coverage.ARCHIVE_CAPABILITIES:
+                candidate = receipt(backend)
+                candidate["backends"][0]["capabilities"][capability] = "passed"
+                self.assertIn("invalid_fixture_capability", self.evaluate([candidate], policy, catalog)["errors"])
+            if backend != "local":
+                candidate = receipt(backend)
+                candidate["backends"][0]["capabilities"]["authentication_rejection"] = "not_applicable"
+                self.assertIn("invalid_fixture_not_applicable", self.evaluate([candidate], policy, catalog)["errors"])
+        candidate = receipt("archive")
+        candidate["backends"][0]["capabilities"]["config_preservation"] = "not_applicable"
+        catalog = coverage.catalog_from_schemas([schema("archive")])
+        self.assertIn("invalid_fixture_not_applicable", self.evaluate([candidate], policy_for(catalog), catalog)["errors"])
+
+    def test_archive_cannot_skip_negative_checks_even_if_policy_is_weaker(self):
+        catalog = coverage.catalog_from_schemas([schema("archive")])
+        policy = policy_for(catalog, application=False, vendor=False)
+        candidate = receipt("archive")
+        candidate["backends"][0]["capabilities"] = {capability: "passed" for capability in coverage.ARCHIVE_REQUIRED_CAPABILITIES}
+        candidate["backends"][0]["capabilities"]["authentication_rejection"] = "not_applicable"
+        for omitted in coverage.ARCHIVE_REQUIRED_CAPABILITIES:
+            incomplete = copy.deepcopy(candidate)
+            del incomplete["backends"][0]["capabilities"][omitted]
+            self.assertIn("invalid_fixture_capability", self.evaluate([incomplete], policy, catalog)["errors"])
+        candidate["backends"][0]["capabilities"]["authentication_rejection"] = "passed"
+        self.assertIn("invalid_fixture_capability", self.evaluate([candidate], policy, catalog)["errors"])
+
+    def test_protocol_fixtures_cannot_claim_reauthentication(self):
+        candidate = receipt()
+        candidate["backends"][0]["capabilities"]["reauthentication"] = "passed"
+        self.assertIn("invalid_fixture_capability", self.evaluate([candidate])["errors"])
 
     def test_not_applicable_only_from_reviewed_policy(self):
         policy = policy_for(self.catalog, application=False, vendor=False)

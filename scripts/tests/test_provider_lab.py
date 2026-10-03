@@ -14,6 +14,8 @@ import sys
 import tempfile
 import unittest
 from unittest import mock
+import zipfile
+import zlib
 
 
 LAB_ROOT = Path(__file__).parents[1] / "provider-lab"
@@ -332,6 +334,119 @@ class ProviderLabTests(unittest.TestCase):
         self.assertFalse(LAB.stat_has_no_file(0, b'{"IsDir":"true"}'))
         self.assertFalse(LAB.stat_has_no_file(0, b'{}'))
         self.assertFalse(LAB.stat_has_no_file(0, b'not json'))
+
+    def archive_entries(self):
+        return [{"Path": name, "IsDir": False, "Size": len(body),
+                 "Hashes": {"crc32": f"{zlib.crc32(body):08x}"}} for name, body in FIXTURES.FILES.items()] + [
+                     {"Path": "nested", "IsDir": True, "Size": -1}]
+
+    def test_archive_zip_is_deterministic_and_matches_independent_payloads(self):
+        first = LAB.archive_zip(dict(FIXTURES.FILES))
+        second = LAB.archive_zip(dict(reversed(list(FIXTURES.FILES.items()))))
+        self.assertEqual(first, second)
+        with zipfile.ZipFile(io.BytesIO(first)) as archive:
+            self.assertEqual(archive.namelist(), sorted([*FIXTURES.FILES, "nested/"]))
+            for entry in archive.infolist():
+                self.assertEqual(entry.date_time, (2024, 1, 1, 0, 0, 0))
+                self.assertEqual(entry.compress_type, zipfile.ZIP_STORED)
+                self.assertEqual(entry.create_system, 3)
+                if not entry.is_dir():
+                    expected = FIXTURES.FILES[entry.filename]
+                    self.assertEqual(archive.read(entry), expected)
+                    self.assertEqual(entry.CRC, zlib.crc32(expected))
+
+    def test_archive_corruption_retains_metadata_but_fails_member_crc(self):
+        original = LAB.archive_zip(FIXTURES.FILES)
+        corrupt = LAB.corrupt_archive_member(original, "README-synthetic.txt")
+        self.assertEqual(sum(left != right for left, right in zip(original, corrupt)), 1)
+        with zipfile.ZipFile(io.BytesIO(original)) as good, zipfile.ZipFile(io.BytesIO(corrupt)) as bad:
+            self.assertEqual([(entry.filename, entry.CRC, entry.file_size) for entry in good.infolist()],
+                             [(entry.filename, entry.CRC, entry.file_size) for entry in bad.infolist()])
+            with self.assertRaisesRegex(zipfile.BadZipFile, "CRC"):
+                bad.read("README-synthetic.txt")
+            self.assertEqual(bad.read("nested/space name.txt"), FIXTURES.FILES["nested/space name.txt"])
+        with self.assertRaises(zipfile.BadZipFile):
+            zipfile.ZipFile(io.BytesIO(original[:-22]))
+
+    def test_archive_inventory_rejects_wrong_crc_size_type_duplicates_and_extra_files(self):
+        entries = self.archive_entries()
+        LAB.archive_inventory(json.dumps(entries).encode(), FIXTURES.FILES)
+        cases = [entries[:-1], entries + [entries[0]], entries[:-1] + [entries[0]]]
+        for field, value in (("Hashes", {"crc32": "00000000"}), ("Size", -1), ("Size", True),
+                             ("IsDir", True), ("Path", "unexpected.txt")):
+            changed = [dict(entry) for entry in entries]
+            changed[0][field] = value
+            cases.append(changed)
+        for value in cases:
+            with self.subTest(value=value), self.assertRaises(LAB.LabError):
+                LAB.archive_inventory(json.dumps(value).encode(), FIXTURES.FILES)
+
+    def synthetic_archive_runtime(self, corrupt_result=None):
+        runtime = mock.Mock()
+
+        def result(args, config):
+            if args[0] == "lsjson":
+                if config.name == "truncated.conf":
+                    return 1, b"", b"zip: not a valid zip file"
+                return 0, json.dumps(self.archive_entries()).encode(), b""
+            self.assertEqual(args[:3], ["rc", "--loopback", "operations/copyfile"])
+            options = dict(argument.split("=", 1) for argument in args[3:])
+            if options["dstFs"] == "Synthetic:":
+                return 1, b"", b"read only file system"
+            destination = Path(options["dstFs"]) / options["dstRemote"]
+            if config.name == "corrupt.conf":
+                if corrupt_result is not None:
+                    return corrupt_result(destination)
+                return 1, b"", b"zip: checksum error"
+            name = options["srcRemote"]
+            if name not in FIXTURES.FILES:
+                return 1, b"", b"is not a regular file" if name == "nested" else b"object not found"
+            destination.write_bytes(FIXTURES.FILES[name])
+            return 0, b"{}", b""
+
+        runtime.run.side_effect = result
+        return runtime
+
+    def test_archive_fixture_attests_all_capabilities_using_file_only_copy(self):
+        runtime = self.synthetic_archive_runtime()
+        row = LAB.run_backend(runtime, "archive", self.root / "archive")
+        self.assertEqual(row["fixture_kind"], "local")
+        self.assertEqual(row["errors"], [])
+        self.assertEqual(row["capabilities"]["authentication_rejection"], "not_applicable")
+        self.assertTrue(all(value == "passed" for key, value in row["capabilities"].items()
+                            if key != "authentication_rejection"))
+        self.assertTrue(all(call.args[0][0] in ("lsjson", "rc") for call in runtime.run.call_args_list))
+
+    def test_archive_corruption_requires_crc_error_and_absent_destination(self):
+        cases = ((1, b"", b"unrelated failure"), (0, b"", b"zip: checksum error"))
+        for index, value in enumerate(cases):
+            runtime = self.synthetic_archive_runtime(lambda destination: value)
+            row = LAB.run_backend(runtime, "archive", self.root / str(index))
+            self.assertNotEqual(row["capabilities"]["corrupt_member_rejection"], "passed")
+            self.assertTrue(row["errors"])
+
+        def leaves_partial(destination):
+            destination.write_bytes(b"unaccepted partial bytes")
+            return 1, b"", b"zip: checksum error"
+
+        row = LAB.run_backend(self.synthetic_archive_runtime(leaves_partial), "archive", self.root / "partial")
+        self.assertIn("corrupt_archive_member_accepted", row["errors"])
+
+    def test_archive_preservation_detects_container_or_config_change_even_after_error(self):
+        for filename, error in (("original.zip", "archive_container_changed"),
+                                ("original.conf", "archive_config_changed")):
+            root = self.root / filename
+            runtime = mock.Mock()
+
+            def mutate(args, config):
+                (root / filename).write_bytes(b"changed")
+                return 1, b"", b"unrelated listing failure"
+
+            runtime.run.side_effect = mutate
+            row = LAB.run_backend(runtime, "archive", root)
+            self.assertIn(error, row["errors"])
+            self.assertNotEqual(row["capabilities"]["source_preservation"], "passed")
+            self.assertNotEqual(row["capabilities"]["config_preservation"], "passed")
 
     def test_timeout_kills_and_reaps_exact_owned_process(self):
         runtime = object.__new__(LAB.Runtime)
