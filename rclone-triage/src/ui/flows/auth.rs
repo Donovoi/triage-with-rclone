@@ -1037,7 +1037,7 @@ fn perform_single_auth_task<
         fallback_base = Some(base.to_string());
         fallback_remote = Some(remote_name.clone());
 
-        let backend = provider.short_name().to_string();
+        let backend = provider.backend_name().to_string();
 
         if mobile_flow.is_some() {
             app.auth_status = format!(

@@ -72,6 +72,7 @@ fn test_all_providers_have_unique_ids_and_names() {
 
         let entry = ProviderEntry::from_known(*provider);
         assert_eq!(entry.id, provider.rclone_type());
+        assert_eq!(entry.backend_name(), provider.rclone_name());
         assert_eq!(entry.name, provider.display_name());
         assert_eq!(entry.known, Some(*provider));
         assert_eq!(entry.auth_kind(), provider.auth_kind());
@@ -281,6 +282,10 @@ fn every_known_provider_has_an_independent_contract_and_round_trips() {
         assert!(!options.is_empty(), "missing setup contract for {prefix}");
         assert_eq!(CloudProvider::from_str(prefix).unwrap(), *provider);
         assert_eq!(
+            CloudProvider::from_str(provider.rclone_name()).unwrap(),
+            *provider
+        );
+        assert_eq!(
             CloudProvider::from_str(provider.rclone_type()).unwrap(),
             *provider
         );
@@ -301,6 +306,44 @@ fn every_known_provider_has_an_independent_contract_and_round_trips() {
             *provider
         );
     }
+}
+
+#[test]
+fn discovered_backend_identity_is_independent_of_prefix_and_display_label() {
+    let json = r#"[{"Name":"future storage","Prefix":"fsx",
+        "Description":"Friendly label","Options":[{"Name":"api_key"}]}]"#;
+    let catalog = discovery::providers_from_rclone_json(json).unwrap();
+    let entry = &catalog.providers[0];
+    assert_eq!(entry.id, "fsx");
+    assert_eq!(entry.backend_name(), "future storage");
+    assert_eq!(entry.display_name(), "Friendly label");
+    assert_eq!(entry.known, None);
+    for accepted in ["future storage", "futurestorage", "fsx"] {
+        assert!(entry.matches_rclone_type(accepted));
+        assert_eq!(
+            schema::provider_schema_from_rclone_json(json, accepted)
+                .unwrap()
+                .unwrap()
+                .prefix
+                .as_deref(),
+            Some("fsx")
+        );
+    }
+    for rejected in ["", "Friendly label", "another backend", "s3"] {
+        assert!(!entry.matches_rclone_type(rejected));
+    }
+    let serialized = serde_json::to_string(entry).unwrap();
+    let restored: ProviderEntry = serde_json::from_str(&serialized).unwrap();
+    assert_eq!(restored.backend_name(), "future storage");
+    assert_eq!(restored.id, "fsx");
+
+    // Entries saved before backend_name was added still use a valid known name.
+    let mut legacy =
+        serde_json::to_value(ProviderEntry::from_known(CloudProvider::GoogleCloudStorage)).unwrap();
+    legacy.as_object_mut().unwrap().remove("backend_name");
+    let restored: ProviderEntry = serde_json::from_value(legacy).unwrap();
+    assert_eq!(restored.backend_name(), "google cloud storage");
+    assert!(restored.matches_rclone_type("gcs"));
 }
 
 #[test]
@@ -497,6 +540,20 @@ fn pinned_rclone_catalog_matches_provider_contracts() {
         let backend = schema::provider_schema_from_rclone_json(&json, prefix)
             .unwrap()
             .unwrap();
+        assert_eq!(
+            backend.name.as_deref(),
+            Some(provider.rclone_name()),
+            "canonical name mismatch for {provider:?}"
+        );
+        assert_eq!(
+            backend.prefix.as_deref(),
+            Some(provider.rclone_prefix()),
+            "option prefix mismatch for {provider:?}"
+        );
+        assert_eq!(entry.backend_name(), provider.rclone_name());
+        let fallback = ProviderEntry::from_known(*provider);
+        assert!(fallback.matches_rclone_type(provider.rclone_name()));
+        assert!(fallback.matches_rclone_type(prefix));
         let options: HashSet<_> = backend
             .options
             .iter()
@@ -529,6 +586,27 @@ fn pinned_rclone_catalog_matches_provider_contracts() {
             .unwrap_or_else(|| {
                 panic!("discovered backend {} has no manual setup schema", entry.id)
             });
+        let canonical_name = backend
+            .name
+            .as_deref()
+            .expect("runtime schema has no canonical Name");
+        assert_eq!(entry.backend_name(), canonical_name);
+        for accepted in [
+            canonical_name.to_string(),
+            entry.id.clone(),
+            canonical_name.replace(' ', ""),
+        ] {
+            assert!(
+                entry.matches_rclone_type(&accepted),
+                "{} does not recognize {accepted}",
+                entry.id
+            );
+            let matched = schema::provider_schema_from_rclone_json(&json, &accepted)
+                .unwrap()
+                .unwrap();
+            assert_eq!(matched.name.as_deref(), Some(canonical_name));
+            assert_eq!(matched.prefix.as_deref(), Some(entry.id.as_str()));
+        }
         assert!(
             !backend.options.is_empty(),
             "{} has no setup options",

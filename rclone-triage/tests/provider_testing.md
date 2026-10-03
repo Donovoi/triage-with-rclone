@@ -49,7 +49,7 @@ Optional controls:
 | `RCLONE_PROVIDER_SMOKE_BACKENDS` | Comma-separated backend IDs, curated short names or Test remote names. Blank selects all Test remotes. Every requested item must match; typos, partially met filters and comma-only filters fail. |
 | `RCLONE_PROVIDER_SMOKE_REQUIRE_ALL` | `true` or `1` requires a selected account for every discovered backend. `false`, `0` or unset permits partial coverage. Other values fail. |
 | `RCLONE_PROVIDER_SMOKE_REPORT` | A new JSON output path; existing files are never overwritten. |
-| `RCLONE_PROVIDER_SMOKE_REPORT_ONLY` | `true` or `1` produces the complete missing-coverage inventory without reading any account config. It makes no live-access claim. |
+| `RCLONE_PROVIDER_SMOKE_REPORT_ONLY` | `true` or `1` produces the complete missing-coverage inventory without reading any account config. It makes no live-access claim. Combined with `REQUIRE_ALL`, it writes the inventory and then fails because full live coverage was not run. |
 
 Every discovered backend gets a row: `not_configured`, `not_requested`, `not_run`, `passed` or `failed`. One successful account cannot hide another account's failure. The report contains backend IDs, authentication categories, counts and statuses; it omits remote names, account identities, filenames, credentials and raw provider errors. `fresh_login_verified` and `refresh_grant_verified` remain false in this harness. `all_discovered_providers_passed` becomes true only when every row passed and there were no errors.
 
