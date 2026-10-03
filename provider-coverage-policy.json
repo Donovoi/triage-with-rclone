@@ -549,6 +549,50 @@
       },
       "review_required": false,
       "unresolved_applicability": []
+    },
+    "swift-v1-fixture": {
+      "required": {
+        "application": [
+          "listing",
+          "download_hash",
+          "manifest_integrity",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation",
+          "refresh"
+        ],
+        "local_protocol": [
+          "listing",
+          "download_hash",
+          "missing_object_rejection",
+          "authentication_rejection",
+          "source_preservation",
+          "config_preservation",
+          "cleanup",
+          "fixture_write_rejection",
+          "service_token_reacquisition",
+          "renewal_denial"
+        ],
+        "vendor": [
+          "listing",
+          "download_hash",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation",
+          "refresh"
+        ]
+      },
+      "review_required": false,
+      "unresolved_applicability": [
+        "refresh",
+        "reauthentication"
+      ]
     }
   },
   "providers": {
@@ -2766,24 +2810,49 @@
     "swift": {
       "canonical_name": "swift",
       "schema_sha256": "50da68737fff6f01d1b1b5a3efbbc865db77171220d5fbcc3e79628d59e4e9c2",
-      "profile": "hosted-protocol-renewal-session-review",
+      "profile": "swift-v1-fixture",
       "notes": [
         "Owned OpenStack Swift/Keystone deployment and scoped test account. Temporary auth tokens require renewal coverage; public/no-auth endpoints are separate profiles.",
         "Free account/API eligibility: no_vendor_account_needed",
         "Local protocol fixtures do not establish hosted service or workload identity acceptance.",
-        "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension."
+        "The independent local fixture covers Swift auth_version=1, env_auth=false, endpoint_type=public and small ordinary objects with no_large_objects=true. Neither auth_token nor storage_url may be preset: rclone reapplies those overrides during authentication, which would confound replacement-token evidence.",
+        "Service-token reacquisition must occur within one rclone copy invocation: initial grant, exact object GET rejected with an injected 401 and zero payload, distinct replacement grant, then that object GET accepted with the new token and independently verified bytes. Separate fresh logins are insufficient.",
+        "Renewal denial requires a bounded failed command after the injected 401, observed rejected reauthentication and no accepted destination/payload. The dependency may make two denied auth requests because authentication itself has one retry.",
+        "The forced 401 tests authorization rejection, not wall-clock expiry or provider revocation. Config preservation is expected; runtime token replacement is in memory and does not establish persisted-token updates.",
+        "The local receipt does not qualify OAuth refresh, TLS, Keystone v2/v3, application credentials, environment-provided credentials, token/storage URL overrides, large objects, vendor deployments, application cancellation, or a general connection-recovery case."
       ],
       "source_links": [
         "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/swift.md",
-        "https://docs.openstack.org/swift/latest/development_saio.html"
+        "https://docs.openstack.org/swift/latest/development_saio.html",
+        "https://github.com/rclone/rclone/blob/v1.75.1/backend/swift/swift.go#L473-L546",
+        "https://github.com/rclone/rclone/blob/v1.75.1/backend/swift/swift.go#L83-L105",
+        "https://github.com/ncw/swift/blob/v2.0.5/auth.go#L92-L125",
+        "https://github.com/ncw/swift/blob/v2.0.5/swift.go#L528-L618",
+        "https://github.com/ncw/swift/blob/v2.0.5/swift.go#L650-L658",
+        "https://github.com/ncw/swift/blob/v2.0.5/swift.go#L764-L850",
+        "https://docs.openstack.org/api-ref/object-store/"
       ],
       "auth_applicability": "provider_specific",
-      "refresh_applicability": "required",
+      "refresh_applicability": "review_required",
       "renewal_modes": [
         {
-          "auth_mode": "Documented provider token or service-identity credentials",
-          "renewal_kind": "provider_credential_renewal",
-          "source_supported_behavior": "The documented token-based authentication requires a renewal acceptance case. Select the exact account/authentication variant and observe the actual renewal exchange; a saved-token listing is insufficient. Connection/session reauthentication applicability is not established by the credential-renewal review.",
+          "auth_mode": "Swift v1 user/key with env_auth=false and no auth_token/storage_url overrides",
+          "renewal_kind": "swift_v1_service_token_reacquisition",
+          "source_supported_behavior": "The v1 authenticator sends X-Auth-User and X-Auth-Key to obtain an X-Auth-Token and storage URL. Storage calls attach X-Auth-Token per HTTP request. On HTTP 401 with retries remaining, the pinned client drains the response, clears authorization and loops through authentication before retrying the object request. Flushing keepalive sockets during authentication is not a connection-bound account-authentication handshake.",
+          "required_lifecycle_scenarios": [
+            "Fresh setup and authentication in the exact v1 variant, without static auth_token or storage_url overrides.",
+            "Within one command, observe initial grant, injected old-token GET rejection with zero bytes, distinct replacement grant and accepted replacement-token GET.",
+            "Validate the acquired synthetic file against independent size/SHA256 and preserve original config and actual served source bytes.",
+            "Deny replacement authentication after token rejection; require bounded failure, no accepted payload/destination and owned cleanup.",
+            "Exercise actual expiry/revocation and application cancellation separately before claiming those lifecycle capabilities; injected 401 alone is insufficient."
+          ],
+          "credential_renewal_requirement": "required",
+          "connection_session_reauthentication_requirement": "not_applicable"
+        },
+        {
+          "auth_mode": "Other Swift authentication variants: Keystone v2/v3, application/environment credentials and explicit token or URL overrides",
+          "renewal_kind": "unresolved_other_swift_auth_variants",
+          "source_supported_behavior": "These variants are not covered by the auth-v1 fixture. Identify the selected grant and transport behavior before classifying renewal or connection/session reauthentication; explicit auth_token/storage_url overrides are reapplied by rclone and must not inherit the replacement-token verdict.",
           "required_lifecycle_scenarios": [
             "Fresh setup and authentication in the chosen variant.",
             "Expired access or session credential triggers the documented successful renewal exchange.",
@@ -2791,7 +2860,7 @@
             "Denial, revocation and cancellation remain bounded and preserve the source.",
             "Review and qualify connection/session reauthentication for this exact mode; do not infer applicability from credential renewal or a fresh login."
           ],
-          "credential_renewal_requirement": "required",
+          "credential_renewal_requirement": "review_required",
           "connection_session_reauthentication_requirement": "review_required"
         }
       ],
