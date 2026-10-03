@@ -29,11 +29,11 @@ import uuid
 import zipfile
 import zlib
 
-from fixture_servers import FILES, State, SwiftState, B2State, AzureBlobState, azure_string_to_sign, probe_write_rejection, serve
+from fixture_servers import FILES, State, SwiftState, B2State, AzureBlobState, AzureFilesState, azure_string_to_sign, probe_write_rejection, serve
 from email.utils import format_datetime
 
 
-BACKENDS = ("local", "http", "webdav", "ftp", "sftp", "s3", "archive", "swift", "b2", "azureblob")
+BACKENDS = ("local", "http", "webdav", "ftp", "sftp", "s3", "archive", "swift", "b2", "azureblob", "azurefiles")
 HARNESS_FILES = ("fixture_servers.py", "run_lab.py")
 MAX_OUTPUT = 2 * 1024 * 1024
 COMMAND_TIMEOUT = 20
@@ -926,9 +926,116 @@ def azureblob_checks(runtime, root, row, expected):
         caps["config_preservation"] = "passed"
 
 
+def azurefiles_options(state, port):
+    return {"type": "azurefiles", "env_auth": "false", "use_emulator": "false", "account": state.account,
+            "key": state.password, "endpoint": f"http://127.0.0.1:{port}/{state.account}", "share_name": state.share}
+
+
+def azurefiles_listing_matches(output, expected):
+    try:
+        rows = json.loads(output)
+        actual = []
+        for entry in rows:
+            if entry["IsDir"] is not False or type(entry["Size"]) is not int or not isinstance(entry["ModTime"], str):
+                return False
+            # datetime alone truncates 100ns differences. This fixed fixture
+            # accepts only zero fractions and UTC, preserving Files precision.
+            if not re.fullmatch(r"2024-01-01T00:00:00(?:\.0{1,9})?(?:Z|\+00:00)", entry["ModTime"]):
+                return False
+            timestamp = datetime.fromisoformat(entry["ModTime"].replace("Z", "+00:00"))
+            if timestamp != datetime(2024, 1, 1, tzinfo=timezone.utc):
+                return False
+            actual.append((entry["Path"], entry["Size"]))
+        return sorted(actual) == [(item["path"], item["size"]) for item in expected]
+    except (ValueError, TypeError, KeyError):
+        return False
+
+
+def azurefiles_checks(runtime, root, row, expected):
+    caps, preserved = row["capabilities"], {}
+    state = AzureFilesState(base64.b64encode(os.urandom(32)).decode())
+    port = None
+
+    def save_config(name, options):
+        path = config_file(root, name, options)
+        data = path.read_bytes()
+        preserved[path] = (data, hashlib.sha256(data).hexdigest())
+        return path
+
+    try:
+        with serve("azurefiles", state) as port:
+            opts = azurefiles_options(state, port)
+            good = save_config("azurefiles-baseline.conf", opts)
+            wrong_key = base64.b64encode(bytes(value ^ 1 for value in state.key_bytes)).decode()
+            bad = save_config("azurefiles-denied.conf", dict(opts, key=wrong_key))
+            code, output, _ = runtime.run(["cat", "Synthetic:README-synthetic.txt"], bad)
+            check(code != 0 and not output and state.auth_denied > 0 and state.authenticated == 0
+                  and state.payload_bytes == 0 and state.read_auth_denied > 0, "azurefiles_bad_auth_not_observed")
+            denied_before = state.auth_denied
+            caps["authentication_rejection"] = "passed"
+            code, output, _ = runtime.run(["lsjson", "--recursive", "--files-only",
+                                            "--no-mimetype", "Synthetic:"], good)
+            check(code == 0, "azurefiles_listing_failed")
+            check(azurefiles_listing_matches(output, expected), "azurefiles_listing_or_timestamp_mismatch")
+            caps["listing"] = "passed"
+            downloads = root / "downloads"
+            downloads.mkdir(mode=0o700)
+            for index, item in enumerate(expected):
+                exact_file_stat(runtime, good, "Synthetic:", item["path"], item["size"])
+                destination = downloads / f"verified-{index}"
+                code, _, _ = exact_copy(runtime, good, "Synthetic:", item["path"],
+                                        downloads.as_posix(), destination.name)
+                check(code == 0 and destination.is_file() and destination.stat().st_size == item["size"]
+                      and digest(destination) == item["sha256"], "azurefiles_download_mismatch")
+            caps["download_hash"] = "passed"
+            missing = "absent-synthetic.txt"
+            code, output, _ = runtime.run(["rc", "--loopback", "operations/stat", "fs=Synthetic:",
+                "remote=" + missing, 'opt={"noModTime":true,"noMimeType":true,"filesOnly":true}'], good)
+            check(code == 0 and json.loads(output) == {"item": None}, "azurefiles_missing_stat_mismatch")
+            destination = downloads / "missing-must-not-exist"
+            code, output, error = exact_copy(runtime, good, "Synthetic:", missing,
+                                            downloads.as_posix(), destination.name)
+            check(code != 0 and not list(downloads.glob(destination.name + "*")) and state.missing >= 2
+                  and b"object not found" in (output + error).lower(), "azurefiles_missing_object_accepted")
+            caps["missing_object_rejection"] = "passed"
+            check(state.rejected_mutations == 0 and state.auth_denied == denied_before
+                  and state.directory_properties > 0 and state.directory_lists > 0 and state.root_file_probes > 0,
+                  "azurefiles_unexpected_native_denial_or_mutation")
+            # This request only exercises the fixture's mutation guard. Native
+            # read/auth acceptance above remains independent of this signer.
+            target = f"/{state.account}/{state.share}/write-must-not-exist.txt"
+            headers = {"x-ms-date": format_datetime(datetime.now(timezone.utc), usegmt=True),
+                       "x-ms-version": "2026-06-06", "x-ms-file-request-intent": "backup", "Content-Length": "0"}
+            signed = azure_string_to_sign(state.account, "PUT", target, headers.items())
+            signature = base64.b64encode(hmac.new(state.key_bytes, signed.encode(), hashlib.sha256).digest()).decode()
+            headers["Authorization"] = f"SharedKey {state.account}:{signature}"
+            client = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
+            try:
+                client.request("PUT", target, body=b"", headers=headers)
+                response = client.getresponse()
+                body = response.read(4097)
+                check(response.status == 403 and response.getheader("x-ms-error-code") == "AuthorizationPermissionMismatch"
+                      and len(body) <= 4096 and state.rejected_mutations == 1
+                      and state.auth_denied == denied_before, "azurefiles_write_guard_not_observed")
+            finally:
+                client.close()
+            caps["fixture_write_rejection"] = "passed"
+    finally:
+        closed = state.cleanup_complete and (port is None or listener_closed(port))
+        caps["cleanup"] = "passed" if closed else "failed"
+        check(closed, "azurefiles_listener_cleanup_failed")
+        check(not state.budget_exceeded and not state.unexpected and not state.rejected_payload_bytes,
+              "azurefiles_unexpected_request_or_budget")
+        check(served_source_unchanged(state, expected), "azurefiles_source_changed")
+        caps["source_preservation"] = "passed"
+        check(all(path.is_file() and path.read_bytes() == data and digest(path) == sha256
+                  for path, (data, sha256) in preserved.items()), "azurefiles_config_changed")
+        caps["config_preservation"] = "passed"
+
+
 def run_backend(runtime, backend, root):
     root.mkdir(mode=0o700)
-    independent = backend in ("http", "webdav", "ftp", "swift", "b2", "azureblob")
+    independent = backend in ("http", "webdav", "ftp", "swift", "b2", "azureblob", "azurefiles")
     row = {"backend": backend,
            "fixture_kind": "local" if backend in ("local", "archive") else "independent_loopback" if independent else "rclone_loopback",
            "capabilities": {key: "not_run" for key in (
@@ -947,7 +1054,7 @@ def run_backend(runtime, backend, root):
         row["capabilities"].update(config_preservation="not_run", service_token_reacquisition="not_run", renewal_denial="not_run")
     if backend == "b2":
         row["capabilities"].update(config_preservation="not_run", account_token_reacquisition="not_run", renewal_denial="not_run")
-    if backend == "azureblob":
+    if backend in ("azureblob", "azurefiles"):
         row["capabilities"]["config_preservation"] = "not_run"
     if backend in ("http", "webdav"):
         row["capabilities"].update(truncated_download_rejection="not_run", cancellation_cleanup="not_run")
@@ -963,6 +1070,9 @@ def run_backend(runtime, backend, root):
         prepare_files(files_root)
     port = None
     try:
+        if backend == "azurefiles":
+            azurefiles_checks(runtime, root, row, expected)
+            return row
         if backend == "azureblob":
             azureblob_checks(runtime, root, row, expected)
             return row
