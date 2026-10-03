@@ -3,14 +3,34 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+    inputs:
+      expected_sha:
+        description: Optional exact commit required by the runtime updater
+        required: false
+        type: string
 permissions:
   contents: read
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 jobs:
+  revision:
+    name: Validate requested revision
+    runs-on: ubuntu-latest
+    steps:
+      - name: Bind dispatched validation to the requested commit
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          ACTUAL_SHA: ${{ github.sha }}
+        run: |
+          if [[ -n "$EXPECTED_SHA" ]] && { [[ ! "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]] || [[ "$EXPECTED_SHA" != "$ACTUAL_SHA" ]]; }; then
+            echo 'The requested commit does not match this workflow run.' >&2
+            exit 1
+          fi
   audit:
     name: Dependency security audit
+    needs: revision
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -26,6 +46,7 @@ jobs:
       - run: cargo audit --file rclone-triage/Cargo.lock --deny warnings
   test:
     name: Test (${{ matrix.os }})
+    needs: revision
     strategy:
       fail-fast: false
       matrix:
@@ -48,6 +69,12 @@ jobs:
       - name: Prepare verified embedded runtime
         shell: bash
         run: bash ../scripts/download-rclone.sh
+      - name: Prepare verified Linux runtime for catalog contracts
+        if: runner.os == 'Linux'
+        shell: bash
+        run: bash ../scripts/download-rclone.sh --linux "$RUNNER_TEMP/rclone-native"
+      - name: Runtime updater regression tests
+        run: python -m unittest discover -s ../scripts/tests -p "test_*.py"
       - name: Formatting
         run: cargo fmt --all -- --check
       - name: Validate Windows acceptance harnesses
@@ -65,6 +92,10 @@ jobs:
         run: cargo clippy --locked --all-targets --all-features -- -D warnings
       - name: Offline tests and local transfer regressions
         run: cargo test --locked --release -- --test-threads=1
+      - name: Every provider against the pinned runtime catalog
+        env:
+          RCLONE_PROVIDER_SCHEMA_BINARY: ${{ runner.os == 'Windows' && format('{0}/rclone-triage/assets/rclone.exe', github.workspace) || format('{0}/rclone-native', runner.temp) }}
+        run: cargo test --locked --release --test provider_matrix pinned_rclone_catalog_matches_provider_contracts -- --ignored --exact --test-threads=1
       - name: Build release
         run: cargo build --locked --release
       - name: Record dependency inventory
