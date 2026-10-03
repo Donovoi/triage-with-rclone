@@ -72,6 +72,14 @@ def receipt(backend="http"):
             }]}
 
 
+def swift_receipt():
+    candidate = receipt("swift")
+    candidate["backends"][0]["capabilities"] = {
+        capability: "passed" for capability in coverage.SWIFT_REQUIRED_CAPABILITIES
+    }
+    return candidate
+
+
 class CoverageTests(unittest.TestCase):
     def setUp(self):
         self.catalog = coverage.catalog_from_schemas([schema()])
@@ -582,7 +590,7 @@ class CoverageTests(unittest.TestCase):
         for backend in set(coverage.FIXTURE_KINDS) - {"archive"}:
             catalog = coverage.catalog_from_schemas([schema(backend)])
             policy = policy_for(catalog)
-            for capability in coverage.ARCHIVE_CAPABILITIES:
+            for capability in coverage.ARCHIVE_ONLY_CAPABILITIES:
                 candidate = receipt(backend)
                 candidate["backends"][0]["capabilities"][capability] = "passed"
                 self.assertIn("invalid_fixture_capability", self.evaluate([candidate], policy, catalog)["errors"])
@@ -612,6 +620,116 @@ class CoverageTests(unittest.TestCase):
         candidate = receipt()
         candidate["backends"][0]["capabilities"]["reauthentication"] = "passed"
         self.assertIn("invalid_fixture_capability", self.evaluate([candidate])["errors"])
+
+    def test_swift_contract_cannot_qualify_application_or_vendor_lifecycle(self):
+        catalog = coverage.catalog_from_schemas([schema("swift")])
+        policy = policy_for(catalog)
+        required = policy["profiles"]["test"]["required"]
+        required["local_protocol"] = sorted(coverage.SWIFT_REQUIRED_CAPABILITIES)
+        for tier in ("application", "vendor"):
+            required[tier].append("reauthentication")
+        entry = policy["providers"]["swift"]
+        entry["reauthentication_applicability"] = "required"
+        entry["renewal_modes"][0]["connection_session_reauthentication_requirement"] = "required"
+        report = self.evaluate([swift_receipt()], policy, catalog)
+        evidence = report["providers"][0]["evidence"]
+        self.assertEqual(evidence["local_protocol"]["status"], "passed")
+        self.assertEqual(set(evidence["local_protocol"]["capabilities"]), coverage.SWIFT_REQUIRED_CAPABILITIES)
+        for tier in ("application", "vendor"):
+            self.assertEqual(evidence[tier]["status"], "not_verified")
+            self.assertEqual(evidence[tier]["capabilities"]["refresh"], "not_verified")
+            self.assertEqual(evidence[tier]["capabilities"]["reauthentication"], "not_verified")
+        self.assertEqual(coverage.gate_errors(report, require_plans=True, require_fixtures=["swift"]), [])
+        self.assertIn("provider_coverage_incomplete", coverage.gate_errors(report, require_complete=True))
+
+    def test_swift_requires_every_capability_even_with_weaker_policy(self):
+        catalog = coverage.catalog_from_schemas([schema("swift")])
+        policy = policy_for(catalog)
+        for omitted in coverage.SWIFT_REQUIRED_CAPABILITIES:
+            candidate = swift_receipt()
+            del candidate["backends"][0]["capabilities"][omitted]
+            with self.subTest(omitted=omitted):
+                report = self.evaluate([candidate], policy, catalog)
+                self.assertIn("invalid_fixture_capability", report["errors"])
+                self.assertIn("required_fixture_not_verified", coverage.gate_errors(report, require_fixtures=["swift"]))
+        for extra in ("refresh", "reauthentication", "host_key_rejection", "archive_crc32",
+                      "truncated_download_rejection", "cancellation_cleanup"):
+            candidate = swift_receipt()
+            candidate["backends"][0]["capabilities"][extra] = "passed"
+            with self.subTest(extra=extra):
+                self.assertIn("invalid_fixture_capability", self.evaluate([candidate], policy, catalog)["errors"])
+
+    def test_swift_does_not_accept_wrong_fixture_kind_or_na_outcomes(self):
+        catalog = coverage.catalog_from_schemas([schema("swift")])
+        policy = policy_for(catalog)
+        for kind in ("local", "rclone_loopback", "vendor"):
+            candidate = swift_receipt()
+            candidate["backends"][0]["fixture_kind"] = kind
+            self.assertIn("unknown_fixture_backend", self.evaluate([candidate], policy, catalog)["errors"])
+        for capability in coverage.SWIFT_REQUIRED_CAPABILITIES:
+            for value, error in (("not_applicable", "invalid_fixture_not_applicable"),
+                                 (True, "invalid_fixture_outcome"),
+                                 ("not_run", "inconsistent_fixture_success"),
+                                 ("failed", "inconsistent_fixture_success")):
+                candidate = swift_receipt()
+                candidate["backends"][0]["capabilities"][capability] = value
+                with self.subTest(capability=capability, value=value):
+                    self.assertIn(error, self.evaluate([candidate], policy, catalog)["errors"])
+
+    def test_swift_renewal_capabilities_cannot_be_forged_for_other_backends(self):
+        for backend in set(coverage.FIXTURE_KINDS) - {"swift"}:
+            catalog = coverage.catalog_from_schemas([schema(backend)])
+            policy = policy_for(catalog)
+            for capability in coverage.SWIFT_ONLY_CAPABILITIES:
+                candidate = receipt(backend)
+                if backend == "archive":
+                    candidate["backends"][0]["capabilities"] = {
+                        key: "passed" for key in coverage.ARCHIVE_REQUIRED_CAPABILITIES
+                    }
+                    candidate["backends"][0]["capabilities"]["authentication_rejection"] = "not_applicable"
+                candidate["backends"][0]["capabilities"][capability] = "passed"
+                with self.subTest(backend=backend, capability=capability):
+                    self.assertIn("invalid_fixture_capability", self.evaluate([candidate], policy, catalog)["errors"])
+
+    def test_config_preservation_supported_only_for_archive_and_swift(self):
+        for backend in coverage.FIXTURE_KINDS:
+            catalog = coverage.catalog_from_schemas([schema(backend)])
+            policy = policy_for(catalog)
+            candidate = swift_receipt() if backend == "swift" else receipt(backend)
+            if backend == "archive":
+                candidate["backends"][0]["capabilities"] = {
+                    key: "passed" for key in coverage.ARCHIVE_REQUIRED_CAPABILITIES
+                }
+                candidate["backends"][0]["capabilities"]["authentication_rejection"] = "not_applicable"
+            candidate["backends"][0]["capabilities"]["config_preservation"] = "passed"
+            report = self.evaluate([candidate], policy, catalog)
+            with self.subTest(backend=backend):
+                if backend in ("archive", "swift"):
+                    self.assertEqual(report["providers"][0]["evidence"]["local_protocol"]["status"], "passed")
+                else:
+                    self.assertIn("invalid_fixture_capability", report["errors"])
+
+    def test_swift_renewal_failure_is_sticky_and_current_provenance_required(self):
+        catalog = coverage.catalog_from_schemas([schema("swift")])
+        policy = policy_for(catalog)
+        for capability in coverage.SWIFT_ONLY_CAPABILITIES:
+            failed = swift_receipt()
+            failed["success"] = False
+            failed["backends"][0]["capabilities"][capability] = "failed"
+            for batch in ([failed, swift_receipt()], [swift_receipt(), failed]):
+                result = self.evaluate(batch, policy, catalog)
+                self.assertEqual(result["providers"][0]["evidence"]["local_protocol"]["status"], "failed")
+        for field, value, error in (("harness_sha256", "d" * 64, "receipt_harness_mismatch"),
+                                    ("fixture_manifest_sha256", "d" * 64, "receipt_fixture_manifest_mismatch"),
+                                    ("platform", "windows", "receipt_runtime_mismatch"),
+                                    ("finished_utc", coverage.utc_text(NOW + timedelta(seconds=1)), "future_receipt")):
+            candidate = swift_receipt()
+            candidate[field] = value
+            self.assertIn(error, self.evaluate([candidate], policy, catalog)["errors"])
+        candidate = swift_receipt()
+        candidate["started_utc"] = coverage.utc_text(NOW - timedelta(days=2, minutes=1))
+        candidate["finished_utc"] = coverage.utc_text(NOW - timedelta(days=2))
+        self.assertIn("expired_receipt", self.evaluate([candidate], policy, catalog)["errors"])
 
     def test_not_applicable_only_from_reviewed_policy(self):
         policy = policy_for(self.catalog, application=False, vendor=False)

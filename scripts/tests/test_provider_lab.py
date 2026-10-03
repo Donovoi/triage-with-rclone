@@ -2,6 +2,7 @@
 
 import ftplib
 import base64
+from contextlib import contextmanager
 import hashlib
 import http.client
 import importlib.util
@@ -510,6 +511,144 @@ class ProviderLabTests(unittest.TestCase):
             self.assertIn(error, row["errors"])
             self.assertNotEqual(row["capabilities"]["source_preservation"], "passed")
             self.assertNotEqual(row["capabilities"]["config_preservation"], "passed")
+
+    def completed_swift_state(self, denial=False):
+        state = FIXTURES.SwiftState("synthetic", "synthetic-key", "deny" if denial else "renew")
+        state.forced_401 = 1
+        state.events = [("grant", 1), ("head", 1), ("get_401", 1)]
+        state.revoked = {"synthetic-token-one"}
+        if denial:
+            state.generation = 1
+            state.tokens = {"synthetic-token-one"}
+            state.token = "synthetic-token-one"
+            state.events += [("renewal_denied", 1), ("renewal_denied", 1)]
+            state.renewal_denied = 2
+        else:
+            state.generation = 2
+            state.tokens = {"synthetic-token-one", "synthetic-token-two"}
+            state.token = "synthetic-token-two"
+            state.events += [("grant", 2), ("get", 2)]
+            state.payload_bytes = len(FIXTURES.FILES["README-synthetic.txt"])
+        return state
+
+    def test_swift_options_cannot_override_refreshed_token_or_enable_environment_auth(self):
+        state = FIXTURES.SwiftState("synthetic", "raw-synthetic-key")
+        options = LAB.swift_options(state, 12345)
+        self.assertEqual(options, {"type": "swift", "env_auth": "false", "user": "synthetic",
+            "key": "raw-synthetic-key", "auth": "http://127.0.0.1:12345/auth/v1.0", "auth_version": "1",
+            "endpoint_type": "public", "no_large_objects": "true"})
+
+    def test_swift_renewal_verdict_rejects_fresh_logins_wrong_order_same_token_and_rejected_bytes(self):
+        size = len(FIXTURES.FILES["README-synthetic.txt"])
+        self.assertTrue(LAB.swift_renewal_matches(self.completed_swift_state(), False, size))
+        mutations = {
+            "no_401": lambda state: setattr(state, "forced_401", 0),
+            "too_many_grants": lambda state: state.events.append(("grant", 3)),
+            "old_token_read": lambda state: state.events.append(("get", 1)),
+            "missing_metadata": lambda state: state.events.remove(("head", 1)),
+            "replacement_before_401": lambda state: setattr(state, "events", [("grant", 1), ("head", 1), ("grant", 2), ("get_401", 1), ("get", 2)]),
+            "same_token": lambda state: setattr(state, "tokens", {"synthetic-token-one"}),
+            "not_revoked": lambda state: state.revoked.clear(),
+            "rejected_payload": lambda state: setattr(state, "rejected_payload_bytes", 1),
+            "wrong_payload_length": lambda state: setattr(state, "payload_bytes", size + 1),
+            "unauthenticated_storage": lambda state: setattr(state, "storage_denied", 1),
+            "budget": lambda state: setattr(state, "budget_exceeded", True),
+            "unexpected_request": lambda state: setattr(state, "unexpected", 1),
+        }
+        for name, mutate in mutations.items():
+            with self.subTest(name=name):
+                state = self.completed_swift_state()
+                mutate(state)
+                self.assertFalse(LAB.swift_renewal_matches(state, False, size))
+
+    def test_swift_denial_allows_bounded_library_retries_but_no_grant_or_payload(self):
+        for denied in (1, 2, 8):
+            state = self.completed_swift_state(True)
+            state.renewal_denied = denied
+            self.assertTrue(LAB.swift_renewal_matches(state, True, 60))
+        for attribute, value in (("renewal_denied", 0), ("renewal_denied", 9), ("generation", 2),
+                                 ("payload_bytes", 1), ("rejected_payload_bytes", 1)):
+            state = self.completed_swift_state(True)
+            setattr(state, attribute, value)
+            self.assertFalse(LAB.swift_renewal_matches(state, True, 60))
+        state = self.completed_swift_state(True)
+        state.events.append(("get", 1))
+        self.assertFalse(LAB.swift_renewal_matches(state, True, 60))
+
+    def test_swift_renewal_case_requires_one_process_and_independent_hash(self):
+        payload = FIXTURES.FILES["README-synthetic.txt"]
+        for index, (commands, downloaded, expected_error) in enumerate(((1, payload, None),
+                (2, payload, "swift_renewal_not_single_process"), (1, b"wrong", "swift_renewed_download_mismatch"))):
+            root = self.root / str(index)
+            root.mkdir()
+            runtime = mock.Mock(sequence=4)
+
+            def run(args, config):
+                self.assertEqual(args[:3], ["rc", "--loopback", "operations/copyfile"])
+                self.assertIn("srcFs=Synthetic:", args)
+                self.assertIn("srcRemote=synthetic-bucket/README-synthetic.txt", args)
+                runtime.sequence += commands
+                (root / "renewed-verified").write_bytes(downloaded)
+                return 0, b"{}", b""
+
+            runtime.run.side_effect = run
+            row = {"capabilities": {}}
+            if expected_error:
+                with self.assertRaisesRegex(LAB.LabError, expected_error):
+                    LAB.swift_renewal_case(runtime, root, self.completed_swift_state(), "synthetic.conf", row)
+                self.assertNotIn("service_token_reacquisition", row["capabilities"])
+            else:
+                LAB.swift_renewal_case(runtime, root, self.completed_swift_state(), "synthetic.conf", row)
+                self.assertEqual(row["capabilities"], {"service_token_reacquisition": "passed"})
+            self.assertEqual(runtime.run.call_count, 1)
+
+    def test_swift_denial_case_rejects_partial_destination_even_with_denied_event_sequence(self):
+        runtime = mock.Mock(sequence=0)
+
+        def run(args, config):
+            runtime.sequence += 1
+            (self.root / "denied-must-not-exist").write_bytes(b"partial")
+            return 1, b'{"error":"authorization failed"}', b""
+
+        runtime.run.side_effect = run
+        row = {"capabilities": {}}
+        with self.assertRaisesRegex(LAB.LabError, "swift_denied_renewal_returned_data"):
+            LAB.swift_renewal_case(runtime, self.root, self.completed_swift_state(True), "synthetic.conf", row)
+        self.assertNotIn("renewal_denial", row["capabilities"])
+
+    def test_swift_failure_still_checks_preservation_and_listener_cleanup(self):
+        @contextmanager
+        def synthetic_serve(kind, state):
+            self.assertEqual(kind, "swift")
+            try:
+                yield 12345
+            finally:
+                if mutation == "teardown":
+                    raise RuntimeError("fixture_cleanup_failed")
+                state.cleanup_complete = True
+
+        for index, mutation in enumerate(("source", "config", "listener", "teardown")):
+            root = self.root / str(index)
+            state = FIXTURES.SwiftState("synthetic", "synthetic-key")
+            runtime = mock.Mock()
+
+            def run(args, config):
+                if mutation == "source":
+                    state.files["README-synthetic.txt"] = b"changed"
+                elif mutation == "config":
+                    config.write_bytes(b"changed")
+                return 1, b"", b"unrelated startup failure"
+
+            runtime.run.side_effect = run
+            with mock.patch.object(LAB, "SwiftState", return_value=state), mock.patch.object(LAB, "serve", synthetic_serve), \
+                    mock.patch.object(LAB, "listener_closed", return_value=mutation != "listener"):
+                row = LAB.run_backend(runtime, "swift", root)
+            self.assertTrue(row["errors"])
+            if mutation in ("listener", "teardown"):
+                self.assertEqual(row["capabilities"]["cleanup"], "failed")
+            else:
+                self.assertIn("swift_source_changed" if mutation == "source" else "swift_config_changed", row["errors"])
+            self.assertNotEqual(row["capabilities"]["service_token_reacquisition"], "passed")
 
     def test_timeout_kills_and_reaps_exact_owned_process(self):
         runtime = object.__new__(LAB.Runtime)
