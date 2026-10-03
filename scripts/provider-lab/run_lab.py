@@ -7,6 +7,7 @@ receipt; rclone's SFTP/S3 servers are not independent conformance or vendor test
 """
 
 import argparse
+import base64
 from contextlib import contextmanager
 from datetime import datetime, timezone
 import hashlib
@@ -290,6 +291,42 @@ def pin_sftp_key(runtime, port, directory):
     return path
 
 
+def mismatched_sftp_key(known, port, directory):
+    # Keep a valid SSH Ed25519 wire format but change the owned server's public
+    # key bytes. A malformed key or unknown host must not satisfy this test.
+    prefix = b"\x00\x00\x00\x0bssh-ed25519\x00\x00\x00\x20"
+    host = f"[127.0.0.1]:{port}"
+    entries = [line.split() for line in known.read_text().splitlines()]
+    entries = [entry for entry in entries if len(entry) == 3 and entry[:2] == [host, "ssh-ed25519"]]
+    check(len(entries) == 1, "missing_fixture_ed25519_key")
+    try:
+        original = base64.b64decode(entries[0][2], validate=True)
+    except ValueError:
+        raise LabError("invalid_fixture_ed25519_key") from None
+    check(len(original) == len(prefix) + 32 and original.startswith(prefix), "invalid_fixture_ed25519_key")
+    changed = original[:-1] + bytes([original[-1] ^ 1])
+    path = directory / "mismatched_known_hosts"
+    write_private(path, f"{host} ssh-ed25519 {base64.b64encode(changed).decode()}\n")
+    return path
+
+
+def sftp_host_key_check(runtime, root, options, target, row):
+    known = Path(options["known_hosts_file"])
+    before = digest(known)
+    mismatch = mismatched_sftp_key(known, int(options["port"]), root)
+    # Credentials, endpoint, agent and shell settings remain identical to the
+    # succeeding client. Only the trusted public key is different.
+    config = config_file(root, "mismatched-host.conf", dict(options, known_hosts_file=str(mismatch)))
+    destination = root / "host-key-mismatch-must-not-exist"
+    for args in (["cat", target + "README-synthetic.txt"],
+                 ["copyto", target + "README-synthetic.txt", str(destination)]):
+        code, output, error = runtime.run(args, config)
+        check(code != 0 and not output and not destination.exists(), "host_key_mismatch_returned_data")
+        check(b"knownhosts: key mismatch" in error.lower(), "host_key_rejection_not_observed")
+    check(digest(known) == before, "fixture_host_keys_changed")
+    row["capabilities"]["host_key_rejection"] = "passed"
+
+
 def stat_has_no_file(code, output):
     if code != 0:
         return True
@@ -370,6 +407,8 @@ def run_backend(runtime, backend, root):
            "errors": []}
     if backend == "local":
         row["capabilities"]["authentication_rejection"] = "not_applicable"
+    if backend == "sftp":
+        row["capabilities"]["host_key_rejection"] = "not_run"
     if independent:
         row["capabilities"]["fixture_write_rejection"] = "not_run"
     if backend in ("http", "webdav"):
@@ -433,6 +472,8 @@ def run_backend(runtime, backend, root):
                 good = config_file(root, "good.conf", opts)
                 bad = config_file(root, "bad.conf", bad_opts)
                 common_checks(runtime, root, good, bad, target, row, auth_marker=auth_marker, expected=expected)
+                if backend == "sftp":
+                    sftp_host_key_check(runtime, root, opts, target, row)
         check(served_source_unchanged(state, expected) if independent else source_unchanged(files_root, expected), "source_changed")
         row["capabilities"]["source_preservation"] = "passed"
     except (LabError, OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as error:

@@ -1,5 +1,6 @@
 """Offline ledger regressions: no rclone, server, credentials or cloud calls."""
 import contextlib
+import copy
 from datetime import datetime, timedelta, timezone
 import importlib.util
 import io
@@ -22,20 +23,37 @@ HARNESS = "b" * 64
 
 def schema(backend="http"):
     return {"Name": backend, "Prefix": backend, "Options": [
-        {"Name": "url", "Required": True, "IsPassword": False, "Default": "/home/private"},
-        {"Name": "pass", "IsPassword": True, "Help": "Private value omitted"},
+        {"Name": "url", "Type": "string", "Required": True, "IsPassword": False, "Default": "/home/private"},
+        {"Name": "pass", "Type": "string", "IsPassword": True, "Help": "Private value omitted"},
     ]}
 
 
 def policy_for(catalog, application=True, vendor=True):
-    required = {"local_protocol": ["listing", "download_hash", "cleanup"]}
+    required = {"local_protocol": ["listing", "download_hash", "cleanup"],
+                "application": ["download_hash", "manifest_integrity", "cleanup"]}
     if application:
-        required["application"] = ["authentication", "download_hash", "manifest_integrity", "cleanup"]
+        required["application"].append("authentication")
     if vendor:
         required["vendor"] = ["authentication", "refresh", "cleanup"]
+        required["application"].append("refresh")
+        if "authentication" not in required["application"]:
+            required["application"].append("authentication")
+    refresh = "required" if vendor else "not_applicable"
     return {"schema_version": 1, "profiles": {"test": {"required": required}},
             "providers": {row["backend"]: {"canonical_name": row["canonical_name"],
-                 "schema_sha256": row["schema_sha256"], "profile": "test"} for row in catalog}}
+                 "schema_sha256": row["schema_sha256"], "profile": "test",
+                 "auth_applicability": "credentials" if application or vendor else "none",
+                 "refresh_applicability": refresh,
+                 "source_links": ["https://example.invalid/official-provider-documentation"],
+                 "renewal_modes": [renewal_mode(refresh)]} for row in catalog}}
+
+
+def renewal_mode(requirement="required"):
+    return {"auth_mode": "synthetic reviewed mode", "refresh_capability_requirement": requirement,
+            "renewal_kind": "provider_specific" if requirement == "review_required" else
+                            "oauth_refresh_token" if requirement == "required" else "none",
+            "source_supported_behavior": "Synthetic source-backed behavior for validation.",
+            "required_lifecycle_scenarios": ["verify lifecycle using synthetic data"]}
 
 
 def receipt(backend="http"):
@@ -70,7 +88,7 @@ class CoverageTests(unittest.TestCase):
         second["Options"][0]["Help"] = "changed prose"
         self.assertEqual(coverage.schema_digest(first), coverage.schema_digest(second))
         for field, value in [("Required", False), ("IsPassword", True), ("Advanced", True),
-                             ("Exclusive", True), ("Provider", "different")]:
+                             ("Exclusive", True), ("Provider", "different"), ("Type", "bool"), ("Type", "Duration")]:
             changed = schema()
             changed["Options"][0][field] = value
             self.assertNotEqual(coverage.schema_digest(first), coverage.schema_digest(changed))
@@ -85,15 +103,127 @@ class CoverageTests(unittest.TestCase):
 
     def test_catalog_rejects_duplicate_and_malformed_contracts(self):
         for data in [[schema(), schema()], [{"Name": "http", "Prefix": "../private"}],
-                     [{"Name": "http", "Options": [{"Name": "x", "Required": "true"}]}]]:
+                     [{"Name": "http", "Options": [{"Name": "x", "Type": "string", "Required": "true"}]}]]:
             with self.assertRaises(coverage.CoverageError):
                 coverage.catalog_from_schemas(data)
 
+    def test_type_is_required_and_type_only_drift_invalidates_plan(self):
+        for value in (None, "", False, [], "string\nprivate", "string/unsafe", "string|"):
+            changed = schema()
+            changed["Options"][0]["Type"] = value
+            with self.assertRaises(coverage.CoverageError):
+                coverage.canonical_schema(changed)
+        missing = schema()
+        del missing["Options"][0]["Type"]
+        with self.assertRaises(coverage.CoverageError):
+            coverage.canonical_schema(missing)
+        for value in ("bool", "Duration", "mtime|atime|btime|ctime"):
+            changed = schema()
+            changed["Options"][0]["Type"] = value
+            report = self.evaluate(catalog=coverage.catalog_from_schemas([changed]))
+            self.assertEqual(report["providers"][0]["policy_status"], "stale_schema")
+            self.assertIn("provider_plans_incomplete", coverage.gate_errors(report, require_plans=True))
+
+    def test_plan_requires_auth_refresh_sources_and_renewal_modes(self):
+        for field in ("auth_applicability", "refresh_applicability", "source_links", "renewal_modes"):
+            policy = copy.deepcopy(self.policy)
+            del policy["providers"]["http"][field]
+            with self.assertRaisesRegex(coverage.CoverageError, "invalid_policy"):
+                coverage.validate_policy(policy)
+        for field, value in (("auth_applicability", "maybe"), ("refresh_applicability", "maybe"),
+                             ("source_links", []), ("source_links", "https://example.invalid/docs"),
+                             ("renewal_modes", [])):
+            policy = copy.deepcopy(self.policy)
+            policy["providers"]["http"][field] = value
+            with self.assertRaisesRegex(coverage.CoverageError, "invalid_policy"):
+                coverage.validate_policy(policy)
+
+    def test_source_links_are_https_without_userinfo_or_malformed_host(self):
+        for source in ("http://example.invalid/docs", "https://user:password@example.invalid/docs",
+                       "https://user@example.invalid/docs", "/relative", "https:///no-host",
+                       "https://example.invalid:99999/docs", "https://example.invalid\\private",
+                       "https://example.invalid/with space", "https://[invalid/docs"):
+            policy = copy.deepcopy(self.policy)
+            policy["providers"]["http"]["source_links"] = [source]
+            with self.subTest(source=source), self.assertRaisesRegex(coverage.CoverageError, "invalid_policy"):
+                coverage.validate_policy(policy)
+        self.policy["providers"]["http"]["source_links"] = ["https://github.com/rclone/rclone/blob/v1.75.1/backend/local/local.go#L85-L88"]
+        coverage.validate_policy(self.policy)
+
+    def test_mode_fields_types_and_lifecycle_requirements_are_validated(self):
+        invalid = []
+        missing = renewal_mode()
+        del missing["source_supported_behavior"]
+        invalid.append(missing)
+        invalid.append(dict(renewal_mode(), ignored_decision="must not be silently ignored"))
+        for field, value in (("auth_mode", ""), ("renewal_kind", "unknown kind"),
+                             ("source_supported_behavior", " "), ("refresh_capability_requirement", "maybe"),
+                             ("required_lifecycle_scenarios", []), ("required_lifecycle_scenarios", "untyped"),
+                             ("required_lifecycle_scenarios", [""]), ("required_lifecycle_scenarios", [False])):
+            invalid.append(dict(renewal_mode(), **{field: value}))
+        for mode in invalid:
+            policy = copy.deepcopy(self.policy)
+            policy["providers"]["http"]["renewal_modes"] = [mode]
+            with self.assertRaisesRegex(coverage.CoverageError, "invalid_policy"):
+                coverage.validate_policy(policy)
+        self.policy["providers"]["http"]["renewal_modes"].append(renewal_mode())
+        with self.assertRaisesRegex(coverage.CoverageError, "invalid_policy"):
+            coverage.validate_policy(self.policy)
+
+    def test_mode_aggregate_and_profile_refresh_decisions_must_agree(self):
+        for requirement in ("required", "not_applicable", "review_required"):
+            policy = policy_for(self.catalog, vendor=requirement == "required")
+            entry = policy["providers"]["http"]
+            entry["refresh_applicability"] = requirement
+            entry["renewal_modes"] = [renewal_mode(requirement)]
+            if requirement == "review_required":
+                policy["profiles"]["test"]["unresolved_applicability"] = ["refresh"]
+            coverage.validate_policy(policy)
+            for wrong in coverage.REFRESH_APPLICABILITY - {requirement}:
+                entry["refresh_applicability"] = wrong
+                with self.assertRaisesRegex(coverage.CoverageError, "invalid_policy"):
+                    coverage.validate_policy(policy)
+        # A known renewal requirement remains mandatory alongside unresolved modes.
+        policy = copy.deepcopy(self.policy)
+        policy["providers"]["http"]["refresh_applicability"] = "review_required"
+        policy["providers"]["http"]["renewal_modes"].append(dict(renewal_mode("review_required"), auth_mode="unresolved mode"))
+        policy["profiles"]["test"]["unresolved_applicability"] = ["refresh"]
+        coverage.validate_policy(policy)
+        del policy["profiles"]["test"]["unresolved_applicability"]
+        with self.assertRaisesRegex(coverage.CoverageError, "invalid_policy"):
+            coverage.validate_policy(policy)
+        policy = copy.deepcopy(self.policy)
+        policy["profiles"]["test"]["unresolved_applicability"] = ["refresh"]
+        with self.assertRaisesRegex(coverage.CoverageError, "invalid_policy"):
+            coverage.validate_policy(policy)
+
+    def test_app_tier_and_applicable_auth_refresh_cannot_be_omitted(self):
+        missing_app = copy.deepcopy(self.policy)
+        del missing_app["profiles"]["test"]["required"]["application"]
+        with self.assertRaisesRegex(coverage.CoverageError, "invalid_policy"):
+            coverage.validate_policy(missing_app)
+        for tier in ("application", "vendor"):
+            for capability in ("authentication", "refresh"):
+                policy = copy.deepcopy(self.policy)
+                policy["profiles"]["test"]["required"][tier].remove(capability)
+                with self.assertRaisesRegex(coverage.CoverageError, "invalid_policy"):
+                    coverage.validate_policy(policy)
+        policy = policy_for(self.catalog, application=False, vendor=False)
+        policy["profiles"]["test"]["required"]["application"].append("refresh")
+        with self.assertRaisesRegex(coverage.CoverageError, "invalid_policy"):
+            coverage.validate_policy(policy)
+        del policy["profiles"]["test"]["required"]["local_protocol"]
+        policy["profiles"]["test"]["required"]["application"].remove("refresh")
+        report = self.evaluate(policy=policy)
+        self.assertTrue(report["all_plans_current"])
+        self.assertEqual(report["providers"][0]["evidence"]["local_protocol"]["status"], "not_applicable")
+        self.assertFalse(report["all_complete"])
+
     def test_provider_specific_options_can_share_a_name(self):
         native_shape = {"Name": "koofr", "Prefix": "koofr", "Options": [
-            {"Name": "password", "Provider": "koofr", "IsPassword": True},
-            {"Name": "password", "Provider": "digistorage", "IsPassword": True},
-            {"Name": "password", "Provider": "custom", "IsPassword": True},
+            {"Name": "password", "Type": "string", "Provider": "koofr", "IsPassword": True},
+            {"Name": "password", "Type": "string", "Provider": "digistorage", "IsPassword": True},
+            {"Name": "password", "Type": "string", "Provider": "custom", "IsPassword": True},
         ]}
         first = coverage.schema_digest(native_shape)
         native_shape["Options"].reverse()
@@ -129,13 +259,14 @@ class CoverageTests(unittest.TestCase):
                  "hashes links metadata_restore_special_bits no_check_updated no_clone no_preallocate "
                  "no_set_modtime no_sparse nounc one_file_system skip_links skip_specials time_type "
                  "unicode_normalization zero_size_links").split()
+        types = {"time_type": "mtime|atime|btime|ctime", "hashes": "CommaSepList", "encoding": "Encoding", "description": "string"}
         native = {"Name": "local", "Prefix": "local", "Options": [
-            {"Name": name, "Advanced": name != "nounc"} for name in names]}
+            {"Name": name, "Type": types.get(name, "bool"), "Advanced": name != "nounc"} for name in names]}
         windows = coverage.catalog_from_schemas([native])
-        self.assertEqual(windows[0]["schema_sha256"], "8f722fecb6aba29e595af50499ede2ec7b2ff348f22982ae9215256fcf5dc40b")
+        self.assertEqual(windows[0]["schema_sha256"], "f99eb9bf2ab8d3a4af2234b84e22db1f9a5d57b7b3b931e912a2a269a351d67c")
         next(option for option in native["Options"] if option["Name"] == "nounc")["Advanced"] = True
         linux = coverage.catalog_from_schemas([native])
-        self.assertEqual(linux[0]["schema_sha256"], "547137991c5322935df6a48146252597515ec1a13e3058c370e47e0fbc99897c")
+        self.assertEqual(linux[0]["schema_sha256"], "a901743e50c3c5839c644f8fef3d77c525d4d2b9909ca894c7dc8449e73256fb")
         policy = policy_for(windows)
         entry = policy["providers"]["local"]
         del entry["schema_sha256"]
@@ -189,8 +320,10 @@ class CoverageTests(unittest.TestCase):
         self.assertFalse(report["all_plans_current"])
 
     def test_unresolved_applicability_is_a_reviewed_plan_but_not_complete(self):
-        policy = policy_for(self.catalog, application=False, vendor=False)
+        policy = policy_for(self.catalog)
         policy["profiles"]["test"]["unresolved_applicability"] = ["refresh"]
+        policy["providers"]["http"]["refresh_applicability"] = "review_required"
+        policy["providers"]["http"]["renewal_modes"].append(dict(renewal_mode("review_required"), auth_mode="unresolved mode"))
         report = self.evaluate([receipt()], policy=policy)
         self.assertTrue(report["all_plans_current"])
         self.assertFalse(report["all_complete"])
@@ -304,10 +437,25 @@ class CoverageTests(unittest.TestCase):
             bad["backends"][0]["capabilities"][capability] = "passed"
             self.assertIn("invalid_fixture_capability", self.evaluate([bad], policy, catalog)["errors"])
 
+    def test_host_key_rejection_is_supported_only_for_sftp(self):
+        for backend in coverage.FIXTURE_KINDS:
+            catalog = coverage.catalog_from_schemas([schema(backend)])
+            policy = policy_for(catalog)
+            policy["profiles"]["test"]["required"]["local_protocol"].append("host_key_rejection")
+            candidate = receipt(backend)
+            candidate["backends"][0]["capabilities"]["host_key_rejection"] = "passed"
+            report = self.evaluate([candidate], policy, catalog)
+            if backend == "sftp":
+                self.assertEqual(report["providers"][0]["evidence"]["local_protocol"]["status"], "passed")
+                self.assertFalse(report["all_complete"])
+            else:
+                self.assertIn("invalid_fixture_capability", report["errors"])
+
     def test_not_applicable_only_from_reviewed_policy(self):
         policy = policy_for(self.catalog, application=False, vendor=False)
         report = self.evaluate([receipt()], policy=policy)
-        self.assertTrue(report["all_complete"])
+        self.assertFalse(report["all_complete"])
+        self.assertEqual(report["providers"][0]["evidence"]["application"]["status"], "not_verified")
         self.assertEqual(report["providers"][0]["evidence"]["vendor"]["status"], "not_applicable")
         policy["profiles"]["test"]["required"] = {}
         with self.assertRaises(coverage.CoverageError):
