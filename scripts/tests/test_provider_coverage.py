@@ -122,6 +122,66 @@ class CoverageTests(unittest.TestCase):
             self.assertEqual(report["providers"][0]["policy_status"], "stale_schema")
             self.assertFalse(report["all_complete"])
 
+    def test_native_local_platform_difference_uses_full_reviewed_contracts(self):
+        # Pinned rclone v1.75.1 backend/local/local.go:85-88 declares nounc
+        # Advanced only outside Windows. All other contract fields stay hashed.
+        names = ("case_insensitive case_sensitive copy_links description encoding fatal_if_no_space "
+                 "hashes links metadata_restore_special_bits no_check_updated no_clone no_preallocate "
+                 "no_set_modtime no_sparse nounc one_file_system skip_links skip_specials time_type "
+                 "unicode_normalization zero_size_links").split()
+        native = {"Name": "local", "Prefix": "local", "Options": [
+            {"Name": name, "Advanced": name != "nounc"} for name in names]}
+        windows = coverage.catalog_from_schemas([native])
+        self.assertEqual(windows[0]["schema_sha256"], "8f722fecb6aba29e595af50499ede2ec7b2ff348f22982ae9215256fcf5dc40b")
+        next(option for option in native["Options"] if option["Name"] == "nounc")["Advanced"] = True
+        linux = coverage.catalog_from_schemas([native])
+        self.assertEqual(linux[0]["schema_sha256"], "547137991c5322935df6a48146252597515ec1a13e3058c370e47e0fbc99897c")
+        policy = policy_for(windows)
+        entry = policy["providers"]["local"]
+        del entry["schema_sha256"]
+        entry["schema_sha256_by_platform"] = {
+            "windows": windows[0]["schema_sha256"], "linux": linux[0]["schema_sha256"]}
+        for platform, catalog, other in (("windows", windows, linux), ("linux", linux, windows)):
+            runtime = dict(RUNTIME, platform=platform)
+            report = coverage.evaluate(catalog, policy, runtime, [], None, NOW)
+            self.assertTrue(report["all_plans_current"])
+            self.assertFalse(report["all_complete"])
+            wrong = coverage.evaluate(other, policy, runtime, [], None, NOW)
+            self.assertEqual(wrong["providers"][0]["policy_status"], "stale_schema")
+            self.assertIn("provider_plans_incomplete", coverage.gate_errors(wrong, require_plans=True))
+        native["Options"][0]["Required"] = True
+        drift = coverage.evaluate(coverage.catalog_from_schemas([native]), policy, RUNTIME, [], None, NOW)
+        self.assertEqual(drift["providers"][0]["policy_status"], "stale_schema")
+
+    def test_unreviewed_platform_has_no_other_platform_fallback(self):
+        entry = self.policy["providers"]["http"]
+        expected = entry.pop("schema_sha256")
+        entry["schema_sha256_by_platform"] = {"windows": expected}
+        result = self.evaluate()
+        self.assertEqual(result["providers"][0]["policy_status"], "unreviewed_platform")
+        self.assertFalse(result["all_plans_current"])
+        self.assertTrue(all(layer["status"] == "not_verified" for layer in result["providers"][0]["evidence"].values()))
+        for platform in ("darwin", "Windows", "", None, ["windows"]):
+            with self.assertRaisesRegex(coverage.CoverageError, "unsupported_runtime_platform"):
+                coverage.evaluate(self.catalog, self.policy, dict(RUNTIME, platform=platform), [], None, NOW)
+
+    def test_policy_platform_variants_reject_ambiguous_or_unknown_mapping(self):
+        variants = ({}, {"darwin": "a" * 64}, {"linux": "invalid"}, None, ["a" * 64])
+        for value in variants:
+            policy = policy_for(self.catalog)
+            entry = policy["providers"]["http"]
+            del entry["schema_sha256"]
+            entry["schema_sha256_by_platform"] = value
+            with self.assertRaisesRegex(coverage.CoverageError, "invalid_policy"):
+                coverage.validate_policy(policy)
+        self.policy["providers"]["http"]["schema_sha256_by_platform"] = {"linux": "a" * 64}
+        with self.assertRaisesRegex(coverage.CoverageError, "invalid_policy"):
+            coverage.validate_policy(self.policy)
+        del self.policy["providers"]["http"]["schema_sha256_by_platform"]
+        del self.policy["providers"]["http"]["schema_sha256"]
+        with self.assertRaisesRegex(coverage.CoverageError, "invalid_policy"):
+            coverage.validate_policy(self.policy)
+
     def test_review_required_plan_is_not_current(self):
         self.policy["profiles"]["test"]["review_required"] = True
         report = self.evaluate([receipt()])

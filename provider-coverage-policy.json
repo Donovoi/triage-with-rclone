@@ -1065,14 +1065,18 @@
     },
     "local": {
       "canonical_name": "local",
-      "schema_sha256": "8f722fecb6aba29e595af50499ede2ec7b2ff348f22982ae9215256fcf5dc40b",
+      "schema_sha256_by_platform": {
+        "windows": "8f722fecb6aba29e595af50499ede2ec7b2ff348f22982ae9215256fcf5dc40b",
+        "linux": "547137991c5322935df6a48146252597515ec1a13e3058c370e47e0fbc99897c"
+      },
       "profile": "local-storage",
       "notes": [
         "Task-owned filesystem tree; no vendor account/login. Include Windows path/permissions and source-preservation evidence.",
         "Free account/API eligibility: no_vendor_account_needed"
       ],
       "source_links": [
-        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/local.md"
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/local.md",
+        "https://github.com/rclone/rclone/blob/v1.75.1/backend/local/local.go#L85-L88"
       ]
     },
     "mailru": {

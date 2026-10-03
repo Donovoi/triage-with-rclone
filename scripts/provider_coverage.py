@@ -27,6 +27,7 @@ import time
 ROOT = Path(__file__).resolve().parents[1]
 WRAPPERS = {"alias", "cache", "chunker", "combine", "compress", "crypt", "hasher", "union"}
 TIERS = ("local_protocol", "application", "vendor")
+PLATFORMS = frozenset(("windows", "linux"))
 CAPABILITIES = {
     "authentication", "listing", "download_hash", "manifest_integrity",
     "source_preservation", "cleanup", "refresh", "cancellation", "denial",
@@ -238,8 +239,20 @@ def validate_policy(policy):
     for backend, entry in providers.items():
         if not ID_PATTERN.fullmatch(backend) or not isinstance(entry, dict):
             fail("invalid_policy")
-        if not isinstance(entry.get("canonical_name"), str) or not valid_hash(entry.get("schema_sha256")):
+        if not isinstance(entry.get("canonical_name"), str):
             fail("invalid_policy")
+        # A platform variant is a separately reviewed full contract. Never
+        # accept either platform's digest as a fallback for the other one.
+        if ("schema_sha256" in entry) == ("schema_sha256_by_platform" in entry):
+            fail("invalid_policy")
+        if "schema_sha256" in entry:
+            if not valid_hash(entry["schema_sha256"]):
+                fail("invalid_policy")
+        else:
+            variants = entry["schema_sha256_by_platform"]
+            if (not isinstance(variants, dict) or not variants or set(variants) - PLATFORMS
+                    or any(not valid_hash(value) for value in variants.values())):
+                fail("invalid_policy")
         if entry.get("profile") not in profiles:
             fail("invalid_policy")
         for field in ("notes", "source_links"):
@@ -330,6 +343,8 @@ def evaluate(catalog, policy, runtime, receipts, harness_sha256, now=None, max_a
     """Receipts are explicit batch inputs. Failed current evidence stays failed."""
     now = now or datetime.now(timezone.utc)
     validate_policy(policy)
+    if not isinstance(runtime.get("platform"), str) or runtime["platform"] not in PLATFORMS:
+        fail("unsupported_runtime_platform")
     if not 1 <= max_age_hours <= 168:
         fail("invalid_freshness_window")
     report = {
@@ -375,7 +390,11 @@ def evaluate(catalog, policy, runtime, receipts, harness_sha256, now=None, max_a
         profile = None
         if planned is None:
             policy_status = "missing_plan"
-        elif planned["canonical_name"] != entry["canonical_name"] or planned["schema_sha256"] != entry["schema_sha256"]:
+        elif ("schema_sha256_by_platform" in planned
+              and runtime["platform"] not in planned["schema_sha256_by_platform"]):
+            policy_status = "unreviewed_platform"
+        elif (planned["canonical_name"] != entry["canonical_name"]
+              or planned.get("schema_sha256", planned.get("schema_sha256_by_platform", {}).get(runtime["platform"])) != entry["schema_sha256"]):
             policy_status = "stale_schema"
         else:
             profile = policy["profiles"][planned["profile"]]
