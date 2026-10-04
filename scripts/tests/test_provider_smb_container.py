@@ -233,6 +233,12 @@ class CleanupContract(unittest.TestCase):
         for code in ("private_account_name", "install_apt_failed_extra", "example@example.invalid", "validation_complete token"):
             self.assertEqual(SUBJECT.BUILD_DIAGNOSTIC.findall(("SMB_BUILD_DIAGNOSTIC=" + code + "\n").encode()), [])
 
+    def test_startup_diagnostics_never_export_exception_details(self):
+        self.assertEqual(SUBJECT.startup_diagnostic(b"Traceback (most recent call last):\nPermissionError: secret/private/path"),
+                         "python_permission_error")
+        self.assertEqual(SUBJECT.startup_diagnostic(b"ModuleNotFoundError: private module identifier"), "python_module_missing")
+        self.assertIsNone(SUBJECT.startup_diagnostic(b"unrecognized arbitrary exception text"))
+
     def test_resource_cleanup_failure_still_removes_private_logs(self):
         with tempfile.TemporaryDirectory() as directory:
             binary, output = Path(directory) / "synthetic", Path(directory) / "receipt.json"
@@ -256,6 +262,47 @@ class CleanupContract(unittest.TestCase):
             remove.assert_called_once()
             self.assertFalse(remove.call_args.args[0].exists())
             self.assertEqual(json.loads(output.read_text()), result)
+
+    def test_startup_failure_diagnostics_survive_later_inspection(self):
+        with tempfile.TemporaryDirectory() as directory:
+            binary, output = Path(directory) / "synthetic", Path(directory) / "receipt.json"
+            binary.write_bytes(b"synthetic non-executable input")
+            identity = {"version": "1.75.1", "sha256": SUBJECT.digest(binary)}
+            docker = mock.Mock(build_phase="manifest", build_diagnostic="bootstrap_cleanup_complete")
+            def run(args, **kwargs):
+                docker.last_stderr = b""
+                if args[0] == "info":
+                    return 0, b'{"OSType":"linux","Architecture":"amd64"}'
+                if args[0] == "build":
+                    Path(args[args.index("--iidfile") + 1]).write_text(IMAGE)
+                if args[0] == "start":
+                    docker.last_stderr = b"PermissionError: private details must not escape"
+                    return 1, b""
+                return 0, b""
+            def inspect(kind, target):
+                docker.last_stderr = b""
+                info = container()
+                info["State"].update(ExitCode=1, OOMKilled=False, Error="")
+                if kind == "image":
+                    return {"Config": info["Config"], "Architecture": "amd64", "Os": "linux"}
+                return info
+            docker.run.side_effect = run
+            docker.inspect.side_effect = inspect
+            with mock.patch.object(SUBJECT.sys, "platform", "linux"), \
+                    mock.patch.dict(SUBJECT.os.environ, {"GITHUB_ACTIONS": "true", "RUNNER_ENVIRONMENT": "github-hosted"}), \
+                    mock.patch.object(SUBJECT, "runtime_identity", return_value=identity), \
+                    mock.patch.object(SUBJECT.uuid, "uuid4", return_value=mock.Mock(hex=RUN)), \
+                    mock.patch.object(SUBJECT, "Docker", return_value=docker), \
+                    mock.patch.object(SUBJECT, "cleanup_owned", return_value={"container_removed": True, "image_removed": True}):
+                result = SUBJECT.run(binary, output)
+            self.assertEqual(result["container_startup_diagnostic"], "python_permission_error")
+            self.assertGreater(result["container_stderr_bytes"], 0)
+            self.assertEqual(result["container_stdout_bytes"], 0)
+            self.assertEqual(result["container_exit_code"], 1)
+            self.assertFalse(result["container_oom_killed"])
+            self.assertFalse(result["success"])
+            self.assertTrue(all(result["cleanup"].values()))
+            self.assertNotIn("private details", output.read_text())
 
 
 if __name__ == "__main__":
