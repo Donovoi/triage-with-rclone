@@ -191,18 +191,23 @@ class JavaContractTests(unittest.TestCase):
 
     def test_throwable_classes_map_only_to_finite_categories(self):
         reason = self.source[self.source.index('private static String failureReason('):
-                             self.source.index('private static void recordFailure(')]
+                             self.source.index('private static String dataNodeOriginFrame(')]
         self.assertEqual(set(re.findall(r'"([a-z_]+)"', reason)),
                          {"unclassified", "missing_class", "resource_failure", "invalid_config",
                           "linkage_failure", "file_missing", "http_webapp_missing", "io_failure",
-                          "exit_requested", "halt_requested"})
+                          "exit_requested", "halt_requested", "null_state", "illegal_state",
+                          "unsupported_operation", "security_failure"})
         expected = {
             "ClassNotFoundException || current instanceof NoClassDefFoundError": ("missing_class", "0"),
             "OutOfMemoryError || current instanceof StackOverflowError": ("resource_failure", "1"),
             "IllegalArgumentException": ("invalid_config", "2"),
             "LinkageError": ("linkage_failure", "3"),
-            "FileNotFoundException": ("file_missing", "4"),
-            "IOException": ("io_failure", "5"),
+            "NullPointerException": ("null_state", "4"),
+            "IllegalStateException": ("illegal_state", "5"),
+            "UnsupportedOperationException": ("unsupported_operation", "6"),
+            "SecurityException": ("security_failure", "7"),
+            "FileNotFoundException": ("file_missing", "8"),
+            "IOException": ("io_failure", "9"),
         }
         actual = {types: (category, rank) for types, category, rank in re.findall(
             r'if \(current instanceof ([^\n]+?)\) \{\s+category = "([a-z_]+)"; rank = ([0-9]+);', reason)}
@@ -222,7 +227,7 @@ class JavaContractTests(unittest.TestCase):
         self.assertIn('catch (Throwable ignored) { return false; }', marker)
         self.assertEqual(self.source.count('missingWebAppResource((FileNotFoundException) current)'), 1)
         reason = self.source[self.source.index('private static String failureReason('):
-                             self.source.index('private static void recordFailure(')]
+                             self.source.index('private static String dataNodeOriginFrame(')]
         subtype = reason[reason.index('current instanceof FileNotFoundException'):
                          reason.index('current instanceof IOException')]
         self.assertIn('category = "file_missing"', subtype)
@@ -311,13 +316,54 @@ class JavaContractTests(unittest.TestCase):
 
     def test_cause_inspection_is_bounded_and_does_not_parse_private_messages(self):
         reason = self.source[self.source.index('private static String failureReason('):
-                             self.source.index('private static void recordFailure(')]
+                             self.source.index('private static String dataNodeOriginFrame(')]
         self.assertIn('current != null && depth < 8', reason)
         self.assertIn('current instanceof FixtureFailure own && REQUIRE_CODES.contains(own.code)', reason)
         self.assertIn('try { current = current.getCause(); }', reason)
         self.assertIn('catch (Throwable ignored) { return "unclassified"; }', reason)
         for forbidden in ('.getMessage(', '.getLocalizedMessage(', '.getClass(', '.toString(', '.getStackTrace('):
             self.assertNotIn(forbidden, reason)
+
+    def test_datanode_origin_is_a_closed_exact_pinned_method_map(self):
+        source = self.source[self.source.index('private static String dataNodeOriginFrame('):
+                             self.source.index('private static String dataNodeOrigin(')]
+        classes = re.findall(r'case "([^"]+)" -> switch \(frame.getMethodName\(\)\) \{(.*?)\};', source, re.S)
+        actual = {name: dict(re.findall(r'case "([^"]+)" -> "([a-z_]+)";', body))
+                  for name, body in classes}
+        self.assertEqual(actual, {
+            'org.apache.hadoop.hdfs.server.datanode.DataNode': {
+                '<init>': 'origin_datanode_constructor',
+                'instantiateDataNode': 'origin_datanode_instantiate',
+                'makeInstance': 'origin_datanode_make_instance',
+                'startDataNode': 'origin_datanode_start',
+                'initDataXceiver': 'origin_datanode_xceiver'},
+            'org.apache.hadoop.hdfs.server.datanode.DNConf': {'<init>': 'origin_datanode_config'},
+            'org.apache.hadoop.hdfs.server.datanode.web.DatanodeHttpServer': {
+                '<init>': 'origin_datanode_http', 'getFilterHandlers': 'origin_datanode_http_filters'},
+        })
+        self.assertEqual(len(classes), 3)
+        self.assertEqual(source.count('default -> null;'), 4)
+        self.assertIn('switch (frame.getClassName())', source)
+        for forbidden in ('.startsWith(', '.contains(', '.getFileName(', '.getLineNumber(',
+                          '.toString(', '.getMessage(', 'errors.add(', 'System.out'):
+            self.assertNotIn(forbidden, source)
+
+    def test_datanode_origin_is_bounded_optional_and_cannot_replace_failure(self):
+        origin = self.source[self.source.index('private static String dataNodeOrigin('):
+                             self.source.index('private static void recordFailure(')]
+        self.assertIn('current != null && depth < 8', origin)
+        self.assertIn('i < frames.length && i < 32', origin)
+        self.assertIn('if (marker != null) { selected = marker; break; }', origin)
+        self.assertIn('catch (Throwable ignored) { return null; }', origin)
+        self.assertIn('current = current.getCause()', origin)
+        record = self.source[self.source.index('private static void recordFailure('):
+                             self.source.index('private static void checkExitRequests(')]
+        self.assertIn('if (stage.equals("datanode_start_failed"))', record)
+        self.assertEqual(record.count('dataNodeOrigin(failure)'), 1)
+        self.assertLess(record.index('errors.add(stage)'), record.index('dataNodeOrigin(failure)'))
+        self.assertLess(record.index('errors.add(reason)'), record.index('dataNodeOrigin(failure)'))
+        self.assertIn('if (origin != null && !errors.contains(origin)) errors.add(origin)', record)
+        self.assertNotIn('errors.clear()', record)
 
     def test_diagnostics_preserve_primary_stage_and_cleanup_attempts(self):
         record = self.source[self.source.index('private static void recordFailure('):

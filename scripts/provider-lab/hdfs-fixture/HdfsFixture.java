@@ -103,7 +103,7 @@ public final class HdfsFixture {
   }
   private static String failureReason(Throwable failure) {
     String selected = "unclassified";
-    int selectedRank = 6;
+    int selectedRank = 10;
     Throwable current = failure;
     // A cycle or unexpectedly deep chain cannot make inspection unbounded.
     for (int depth = 0; current != null && depth < 8; depth++) {
@@ -111,7 +111,7 @@ public final class HdfsFixture {
       if (current instanceof ExitUtil.ExitException) return "exit_requested";
       if (current instanceof ExitUtil.HaltException) return "halt_requested";
       String category = "unclassified";
-      int rank = 6;
+      int rank = 10;
       if (current instanceof ClassNotFoundException || current instanceof NoClassDefFoundError) {
         category = "missing_class"; rank = 0;
       } else if (current instanceof OutOfMemoryError || current instanceof StackOverflowError) {
@@ -120,11 +120,19 @@ public final class HdfsFixture {
         category = "invalid_config"; rank = 2;
       } else if (current instanceof LinkageError) {
         category = "linkage_failure"; rank = 3;
+      } else if (current instanceof NullPointerException) {
+        category = "null_state"; rank = 4;
+      } else if (current instanceof IllegalStateException) {
+        category = "illegal_state"; rank = 5;
+      } else if (current instanceof UnsupportedOperationException) {
+        category = "unsupported_operation"; rank = 6;
+      } else if (current instanceof SecurityException) {
+        category = "security_failure"; rank = 7;
       } else if (current instanceof FileNotFoundException) {
-        category = "file_missing"; rank = 4;
+        category = "file_missing"; rank = 8;
         if (missingWebAppResource((FileNotFoundException) current)) category = "http_webapp_missing";
       } else if (current instanceof IOException) {
-        category = "io_failure"; rank = 5;
+        category = "io_failure"; rank = 9;
       }
       if (rank < selectedRank) { selected = category; selectedRank = rank; }
       try { current = current.getCause(); }
@@ -132,10 +140,53 @@ public final class HdfsFixture {
     }
     return selected;
   }
+  private static String dataNodeOriginFrame(StackTraceElement frame) {
+    // Exact methods on the pinned normal-JAR startup path, not arbitrary names.
+    return switch (frame.getClassName()) {
+      case "org.apache.hadoop.hdfs.server.datanode.DataNode" -> switch (frame.getMethodName()) {
+        case "<init>" -> "origin_datanode_constructor";
+        case "instantiateDataNode" -> "origin_datanode_instantiate";
+        case "makeInstance" -> "origin_datanode_make_instance";
+        case "startDataNode" -> "origin_datanode_start";
+        case "initDataXceiver" -> "origin_datanode_xceiver";
+        default -> null;
+      };
+      case "org.apache.hadoop.hdfs.server.datanode.DNConf" -> switch (frame.getMethodName()) {
+        case "<init>" -> "origin_datanode_config";
+        default -> null;
+      };
+      case "org.apache.hadoop.hdfs.server.datanode.web.DatanodeHttpServer" -> switch (frame.getMethodName()) {
+        case "<init>" -> "origin_datanode_http";
+        case "getFilterHandlers" -> "origin_datanode_http_filters";
+        default -> null;
+      };
+      default -> null;
+    };
+  }
+  private static String dataNodeOrigin(Throwable failure) {
+    String selected = null;
+    Throwable current = failure;
+    try {
+      for (int depth = 0; current != null && depth < 8; depth++) {
+        StackTraceElement[] frames = current.getStackTrace();
+        for (int i = 0; i < frames.length && i < 32; i++) {
+          String marker = dataNodeOriginFrame(frames[i]);
+          if (marker != null) { selected = marker; break; }
+        }
+        // A bounded deeper cause can replace a generic wrapper's origin.
+        current = current.getCause();
+      }
+    } catch (Throwable ignored) { return null; }
+    return selected;
+  }
   private static void recordFailure(List<String> errors, String stage, Throwable failure) {
     errors.add(stage);
     String reason = failureReason(failure);
     if (!errors.contains(reason)) errors.add(reason);
+    if (stage.equals("datanode_start_failed")) {
+      String origin = dataNodeOrigin(failure);
+      if (origin != null && !errors.contains(origin)) errors.add(origin);
+    }
   }
   private static void checkExitRequests() throws IOException {
     require(!ExitUtil.terminateCalled(), "exit_requested");
