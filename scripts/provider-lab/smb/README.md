@@ -53,10 +53,11 @@ Build timeout or unavailable snapshots fail the experiment without a mirror,
 credential, or privilege fallback. The public report includes only fixed stage
 markers and diagnostic codes for failures.
 
-CI combines the new SMB receipt only with the same run's Linux baseline receipts
-and requires all eighteen reviewed Linux local protocol profiles. Windows retains
-seventeen; Internet Archive and pCloud remain partial on both platforms. The
-scheduled Linux provider workflow also runs and requires the SMB contract.
+CI combines the new SMB receipt only with the same run's Linux baseline,
+FileFabric renewal and IA LOW receipts, and requires nineteen complete local
+protocol profiles. The Windows gate requires eighteen and leaves SMB unverified.
+Internet Archive requires both its anonymous and protected LOW modes; pCloud
+still lacks fresh OAuth authentication. A profile qualifies only when its current receipts pass. The scheduled Linux provider workflow also requires the SMB contract.
 
 The Python tests use mocks and local temporary files and do not start Docker,
 Samba, rclone, or a service. Native execution requires the isolated CI job.
