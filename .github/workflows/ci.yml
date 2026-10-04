@@ -81,8 +81,8 @@ jobs:
           path: ${{ runner.temp }}/python-dependency-audit.json
           if-no-files-found: warn
           retention-days: 14
-  smb-feasibility:
-    name: Isolated Samba feasibility
+  smb-protocol:
+    name: Isolated Samba NTLM protocol
     needs: revision
     runs-on: ubuntu-latest
     timeout-minutes: 18
@@ -101,15 +101,15 @@ jobs:
         run: |
           python -B scripts/provider-lab/smb/run_container.py \
             --rclone "$RUNNER_TEMP/rclone-smb-probe" \
-            --report "$RUNNER_TEMP/smb-feasibility.json"
-      # This receipt is deliberately ineligible for the provider coverage ledger.
+            --protocol-evidence --report "$RUNNER_TEMP/smb-protocol.json"
+      # Schema 3 qualifies only the reviewed Linux/amd64 NTLM read contract.
       # Never upload the image, Docker cache, synthetic credentials or raw logs.
-      - name: Retain sanitized feasibility result
+      - name: Retain sanitized SMB protocol result
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: smb-feasibility
-          path: ${{ runner.temp }}/smb-feasibility.json
+          name: smb-protocol
+          path: ${{ runner.temp }}/smb-protocol.json
           if-no-files-found: warn
           retention-days: 14
   test:
@@ -237,9 +237,50 @@ jobs:
             rclone-version.env
           if-no-files-found: error
           retention-days: 14
+  linux-provider-evidence:
+    name: Combined Linux provider evidence
+    needs: [test, smb-protocol]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      # Only same-run, named Linux artifacts are accepted. Do not merge Windows
+      # receipts or retrieve evidence from an earlier workflow/runtime.
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: provider-evidence-Linux
+          path: ${{ runner.temp }}/provider-baseline
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: smb-protocol
+          path: ${{ runner.temp }}/provider-smb
+      - name: Prepare verified Linux runtime
+        run: bash scripts/download-rclone.sh --linux "$RUNNER_TEMP/rclone-ledger"
+      - name: Require all 18 reviewed Linux protocol profiles
+        run: |
+          python -B scripts/provider_coverage.py --rclone "$RUNNER_TEMP/rclone-ledger" \
+            --report "$RUNNER_TEMP/provider-evidence-linux-combined.json" \
+            --fixture-receipt "$RUNNER_TEMP/provider-baseline/provider-fixtures.json" \
+            --fixture-receipt "$RUNNER_TEMP/provider-baseline/filefabric-renewal-fixture.json" \
+            --fixture-receipt "$RUNNER_TEMP/provider-smb/smb-protocol.json" \
+            --require-plans --require-fixtures local,archive,http,webdav,ftp,sftp,s3,swift,b2,azureblob,azurefiles,seafile,memory,koofr,pixeldrain,filefabric,netstorage,smb
+      - name: Retain sanitized combined ledger
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: provider-evidence-Linux-combined
+          path: ${{ runner.temp }}/provider-evidence-linux-combined.json
+          if-no-files-found: warn
+          retention-days: 14
   release:
     name: Publish checked prerelease
-    needs: [test, audit, python-audit, smb-feasibility]
+    needs: [test, audit, python-audit, smb-protocol, linux-provider-evidence]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
