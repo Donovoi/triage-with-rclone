@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""GitHub-hosted Linux Samba feasibility supervisor, never provider evidence.
+"""GitHub-hosted Linux Samba supervisor; protocol evidence requires an explicit flag.
 
 Only exact labeled container/image resources created by this invocation can be
 removed. No host services, system configuration, volumes or trust are changed.
@@ -7,7 +7,9 @@ Raw build/server/child transcripts are private temporary inputs, not artifacts.
 """
 
 import argparse
+from datetime import datetime, timezone
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -303,7 +305,36 @@ def cleanup_temporary(root, identity):
     return not root.exists()
 
 
-def run(binary, report_path):
+def load_protocol_contract():
+    path = ROOT / "protocol_evidence.py"
+    check(plain(path) and path.is_file(), "regular_fixture_source_required")
+    spec = importlib.util.spec_from_file_location("synthetic_smb_evidence", path)
+    module = importlib.util.module_from_spec(spec)
+    source = path.read_bytes()
+    check(len(source) <= 1024 * 1024, "protocol_contract_size_limit")
+    exec(compile(source, str(path), "exec"), module.__dict__)
+    return module
+
+
+def utc_now():
+    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def protocol_result(native, contract, bindings, started, finished, source_errors):
+    errors = (["smb_native_run_failed"] if not native["success"] else []) + source_errors
+    success = native["success"] and not errors
+    cleanup = (all(native["cleanup"].values()) and native["probe"] is not None
+               and all(native["probe"]["cleanup"].values()))
+    return {"schema_version": 3, "scope": "rclone_backend_protocol_fixture", "runtime": dict(native["runtime"]),
+            "platform": "linux", "architecture": "amd64", "harness_sha256": bindings["harness_sha256"],
+            "fixture_manifest_sha256": bindings["fixture_manifest_sha256"], "started_utc": started,
+            "finished_utc": finished, "success": success, "cleanup_passed": cleanup, "errors": errors,
+            "backends": [{"backend": "smb", "fixture_kind": "independent_samba_container", "fixture_mode": contract.MODE,
+                          "capabilities": dict.fromkeys(contract.CAPABILITIES, "passed" if success else "failed"),
+                          "errors": list(errors)}], "native_evidence": native}
+
+
+def run(binary, report_path, *, protocol_evidence=False):
     check(sys.platform == "linux" and os.environ.get("GITHUB_ACTIONS") == "true"
           and os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted", "github_hosted_linux_required")
     check(report_path.is_absolute() and plain(report_path.parent) and report_path.parent.is_dir()
@@ -319,6 +350,11 @@ def run(binary, report_path):
           and re.fullmatch(r"docker\.io/library/debian@sha256:[a-f0-9]{64}", lock["base_image"]), "image_lock_invalid")
     source_hashes = {name: digest(ROOT / name) for name in ("Dockerfile", "build-lock.json", "probe_samba.py")}
     source_hashes["run_container.py"] = digest(Path(__file__))
+    contract = load_protocol_contract() if protocol_evidence else None
+    bindings = contract.compute_bindings(ROOT) if contract else None
+    if contract:
+        check(bindings["source_sha256"] == source_hashes, "protocol_sources_changed")
+    started = utc_now() if contract else None
     run_id = uuid.uuid4().hex
     name, tag = "triage-smb-" + run_id, "triage-smb-fixture:" + run_id
     report = {"schema_version": 1, "scope": "smb_samba_container_feasibility_only", "ledger_eligible": False,
@@ -405,23 +441,36 @@ def run(binary, report_path):
         except (SupervisorError, OSError):
             report["errors"].append("temporary_cleanup_failed")
         report["success"] = report["success"] and not report["errors"] and all(report["cleanup"].values())
+        result = report
+        if contract:
+            source_errors = []
+            try:
+                if contract.compute_bindings(ROOT) != bindings:
+                    source_errors.append("smb_source_changed")
+            except (OSError, ValueError, KeyError, TypeError):
+                source_errors.append("smb_source_check_failed")
+            result = protocol_result(report, contract, bindings, started, utc_now(), source_errors)
+            contract.validate_evidence(result, identity, bindings["harness_sha256"], bindings["fixture_manifest_sha256"],
+                                       bindings["source_sha256"], datetime.now(timezone.utc),
+                                       expected_base_image=bindings["base_image"], expected_samba_version=bindings["samba_version"])
         with report_path.open("x", encoding="utf-8") as handle:
-            json.dump(report, handle, indent=2, sort_keys=True)
+            json.dump(result, handle, indent=2, sort_keys=True)
             handle.write("\n")
-    return report
+    return result
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--rclone", required=True, type=Path)
     parser.add_argument("--report", required=True, type=Path)
+    parser.add_argument("--protocol-evidence", action="store_true", help="Run a fresh isolated probe and emit bound protocol evidence")
     args = parser.parse_args()
     try:
-        result = run(args.rclone, args.report)
-    except (SupervisorError, OSError):
+        result = run(args.rclone, args.report, **({"protocol_evidence": True} if args.protocol_evidence else {}))
+    except (SupervisorError, OSError, ValueError, KeyError):
         print("Samba feasibility preflight failed", file=sys.stderr)
         return 1
-    print(json.dumps({"success": result["success"], "ledger_eligible": False, "errors": result["errors"]}))
+    print(json.dumps({"success": result["success"], "ledger_eligible": args.protocol_evidence and result["success"], "errors": result["errors"]}))
     return 0 if result["success"] else 1
 
 

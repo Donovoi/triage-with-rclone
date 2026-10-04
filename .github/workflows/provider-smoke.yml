@@ -59,12 +59,14 @@ jobs:
   provider-smoke-linux:
     needs: python-audit
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     defaults:
       run:
         working-directory: rclone-triage
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.12'
@@ -97,8 +99,14 @@ jobs:
       - name: Isolated FileFabric later-call renewal fixture
         if: ${{ !cancelled() }}
         run: python -B ../scripts/provider-lab/run_lab.py --rclone "$RUNNER_TEMP/rclone-smoke" --filefabric-renewal --report "$RUNNER_TEMP/filefabric-renewal-fixture.json"
+      - name: Isolated Samba NTLM protocol
+        if: ${{ !cancelled() }}
+        run: |
+          python -B ../scripts/provider-lab/smb/run_container.py \
+            --rclone "$RUNNER_TEMP/rclone-smoke" \
+            --protocol-evidence --report "$RUNNER_TEMP/smb-protocol.json"
       # Internet Archive anonymous and pCloud saved-token reads must pass above.
-      # Their authentication gaps keep the full ledger gate limited to 17 profiles.
+      # The independent Linux SMB contract adds the eighteenth complete profile.
       - name: Require current provider plans and protocol evidence
         if: ${{ !cancelled() }}
         run: |
@@ -106,7 +114,8 @@ jobs:
             --report "$RUNNER_TEMP/provider-evidence.json" \
             --fixture-receipt "$RUNNER_TEMP/provider-fixtures.json" \
             --fixture-receipt "$RUNNER_TEMP/filefabric-renewal-fixture.json" \
-            --require-plans --require-fixtures local,archive,http,webdav,ftp,sftp,s3,swift,b2,azureblob,azurefiles,seafile,memory,koofr,pixeldrain,filefabric,netstorage
+            --fixture-receipt "$RUNNER_TEMP/smb-protocol.json" \
+            --require-plans --require-fixtures local,archive,http,webdav,ftp,sftp,s3,swift,b2,azureblob,azurefiles,seafile,memory,koofr,pixeldrain,filefabric,netstorage,smb
       - name: Offline provider contracts
         run: cargo test --locked --release --test provider_smoke --test provider_matrix -- --test-threads=1
       - name: Login and credential regressions without accounts
@@ -197,6 +206,7 @@ jobs:
             ${{ runner.temp }}/provider-coverage.json
             ${{ runner.temp }}/provider-fixtures.json
             ${{ runner.temp }}/filefabric-renewal-fixture.json
+            ${{ runner.temp }}/smb-protocol.json
             ${{ runner.temp }}/provider-evidence.json
           if-no-files-found: warn
           retention-days: 14
