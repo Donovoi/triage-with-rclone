@@ -83,6 +83,12 @@ jobs:
           PROVIDER_BINARY: ${{ runner.os == 'Windows' && format('{0}/rclone-triage/assets/rclone.exe', github.workspace) || format('{0}/rclone-native', runner.temp) }}
         shell: bash
         run: python -B ../scripts/provider-lab/run_lab.py --rclone "$PROVIDER_BINARY" --report "$RUNNER_TEMP/provider-fixtures.json"
+      - name: Isolated FileFabric later-call renewal fixture
+        if: ${{ !cancelled() }}
+        env:
+          PROVIDER_BINARY: ${{ runner.os == 'Windows' && format('{0}/rclone-triage/assets/rclone.exe', github.workspace) || format('{0}/rclone-native', runner.temp) }}
+        shell: bash
+        run: python -B ../scripts/provider-lab/run_lab.py --rclone "$PROVIDER_BINARY" --filefabric-renewal --report "$RUNNER_TEMP/filefabric-renewal-fixture.json"
       - name: Require current provider plans and protocol evidence
         if: ${{ !cancelled() }}
         env:
@@ -92,6 +98,7 @@ jobs:
           python -B ../scripts/provider_coverage.py --rclone "$PROVIDER_BINARY" \
             --report "$RUNNER_TEMP/provider-evidence.json" \
             --fixture-receipt "$RUNNER_TEMP/provider-fixtures.json" \
+            --fixture-receipt "$RUNNER_TEMP/filefabric-renewal-fixture.json" \
             --require-plans --require-fixtures local,archive,http,webdav,ftp,sftp,s3,swift,b2,azureblob,azurefiles,seafile,memory,koofr,pixeldrain,filefabric
       - name: Retain sanitized protocol evidence
         if: always()
@@ -100,6 +107,7 @@ jobs:
           name: provider-evidence-${{ runner.os }}
           path: |
             ${{ runner.temp }}/provider-fixtures.json
+            ${{ runner.temp }}/filefabric-renewal-fixture.json
             ${{ runner.temp }}/provider-evidence.json
           if-no-files-found: warn
           retention-days: 14

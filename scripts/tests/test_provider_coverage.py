@@ -116,6 +116,18 @@ def filefabric_receipt():
     return read_fixture_receipt("filefabric")
 
 
+def filefabric_renewal_receipt():
+    # Literal independent contract, not copied from the importer constants.
+    candidate = receipt("filefabric")
+    candidate["schema_version"] = 2
+    candidate["backends"][0]["fixture_mode"] = "filefabric_later_call_renewal_v1"
+    candidate["backends"][0]["capabilities"] = {key: "passed" for key in (
+        "session_token_reacquisition", "renewal_denial", "config_scope_preservation",
+        "saved_token_reuse", "source_preservation", "cleanup",
+    )}
+    return candidate
+
+
 def pixeldrain_receipt():
     return read_fixture_receipt("pixeldrain")
 
@@ -516,7 +528,7 @@ class CoverageTests(unittest.TestCase):
             (None, "platform", "windows", "receipt_runtime_mismatch"),
             (None, "harness_sha256", "d" * 64, "receipt_harness_mismatch"),
             (None, "fixture_manifest_sha256", "d" * 64, "receipt_fixture_manifest_mismatch"),
-            (None, "schema_version", 2, "unknown_receipt_schema"),
+            (None, "schema_version", 3, "unknown_receipt_schema"),
             (None, "schema_version", True, "unknown_receipt_schema"),
         ]:
             changed = receipt()
@@ -1120,6 +1132,190 @@ class CoverageTests(unittest.TestCase):
 
     def test_filefabric_failures_are_sticky_and_private_fields_omitted(self):
         self.assert_read_fixture_failures_are_sticky_and_private_fields_omitted("filefabric")
+
+    def filefabric_combined_policy(self):
+        catalog = coverage.catalog_from_schemas([schema("filefabric")])
+        policy = policy_for(catalog)
+        policy["profiles"]["test"]["required"]["local_protocol"] = [
+            "listing", "download_hash", "missing_object_rejection", "authentication_rejection",
+            "source_preservation", "config_preservation", "fixture_write_rejection", "cleanup",
+            "session_token_reacquisition", "renewal_denial", "config_scope_preservation", "saved_token_reuse",
+        ]
+        return catalog, policy
+
+    def test_filefabric_both_modes_required_without_cross_layer_promotion(self):
+        catalog, policy = self.filefabric_combined_policy()
+        for candidates in ([], [filefabric_receipt()], [filefabric_renewal_receipt()]):
+            result = self.evaluate(candidates, policy, catalog)
+            self.assertEqual(result["errors"], [])
+            self.assertEqual(result["providers"][0]["evidence"]["local_protocol"]["status"], "not_verified")
+            self.assertIn("required_fixture_not_verified", coverage.gate_errors(result, require_fixtures=["filefabric"]))
+        for candidates in ([filefabric_receipt(), filefabric_renewal_receipt()],
+                           [filefabric_renewal_receipt(), filefabric_receipt()]):
+            result = self.evaluate(candidates, policy, catalog)
+            evidence = result["providers"][0]["evidence"]
+            local = evidence["local_protocol"]
+            self.assertEqual(result["errors"], [])
+            self.assertEqual(local["status"], "passed")
+            self.assertEqual(len(local["capabilities"]), 12)
+            self.assertEqual(coverage.gate_errors(result, require_plans=True, require_fixtures=["filefabric"]), [])
+            self.assertEqual(evidence["application"]["status"], "not_verified")
+            self.assertEqual(evidence["vendor"]["status"], "not_verified")
+            self.assertFalse(result["providers"][0]["complete"])
+            self.assertEqual(set(local["modes"]), {"filefabric_cached_session_v1", "filefabric_later_call_renewal_v1"})
+            for candidate, mode in zip(candidates, [row["fixture_mode"] for row in local["runs"]]):
+                expected = candidate["backends"][0].get("fixture_mode", "filefabric_cached_session_v1")
+                self.assertEqual(mode, expected)
+                self.assertEqual(local["modes"][mode]["status"], "passed")
+                self.assertEqual(local["modes"][mode]["runs"][0]["receipt_sha256"],
+                                 coverage.sha256_bytes(coverage.compact_json(candidate)))
+
+    def test_filefabric_renewal_never_fills_baseline_even_shared_capabilities(self):
+        catalog, policy = self.filefabric_combined_policy()
+        result = self.evaluate([filefabric_renewal_receipt()], policy, catalog)
+        local = result["providers"][0]["evidence"]["local_protocol"]
+        for key in ("listing", "download_hash", "source_preservation", "cleanup", "config_preservation"):
+            self.assertEqual(local["capabilities"][key], "not_verified")
+        renewal = local["modes"]["filefabric_later_call_renewal_v1"]
+        self.assertEqual(renewal["capabilities"]["source_preservation"], "passed")
+        self.assertEqual(renewal["capabilities"]["cleanup"], "passed")
+        policy["profiles"]["test"]["required"]["local_protocol"] = ["source_preservation", "cleanup"]
+        result = self.evaluate([filefabric_renewal_receipt()], policy, catalog)
+        self.assertEqual(result["providers"][0]["evidence"]["local_protocol"]["status"], "not_verified")
+
+    def test_filefabric_cached_schema_one_remains_compatible(self):
+        catalog, policy = self.filefabric_combined_policy()
+        policy["profiles"]["test"]["required"]["local_protocol"] = sorted(coverage.FILEFABRIC_REQUIRED_CAPABILITIES)
+        result = self.evaluate([filefabric_receipt()], policy, catalog)
+        self.assertEqual(result["errors"], [])
+        local = result["providers"][0]["evidence"]["local_protocol"]
+        self.assertEqual(local["status"], "passed")
+        self.assertEqual(local["modes"]["filefabric_later_call_renewal_v1"]["status"], "not_verified")
+
+    def test_filefabric_renewal_exact_capabilities_even_under_weaker_policy(self):
+        catalog = coverage.catalog_from_schemas([schema("filefabric")])
+        policy = policy_for(catalog)
+        original = filefabric_renewal_receipt()
+        caps = original["backends"][0]["capabilities"]
+        for key in caps:
+            candidate = copy.deepcopy(original)
+            del candidate["backends"][0]["capabilities"][key]
+            with self.subTest(omitted=key):
+                self.assertIn("invalid_fixture_capability", self.evaluate([candidate], policy, catalog)["errors"])
+        for key in (coverage.CAPABILITIES - set(caps)) | {"unknown_capability"}:
+            candidate = copy.deepcopy(original)
+            candidate["backends"][0]["capabilities"][key] = "passed"
+            with self.subTest(extra=key):
+                self.assertIn("invalid_fixture_capability", self.evaluate([candidate], policy, catalog)["errors"])
+
+    def test_filefabric_renewal_mode_and_schema_are_closed(self):
+        catalog, policy = self.filefabric_combined_policy()
+        candidates = []
+        for mode in (None, True, {}, "filefabric_cached_session_v1", "unreviewed_mode"):
+            candidate = filefabric_renewal_receipt()
+            candidate["backends"][0]["fixture_mode"] = mode
+            candidates.append(candidate)
+        candidate = filefabric_renewal_receipt()
+        del candidate["backends"][0]["fixture_mode"]
+        candidates.append(candidate)
+        for level in ("top", "row"):
+            for key in ("subscenarios", "modes", "private_canary"):
+                candidate = filefabric_renewal_receipt()
+                target = candidate if level == "top" else candidate["backends"][0]
+                target[key] = "private-value-not-for-export"
+                candidates.append(candidate)
+        candidate = filefabric_renewal_receipt()
+        candidate["backends"].append(copy.deepcopy(candidate["backends"][0]))
+        candidates.append(candidate)
+        for backend in ("swift", "http", "b2"):
+            candidate = filefabric_renewal_receipt()
+            candidate["backends"][0]["backend"] = backend
+            candidates.append(candidate)
+        for candidate in candidates:
+            result = self.evaluate([candidate], policy, catalog)
+            self.assertIn("invalid_fixture_mode", result["errors"])
+            self.assertNotIn("private-value-not-for-export", json.dumps(result))
+        for version in (0, 3, True, "2"):
+            candidate = filefabric_renewal_receipt()
+            candidate["schema_version"] = version
+            self.assertIn("unknown_receipt_schema", self.evaluate([candidate], policy, catalog)["errors"])
+
+    def test_filefabric_renewal_contract_cannot_be_injected_into_old_receipts(self):
+        catalog, policy = self.filefabric_combined_policy()
+        for key in ("fixture_mode", "subscenarios", "modes"):
+            for level in ("top", "row"):
+                candidate = filefabric_receipt()
+                target = candidate if level == "top" else candidate["backends"][0]
+                target[key] = "filefabric_later_call_renewal_v1"
+                self.assertIn("invalid_fixture_mode", self.evaluate([candidate], policy, catalog)["errors"])
+        for backend in coverage.FIXTURE_KINDS:
+            for capability in ("session_token_reacquisition", "config_scope_preservation", "saved_token_reuse"):
+                candidate = receipt(backend)
+                candidate["backends"][0]["capabilities"][capability] = "passed"
+                self.assertIn("invalid_fixture_capability", self.evaluate([candidate], policy, catalog)["errors"])
+
+    def test_filefabric_renewal_requires_executed_typed_outcomes(self):
+        catalog, policy = self.filefabric_combined_policy()
+        for key in filefabric_renewal_receipt()["backends"][0]["capabilities"]:
+            for value, error in ((True, "invalid_fixture_outcome"), (1, "invalid_fixture_outcome"),
+                                 (None, "invalid_fixture_outcome"), ({}, "invalid_fixture_outcome"),
+                                 ("not_applicable", "invalid_fixture_not_applicable"),
+                                 ("not_run", "inconsistent_fixture_success"), ("failed", "inconsistent_fixture_success")):
+                candidate = filefabric_renewal_receipt()
+                candidate["backends"][0]["capabilities"][key] = value
+                with self.subTest(capability=key, value=value):
+                    self.assertIn(error, self.evaluate([candidate], policy, catalog)["errors"])
+
+    def test_filefabric_renewal_bound_to_current_full_fixture_and_runtime(self):
+        catalog, policy = self.filefabric_combined_policy()
+        changes = [("harness_sha256", "d" * 64, "receipt_harness_mismatch"),
+                   ("fixture_manifest_sha256", "d" * 64, "receipt_fixture_manifest_mismatch"),
+                   ("platform", "windows", "receipt_runtime_mismatch"),
+                   ("finished_utc", coverage.utc_text(NOW + timedelta(seconds=1)), "future_receipt")]
+        for key, value, error in changes:
+            candidate = filefabric_renewal_receipt()
+            candidate[key] = value
+            self.assertIn(error, self.evaluate([filefabric_receipt(), candidate], policy, catalog)["errors"])
+        for key, value in (("version", "1.75.2"), ("sha256", "d" * 64)):
+            candidate = filefabric_renewal_receipt()
+            candidate["runtime"][key] = value
+            self.assertIn("receipt_runtime_mismatch", self.evaluate([candidate], policy, catalog)["errors"])
+        candidate = filefabric_renewal_receipt()
+        candidate["started_utc"] = coverage.utc_text(NOW - timedelta(days=2, minutes=1))
+        candidate["finished_utc"] = coverage.utc_text(NOW - timedelta(days=2))
+        self.assertIn("expired_receipt", self.evaluate([candidate], policy, catalog)["errors"])
+
+    def test_filefabric_any_mode_failure_stays_failed_in_any_receipt_order(self):
+        catalog, policy = self.filefabric_combined_policy()
+        baseline, renewal = filefabric_receipt(), filefabric_renewal_receipt()
+        for original in (baseline, renewal):
+            for key in original["backends"][0]["capabilities"]:
+                failed = copy.deepcopy(original)
+                failed["success"] = False
+                failed["backends"][0]["capabilities"][key] = "failed"
+                for candidates in ([failed, baseline, renewal], [baseline, renewal, failed]):
+                    result = self.evaluate(candidates, policy, catalog)
+                    local = result["providers"][0]["evidence"]["local_protocol"]
+                    self.assertEqual(result["errors"], [])
+                    self.assertEqual(local["status"], "failed")
+                    mode = original["backends"][0].get("fixture_mode", "filefabric_cached_session_v1")
+                    self.assertEqual(local["modes"][mode]["status"], "failed")
+                    self.assertEqual(local["modes"][mode]["capabilities"][key], "failed")
+                    self.assertIn("required_fixture_not_verified", coverage.gate_errors(result, require_fixtures=["filefabric"]))
+        for change in ("cleanup", "receipt_error", "row_error", "incomplete"):
+            failed = filefabric_renewal_receipt()
+            failed["success"] = False
+            if change == "cleanup":
+                failed["cleanup_passed"] = False
+            elif change == "receipt_error":
+                failed["errors"] = ["synthetic_error"]
+            elif change == "row_error":
+                failed["backends"][0]["errors"] = ["synthetic_error"]
+            else:
+                failed["backends"][0]["capabilities"]["saved_token_reuse"] = "not_run"
+            for candidates in ([failed, baseline, renewal], [baseline, renewal, failed]):
+                result = self.evaluate(candidates, policy, catalog)
+                self.assertEqual(result["providers"][0]["evidence"]["local_protocol"]["status"], "failed")
 
     def test_memory_receipt_is_local_only_and_never_qualifies_other_acceptance(self):
         catalog = coverage.catalog_from_schemas([schema("memory")])
