@@ -11,6 +11,9 @@ hash-locked package closure from authenticated fixed Debian snapshots. Package
 versions, dependency choices, provenance, support dates, and known limitations
 are recorded in `build-lock.json`. Review and refresh that snapshot before a
 later acceptance batch; this image does not receive automatic security fixes.
+Rclone uses the repository's sole `rclone-version.env` pin set. Both image build
+and probe startup verify that manifest against the executable and image metadata,
+so the normal runtime updater can advance it without editing duplicate pins.
 
 Build-time setup creates one synthetic local account and a fresh random password.
 The password travels through private stdin and stays inside the unpublished

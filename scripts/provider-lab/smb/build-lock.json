@@ -3405,8 +3405,6 @@
     "uid": 10001,
     "gid": 10001,
     "username": "synthetic-smb",
-    "rclone_version": "1.75.1",
-    "rclone_sha256": "f66d8c1d552ad90296a11bc8b46d56a7fa5da1a7fa05e7ca522d95df92c4a4c0",
     "entrypoint": [
       "python3",
       "/opt/synthetic-smb/probe_samba.py"

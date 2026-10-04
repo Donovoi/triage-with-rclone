@@ -19,6 +19,13 @@ P = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(P)
 
 
+def runtime_manifest(binary_hash, version="1.76.2"):
+    return ("# Synthetic future stable runtime\n"
+            f"RCLONE_VERSION={version}\nRCLONE_EXE_SHA256={'a' * 64}\n"
+            f"RCLONE_WINDOWS_ZIP_SHA256={'b' * 64}\nRCLONE_LINUX_ZIP_SHA256={'c' * 64}\n"
+            f"RCLONE_LINUX_EXE_SHA256={binary_hash}\n")
+
+
 def listing():
     return {"list": [{"Path": name, "Name": name.rsplit("/", 1)[-1], "Size": len(body),
                       "IsDir": False, "ModTime": "2024-01-01T00:00:00.123Z"}
@@ -151,11 +158,12 @@ class PureTests(unittest.TestCase):
 
 
 class Scenario:
-    def __init__(self, mutation=None, cleanup=True):
+    def __init__(self, mutation=None, cleanup=True, observed_version="1.76.2"):
         self.count, self.calls, self.server = 0, [], None
         self.mutation, self.cleanup = mutation, cleanup
         self.closed = False
         self.server_handle = SimpleNamespace(poll=lambda: None)
+        self.observed_version = observed_version
 
     def prepare(self):
         for name in ("logs", "source", "output", "cache"):
@@ -190,7 +198,7 @@ class Scenario:
         self.count += 1
         self.calls.append((P.RCLONE, args, {"config": config, "stdin": stdin}))
         if args == ["version"]:
-            return 0, b"rclone v1.75.1\n", b""
+            return 0, ("rclone v" + self.observed_version + "\n").encode(), b""
         if args == ["obscure", "-"]:
             return 0, (b"a" if self.count == 3 else b"b") * 40 + b"\n", b""
         assert args[:2] == ["rc", "--loopback"]
@@ -224,6 +232,9 @@ class OrchestrationTests(unittest.TestCase):
             base, root = Path(directory) / "base", Path(directory) / "root"
             (base / "seed").mkdir(parents=True)
             (base / "seed" / "passdb.tdb").write_bytes(b"synthetic seed")
+            binary = base / "rclone"
+            binary.write_bytes(b"synthetic never executed runtime")
+            (base / "rclone-version.env").write_text(runtime_manifest(P.sha256(binary)))
             root.mkdir()
             def verify(report):
                 report["runtime"].update(samba_version="4.22.11-Debian-4.22.11+dfsg-0+deb13u1",
@@ -235,7 +246,7 @@ class OrchestrationTests(unittest.TestCase):
                 for path in root.iterdir():
                     shutil.rmtree(path) if path.is_dir() else path.unlink()
                 return True
-            with mock.patch.object(P, "BASE", base), mock.patch.object(P, "ROOT", root), \
+            with mock.patch.object(P, "BASE", base), mock.patch.object(P, "ROOT", root), mock.patch.object(P, "RCLONE", binary), \
                  mock.patch.object(P, "environment_checks", side_effect=P.ProbeError("capabilities_present") if preflight_error else None), \
                  mock.patch.object(P, "verify_build", side_effect=verify), \
                  mock.patch.object(P, "prepare", side_effect=scenario.prepare), \
@@ -251,6 +262,7 @@ class OrchestrationTests(unittest.TestCase):
         scenario = Scenario()
         report = self.execute(scenario)
         self.assertEqual(report["status"], "passed")
+        self.assertEqual(report["runtime"]["rclone_version"], "1.76.2")
         self.assertEqual(report["commands_total"], 16)
         self.assertTrue(all(report["checks"].values()))
         self.assertTrue(all(report["cleanup"].values()))
@@ -269,6 +281,17 @@ class OrchestrationTests(unittest.TestCase):
         self.assertEqual(report["commands_total"], 0)
         self.assertEqual(report["status"], "failed")
         self.assertIn("capabilities_present", report["errors"])
+        self.assertEqual(report["runtime"]["rclone_version"], "1.76.2")
+        self.assertRegex(report["runtime"]["rclone_sha256"], r"^[a-f0-9]{64}$")
+
+    def test_observed_runtime_version_must_match_verified_manifest(self):
+        scenario = Scenario(observed_version="1.75.1")
+        report = self.execute(scenario)
+        self.assertEqual(report["status"], "failed")
+        self.assertIn("rclone_version_mismatch", report["errors"])
+        self.assertFalse(report["checks"]["version_binding"])
+        self.assertEqual(report["commands_total"], 2)
+        self.assertEqual(report["runtime"]["rclone_version"], "1.76.2")
 
     def test_generic_connection_failure_cannot_pass_auth(self):
         def mutate(args, config, result):
@@ -457,20 +480,83 @@ class ExecutionGuardsTests(unittest.TestCase):
             version = "4.22.11-Debian-4.22.11+dfsg-0+deb13u1"
             (root / "build-lock.json").write_text(json.dumps({"runtime_expected": {
                 "samba_version": version, "uid": P.UID, "gid": P.UID, "username": P.USER}}))
-            manifest = {"schema_version": 1, "samba_version": version, **{key: P.sha256(path) for key, path in (
+            pins_path = root / "rclone-version.env"
+            pins_path.write_text(runtime_manifest(P.sha256(rclone)))
+            manifest = {"schema_version": 1, "samba_version": version, "rclone_version": "1.76.2", **{key: P.sha256(path) for key, path in (
                 ("smbd_sha256", smbd), ("testparm_sha256", testparm), ("rclone_sha256", rclone),
-                ("probe_sha256", root / "probe_samba.py"), ("lock_sha256", root / "build-lock.json"))}}
+                ("probe_sha256", root / "probe_samba.py"), ("lock_sha256", root / "build-lock.json"),
+                ("rclone_manifest_sha256", pins_path))}}
             (root / "runtime-manifest.json").write_text(json.dumps(manifest))
             with mock.patch.object(P, "BASE", root), mock.patch.object(P, "SMBD", smbd), \
-                 mock.patch.object(P, "TESTPARM", testparm), mock.patch.object(P, "RCLONE", rclone), \
-                 mock.patch.object(P, "RCLONE_SHA", P.sha256(rclone)):
+                 mock.patch.object(P, "TESTPARM", testparm), mock.patch.object(P, "RCLONE", rclone):
                 report = P.new_report()
                 result = P.verify_build(report)
                 self.assertEqual(set(result), {smbd, testparm, rclone})
                 self.assertEqual(report["runtime"]["samba_version"], version)
+                self.assertEqual(report["runtime"]["rclone_version"], "1.76.2")
+                original_pins = pins_path.read_bytes()
+                for field, value, code in (("rclone_version", "1.75.1", "rclone_pin_mismatch"),
+                                           ("rclone_sha256", "d" * 64, "build_hash_mismatch"),
+                                           ("rclone_manifest_sha256", "e" * 64, "build_hash_mismatch")):
+                    with self.subTest(field=field):
+                        changed = dict(manifest, **{field: value})
+                        (root / "runtime-manifest.json").write_text(json.dumps(changed))
+                        with self.assertRaisesRegex(P.ProbeError, code):
+                            P.verify_build(P.new_report())
+                (root / "runtime-manifest.json").write_text(json.dumps(manifest))
+                pins_path.write_bytes(original_pins + b"# changed manifest bytes\n")
+                with self.assertRaisesRegex(P.ProbeError, "build_hash_mismatch"):
+                    P.verify_build(P.new_report())
+                pins_path.write_bytes(original_pins)
                 smbd.write_bytes(b"replaced")
                 with self.assertRaisesRegex(P.ProbeError, "build_hash_mismatch"):
                     P.verify_build(P.new_report())
+
+
+class RuntimePinTests(unittest.TestCase):
+    def test_exact_manifest_accepts_future_stable_and_crlf_comments(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "rclone-version.env"
+            path.write_bytes(runtime_manifest("d" * 64).replace("\n", "\r\n").encode())
+            self.assertEqual(P.read_runtime_pins(path), {"version": "1.76.2", "sha256": "d" * 64})
+
+    def test_manifest_rejects_duplicate_unknown_missing_and_malformed_values(self):
+        original = runtime_manifest("d" * 64)
+        changed = [original + "RCLONE_VERSION=1.76.2\n", original + "UNKNOWN_KEY=value\n",
+                   original.replace("RCLONE_VERSION=1.76.2\n", ""),
+                   original.replace("1.76.2", "v1.76.2"), original.replace("1.76.2", "1.76.2-beta"),
+                   original.replace("1.76.2", "01.76.2"), original.replace("1.76.2", '"1.76.2"'),
+                   original.replace("d" * 64, "D" * 64), original.replace("a" * 64, "a" * 63),
+                   original.replace("b" * 64, "g" * 64), original.replace("c" * 64, "0" * 65)]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "rclone-version.env"
+            for index, body in enumerate(changed):
+                with self.subTest(index=index):
+                    path.write_text(body)
+                    with self.assertRaisesRegex(P.ProbeError, "rclone_manifest_invalid"):
+                        P.read_runtime_pins(path)
+            path.write_bytes(b"#" * 4097)
+            with self.assertRaisesRegex(P.ProbeError, "rclone_manifest_size_limit"):
+                P.read_runtime_pins(path)
+            path.write_bytes(original.encode() + b"\xff")
+            with self.assertRaisesRegex(P.ProbeError, "rclone_manifest_invalid"):
+                P.read_runtime_pins(path)
+
+    def test_mismatched_binary_pins_never_promote_identity_or_start_child(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            binary = root / "rclone"
+            binary.write_bytes(b"synthetic never executed")
+            (root / "rclone-version.env").write_text(runtime_manifest("d" * 64))
+            with mock.patch.object(P, "BASE", root), mock.patch.object(P, "RCLONE", binary), \
+                    mock.patch.object(P, "environment_checks") as environment, mock.patch.object(P, "Children") as children:
+                report = P.run_probe()
+            self.assertEqual(report["status"], "failed")
+            self.assertIn("rclone_pin_mismatch", report["errors"])
+            self.assertIsNone(report["runtime"]["rclone_version"])
+            self.assertIsNone(report["runtime"]["rclone_sha256"])
+            environment.assert_not_called()
+            children.assert_not_called()
 
 
 if __name__ == "__main__":
