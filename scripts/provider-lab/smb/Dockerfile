@@ -144,41 +144,120 @@ while IFS="$(printf '\t')" read -r name version digest size url; do
     test "$(dpkg-deb -f "$target" Package)" = "$name"
     test "$(dpkg-deb -f "$target" Version)" = "$version"
 done < /tmp/smb-artifacts.tsv
-# No package may be fetched during dependency solving or installation.
+# APT 3.0.3 rejects uncached acquisitions with --no-download, even local URIs.
+# Source: https://github.com/Debian/apt/blob/3.0.3/apt-private/private-install.cc#L153-L170
+# Cache names and completed-local handling:
+# https://github.com/Debian/apt/blob/3.0.3/apt-pkg/acquire-item.cc#L3314-L3354
+# QuoteString uses lowercase hex, leaves +/~ intact, and escapes colon:
+# https://github.com/Debian/apt/blob/3.0.3/apt-pkg/contrib/strutl.cc#L323-L337
+apt_cache_name() {
+    case "$1" in ""|*[!a-z0-9+.-]*|[!a-z0-9]*) return 1 ;; esac
+    case "$2" in ""|*[!0-9A-Za-z.+:~-]*|[!0-9]*) return 1 ;; esac
+    case "$3" in amd64|all) ;; *) return 1 ;; esac
+    encoded_version=$(printf '%s' "$2" | sed 's/:/%3a/g') || return 1
+    printf '%s_%s_%s.deb\n' "$1" "$encoded_version" "$3"
+}
 printf '%s\n' 'SMB_BUILD_PHASE=install'
-DEBIAN_FRONTEND=noninteractive apt-get --no-download --no-install-recommends --no-remove -y install /tmp/smb-locked-debs/*.deb
-apt-get check
+printf '%s\n' 'SMB_BUILD_DIAGNOSTIC=install_cache_started'
+if (
+    set -eu
+    mkdir -p /var/cache/apt/archives/partial || exit 1
+    while IFS="$(printf '\t')" read -r name version digest size url; do
+        target="/tmp/smb-locked-debs/$name.deb"
+        arch=$(dpkg-deb -f "$target" Architecture) || exit 1
+        cache_name=$(apt_cache_name "$name" "$version" "$arch") || exit 1
+        cache_path="/var/cache/apt/archives/$cache_name"
+        test ! -e "$cache_path" || exit 1
+        cp "$target" "$cache_path" || exit 1
+        printf '%s  %s\n' "$digest" "$cache_path" | sha256sum -c - || exit 1
+        test "$(wc -c < "$cache_path")" -eq "$size" || exit 1
+    done < /tmp/smb-artifacts.tsv
+); then
+    printf '%s\n' 'SMB_BUILD_DIAGNOSTIC=install_cache_passed'
+else
+    printf '%s\n' 'SMB_BUILD_DIAGNOSTIC=install_cache_failed'
+    exit 1
+fi
+# No package may be fetched during dependency solving or installation.
+printf '%s\n' 'SMB_BUILD_DIAGNOSTIC=install_apt_started'
+if DEBIAN_FRONTEND=noninteractive apt-get --no-download --no-install-recommends --no-remove -y install /tmp/smb-locked-debs/*.deb; then
+    printf '%s\n' 'SMB_BUILD_DIAGNOSTIC=install_apt_passed'
+else
+    printf '%s\n' 'SMB_BUILD_DIAGNOSTIC=install_apt_failed'
+    exit 1
+fi
+printf '%s\n' 'SMB_BUILD_DIAGNOSTIC=install_dependency_check_started'
+if apt-get check; then
+    printf '%s\n' 'SMB_BUILD_DIAGNOSTIC=install_dependency_check_passed'
+else
+    printf '%s\n' 'SMB_BUILD_DIAGNOSTIC=install_dependency_check_failed'
+    exit 1
+fi
 python3 - <<'PY'
-import hashlib, json, pathlib, subprocess, sys
-base = pathlib.Path("/opt/synthetic-smb")
-lock = json.loads((base / "build-lock.json").read_text())
-expected = {p["name"]: p["version"] for p in lock["packages"]}
-rows = [line.split("\t") for line in pathlib.Path("/tmp/smb-artifacts.tsv").read_text().splitlines()]
-assert len(rows) == len(expected) and len({r[0] for r in rows}) == len(rows)
-repos = {r["suite"]: r["url"] for r in lock["repositories"]}
-for row, pkg in zip(rows, lock["packages"]):
-    assert row == [pkg["name"], pkg["version"], pkg["sha256"], str(pkg["size"]), repos[pkg["suite"]] + pkg["filename"]]
+import json, pathlib, subprocess, sys
+
+def marker(code):
+    print("SMB_BUILD_DIAGNOSTIC=" + code, flush=True)
+
+def fail(code):
+    marker(code)
+    raise SystemExit(1)
+
+def require(value, code):
+    if not value:
+        fail(code)
+
 def installed(text):
     answer = {}
     for line in text.splitlines():
-        name, version, status = line.split("\t")
+        fields = line.split("\t")
+        require(len(fields) == 3, "validation_package_inventory_failed")
+        name, version, status = fields
         if status == "ii ":
             name = name.removesuffix(":amd64")
-            assert name not in answer
+            require(name not in answer, "validation_package_inventory_failed")
             answer[name] = version
     return answer
-before = installed(pathlib.Path("/tmp/smb-base-packages.tsv").read_text())
-after = installed(subprocess.check_output(["dpkg-query", "-W", "-f=${binary:Package}\t${Version}\t${db:Status-Abbrev}\n"], text=True))
-assert all(after.get(name) == version for name, version in expected.items())
-assert set(before) <= set(after), "package removal forbidden"
-assert all(name in expected or before.get(name) == version for name, version in after.items()), "unlocked package change"
-assert not ({"winbind", "libpam-winbind", "python3-samba"} & set(after))
-assert ".".join(map(str, sys.version_info[:3])) == lock["runtime_expected"]["python_version"]
-# Debian performs the actual dependency solver check above; retain source-level
-# resolution edges in the lock for independent review.
+
+def validate():
+    marker("validation_started")
+    base = pathlib.Path("/opt/synthetic-smb")
+    try:
+        lock = json.loads((base / "build-lock.json").read_text())
+        rows = [line.split("\t") for line in pathlib.Path("/tmp/smb-artifacts.tsv").read_text().splitlines()]
+    except (OSError, ValueError, UnicodeError):
+        fail("validation_input_read_failed")
+    expected = {p["name"]: p["version"] for p in lock["packages"]}
+    require(len(rows) == len(expected) and all(len(row) == 5 for row in rows)
+            and len({r[0] for r in rows}) == len(rows), "validation_artifact_parity_failed")
+    repos = {r["suite"]: r["url"] for r in lock["repositories"]}
+    for row, pkg in zip(rows, lock["packages"]):
+        require(row == [pkg["name"], pkg["version"], pkg["sha256"], str(pkg["size"]), repos[pkg["suite"]] + pkg["filename"]],
+                "validation_artifact_parity_failed")
+    try:
+        before = installed(pathlib.Path("/tmp/smb-base-packages.tsv").read_text())
+        after = installed(subprocess.check_output(["dpkg-query", "-W", "-f=${binary:Package}\t${Version}\t${db:Status-Abbrev}\n"], text=True))
+    except (OSError, ValueError, UnicodeError, subprocess.SubprocessError):
+        fail("validation_package_inventory_failed")
+    require(all(after.get(name) == version for name, version in expected.items()), "validation_locked_version_failed")
+    require(set(before) <= set(after), "validation_package_removed")
+    require(all(name in expected or before.get(name) == version for name, version in after.items()), "validation_unlocked_package_change")
+    require(not ({"winbind", "libpam-winbind", "python3-samba"} & set(after)), "validation_excluded_package_present")
+    require(".".join(map(str, sys.version_info[:3])) == lock["runtime_expected"]["python_version"], "validation_python_version_failed")
+    marker("validation_complete")
+
+try:
+    validate()
+except Exception:
+    fail("validation_unexpected_error")
 PY
-rm -rf /tmp/smb-locked-debs /var/lib/apt/lists/*
-rm -f /tmp/smb-artifacts.tsv /tmp/smb-base-packages.tsv /var/cache/apt/archives/*.deb
+printf '%s\n' 'SMB_BUILD_DIAGNOSTIC=bootstrap_cleanup_started'
+if rm -rf /tmp/smb-locked-debs /var/lib/apt/lists/* && rm -f /tmp/smb-artifacts.tsv /tmp/smb-base-packages.tsv /var/cache/apt/archives/*.deb; then
+    printf '%s\n' 'SMB_BUILD_DIAGNOSTIC=bootstrap_cleanup_complete'
+else
+    printf '%s\n' 'SMB_BUILD_DIAGNOSTIC=bootstrap_cleanup_failed'
+    exit 1
+fi
 BOOTSTRAP
 
 COPY probe_samba.py rclone rclone-version.env /opt/synthetic-smb/
