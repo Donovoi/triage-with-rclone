@@ -47,6 +47,8 @@ The current importer accepts **protocol fixture receipts only**. Application and
 
 Fixture receipts bind to runtime version and executable SHA256, operating system, harness SHA256, fixture manifest and UTC execution time. The default maximum age is 24 hours (explicitly configurable from 1 to 168). Future, expired, mismatched or malformed receipts are rejected; an observed failure cannot be hidden by another successful receipt in the same batch. Reports are create-new and contain no account names, remote names, endpoints, file paths, credentials or raw provider diagnostics.
 
+Runtime catalog failures report finite operation and error categories, including private-copy setup, metadata queries and cleanup. Existing specific validation errors remain intact. If cleanup also fails, the report retains both errors and the gate fails; it does not retry or ignore cleanup. These diagnostics identify the observed failure stage without publishing exception text or establishing its underlying cause.
+
 Run the account-free lab and ledger with Python 3.11 or newer, from the repository root:
 
 ```powershell
