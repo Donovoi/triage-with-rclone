@@ -346,6 +346,7 @@ class FixtureTests(unittest.TestCase):
         codes = set(re.findall(r'"([a-z0-9_]+)"', block))
         codes.update(re.findall(r'(?:stage = |recordFailure\(errors, )"([a-z_]+)"', source))
         codes.update(re.findall(r'(?:return |category = |selected = )"([a-z_]+)"', source))
+        codes.update(re.findall(r'-> "(origin_[a-z_]+)"', source))
         self.assertEqual(codes, F.JAVA_CODES)
 
     def test_foreign_container_or_unreaped_command_preserves_raw_context(self):
