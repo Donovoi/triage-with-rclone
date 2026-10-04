@@ -1,4 +1,4 @@
-"""Private hosted-only dependency discovery; no offline or daemon acceptance.
+"""Hosted-only dependency resolution; no daemon or provider acceptance.
 
 Imports and plan construction are pure. Native execution is available only via
 discover(), after closed bootstrap bindings and the hosted Linux guard pass.
@@ -31,8 +31,8 @@ INPUT_HASHES = {
     "settings.xml": "73c88f4d9660338f35a6e56978f8567f89f5a85641d5338f189fc489440b364c",
     "global-settings.xml": "aeb786c97c2a0103b71c04ab1b29508d7ec1c402a9d36e22301407b23670edf2",
 }
-# This is a separate, online-only dependency experiment. Its additional KDC
-# closure has no reviewed offline lock yet; never reuse the SIMPLE cache.
+# Kerberos uses its own fixed dependency lock for online and offline runs.
+# Never substitute the SIMPLE cache for its additional KDC dependencies.
 KERBEROS_INPUT_HASHES = {
     "pom.xml": "f2b4397a3e096770be70663bcb801ff942ee4d84f294b75826a4934b13e7bb28",
     "settings.xml": "73c88f4d9660338f35a6e56978f8567f89f5a85641d5338f189fc489440b364c",
