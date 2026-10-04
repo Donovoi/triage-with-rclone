@@ -83,6 +83,10 @@ class OAuthFixtureTests(unittest.TestCase):
             response = conn.getresponse()
             data = response.read(oauth.MAX_RESPONSE_BYTES + 1)
             self.assertLessEqual(len(data), oauth.MAX_RESPONSE_BYTES)
+            # A client may receive the body before the handler finishes its
+            # state updates. Dispatch holds this lock through those updates.
+            self.assertTrue(fixture.state.lock.acquire(timeout=4), "fixture dispatch did not finish")
+            fixture.state.lock.release()
             return response.status, data, dict(response.getheaders())
         finally:
             conn.close()
@@ -696,6 +700,47 @@ class OAuthFixtureTests(unittest.TestCase):
                 self.assertEqual(state.source_snapshot(), before)
                 self.assertTrue(state.source_preserved())
                 self.assertEqual(fixture.snapshot()["transport"]["failure_codes"], [])
+
+    def test_request_waits_for_handler_state_after_receiving_response(self):
+        response_read, lock_attempted, finished = (threading.Event() for _ in range(3))
+        dispatch_lock = threading.Lock()
+        class ObservedLock:
+            def acquire(self, **kwargs):
+                lock_attempted.set()
+                return dispatch_lock.acquire(**kwargs)
+            def release(self):
+                dispatch_lock.release()
+        response = Mock(status=400)
+        response.read.side_effect = lambda _limit: (response_read.set(), b"{}")[1]
+        response.getheaders.return_value = []
+        connection = Mock()
+        connection.getresponse.return_value = response
+        fixture = SimpleNamespace(port=1, client_context=lambda: None,
+                                  state=SimpleNamespace(lock=ObservedLock()))
+        results, errors = [], []
+        def client():
+            try:
+                results.append(self.request(fixture, "/oauth2_token"))
+            except BaseException as error:
+                errors.append(type(error).__name__)
+            finally:
+                finished.set()
+        dispatch_lock.acquire()
+        with patch.object(http.client, "HTTPSConnection", return_value=connection):
+            worker = threading.Thread(target=client)
+            worker.start()
+            try:
+                self.assertTrue(response_read.wait(2))
+                self.assertTrue(lock_attempted.wait(2))
+                self.assertFalse(finished.is_set())
+            finally:
+                dispatch_lock.release()
+                worker.join(5)
+        self.assertFalse(worker.is_alive())
+        self.assertTrue(finished.is_set())
+        self.assertEqual(errors, [])
+        self.assertEqual(results, [(400, b"{}", {})])
+        connection.close.assert_called_once()
 
     def test_generic_malformed_or_unexpected_credentials_cannot_earn_denial(self):
         for mode in ("invalid_code", "wrong_client_secret"):
