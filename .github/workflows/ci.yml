@@ -142,6 +142,35 @@ jobs:
           path: ${{ runner.temp }}/pcloud-oauth-feasibility.json
           if-no-files-found: warn
           retention-days: 14
+  pcloud-oauth-authentication:
+    name: Isolated pCloud OAuth authentication
+    needs: revision
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - name: Prepare verified Linux runtime
+        shell: bash
+        run: bash scripts/download-rclone.sh --linux "$RUNNER_TEMP/rclone-pcloud-auth"
+      - name: Verify fresh login, exact denials and owned process cancellation
+        shell: bash
+        run: |
+          python -B scripts/provider-lab/pcloud-oauth/run_container.py \
+            --rclone "$RUNNER_TEMP/rclone-pcloud-auth" --authentication-evidence \
+            --report "$RUNNER_TEMP/pcloud-oauth-authentication.json"
+      - name: Retain sanitized pCloud authentication evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: pcloud-oauth-authentication
+          path: ${{ runner.temp }}/pcloud-oauth-authentication.json
+          if-no-files-found: warn
+          retention-days: 14
   test:
     name: Test (${{ matrix.os }})
     needs: revision
@@ -277,7 +306,7 @@ jobs:
           retention-days: 14
   linux-provider-evidence:
     name: Combined Linux provider evidence
-    needs: [test, smb-protocol]
+    needs: [test, smb-protocol, pcloud-oauth-authentication]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -298,9 +327,13 @@ jobs:
         with:
           name: smb-protocol
           path: ${{ runner.temp }}/provider-smb
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: pcloud-oauth-authentication
+          path: ${{ runner.temp }}/provider-pcloud
       - name: Prepare verified Linux runtime
         run: bash scripts/download-rclone.sh --linux "$RUNNER_TEMP/rclone-ledger"
-      - name: Require all 19 reviewed Linux protocol profiles
+      - name: Require all 20 reviewed Linux protocol profiles
         run: |
           python -B scripts/provider_coverage.py --rclone "$RUNNER_TEMP/rclone-ledger" \
             --report "$RUNNER_TEMP/provider-evidence-linux-combined.json" \
@@ -308,7 +341,8 @@ jobs:
             --fixture-receipt "$RUNNER_TEMP/provider-baseline/filefabric-renewal-fixture.json" \
             --fixture-receipt "$RUNNER_TEMP/provider-baseline/internetarchive-low-auth-fixture.json" \
             --fixture-receipt "$RUNNER_TEMP/provider-smb/smb-protocol.json" \
-            --require-plans --require-fixtures local,archive,http,webdav,ftp,sftp,s3,swift,b2,azureblob,azurefiles,seafile,memory,koofr,pixeldrain,filefabric,netstorage,internetarchive,smb
+            --fixture-receipt "$RUNNER_TEMP/provider-pcloud/pcloud-oauth-authentication.json" \
+            --require-plans --require-fixtures local,archive,http,webdav,ftp,sftp,s3,swift,b2,azureblob,azurefiles,seafile,memory,koofr,pixeldrain,filefabric,netstorage,internetarchive,smb,pcloud
       - name: Retain sanitized combined ledger
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -319,7 +353,7 @@ jobs:
           retention-days: 14
   release:
     name: Publish checked prerelease
-    needs: [test, audit, python-audit, smb-protocol, linux-provider-evidence, pcloud-oauth-feasibility]
+    needs: [test, audit, python-audit, smb-protocol, linux-provider-evidence, pcloud-oauth-feasibility, pcloud-oauth-authentication]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:

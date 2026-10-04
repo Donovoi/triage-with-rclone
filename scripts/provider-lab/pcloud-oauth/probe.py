@@ -41,6 +41,14 @@ CHECKS = ('environment', 'version_binding', 'initial_config_question', 'callback
           'authorize', 'token_exchange', 'config_persisted', 'fresh_child_read',
           'source_preserved', 'post_auth_config_preserved', 'request_sequence')
 CLEANUP = ('children_stopped', 'listeners_closed', 'temporary_removed')
+AUTH_CASES = ('positive', 'wrong_state', 'consent_denied', 'invalid_code', 'wrong_client_secret', 'cancelled')
+NEGATIVE_COMMON_CHECKS = ('environment', 'version_binding', 'initial_config_question', 'callback_ownership',
+                          'no_token_persisted', 'config_preserved', 'no_read', 'source_preserved', 'request_sequence')
+NEGATIVE_CHECKS = {
+    name: NEGATIVE_COMMON_CHECKS + (('owned_process_cancel',) if name == 'cancelled' else
+                                  ('authorize', 'callback_denial' if name in ('wrong_state', 'consent_denied') else 'token_denial'))
+    for name in AUTH_CASES[1:]
+}
 MAX_OUTPUT = 2 * 1024 * 1024
 MAX_SECONDS = 60
 
@@ -370,17 +378,54 @@ def remove_owned(root, identity):
     return not root.exists() and not any(WORK.iterdir())
 
 
-def run(binary, manifest):
-    now = lambda: datetime.now(timezone.utc).isoformat(timespec='microseconds').replace('+00:00', 'Z')
-    report = {'schema_version': 1, 'scope': 'pcloud_oauth_callback_feasibility', 'ledger_eligible': False,
-              'started_utc': now(), 'finished_utc': None, 'runtime': {'platform': sys.platform,
+def utc_now():
+    return datetime.now(timezone.utc).isoformat(timespec='microseconds').replace('+00:00', 'Z')
+
+
+def new_report(scope, checks):
+    return {'schema_version': 1, 'scope': scope, 'ledger_eligible': False,
+              'started_utc': utc_now(), 'finished_utc': None, 'runtime': {'platform': sys.platform,
               'architecture': 'amd64' if platform.machine() == 'x86_64' else platform.machine(),
               'uid': os.getuid() if hasattr(os, 'getuid') else -1, 'gid': os.getgid() if hasattr(os, 'getgid') else -1,
               'python_version': platform.python_version(), 'cryptography_version': '', 'rclone_version': '',
               'rclone_sha256': '', 'probe_sha256': digest(Path(__file__)), 'fixture_manifest_sha256': MANIFEST_SHA},
-              'checks': dict.fromkeys(CHECKS, False), 'observations': dict.fromkeys(
+              'checks': dict.fromkeys(checks, False), 'observations': dict.fromkeys(
                   ('native_commands', 'http_transactions', 'callback_requests', 'https_requests'), 0),
               'cleanup': dict.fromkeys(CLEANUP, False), 'success': False, 'errors': []}
+
+
+def finish_report(report, native, fixture, state, root, identity):
+    report['observations']['native_commands'] = len(native.records) if native else 0
+    report['observations']['https_requests'] = state.requests if state else 0
+    report['observations']['http_transactions'] = (report['observations']['callback_requests']
+                                                   + report['observations']['https_requests'])
+    try:
+        report['cleanup']['children_stopped'] = native.close() if native else True
+    except Exception:
+        report['errors'].append('child_cleanup_failed')
+    try:
+        if fixture is not None:
+            require(fixture.cleanup_complete and state.cleanup_complete and state.source_preserved(), 'fixture_cleanup_failed')
+            snapshot = fixture.snapshot()
+            require(not snapshot['transport']['failure_codes'], 'transport_cleanup_failed')
+    except Exception:
+        report['errors'].append('fixture_cleanup_failed')
+    try:
+        report['cleanup']['listeners_closed'] = listeners() == ([], []) if sys.platform == 'linux' else False
+    except Exception:
+        report['errors'].append('listener_cleanup_failed')
+    try:
+        # Do not unlink output beneath a child which could still be writing.
+        require(report['cleanup']['children_stopped'], 'live_child_prevents_removal')
+        report['cleanup']['temporary_removed'] = remove_owned(root, identity) if root else True
+    except Exception:
+        report['errors'].append('temporary_cleanup_failed')
+    report['finished_utc'] = utc_now()
+    report['success'] = (not report['errors'] and all(report['checks'].values()) and all(report['cleanup'].values()))
+
+
+def run(binary, manifest):
+    report = new_report('pcloud_oauth_callback_feasibility', CHECKS)
     root = identity = native = fixture = state = None
     try:
         environment_checks()
@@ -471,45 +516,188 @@ def run(binary, manifest):
     except Exception:
         report['errors'].append('probe_unexpected_failure')
     finally:
-        report['observations']['native_commands'] = len(native.records) if native else 0
-        report['observations']['https_requests'] = state.requests if state else 0
-        report['observations']['http_transactions'] = (report['observations']['callback_requests']
-                                                       + report['observations']['https_requests'])
-        try:
-            report['cleanup']['children_stopped'] = native.close() if native else True
-        except Exception:
-            report['errors'].append('child_cleanup_failed')
-        try:
-            if fixture is not None:
-                require(fixture.cleanup_complete and state.cleanup_complete and state.source_preserved(), 'fixture_cleanup_failed')
-                snapshot = fixture.snapshot()
-                require(not snapshot['transport']['failure_codes'], 'transport_cleanup_failed')
-        except Exception:
-            report['errors'].append('fixture_cleanup_failed')
-        try:
-            report['cleanup']['listeners_closed'] = listeners() == ([], []) if sys.platform == 'linux' else False
-        except Exception:
-            report['errors'].append('listener_cleanup_failed')
-        try:
-            # Do not unlink output beneath a child which could still be writing.
-            require(report['cleanup']['children_stopped'], 'live_child_prevents_removal')
-            report['cleanup']['temporary_removed'] = remove_owned(root, identity) if root else True
-        except Exception:
-            report['errors'].append('temporary_cleanup_failed')
-        report['finished_utc'] = now()
-        report['success'] = (not report['errors'] and all(report['checks'].values()) and all(report['cleanup'].values()))
+        finish_report(report, native, fixture, state, root, identity)
     return report
+
+
+def deny_native_output(mode, code, output, error, callback_state, alternate_state):
+    require(type(code) is int and code > 0 and output == b'', 'denial_process_result_mismatch')
+    if mode == 'wrong_state':
+        marker = ('Error: Auth state doesn\'t match\nCode: ""\nDescription: Expecting "'
+                  + callback_state + '" got "' + alternate_state + '"').encode('ascii')
+    elif mode == 'consent_denied':
+        marker = (b'Error: Auth Error\nCode: ""\nDescription: No code returned by remote server: '
+                  b'access_denied: synthetic consent denied')
+    elif mode == 'invalid_code':
+        marker = b'failed to get token: oauth2: "invalid_grant" "synthetic authorization code rejected"'
+    elif mode == 'wrong_client_secret':
+        marker = b'failed to get token: oauth2: "invalid_client" "synthetic client secret rejected"'
+    else:
+        raise ProbeError('unknown_denial_mode')
+    require(type(error) is bytes and marker in error, 'native_denial_reason_mismatch')
+
+
+def cancel_waiting(native, record):
+    native.check(record)
+    process = record['process']
+    require(process.poll() is None and proc_identity(process.pid) == record['identity']
+            and record['identity'][1:] == (UID, process.pid), 'cancellation_owner_mismatch')
+    os.killpg(process.pid, signal.SIGTERM)
+    try:
+        process.wait(3)
+    except subprocess.TimeoutExpired:
+        raise ProbeError('cancellation_deadline') from None
+    code, output, _ = native.finish(record)
+    require(type(code) is int and code != 0 and output == b'', 'cancellation_result_mismatch')
+
+
+def run_negative(binary, manifest, mode):
+    require(mode in NEGATIVE_CHECKS, 'unknown_denial_mode')
+    report = new_report('pcloud_oauth_authentication_case', NEGATIVE_CHECKS[mode])
+    root = identity = native = fixture = state = None
+    try:
+        environment_checks()
+        require(binary == BASE / 'rclone' and manifest == BASE / 'rclone-version.env', 'fixed_image_paths_required')
+        report['checks']['environment'] = True
+        version, binary_sha = pins(manifest)
+        regular(binary)
+        require(digest(binary) == binary_sha, 'rclone_hash_mismatch')
+        import cryptography
+        require(cryptography.__version__ == '50.0.2', 'certificate_dependency_mismatch')
+        report['runtime'].update(cryptography_version=cryptography.__version__, rclone_version=version, rclone_sha256=binary_sha)
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+        from fixture_oauth import OAuthState, serve_oauth
+        root = Path(tempfile.mkdtemp(prefix='oauth-', dir=WORK))
+        identity = root.stat().st_dev, root.stat().st_ino
+        native = Native(binary, root)
+        code, output, _ = native.run(['version'])
+        require(code == 0 and output.splitlines()[0] == ('rclone v' + version).encode(), 'runtime_version_mismatch')
+        report['checks']['version_binding'] = True
+        client_id, client_secret, auth_code, token, wrong_token, alternate_code, alternate_secret = (
+            secrets.token_urlsafe(24) for _ in range(7))
+        alternate_state = secrets.token_urlsafe(16)
+        require(len({client_id, client_secret, auth_code, token, wrong_token, alternate_code,
+                     alternate_secret, alternate_state}) == 8, 'fixture_credential_collision')
+        state = OAuthState(dict(FILES), client_id, client_secret, auth_code, token, wrong_token,
+                           mode=mode, alternate_state=alternate_state, alternate_code=alternate_code,
+                           alternate_secret=alternate_secret)
+        with serve_oauth(root, state) as fixture:
+            options = {'type': 'pcloud', 'client_id': client_id,
+                       'client_secret': alternate_secret if mode == 'wrong_client_secret' else client_secret,
+                       'client_credentials': 'false', 'root_folder_id': 'd100', 'hostname': fixture.host,
+                       'auth_url': 'https://' + fixture.host + '/oauth2/authorize',
+                       'token_url': 'https://' + fixture.host + '/oauth2_token'}
+            create = ['config', 'create', 'Synthetic', 'pcloud', '--non-interactive']
+            create += [key + '=' + value for key, value in options.items() if key != 'type']
+            create += ['config_auth_no_browser=true']
+            code, output, _ = native.run(create, fixture.rclone_ca_args())
+            require(code == 0, 'create_config_failed')
+            continuation = question(output)
+            require(config_values(native.config) == options and state.requests == 0, 'initial_config_or_network_changed')
+            pre_auth = native.config.read_bytes()
+            report['checks']['initial_config_question'] = True
+            record = native.start(['config', 'update', 'Synthetic', '--continue', '--state', continuation,
+                                   '--result', 'true', 'config_auth_no_browser=true'], fixture.rclone_ca_args(), notice=True)
+            callback_state = wait_callback(native, record)
+            require(callback_state != alternate_state, 'fixture_state_collision')
+            report['checks']['callback_ownership'] = True
+            if mode == 'cancelled':
+                cancel_waiting(native, record)
+                report['checks']['owned_process_cancel'] = True
+            else:
+                status, location, _ = request(CALLBACK_PORT, '/auth?state=' + callback_state, '127.0.0.1:53682')
+                report['observations']['callback_requests'] += 1
+                require(status == 307 and location is not None, 'auth_redirect_mismatch')
+                authorize = validate_location(location, 'https', fixture.host, '/oauth2/authorize',
+                                              {'access_type': 'offline', 'client_id': client_id, 'redirect_uri': CALLBACK_URI,
+                                               'response_type': 'code', 'state': callback_state})
+                state.bind_state(callback_state)
+                status, location, _ = request(fixture.port, authorize, fixture.host, fixture.client_context())
+                require(status == 302 and location is not None, 'authorize_redirect_mismatch')
+                expected = {'state': alternate_state if mode == 'wrong_state' else callback_state,
+                            'locationid': '1', 'hostname': fixture.host}
+                if mode == 'consent_denied':
+                    expected.update(error='access_denied', error_description='synthetic consent denied')
+                else:
+                    expected['code'] = alternate_code if mode == 'invalid_code' else auth_code
+                callback = validate_location(location, 'http', 'localhost:53682', '/', expected)
+                report['checks']['authorize'] = True
+                status, location, body = request(CALLBACK_PORT, callback, 'localhost:53682')
+                report['observations']['callback_requests'] += 1
+                callback_denial = mode in ('wrong_state', 'consent_denied')
+                require(status == (400 if callback_denial else 200) and location is None and bool(body),
+                        'denial_callback_response_mismatch')
+                code, output, error = native.finish(record)
+                deny_native_output(mode, code, output, error, callback_state, alternate_state)
+                if callback_denial:
+                    require(state.token_requests == state.token_denials == state.basic_denials == state.form_denials == 0,
+                            'unexpected_denial_exchange')
+                    report['checks']['callback_denial'] = True
+                else:
+                    require(state.token_requests == state.token_denials == state.auth_denied == 2
+                            and state.basic_denials == state.form_denials == 1, 'token_denial_sequence_mismatch')
+                    report['checks']['token_denial'] = True
+            values = config_values(native.config)
+            require(not state.token_issued and 'token' not in values, 'denial_saved_token')
+            report['checks']['no_token_persisted'] = True
+            require(values == options and native.config.read_bytes() == pre_auth
+                    and not list(root.glob('synthetic.conf.*')), 'denial_config_changed')
+            report['checks']['config_preserved'] = True
+            require(state.authenticated == state.payload_bytes == 0 and not (root / 'output').exists(), 'denial_returned_data')
+            report['checks']['no_read'] = True
+            require(state.source_preserved(), 'denial_source_changed')
+            report['checks']['source_preserved'] = True
+            require(not state.failed and not any(getattr(state, field) for field in
+                    ('unexpected', 'member_denied', 'rejected_mutations', 'rejected_payload_bytes', 'budget_exceeded')),
+                    'unexpected_protocol_observation')
+            expected_events = [] if mode == 'cancelled' else [('authorize', '')]
+            if mode in ('invalid_code', 'wrong_client_secret'):
+                error_code = 'invalid_grant' if mode == 'invalid_code' else 'invalid_client'
+                expected_events += [('token_denied_basic', error_code), ('token_denied_form', error_code)]
+            expected_phase = ('unbound' if mode == 'cancelled' else 'denied' if len(expected_events) == 3 else 'authorized')
+            require(state.events == expected_events and state.phase == expected_phase and state.requests == len(expected_events)
+                    and state.authorize_requests == (0 if mode == 'cancelled' else 1)
+                    and state.auth_denied == (2 if len(expected_events) == 3 else 0)
+                    and len(native.records) == 3 and report['observations']['callback_requests'] == (0 if mode == 'cancelled' else 2),
+                    'case_count_mismatch')
+            report['checks']['request_sequence'] = True
+    except ProbeError as error:
+        report['errors'].append(str(error))
+    except KeyboardInterrupt:
+        report['errors'].append('probe_interrupted')
+    except Exception:
+        report['errors'].append('probe_unexpected_failure')
+    finally:
+        finish_report(report, native, fixture, state, root, identity)
+    return report
+
+
+def run_authentication(binary, manifest):
+    suite = {'schema_version': 1, 'scope': 'pcloud_oauth_authentication_suite', 'ledger_eligible': False,
+             'started_utc': utc_now(), 'finished_utc': None, 'runtime': None, 'cases': [], 'success': False, 'errors': []}
+    for name in AUTH_CASES:
+        report = run(binary, manifest) if name == 'positive' else run_negative(binary, manifest, name)
+        if suite['runtime'] is None:
+            suite['runtime'] = dict(report['runtime'])
+        suite['cases'].append({'name': name, 'report': report})
+        if not report['success']:
+            suite['errors'].append('authentication_case_failed')
+            break
+    suite['finished_utc'] = utc_now()
+    suite['success'] = len(suite['cases']) == len(AUTH_CASES) and not suite['errors']
+    return suite
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--rclone', type=Path, required=True)
     parser.add_argument('--manifest', type=Path, required=True)
+    parser.add_argument('--authentication-suite', action='store_true')
     args = parser.parse_args()
     def interrupted(_signum, _frame):
         raise KeyboardInterrupt
     signal.signal(signal.SIGTERM, interrupted)
-    report = run(args.rclone, args.manifest)
+    report = (run_authentication(args.rclone, args.manifest) if args.authentication_suite else run(args.rclone, args.manifest))
     print(json.dumps(report, sort_keys=True, separators=(',', ':')))
     return 0 if report['success'] else 1
 
