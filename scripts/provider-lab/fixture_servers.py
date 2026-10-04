@@ -1714,6 +1714,9 @@ class InternetArchiveLowHandler(SeafileHandler):
         # HTTP header parsing treats EOF as termination. Require a real blank
         # line and recheck ownership/deadline before any method is dispatched.
         original = self.rfile
+        wire_line = self.raw_requestline
+        valid_line_ending = (wire_line.endswith(b"\r\n")
+                             and b"\r" not in wire_line[:-2] and b"\n" not in wire_line[:-2])
 
         class HeaderReader:
             complete = False
@@ -1748,7 +1751,7 @@ class InternetArchiveLowHandler(SeafileHandler):
             expired = time.monotonic() >= self._request_deadline
             if expired:
                 state.budget_exceeded = True
-            if (not parsed or not reader.complete or reader.invalid or self.headers.defects or expired
+            if (not parsed or not valid_line_ending or not reader.complete or reader.invalid or self.headers.defects or expired
                     or state.stopping.is_set() or self.connection not in state.sockets):
                 state.unexpected += 1
                 self.close_connection = True
@@ -1767,7 +1770,7 @@ class InternetArchiveLowHandler(SeafileHandler):
             headers = list(self.headers.items())
             names = [name.lower() for name, _ in headers]
             try:
-                wire = self.raw_requestline.rstrip(b"\r\n").split(b" ")
+                wire = self.raw_requestline[:-2].split(b" ")
                 if (not state.source_preserved() or len(wire) != 3
                         or wire[0] != b"GET" or wire[1].decode("ascii") != self.path
                         or wire[2] not in (b"HTTP/1.0", b"HTTP/1.1") or self.command != "GET"

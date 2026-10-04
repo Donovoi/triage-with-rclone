@@ -277,6 +277,24 @@ class InternetArchiveLowTests(unittest.TestCase):
         self.assertEqual(state.events, [])
         self.assert_closed(state, port)
 
+    def test_malformed_request_line_ending_never_counts_as_auth_evidence(self):
+        for ending in (b"\n", b"\r\r\n"):
+            for auth_case in ("valid", "wrong_secret", "absent"):
+                with self.subTest(ending=ending, auth_case=auth_case), F.serve(
+                        "internetarchive-low-auth", state := self.state(auth_case=auth_case)) as port:
+                    secret = WRONG if auth_case == "wrong_secret" else SECRET
+                    authorization = (b"" if auth_case == "absent" else
+                                     ("Authorization: LOW " + KEY + ":" + secret + "\r\n").encode())
+                    with socket.create_connection(("127.0.0.1", port), timeout=2) as client:
+                        client.sendall(("GET " + META + " HTTP/1.1").encode() + ending
+                                       + ("Host: 127.0.0.1:" + str(port) + "\r\n").encode()
+                                       + authorization + b"\r\n")
+                        self.assertEqual(client.recv(1), b"")
+                self.assertEqual(state.events, [])
+                self.assertEqual((state.auth_denied, state.authenticated, state.requests), (0, 0, 0))
+                self.assertGreater(state.unexpected, 0)
+                self.assert_closed(state, port)
+
     def test_malformed_authorization_name_is_not_an_absent_credential(self):
         for field in (b"Authorization : LOW synthetic:synthetic", b": LOW synthetic:synthetic",
                       b"Authorization\t: LOW synthetic:synthetic", b"NoColonHeader"):
