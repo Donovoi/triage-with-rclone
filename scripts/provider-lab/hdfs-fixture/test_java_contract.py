@@ -194,18 +194,63 @@ class JavaContractTests(unittest.TestCase):
                              self.source.index('private static void recordFailure(')]
         self.assertEqual(set(re.findall(r'"([a-z_]+)"', reason)),
                          {"unclassified", "missing_class", "resource_failure", "invalid_config",
-                          "linkage_failure", "io_failure", "exit_requested", "halt_requested"})
+                          "linkage_failure", "file_missing", "http_webapp_missing", "io_failure",
+                          "exit_requested", "halt_requested"})
         expected = {
             "ClassNotFoundException || current instanceof NoClassDefFoundError": ("missing_class", "0"),
             "OutOfMemoryError || current instanceof StackOverflowError": ("resource_failure", "1"),
             "IllegalArgumentException": ("invalid_config", "2"),
             "LinkageError": ("linkage_failure", "3"),
-            "IOException": ("io_failure", "4"),
+            "FileNotFoundException": ("file_missing", "4"),
+            "IOException": ("io_failure", "5"),
         }
         actual = {types: (category, rank) for types, category, rank in re.findall(
             r'if \(current instanceof ([^\n]+?)\) \{\s+category = "([a-z_]+)"; rank = ([0-9]+);', reason)}
         self.assertEqual(actual, expected)
         self.assertIn('if (rank < selectedRank)', reason)
+
+    def test_webapp_marker_is_exact_subtype_gated_bounded_and_private(self):
+        marker = self.source[self.source.index('private static boolean missingWebAppResource('):
+                             self.source.index('private static String failureReason(')]
+        self.assertIn('missingWebAppResource(FileNotFoundException failure)', marker)
+        self.assertIn('i < frames.length && i < 32', marker)
+        self.assertEqual(re.findall(r'getClassName\(\)\.equals\("([^"]+)"\)', marker),
+                         ['org.apache.hadoop.http.HttpServer2'])
+        self.assertEqual(re.findall(r'getMethodName\(\)\.equals\("([^"]+)"\)', marker),
+                         ['getWebAppsPath'])
+        self.assertIn('&& frames[i].getMethodName()', marker)
+        self.assertIn('catch (Throwable ignored) { return false; }', marker)
+        self.assertEqual(self.source.count('missingWebAppResource((FileNotFoundException) current)'), 1)
+        reason = self.source[self.source.index('private static String failureReason('):
+                             self.source.index('private static void recordFailure(')]
+        subtype = reason[reason.index('current instanceof FileNotFoundException'):
+                         reason.index('current instanceof IOException')]
+        self.assertIn('category = "file_missing"', subtype)
+        self.assertIn('if (missingWebAppResource((FileNotFoundException) current)) category = "http_webapp_missing"', subtype)
+        for forbidden in ('.getMessage(', '.toString(', '.getFileName(', '.getLineNumber(',
+                          '.startsWith(', '.contains(', 'System.out', 'errors.add('):
+            self.assertNotIn(forbidden, marker)
+
+    def test_startup_stages_bind_exact_api_boundaries_without_configuration_changes(self):
+        main = self.source[self.source.index('public static void main('):]
+        startup = main[main.index('stage = "startup_failed"'):main.index('stage = "seed_failed"')]
+        sections = re.split(r'stage = "([a-z_]+)";', startup)[1:]
+        blocks = dict(zip(sections[::2], sections[1::2]))
+        expected = ['startup_failed', 'format_failed', 'namenode_start_failed',
+                    'datanode_start_failed', 'client_start_failed', 'readiness_failed']
+        self.assertEqual(sections[::2], expected)
+        self.assertIn('Configuration conf = configuration()', blocks['startup_failed'])
+        self.assertIn('UserGroupInformation.setLoginUser(', blocks['startup_failed'])
+        self.assertEqual(blocks['format_failed'].strip(), 'NameNode.format(conf);')
+        self.assertEqual(blocks['namenode_start_failed'].strip(), 'nn = new NameNode(conf);')
+        self.assertEqual(blocks['datanode_start_failed'].strip(),
+                         'dn = DataNode.createDataNode(new String[0], conf);\n'
+                         '      require(dn != null, "datanode_missing");')
+        self.assertEqual(blocks['client_start_failed'].strip(),
+                         'fs = new DistributedFileSystem(); fs.initialize(URI.create("hdfs://127.0.0.1:19000"), conf);')
+        self.assertEqual(blocks['readiness_failed'].strip(), 'ready(nn, dn, fs);')
+        self.assertIn('new HdfsConfiguration(false)', self.source)
+        self.assertIn('conf.set("dfs.reformat.disabled", "true")', self.source)
 
     def test_cause_inspection_is_bounded_and_does_not_parse_private_messages(self):
         reason = self.source[self.source.index('private static String failureReason('):
