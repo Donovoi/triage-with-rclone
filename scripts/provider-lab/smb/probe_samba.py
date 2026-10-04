@@ -346,9 +346,12 @@ class Children:
         out, err = ROOT / f"child-{self.count}.out", ROOT / f"child-{self.count}.err"
         input_path = ROOT / f"child-{self.count}.in"
         private_write(input_path, stdin or b"")
+        # Samba's atexit killkids() sends SIGTERM to its process group:
+        # samba-team/samba tag samba-4.22.11, source3/smbd/server.c:125-128.
+        # Isolate only the daemon, retaining --no-process-group inside Samba.
         with input_path.open("rb") as inp, out.open("xb") as stdout, err.open("xb") as stderr:
             child = subprocess.Popen([str(binary), *args], stdin=subprocess.PIPE if keep_stdin else inp, stdout=stdout, stderr=stderr,
-                                     cwd=ROOT, env=self.env, close_fds=True)
+                                     cwd=ROOT, env=self.env, close_fds=True, start_new_session=keep_stdin)
         self.records.append((child, out, err))
         return child, out, err
 
