@@ -231,8 +231,9 @@ class FixtureTests(unittest.TestCase):
         def download(context, rows):
             (context/"jars").mkdir(); (context/"jars/000.jar").write_bytes(b"jar")
             if failure == "download": raise F.FixtureError("download_failed")
-        def probe(docker, container):
+        def probe(docker, container, progress=None):
             instance.probed = True
+            progress["stage"] = "acquisition"
             if failure == "probe": raise F.FixtureError("sample_mismatch")
             if failure == "command_cleanup": raise F.D.DiscoveryError("command_cleanup_failed")
             return dict(checks={"synthetic_mock":True})
@@ -251,12 +252,14 @@ class FixtureTests(unittest.TestCase):
         result, docker, output = self.invoke()
         self.assertTrue(result["success"])
         self.assertTrue(all(result["cleanup"].values()))
+        self.assertEqual(result["cleanup_excludes"], ["shared_base_image", "shared_build_cache"])
         self.assertFalse(output.exists())
         for key in F.FALSE_CLAIMS: self.assertIs(result[key], False)
 
     def test_download_failure_has_no_native_calls(self):
         result, docker, output = self.invoke("download")
         self.assertFalse(result["success"]); self.assertEqual(docker.calls, [])
+        self.assertEqual(result["stage"], "download")
         self.assertFalse(output.exists())
 
     def test_build_and_probe_failures_remove_only_owned_resources(self):
@@ -267,7 +270,60 @@ class FixtureTests(unittest.TestCase):
                 try: result, docker, output = self.invoke(failure)
                 finally: self.root = original
                 self.assertFalse(result["success"]); self.assertTrue(all(result["cleanup"].values()))
+                self.assertEqual(result["stage"], "build" if failure == "build" else "acquisition")
                 self.assertFalse(output.exists())
+
+    def diagnostic(self, value, *, current=None, code=0):
+        path = self.root / "diagnostic.json"
+        path.write_text(json.dumps(value), encoding="ascii")
+        docker = types.SimpleNamespace(
+            inspect=lambda *a, **k: record(True) if current is None else current,
+            call=lambda *a, **k: F.D.Result(code, path, path))
+        return F.failure_diagnostic(docker, CONTAINER, "hdfs-fixture-"+RUN, IMAGE, RUN)
+
+    def test_diagnostic_emits_only_allowlisted_codes_and_no_source_fields(self):
+        value = oracle("final")
+        value.update(success=False, errors=["startup_failed", "invalid_config"])
+        self.assertEqual(self.diagnostic(value), dict(status="reported", java_success=False,
+                                                     errors=["startup_failed", "invalid_config"]))
+        self.assertEqual(self.diagnostic(value, code=1), dict(status="unavailable"))
+
+    def test_diagnostic_rejects_untrusted_text_and_malformed_fields(self):
+        changes = [dict(errors=["PRIVATE_SYNTHETIC_CANARY"]), dict(errors=[[]]),
+                   dict(errors=["io_failure"]*13), dict(extra="PRIVATE_SYNTHETIC_CANARY"),
+                   dict(configuration_sha256="PRIVATE_SYNTHETIC_CANARY"), dict(success=1),
+                   dict(files=[]), dict(scope="PRIVATE_SYNTHETIC_CANARY")]
+        for change in changes:
+            with self.subTest(change=change):
+                value = oracle("final"); value.update(change)
+                self.assertEqual(self.diagnostic(value), dict(status="invalid"))
+
+    def test_diagnostic_never_reads_foreign_or_stopped_container(self):
+        for field in ("Id", "Image", "Name"):
+            value = record(True); value[field] = "foreign"
+            with patch.object(F.D, "regular", side_effect=AssertionError("read forbidden")):
+                with self.assertRaises(F.FixtureError):
+                    self.diagnostic(oracle("final"), current=value)
+        self.assertEqual(self.diagnostic(oracle("final"), current=record(False)),
+                         dict(status="unavailable"))
+
+    def test_diagnostic_cleanup_failure_remains_sticky_and_preserves_raw_context(self):
+        with patch.object(F, "failure_diagnostic", side_effect=F.D.DiscoveryError("command_cleanup_failed")):
+            result, docker, output = self.invoke("probe")
+        self.assertIn("command_cleanup_failed", result["errors"])
+        self.assertFalse(result["success"])
+        self.assertFalse(result["cleanup"]["context_removed"])
+        self.assertFalse(result["cleanup"]["raw_evidence_removed"])
+        self.assertTrue(output.exists())
+
+    def test_diagnostic_codes_cover_only_reviewed_java_assertions_and_stages(self):
+        source = (F.HERE / "HdfsFixture.java").read_text(encoding="ascii")
+        import re
+        block = source.split("REQUIRE_CODES = Set.of(", 1)[1].split(");", 1)[0]
+        codes = set(re.findall(r'"([a-z0-9_]+)"', block))
+        codes.update(re.findall(r'(?:stage = |recordFailure\(errors, )"([a-z_]+)"', source))
+        codes.update(re.findall(r'(?:return |category = |selected = )"([a-z_]+)"', source))
+        self.assertEqual(codes, F.JAVA_CODES)
 
     def test_foreign_container_or_unreaped_command_preserves_raw_context(self):
         for failure in ("foreign", "command_cleanup"):

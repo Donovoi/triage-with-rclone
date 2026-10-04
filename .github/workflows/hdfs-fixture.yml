@@ -40,6 +40,8 @@ jobs:
       # Preparation downloads public hash-locked JARs and the pinned base.
       # The daemon/client container has no network, mounts or published ports.
       # SIMPLE asserts a username; it does not verify a password or Kerberos.
+      # Cleanup checks owned resources; shared base/build caches last until
+      # this disposable hosted runner is removed, and are not counted as cleaned.
       - name: Check sample bytes, denial, cancellation and cleanup
         run: >-
           python -B scripts/provider-lab/hdfs-fixture/container_fixture.py

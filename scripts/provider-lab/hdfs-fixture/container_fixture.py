@@ -39,6 +39,20 @@ CODES = frozenset({"runtime_lock_invalid", "download_failed", "input_changed", "
     "oracle_invalid", "listing_invalid", "sample_mismatch", "negative_case_failed",
     "listeners_invalid", "runtime_invalid", "shutdown_failed", "raw_cleanup_failed",
     "fixture_interrupted", "command_cleanup_failed"}) | D.CODES
+JAVA_CODES = frozenset("""
+advertised_endpoint_mismatch arguments_invalid configuration_changed datanode_missing
+datanode_not_ready directory_changed endpoint_mismatch environment_invalid extra_service
+hadoop_version_invalid ipv4_required java_version_invalid listener_duplicate listener_inventory_bound
+listener_inventory_invalid listener_not_loopback listener_set_mismatch missing_member_present
+mkdir_failed output_identity_changed output_identity_unavailable report_bound shutdown_invalid
+shutdown_preexisting shutdown_timeout simple_required source_bytes_changed source_duplicate
+source_inventory_bound source_inventory_changed source_metadata_changed source_preexisting
+source_scope startup_timeout unexpected_directory unexpected_file work_invalid work_owner_invalid
+work_permissions_invalid exit_requested halt_requested missing_class resource_failure invalid_config
+linkage_failure io_failure unclassified environment_failed startup_failed seed_failed ready_report_failed
+shutdown_request_failed source_preservation_failed configuration_preservation_failed client_close_failed
+datanode_shutdown_failed namenode_shutdown_failed termination_requested final_report_failed
+""".split())
 
 
 class FixtureError(Exception):
@@ -220,6 +234,38 @@ def validate_oracle(value, phase, prior=None):
     return value
 
 
+def failure_diagnostic(docker, container, name, image, run_id):
+    """Read only fixed final-report fields from the exact owned live container."""
+    current = docker.inspect("container", container, allow_missing=True)
+    if current is None:
+        return dict(status="unavailable")
+    inspect_container(current, name, image, run_id)
+    need(current.get("Id") == container, "container_binding_invalid")
+    if current.get("State", {}).get("Running") is not True:
+        return dict(status="unavailable")
+    result = docker.call(["exec", container, "/bin/cat", "/work/output/final.json"],
+                         timeout=5, limit=16384, allow_failure=True)
+    if result.code:
+        return dict(status="unavailable")
+    try:
+        value = D.json_value(D.regular(result.stdout, 16384).read_bytes())
+        fixed = dict(schema_version=1, scope="hdfs_simple_fixture", phase="final", ledger_eligible=False,
+                     authentication_verified=False, authentication_mode="SIMPLE", owner="fixture-owner",
+                     root="/synthetic", mtime_ms=1704067200000, ports=PORTS, files=expected_files())
+        flags = ("success", "source_preserved", "configuration_preserved", "api_shutdown_complete")
+        need(type(value) is dict and set(value) == set(fixed) | set(flags) | {"errors", "configuration_sha256"}
+             and all(canonical(value[k]) == canonical(v) for k, v in fixed.items())
+             and all(type(value[k]) is bool for k in flags), "oracle_invalid")
+        codes, config = value["errors"], value["configuration_sha256"]
+        need(type(codes) is list and len(codes) <= 12
+             and all(type(code) is str and code in JAVA_CODES for code in codes)
+             and (config is None or type(config) is str and re.fullmatch(r"[0-9a-f]{64}", config)), "oracle_invalid")
+        # Diagnostics can never promote a failed run or transfer source fields.
+        return dict(status="reported", java_success=value["success"], errors=codes)
+    except (FixtureError, D.DiscoveryError, ValueError, TypeError, KeyError):
+        return dict(status="invalid")
+
+
 def listener_ports(data):
     need(type(data) is bytes and len(data) <= 65536, "listeners_invalid")
     ports = []
@@ -312,17 +358,23 @@ printf '%s %s\\n' "$code" "$observed"
 """
 
 
-def probe(docker, container):
+def probe(docker, container, progress=None):
+    progress = {} if progress is None else progress
     def execute(args, **kwargs):
         return docker.call(["exec", container, *args], **kwargs)
+    progress["stage"] = "java_ready"
     ready = validate_oracle(D.json_value(wait_file(docker, container, "/work/output/ready.json")), "ready")
+    progress["stage"] = "listeners"
     ports = listener_ports(execute(["/bin/cat", "/proc/net/tcp", "/proc/net/tcp6"], limit=65536).stdout.read_bytes())
     need(ports == sorted(PORTS.values()), "listeners_invalid")
+    progress["stage"] = "rclone_version"
     version = execute(["/usr/bin/env", "-i", "/opt/hdfs/rclone", "version"], limit=8192).stdout.read_bytes()
     need(version.splitlines()[0] == ("rclone v" + RCLONE_VERSION).encode("ascii"), "runtime_invalid")
+    progress["stage"] = "listing"
     listing = D.json_value(execute(rclone_args("lsjson", remote(), "--recursive", "--files-only"),
                                    timeout=30, limit=32768).stdout.read_bytes())
     validate_listing(listing)
+    progress["stage"] = "acquisition"
     acquired = []
     for path, data in sorted(samples().items()):
         result = execute(rclone_args("cat", remote(path)), timeout=30, limit=max(1, len(data) + 1))
@@ -336,13 +388,16 @@ def probe(docker, container):
         need(error.code == "sample_mismatch", "negative_case_failed")
     else:
         raise FixtureError("negative_case_failed")
+    progress["stage"] = "missing_path"
     missing = execute(rclone_args("cat", remote("missing-synthetic-file")), timeout=20, allow_failure=True)
     check_missing(missing)
+    progress["stage"] = "permission_denial"
     denied = execute(rclone_args("cat", remote("private/owner-only.txt"), user="fixture-other"),
                      timeout=20, allow_failure=True)
     text = denied.stderr.read_bytes().lower()
     need(denied.code != 0 and denied.stdout.stat().st_size == 0
          and (b"permission denied" in text or b"accesscontrolexception" in text), "negative_case_failed")
+    progress["stage"] = "cancellation"
     cancelled = execute(["/bin/sh", "-c", cancellation_script(), "hdfs-cancel",
                          *rclone_args("copyto", remote("large/cancel.bin"), "/work/download/cancel.bin",
                                       "--inplace", "--buffer-size", "0", "--bwlimit", "32k")],
@@ -350,6 +405,7 @@ def probe(docker, container):
     cancellation = cancelled.stdout.read_bytes()
     match = re.fullmatch(rb"124 ([0-9]+)\n", cancellation)
     need(match is not None and 0 < int(match.group(1)) < len(samples()["large/cancel.bin"]), "negative_case_failed")
+    progress["stage"] = "shutdown"
     execute(["/bin/sh", "-c",
              "for f in /proc/[0-9]*/comm; do [ \"$(cat \"$f\" 2>/dev/null)\" != rclone ] || exit 1; done"])
     execute(["/bin/rm", "-f", "--", "/work/download/cancel.bin"])
@@ -375,6 +431,8 @@ def run(rclone, *, runner_factory=D.Docker, downloader=download_jars):
     start = time.monotonic()
     report = dict(schema_version=1, scope="hdfs_simple_protocol_experiment", success=False,
                   started_utc=R.utc_now(), errors=[], inputs={}, result=None,
+                  stage="preflight", java_diagnostic=dict(status="not_requested"),
+                  cleanup_excludes=["shared_base_image", "shared_build_cache"],
                   review_status="partial_protocol_only", authentication_mode="SIMPLE",
                   http_services_present=True, network_scope="network_none_container_not_host_or_build_registry",
                   cleanup=dict(container_removed=False, image_removed=False, context_removed=False,
@@ -406,6 +464,7 @@ def run(rclone, *, runner_factory=D.Docker, downloader=download_jars):
         need(stat.S_ISDIR(info.st_mode) and stat.S_IMODE(info.st_mode) == 0o700, "unsafe_path")
         context = root / "context"; context.mkdir(mode=0o700)
         info = context.lstat(); context_identity = (info.st_dev, info.st_ino)
+        report["stage"] = "download"
         downloader(context, rows)
         shutil.copyfile(rclone, context / "rclone")
         shutil.copyfile(HERE / "HdfsFixture.java", context / "HdfsFixture.java")
@@ -419,6 +478,7 @@ def run(rclone, *, runner_factory=D.Docker, downloader=download_jars):
             (context / filename).write_text(data, encoding="ascii", newline="\n")
         context_hashes = {p.relative_to(context).as_posix(): D.file_hash(p) for p in context.rglob("*") if p.is_file()}
         report["inputs"]["context_sha256"] = digest(canonical(context_hashes))
+        report["stage"] = "docker_preflight"
         docker = runner_factory(root, max_calls=120)
         host = D.json_value(docker.call(["info", "--format", "{{json .}}"]).stdout.read_bytes())
         need(host.get("OSType") == "linux" and host.get("Architecture") in ("amd64", "x86_64"), "docker_platform_invalid")
@@ -427,6 +487,7 @@ def run(rclone, *, runner_factory=D.Docker, downloader=download_jars):
         need(base.get("Id") == BASE_ID and base.get("Os") == "linux" and base.get("Architecture") == "amd64",
              "base_image_mismatch")
         need(docker.inspect("image", tag, allow_missing=True) is None, "image_binding_invalid")
+        report["stage"] = "build"
         attempted_build = True
         docker.call(["build", "--network", "none", "--pull=false", "--label", LABEL + "=" + run_id,
                      "--tag", tag, str(context)], timeout=180, limit=4 * 1024 * 1024)
@@ -439,21 +500,25 @@ def run(rclone, *, runner_factory=D.Docker, downloader=download_jars):
                                 for p in context.rglob("*") if p.is_file()}, "input_changed")
         report["inputs"]["fixture_image_id"] = image
         need(docker.inspect("container", name, allow_missing=True) is None, "container_binding_invalid")
+        report["stage"] = "create"
         attempted_create = True
         docker.call(command_args(name, image, run_id))
         current = docker.inspect("container", name); inspect_container(current, name, image, run_id)
         need(current.get("State", {}).get("Status") == "created" and current["State"].get("Running") is False,
              "container_binding_invalid")
         container = current["Id"]
+        report["stage"] = "start"
         docker.call(["start", container])
         current = docker.inspect("container", container); inspect_container(current, name, image, run_id)
         need(current.get("Id") == container and current.get("State", {}).get("Running") is True, "container_failed")
-        report["result"] = probe(docker, container)
+        report["result"] = probe(docker, container, progress=report)
+        report["stage"] = "exit_inspection"
         ended = docker.inspect("container", container); inspect_container(ended, name, image, run_id)
         need(ended.get("Id") == container and ended.get("State", {}).get("Running") is False
              and ended["State"].get("Status") == "exited" and ended["State"].get("ExitCode") == 0
              and ended["State"].get("OOMKilled") is False, "container_failed")
         report["success"] = True
+        report["stage"] = "completed"
     except (FixtureError, D.DiscoveryError, O.CacheError) as error:
         report["errors"].append(error.code if error.code in CODES else "fixture_failed")
     except KeyboardInterrupt:
@@ -461,6 +526,16 @@ def run(rclone, *, runner_factory=D.Docker, downloader=download_jars):
     except BaseException:
         report["errors"].append("fixture_failed")
     finally:
+        if report["errors"] and docker is not None and container is not None:
+            report["java_diagnostic"] = dict(status="unavailable")
+            if "command_cleanup_failed" not in report["errors"]:
+                try:
+                    report["java_diagnostic"] = failure_diagnostic(docker, container, name, image, run_id)
+                except D.DiscoveryError as error:
+                    if error.code == "command_cleanup_failed":
+                        report["errors"].append("command_cleanup_failed")
+                except BaseException:
+                    pass
         for kind, attempted, reference, expected_id in (
                 ("container", attempted_create, container or name, container),
                 ("image", attempted_build, image or tag, image)):
