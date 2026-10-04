@@ -112,6 +112,36 @@ jobs:
           path: ${{ runner.temp }}/smb-protocol.json
           if-no-files-found: warn
           retention-days: 14
+  pcloud-oauth-feasibility:
+    name: Isolated pCloud OAuth feasibility
+    needs: revision
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - name: Prepare verified Linux runtime
+        shell: bash
+        run: bash scripts/download-rclone.sh --linux "$RUNNER_TEMP/rclone-pcloud-oauth"
+      - name: Exercise fresh callback and persisted-token read in a network-none container
+        shell: bash
+        run: |
+          python -B scripts/provider-lab/pcloud-oauth/run_container.py \
+            --rclone "$RUNNER_TEMP/rclone-pcloud-oauth" \
+            --report "$RUNNER_TEMP/pcloud-oauth-feasibility.json"
+      # Positive feasibility only: never import this receipt into the coverage ledger.
+      - name: Retain sanitized pCloud feasibility result
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: pcloud-oauth-feasibility
+          path: ${{ runner.temp }}/pcloud-oauth-feasibility.json
+          if-no-files-found: warn
+          retention-days: 14
   test:
     name: Test (${{ matrix.os }})
     needs: revision
@@ -289,7 +319,7 @@ jobs:
           retention-days: 14
   release:
     name: Publish checked prerelease
-    needs: [test, audit, python-audit, smb-protocol, linux-provider-evidence]
+    needs: [test, audit, python-audit, smb-protocol, linux-provider-evidence, pcloud-oauth-feasibility]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:

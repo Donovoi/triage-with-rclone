@@ -108,6 +108,12 @@ jobs:
           python -B ../scripts/provider-lab/smb/run_container.py \
             --rclone "$RUNNER_TEMP/rclone-smoke" \
             --protocol-evidence --report "$RUNNER_TEMP/smb-protocol.json"
+      - name: Isolated pCloud OAuth positive feasibility
+        if: ${{ !cancelled() }}
+        run: |
+          python -B ../scripts/provider-lab/pcloud-oauth/run_container.py \
+            --rclone "$RUNNER_TEMP/rclone-smoke" \
+            --report "$RUNNER_TEMP/pcloud-oauth-feasibility.json"
       # Internet Archive requires anonymous plus LOW evidence; pCloud stays partial.
       # The independent Linux SMB contract brings the complete-profile gate to 19.
       - name: Require current provider plans and protocol evidence
@@ -213,6 +219,14 @@ jobs:
             ${{ runner.temp }}/internetarchive-low-auth-fixture.json
             ${{ runner.temp }}/smb-protocol.json
             ${{ runner.temp }}/provider-evidence.json
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Retain separate pCloud feasibility result
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: pcloud-oauth-feasibility
+          path: ${{ runner.temp }}/pcloud-oauth-feasibility.json
           if-no-files-found: warn
           retention-days: 14
       - name: Remove temporary credentials
