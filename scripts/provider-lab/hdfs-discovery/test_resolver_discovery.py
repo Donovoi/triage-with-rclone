@@ -182,10 +182,11 @@ class ResolverTests(unittest.TestCase):
         hashes["pom.xml"] = "0" * 64
         self.assertNotEqual(hashes, D.KERBEROS_INPUT_HASHES)
 
-    def test_kerberos_cannot_use_or_prepare_existing_offline_lock_before_native(self):
+    def test_kerberos_rejects_wrong_profile_lock_before_native(self):
         for kwargs in ({"seed_cache": self.root / "offline-seed.tar"},
                        {"cache_destination": self.root / "offline-seed.tar"}):
             with self.subTest(kwargs=kwargs), patch.object(D, "hosted_guard"), \
+                    patch.object(D.offline_cache, "lock_path", return_value=HERE / "artifact-lock.json"), \
                     patch.object(D, "validate_bootstrap") as bootstrap, \
                     patch.object(D, "candidate_inputs") as inputs, \
                     self.assertRaisesRegex(D.DiscoveryError, "offline_cache_invalid"):
@@ -460,12 +461,13 @@ class ResolverTests(unittest.TestCase):
             obj=FakeDocker(root,failure,kerberos=candidate_profile == "kerberos"); instances.append(obj); return obj
         with patch.object(D,"hosted_guard"), patch.object(D,"validate_bootstrap",return_value=bootstrap), \
              patch.object(D.uuid,"uuid4",return_value=types.SimpleNamespace(hex=RUN)), patch.object(D.stat,"S_IMODE",return_value=0o700):
-            with patch.object(D.offline_cache, "verify_cache", return_value={"sha256": "1" * 64}, side_effect=verify_effect), \
-                    patch.object(D.offline_cache, "prepare_cache", return_value={"sha256": "1" * 64}, side_effect=prepare_effect):
+            with patch.object(D.offline_cache, "verify_cache", return_value={"sha256": "1" * 64}, side_effect=verify_effect) as verify, \
+                    patch.object(D.offline_cache, "prepare_cache", return_value={"sha256": "1" * 64}, side_effect=prepare_effect) as prepare_call:
                 candidate = CANDIDATE if candidate_profile == "hdfs" else HERE / "candidate-kerberos"
                 result=D.discover(candidate,bootstrap,archive,self.root,runner_factory=factory,
                                   cache_destination=seed if prepare else None,
                                   seed_cache=seed if offline else None, candidate_profile=candidate_profile)
+                self.last_cache_calls = [*verify.call_args_list, *prepare_call.call_args_list]
         self.popen.assert_not_called()
         return result,instances[0]
 
@@ -511,6 +513,45 @@ class ResolverTests(unittest.TestCase):
         self.assertIs(result["success"], False)
         self.assertIn("classpath_invalid", result["errors"])
         self.assertTrue(all(result["cleanup"].values()))
+
+    def test_kerberos_offline_uses_explicit_profile_and_no_network_fallback(self):
+        result, docker = self.execute(offline=True, candidate_profile="kerberos")
+        self.assertTrue(result["success"], result["errors"])
+        self.assertEqual(result["mode"], "offline")
+        self.assertEqual(result["inputs"]["cache_lock_sha256"], D.offline_cache.KERBEROS_LOCK_SHA256)
+        self.assertEqual(len(self.last_cache_calls), 3)
+        self.assertTrue(all(call.kwargs == {"profile": "kerberos"} for call in self.last_cache_calls))
+        create = next(args for args, _ in docker.calls if args[0] == "create")
+        self.assertEqual(create[create.index("--network") + 1], "none")
+        self.assertFalse(any(args[:2] == ["image", "pull"] for args, _ in docker.calls))
+        self.assertFalse(result["offline_reproduced"] or result["ledger_eligible"])
+
+    def test_kerberos_cache_preparation_and_final_verification_use_new_profile(self):
+        result, _ = self.execute(prepare=True, candidate_profile="kerberos")
+        self.assertTrue(result["success"], result["errors"])
+        self.assertEqual(len(self.last_cache_calls), 2)
+        self.assertTrue(all(call.kwargs == {"profile": "kerberos"} for call in self.last_cache_calls))
+
+    def test_kerberos_invalid_seed_stops_before_docker(self):
+        with self.assertRaisesRegex(D.DiscoveryError, "offline_cache_invalid"):
+            self.execute(offline=True, candidate_profile="kerberos",
+                         verify_effect=D.offline_cache.CacheError("seed_mismatch"))
+        self.assertEqual(self.last_instances, [])
+
+    def test_kerberos_late_lock_change_cannot_pass(self):
+        original_hash = D.file_hash
+        calls = 0
+        def changed(path):
+            nonlocal calls
+            if Path(path) == HERE / "artifact-lock-kerberos.json":
+                calls += 1
+                if calls > 1:
+                    return "0" * 64
+            return original_hash(path)
+        with patch.object(D, "file_hash", side_effect=changed):
+            result, _ = self.execute(offline=True, candidate_profile="kerberos")
+        self.assertFalse(result["success"])
+        self.assertIn("source_changed", result["errors"])
 
     def test_kerberos_kdc_must_be_exact_selected_ordinary_direct_dependency(self):
         original = D.artifact_manifest(make_tar(self.root / "kerberos.tar", kerberos=True))
@@ -619,7 +660,8 @@ class ResolverTests(unittest.TestCase):
         self.assertFalse(any(args[:2] == ["image", "pull"] for args, _ in docker.calls))
 
     def test_replaced_seed_cleanup_failure_survives_successful_native_cleanup(self):
-        def replaced(_source, destination):
+        def replaced(_source, destination, *, profile):
+            self.assertEqual(profile, "hdfs")
             destination.write_bytes(b"foreign replacement must survive")
             raise D.offline_cache.CacheError("source_changed", cleanup_failed=True)
         result, _docker = self.execute(prepare=True, prepare_effect=replaced)

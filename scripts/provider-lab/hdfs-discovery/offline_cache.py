@@ -17,6 +17,8 @@ import tarfile
 
 LOCK_SHA256 = "e0c4a34dc8999bc0b53ec5d8fc5d4d5fd2b72400424b4e110d45e70f8ab780e6"
 ARTIFACTS_SHA256 = "c360e17bfb67c21a71304fb38b72ff249d28b232eb353985626017c54685bc3b"
+KERBEROS_LOCK_SHA256 = "a62e2a60bbb3f6c8b95b849760ff597e4e05e1c93bf61987c175502c3fe2ac74"
+KERBEROS_ARTIFACTS_SHA256 = "a2152c3451b85c3f5e2093a4086c6b28db64e394e355401f8e4b5b93de5ad638"
 MAX_ARCHIVE = 1024 * 1024 * 1024
 MAX_MEMBERS = 12000
 MAX_FILE = 128 * 1024 * 1024
@@ -36,7 +38,8 @@ FALSE_CLAIMS = {"ledger_eligible": False, "offline_reproduced": False,
 CODES = frozenset({"lock_invalid", "path_invalid", "archive_invalid", "archive_limit",
     "duplicate_member", "unexpected_member", "artifact_missing", "artifact_mismatch",
     "metadata_mismatch", "seed_mismatch", "source_changed", "destination_exists",
-    "cache_io_failed", "cleanup_failed", "manifest_invalid", "manifest_mismatch"})
+    "cache_io_failed", "cleanup_failed", "manifest_invalid", "manifest_mismatch",
+    "profile_invalid"})
 
 
 class CacheError(Exception):
@@ -65,16 +68,67 @@ def sha(data):
     return hashlib.sha256(data).hexdigest()
 
 
-def _load_lock():
+def _profile(profile):
+    need(type(profile) is str and profile in {"hdfs", "kerberos"}, "profile_invalid")
+    if profile == "hdfs":
+        return "artifact-lock.json", LOCK_SHA256, ARTIFACTS_SHA256, 605
+    return "artifact-lock-kerberos.json", KERBEROS_LOCK_SHA256, KERBEROS_ARTIFACTS_SHA256, 645
+
+
+def lock_path(profile="hdfs"):
+    return Path(__file__).with_name(_profile(profile)[0])
+
+
+def _load_lock(profile="hdfs"):
+    _, lock_hash, rows_hash, count = _profile(profile)
     try:
-        data = Path(__file__).with_name("artifact-lock.json").read_bytes()
-        need(len(data) <= 512 * 1024 and sha(data) == LOCK_SHA256, "lock_invalid")
+        data, _ = _bound_bytes(lock_path(profile), 512 * 1024)
+        need(sha(data) == lock_hash, "lock_invalid")
         value = json.loads(data)
         rows = value["artifacts"]
-        need(len(rows) == 605 and sha(encoded(rows)) == ARTIFACTS_SHA256, "lock_invalid")
+        need(len(rows) == count and sha(encoded(rows)) == rows_hash, "lock_invalid")
         return rows
     except (OSError, ValueError, TypeError, KeyError):
         raise CacheError("lock_invalid") from None
+
+
+def _bound_bytes(path, maximum):
+    path = _path(path)
+    before = _regular(path, maximum)
+    stamp = lambda s: (s.st_dev, s.st_ino, s.st_size, s.st_mtime_ns)
+    with path.open("rb") as stream:
+        opened = os.fstat(stream.fileno())
+        need(stamp(before) == stamp(opened) and opened.st_nlink == 1, "source_changed")
+        data = stream.read(maximum + 1)
+        after_fd = os.fstat(stream.fileno())
+    after_path = _regular(path, maximum)
+    need(len(data) == before.st_size and stamp(opened) == stamp(after_fd)
+         and opened.st_ctime_ns == after_fd.st_ctime_ns
+         and stamp(before) == stamp(after_path) and before.st_ctime_ns == after_path.st_ctime_ns,
+         "source_changed")
+    return data, (stamp(before), before.st_ctime_ns)
+
+
+def _binding(profile):
+    # Bind the helper and selected lock throughout the operation. Callers also
+    # bind the loaded helper before invoking it; this checks later disk drift.
+    _, expected, _, _ = _profile(profile)
+    try:
+        source, source_identity = _bound_bytes(Path(__file__), 1024 * 1024)
+        lock, lock_identity = _bound_bytes(lock_path(profile), 512 * 1024)
+    except OSError:
+        raise CacheError("source_changed") from None
+    need(sha(lock) == expected, "lock_invalid")
+    return sha(source), source_identity, sha(lock), lock_identity
+
+
+def _profile_receipt(profile):
+    # Keep the established default receipt byte-shape unchanged.
+    _profile(profile)
+    if profile == "hdfs":
+        return {}
+    return {"candidate_profile": "kerberos", "authentication_verified": False,
+            "application_accepted": False, "vendor_accepted": False}
 
 
 def _artifact_path(row):
@@ -195,26 +249,28 @@ def _scan(archive, expected, seed=False):
     return members, sha1s
 
 
-def _receipt(archive, rows):
+def _receipt(archive, rows, profile="hdfs"):
     paths = {_artifact_path(row): row for row in rows}
     return {"schema_version": 1, "scope": "hdfs_offline_cache_preparation",
             "sha256": _file_hash(archive), "size": archive.stat().st_size,
-            "lock_sha256": LOCK_SHA256, "counts": _counts(rows),
+            "lock_sha256": _profile(profile)[1], "counts": _counts(rows),
             "seed_regular_files": 2 * len(rows) + len(_tracking(paths)),
             "sha1_files": len(rows), "repository_tracking_files": len(_tracking(paths)),
             "metadata_reconstructed": True, "original_auxiliary_copied": False,
             "success": True, "preparation_only": True, "advisory_work_pending": True,
-            **FALSE_CLAIMS}
+            **FALSE_CLAIMS, **_profile_receipt(profile)}
 
 
-def verify_cache(seed_tar):
+def verify_cache(seed_tar, *, profile="hdfs"):
     try:
-        rows = _load_lock()
+        binding = _binding(profile)
+        rows = _load_lock(profile)
         path = _path(seed_tar)
         initial_hash = _file_hash(path)
         _scan(path, {_artifact_path(row): row for row in rows}, seed=True)
-        receipt = _receipt(path, rows)
+        receipt = _receipt(path, rows, profile)
         need(receipt["sha256"] == initial_hash, "source_changed")
+        need(_binding(profile) == binding, "source_changed")
         return receipt
     except CacheError:
         raise
@@ -222,16 +278,18 @@ def verify_cache(seed_tar):
         raise CacheError("cache_io_failed") from None
 
 
-def prepare_cache(source_tar, destination_tar):
+def prepare_cache(source_tar, destination_tar, *, profile="hdfs"):
     destination, identity, owned, failure, result = None, None, False, None, None
     try:
-        rows = _load_lock()
+        binding = _binding(profile)
+        rows = _load_lock(profile)
         source, destination = _path(source_tar), _path(destination_tar)
         need(not destination.exists() and not destination.is_symlink(), "destination_exists")
         initial_hash = _file_hash(source)
         expected = {_artifact_path(row): row for row in rows}
         members, sha1s = _scan(source, expected)
         need(_file_hash(source) == initial_hash, "source_changed")
+        need(_binding(profile) == binding, "source_changed")
         derived = {path + ".sha1": value for path, value in sha1s.items()} | _tracking(expected)
         fd = os.open(destination, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600)
         owned = True
@@ -255,9 +313,10 @@ def prepare_cache(source_tar, destination_tar):
         need(_file_hash(source) == initial_hash, "source_changed")
         info = _regular(destination)
         need((info.st_dev, info.st_ino) == identity, "source_changed")
-        result = verify_cache(destination)
+        result = verify_cache(destination, profile=profile)
         info = _regular(destination)
         need((info.st_dev, info.st_ino) == identity, "source_changed")
+        need(_binding(profile) == binding, "source_changed")
     except CacheError as error:
         failure = error.code
     except (OSError, tarfile.TarError, ValueError, TypeError):
@@ -275,8 +334,11 @@ def prepare_cache(source_tar, destination_tar):
     return result
 
 
-def _manifest_parts(value, rows):
+def _manifest_parts(value, rows, profile="hdfs"):
     need(type(value) is dict and type(value.get("artifacts")) is list, "manifest_invalid")
+    if "candidate_profile" in value:
+        need(type(value["candidate_profile"]) is str and value["candidate_profile"] == profile,
+             "manifest_mismatch")
     key = lambda row: tuple(row[k] for k in ("group", "artifact", "version", "type", "classifier"))
     try:
         need(encoded(sorted(value["artifacts"], key=key)) == encoded(sorted(rows, key=key)), "manifest_mismatch")
@@ -301,13 +363,16 @@ def _manifest_parts(value, rows):
         raise CacheError("manifest_invalid") from None
 
 
-def compare_manifests(online, offline):
-    rows = _load_lock()
-    first, second = _manifest_parts(online, rows), _manifest_parts(offline, rows)
+def compare_manifests(online, offline, *, profile="hdfs"):
+    binding = _binding(profile)
+    rows = _load_lock(profile)
+    first, second = _manifest_parts(online, rows, profile), _manifest_parts(offline, rows, profile)
     need(encoded(first[:2]) == encoded(second[:2]) and first[2] == second[2], "manifest_mismatch")
+    need(_binding(profile) == binding, "source_changed")
     return {"schema_version": 1, "scope": "hdfs_offline_manifest_comparison",
-            "lock_sha256": LOCK_SHA256, "counts": _counts(rows),
+            "lock_sha256": _profile(profile)[1], "counts": _counts(rows),
             "runtime_classpath_sha256": first[0]["normalized_sha256"],
             "graph_outputs_sha256": sha(encoded(first[1])), "dependency_semantics_sha256": sha(first[2]),
             "artifact_runtime_graph_match": True, "auxiliary_cache_identity_claimed": False,
-            "success": True, "preparation_only": True, "advisory_work_pending": True, **FALSE_CLAIMS}
+            "success": True, "preparation_only": True, "advisory_work_pending": True,
+            **FALSE_CLAIMS, **_profile_receipt(profile)}

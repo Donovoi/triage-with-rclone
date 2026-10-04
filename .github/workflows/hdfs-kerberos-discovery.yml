@@ -18,9 +18,9 @@ concurrency:
 
 jobs:
   prepare:
-    name: Capture the added KDC dependencies for review
+    name: Check the Kerberos dependencies online and offline
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -32,13 +32,15 @@ jobs:
       - name: Check contracts without downloads or native tools
         run: python -B -m unittest discover -s scripts/provider-lab/hdfs-discovery -p 'test_*.py'
       # This runs networked build tools, not Hadoop or a KDC. The container has
-      # no host mounts, credentials or published ports. Network destinations
-      # are not confined by Maven settings. The result remains quarantined.
-      - name: Inspect the added dependency closure
+      # no host mounts, credentials or published ports. The first stage's network
+      # destinations are not confined by Maven settings. The second stage uses
+      # network=none and Maven offline mode. No login or provider pass is awarded.
+      - name: Compare the online and isolated offline results
         run: >-
           python -B scripts/provider-lab/hdfs-discovery/hosted_kerberos_discovery.py
           --candidate scripts/provider-lab/hdfs-discovery/candidate-kerberos
           --verifier scripts/provider-lab/hdfs-bootstrap/verify_bootstrap.py
+          --mode repeat
           --report "${{ runner.temp }}/hdfs-kerberos-dependency-preparation.json"
       # Only sanitized facts are retained. Raw archives, POMs and logs stay
       # private to this disposable runner. No provider coverage is awarded.
