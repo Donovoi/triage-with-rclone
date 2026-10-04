@@ -13,6 +13,8 @@ import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.InetSocketAddress;
+import java.net.ConnectException;
+import java.net.SocketTimeoutException;
 import java.net.URI;
 import java.net.URL;
 import java.nio.ByteBuffer;
@@ -40,6 +42,10 @@ import java.util.TreeMap;
 import java.util.TreeSet;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Pattern;
+import javax.security.auth.kerberos.KerberosKey;
+import javax.security.auth.kerberos.KerberosPrincipal;
+import javax.security.auth.kerberos.KeyTab;
+import javax.security.auth.login.LoginException;
 import javax.xml.XMLConstants;
 import javax.xml.parsers.DocumentBuilderFactory;
 import org.w3c.dom.Element;
@@ -72,7 +78,7 @@ public final class SecureHdfsRoles {
   private static final Set<String> ASSERTIONS = Set.of(
       "arguments_invalid", "environment_invalid", "material_invalid", "material_changed",
       "root_identity_changed", "secure_configuration_invalid", "configuration_changed",
-      "ssl_resource_invalid", "webapp_resources_invalid", "keytab_login_invalid",
+      "ssl_resource_invalid", "webapp_resources_invalid", "keytab_login_invalid", "keytab_unreadable",
       "format_preexisting", "format_incomplete", "endpoint_mismatch", "extra_service",
       "datanode_not_ready", "startup_timeout", "shutdown_invalid", "shutdown_preexisting",
       "shutdown_timeout", "source_preexisting", "mkdir_failed", "source_scope",
@@ -86,12 +92,52 @@ public final class SecureHdfsRoles {
   private static void require(boolean condition, String code) throws RoleFailure {
     if (!condition) throw new RoleFailure(code);
   }
+  private static String kerberosReason(Throwable failure) {
+    // Exact OpenJDK17 KrbException.getMessage contract, not a search through
+    // arbitrary exception text: a known description/code must start the whole
+    // message, optionally followed by " - " and nonempty detail. The detail is
+    // inspected only for bounds/control characters and is never retained or
+    // published. No sun.* imports, reflection, module exports or debug logs.
+    // https://github.com/openjdk/jdk17u/blob/jdk-17.0.20.1%2B1/src/java.security.jgss/share/classes/sun/security/krb5/KrbException.java#L109
+    String message;
+    try { message = failure.getMessage(); } catch (Throwable ignored) { return "kerberos_failure"; }
+    if (message == null || message.length() > 2048 || message.chars().anyMatch(Character::isISOControl)) return "kerberos_failure";
+    Map<String, String> headers = Map.ofEntries(
+        Map.entry("Client not found in Kerberos database (6)", "kerberos_client_unknown"),
+        Map.entry("Server not found in Kerberos database (7)", "kerberos_server_unknown"),
+        Map.entry("KDC policy rejects request (12)", "kerberos_policy_rejected"),
+        Map.entry("KDC has no support for encryption type (14)", "kerberos_etype_unsupported"),
+        Map.entry("Pre-authentication information was invalid (24)", "kerberos_preauth_failed"),
+        Map.entry("Additional pre-authentication required (25)", "kerberos_preauth_required"),
+        Map.entry("Integrity check on decrypted field failed (31)", "kerberos_integrity_failed"),
+        Map.entry("Clock skew too great (37)", "kerberos_clock_skew"),
+        Map.entry("Message stream modified (41)", "kerberos_message_modified"),
+        Map.entry("Generic error (description in e-text) (60)", "kerberos_generic_error"),
+        Map.entry("Identifier doesn't match expected value (906)", "kerberos_asn_identifier"));
+    for (Map.Entry<String, String> entry : headers.entrySet()) {
+      String header = entry.getKey();
+      if (message.equals(header) || (message.startsWith(header + " - ") && message.length() > header.length() + 3)) return entry.getValue();
+    }
+    return "kerberos_failure";
+  }
   private static String reason(Throwable failure) {
-    String result = "unclassified";
+    String result = "unclassified", kerberos = null, network = null;
+    int kerberosPriority = 0; boolean loginException = false;
     for (int depth = 0; failure != null && depth < 8; depth++) {
       if (failure instanceof RoleFailure own) return own.code;
       if (failure instanceof ExitUtil.ExitException) return "exit_requested";
       if (failure instanceof ExitUtil.HaltException) return "halt_requested";
+      if (failure instanceof LoginException) loginException = true;
+      if (failure instanceof SocketTimeoutException && network == null) network = "socket_timeout";
+      if (failure instanceof ConnectException && network == null) network = "connection_failed";
+      String className = failure.getClass().getName();
+      if (className.equals("sun.security.krb5.KrbException") || className.equals("sun.security.krb5.Asn1Exception")) {
+        String candidate = kerberosReason(failure);
+        int priority = candidate.equals("kerberos_failure") ? 1 : className.equals("sun.security.krb5.KrbException") ? 3 : 2;
+        // An outer, recognized Kerberos code outranks a nested ASN.1 parsing
+        // fallback. A LoginException never hides its more specific cause.
+        if (priority > kerberosPriority) { kerberos = candidate; kerberosPriority = priority; }
+      }
       if (failure instanceof ClassNotFoundException || failure instanceof NoClassDefFoundError) result = "missing_class";
       else if (failure instanceof LinkageError) result = "linkage_failure";
       else if (failure instanceof OutOfMemoryError || failure instanceof StackOverflowError) result = "resource_failure";
@@ -103,6 +149,10 @@ public final class SecureHdfsRoles {
       else if (failure instanceof IOException && result.equals("unclassified")) result = "io_failure";
       try { failure = failure.getCause(); } catch (Throwable ignored) { return "unclassified"; }
     }
+    if (kerberosPriority >= 2) return kerberos;
+    if (network != null) return network;
+    if (kerberos != null) return kerberos;
+    if (loginException) return "login_exception";
     return result;
   }
   private static void addError(List<String> errors, String code) {
@@ -245,6 +295,38 @@ public final class SecureHdfsRoles {
     for (String name : List.of("nn/data", "nn/tmp", "nn/http", "dn/data", "dn/tmp", "dn/http")) privatePath(ROOT.resolve(name), true);
     Material result = new Material(realm.substring(0, realm.length() - 1), Collections.unmodifiableMap(hashes), Collections.unmodifiableMap(identities));
     unchanged(result); return result;
+  }
+  private static void keytabReadable(String service, String realm) throws Exception {
+    // Local parsing only. This does not prove the KDC accepts the key, and must
+    // never set keytab_login or any authentication/coverage claim.
+    Path path = ROOT.resolve("auth/" + service + ".keytab");
+    KerberosKey[] keys = null; boolean readable = false, destroyed = true;
+    try {
+      privatePath(path, false);
+      String name = service + "/127.0.0.1@" + realm;
+      KerberosPrincipal expected = new KerberosPrincipal(name);
+      require(expected.getName().equals(name), "keytab_unreadable");
+      KeyTab tab = KeyTab.getInstance(expected, path.toFile());
+      keys = tab.getKeys(expected);
+      require(keys != null && keys.length > 0 && keys.length <= 16, "keytab_unreadable");
+      boolean aes128 = false;
+      for (KerberosKey key : keys) {
+        require(key != null && !key.isDestroyed() && expected.equals(key.getPrincipal()), "keytab_unreadable");
+        if (key.getKeyType() == 17) {
+          byte[] encoded = key.getEncoded();
+          try { require(encoded != null && encoded.length == 16, "keytab_unreadable"); aes128 = true; }
+          finally { if (encoded != null) Arrays.fill(encoded, (byte) 0); }
+        }
+      }
+      privatePath(path, false); readable = aes128;
+    } catch (Exception ignored) { readable = false; }
+    finally {
+      if (keys != null) for (KerberosKey key : keys) if (key != null) {
+        try { key.destroy(); if (!key.isDestroyed()) destroyed = false; }
+        catch (Exception ignored) { destroyed = false; }
+      }
+    }
+    require(readable && destroyed, "keytab_unreadable");
   }
   private static void unchanged(Material material) throws Exception {
     for (Map.Entry<Path, String> entry : material.hashes().entrySet()) {
@@ -589,6 +671,7 @@ public final class SecureHdfsRoles {
       UserGroupInformation.setConfiguration(conf); require(UserGroupInformation.isSecurityEnabled(), "secure_configuration_invalid");
       configHash = configurationHash(conf, values, material); checks.put("secure_configuration", true);
       ExitUtil.disableSystemExit(); ExitUtil.disableSystemHalt();
+      stage = "login_failed"; keytabReadable(service, material.realm()); unchanged(material);
       if (role.equals("format") || role.equals("seed") || role.equals("verify")) {
         stage = "login_failed";
         UserGroupInformation.loginUserFromKeytab("nn/127.0.0.1@" + material.realm(), ROOT.resolve("auth/nn.keytab").toString());

@@ -247,9 +247,10 @@ public final class SecureKdc {
             && server.getKdcSetting().getKdcTcpPort()==PORT && "127.0.0.1".equals(server.getKdcSetting().getKdcHost()),Code.configuration_invalid);
     }
     private static byte[] confBytes(String realm) {
+        // JDK 17 KrbAsReq requests renewal even for renew_lifetime=0; omit it for nonrenewable tickets.
         return ("[libdefaults]\n default_realm = "+realm+"\n dns_lookup_kdc = false\n dns_lookup_realm = false\n"
             +" rdns = false\n udp_preference_limit = 1\n forwardable = false\n proxiable = false\n"
-            +" ticket_lifetime = 600\n renew_lifetime = 0\n permitted_enctypes = aes128-cts-hmac-sha1-96\n"
+            +" ticket_lifetime = 600\n permitted_enctypes = aes128-cts-hmac-sha1-96\n"
             +" default_tkt_enctypes = aes128-cts-hmac-sha1-96\n default_tgs_enctypes = aes128-cts-hmac-sha1-96\n"
             +"[realms]\n "+realm+" = {\n  kdc = 127.0.0.1:19006\n }\n").getBytes(StandardCharsets.US_ASCII);
     }
