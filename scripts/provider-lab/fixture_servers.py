@@ -1410,6 +1410,167 @@ class PixeldrainHandler(SeafileHandler):
     do_DELETE = dispatch
 
 
+NETSTORAGE_STAT = "version=1&action=stat&implicit=yes&format=xml&encoding=utf-8&slash=both"
+NETSTORAGE_LIST = "version=1&action=list&mtime_all=yes&format=xml&encoding=utf-8&end=%2F123456%2Fsynthetic0"
+NETSTORAGE_DOWNLOAD = "version=1&action=download"
+NETSTORAGE_DELETE = "version=1&action=delete"
+
+
+def netstorage_signature(secret, data, raw_uri, action):
+    # Sign the literal wire URI and action, never decoded or sorted forms.
+    message = data + raw_uri + "\nx-akamai-acs-action:" + action + "\n"
+    return base64.b64encode(hmac.new(secret.encode("ascii"), message.encode("ascii"), hashlib.sha256).digest()).decode("ascii")
+
+
+class NetStorageState(State):
+    """Closed synthetic HMAC/XML namespace; no resumes, redirects or uploads."""
+    prefix = "/123456/synthetic"
+    account = "synthetic-account"
+    modified = 1704067200
+    missing_path = "missing-synthetic-object.bin"
+    denied_path = "README-synthetic.txt"
+
+    def __init__(self, secret, wrong_secret, mode="normal"):
+        if (mode not in ("normal", "wrong_secret", "member_denied") or not isinstance(secret, str)
+                or not isinstance(wrong_secret, str) or secret == wrong_secret
+                or not all(re.fullmatch(r"[A-Za-z0-9_+/=-]{16,128}", value) for value in (secret, wrong_secret))):
+            raise ValueError("invalid_netstorage_fixture")
+        super().__init__(self.account, secret)
+        self.secret, self.wrong_secret, self.mode = secret, wrong_secret, mode
+        self.deadline = time.monotonic() + 60
+        self.created_epoch = int(time.time())
+        self.request_timeout, self.request_limit = 3, 8
+        self.byte_limit, self.response_bytes = 64 * 1024, 0
+        self.authenticated = self.auth_denied = self.member_denied = self.missing = 0
+        self.unexpected = self.rejected_payload_bytes = 0
+        self.budget_exceeded = False
+        self.events, self.seen_auth_data = [], set()
+        self.accepted_connections = self.admission_denied = 0
+        self.connection_limit, self.active_connection_limit = 8, 4
+        self.metadata = {name: {"type": "file", "name": name, "size": str(len(body)),
+                               "mtime": "1704067200", "md5": hashlib.md5(body).hexdigest()}
+                         for name, body in sorted(self.files.items())}
+
+    def xml(self, kind, member=""):
+        if kind == "root":
+            node = ET.Element("stat", directory=self.prefix)
+            ET.SubElement(node, "file", type="dir", name="synthetic", mtime="1704067200")
+        elif kind == "stat" and member in self.metadata:
+            node = ET.Element("stat", directory=self.prefix)
+            ET.SubElement(node, "file", self.metadata[member])
+        elif kind == "list":
+            node = ET.Element("list")
+            for name in ("123456/synthetic/", "123456/synthetic/nested/"):
+                ET.SubElement(node, "file", type="dir", name=name, mtime="1704067200")
+            for name, fields in self.metadata.items():
+                ET.SubElement(node, "file", dict(fields, name="123456/synthetic/" + name))
+        else:
+            raise ValueError("invalid_netstorage_xml")
+        return ET.tostring(node, encoding="utf-8")
+
+
+class NetStorageFixture(SeafileFixture):
+    def __init__(self, state):
+        self.state = state
+        HTTPServer.__init__(self, ("127.0.0.1", 0), NetStorageHandler)
+
+
+class NetStorageHandler(SeafileHandler):
+    def dispatch(self):
+        with self.server.state.lock:
+            state = self.server.state
+            state.requests += 1
+            if state.requests > state.request_limit or time.monotonic() > state.deadline:
+                state.budget_exceeded = True
+                self.reject(429)
+                return
+            headers = list(self.headers.items())
+            names = [name.lower() for name, _ in headers]
+            try:
+                wire = self.raw_requestline.rstrip(b"\r\n").split(b" ")
+                allowed = {"host", "content-length", "user-agent", "accept", "accept-encoding", "connection",
+                           "x-akamai-acs-action", "x-akamai-acs-auth-data", "x-akamai-acs-auth-sign"}
+                if (len(wire) != 3 or wire[1].decode("ascii") != self.path or len(self.path) > 2048
+                        or self.headers.get_all("Host") != [f"127.0.0.1:{self.server.server_address[1]}"]
+                        or len(names) != len(set(names)) or set(names) - allowed
+                        or sum(len(k) + len(v) for k, v in headers) > 8192
+                        or any("\r" in v or "\n" in v for _, v in headers)
+                        or self.headers.get("Content-Length", "0") != "0"):
+                    raise ValueError("invalid_request")
+                action = self.headers.get("X-Akamai-ACS-Action", "")
+                member_paths = {state.prefix + "/" + urllib.parse.quote(name, safe="/-._~"): name for name in (*FILES, state.missing_path)}
+                if self.command == "GET" and self.path == state.prefix and action == NETSTORAGE_STAT:
+                    kind, member = "root", ""
+                elif self.command == "GET" and self.path == state.prefix + "/" and action == NETSTORAGE_LIST:
+                    kind, member = "list", ""
+                elif self.path in member_paths:
+                    member = member_paths[self.path]
+                    choices = {("GET", NETSTORAGE_STAT): "stat", ("GET", NETSTORAGE_DOWNLOAD): "download",
+                               ("POST", NETSTORAGE_DELETE): "write"}
+                    kind = choices.get((self.command, action))
+                    if (kind is None or member == state.missing_path and kind != "stat"
+                            or kind == "write" and member != state.denied_path):
+                        raise ValueError("invalid_operation")
+                else:
+                    raise ValueError("invalid_target")
+                data = self.headers.get("X-Akamai-ACS-Auth-Data", "")
+                match = re.fullmatch(r"5, 0\.0\.0\.0, 0\.0\.0\.0, ([1-9][0-9]{9,10}), (0|[1-9][0-9]{0,18}),synthetic-account", data)
+                signature = self.headers.get("X-Akamai-ACS-Auth-Sign", "")
+                decoded = base64.b64decode(signature, validate=True)
+                if (not match or not state.created_epoch - 5 <= int(match[1]) <= int(time.time()) + 5
+                        or int(match[2]) > 2**63 - 1 or data in state.seen_auth_data
+                        or len(decoded) != 32 or base64.b64encode(decoded).decode("ascii") != signature):
+                    raise ValueError("invalid_auth_shape")
+                good = hmac.compare_digest(signature, netstorage_signature(state.secret, data, self.path, action))
+                wrong = hmac.compare_digest(signature, netstorage_signature(state.wrong_secret, data, self.path, action))
+                if state.mode == "wrong_secret":
+                    required = [] if kind == "root" else [("auth_denied", "")]
+                    if (good or not wrong or kind not in ("root", "stat") or member not in ("", state.denied_path)
+                            or state.events != required):
+                        raise ValueError("unexpected_auth_sequence")
+                    state.seen_auth_data.add(data)
+                    state.auth_denied += 1
+                    state.events.append(("auth_denied", member))
+                    self.reply(403, b"Synthetic authentication denied", {"Content-Type": "text/plain"})
+                    return
+                if not good:
+                    raise ValueError("invalid_signature")
+                required = [] if kind == "root" else [("root_stat", "")]
+                if kind in ("download", "write"):
+                    required.append(("member_stat", member))
+                if state.events != required:
+                    raise ValueError("invalid_sequence")
+            except (UnicodeError, ValueError):
+                self.reject()
+                return
+            state.seen_auth_data.add(data)
+            state.authenticated += 1
+            if kind in ("root", "list"):
+                state.events.append(("root_stat" if kind == "root" else "listing", ""))
+                self.reply(200, state.xml(kind), {"Content-Type": "application/xml"})
+            elif kind == "stat":
+                if member == state.missing_path:
+                    state.missing += 1
+                    state.events.append(("file_missing", member))
+                    self.reply(404, b"Synthetic object missing", {"Content-Type": "text/plain"})
+                else:
+                    state.events.append(("member_stat", member))
+                    self.reply(200, state.xml("stat", member), {"Content-Type": "application/xml"})
+            elif kind == "write":
+                state.rejected_mutations += 1
+                state.events.append(("write_denied", member))
+                self.json_reply(405, {"status": "fixture_read_only"})
+            elif state.mode == "member_denied" and member == state.denied_path:
+                state.member_denied += 1
+                state.events.append(("content_denied", member))
+                self.reply(403, b"Synthetic member denied", {"Content-Type": "text/plain"})
+            else:
+                state.events.append(("content", member))
+                self.reply(200, state.files[member], {"Content-Type": "application/octet-stream"}, object_payload=True)
+
+    do_GET = do_HEAD = do_POST = do_PUT = do_DELETE = do_PATCH = do_OPTIONS = do_PROPFIND = dispatch
+
+
 class InternetArchiveState(State):
     """Fixed anonymous item; no accounts, IAS3 reads, redirects or uploads."""
     item = "synthetic-item"
@@ -2440,7 +2601,7 @@ def serve(kind, state):
     server = (FtpFixture(state) if kind == "ftp" else SwiftFixture(state) if kind == "swift"
               else B2Fixture(state) if kind == "b2" else AzureBlobFixture(state) if kind == "azureblob"
               else AzureFilesFixture(state) if kind == "azurefiles" else SeafileFixture(state) if kind == "seafile"
-              else InternetArchiveFixture(state) if kind == "internetarchive" else FileFabricSessionFixture(state) if kind == "filefabric-renewal" else FileFabricFixture(state) if kind == "filefabric" else KoofrFixture(state) if kind == "koofr" else PixeldrainFixture(state) if kind == "pixeldrain" else HttpFixture(state))
+              else NetStorageFixture(state) if kind == "netstorage" else InternetArchiveFixture(state) if kind == "internetarchive" else FileFabricSessionFixture(state) if kind == "filefabric-renewal" else FileFabricFixture(state) if kind == "filefabric" else KoofrFixture(state) if kind == "koofr" else PixeldrainFixture(state) if kind == "pixeldrain" else HttpFixture(state))
     thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05})
     thread.start()
     try:

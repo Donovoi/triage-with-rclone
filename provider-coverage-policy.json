@@ -973,6 +973,43 @@
       },
       "review_required": false,
       "unresolved_applicability": []
+    },
+    "netstorage-signed-read-fixture": {
+      "required": {
+        "application": [
+          "listing",
+          "download_hash",
+          "manifest_integrity",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation"
+        ],
+        "vendor": [
+          "listing",
+          "download_hash",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation"
+        ],
+        "local_protocol": [
+          "listing",
+          "download_hash",
+          "missing_object_rejection",
+          "authentication_rejection",
+          "source_preservation",
+          "config_preservation",
+          "fixture_write_rejection",
+          "cleanup"
+        ]
+      },
+      "review_required": false,
+      "unresolved_applicability": []
     }
   },
   "providers": {
@@ -2376,16 +2413,23 @@
     "netstorage": {
       "canonical_name": "netstorage",
       "schema_sha256": "3f6f4e5ec0fccd9e1c5efae3df6b5b388d2c541b24fb5a5aba7f496ddf95539a",
-      "profile": "hosted-static-credentials",
+      "profile": "netstorage-signed-read-fixture",
       "notes": [
         "Akamai NetStorage account/provisioned group, host and authentication secret. Enterprise provisioning and pricing unresolved.",
         "Free account/API eligibility: review_required",
-        "Rotating the account secret is external credential replacement; per-request signing freshness is a separate protocol test."
+        "Rotating the account secret is external credential replacement; per-request signing freshness is a separate protocol test.",
+        "A schema-1 independent loopback fixture uses protocol=http, a fixed synthetic directory prefix, a synthetic account name and generated secret. Independent HMAC-SHA256 verification covers the exact request URI and action header with raw secret bytes; no hosted account is used.",
+        "The exact eight-capability contract requires complete synthetic listing/stat/downloads, known wrong-secret rejection beyond the tolerated root probe, genuine member 404 after successful setup, a separate valid-signature read denial, source/config preservation, direct fixture write rejection and owned cleanup.",
+        "This single-page, regular-file fixture establishes request-signature handling and independent download integrity only. Hosted Akamai eligibility, fresh account login, external secret rotation, lifecycle recovery, TLS/redirects, pagination, implicit directories, symlinks and application/vendor acceptance remain unverified."
       ],
       "source_links": [
         "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/netstorage.md",
         "https://github.com/rclone/rclone/blob/v1.75.1/backend/netstorage/netstorage.go#L830-L841",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/netstorage/netstorage.go#L1250-L1274"
+        "https://github.com/rclone/rclone/blob/v1.75.1/backend/netstorage/netstorage.go#L1250-L1274",
+        "https://github.com/rclone/rclone/blob/v1.75.1/backend/netstorage/netstorage.go#L216-L278",
+        "https://github.com/rclone/rclone/blob/v1.75.1/backend/netstorage/netstorage.go#L356-L370",
+        "https://github.com/rclone/rclone/blob/v1.75.1/backend/netstorage/netstorage.go#L903-L977",
+        "https://github.com/rclone/rclone/blob/v1.75.1/backend/netstorage/netstorage.go#L1067-L1085"
       ],
       "auth_applicability": "credentials",
       "refresh_applicability": "not_applicable",
