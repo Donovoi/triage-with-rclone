@@ -159,6 +159,19 @@ public final class SecureHdfsRoles {
   private static void addError(List<String> errors, String code) {
     if (!errors.contains(code) && errors.size() < 16) errors.add(code);
   }
+  private static void appendConfigurationAliases(List<String> errors, Configuration conf, Map<String, String> values) {
+    if (conf == null || values == null) return;
+    // Failure-only observations of two exact public endpoint aliases. These
+    // never normalize configuration or satisfy its strict preservation check.
+    try {
+      if ("hdfs://127.0.0.1:19000".equals(values.get("fs.defaultFS"))
+          && "hdfs://localhost:19000".equals(conf.get("fs.defaultFS")))
+        addError(errors, "configuration_default_uri_loopback_alias");
+      if ("127.0.0.1:19003".equals(values.get("dfs.namenode.https-address"))
+          && "localhost:19003".equals(conf.get("dfs.namenode.https-address")))
+        addError(errors, "configuration_https_loopback_alias");
+    } catch (Throwable ignored) { /* Preserve the original finite failure. */ }
+  }
   private static void appendStartupOrigins(List<String> errors, Throwable failure) {
     // Context only, never a root-cause or acceptance assertion. Hadoop 3.5.0
     // wraps HTTP startup exceptions; Jetty 9.4.58 MultiException also retains
@@ -770,7 +783,7 @@ public final class SecureHdfsRoles {
         if (nn != null) nnAddresses(nn); if (dn != null) dnAddresses(dn);
         login = loginProof(service, material.realm()); checks.put("configuration_preserved", true);
       }
-    } catch (Throwable failure) { addError(errors, stage); addError(errors, reason(failure)); appendStartupOrigins(errors, failure); }
+    } catch (Throwable failure) { addError(errors, stage); addError(errors, reason(failure)); appendConfigurationAliases(errors, conf, values); appendStartupOrigins(errors, failure); }
     finally {
       if (constructorPending) { closed = false; addError(errors, "constructor_cleanup_unconfirmed"); }
       if (fs != null) try { fs.close(); } catch (Throwable failure) { closed = false; addError(errors, "client_close_failed"); addError(errors, reason(failure)); }
