@@ -112,6 +112,10 @@ def koofr_receipt():
     return read_fixture_receipt("koofr")
 
 
+def filefabric_receipt():
+    return read_fixture_receipt("filefabric")
+
+
 def pixeldrain_receipt():
     return read_fixture_receipt("pixeldrain")
 
@@ -743,7 +747,7 @@ class CoverageTests(unittest.TestCase):
             candidate = {"swift": swift_receipt, "b2": b2_receipt, "azureblob": azureblob_receipt,
                          "azurefiles": azurefiles_receipt, "seafile": seafile_receipt,
                          "memory": memory_receipt, "koofr": koofr_receipt,
-                         "pixeldrain": pixeldrain_receipt}.get(backend, lambda: receipt(backend))()
+                         "pixeldrain": pixeldrain_receipt, "filefabric": filefabric_receipt}.get(backend, lambda: receipt(backend))()
             if backend == "archive":
                 candidate["backends"][0]["capabilities"] = {
                     key: "passed" for key in coverage.ARCHIVE_REQUIRED_CAPABILITIES
@@ -752,7 +756,7 @@ class CoverageTests(unittest.TestCase):
             candidate["backends"][0]["capabilities"]["config_preservation"] = "passed"
             report = self.evaluate([candidate], policy, catalog)
             with self.subTest(backend=backend):
-                if backend in ("archive", "memory", "swift", "b2", "azureblob", "azurefiles", "seafile", "koofr", "pixeldrain"):
+                if backend in ("archive", "memory", "swift", "b2", "azureblob", "azurefiles", "seafile", "koofr", "pixeldrain", "filefabric"):
                     self.assertEqual(report["providers"][0]["evidence"]["local_protocol"]["status"], "passed")
                 else:
                     self.assertIn("invalid_fixture_capability", report["errors"])
@@ -1090,7 +1094,7 @@ class CoverageTests(unittest.TestCase):
         self.assert_read_fixture_failures_are_sticky_and_private_fields_omitted("pixeldrain")
 
     def test_read_fixture_services_never_inherit_each_others_result(self):
-        backends = ("azureblob", "azurefiles", "seafile", "koofr", "pixeldrain")
+        backends = ("azureblob", "azurefiles", "seafile", "koofr", "pixeldrain", "filefabric")
         catalog = coverage.catalog_from_schemas([schema(backend) for backend in backends])
         policy = policy_for(catalog)
         policy["profiles"]["test"]["required"]["local_protocol"] = sorted(coverage.SEAFILE_REQUIRED_CAPABILITIES)
@@ -1101,6 +1105,21 @@ class CoverageTests(unittest.TestCase):
             self.assertEqual(statuses, {backend: "passed", **{other: "not_verified" for other in others}})
             for other in others:
                 self.assertIn("required_fixture_not_verified", coverage.gate_errors(result, require_fixtures=[other]))
+
+    def test_filefabric_never_qualifies_other_modes_or_acceptance_tiers(self):
+        self.assert_read_fixture_never_qualifies_other_modes_or_acceptance_tiers("filefabric")
+
+    def test_filefabric_requires_exact_capabilities_despite_weaker_policy(self):
+        self.assert_read_fixture_requires_exact_capabilities_despite_weaker_policy("filefabric")
+
+    def test_filefabric_requires_executed_typed_outcomes_and_independent_kind(self):
+        self.assert_read_fixture_requires_executed_typed_outcomes_and_independent_kind("filefabric")
+
+    def test_filefabric_requires_current_runtime_harness_manifest_and_time(self):
+        self.assert_read_fixture_requires_current_runtime_harness_manifest_and_time("filefabric")
+
+    def test_filefabric_failures_are_sticky_and_private_fields_omitted(self):
+        self.assert_read_fixture_failures_are_sticky_and_private_fields_omitted("filefabric")
 
     def test_memory_receipt_is_local_only_and_never_qualifies_other_acceptance(self):
         catalog = coverage.catalog_from_schemas([schema("memory")])

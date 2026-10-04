@@ -1409,6 +1409,170 @@ class PixeldrainHandler(SeafileHandler):
     do_DELETE = dispatch
 
 
+class FileFabricState(State):
+    """Seeded-session RPC reads only; grant, renewal and appliance calls forbidden."""
+    root_id, nested_id = "100", "200"
+    modified, localtime = "2024-01-02 00:00:00", "2024-01-01 00:00:00"
+    missing_path, denied_path = "missing-synthetic-object.bin", "README-synthetic.txt"
+    ids = {"README-synthetic.txt": "301", "nested/bytes.bin": "302", "nested/space name.txt": "303"}
+    options = "filelist|fi_id|fi_pid|fi_name|fi_type|fi_size|fi_contenttype|fi_modified|fi_localtime|trash|subfolders"
+
+    def __init__(self, token, mode="normal", *, wrong_token="wrong-synthetic-session"):
+        if (mode not in ("normal", "member_denied") or not isinstance(token, str)
+                or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", token)
+                or not isinstance(wrong_token, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", wrong_token)
+                or token == wrong_token):
+            raise ValueError("invalid_filefabric_fixture")
+        super().__init__("", "")
+        self.token, self.wrong_token, self.mode = token, wrong_token, mode
+        self.deadline = time.monotonic() + 60
+        self.request_timeout, self.request_limit = 3, 128
+        self.byte_limit, self.response_bytes = 128 * 1024, 0
+        self.authenticated = self.auth_denied = self.member_denied = self.missing = 0
+        self.unexpected = self.rejected_payload_bytes = 0
+        self.budget_exceeded = False
+        self.events, self.details = [], set()
+        self.accepted_connections = self.admission_denied = 0
+        self.connection_limit, self.active_connection_limit = 64, 4
+
+    def node(self, member):
+        if member not in self.ids and member != "nested":
+            raise ValueError("invalid_filefabric_member")
+        directory = member == "nested"
+        return {"fi_id": self.nested_id if directory else self.ids[member],
+                "fi_pid": self.root_id if "/" not in member else self.nested_id,
+                "fi_name": member.rsplit("/", 1)[-1], "fi_type": "1" if directory else "0",
+                "fi_size": "0" if directory else str(len(self.files[member])),
+                "fi_contenttype": "inode/directory" if directory else "application/octet-stream",
+                "fi_modified": self.modified, "fi_localtime": self.localtime, "trash": False, "subfolders": 0}
+
+
+class FileFabricFixture(SeafileFixture):
+    def __init__(self, state):
+        self.state = state
+        HTTPServer.__init__(self, ("127.0.0.1", 0), FileFabricHandler)
+
+
+class FileFabricHandler(SeafileHandler):
+    def dispatch(self):
+        with self.server.state.lock:
+            state = self.server.state
+            state.requests += 1
+            if state.requests > state.request_limit or time.monotonic() > state.deadline:
+                state.budget_exceeded = True
+                self.json_reply(429, {"status": "fixture_request_limit"})
+                return
+            try:
+                headers = list(self.headers.items())
+                names = [name.lower() for name, _ in headers]
+                wire = self.raw_requestline.rstrip(b"\r\n").split(b" ")
+                if (self.command != "POST" or self.path != "/api/rpc.php"
+                        or len(wire) != 3 or wire[1] != b"/api/rpc.php"
+                        or self.headers.get_all("Host") != [f"127.0.0.1:{self.server.server_address[1]}"]
+                        or len(names) != len(set(names)) or sum(len(k) + len(v) for k, v in headers) > 16384
+                        or any("\r" in v or "\n" in v for _, v in headers)
+                        or any(self.headers.get(k) is not None for k in ("Transfer-Encoding", "Content-Encoding", "Authorization", "Proxy-Authorization", "Cookie"))
+                        or self.headers.get("Content-Type") != "application/x-www-form-urlencoded"):
+                    raise ValueError("invalid_request")
+                length = self.headers.get("Content-Length", "")
+                if not re.fullmatch(r"[1-9][0-9]{0,3}", length) or int(length) > 4096:
+                    raise ValueError("invalid_length")
+                raw = self.rfile.read(int(length))
+                if len(raw) != int(length):
+                    raise ValueError("incomplete_body")
+                encoded = raw.decode("ascii")
+                if re.search(r"%(?![0-9a-fA-F]{2})", encoded):
+                    raise ValueError("invalid_percent")
+                pairs = urllib.parse.parse_qsl(encoded, keep_blank_values=True, strict_parsing=True,
+                                              max_num_fields=8, encoding="utf-8", errors="strict")
+                form = dict(pairs)
+                if (len(form) != len(pairs) or any(not k or not v or any(ord(c) < 32 or 127 <= ord(c) <= 159 for c in k + v)
+                                                 for k, v in pairs) or form.get("apiformat") != "json"):
+                    raise ValueError("invalid_form")
+                function = form.get("function")
+                fields = {"getFolderContents": {"fi_pid", "count", "subfolders", "options"},
+                          "checkPathExists": {"pid", "path"}, "getFile": {"fi_id"},
+                          "doDeleteFile": {"fi_id", "completedeletion"}}
+                if function not in fields or set(form) != fields[function] | {"function", "token", "apiformat"}:
+                    raise ValueError("invalid_function")
+                if self.headers.get("Range") is not None and function != "getFile":
+                    raise ValueError("invalid_range")
+                member = ""
+                if function == "getFolderContents":
+                    if (form["fi_pid"] not in (state.root_id, state.nested_id) or form["count"] != "1000"
+                            or form["subfolders"] != "y" or form["options"] != state.options):
+                        raise ValueError("invalid_listing")
+                elif function == "checkPathExists":
+                    member = form["path"]
+                    if form["pid"] != state.root_id or member not in (*state.ids, state.missing_path):
+                        raise ValueError("invalid_metadata")
+                else:
+                    member = next((name for name, identifier in state.ids.items() if identifier == form["fi_id"]), None)
+                    if member is None or (function == "doDeleteFile" and (member != state.denied_path or form["completedeletion"] != "n")):
+                        raise ValueError("invalid_object_id")
+            except (ValueError, UnicodeError, OSError):
+                self.reject()
+                return
+            if not hmac.compare_digest(form["token"].encode(), state.token.encode()):
+                if function == "checkPathExists" and member == state.denied_path and hmac.compare_digest(form["token"].encode(), state.wrong_token.encode()):
+                    state.auth_denied += 1
+                    state.events.append(("auth_denied", member))
+                else:
+                    state.unexpected += 1
+                self.json_reply(200, {"status": "login_token_expired", "statusmessage": "Synthetic cached session denied"})
+                return
+            state.authenticated += 1
+            if function == "getFolderContents":
+                members = [state.denied_path, "nested"] if form["fi_pid"] == state.root_id else ["nested/bytes.bin", "nested/space name.txt"]
+                state.events.append(("listing", form["fi_pid"]))
+                self.json_reply(200, {"status": "ok", "total": str(len(members)), "filelist": [state.node(name) for name in members],
+                                      "from": 0, "pid": form["fi_pid"]})
+            elif function == "checkPathExists":
+                if member == state.missing_path:
+                    state.missing += 1
+                    state.events.append(("file_missing", member))
+                    self.json_reply(200, {"status": "ok", "exists": "n"})
+                elif member == state.denied_path and state.mode == "member_denied":
+                    state.member_denied += 1
+                    state.events.append(("member_denied", member))
+                    self.json_reply(200, {"status": "fixture_member_denied", "statusmessage": "Synthetic member denied"})
+                else:
+                    state.details.add(member)
+                    state.events.append(("member_stat", member))
+                    self.json_reply(200, {"status": "ok", "exists": "y", "file": state.node(member)})
+            elif function == "doDeleteFile":
+                state.rejected_mutations += 1
+                state.events.append(("write_denied", member))
+                self.json_reply(405, {"status": "fixture_read_only"})
+            else:
+                if member not in state.details:
+                    self.reject()
+                    return
+                payload, status = state.files[member], 200
+                response_headers = {"Content-Type": "application/octet-stream"}
+                requested = self.headers.get("Range")
+                if requested is not None:
+                    match = re.fullmatch(r"bytes=([0-9]{1,19})-([0-9]{0,19})", requested)
+                    if not match:
+                        self.reject(416)
+                        return
+                    start, end = int(match[1]), int(match[2]) if match[2] else len(payload) - 1
+                    if start >= len(payload) or start > end:
+                        self.reject(416)
+                        return
+                    end = min(end, len(payload) - 1)
+                    response_headers["Content-Range"] = f"bytes {start}-{end}/{len(payload)}"
+                    payload, status = payload[start:end + 1], 206
+                state.events.append(("content", member))
+                self.reply(status, payload, response_headers, object_payload=True)
+
+    do_GET = dispatch
+    do_HEAD = dispatch
+    do_POST = dispatch
+    do_PUT = dispatch
+    do_DELETE = dispatch
+
+
 class B2State(State):
     """Synthetic native B2 v4 authorization/v1 reads, restricted to one bucket."""
     bucket = "synthetic-bucket"
@@ -2038,7 +2202,7 @@ def serve(kind, state):
     server = (FtpFixture(state) if kind == "ftp" else SwiftFixture(state) if kind == "swift"
               else B2Fixture(state) if kind == "b2" else AzureBlobFixture(state) if kind == "azureblob"
               else AzureFilesFixture(state) if kind == "azurefiles" else SeafileFixture(state) if kind == "seafile"
-              else KoofrFixture(state) if kind == "koofr" else PixeldrainFixture(state) if kind == "pixeldrain" else HttpFixture(state))
+              else FileFabricFixture(state) if kind == "filefabric" else KoofrFixture(state) if kind == "koofr" else PixeldrainFixture(state) if kind == "pixeldrain" else HttpFixture(state))
     thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05})
     thread.start()
     try:
