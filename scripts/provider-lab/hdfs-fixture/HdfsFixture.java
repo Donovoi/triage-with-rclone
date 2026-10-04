@@ -47,6 +47,7 @@ import org.apache.hadoop.hdfs.protocol.HdfsConstants;
 import org.apache.hadoop.hdfs.server.datanode.DataNode;
 import org.apache.hadoop.hdfs.server.namenode.NameNode;
 import org.apache.hadoop.security.UserGroupInformation;
+import org.apache.hadoop.util.ExitUtil;
 import org.apache.hadoop.util.VersionInfo;
 
 public final class HdfsFixture {
@@ -63,6 +64,66 @@ public final class HdfsFixture {
   private static final Set<Integer> PORTS = Set.of(19000, 19001, 19002, 19003, 19004, 19005);
   private static final LinkOption[] NOFOLLOW = {LinkOption.NOFOLLOW_LINKS};
   private static Object outputIdentity;
+  // Only our typed assertions can supply these codes. Never parse messages
+  // from Hadoop/JDK exceptions, even when they resemble a known assertion.
+  private static final Set<String> REQUIRE_CODES = Set.of(
+      "advertised_endpoint_mismatch", "arguments_invalid", "configuration_changed",
+      "datanode_missing", "datanode_not_ready", "directory_changed", "endpoint_mismatch",
+      "environment_invalid", "extra_service", "hadoop_version_invalid", "ipv4_required",
+      "java_version_invalid", "listener_duplicate", "listener_inventory_bound",
+      "listener_inventory_invalid", "listener_not_loopback", "listener_set_mismatch",
+      "missing_member_present", "mkdir_failed", "output_identity_changed",
+      "output_identity_unavailable", "report_bound", "shutdown_invalid", "shutdown_preexisting",
+      "shutdown_timeout", "simple_required", "source_bytes_changed", "source_duplicate",
+      "source_inventory_bound", "source_inventory_changed", "source_metadata_changed",
+      "source_preexisting", "source_scope", "startup_timeout", "unexpected_directory",
+      "unexpected_file", "work_invalid", "work_owner_invalid", "work_permissions_invalid",
+      "exit_requested", "halt_requested");
+  private static final class FixtureFailure extends IOException {
+    private final String code;
+    FixtureFailure(String code) {
+      super("fixture_assertion");
+      this.code = REQUIRE_CODES.contains(code) ? code : "unclassified";
+    }
+  }
+
+  private static String failureReason(Throwable failure) {
+    String selected = "unclassified";
+    int selectedRank = 6;
+    Throwable current = failure;
+    // A cycle or unexpectedly deep chain cannot make inspection unbounded.
+    for (int depth = 0; current != null && depth < 8; depth++) {
+      if (current instanceof FixtureFailure own && REQUIRE_CODES.contains(own.code)) return own.code;
+      if (current instanceof ExitUtil.ExitException) return "exit_requested";
+      if (current instanceof ExitUtil.HaltException) return "halt_requested";
+      String category = "unclassified";
+      int rank = 6;
+      if (current instanceof ClassNotFoundException || current instanceof NoClassDefFoundError) {
+        category = "missing_class"; rank = 0;
+      } else if (current instanceof OutOfMemoryError || current instanceof StackOverflowError) {
+        category = "resource_failure"; rank = 1;
+      } else if (current instanceof IllegalArgumentException) {
+        category = "invalid_config"; rank = 2;
+      } else if (current instanceof LinkageError) {
+        category = "linkage_failure"; rank = 3;
+      } else if (current instanceof IOException) {
+        category = "io_failure"; rank = 4;
+      }
+      if (rank < selectedRank) { selected = category; selectedRank = rank; }
+      try { current = current.getCause(); }
+      catch (Throwable ignored) { return "unclassified"; }
+    }
+    return selected;
+  }
+  private static void recordFailure(List<String> errors, String stage, Throwable failure) {
+    errors.add(stage);
+    String reason = failureReason(failure);
+    if (!errors.contains(reason)) errors.add(reason);
+  }
+  private static void checkExitRequests() throws IOException {
+    require(!ExitUtil.terminateCalled(), "exit_requested");
+    require(!ExitUtil.haltCalled(), "halt_requested");
+  }
 
   // Literal bytes are the independent oracle; HDFS metadata never defines it.
   private static Map<String, byte[]> samples() {
@@ -96,7 +157,7 @@ public final class HdfsFixture {
     return "\"" + value + "\"";
   }
   private static void require(boolean condition, String code) throws IOException {
-    if (!condition) throw new IOException(code);
+    if (!condition) throw new FixtureFailure(code);
   }
 
   private static void privateDirectory(Path path) throws IOException {
@@ -207,6 +268,7 @@ public final class HdfsFixture {
     return ports;
   }
   private static void topology(NameNode nn, DataNode dn, DistributedFileSystem fs) throws Exception {
+    checkExitRequests();
     address(nn.getNameNodeAddress(), 19000);
     address(nn.getHttpAddress(), 19003);
     address(dn.getXferAddress(), 19001);
@@ -338,6 +400,7 @@ public final class HdfsFixture {
   }
   private static void waitForShutdown(long deadline) throws Exception {
     while (!Files.exists(SHUTDOWN, NOFOLLOW)) {
+      checkExitRequests();
       require(System.nanoTime() < deadline, "shutdown_timeout");
       Thread.sleep(100);
     }
@@ -355,6 +418,9 @@ public final class HdfsFixture {
     try {
       environment(args);
       stage = "startup_failed";
+      // Pinned common-JAR embedding API; intercepted exits still fail evidence.
+      ExitUtil.disableSystemExit();
+      ExitUtil.disableSystemHalt();
       Configuration conf = configuration();
       UserGroupInformation.setConfiguration(conf);
       UserGroupInformation.setLoginUser(UserGroupInformation.createRemoteUser(OWNER));
@@ -370,6 +436,7 @@ public final class HdfsFixture {
       seed(fs, files); verifySource(fs, files);
       configHash = configurationHash(conf);
       stage = "ready_report_failed";
+      checkExitRequests();
       publish("ready.json", report("ready", true, true, false, configHash, errors, files));
       stage = "shutdown_request_failed";
       waitForShutdown(deadline);
@@ -380,13 +447,18 @@ public final class HdfsFixture {
       require(configPreserved, "configuration_changed");
     } catch (Throwable failure) {
       // No exception/path/log text in the public finite result.
-      errors.add(stage);
+      recordFailure(errors, stage, failure);
     } finally {
-      try { if (fs != null) fs.close(); } catch (Throwable failure) { closed = false; errors.add("client_close_failed"); }
-      try { if (dn != null) dn.shutdown(); } catch (Throwable failure) { closed = false; errors.add("datanode_shutdown_failed"); }
-      try { if (nn != null) nn.stop(); } catch (Throwable failure) { closed = false; errors.add("namenode_shutdown_failed"); }
+      try { if (fs != null) fs.close(); }
+      catch (Throwable failure) { closed = false; recordFailure(errors, "client_close_failed", failure); }
+      try { if (dn != null) dn.shutdown(); }
+      catch (Throwable failure) { closed = false; recordFailure(errors, "datanode_shutdown_failed", failure); }
+      try { if (nn != null) nn.stop(); }
+      catch (Throwable failure) { closed = false; recordFailure(errors, "namenode_shutdown_failed", failure); }
+      try { checkExitRequests(); }
+      catch (Throwable failure) { closed = false; recordFailure(errors, "termination_requested", failure); }
       try { publish("final.json", report("final", preserved, configPreserved, closed, configHash, errors, files)); }
-      catch (Throwable failure) { errors.add("final_report_failed"); }
+      catch (Throwable failure) { recordFailure(errors, "final_report_failed", failure); }
     }
     if (!errors.isEmpty()) System.exit(1);
   }

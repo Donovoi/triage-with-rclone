@@ -64,8 +64,8 @@ class JavaContractTests(unittest.TestCase):
         self.assertEqual(actual["empty.bin"], b"")
         self.assertEqual(len(actual["large/cancel.bin"]), 2 * 1024 * 1024)
         self.assertEqual(actual["large/cancel.bin"][:512], bytes(range(256)) * 2)
-        # Four seconds at32KiB/s cannot finish the2MiB cancellation payload.
-        self.assertGreater(len(actual["large/cancel.bin"]), 4 * 32768)
+        # Eight seconds at32KiB/s cannot finish the2MiB cancellation payload.
+        self.assertGreater(len(actual["large/cancel.bin"]), 8 * 32768)
 
     def test_sample_parser_refuses_alias_duplicate_and_arbitrary_generator(self):
         for old, new in [("nested/alpha.txt", "nested/../alpha.txt"),
@@ -170,11 +170,76 @@ class JavaContractTests(unittest.TestCase):
         self.assertNotIn('.getMessage()', self.source)
         self.assertNotIn('System.out.', self.source)
         self.assertIn('errors.add(stage)', self.source)
-        self.assertIn('closed = false; errors.add("datanode_shutdown_failed")', self.source)
-        self.assertIn('closed = false; errors.add("namenode_shutdown_failed")', self.source)
+        self.assertIn('closed = false; recordFailure(errors, "datanode_shutdown_failed", failure)', self.source)
+        self.assertIn('closed = false; recordFailure(errors, "namenode_shutdown_failed", failure)', self.source)
         self.assertIn('api_shutdown_complete', self.source)
         self.assertIn('parent must enforce a 240s JVM deadline', self.source)
         self.assertNotIn('"cleanup_passed"', self.source)
+
+    def test_assertion_codes_are_closed_and_cover_every_require_literal(self):
+        declaration = re.search(r'REQUIRE_CODES = Set\.of\((.*?)\);', self.source, re.S).group(1)
+        codes = re.findall(r'"([a-z0-9_]+)"', declaration)
+        self.assertEqual(len(codes), len(set(codes)))
+        used = set(re.findall(r'require\(.*?"([a-z0-9_]+)"\);', self.source, re.S))
+        self.assertEqual(set(codes), used)
+        self.assertEqual(len(codes), 41)
+        for canary in ("PRIVATE_SYNTHETIC_CANARY", "/private/synthetic/file", "source_scope extra",
+                       "prefix_source_scope", "source_scope\n", "unclassified"):
+            self.assertNotIn(canary, codes)
+        self.assertIn('throw new FixtureFailure(code)', self.source)
+        self.assertIn('REQUIRE_CODES.contains(code) ? code : "unclassified"', self.source)
+
+    def test_throwable_classes_map_only_to_finite_categories(self):
+        reason = self.source[self.source.index('private static String failureReason('):
+                             self.source.index('private static void recordFailure(')]
+        self.assertEqual(set(re.findall(r'"([a-z_]+)"', reason)),
+                         {"unclassified", "missing_class", "resource_failure", "invalid_config",
+                          "linkage_failure", "io_failure", "exit_requested", "halt_requested"})
+        expected = {
+            "ClassNotFoundException || current instanceof NoClassDefFoundError": ("missing_class", "0"),
+            "OutOfMemoryError || current instanceof StackOverflowError": ("resource_failure", "1"),
+            "IllegalArgumentException": ("invalid_config", "2"),
+            "LinkageError": ("linkage_failure", "3"),
+            "IOException": ("io_failure", "4"),
+        }
+        actual = {types: (category, rank) for types, category, rank in re.findall(
+            r'if \(current instanceof ([^\n]+?)\) \{\s+category = "([a-z_]+)"; rank = ([0-9]+);', reason)}
+        self.assertEqual(actual, expected)
+        self.assertIn('if (rank < selectedRank)', reason)
+
+    def test_cause_inspection_is_bounded_and_does_not_parse_private_messages(self):
+        reason = self.source[self.source.index('private static String failureReason('):
+                             self.source.index('private static void recordFailure(')]
+        self.assertIn('current != null && depth < 8', reason)
+        self.assertIn('current instanceof FixtureFailure own && REQUIRE_CODES.contains(own.code)', reason)
+        self.assertIn('try { current = current.getCause(); }', reason)
+        self.assertIn('catch (Throwable ignored) { return "unclassified"; }', reason)
+        for forbidden in ('.getMessage(', '.getLocalizedMessage(', '.getClass(', '.toString(', '.getStackTrace('):
+            self.assertNotIn(forbidden, reason)
+
+    def test_diagnostics_preserve_primary_stage_and_cleanup_attempts(self):
+        record = self.source[self.source.index('private static void recordFailure('):
+                             self.source.index('private static void checkExitRequests(')]
+        self.assertLess(record.index('errors.add(stage)'), record.index('failureReason(failure)'))
+        self.assertIn('if (!errors.contains(reason)) errors.add(reason)', record)
+        main = self.source[self.source.index('public static void main('):]
+        self.assertIn('recordFailure(errors, stage, failure)', main)
+        for stage in ('client_close_failed', 'datanode_shutdown_failed', 'namenode_shutdown_failed',
+                      'termination_requested', 'final_report_failed'):
+            self.assertIn('recordFailure(errors, "' + stage + '", failure)', main)
+        self.assertNotIn('errors.clear()', main)
+
+    def test_exit_interception_is_before_daemons_and_sticky_requests_fail(self):
+        main = self.source[self.source.index('public static void main('):]
+        for enable in ('ExitUtil.disableSystemExit()', 'ExitUtil.disableSystemHalt()'):
+            self.assertLess(main.index(enable), main.index('NameNode.format(conf)'))
+        self.assertIn('require(!ExitUtil.terminateCalled(), "exit_requested")', self.source)
+        self.assertIn('require(!ExitUtil.haltCalled(), "halt_requested")', self.source)
+        self.assertLess(main.index('checkExitRequests()'), main.index('publish("ready.json"'))
+        self.assertLess(main.rindex('checkExitRequests()'), main.index('publish("final.json"'))
+        self.assertNotIn('resetFirstExitException', self.source)
+        self.assertNotIn('resetFirstHaltException', self.source)
+        self.assertIn('if (!errors.isEmpty()) System.exit(1)', main)
 
     def test_java17_source_encoding_and_no_preview_constructs(self):
         self.assertNotIn(b"\r", self.raw)
