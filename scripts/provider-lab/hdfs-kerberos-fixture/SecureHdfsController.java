@@ -88,6 +88,8 @@ public final class SecureHdfsController {
         role_environment_failed, role_material_failed, role_configuration_failed, role_login_failed,
         role_format_failed, role_format_preexisting, role_format_incomplete, role_source_failed,
         role_service_start_failed, role_cleanup_failed, role_preservation_failed, role_report_failed,
+        role_origin_http_ssl_configuration, role_origin_http_spnego, role_origin_http_start,
+        role_origin_jetty_ssl_start, role_origin_kerberos_auth_init, role_origin_namespace_load, role_origin_rpc_constructor,
         role_invalid_config, role_io_failure, role_file_missing, role_security_failure,
         role_illegal_state, role_null_state, role_missing_class, role_linkage_failure,
         role_resource_failure, role_exit_requested, role_halt_requested, role_unclassified,
@@ -597,6 +599,13 @@ public final class SecureHdfsController {
                 case "report_failed","report_invalid","report_preexisting" -> Code.role_report_failed;
                 case "invalid_config" -> Code.role_invalid_config;
                 case "io_failure" -> Code.role_io_failure;
+                case "origin_http_ssl_configuration" -> Code.role_origin_http_ssl_configuration;
+                case "origin_http_spnego" -> Code.role_origin_http_spnego;
+                case "origin_http_start" -> Code.role_origin_http_start;
+                case "origin_jetty_ssl_start" -> Code.role_origin_jetty_ssl_start;
+                case "origin_kerberos_auth_init" -> Code.role_origin_kerberos_auth_init;
+                case "origin_namespace_load" -> Code.role_origin_namespace_load;
+                case "origin_rpc_constructor" -> Code.role_origin_rpc_constructor;
                 case "file_missing" -> Code.role_file_missing;
                 case "security_failure" -> Code.role_security_failure;
                 case "illegal_state" -> Code.role_illegal_state;
