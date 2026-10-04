@@ -32,6 +32,7 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.Enumeration;
 import java.util.HashSet;
 import java.util.HexFormat;
@@ -66,6 +67,11 @@ import org.apache.hadoop.hdfs.server.namenode.NameNode;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.util.ExitUtil;
 import org.apache.hadoop.util.VersionInfo;
+import org.apache.log4j.AppenderSkeleton;
+import org.apache.log4j.Level;
+import org.apache.log4j.Logger;
+import org.apache.log4j.spi.LoggingEvent;
+import org.slf4j.LoggerFactory;
 
 public final class SecureHdfsRoles {
   private static final Path ROOT = Path.of("/work/secure");
@@ -86,7 +92,8 @@ public final class SecureHdfsRoles {
       "shutdown_timeout", "source_preexisting", "mkdir_failed", "source_scope",
       "source_inventory_bound", "source_duplicate", "source_inventory_changed",
       "source_metadata_changed", "source_bytes_changed", "missing_member_present",
-      "report_invalid", "report_preexisting", "exit_requested", "halt_requested");
+      "report_invalid", "report_preexisting", "pipeline_observer_failed", "pipeline_observer_cleanup_failed",
+      "exit_requested", "halt_requested");
   private static final class RoleFailure extends IOException {
     final String code;
     RoleFailure(String code) { super("role_assertion"); this.code = ASSERTIONS.contains(code) ? code : "unclassified"; }
@@ -159,6 +166,108 @@ public final class SecureHdfsRoles {
   }
   private static void addError(List<String> errors, String code) {
     if (!errors.contains(code) && errors.size() < 16) errors.add(code);
+  }
+  private static final class PipelineDiagnostics extends AppenderSkeleton {
+    private static final String LOGGER = "org.apache.hadoop.hdfs.DataStreamer";
+    private static final String PREFIX = "Exception in createBlockOutputStream ";
+    private final Logger logger = Logger.getLogger(LOGGER);
+    private final TreeSet<String> observations = new TreeSet<>(Comparator
+        .comparingInt(PipelineDiagnostics::priority).thenComparing(Comparator.naturalOrder()));
+    private int matchedEvents;
+    private boolean observationFailed;
+    void attach() throws Exception {
+      require(LoggerFactory.getILoggerFactory().getClass().getName().equals("org.slf4j.impl.Reload4jLoggerFactory")
+          && logger.isEnabledFor(Level.WARN) && !logger.isAttached(this), "pipeline_observer_failed");
+      setName("secure-pipeline-diagnostics");
+      logger.addAppender(this);
+      require(logger.isAttached(this), "pipeline_observer_failed");
+    }
+    void detach() throws Exception {
+      // Remove only this owned object, without changing level, additivity or
+      // another appender. Do not hold the observer lock while acquiring logger.
+      try {
+        logger.removeAppender(this);
+        require(!logger.isAttached(this), "pipeline_observer_cleanup_failed");
+      } finally { close(); }
+    }
+    @Override public synchronized void close() { closed = true; }
+    @Override public boolean requiresLayout() { return false; }
+    private static int priority(String code) {
+      return switch (code) {
+        case "logged_pipeline_connect", "logged_pipeline_timeout", "logged_pipeline_socket", "logged_pipeline_eof",
+             "logged_pipeline_sasl", "logged_pipeline_block_token", "logged_pipeline_encryption_key",
+             "logged_pipeline_observer_failed" -> 0;
+        case "logged_pipeline_connect_stage", "logged_pipeline_sasl_handshake", "logged_pipeline_sasl_message",
+             "logged_pipeline_block_ack" -> 1;
+        default -> 2;
+      };
+    }
+    private void note(String code) {
+      if (code == null) return;
+      observations.add(code);
+      // Later discriminating causes displace generic outer context, never the
+      // other way round. Only four static codes survive across all events.
+      if (observations.size() > 4) observations.pollLast();
+    }
+    @Override protected synchronized void append(LoggingEvent event) {
+      // This callback runs before DataStreamer can replace the original cause.
+      // Public typed-event APIs only: never render/store a message, event,
+      // throwable, thread name, location or raw frame beyond this callback.
+      try {
+        if (closed || matchedEvents >= 8 || event == null || !LOGGER.equals(event.getLoggerName())
+            || !Level.WARN.equals(event.getLevel())) return;
+        Object raw = event.getMessage();
+        if (!(raw instanceof String message) || message.length() > 4096 || !message.startsWith(PREFIX)
+            || event.getThrowableInformation() == null) return;
+        Throwable failure = event.getThrowableInformation().getThrowable();
+        if (failure == null) return;
+        matchedEvents++; note("logged_pipeline_create_block");
+        Set<Throwable> seen = Collections.newSetFromMap(new IdentityHashMap<>());
+        ArrayDeque<Throwable> pending = new ArrayDeque<>(); seen.add(failure); pending.add(failure);
+        while (!pending.isEmpty()) {
+          Throwable current = pending.removeFirst();
+          note(switch (current.getClass().getName()) {
+            case "java.net.ConnectException" -> "logged_pipeline_connect";
+            case "java.net.SocketTimeoutException" -> "logged_pipeline_timeout";
+            case "java.net.SocketException" -> "logged_pipeline_socket";
+            case "java.io.EOFException" -> "logged_pipeline_eof";
+            case "javax.security.sasl.SaslException", "javax.security.sasl.AuthenticationException" -> "logged_pipeline_sasl";
+            case "org.apache.hadoop.hdfs.security.token.block.InvalidBlockTokenException" -> "logged_pipeline_block_token";
+            case "org.apache.hadoop.hdfs.protocol.datatransfer.InvalidEncryptionKeyException" -> "logged_pipeline_encryption_key";
+            default -> null;
+          });
+          StackTraceElement[] frames = current.getStackTrace();
+          for (int index = 0; index < Math.min(32, frames.length); index++) {
+            StackTraceElement frame = frames[index]; String method = frame.getMethodName();
+            note(switch (frame.getClassName()) {
+              case "org.apache.hadoop.hdfs.DataStreamer" ->
+                  method.equals("createSocketForPipeline") ? "logged_pipeline_connect_stage" : null;
+              case "org.apache.hadoop.hdfs.protocol.datatransfer.sasl.SaslDataTransferClient" ->
+                  method.equals("doSaslHandshake") ? "logged_pipeline_sasl_handshake" : null;
+              case "org.apache.hadoop.hdfs.protocol.datatransfer.sasl.DataTransferSaslUtil" ->
+                  method.equals("readSaslMessage") ? "logged_pipeline_sasl_message" : null;
+              case "org.apache.hadoop.hdfs.protocol.datatransfer.DataTransferProtoUtil" ->
+                  method.equals("checkBlockOpStatus") ? "logged_pipeline_block_ack" : null;
+              default -> null;
+            });
+          }
+          Throwable cause = current.getCause();
+          if (cause != null && seen.size() < 8 && seen.add(cause)) pending.addLast(cause);
+          Throwable[] suppressed = current.getSuppressed();
+          for (int index = 0; index < Math.min(8, suppressed.length) && seen.size() < 8; index++) {
+            Throwable sibling = suppressed[index];
+            if (sibling != null && seen.add(sibling)) pending.addLast(sibling);
+          }
+        }
+      } catch (Throwable ignored) { observationFailed = true; }
+    }
+    synchronized void appendFailure(List<String> errors) {
+      // A recovered WARN cannot convert a successful acquisition into failure.
+      // Append after original and cleanup errors, preserving their error budget.
+      if (errors.isEmpty()) return;
+      if (observationFailed) note("logged_pipeline_observer_failed");
+      for (String code : observations) addError(errors, code);
+    }
   }
   private static void appendConfigurationAliases(List<String> errors, Configuration conf, Map<String, String> values) {
     if (conf == null || values == null) return;
@@ -770,6 +879,7 @@ public final class SecureHdfsRoles {
     String role = args[0], service = role.equals("dn") ? "dn" : "nn";
     Map<String, Boolean> checks = checks(role); List<String> errors = new ArrayList<>();
     NameNode nn = null; DataNode dn = null; DistributedFileSystem fs = null;
+    PipelineDiagnostics pipelineDiagnostics = null;
     Configuration conf = null; Map<String, String> values = null; Material material = null;
     UserGroupInformation login = null; String configHash = null, files = "null", stage = "environment_failed";
     boolean closed = true, constructorPending = false;
@@ -819,6 +929,8 @@ public final class SecureHdfsRoles {
         while (!dn.isDatanodeFullyStarted()) { exitRequests(); require(System.nanoTime() < start, "startup_timeout"); Thread.sleep(100); }
         dnAddresses(dn); checks.put("bound_service_addresses", true);
       } else {
+        stage = "pipeline_observer_failed";
+        pipelineDiagnostics = new PipelineDiagnostics(); pipelineDiagnostics.attach();
         stage = "client_start_failed";
         constructorPending = true;
         FileSystem client = FileSystem.newInstance(URI.create("hdfs://127.0.0.1:19000"), conf);
@@ -857,6 +969,11 @@ public final class SecureHdfsRoles {
           unchanged(material); require(configHash.equals(configurationHash(conf, values, material)), "configuration_changed");
         }
       } catch (Throwable failure) { checks.put("configuration_preserved", false); addError(errors, "preservation_failed"); addError(errors, reason(failure)); }
+      if (pipelineDiagnostics != null) {
+        try { pipelineDiagnostics.detach(); }
+        catch (Throwable ignored) { closed = false; addError(errors, "pipeline_observer_cleanup_failed"); }
+        pipelineDiagnostics.appendFailure(errors);
+      }
       try { publish(role, "final", report(role, "final", checks, configHash, files, closed, errors)); }
       catch (Throwable ignored) { /* No raw fallback output; missing final is failure. */ }
     }

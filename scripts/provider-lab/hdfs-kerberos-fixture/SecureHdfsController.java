@@ -94,6 +94,21 @@ public final class SecureHdfsController {
         role_origin_datastreamer_bad_datanode, role_origin_datastreamer_recovery,
         role_origin_output_flush, role_origin_output_complete, role_origin_output_close_threads,
         role_exception_sasl, role_exception_invalid_block_token, role_exception_invalid_encryption_key,
+        role_pipeline_observer_failed,
+        role_pipeline_observer_cleanup_failed,
+        role_logged_pipeline_create_block,
+        role_logged_pipeline_connect,
+        role_logged_pipeline_timeout,
+        role_logged_pipeline_socket,
+        role_logged_pipeline_eof,
+        role_logged_pipeline_sasl,
+        role_logged_pipeline_block_token,
+        role_logged_pipeline_encryption_key,
+        role_logged_pipeline_connect_stage,
+        role_logged_pipeline_sasl_handshake,
+        role_logged_pipeline_sasl_message,
+        role_logged_pipeline_block_ack,
+        role_logged_pipeline_observer_failed,
         role_configuration_default_uri_loopback_alias, role_configuration_https_loopback_alias,
         role_source_check_failed, role_source_mkdir_failed, role_source_create_failed, role_source_write_failed,
         role_source_close_failed, role_source_metadata_failed, role_source_inventory_failed, role_source_read_failed,
@@ -633,6 +648,21 @@ public final class SecureHdfsController {
                 case "exception_sasl" -> Code.role_exception_sasl;
                 case "exception_invalid_block_token" -> Code.role_exception_invalid_block_token;
                 case "exception_invalid_encryption_key" -> Code.role_exception_invalid_encryption_key;
+                case "pipeline_observer_failed" -> Code.role_pipeline_observer_failed;
+                case "pipeline_observer_cleanup_failed" -> Code.role_pipeline_observer_cleanup_failed;
+                case "logged_pipeline_create_block" -> Code.role_logged_pipeline_create_block;
+                case "logged_pipeline_connect" -> Code.role_logged_pipeline_connect;
+                case "logged_pipeline_timeout" -> Code.role_logged_pipeline_timeout;
+                case "logged_pipeline_socket" -> Code.role_logged_pipeline_socket;
+                case "logged_pipeline_eof" -> Code.role_logged_pipeline_eof;
+                case "logged_pipeline_sasl" -> Code.role_logged_pipeline_sasl;
+                case "logged_pipeline_block_token" -> Code.role_logged_pipeline_block_token;
+                case "logged_pipeline_encryption_key" -> Code.role_logged_pipeline_encryption_key;
+                case "logged_pipeline_connect_stage" -> Code.role_logged_pipeline_connect_stage;
+                case "logged_pipeline_sasl_handshake" -> Code.role_logged_pipeline_sasl_handshake;
+                case "logged_pipeline_sasl_message" -> Code.role_logged_pipeline_sasl_message;
+                case "logged_pipeline_block_ack" -> Code.role_logged_pipeline_block_ack;
+                case "logged_pipeline_observer_failed" -> Code.role_logged_pipeline_observer_failed;
                 case "file_missing" -> Code.role_file_missing;
                 case "security_failure" -> Code.role_security_failure;
                 case "illegal_state" -> Code.role_illegal_state;
