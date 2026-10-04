@@ -848,6 +848,47 @@
         "refresh",
         "reauthentication"
       ]
+    },
+    "filefabric-cached-session-fixture": {
+      "required": {
+        "application": [
+          "listing",
+          "download_hash",
+          "manifest_integrity",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation",
+          "refresh"
+        ],
+        "vendor": [
+          "listing",
+          "download_hash",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation",
+          "refresh"
+        ],
+        "local_protocol": [
+          "listing",
+          "download_hash",
+          "missing_object_rejection",
+          "authentication_rejection",
+          "source_preservation",
+          "config_preservation",
+          "fixture_write_rejection",
+          "cleanup"
+        ]
+      },
+      "review_required": false,
+      "unresolved_applicability": [
+        "reauthentication"
+      ]
     }
   },
   "providers": {
@@ -1371,14 +1412,24 @@
     "filefabric": {
       "canonical_name": "filefabric",
       "schema_sha256": "043189412a12be7db296a53f98592cf7191c2e63b1a165679ff8f695b77755f4",
-      "profile": "hosted-renewal-session-review",
+      "profile": "filefabric-cached-session-fixture",
       "notes": [
         "Enterprise File Fabric endpoint and permanent authentication token; derived session token expiry is documented. Local installation is not evidence of free licensing.",
         "Free account/API eligibility: review_required",
-        "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension."
+        "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension.",
+        "The independent loopback RPC fixture seeds a synthetic cached session token, future expiry, explicit version and fixed root folder ID. It accepts only getFolderContents, checkPathExists, getFile and a denied doDeleteFile guard on a closed synthetic graph. Token grants and appliance discovery are forbidden in this baseline.",
+        "Every native operation has fresh fixture state and exact request/event binding. Listing and stat verify complete typed file metadata and second-precision fi_localtime precedence over differing fi_modified. FileFabric exposes no backend hash; downloaded bytes use independent size and SHA256 checks.",
+        "Wrong cached-session metadata and a separate synthetic member denial require distinct semantic errors, a nonzero copy outcome and no artifact. Missing metadata must be the explicit exists=n response; malformed success cannot stand in for intended absence. HTTP200 raw getFile bodies are ordinary content and never qualify as authentication rejection.",
+        "The eight fixture capabilities cover cached-session reads only. Permanent-token provisioning, fresh login, session acquisition/renewal, token persistence, general session reauthentication, hosted appliances, TLS, pagination, native empty/range objects, application acceptance and account permissions remain unverified. Existing application/vendor lifecycle obligations are unchanged."
       ],
       "source_links": [
-        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/filefabric.md"
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/filefabric.md",
+        "https://github.com/rclone/rclone/blob/v1.75.1/backend/filefabric/filefabric.go#L235-L419",
+        "https://github.com/rclone/rclone/blob/v1.75.1/backend/filefabric/filefabric.go#L423-L517",
+        "https://github.com/rclone/rclone/blob/v1.75.1/backend/filefabric/filefabric.go#L584-L678",
+        "https://github.com/rclone/rclone/blob/v1.75.1/backend/filefabric/filefabric.go#L1095-L1203",
+        "https://github.com/rclone/rclone/blob/v1.75.1/backend/filefabric/api/types.go#L15-L246",
+        "https://github.com/rclone/rclone/blob/v1.75.1/lib/dircache/dircache.go#L369-L380"
       ],
       "auth_applicability": "provider_specific",
       "refresh_applicability": "required",
