@@ -44,6 +44,24 @@ def archive(entries=None):
     return gzip.compress(stream.getvalue(), mtime=0)
 
 
+def patch_header(data, index, fields):
+    """Independent raw USTAR oracle: writer APIs otherwise mask Unix type bits."""
+    raw = bytearray(gzip.decompress(data))
+    start = 0
+    for _ in range(1, index):
+        size = int(raw[start + 124:start + 136].rstrip(b"\0 "), 8)
+        start += 512 + ((size + 511) // 512) * 512
+    header = bytearray(raw[start:start + 512])
+    assert len(header) == 512 and any(header)
+    for offset, value in fields.items():
+        assert 0 <= offset < 512 and offset + len(value) <= 512
+        header[offset:offset + len(value)] = value
+    header[148:156] = b" " * 8
+    header[148:156] = f"{sum(header):06o}\0 ".encode("ascii")
+    raw[start:start + 512] = header
+    return gzip.compress(raw, mtime=0)
+
+
 class Tests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -95,18 +113,24 @@ class Tests(unittest.TestCase):
     def test_duplicate_canonical_names_reject(self):
         entries = [(ROOT_NAME + "/", tarfile.DIRTYPE, b"", 0o755),
                    (ROOT_NAME, tarfile.DIRTYPE, b"", 0o755)]
-        self.error("layout_duplicate", self.layout, archive(entries))
+        # TarInfo writes a trailing slash for both names; remove it in the actual header.
+        data = patch_header(archive(entries), 2, {0: ROOT_NAME.encode().ljust(100, b"\0")})
+        self.error("layout_duplicate", self.layout, data)
 
-    def duplicate_diagnostic(self, entries):
+    def duplicate_diagnostic(self, entries, updates=()):
+        data = archive(entries)
+        for index, fields in updates:
+            data = patch_header(data, index, fields)
         with self.assertRaises(b.MaterialError) as caught:
-            self.layout(archive(entries))
+            self.layout(data)
         self.assertEqual(str(caught.exception), "layout_duplicate")
         return caught.exception.diagnostic
 
     def test_duplicate_directories_report_only_canonical_hash_and_closed_metadata(self):
         name = ROOT_NAME + "/PRIVATE_NAME_CANARY"
         result = self.duplicate_diagnostic([(name + "/", tarfile.DIRTYPE, b"", 0o755),
-                                            (name, tarfile.DIRTYPE, b"", 0o755)])
+                                            (name, tarfile.DIRTYPE, b"", 0o755)],
+                                           updates=((2, {0: name.encode().ljust(100, b"\0")}),))
         self.assertEqual(result, {
             "schema_version": 1, "code": "layout_duplicate",
             "canonical_path_sha256": hashlib.sha256(name.encode()).hexdigest(),
@@ -160,7 +184,8 @@ class Tests(unittest.TestCase):
 
     def test_diagnostic_schema_types_bounds_and_consistency_are_closed(self):
         good = self.duplicate_diagnostic([(ROOT_NAME, tarfile.DIRTYPE, b"", 0o755),
-                                          (ROOT_NAME, tarfile.DIRTYPE, b"", 0o755)])
+                                          (ROOT_NAME, tarfile.DIRTYPE, b"", 0o755)],
+                                         updates=((2, {136: b"00000000001\0"}),))
         changes = [("schema_version", True), ("code", "PRIVATE_CODE"), ("extra", "PRIVATE_PATH"),
                    ("canonical_path_sha256", "PRIVATE_PATH"), ("canonical_path_sha256", "A" * 64),
                    ("same_type", 1), ("same_mode", False), ("same_content", False),
@@ -168,6 +193,7 @@ class Tests(unittest.TestCase):
                    ("new.index", b.MAX_MEMBERS + 1), ("existing.size", True), ("existing.size", -1),
                    ("existing.size", b.MAX_PAYLOAD + 1), ("existing.size", 1),
                    ("existing.mode", True), ("existing.mode", -1), ("existing.mode", 0o4755),
+                   ("existing.mode", 0o100755), ("existing.mode", 0o240755),
                    ("existing.payload_sha256", "a" * 64), ("existing.type", "symlink"),
                    ("existing.type", "file"), ("existing.path", "PRIVATE_PATH")]
         for field, value in changes:
@@ -185,6 +211,88 @@ class Tests(unittest.TestCase):
         error = b.MaterialError("layout_duplicate", good)
         good["existing"]["size"] = 1
         self.assertEqual(error.diagnostic["existing"]["size"], 0)
+
+    def test_full_unix_modes_preserved_from_raw_headers(self):
+        data = archive()
+        for index, mode in ((1, 0o40755), (2, 0o40755), (3, 0o100755)):
+            data = patch_header(data, index, {100: f"{mode:07o}\0".encode("ascii")})
+        result = self.layout(data)
+        expected_rows = [
+            {"path": ROOT_NAME, "type": "directory", "size": 0, "mode": 0o40755, "sha256": None},
+            {"path": ROOT_NAME + "/bin", "type": "directory", "size": 0, "mode": 0o40755, "sha256": None},
+            {"path": ROOT_NAME + "/bin/mvn", "type": "file", "size": len(SCRIPT), "mode": 0o100755,
+             "sha256": hashlib.sha256(SCRIPT).hexdigest()}]
+        framing = (json.dumps(expected_rows, sort_keys=True, separators=(",", ":")) + "\n").encode()
+        self.assertEqual(result["members_sha256"], hashlib.sha256(framing).hexdigest())
+        self.assertEqual((result["members"], result["repeated_directories"]), (3, 0))
+        self.assertTrue(result["mvn"]["executable"])
+        # Nonexecutable data files accept 0100644 too; bin/mvn must stay executable.
+        entries = [(ROOT_NAME + "/data", tarfile.REGTYPE, b"data", 0o644),
+                   (ROOT_NAME + "/bin/mvn", tarfile.REGTYPE, SCRIPT, 0o755)]
+        self.assertEqual(self.layout(patch_header(archive(entries), 1, {100: b"0100644\0"}))["files"], 2)
+
+    def test_raw_conflicting_unknown_and_special_mode_bits_reject(self):
+        for index, mode in ((1, 0o100755), (3, 0o40755), (1, 0o20755), (3, 0o140755),
+                            (1, 0o240755), (3, 0o200755), (1, 0o44755), (3, 0o102755),
+                            (3, 0o101755), (1, 0o1755), (3, 0o6755)):
+            with self.subTest(index=index, mode=oct(mode)):
+                self.error("layout_invalid", self.layout,
+                           patch_header(archive(), index, {100: f"{mode:07o}\0".encode("ascii")}))
+
+    def test_exact_repeated_directory_headers_retain_every_physical_row(self):
+        entries = [(ROOT_NAME + "/", tarfile.DIRTYPE, b"", 0o755),
+                   (ROOT_NAME + "/bin/", tarfile.DIRTYPE, b"", 0o755),
+                   (ROOT_NAME + "/bin/mvn", tarfile.REGTYPE, SCRIPT, 0o755),
+                   (ROOT_NAME + "/bin/", tarfile.DIRTYPE, b"", 0o755)]
+        for full in (False, True):
+            with self.subTest(full=full):
+                data = archive(entries)
+                modes = [0o40755, 0o40755, 0o100755, 0o40755] if full else [0o755] * 4
+                for index, mode in enumerate(modes, 1):
+                    data = patch_header(data, index, {100: f"{mode:07o}\0".encode("ascii")})
+                result = self.layout(data)
+                rows = [
+                    {"path": ROOT_NAME, "type": "directory", "size": 0, "mode": modes[0], "sha256": None},
+                    {"path": ROOT_NAME + "/bin", "type": "directory", "size": 0, "mode": modes[1], "sha256": None},
+                    {"path": ROOT_NAME + "/bin/mvn", "type": "file", "size": len(SCRIPT), "mode": modes[2],
+                     "sha256": hashlib.sha256(SCRIPT).hexdigest()},
+                    {"path": ROOT_NAME + "/bin", "type": "directory", "size": 0, "mode": modes[3], "sha256": None}]
+                framing = (json.dumps(rows, sort_keys=True, separators=(",", ":")) + "\n").encode()
+                self.assertEqual(result["members_sha256"], hashlib.sha256(framing).hexdigest())
+                self.assertEqual((result["members"], result["files"], result["directories"],
+                                  result["repeated_directories"]), (4, 1, 3, 1))
+                self.assertEqual(result["payload_bytes"], len(SCRIPT))
+                self.assertFalse(result["extracted"])
+                self.assertFalse(result["executed"])
+
+    def test_directory_header_metadata_or_raw_spelling_changes_reject(self):
+        entries = [(ROOT_NAME + "/", tarfile.DIRTYPE, b"", 0o755)] * 2
+        for fields in ({108: b"0000001\0"}, {116: b"0000001\0"}, {136: b"00000000001\0"},
+                       {265: b"PRIVATE_OWNER_CANARY"}, {297: b"PRIVATE_GROUP_CANARY"}, {500: b"x"},
+                       {100: b"0040755\0"}, {0: ROOT_NAME.encode().ljust(100, b"\0")}):
+            with self.subTest(offset=next(iter(fields))):
+                result = self.duplicate_diagnostic(entries, updates=((2, fields),))
+                self.assertEqual((result["existing"]["index"], result["new"]["index"]), (1, 2))
+                self.assertNotIn("PRIVATE", json.dumps(result))
+        for alias in (ROOT_NAME + "//", ROOT_NAME + "/./"):
+            with self.subTest(alias=alias):
+                self.error("layout_alias", self.layout,
+                           patch_header(archive(entries), 2, {0: alias.encode().ljust(100, b"\0")}))
+
+    def test_repeats_count_against_member_bound_and_preserve_first_index(self):
+        entries = [(ROOT_NAME + "/", tarfile.DIRTYPE, b"", 0o755)] * 3
+        entries += [(ROOT_NAME, tarfile.REGTYPE, b"", 0o755)]
+        result = self.duplicate_diagnostic(entries)
+        self.assertEqual((result["existing"]["index"], result["new"]["index"]), (1, 4))
+        with mock.patch.object(b, "MAX_MEMBERS", 2):
+            self.error("layout_bounds", self.layout, archive(entries))
+
+    def test_repeated_file_still_rejects_with_full_modes(self):
+        entries = [(ROOT_NAME + "/file", tarfile.REGTYPE, b"same", 0o644)] * 2
+        result = self.duplicate_diagnostic(entries, updates=((1, {100: b"0100644\0"}), (2, {100: b"0100644\0"})))
+        self.assertTrue(result["same_content"])
+        self.assertEqual(result["existing"]["mode"], 0o100644)
+        self.assertEqual(b.validate_layout_diagnostic(result), result)
 
     def test_pax_physical_headers_reject_before_large_payload_parse(self):
         for kind in (tarfile.XHDTYPE, tarfile.XGLTYPE):
@@ -313,6 +421,24 @@ class Tests(unittest.TestCase):
             self.assertFalse(lease.report["ledger_eligible"])
             self.error("material_invalid", lambda: lease.material)
             self.error("lease_reused", lease.__enter__)
+
+    def test_full_mode_repeated_directory_layout_revalidates_through_lease(self):
+        entries = [(ROOT_NAME + "/", tarfile.DIRTYPE, b"", 0o755),
+                   (ROOT_NAME + "/bin/", tarfile.DIRTYPE, b"", 0o755),
+                   (ROOT_NAME + "/bin/mvn", tarfile.REGTYPE, SCRIPT, 0o755),
+                   (ROOT_NAME + "/bin/", tarfile.DIRTYPE, b"", 0o755)]
+        data = archive(entries)
+        for index, mode in ((1, 0o40755), (2, 0o40755), (3, 0o100755), (4, 0o40755)):
+            data = patch_header(data, index, {100: f"{mode:07o}\0".encode("ascii")})
+        with self.scenario(archive_data=data) as (lease, _, _):
+            with lease:
+                self.assertEqual(b.validate_material(lease.material, lease.root), lease.material)
+                self.assertIsNone(lease.report["layout"])
+            self.assertTrue(lease.report["success"])
+            self.assertEqual((lease.report["layout"]["members"], lease.report["layout"]["repeated_directories"]), (4, 1))
+            self.assertIsNone(lease.report["layout_diagnostic"])
+            self.assertEqual(lease.report["cleanup"], {"children_stopped": True, "temporary_removed": True})
+            self.assertFalse(lease.root.exists())
 
     def test_pure_revalidation_does_not_call_verifier_or_network(self):
         with self.scenario() as (lease, calls, verifier), lease:
