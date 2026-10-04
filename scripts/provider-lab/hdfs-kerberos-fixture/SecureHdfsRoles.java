@@ -615,52 +615,74 @@ public final class SecureHdfsRoles {
     }
     return result;
   }
-  private static void seed(DistributedFileSystem fs, Map<String, byte[]> files) throws Exception {
-    require(!fs.exists(remote("")), "source_preexisting");
-    for (String dir : directories(files)) {
-      require(fs.mkdirs(remote(dir), new FsPermission((short) 0755)), "mkdir_failed");
-      fs.setPermission(remote(dir), new FsPermission((short) 0755));
-    }
-    for (Map.Entry<String, byte[]> entry : files.entrySet()) {
-      try (FSDataOutputStream out = fs.create(remote(entry.getKey()), false)) { out.write(entry.getValue()); }
-      fs.setPermission(remote(entry.getKey()), new FsPermission(mode(entry.getKey())));
-      fs.setOwner(remote(entry.getKey()), "reader", "fixture-readers");
-      fs.setTimes(remote(entry.getKey()), MTIME_MS, MTIME_MS);
-    }
-    for (String dir : directories(files)) {
-      fs.setOwner(remote(dir), "reader", "fixture-readers"); fs.setTimes(remote(dir), MTIME_MS, MTIME_MS);
-    }
+  private static void seed(DistributedFileSystem fs, Map<String, byte[]> files, List<String> errors) throws Exception {
+    String operation = "source_check_failed";
+    try {
+      require(!fs.exists(remote("")), "source_preexisting");
+      for (String dir : directories(files)) {
+        operation = "source_mkdir_failed";
+        require(fs.mkdirs(remote(dir), new FsPermission((short) 0755)), "mkdir_failed");
+        operation = "source_metadata_failed";
+        fs.setPermission(remote(dir), new FsPermission((short) 0755));
+      }
+      for (Map.Entry<String, byte[]> entry : files.entrySet()) {
+        operation = "source_create_failed";
+        FSDataOutputStream created = fs.create(remote(entry.getKey()), false);
+        try (FSDataOutputStream out = created) {
+          operation = "source_write_failed"; out.write(entry.getValue());
+          operation = "source_close_failed";
+        }
+        operation = "source_metadata_failed";
+        fs.setPermission(remote(entry.getKey()), new FsPermission(mode(entry.getKey())));
+        fs.setOwner(remote(entry.getKey()), "reader", "fixture-readers");
+        fs.setTimes(remote(entry.getKey()), MTIME_MS, MTIME_MS);
+      }
+      for (String dir : directories(files)) {
+        operation = "source_metadata_failed";
+        fs.setOwner(remote(dir), "reader", "fixture-readers"); fs.setTimes(remote(dir), MTIME_MS, MTIME_MS);
+      }
+    } catch (Exception failure) { addError(errors, operation); throw failure; }
   }
-  private static void verifySource(DistributedFileSystem fs, Map<String, byte[]> files) throws Exception {
-    Set<String> dirs = directories(files), foundDirs = new TreeSet<>(), foundFiles = new TreeSet<>();
-    ArrayDeque<String> pending = new ArrayDeque<>(); pending.add(""); int observed = 0;
-    while (!pending.isEmpty()) {
-      String relativeDir = pending.remove(); FileStatus directory = fs.getFileStatus(remote(relativeDir));
-      require(directory.isDirectory() && !directory.isSymlink() && directory.getPermission().toShort() == 0755
-          && directory.getOwner().equals("reader") && directory.getGroup().equals("fixture-readers")
-          && directory.getModificationTime() == MTIME_MS, "source_metadata_changed");
-      require(foundDirs.add(relativeDir), "source_duplicate");
-      FileStatus[] children = fs.listStatus(remote(relativeDir)); require(children.length <= 16, "source_inventory_bound");
-      for (FileStatus child : children) {
-        require(++observed <= 32 && !child.isSymlink(), "source_inventory_bound");
-        URI uri = child.getPath().toUri(); String full = uri.getPath();
-        require("hdfs".equals(uri.getScheme()) && "127.0.0.1:19000".equals(uri.getAuthority())
-            && full.startsWith(REMOTE_ROOT + "/"), "source_scope");
-        String relative = full.substring(REMOTE_ROOT.length() + 1);
-        if (child.isDirectory()) { require(dirs.contains(relative), "source_inventory_changed"); pending.add(relative); }
-        else {
-          require(child.isFile() && files.containsKey(relative) && foundFiles.add(relative), "source_inventory_changed");
-          byte[] expected = files.get(relative);
-          require(child.getLen() == expected.length && child.getOwner().equals("reader") && child.getGroup().equals("fixture-readers")
-              && child.getPermission().toShort() == mode(relative) && child.getModificationTime() == MTIME_MS
-              && child.getAccessTime() == MTIME_MS && child.getReplication() == 1, "source_metadata_changed");
-          byte[] actual; try (InputStream input = fs.open(remote(relative))) { actual = input.readNBytes(expected.length + 1); }
-          require(Arrays.equals(actual, expected) && sha256(actual).equals(sha256(expected)), "source_bytes_changed");
+  private static void verifySource(DistributedFileSystem fs, Map<String, byte[]> files, List<String> errors) throws Exception {
+    String operation = "source_inventory_failed";
+    try {
+      Set<String> dirs = directories(files), foundDirs = new TreeSet<>(), foundFiles = new TreeSet<>();
+      ArrayDeque<String> pending = new ArrayDeque<>(); pending.add(""); int observed = 0;
+      while (!pending.isEmpty()) {
+        operation = "source_metadata_failed";
+        String relativeDir = pending.remove(); FileStatus directory = fs.getFileStatus(remote(relativeDir));
+        require(directory.isDirectory() && !directory.isSymlink() && directory.getPermission().toShort() == 0755
+            && directory.getOwner().equals("reader") && directory.getGroup().equals("fixture-readers")
+            && directory.getModificationTime() == MTIME_MS, "source_metadata_changed");
+        operation = "source_inventory_failed";
+        require(foundDirs.add(relativeDir), "source_duplicate");
+        FileStatus[] children = fs.listStatus(remote(relativeDir)); require(children.length <= 16, "source_inventory_bound");
+        for (FileStatus child : children) {
+          operation = "source_inventory_failed";
+          require(++observed <= 32 && !child.isSymlink(), "source_inventory_bound");
+          URI uri = child.getPath().toUri(); String full = uri.getPath();
+          require("hdfs".equals(uri.getScheme()) && "127.0.0.1:19000".equals(uri.getAuthority())
+              && full.startsWith(REMOTE_ROOT + "/"), "source_scope");
+          String relative = full.substring(REMOTE_ROOT.length() + 1);
+          if (child.isDirectory()) { require(dirs.contains(relative), "source_inventory_changed"); pending.add(relative); }
+          else {
+            require(child.isFile() && files.containsKey(relative) && foundFiles.add(relative), "source_inventory_changed");
+            byte[] expected = files.get(relative);
+            operation = "source_metadata_failed";
+            require(child.getLen() == expected.length && child.getOwner().equals("reader") && child.getGroup().equals("fixture-readers")
+                && child.getPermission().toShort() == mode(relative) && child.getModificationTime() == MTIME_MS
+                && child.getAccessTime() == MTIME_MS && child.getReplication() == 1, "source_metadata_changed");
+            operation = "source_read_failed";
+            byte[] actual; try (InputStream input = fs.open(remote(relative))) { actual = input.readNBytes(expected.length + 1); }
+            require(Arrays.equals(actual, expected) && sha256(actual).equals(sha256(expected)), "source_bytes_changed");
+          }
         }
       }
-    }
-    require(foundFiles.equals(files.keySet()) && foundDirs.equals(dirs), "source_inventory_changed");
-    require(!fs.exists(remote("missing-synthetic.bin")), "missing_member_present");
+      operation = "source_inventory_failed";
+      require(foundFiles.equals(files.keySet()) && foundDirs.equals(dirs), "source_inventory_changed");
+      operation = "source_check_failed";
+      require(!fs.exists(remote("missing-synthetic.bin")), "missing_member_present");
+    } catch (Exception failure) { addError(errors, operation); throw failure; }
   }
   private static String quoted(String value) {
     // Called only on static labels, fixed sample paths or a SHA256, never raw input.
@@ -783,8 +805,8 @@ public final class SecureHdfsRoles {
         fs = (DistributedFileSystem) client; constructorPending = false;
         clientReady(fs); checks.put("bound_service_addresses", true);
         Map<String, byte[]> expected = samples(); stage = "source_failed";
-        if (role.equals("seed")) seed(fs, expected);
-        verifySource(fs, expected); checks.put("source_preserved", true); files = manifest(expected);
+        if (role.equals("seed")) seed(fs, expected, errors);
+        verifySource(fs, expected, errors); checks.put("source_preserved", true); files = manifest(expected);
       }
       stage = "preservation_failed"; unchanged(material);
       require(configHash.equals(configurationHash(conf, values, material)), "configuration_changed");
