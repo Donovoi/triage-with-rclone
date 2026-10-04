@@ -74,7 +74,7 @@ def policy_and_catalog():
     catalog = C.catalog_from_schemas([{"Name": "smb", "Prefix": "smb", "Options": []}])
     entry.pop("schema_sha256_by_platform", None)
     entry["schema_sha256"] = catalog[0]["schema_sha256"]
-    return {"schema_version": 2, "providers": {"smb": entry},
+    return {"schema_version": 2, "reviewed_runtime_version": RUNTIME["version"], "providers": {"smb": entry},
             "profiles": {entry["profile"]: copy.deepcopy(original["profiles"][entry["profile"]])}}, catalog
 
 
