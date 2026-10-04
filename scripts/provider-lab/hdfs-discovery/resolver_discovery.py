@@ -202,15 +202,17 @@ class Result:
 
 class Docker:
     """Bounded Linux pipe capture. Raw bytes remain only in the private run root."""
-    def __init__(self, root):
+    def __init__(self, root, *, max_calls=30):
+        need(type(max_calls) is int and 30 <= max_calls <= 120, "command_output_limit")
         self.root, self.calls = root, 0
+        self.max_calls = max_calls
         self.environment = {key: os.environ[key] for key in ("PATH", "LANG", "LC_ALL") if key in os.environ}
         self.environment.update(HOME=str(root), DOCKER_CONFIG=str(root / "docker-config"))
         (root / "docker-config").mkdir(mode=0o700)
 
     def call(self, arguments, timeout=15, limit=1024 * 1024, allow_failure=False):
         self.calls += 1
-        need(self.calls <= 30 and type(timeout) is int and 1 <= timeout <= 630
+        need(self.calls <= self.max_calls and type(timeout) is int and 1 <= timeout <= 630
              and type(limit) is int and 1 <= limit <= MAX_ARCHIVE, "command_output_limit")
         out, err = (self.root / ("command-%02d." % self.calls + suffix) for suffix in ("out", "err"))
         process = None
