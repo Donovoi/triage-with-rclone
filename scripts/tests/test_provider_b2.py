@@ -231,8 +231,9 @@ class B2ServerTests(unittest.TestCase):
                  ("/%622api/v4/b2_authorize_account", {}),
                  ("/file/synthetic-bucket/%2e%2e/README-synthetic.txt", {}),
                  ("/b2api/v1/b2_download_file_by_id?fileId=a&fileId=b", {})]
-        for path, kwargs in cases:
-            self.assert_error(self.request("GET", path, token, **kwargs), 400)
+        for case, (path, kwargs) in enumerate(cases, start=1):
+            with self.subTest(case=case):
+                self.assert_error(self.request("GET", path, token, **kwargs), 400)
         self.assertEqual(self.state.payload_bytes, 0)
 
     def test_range_is_single_bounded_and_exact(self):

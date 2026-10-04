@@ -231,6 +231,65 @@ class TlsTests(unittest.TestCase):
         self.wait_for(lambda: server.snapshot()["active_connections"] == 0)
         self.assertEqual(state, [])
 
+    def test_dispatch_guard_rejects_successful_eof_parse_after_deadline(self):
+        self._check_dispatch_guard(headers=b"Host: 127.0.0.1\r\n", deadline=10, now=10,
+                                   failures={"tls_http_dispatch_rejected", "tls_request_deadline", "tls_incomplete_http_headers"})
+
+    def test_dispatch_guard_rejects_complete_headers_after_deadline(self):
+        self._check_dispatch_guard(headers=b"Host: 127.0.0.1\r\n\r\n", deadline=10, now=11,
+                                   failures={"tls_http_dispatch_rejected", "tls_request_deadline"})
+
+    def test_dispatch_guard_rejects_stopping_and_untracked_connections(self):
+        for deadline, stopping in ((None, False), (20, True)):
+            with self.subTest(deadline=deadline, stopping=stopping):
+                self._check_dispatch_guard(headers=b"Host: 127.0.0.1\r\n\r\n", deadline=deadline, now=10,
+                                           failures={"tls_http_dispatch_rejected"}, stopping=stopping)
+
+    def test_eof_without_header_terminator_is_rejected_before_deadline(self):
+        self._check_dispatch_guard(headers=b"Host: 127.0.0.1\r\n", deadline=20, now=10,
+                                   failures={"tls_incomplete_http_headers"})
+
+    def _check_dispatch_guard(self, *, headers, deadline, now, failures, stopping=False):
+        # Exercise the real stdlib parser with deterministic EOF and clock.
+        # It returns true for these incomplete headers; no socket scheduling
+        # or platform-specific TLS EOF behavior is needed to reproduce that.
+        state, parsed_results = [], []
+        server = tls.BoundedHttpsServer(self.material(), FixedHandler, state=state)
+        self.servers.append(server)
+        connection = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server._sockets.add(connection)
+        if deadline is not None:
+            server._socket_deadlines[connection] = deadline
+        server._stopping = stopping
+        handler = object.__new__(server._server.RequestHandlerClass)
+        handler.connection = handler.request = connection
+        handler.server = server._server
+        handler.client_address = ("127.0.0.1", 1)
+        handler.rfile = io.BytesIO(b"GET /synthetic HTTP/1.1\r\n" + headers)
+        handler.wfile = io.BytesIO()
+        handler.close_connection = True
+        original = BaseHTTPRequestHandler.parse_request
+        def observe_parser(instance):
+            result = original(instance)
+            parsed_results.append(result)
+            return result
+        try:
+            with patch.object(BaseHTTPRequestHandler, "parse_request", observe_parser), patch.object(tls.time, "monotonic", return_value=now):
+                handler.handle_one_request()
+                if deadline is not None and now >= deadline:
+                    # The real timer and worker also report the same event.
+                    server._mark_expired(connection)
+                    server._mark_expired(connection)
+            self.assertEqual(parsed_results, [True])
+            self.assertEqual(state, [])
+            self.assertTrue(handler.close_connection)
+            self.assertEqual(set(server.snapshot()["failure_codes"]), failures)
+            self.assertEqual(server.snapshot()["request_timeouts"], int(deadline is not None and now >= deadline))
+        finally:
+            handler.rfile.close()
+            handler.wfile.close()
+            server._release(connection)
+
     def test_active_limit_rejection_is_sticky(self):
         server, _ = self.server(active_limit=1)
         with socket.create_connection(("127.0.0.1", server.port), timeout=1):
