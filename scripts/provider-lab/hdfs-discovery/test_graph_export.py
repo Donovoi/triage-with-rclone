@@ -254,7 +254,7 @@ class GraphExportTests(unittest.TestCase):
         valid = pom(self.a)["content"].replace(b'http://maven.apache.org/POM/4.0.0',
                                              b'https://maven.apache.org/POM/4.0.0')
         with mock.patch.object(g, "MAX_ELEMENTS", 2):
-            self.rejected_pom(valid, "element_bounds", expected_code="input_limit")
+            self.rejected_pom(valid, "pom_element_limit", expected_code="input_limit")
 
     def test_https_child_alias_is_flagged_even_with_canonical_root(self):
         record = pom(self.a, '<description xmlns="https://maven.apache.org/POM/4.0.0">PRIVATE_CANARY</description>')
@@ -305,7 +305,54 @@ class GraphExportTests(unittest.TestCase):
 
     def test_pom_element_budget_failure_remains_input_limit_with_diagnostic(self):
         with mock.patch.object(g, "MAX_ELEMENTS", 2):
-            self.rejected_pom(pom(self.a)["content"], "element_bounds", expected_code="input_limit")
+            self.rejected_pom(pom(self.a)["content"], "pom_element_limit", expected_code="input_limit")
+
+    def test_shared_element_budget_accepts_exact_boundary_and_rejects_next_element(self):
+        # Three separate five-element POMs: each is below the per-file limit.
+        with mock.patch.object(g, "MAX_TOTAL_ELEMENTS", 15), mock.patch.object(g, "MAX_ELEMENTS", 5):
+            result = self.export()
+            self.assertEqual(result["processed_pom_totals"],
+                             {"poms": 3, "bytes": sum(len(p["content"]) for p in self.poms), "elements": 15})
+        with mock.patch.object(g, "MAX_TOTAL_ELEMENTS", 14), mock.patch.object(g, "MAX_ELEMENTS", 5):
+            with self.assertRaises(g.ExportError) as caught:
+                self.export()
+            self.assertEqual((caught.exception.code, caught.exception.pom_reason),
+                             ("input_limit", "aggregate_element_limit"))
+            diagnostic = g.pom_failure_diagnostic(caught.exception)
+            self.assertEqual(diagnostic["coordinate"], self.poms[2]["coordinate"])
+            self.assertEqual(diagnostic["sha256"], self.poms[2]["sha256"])
+
+    def test_depth_limit_is_distinct_and_retains_exact_boundary(self):
+        # root depth 0; four nested unrecognized elements reach depth 4.
+        content = pom(self.a, '<a><b><c><d/></c></b></a>')["content"]
+        record = {"coordinate": dict(self.a, type="pom"), "content": content, "size": len(content),
+                  "sha256": hashlib.sha256(content).hexdigest()}
+        with mock.patch.object(g, "MAX_DEPTH", 4):
+            result = self.export(poms=[record])
+            self.assertEqual(result["processed_pom_totals"]["elements"], 9)
+        with mock.patch.object(g, "MAX_DEPTH", 3):
+            self.rejected_pom(content, "pom_depth_limit", expected_code="input_limit")
+
+    def test_file_element_limit_is_independent_of_larger_aggregate_budget(self):
+        content = pom(self.a, '<description/>')["content"]
+        with mock.patch.object(g, "MAX_ELEMENTS", 5), mock.patch.object(g, "MAX_TOTAL_ELEMENTS", 500000):
+            self.rejected_pom(content, "pom_element_limit", expected_code="input_limit")
+
+    def test_success_totals_include_parent_or_plugin_poms_outside_runtime_tree(self):
+        extra = pom(coord("parent", "9"))
+        result = self.export(poms=[*self.poms, extra])
+        self.assertEqual(result["processed_pom_totals"],
+                         {"poms": 4, "bytes": sum(len(p["content"]) for p in [*self.poms, extra]), "elements": 20})
+        empty = self.export(poms=[])
+        self.assertEqual(empty["processed_pom_totals"], {"poms": 0, "bytes": 0, "elements": 0})
+        self.assertFalse(result["semantics_complete"])
+        self.assertFalse(result["ledger_eligible"])
+
+    def test_only_aggregate_element_capacity_changes(self):
+        self.assertEqual(g.MAX_TOTAL_ELEMENTS, 500000)
+        self.assertEqual((g.MAX_POM, g.MAX_POMS_BYTES, g.MAX_ELEMENTS, g.MAX_DEPTH, g.MAX_OUTPUT),
+                         (4 * 1024 * 1024, 32 * 1024 * 1024, 20000, 64, 32 * 1024 * 1024))
+        self.assertNotIn("element_bounds", g.POM_REASON_CODES)
 
     def test_diagnostic_is_unavailable_before_identity_and_byte_validation(self):
         for change, expected_code in (
@@ -333,7 +380,7 @@ class GraphExportTests(unittest.TestCase):
         for field, value in (
                 ("schema_version", True), ("schema_version", 2), ("scope", "PRIVATE_CANARY"),
                 ("code", "input_limit"), ("code", "PRIVATE_CANARY"), ("reason", "PRIVATE_CANARY"),
-                ("reason", None), ("reason", "element_bounds"), ("size", True), ("size", 0),
+                ("reason", None), ("reason", "aggregate_element_limit"), ("size", True), ("size", 0),
                 ("size", -1), ("size", g.MAX_POM + 1), ("size", 1.5),
                 ("sha256", "A" * 64), ("sha256", "PRIVATE_PATH"), ("sha256", None),
                 ("coordinate", dict(good["coordinate"], type="jar")),
@@ -362,7 +409,7 @@ class GraphExportTests(unittest.TestCase):
         foreign = ValueError("PRIVATE_EXCEPTION_CANARY")
         foreign.pom_diagnostic, foreign.code, foreign.pom_reason = good, "pom_invalid", "xml_parse"
         self.assertIsNone(g.pom_failure_diagnostic(foreign))
-        for code, reason in (("input_limit", "element_bounds"), ("pom_invalid", "model_version"),
+        for code, reason in (("input_limit", "aggregate_element_limit"), ("pom_invalid", "model_version"),
                              ("pom_invalid", None)):
             typed = g.ExportError(code, pom_reason=reason)
             typed.pom_diagnostic = copy.deepcopy(good)
