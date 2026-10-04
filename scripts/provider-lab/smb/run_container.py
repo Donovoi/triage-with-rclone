@@ -149,6 +149,23 @@ def create_args(name, image, run_id):
             "--lock", "/opt/synthetic-smb/build-lock.json"]
 
 
+def startup_diagnostic(stderr):
+    """Return a fixed classification only, never paths or exception messages."""
+    for marker, code in (
+            (b"ModuleNotFoundError:", "python_module_missing"),
+            (b"ImportError:", "python_import_error"),
+            (b"PermissionError:", "python_permission_error"),
+            (b"SyntaxError:", "python_syntax_error"),
+            (b"Fatal Python error:", "python_startup_failure"),
+            (b"error while loading shared libraries:", "native_loader_failure"),
+            (b"Traceback (most recent call last):", "python_exception")):
+        if marker in stderr:
+            return code
+    if b"permission denied" in stderr.lower():
+        return "entrypoint_permission_denied"
+    return None
+
+
 def validate_container(info, image, run_id):
     check(isinstance(info, dict), "container_inspect_invalid")
     config, host = info.get("Config", {}), info.get("HostConfig", {})
@@ -309,6 +326,9 @@ def run(binary, report_path):
               "image_id": None, "container_isolation_verified": False, "probe": None, "errors": [],
               "cleanup": {"container_removed": False, "image_removed": False, "temporary_removed": False},
               "stage": "preflight", "build_phase": None, "build_diagnostic": None,
+              "container_exit_code": None, "container_stdout_bytes": None,
+              "container_stderr_bytes": None, "container_startup_diagnostic": None,
+              "container_oom_killed": None, "container_start_error_present": None,
               "build_cache_scope": "shared_daemon_cache_not_pruned"}
     root = Path(tempfile.mkdtemp(prefix="triage-smb-container-"))
     root_identity = (root.stat().st_dev, root.stat().st_ino)
@@ -348,9 +368,20 @@ def run(binary, report_path):
         report["container_isolation_verified"] = True
         report["stage"] = "probe"
         code, raw = docker.run(["start", "--attach", name], timeout=180, allow_failure=True)
+        startup_stderr = docker.last_stderr
         final = docker.inspect("container", name) or {}
         validate_container(final, image, run_id)
         check(final.get("State", {}).get("Running") is False, "container_still_running")
+        container_code = final.get("State", {}).get("ExitCode")
+        check(type(container_code) is int and -255 <= container_code <= 255, "container_exit_code_invalid")
+        report["container_exit_code"] = container_code
+        report["container_stdout_bytes"] = len(raw)
+        report["container_stderr_bytes"] = len(startup_stderr)
+        report["container_startup_diagnostic"] = startup_diagnostic(startup_stderr)
+        check(type(final["State"].get("OOMKilled")) is bool and isinstance(final["State"].get("Error"), str),
+              "container_state_invalid")
+        report["container_oom_killed"] = final["State"]["OOMKilled"]
+        report["container_start_error_present"] = bool(final["State"]["Error"])
         report["probe"] = validate_probe(parse_json(raw), identity, source_hashes)
         check(code == 0 and final.get("State", {}).get("ExitCode") == 0
               and report["probe"]["status"] == "passed", "samba_probe_failed")
