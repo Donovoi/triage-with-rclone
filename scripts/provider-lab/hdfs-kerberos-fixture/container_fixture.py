@@ -24,8 +24,8 @@ HERE = Path(__file__).resolve().parent
 SUPPORT = HERE.parent / "hdfs-kerberos-ticket" / "ticket_probe_container.py"
 SUPPORT_SHA = "538a81005d67123930fb9711474f3b681861fb0866a2443661e401833982624f"
 JAVA_INPUTS = {"SecureKdc.java": "645dfda75faa24279f3cb7e1680f06cdb56b4ba85236a5a9543fbcf83d81a91e",
-    "SecureHdfsRoles.java": "4dd361d0c376e11601874ff3bf15d4b327760c22d36124f32f2c3e81713898e5",
-    "SecureHdfsController.java": "1174ed49a8d196c938a854222c02b5bc4574d82bbec16df8ecef785c25fa006f"}
+    "SecureHdfsRoles.java": "652118cc5b8d3bac3c8449cbcc6d20f61fcde4580069fb214a9c01d2edb0407e",
+    "SecureHdfsController.java": "0ff333721022a31e48bfee03574546c8afdbd353fd830b79e77d8d57d6984adf"}
 LABEL = "org.openai.triage.hdfs-kerberos-fixture"
 TMPFS = "rw,nosuid,nodev,noexec,size=1g,mode=0700,uid=10001,gid=10001"
 FALSE_CLAIMS = dict(ledger_eligible=False, authentication_verified=False, hdfs_authenticated=False,
@@ -69,6 +69,12 @@ CONTROLLER_CODES = frozenset("environment_invalid path_invalid input_changed cla
     "role_logged_pipeline_sasl_message "
     "role_logged_pipeline_block_ack "
     "role_logged_pipeline_observer_failed "
+    "dn_diagnostics_truncated dn_diagnostics_unavailable dn_observed_eof dn_observed_illegal_state "
+    "dn_observed_invalid_argument dn_observed_invalid_encryption_key dn_observed_invalid_magic dn_observed_invalid_token "
+    "dn_observed_io dn_observed_linkage dn_observed_missing_class dn_observed_null_state "
+    "dn_observed_other dn_observed_resource dn_observed_sasl dn_observed_security "
+    "dn_observed_socket dn_observed_timeout dn_origin_block_receiver dn_origin_dataset_create_rbw "
+    "dn_origin_sasl_handshake dn_origin_sasl_receive dn_origin_volume_create_rbw_file dn_origin_write_block "
     "role_configuration_default_uri_loopback_alias role_configuration_https_loopback_alias "
     "role_source_check_failed role_source_mkdir_failed role_source_create_failed role_source_write_failed role_source_close_failed role_source_metadata_failed role_source_inventory_failed role_source_read_failed "
     "role_kerberos_asn_identifier".split())
