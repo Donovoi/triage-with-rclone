@@ -24,7 +24,7 @@ HERE = Path(__file__).resolve().parent
 SUPPORT = HERE.parent / "hdfs-kerberos-ticket" / "ticket_probe_container.py"
 SUPPORT_SHA = "538a81005d67123930fb9711474f3b681861fb0866a2443661e401833982624f"
 JAVA_INPUTS = {"SecureKdc.java": "645dfda75faa24279f3cb7e1680f06cdb56b4ba85236a5a9543fbcf83d81a91e",
-    "SecureHdfsRoles.java": "652118cc5b8d3bac3c8449cbcc6d20f61fcde4580069fb214a9c01d2edb0407e",
+    "SecureHdfsRoles.java": "30c96602b34349e16445470d7f4d763f82c08d4e37e2354ed5a02881d80d0d2c",
     "SecureHdfsController.java": "0ff333721022a31e48bfee03574546c8afdbd353fd830b79e77d8d57d6984adf"}
 LABEL = "org.openai.triage.hdfs-kerberos-fixture"
 TMPFS = "rw,nosuid,nodev,noexec,size=1g,mode=0700,uid=10001,gid=10001"

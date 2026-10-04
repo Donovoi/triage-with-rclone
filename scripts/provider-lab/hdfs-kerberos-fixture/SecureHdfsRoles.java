@@ -386,7 +386,8 @@ public final class SecureHdfsRoles {
     }
     synchronized String report() {
       List<String> codes = new ArrayList<>();
-      for (String code : new TreeSet<>(observations)) codes.add(quoted(code));
+      TreeSet<String> ordered = new TreeSet<>(); ordered.addAll(observations);
+      for (String code : ordered) codes.add(quoted(code));
       return "{\"schema_version\":1,\"scope\":\"secure_hdfs_datanode_observations\",\"role\":\"dn\",\"phase\":\"final\","
           + "\"ledger_eligible\":false,\"observer_attached\":" + attached + ",\"observer_detached\":" + detached
           + ",\"observation_failed\":" + observationFailed + ",\"truncated\":" + truncated
