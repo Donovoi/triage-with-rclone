@@ -175,10 +175,11 @@ public final class SecureHdfsRoles {
   }
   private static void appendStartupOrigins(List<String> errors, Throwable failure) {
     // Context only, never a root-cause or acceptance assertion. Hadoop 3.5.0
-    // wraps HTTP startup exceptions; Jetty 9.4.58 MultiException also retains
-    // failures as suppressed exceptions. Inspect only this bounded graph and
-    // exact tagged method pairs. No messages, paths, line numbers or raw frames
-    // are copied to the receipt, and diagnostics cannot replace the failure.
+    // wraps HTTP startup and asynchronous stream failures; suppressed failures
+    // can also retain useful context. Inspect only this bounded graph, exact
+    // tagged method pairs and exact public exception classes. No messages,
+    // paths, line numbers or raw frames are copied, and diagnostics cannot
+    // replace the failure. Keep the existing seven-observation error budget.
     try {
       Set<Throwable> seen = Collections.newSetFromMap(new IdentityHashMap<>());
       ArrayDeque<Throwable> pending = new ArrayDeque<>();
@@ -186,6 +187,13 @@ public final class SecureHdfsRoles {
       if (failure != null) { seen.add(failure); pending.add(failure); }
       while (!pending.isEmpty()) {
         Throwable current = pending.removeFirst();
+        String exception = switch (current.getClass().getName()) {
+          case "javax.security.sasl.SaslException" -> "exception_sasl";
+          case "org.apache.hadoop.hdfs.security.token.block.InvalidBlockTokenException" -> "exception_invalid_block_token";
+          case "org.apache.hadoop.hdfs.protocol.datatransfer.InvalidEncryptionKeyException" -> "exception_invalid_encryption_key";
+          default -> null;
+        };
+        if (exception != null && origins.size() < 7) origins.add(exception);
         StackTraceElement[] frames = current.getStackTrace();
         for (int index = 0; index < Math.min(32, frames.length); index++) {
           StackTraceElement frame = frames[index];
@@ -206,6 +214,19 @@ public final class SecureHdfsRoles {
                 method.equals("loadFromDisk") ? "origin_namespace_load" : null;
             case "org.apache.hadoop.hdfs.server.namenode.NameNodeRpcServer" ->
                 method.equals("<init>") ? "origin_rpc_constructor" : null;
+            case "org.apache.hadoop.hdfs.DataStreamer" -> switch (method) {
+              case "createBlockOutputStream" -> "origin_datastreamer_create_block";
+              case "setupPipelineForCreate" -> "origin_datastreamer_setup_pipeline";
+              case "handleBadDatanode" -> "origin_datastreamer_bad_datanode";
+              case "processDatanodeOrExternalError" -> "origin_datastreamer_recovery";
+              default -> null;
+            };
+            case "org.apache.hadoop.hdfs.DFSOutputStream" -> switch (method) {
+              case "flushInternal" -> "origin_output_flush";
+              case "completeFile" -> "origin_output_complete";
+              case "closeThreads" -> "origin_output_close_threads";
+              default -> null;
+            };
             default -> null;
           };
           if (origin != null && origins.size() < 7) origins.add(origin);
