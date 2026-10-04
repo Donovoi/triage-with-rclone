@@ -34,6 +34,7 @@ import java.util.Collections;
 import java.util.Enumeration;
 import java.util.HashSet;
 import java.util.HexFormat;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -157,6 +158,54 @@ public final class SecureHdfsRoles {
   }
   private static void addError(List<String> errors, String code) {
     if (!errors.contains(code) && errors.size() < 16) errors.add(code);
+  }
+  private static void appendStartupOrigins(List<String> errors, Throwable failure) {
+    // Context only, never a root-cause or acceptance assertion. Hadoop 3.5.0
+    // wraps HTTP startup exceptions; Jetty 9.4.58 MultiException also retains
+    // failures as suppressed exceptions. Inspect only this bounded graph and
+    // exact tagged method pairs. No messages, paths, line numbers or raw frames
+    // are copied to the receipt, and diagnostics cannot replace the failure.
+    try {
+      Set<Throwable> seen = Collections.newSetFromMap(new IdentityHashMap<>());
+      ArrayDeque<Throwable> pending = new ArrayDeque<>();
+      Set<String> origins = new TreeSet<>();
+      if (failure != null) { seen.add(failure); pending.add(failure); }
+      while (!pending.isEmpty()) {
+        Throwable current = pending.removeFirst();
+        StackTraceElement[] frames = current.getStackTrace();
+        for (int index = 0; index < Math.min(32, frames.length); index++) {
+          StackTraceElement frame = frames[index];
+          String method = frame.getMethodName();
+          String origin = switch (frame.getClassName()) {
+            case "org.apache.hadoop.http.HttpServer2$Builder" ->
+                method.equals("loadSSLConfiguration") ? "origin_http_ssl_configuration" : null;
+            case "org.apache.hadoop.http.HttpServer2" -> switch (method) {
+              case "initSpnego" -> "origin_http_spnego";
+              case "start" -> "origin_http_start";
+              default -> null;
+            };
+            case "org.eclipse.jetty.util.ssl.SslContextFactory" ->
+                method.equals("load") || method.equals("doStart") ? "origin_jetty_ssl_start" : null;
+            case "org.apache.hadoop.security.authentication.server.KerberosAuthenticationHandler" ->
+                method.equals("init") ? "origin_kerberos_auth_init" : null;
+            case "org.apache.hadoop.hdfs.server.namenode.FSNamesystem" ->
+                method.equals("loadFromDisk") ? "origin_namespace_load" : null;
+            case "org.apache.hadoop.hdfs.server.namenode.NameNodeRpcServer" ->
+                method.equals("<init>") ? "origin_rpc_constructor" : null;
+            default -> null;
+          };
+          if (origin != null && origins.size() < 7) origins.add(origin);
+        }
+        Throwable cause = current.getCause();
+        if (cause != null && seen.size() < 8 && seen.add(cause)) pending.addLast(cause);
+        Throwable[] suppressed = current.getSuppressed();
+        for (int index = 0; index < Math.min(8, suppressed.length) && seen.size() < 8; index++) {
+          Throwable sibling = suppressed[index];
+          if (sibling != null && seen.add(sibling)) pending.addLast(sibling);
+        }
+      }
+      for (String origin : origins) addError(errors, origin);
+    } catch (Throwable ignored) { /* Existing finite failure remains authoritative. */ }
   }
   private static String sha256(byte[] bytes) throws Exception {
     return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));
@@ -718,7 +767,7 @@ public final class SecureHdfsRoles {
         if (nn != null) nnAddresses(nn); if (dn != null) dnAddresses(dn);
         login = loginProof(service, material.realm()); checks.put("configuration_preserved", true);
       }
-    } catch (Throwable failure) { addError(errors, stage); addError(errors, reason(failure)); }
+    } catch (Throwable failure) { addError(errors, stage); addError(errors, reason(failure)); appendStartupOrigins(errors, failure); }
     finally {
       if (constructorPending) { closed = false; addError(errors, "constructor_cleanup_unconfirmed"); }
       if (fs != null) try { fs.close(); } catch (Throwable failure) { closed = false; addError(errors, "client_close_failed"); addError(errors, reason(failure)); }

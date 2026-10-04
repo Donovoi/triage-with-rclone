@@ -24,8 +24,8 @@ HERE = Path(__file__).resolve().parent
 SUPPORT = HERE.parent / "hdfs-kerberos-ticket" / "ticket_probe_container.py"
 SUPPORT_SHA = "538a81005d67123930fb9711474f3b681861fb0866a2443661e401833982624f"
 JAVA_INPUTS = {"SecureKdc.java": "645dfda75faa24279f3cb7e1680f06cdb56b4ba85236a5a9543fbcf83d81a91e",
-    "SecureHdfsRoles.java": "436f0a5f6c3d66c57364ab8de2263517e06fcf3d557e430f59578c3c3c06c8ea",
-    "SecureHdfsController.java": "02684da82b3c4aedd1341ea8a7bb08818a41c393fda9989e78042f1bbce8d3bf"}
+    "SecureHdfsRoles.java": "12490dc2efffc830a30b4d2b2d70803a3cebc3901634d3dd0d19af88cd9d18a7",
+    "SecureHdfsController.java": "037082707a1ff89575b4450e1a3fc42bf8e17d227cc84d271c09f9a5652b3551"}
 LABEL = "org.openai.triage.hdfs-kerberos-fixture"
 TMPFS = "rw,nosuid,nodev,noexec,size=1g,mode=0700,uid=10001,gid=10001"
 FALSE_CLAIMS = dict(ledger_eligible=False, authentication_verified=False, hdfs_authenticated=False,
@@ -50,6 +50,7 @@ CONTROLLER_CODES = frozenset("environment_invalid path_invalid input_changed cla
     "role_connection_failed role_kerberos_failure role_kerberos_client_unknown role_kerberos_server_unknown "
     "role_kerberos_policy_rejected role_kerberos_etype_unsupported role_kerberos_preauth_failed role_kerberos_preauth_required "
     "role_kerberos_integrity_failed role_kerberos_clock_skew role_kerberos_message_modified role_kerberos_generic_error "
+    "role_origin_http_ssl_configuration role_origin_http_spnego role_origin_http_start role_origin_jetty_ssl_start role_origin_kerberos_auth_init role_origin_namespace_load role_origin_rpc_constructor "
     "role_kerberos_asn_identifier".split())
 CODES = frozenset("hosted_linux_required input_invalid input_changed unsafe_path support_invalid runtime_invalid "
     "source_not_frozen download_failed download_cleanup_failed command_cleanup_failed platform_invalid base_invalid "
