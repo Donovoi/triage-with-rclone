@@ -87,7 +87,7 @@ def validate_layout_diagnostic(value):
                  and type(item["index"]) is int and 1 <= item["index"] <= MAX_MEMBERS
                  and type(item["type"]) is str and item["type"] in {"file", "directory"}
                  and type(item["size"]) is int and 0 <= item["size"] <= MAX_PAYLOAD
-                 and type(item["mode"]) is int and 0 <= item["mode"] <= 0o777
+                 and valid_mode(item["mode"], item["type"])
                  and (digest(item["payload_sha256"]) if item["type"] == "file"
                       else item["size"] == 0 and item["payload_sha256"] is None))
         if not valid:
@@ -102,6 +102,14 @@ def validate_layout_diagnostic(value):
                                               for key, flag in expected.items()):
         raise ValueError("invalid_layout_diagnostic")
     return copy.deepcopy(value)
+
+
+def valid_mode(mode, kind):
+    """Allow permissions alone or matching Unix type bits, never special bits."""
+    if type(mode) is not int or not 0 <= mode <= 0o177777 or kind not in {"file", "directory"}:
+        return False
+    expected_type = 0o100000 if kind == "file" else 0o040000
+    return not mode & 0o7000 and (mode & 0o170000) in {0, expected_type}
 
 
 def need(condition, code):
@@ -197,12 +205,15 @@ def inspect_layout(path):
 
     Parse each physical header before tarfile can consume PAX/longname payloads.
     Only ordinary files/directories are accepted; require and drain end padding.
+    Repeated directories require identical physical headers. All physical rows
+    remain in the count/digest; repeated files and differing headers are refused.
     """
     try:
         archive_hash = sha(path)
     except OSError:
         raise MaterialError("source_invalid") from None
-    rows, names, size_total, decompressed, mvn = [], {}, 0, 0, None
+    rows, names, directory_headers, size_total, decompressed, mvn = [], {}, {}, 0, 0, None
+    physical_records, repeated_directories = 0, 0
     try:
         with gzip.open(path, "rb") as source:
             def take(amount):
@@ -223,6 +234,8 @@ def inspect_layout(path):
                             break
                         need(not any(tail), "layout_trailing_data")
                     break
+                physical_records += 1
+                need(physical_records <= MAX_MEMBERS, "layout_bounds")
                 info = tarfile.TarInfo.frombuf(header, "utf-8", "strict")
                 need(info.type not in {tarfile.XHDTYPE, tarfile.XGLTYPE}, "layout_pax_unsupported")
                 need(info.type not in {tarfile.LNKTYPE, tarfile.SYMTYPE}, "layout_link_unsupported")
@@ -237,10 +250,11 @@ def inspect_layout(path):
                      and ".." not in parts.parts and "\\" not in name
                      and all(ord(char) >= 32 and ord(char) != 127 for char in name)
                      and parts.parts[0] == MAVEN_ROOT and (info.isdir() or not raw.endswith("/")), "layout_alias")
-                need(len(rows) < MAX_MEMBERS and type(info.size) is int and info.size >= 0
+                need(type(info.size) is int and info.size >= 0
                      and size_total + info.size <= MAX_PAYLOAD, "layout_bounds")
                 need(not info.isdir() or info.size == 0, "layout_invalid")
-                need(type(info.mode) is int and 0 <= info.mode <= 0o777, "layout_invalid")
+                kind = "directory" if info.isdir() else "file"
+                need(valid_mode(info.mode, kind), "layout_invalid")
                 content = hashlib.sha256()
                 remaining = info.size
                 while remaining:
@@ -252,24 +266,29 @@ def inspect_layout(path):
                 pad = take(padding)
                 need(len(pad) == padding, "layout_truncated")
                 need(pad == b"\0" * padding, "layout_invalid")
-                kind = "directory" if info.isdir() else "file"
-                entry = {"index": len(rows) + 1, "type": kind, "size": info.size, "mode": info.mode,
+                entry = {"index": physical_records, "type": kind, "size": info.size, "mode": info.mode,
                          "payload_sha256": content.hexdigest() if kind == "file" else None}
                 if name in names:
                     old = names[name]
-                    raise MaterialError("layout_duplicate", {
-                        "schema_version": 1, "code": "layout_duplicate",
-                        "canonical_path_sha256": hashlib.sha256(name.encode("utf-8")).hexdigest(),
-                        "existing": old, "new": entry,
-                        "same_type": old["type"] == kind, "same_size": old["size"] == info.size,
-                        "same_mode": old["mode"] == info.mode,
-                        "same_content": old["type"] == kind and old["size"] == info.size
-                            and old["payload_sha256"] == entry["payload_sha256"],
-                    })
+                    if kind == "directory" and old["type"] == "directory" and header == directory_headers[name]:
+                        repeated_directories += 1
+                    else:
+                        raise MaterialError("layout_duplicate", {
+                            "schema_version": 1, "code": "layout_duplicate",
+                            "canonical_path_sha256": hashlib.sha256(name.encode("utf-8")).hexdigest(),
+                            "existing": old, "new": entry,
+                            "same_type": old["type"] == kind, "same_size": old["size"] == info.size,
+                            "same_mode": old["mode"] == info.mode,
+                            "same_content": old["type"] == kind and old["size"] == info.size
+                                and old["payload_sha256"] == entry["payload_sha256"],
+                        })
                 row = {"path": name, "type": kind, "size": info.size, "mode": info.mode,
                        "sha256": content.hexdigest() if kind == "file" else None}
                 rows.append(row)
-                names[name] = entry
+                if name not in names:
+                    names[name] = entry
+                    if kind == "directory":
+                        directory_headers[name] = header
                 size_total += info.size
                 if name == MAVEN_ROOT + "/bin/mvn":
                     need(kind == "file" and info.size > 0 and info.mode & 0o111, "layout_mvn_invalid")
@@ -281,7 +300,8 @@ def inspect_layout(path):
     except (OSError, EOFError, UnicodeError, tarfile.TarError, ValueError):
         raise MaterialError("layout_invalid") from None
     return {"schema_version": 1, "scope": "maven_archive_data_only_layout", "archive_sha256": archive_hash,
-            "members": len(rows), "files": sum(row["type"] == "file" for row in rows),
+            "members": physical_records, "repeated_directories": repeated_directories,
+            "files": sum(row["type"] == "file" for row in rows),
             "directories": sum(row["type"] == "directory" for row in rows), "payload_bytes": size_total,
             "decompressed_bytes": decompressed, "members_sha256": hashlib.sha256(canonical(rows)).hexdigest(),
             "mvn": mvn, "extracted": False, "executed": False}
