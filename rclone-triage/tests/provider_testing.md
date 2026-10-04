@@ -67,7 +67,7 @@ python -B scripts/provider_coverage.py --rclone $runtime --report $evidence `
 
 The lab runs only the pinned native rclone, never the triage application. It uses fresh temporary config, home, cache and synthetic credentials; inherited cloud/proxy/SSH settings are excluded. All network listeners bind to `127.0.0.1` and ephemeral ports. It stops only its owned children and removes its temporary fixtures. HTTP, WebDAV, FTP, Swift, B2, Azure Blob, Azure Files, Seafile, Koofr, Pixeldrain, FileFabric, Internet Archive and NetStorage use independent Python fixture servers; FTP active connections are disabled and passive listeners also bind loopback. SFTP and S3 use rclone's own read-only servers, so these are interoperability regressions between two rclone instances, not independent server conformance tests. SFTP uses the fixture's pinned host keys and no external hash commands.
 
-All eighteen cases require recursive listing, independent SHA256 after downloads, missing-object rejection, source preservation and cleanup. Credentialed network cases also reject incorrect credentials. Internet Archive uses anonymous public reads and a separate known-member read denial; it supplies no credential-rejection evidence. SFTP separately tests correct credentials with a mismatched known host key and requires an explicit host-key rejection with no returned bytes or accepted file. The independent HTTP/WebDAV/FTP services reject authenticated write probes and compare the bytes actually served with a snapshot captured before requests. HTTP and WebDAV additionally reject truncated transfers and terminate a stalled download before checking cleanup. That process-termination test does not prove the application's interactive cancellation behavior. Run socket-free and fixture-server unit regressions with `python -B -m unittest discover -s scripts/tests -p 'test_*.py'`.
+All eighteen cases require recursive listing, independent SHA256 after downloads, missing-object rejection, source preservation and cleanup. Credentialed network cases also reject incorrect credentials. Internet Archive uses anonymous public reads and a separate known-member read denial; it supplies no credential-rejection evidence. SFTP separately tests correct credentials with a mismatched known host key and requires an explicit host-key rejection with no returned bytes or accepted file. The independent HTTP/WebDAV/FTP services reject authenticated write probes and compare the bytes actually served with a snapshot captured before requests. HTTP and WebDAV additionally reject truncated transfers and terminate a stalled download before checking cleanup. That process-termination test does not prove the application's interactive cancellation behavior. Run socket-free and fixture-server unit regressions with the [isolated Python test environment](#python-test-environment).
 
 Swift fixtures exercise v1 authentication against an independent loopback service. In a single rclone copy process, the service rejects the first token with a body-free 401, issues a different token and accepts the retried download only with that replacement. The harness requires the ordered authentication/rejection/replacement/download sequence and an independent SHA256. A separate renewal-denial case must fail without accepting an output. Wrong credentials, missing objects and authenticated writes are rejected; served bytes and the private config must remain unchanged. These tests cover small Swift v1 objects and forced authorization rejection only. They do not establish wall-clock expiry, OAuth refresh, Keystone v2/v3, application credentials, large objects, TLS, general session reauthentication or real vendor acceptance.
 
@@ -107,6 +107,31 @@ This NetStorage scope covers static-key request signing, not account provisionin
 
 
 
+
+## Python test environment
+
+The full Python regression suite includes the HTTPS fixture foundation and requires `cryptography`. These are test dependencies only; the application and the existing eighteen native provider fixtures do not import this module. The wheel locks support CPython 3.12 on Windows x64 and glibc Linux x86_64 (the CI targets), plus CPython 3.14 on Windows x64 for local validation. Other operating systems, architectures and Python versions need a separately reviewed lock.
+
+Create a fresh environment outside the checkout, install only the locked binary distributions, and use its interpreter explicitly. For example, from the repository root on Windows with a supported Python:
+
+```powershell
+$testEnv = Join-Path $env:TEMP ('triage-tests-' + [guid]::NewGuid())
+python -m venv $testEnv
+if ($LASTEXITCODE -ne 0) { throw 'Test environment creation failed' }
+$testPython = Join-Path $testEnv 'Scripts/python.exe'
+& $testPython -m pip --isolated --disable-pip-version-check install `
+  --index-url https://pypi.org/simple --require-hashes --only-binary=:all: `
+  -r scripts/provider-lab/requirements-fixture.txt
+if ($LASTEXITCODE -ne 0) { throw 'Locked dependency installation failed' }
+& $testPython -B -m unittest discover -s scripts/tests -p 'test_*.py'
+if ($LASTEXITCODE -ne 0) { throw 'Python regressions failed' }
+```
+
+On Linux, use `bin/python` inside the environment. No global package or pip upgrade is needed. Retain the environment for subsequent tests, or remove that exact owned directory after its processes have exited.
+
+`requirements-fixture.txt` and the separate `requirements-audit.txt` pin every dependency and accepted wheel hash. CI audits both locks, including the auditor's own dependencies, and fails on vulnerabilities or incomplete audit results. The scheduled provider checks repeat this audit; Dependabot proposes weekly Python dependency updates. A clean audit reflects the advisories available at execution time, not a guarantee that packages have no vulnerabilities. Updating a lock requires reviewing its full dependency closure, checking compatible Windows/Linux wheels, and repeating both platform tests and audits; never remove hashes or ignore findings to make an update pass.
+
+The HTTPS foundation generates a short-lived CA and a leaf certificate with the loopback IP in its SAN for each run. It supplies trust only through a child-specific CA argument; it does not alter the system trust store. Handshakes and HTTP share an absolute connection deadline, with bounded admission and explicit owned-socket cleanup. The supplied protocol handler remains responsible for method, path, header, body and request-count limits. Certificate and key files stay inside the owned temporary directory. These transport tests do not establish pCloud authentication, native downloads, renewal or vendor/application acceptance. A provider integration must also constrain every API, OAuth and returned download authority to the exact owned loopback port before it can qualify for evidence. Before such integration produces receipts, both producer and importer must bind the TLS module and dependency lock into the harness digest and verify the loaded dependency versions.
 
 ## Authentication boundaries
 
