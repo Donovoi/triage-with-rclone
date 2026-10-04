@@ -1454,6 +1454,35 @@ class FileFabricFixture(SeafileFixture):
 
 
 class FileFabricHandler(SeafileHandler):
+    def read_form(self):
+        headers = list(self.headers.items())
+        names = [name.lower() for name, _ in headers]
+        wire = self.raw_requestline.rstrip(b"\r\n").split(b" ")
+        if (self.command != "POST" or self.path != "/api/rpc.php"
+                or len(wire) != 3 or wire[1] != b"/api/rpc.php"
+                or self.headers.get_all("Host") != [f"127.0.0.1:{self.server.server_address[1]}"]
+                or len(names) != len(set(names)) or sum(len(k) + len(v) for k, v in headers) > 16384
+                or any("\r" in v or "\n" in v for _, v in headers)
+                or any(self.headers.get(k) is not None for k in ("Transfer-Encoding", "Content-Encoding", "Authorization", "Proxy-Authorization", "Cookie"))
+                or self.headers.get("Content-Type") != "application/x-www-form-urlencoded"):
+            raise ValueError("invalid_request")
+        length = self.headers.get("Content-Length", "")
+        if not re.fullmatch(r"[1-9][0-9]{0,3}", length) or int(length) > 4096:
+            raise ValueError("invalid_length")
+        raw = self.rfile.read(int(length))
+        if len(raw) != int(length):
+            raise ValueError("incomplete_body")
+        encoded = raw.decode("ascii")
+        if re.search(r"%(?![0-9a-fA-F]{2})", encoded):
+            raise ValueError("invalid_percent")
+        pairs = urllib.parse.parse_qsl(encoded, keep_blank_values=True, strict_parsing=True,
+                                      max_num_fields=8, encoding="utf-8", errors="strict")
+        form = dict(pairs)
+        if (len(form) != len(pairs) or any(not k or not v or any(ord(c) < 32 or 127 <= ord(c) <= 159 for c in k + v)
+                                         for k, v in pairs) or form.get("apiformat") != "json"):
+            raise ValueError("invalid_form")
+        return form
+
     def dispatch(self):
         with self.server.state.lock:
             state = self.server.state
@@ -1463,32 +1492,7 @@ class FileFabricHandler(SeafileHandler):
                 self.json_reply(429, {"status": "fixture_request_limit"})
                 return
             try:
-                headers = list(self.headers.items())
-                names = [name.lower() for name, _ in headers]
-                wire = self.raw_requestline.rstrip(b"\r\n").split(b" ")
-                if (self.command != "POST" or self.path != "/api/rpc.php"
-                        or len(wire) != 3 or wire[1] != b"/api/rpc.php"
-                        or self.headers.get_all("Host") != [f"127.0.0.1:{self.server.server_address[1]}"]
-                        or len(names) != len(set(names)) or sum(len(k) + len(v) for k, v in headers) > 16384
-                        or any("\r" in v or "\n" in v for _, v in headers)
-                        or any(self.headers.get(k) is not None for k in ("Transfer-Encoding", "Content-Encoding", "Authorization", "Proxy-Authorization", "Cookie"))
-                        or self.headers.get("Content-Type") != "application/x-www-form-urlencoded"):
-                    raise ValueError("invalid_request")
-                length = self.headers.get("Content-Length", "")
-                if not re.fullmatch(r"[1-9][0-9]{0,3}", length) or int(length) > 4096:
-                    raise ValueError("invalid_length")
-                raw = self.rfile.read(int(length))
-                if len(raw) != int(length):
-                    raise ValueError("incomplete_body")
-                encoded = raw.decode("ascii")
-                if re.search(r"%(?![0-9a-fA-F]{2})", encoded):
-                    raise ValueError("invalid_percent")
-                pairs = urllib.parse.parse_qsl(encoded, keep_blank_values=True, strict_parsing=True,
-                                              max_num_fields=8, encoding="utf-8", errors="strict")
-                form = dict(pairs)
-                if (len(form) != len(pairs) or any(not k or not v or any(ord(c) < 32 or 127 <= ord(c) <= 159 for c in k + v)
-                                                 for k, v in pairs) or form.get("apiformat") != "json"):
-                    raise ValueError("invalid_form")
+                form = self.read_form()
                 function = form.get("function")
                 fields = {"getFolderContents": {"fi_pid", "count", "subfolders", "options"},
                           "checkPathExists": {"pid", "path"}, "getFile": {"fi_id"},
@@ -1565,6 +1569,144 @@ class FileFabricHandler(SeafileHandler):
                     payload, status = payload[start:end + 1], 206
                 state.events.append(("content", member))
                 self.reply(status, payload, response_headers, object_payload=True)
+
+    do_GET = dispatch
+    do_HEAD = dispatch
+    do_POST = dispatch
+    do_PUT = dispatch
+    do_DELETE = dispatch
+
+
+class FileFabricSessionState(FileFabricState):
+    """One later-call grant or denial; a fresh child can then reuse the saved token."""
+    seed_version, issued_version = "2006.01", "2006.02"
+
+    def __init__(self, token, permanent_token, *, deny=False):
+        super().__init__(token)
+        if (type(deny) is not bool or not isinstance(permanent_token, str)
+                or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", permanent_token) or permanent_token == token):
+            raise ValueError("invalid_filefabric_session_fixture")
+        self.permanent_token, self.deny, self.issued_token = permanent_token, deny, None
+        self.phase = "initial"
+        self.expirations = self.grant_attempts = self.grants = self.grant_denials = self.appliance_calls = 0
+        self.active_handlers = self.lifetime_requests = 0
+        self.expiry_lower = self.grant_upper = None
+        self.expiry_lower_monotonic = self.grant_upper_monotonic = None
+
+    def begin_reuse(self):
+        with self.lock:
+            if (self.phase != "complete" or self.deny or not self.issued_token
+                    or self.active_handlers or self.sockets or self.unexpected or self.budget_exceeded):
+                raise ValueError("filefabric_session_not_quiescent")
+            self.phase = "reuse_stat"
+            self.events = []
+            self.requests = self.authenticated = self.payload_bytes = 0
+            self.expirations = self.grant_attempts = self.grants = self.grant_denials = self.appliance_calls = 0
+
+
+class FileFabricSessionFixture(SeafileFixture):
+    def __init__(self, state):
+        self.state = state
+        HTTPServer.__init__(self, ("127.0.0.1", 0), FileFabricSessionHandler)
+
+
+class FileFabricSessionHandler(FileFabricHandler):
+    def handle(self):
+        with self.server.state.lock:
+            self.server.state.active_handlers += 1
+        try:
+            super().handle()
+        finally:
+            with self.server.state.lock:
+                self.server.state.active_handlers -= 1
+
+    def dispatch(self):
+        with self.server.state.lock:
+            state = self.server.state
+            state.requests += 1
+            state.lifetime_requests += 1
+            if state.lifetime_requests > state.request_limit or time.monotonic() > state.deadline:
+                state.budget_exceeded = True
+                self.json_reply(429, {"status": "fixture_request_limit"})
+                return
+            try:
+                form = self.read_form()
+                function = form.get("function")
+                fields = {"checkPathExists": {"pid", "path"}, "getFile": {"fi_id"},
+                          "getTokenByAuthToken": {"authtoken"}, "getApplianceInfo": set()}
+                if (function not in fields or set(form) != fields[function] | {"function", "token", "apiformat"}
+                        or self.headers.get("Range") is not None):
+                    raise ValueError("invalid_session_request")
+                if function == "checkPathExists" and (form["pid"] != "100" or form["path"] != "README-synthetic.txt"):
+                    raise ValueError("invalid_session_member")
+                if function == "getFile" and form["fi_id"] != "301":
+                    raise ValueError("invalid_session_id")
+            except (ValueError, UnicodeError, OSError):
+                self.reject()
+                return
+            phase = state.phase
+            token = form["token"].encode()
+            member = "README-synthetic.txt"
+            if function == "getTokenByAuthToken":
+                if (phase != "grant" or token != b"*" or not hmac.compare_digest(form["authtoken"].encode(), state.permanent_token.encode())):
+                    self.reject()
+                    return
+                state.grant_upper = datetime.now(timezone.utc)
+                state.grant_upper_monotonic = time.monotonic()
+                state.grant_attempts += 1
+                if state.deny:
+                    state.grant_denials += 1
+                    state.phase = "denied"
+                    state.events.append(("grant_denied", ""))
+                    self.json_reply(200, {"status": "fixture_grant_denied", "statusmessage": "Synthetic grant denied"})
+                else:
+                    state.issued_token = "synthetic-session-" + secrets.token_hex(24)
+                    state.grants += 1
+                    state.phase = "appliance"
+                    state.events.append(("grant", ""))
+                    self.json_reply(200, {"status": "ok", "token": state.issued_token})
+                return
+            if function == "getApplianceInfo":
+                if phase != "appliance" or token != b"*":
+                    self.reject()
+                    return
+                state.appliance_calls += 1
+                state.phase = "renewed_stat"
+                state.events.append(("appliance", ""))
+                self.json_reply(200, {"status": "ok", "softwareversionlabel": state.issued_version})
+                return
+            expected_token = state.token if phase in ("initial", "expire") else state.issued_token
+            if not expected_token or not hmac.compare_digest(token, expected_token.encode()):
+                self.reject()
+                return
+            if function == "checkPathExists":
+                if phase == "expire":
+                    state.expirations += 1
+                    state.phase = "grant"
+                    state.events.append(("expired", member))
+                    # Client samples now for the later grant after receiving this.
+                    state.expiry_lower = datetime.now(timezone.utc)
+                    state.expiry_lower_monotonic = time.monotonic()
+                    self.json_reply(200, {"status": "login_token_expired", "statusmessage": "Synthetic cached session expired"})
+                    return
+                transitions = {"initial": ("initial_stat", "expire"), "renewed_stat": ("renewed_stat", "copy_stat"),
+                               "copy_stat": ("copy_stat", "content"), "reuse_stat": ("reuse_stat", "reuse_copy_stat"),
+                               "reuse_copy_stat": ("reuse_copy_stat", "reuse_content")}
+                if phase not in transitions:
+                    self.reject()
+                    return
+                event, state.phase = transitions[phase]
+                state.authenticated += 1
+                state.events.append((event, member))
+                self.json_reply(200, {"status": "ok", "exists": "y", "file": state.node(member)})
+                return
+            if function != "getFile" or phase not in ("content", "reuse_content"):
+                self.reject()
+                return
+            state.authenticated += 1
+            state.phase = "complete" if phase == "content" else "reuse_complete"
+            state.events.append((phase, member))
+            self.reply(200, state.files[member], {"Content-Type": "application/octet-stream"}, object_payload=True)
 
     do_GET = dispatch
     do_HEAD = dispatch
@@ -2202,7 +2344,7 @@ def serve(kind, state):
     server = (FtpFixture(state) if kind == "ftp" else SwiftFixture(state) if kind == "swift"
               else B2Fixture(state) if kind == "b2" else AzureBlobFixture(state) if kind == "azureblob"
               else AzureFilesFixture(state) if kind == "azurefiles" else SeafileFixture(state) if kind == "seafile"
-              else FileFabricFixture(state) if kind == "filefabric" else KoofrFixture(state) if kind == "koofr" else PixeldrainFixture(state) if kind == "pixeldrain" else HttpFixture(state))
+              else FileFabricSessionFixture(state) if kind == "filefabric-renewal" else FileFabricFixture(state) if kind == "filefabric" else KoofrFixture(state) if kind == "koofr" else PixeldrainFixture(state) if kind == "pixeldrain" else HttpFixture(state))
     thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05})
     thread.start()
     try:

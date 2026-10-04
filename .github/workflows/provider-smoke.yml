@@ -46,12 +46,16 @@ jobs:
         run: python -B -m unittest discover -s ../scripts/tests -p 'test_*.py'
       - name: Isolated backend protocol fixtures
         run: python -B ../scripts/provider-lab/run_lab.py --rclone "$RUNNER_TEMP/rclone-smoke" --report "$RUNNER_TEMP/provider-fixtures.json"
+      - name: Isolated FileFabric later-call renewal fixture
+        if: ${{ !cancelled() }}
+        run: python -B ../scripts/provider-lab/run_lab.py --rclone "$RUNNER_TEMP/rclone-smoke" --filefabric-renewal --report "$RUNNER_TEMP/filefabric-renewal-fixture.json"
       - name: Require current provider plans and protocol evidence
         if: ${{ !cancelled() }}
         run: |
           python -B ../scripts/provider_coverage.py --rclone "$RUNNER_TEMP/rclone-smoke" \
             --report "$RUNNER_TEMP/provider-evidence.json" \
             --fixture-receipt "$RUNNER_TEMP/provider-fixtures.json" \
+            --fixture-receipt "$RUNNER_TEMP/filefabric-renewal-fixture.json" \
             --require-plans --require-fixtures local,archive,http,webdav,ftp,sftp,s3,swift,b2,azureblob,azurefiles,seafile,memory,koofr,pixeldrain,filefabric
       - name: Offline provider contracts
         run: cargo test --locked --release --test provider_smoke --test provider_matrix -- --test-threads=1
@@ -142,6 +146,7 @@ jobs:
           path: |
             ${{ runner.temp }}/provider-coverage.json
             ${{ runner.temp }}/provider-fixtures.json
+            ${{ runner.temp }}/filefabric-renewal-fixture.json
             ${{ runner.temp }}/provider-evidence.json
           if-no-files-found: warn
           retention-days: 14

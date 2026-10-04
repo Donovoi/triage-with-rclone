@@ -8,6 +8,7 @@ receipt; rclone's SFTP/S3 servers are not independent conformance or vendor test
 
 import argparse
 import base64
+import configparser
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 import hashlib
@@ -31,7 +32,7 @@ import urllib.parse
 import zipfile
 import zlib
 
-from fixture_servers import FILES, State, SwiftState, B2State, AzureBlobState, AzureFilesState, SeafileState, KoofrState, PixeldrainState, FileFabricState, azure_string_to_sign, probe_write_rejection, serve
+from fixture_servers import FILES, State, SwiftState, B2State, AzureBlobState, AzureFilesState, SeafileState, KoofrState, PixeldrainState, FileFabricState, FileFabricSessionState, azure_string_to_sign, probe_write_rejection, serve
 from email.utils import format_datetime
 
 
@@ -2077,6 +2078,233 @@ def filefabric_checks(runtime, root, row, expected):
                 caps[name] = "passed"
 
 
+FILEFABRIC_SESSION_CAPABILITIES = ("session_token_reacquisition", "renewal_denial", "config_scope_preservation",
+                                   "saved_token_reuse", "source_preservation", "cleanup")
+
+
+def filefabric_session_options(state, port):
+    options = filefabric_options(state, port)
+    check(state.seed_version == "2006.01" and state.issued_version == "2006.02", "filefabric_session_version_changed")
+    return dict(options, permanent_token=state.permanent_token, version=state.seed_version)
+
+
+def filefabric_session_batch(destination, mode):
+    check(mode in ("success", "deny", "reuse") and memory_plain_path(destination) and destination.is_dir()
+          and destination.name == {"success": "downloads", "deny": "denied-downloads", "reuse": "reuse-downloads"}[mode],
+          "filefabric_session_invalid_batch")
+    metadata = {"_path": "operations/stat", "fs": "Synthetic:", "remote": FILEFABRIC_MEMBER,
+                "opt": {"filesOnly": True, "showHash": True, "noModTime": False, "noMimeType": True}}
+    pid = {"_path": "core/pid"}
+    acquire = {"_path": "operations/copyfile", "srcFs": "Synthetic:", "srcRemote": FILEFABRIC_MEMBER,
+               "dstFs": str(destination), "dstRemote": FILEFABRIC_MEMBER}
+    calls = [pid, metadata, acquire, pid] if mode == "reuse" else [pid, metadata, metadata, pid, metadata]
+    if mode == "success":
+        calls += [acquire]
+    if mode != "reuse":
+        calls += [pid]
+    # Copy input objects so expected error inputs cannot alias mutable callers.
+    return json.loads(json.dumps({"concurrency": 1, "inputs": calls}))
+
+
+def filefabric_session_error_matches(result, expected_input, kind):
+    causes = {"expired": "failed to check path exists: Synthetic cached session expired (login_token_expired)",
+              "grant_denied": "failed to check path exists: failed to get session token: Synthetic grant denied (fixture_grant_denied)"}
+    if (kind not in causes or not isinstance(result, dict) or set(result) != {"error", "input", "path", "status"}
+            or result["error"] != causes[kind] or result["path"] != "operations/stat"
+            or type(result["status"]) is not int or result["status"] != 500 or not isinstance(result["input"], dict)):
+        return False
+    actual = dict(result["input"])
+    group = actual.pop("_group", None)
+    if "_group" in result["input"] and (not isinstance(group, str) or not re.fullmatch(r"job/[1-9][0-9]{0,11}", group)):
+        return False
+    expected = {key: value for key, value in expected_input.items() if key != "_path"}
+    return json.dumps(actual, sort_keys=True, separators=(",", ":")) == json.dumps(expected, sort_keys=True, separators=(",", ":"))
+
+
+def filefabric_session_results(output, inputs, mode, pid, expected):
+    try:
+        parsed = memory_json(output)
+        if (type(pid) is not int or pid <= 0 or not isinstance(parsed, dict) or set(parsed) != {"results"}
+                or not isinstance(parsed["results"], list) or len(parsed["results"]) != len(inputs)):
+            return False
+        for index, (result, request) in enumerate(zip(parsed["results"], inputs)):
+            if request["_path"] == "core/pid":
+                if not isinstance(result, dict) or set(result) != {"pid"} or type(result["pid"]) is not int or result["pid"] != pid:
+                    return False
+            elif mode != "reuse" and index == 2:
+                if not filefabric_session_error_matches(result, request, "expired"):
+                    return False
+            elif mode == "deny" and index == 4:
+                if not filefabric_session_error_matches(result, request, "grant_denied"):
+                    return False
+            elif request["_path"] == "operations/stat":
+                if not filefabric_metadata_matches(json.dumps(result).encode(), expected, stat_result=True):
+                    return False
+            elif result != {}:
+                return False
+        return True
+    except (LabError, ValueError, TypeError, KeyError):
+        return False
+
+
+def filefabric_session_flow(state, mode, size):
+    keys = ("requests", "authenticated", "expirations", "grant_attempts", "grants", "grant_denials", "appliance_calls",
+            "payload_bytes", "unexpected", "rejected_payload_bytes", "rejected_mutations", "auth_denied", "member_denied", "missing")
+    if (any(type(getattr(state, key)) is not int or getattr(state, key) < 0 for key in keys)
+            or state.budget_exceeded or any(getattr(state, key) for key in keys[-6:]) or type(size) is not int or size <= 0):
+        return False
+    member = FILEFABRIC_MEMBER
+    if mode == "success":
+        events = [("initial_stat", member), ("expired", member), ("grant", ""), ("appliance", ""),
+                  ("renewed_stat", member), ("copy_stat", member), ("content", member)]
+        counts, phase = (7, 4, 1, 1, 1, 0, 1, size), "complete"
+    elif mode == "deny":
+        events = [("initial_stat", member), ("expired", member), ("grant_denied", "")]
+        counts, phase = (3, 1, 1, 1, 0, 1, 0, 0), "denied"
+        if state.issued_token is not None:
+            return False
+    elif mode == "reuse":
+        events = [("reuse_stat", member), ("reuse_copy_stat", member), ("reuse_content", member)]
+        counts, phase = (3, 3, 0, 0, 0, 0, 0, size), "reuse_complete"
+    else:
+        return False
+    return state.phase == phase and state.events == events and tuple(getattr(state, key) for key in keys[:8]) == counts
+
+
+def filefabric_session_config(path):
+    check(memory_plain_path(path) and path.is_file() and path.stat().st_nlink == 1 and path.stat().st_size <= 8192
+          and memory_plain_path(path.parent) and sorted(child.name for child in path.parent.iterdir()) == [path.name],
+          "filefabric_session_config_inventory")
+    if os.name != "nt":
+        check(path.stat().st_uid == os.getuid() and path.stat().st_mode & 0o077 == 0, "filefabric_session_config_permissions")
+    data = path.read_bytes()
+    parser = configparser.ConfigParser(interpolation=None, strict=True, delimiters=("=",), empty_lines_in_values=False)
+    parser.optionxform = str
+    try:
+        parser.read_string(data.decode("utf-8"))
+        check(parser.sections() == ["Synthetic"] and not parser.defaults(), "filefabric_session_config_shape")
+        values = dict(parser.items("Synthetic", raw=True))
+        check(set(values) == {"type", "url", "root_folder_id", "permanent_token", "token", "token_expiry", "version"}
+              and all("\n" not in value and "\r" not in value for value in values.values()), "filefabric_session_config_shape")
+    except (UnicodeError, configparser.Error):
+        raise LabError("filefabric_session_config_shape") from None
+    return data, values
+
+
+def filefabric_session_saved_config(state, original, saved):
+    if (set(original) != set(saved) or any(original[key] != saved[key] for key in original if key not in ("token", "token_expiry", "version"))
+            or not isinstance(state.issued_token, str) or not state.issued_token or state.issued_token == original["token"]
+            or saved["token"] != state.issued_token or original["version"] != "2006.01" or saved["version"] != "2006.02"):
+        return False
+    try:
+        if not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:Z|[+-](?:[01][0-9]|2[0-3]):[0-5][0-9])", saved["token_expiry"]):
+            return False
+        if saved["token_expiry"].endswith("-00:00"):
+            return False
+        expiry = datetime.fromisoformat(saved["token_expiry"].replace("Z", "+00:00")).astimezone(timezone.utc)
+        lower, upper = state.expiry_lower, state.grant_upper
+        wall = (upper - lower).total_seconds()
+        monotonic = state.grant_upper_monotonic - state.expiry_lower_monotonic
+        if (lower.tzinfo is None or upper.tzinfo is None or not 0 <= wall <= 20 or not 0 <= monotonic <= 20
+                or abs(wall - monotonic) > 1):
+            return False
+        return ((lower + timedelta(minutes=55)).replace(microsecond=0) <= expiry
+                <= (upper + timedelta(minutes=55)).replace(microsecond=0))
+    except (ValueError, TypeError, AttributeError, OverflowError):
+        return False
+
+
+def filefabric_session_drain(state):
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline:
+        with state.lock:
+            if state.active_handlers == 0 and not state.sockets:
+                return
+        time.sleep(0.01)
+    raise LabError("filefabric_session_handlers_not_drained")
+
+
+def filefabric_session_child(runtime, config, destination, mode, expected):
+    batch = filefabric_session_batch(destination, mode)
+    before = len(runtime.children)
+    code, output, _ = runtime.run(["rc", "--loopback", "job/batch", "--json", json.dumps(batch, separators=(",", ":"))], config, timeout=20)
+    check(len(runtime.children) == before + 1, "filefabric_session_child_count")
+    child = runtime.children[-1][0]
+    check(type(code) is int and code == 0 and type(child.poll()) is int and child.poll() == 0,
+          "filefabric_session_child_exit")
+    check(filefabric_session_results(output, batch["inputs"], mode, child.pid, expected), "filefabric_session_batch_results")
+
+
+def filefabric_session_checks(runtime, root, row, expected):
+    caps, states, ports = row["capabilities"], [], []
+    before, complete = len(runtime.children), False
+    check(expected == fixture_manifest(), "filefabric_session_manifest_changed")
+    member = [item for item in expected if item["path"] == FILEFABRIC_MEMBER]
+    check(len(member) == 1, "filefabric_session_member_missing")
+    snapshots, source_settings = [], []
+    try:
+        for mode in ("success", "deny"):
+            case_root = root / mode
+            case_root.mkdir(mode=0o700)
+            private = case_root / "config"
+            private.mkdir(mode=0o700)
+            destination = case_root / ("downloads" if mode == "success" else "denied-downloads")
+            destination.mkdir(mode=0o700)
+            state = FileFabricSessionState("synthetic-" + uuid.uuid4().hex, "permanent-synthetic-" + uuid.uuid4().hex, deny=mode == "deny")
+            states.append(state)
+            source_settings.append((state.token, state.permanent_token, state.deny))
+            with serve("filefabric-renewal", state) as port:
+                ports.append(port)
+                config = config_file(private, "session.conf", filefabric_session_options(state, port))
+                original_bytes, original = filefabric_session_config(config)
+                filefabric_cache_fresh(config)
+                filefabric_session_child(runtime, config, destination, mode, member)
+                filefabric_session_drain(state)
+                check(filefabric_session_flow(state, mode, member[0]["size"]), "filefabric_session_" + mode + "_flow")
+                saved_bytes, saved = filefabric_session_config(config)
+                check(memory_tree_matches(destination, [] if mode == "deny" else member), "filefabric_session_download_inventory")
+                if mode == "deny":
+                    check(saved_bytes == original_bytes and saved == original, "filefabric_session_denial_config_changed")
+                else:
+                    check(filefabric_session_saved_config(state, original, saved), "filefabric_session_saved_config_mismatch")
+                    state.begin_reuse()
+                    reuse = case_root / "reuse-downloads"
+                    reuse.mkdir(mode=0o700)
+                    filefabric_session_child(runtime, config, reuse, "reuse", member)
+                    filefabric_session_drain(state)
+                    check(filefabric_session_flow(state, "reuse", member[0]["size"]), "filefabric_session_reuse_flow")
+                    check(memory_tree_matches(reuse, member) and memory_tree_matches(destination, member), "filefabric_session_reuse_inventory")
+                    snapshots.append((reuse, member))
+                    after_bytes, after = filefabric_session_config(config)
+                    check(after_bytes == saved_bytes and after == saved, "filefabric_session_reuse_config_changed")
+                snapshots.append((destination, [] if mode == "deny" else member))
+                snapshots.append((config, saved_bytes))
+        complete = True
+    finally:
+        closed = (all(state.cleanup_complete for state in states) and all(listener_closed(port) for port in ports)
+                  and all(record[0].poll() is not None for record in runtime.children[before:]))
+        caps["cleanup"] = "passed" if closed else "failed"
+        check(closed, "filefabric_session_cleanup_failed")
+        check(all(not state.unexpected and not state.budget_exceeded and not state.rejected_payload_bytes
+                  and state.active_handlers == 0 and not state.sockets
+                  and type(state.lifetime_requests) is int and 0 < state.lifetime_requests <= 128 for state in states),
+              "filefabric_session_unexpected_or_budget")
+        check(all(served_source_unchanged(state, expected) and state.root_id == "100" and state.nested_id == "200"
+                  and state.modified == "2024-01-02 00:00:00" and state.localtime == "2024-01-01 00:00:00"
+                  and state.seed_version == "2006.01" and state.issued_version == "2006.02"
+                  and state.ids == {"README-synthetic.txt": "301", "nested/bytes.bin": "302", "nested/space name.txt": "303"}
+                  and (state.token, state.permanent_token, state.deny) == original
+                  for state, original in zip(states, source_settings)), "filefabric_session_source_changed")
+        for path, wanted in snapshots:
+            if isinstance(wanted, bytes):
+                check(filefabric_session_config(path)[0] == wanted, "filefabric_session_final_config_changed")
+            else:
+                check(memory_tree_matches(path, wanted), "filefabric_session_final_inventory_changed")
+        if complete:
+            for capability in FILEFABRIC_SESSION_CAPABILITIES:
+                caps[capability] = "passed"
+
+
 def run_backend(runtime, backend, root):
     root.mkdir(mode=0o700)
     independent = backend in ("http", "webdav", "ftp", "swift", "b2", "azureblob", "azurefiles", "seafile", "koofr", "pixeldrain", "filefabric")
@@ -2244,17 +2472,61 @@ def run_lab(binary, report_path, backends=BACKENDS):
     return report
 
 
+def run_filefabric_renewal(binary, report_path):
+    validate_report_path(report_path)
+    repository = Path(__file__).resolve().parents[2]
+    original, identity, platform = verified_runtime(binary, repository / "rclone-version.env")
+    report = {"schema_version": 2, "scope": "rclone_backend_protocol_fixture", "runtime": identity,
+              "harness_sha256": compute_harness_sha256(Path(__file__).parent),
+              "fixture_manifest_sha256": fixture_manifest_sha256(), "started_utc": utc_now(),
+              "finished_utc": None, "platform": platform, "success": False,
+              "cleanup_passed": False, "backends": [], "errors": []}
+    root = Path(tempfile.mkdtemp(prefix="triage-provider-lab-"))
+    runtime = None
+    try:
+        runtime = Runtime(original, identity, root)
+        code, output, _ = runtime.run(["version"])
+        check(code == 0 and output.decode().splitlines()[0] == "rclone v" + identity["version"], "runtime_version_mismatch")
+        case_root = root / "filefabric-renewal"
+        case_root.mkdir(mode=0o700)
+        row = {"backend": "filefabric", "fixture_kind": "independent_loopback",
+               "fixture_mode": "filefabric_later_call_renewal_v1",
+               "capabilities": {name: "not_run" for name in FILEFABRIC_SESSION_CAPABILITIES}, "errors": []}
+        report["backends"].append(row)
+        filefabric_session_checks(runtime, case_root, row, fixture_manifest())
+    except (LabError, OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as error:
+        report["errors"].append(str(error) if isinstance(error, LabError) else "lab_setup_failed")
+    except KeyboardInterrupt:
+        report["errors"].append("lab_interrupted")
+    finally:
+        try:
+            processes_closed = runtime.close() if runtime else True
+            shutil.rmtree(root)
+            report["cleanup_passed"] = processes_closed and not root.exists()
+        except OSError:
+            report["errors"].append("lab_cleanup_failed")
+        report["finished_utc"] = utc_now()
+        report["success"] = (report["cleanup_passed"] and not report["errors"]
+                             and len(report["backends"]) == 1
+                             and all(not row["errors"] and all(value == "passed"
+                                     for value in row["capabilities"].values()) for row in report["backends"]))
+        atomic_report(report_path, report)
+    return report
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--rclone", required=True, type=Path)
     parser.add_argument("--report", required=True, type=Path)
-    parser.add_argument("--backends", default=",".join(BACKENDS))
+    selection = parser.add_mutually_exclusive_group()
+    selection.add_argument("--backends")
+    selection.add_argument("--filefabric-renewal", action="store_true")
     args = parser.parse_args()
-    selected = args.backends.split(",")
+    selected = args.backends.split(",") if args.backends is not None else list(BACKENDS)
     if not selected or len(set(selected)) != len(selected) or any(item not in BACKENDS for item in selected):
         parser.error("backends must be a unique comma-separated subset of supported fixture IDs")
     try:
-        report = run_lab(args.rclone, args.report, selected)
+        report = run_filefabric_renewal(args.rclone, args.report) if args.filefabric_renewal else run_lab(args.rclone, args.report, selected)
     except (LabError, OSError):
         print("Provider fixture preflight/report failure", file=sys.stderr)
         return 1
