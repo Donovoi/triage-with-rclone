@@ -110,6 +110,11 @@ MEMORY_REQUIRED_CAPABILITIES = frozenset({
     "listing", "download_hash", "missing_object_rejection", "authentication_rejection",
     "source_preservation", "config_preservation", "cleanup",
 })
+SMB_MODE = "smb_samba_ntlm_read_v1"
+SMB_REQUIRED_CAPABILITIES = frozenset({
+    "listing", "download_hash", "missing_object_rejection", "authentication_rejection",
+    "source_preservation", "config_preservation", "cleanup",
+})
 READ_FIXTURE_CONTRACTS = {
     "azureblob": AZUREBLOB_REQUIRED_CAPABILITIES,
     "azurefiles": AZUREFILES_REQUIRED_CAPABILITIES,
@@ -290,6 +295,53 @@ def compute_harness_sha256(root):
     return digest.hexdigest()
 
 
+def smb_evidence_module():
+    """Load only the repository-owned, pure SMB receipt helper on demand."""
+    path = plain_path(ROOT / "scripts" / "provider-lab" / "smb" / "protocol_evidence.py")
+    try:
+        spec = importlib.util.spec_from_file_location("coverage_smb_evidence", path)
+        module = importlib.util.module_from_spec(spec)
+        source = path.read_bytes()
+        if len(source) > MAX_RECEIPT:
+            fail("smb_evidence_helper_size_limit")
+        exec(compile(source, str(path), "exec"), module.__dict__)
+        return module
+    except (ImportError, OSError, SyntaxError, AttributeError, TypeError):
+        fail("smb_evidence_helper_unavailable")
+
+
+def compute_smb_bindings(root):
+    """Current fixed SMB sources, never paths or expectations from a receipt."""
+    try:
+        return smb_evidence_module().compute_bindings(plain_path(Path(root).absolute()))
+    except (OSError, ValueError, TypeError, KeyError):
+        fail("smb_evidence_bindings_invalid")
+
+
+def validate_smb_receipt(receipt, runtime, bindings, now, max_age_hours, fixture_manifest_sha256):
+    if bindings is None:
+        # Existing callers have not opted into the separately bound format.
+        fail("unknown_receipt_schema")
+    if runtime.get("platform") != "linux":
+        fail("receipt_runtime_mismatch")
+    if (not isinstance(bindings, dict) or set(bindings) != {
+            "harness_sha256", "fixture_manifest_sha256", "source_sha256", "base_image", "samba_version"}
+            or not valid_hash(fixture_manifest_sha256)
+            or bindings["fixture_manifest_sha256"] != fixture_manifest_sha256):
+        fail("smb_evidence_bindings_invalid")
+    try:
+        smb_evidence_module().validate_evidence(
+            receipt, runtime, bindings["harness_sha256"], fixture_manifest_sha256,
+            bindings["source_sha256"], now, max_age_hours,
+            expected_base_image=bindings["base_image"], expected_samba_version=bindings["samba_version"])
+    except ValueError as error:
+        code = str(error)
+        fail(code if re.fullmatch(r"[a-z][a-z0-9_]{0,80}", code) else "invalid_smb_evidence")
+    except (TypeError, KeyError, AttributeError, OverflowError):
+        fail("invalid_smb_evidence")
+    return receipt
+
+
 def compute_fixture_manifest_sha256(root):
     """Read the current repository fixture definition, never a receipt path.
 
@@ -456,7 +508,9 @@ def parse_utc(value):
 
 
 def validate_receipt(receipt, runtime, harness_sha256, now, max_age_hours=MAX_AGE_HOURS,
-                     fixture_manifest_sha256=None):
+                     fixture_manifest_sha256=None, smb_bindings=None):
+    if isinstance(receipt, dict) and type(receipt.get("schema_version")) is int and receipt["schema_version"] == 3:
+        return validate_smb_receipt(receipt, runtime, smb_bindings, now, max_age_hours, fixture_manifest_sha256)
     if (not isinstance(receipt, dict) or type(receipt.get("schema_version")) is not int
             or receipt["schema_version"] not in (1, 2) or receipt.get("scope") != "rclone_backend_protocol_fixture"):
         fail("unknown_receipt_schema")
@@ -588,7 +642,7 @@ def merge_fixture_observation(observed, capabilities, failed, run):
 
 
 def evaluate(catalog, policy, runtime, receipts, harness_sha256, now=None, max_age_hours=MAX_AGE_HOURS,
-             fixture_manifest_sha256=None):
+             fixture_manifest_sha256=None, smb_bindings=None):
     """Receipts are explicit batch inputs. Failed current evidence stays failed."""
     now = now or datetime.now(timezone.utc)
     validate_policy(policy)
@@ -613,7 +667,8 @@ def evaluate(catalog, policy, runtime, receipts, harness_sha256, now=None, max_a
     observations = {}
     for receipt in receipts:
         try:
-            validate_receipt(receipt, runtime, harness_sha256, now, max_age_hours, fixture_manifest_sha256)
+            validate_receipt(receipt, runtime, harness_sha256, now, max_age_hours, fixture_manifest_sha256,
+                             smb_bindings=smb_bindings)
             for row in receipt["backends"]:
                 if row["backend"] not in {entry["backend"] for entry in catalog}:
                     fail("fixture_backend_absent_from_catalog")
@@ -628,6 +683,16 @@ def evaluate(catalog, policy, runtime, receipts, harness_sha256, now=None, max_a
                     "fixture_manifest_sha256": receipt["fixture_manifest_sha256"],
                 }
                 contributed = row["capabilities"]
+                if row["backend"] == "smb":
+                    native = receipt["native_evidence"]
+                    probe_runtime = (native.get("probe") or {}).get("runtime", {})
+                    run.update(fixture_mode=SMB_MODE, platform="linux", architecture="amd64",
+                               samba_version=probe_runtime.get("samba_version"), base_image=native["base_image"],
+                               image_id=native["image_id"], source_sha256=dict(native["source_sha256"]),
+                               harness_sha256=receipt["harness_sha256"])
+                    mode_observed = observed.setdefault("modes", {}).setdefault(
+                        SMB_MODE, {"capabilities": {}, "failed": False, "runs": []})
+                    merge_fixture_observation(mode_observed, contributed, failed, run)
                 if row["backend"] == "internetarchive":
                     run["fixture_mode"] = INTERNETARCHIVE_ANONYMOUS_MODE
                 if row["backend"] == "pcloud":
@@ -685,9 +750,11 @@ def evaluate(catalog, policy, runtime, receipts, harness_sha256, now=None, max_a
                     if value in ("passed", "failed"):
                         capabilities[capability] = value
                 evidence["runs"] = observed["runs"]
-                if backend == "filefabric":
+                if backend in ("filefabric", "smb"):
                     evidence["modes"] = {}
-                    for mode, contract in FILEFABRIC_MODE_CONTRACTS.items():
+                    contracts = ({SMB_MODE: SMB_REQUIRED_CAPABILITIES} if backend == "smb"
+                                 else FILEFABRIC_MODE_CONTRACTS)
+                    for mode, contract in contracts.items():
                         mode_observed = observed.get("modes", {}).get(mode, {})
                         mode_capabilities = {key: mode_observed.get("capabilities", {}).get(key, "not_verified")
                                              for key in sorted(contract)}
@@ -896,8 +963,11 @@ def main(argv=None):
                 receipts.append(read_json(path, MAX_RECEIPT))
             except CoverageError as error:
                 receipt_errors.append(str(error))
+        smb_bindings = (compute_smb_bindings(ROOT / "scripts" / "provider-lab" / "smb")
+                        if any(isinstance(receipt, dict) and type(receipt.get("schema_version")) is int
+                               and receipt["schema_version"] == 3 for receipt in receipts) else None)
         report = evaluate(catalog, policy, runtime, receipts, harness_sha, max_age_hours=args.max_age_hours,
-                          fixture_manifest_sha256=fixture_sha)
+                          fixture_manifest_sha256=fixture_sha, smb_bindings=smb_bindings)
         report["errors"] = sorted(set(report["errors"] + receipt_errors))
         report["all_complete"] = report["all_complete"] and not report["errors"]
         report["gate_errors"] = gate_errors(report, args.require_plans, required, args.require_complete)
