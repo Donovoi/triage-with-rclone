@@ -97,6 +97,95 @@ class Tests(unittest.TestCase):
                    (ROOT_NAME, tarfile.DIRTYPE, b"", 0o755)]
         self.error("layout_duplicate", self.layout, archive(entries))
 
+    def duplicate_diagnostic(self, entries):
+        with self.assertRaises(b.MaterialError) as caught:
+            self.layout(archive(entries))
+        self.assertEqual(str(caught.exception), "layout_duplicate")
+        return caught.exception.diagnostic
+
+    def test_duplicate_directories_report_only_canonical_hash_and_closed_metadata(self):
+        name = ROOT_NAME + "/PRIVATE_NAME_CANARY"
+        result = self.duplicate_diagnostic([(name + "/", tarfile.DIRTYPE, b"", 0o755),
+                                            (name, tarfile.DIRTYPE, b"", 0o755)])
+        self.assertEqual(result, {
+            "schema_version": 1, "code": "layout_duplicate",
+            "canonical_path_sha256": hashlib.sha256(name.encode()).hexdigest(),
+            "existing": {"index": 1, "type": "directory", "size": 0, "mode": 0o755, "payload_sha256": None},
+            "new": {"index": 2, "type": "directory", "size": 0, "mode": 0o755, "payload_sha256": None},
+            "same_type": True, "same_size": True, "same_mode": True, "same_content": True})
+        self.assertNotIn("PRIVATE_NAME_CANARY", json.dumps(result))
+        self.assertNotIn(ROOT_NAME, json.dumps(result))
+
+    def test_duplicate_files_independently_compare_full_payload_size_and_modes(self):
+        name, payload = ROOT_NAME + "/PRIVATE_NAME_CANARY", b"PRIVATE_PAYLOAD_CANARY"
+        for other, mode, same_size, same_mode, same_content in (
+                (payload, 0o644, True, True, True),
+                (payload.lower(), 0o644, True, True, False),
+                (payload + b"x", 0o644, False, True, False),
+                (payload, 0o600, True, False, True)):
+            with self.subTest(mode=mode, same_content=same_content, same_size=same_size):
+                result = self.duplicate_diagnostic([(name, tarfile.REGTYPE, payload, 0o644),
+                                                    (name, tarfile.REGTYPE, other, mode)])
+                self.assertEqual(result["existing"], {"index": 1, "type": "file", "size": len(payload),
+                    "mode": 0o644, "payload_sha256": hashlib.sha256(payload).hexdigest()})
+                self.assertEqual(result["new"], {"index": 2, "type": "file", "size": len(other),
+                    "mode": mode, "payload_sha256": hashlib.sha256(other).hexdigest()})
+                self.assertEqual((result["same_type"], result["same_size"], result["same_mode"], result["same_content"]),
+                                 (True, same_size, same_mode, same_content))
+                self.assertNotIn("PRIVATE", json.dumps(result))
+
+    def test_duplicate_cross_types_and_directory_mode_conflict_still_reject(self):
+        name = ROOT_NAME + "/duplicate"
+        for first, second in ((tarfile.DIRTYPE, tarfile.REGTYPE), (tarfile.REGTYPE, tarfile.DIRTYPE)):
+            with self.subTest(first=first):
+                result = self.duplicate_diagnostic([(name, first, b"", 0o755), (name, second, b"", 0o755)])
+                self.assertFalse(result["same_type"])
+                self.assertFalse(result["same_content"])
+                self.assertTrue(result["same_size"])
+                self.assertEqual({result["existing"]["payload_sha256"], result["new"]["payload_sha256"]},
+                                 {None, hashlib.sha256(b"").hexdigest()})
+        result = self.duplicate_diagnostic([(name, tarfile.DIRTYPE, b"", 0o755),
+                                            (name, tarfile.DIRTYPE, b"", 0o700)])
+        self.assertFalse(result["same_mode"])
+        self.assertTrue(result["same_content"])
+
+    def test_duplicate_payload_must_obey_bounds_and_be_complete(self):
+        entries = [(ROOT_NAME + "/", tarfile.DIRTYPE, b"", 0o755),
+                   (ROOT_NAME + "/duplicate", tarfile.REGTYPE, b"abcd", 0o644),
+                   (ROOT_NAME + "/duplicate", tarfile.REGTYPE, b"abcd", 0o644)]
+        data = archive(entries)
+        with mock.patch.object(b, "MAX_PAYLOAD", 7):
+            self.error("layout_bounds", self.layout, data)
+        self.error("layout_truncated", self.layout, gzip.compress(gzip.decompress(data)[:2050], mtime=0))
+
+    def test_diagnostic_schema_types_bounds_and_consistency_are_closed(self):
+        good = self.duplicate_diagnostic([(ROOT_NAME, tarfile.DIRTYPE, b"", 0o755),
+                                          (ROOT_NAME, tarfile.DIRTYPE, b"", 0o755)])
+        changes = [("schema_version", True), ("code", "PRIVATE_CODE"), ("extra", "PRIVATE_PATH"),
+                   ("canonical_path_sha256", "PRIVATE_PATH"), ("canonical_path_sha256", "A" * 64),
+                   ("same_type", 1), ("same_mode", False), ("same_content", False),
+                   ("existing.index", True), ("existing.index", 0), ("existing.index", 2),
+                   ("new.index", b.MAX_MEMBERS + 1), ("existing.size", True), ("existing.size", -1),
+                   ("existing.size", b.MAX_PAYLOAD + 1), ("existing.size", 1),
+                   ("existing.mode", True), ("existing.mode", -1), ("existing.mode", 0o4755),
+                   ("existing.payload_sha256", "a" * 64), ("existing.type", "symlink"),
+                   ("existing.type", "file"), ("existing.path", "PRIVATE_PATH")]
+        for field, value in changes:
+            with self.subTest(field=field, value=value):
+                changed = copy.deepcopy(good)
+                if "." in field:
+                    group, key = field.split(".")
+                    changed[group][key] = value
+                else:
+                    changed[field] = value
+                with self.assertRaisesRegex(ValueError, "^invalid_layout_diagnostic$"):
+                    b.MaterialError("layout_duplicate", changed)
+        with self.assertRaisesRegex(ValueError, "^invalid_layout_diagnostic$"):
+            b.MaterialError("layout_invalid", good)
+        error = b.MaterialError("layout_duplicate", good)
+        good["existing"]["size"] = 1
+        self.assertEqual(error.diagnostic["existing"]["size"], 0)
+
     def test_pax_physical_headers_reject_before_large_payload_parse(self):
         for kind in (tarfile.XHDTYPE, tarfile.XGLTYPE):
             item = tarfile.TarInfo(ROOT_NAME + "/pax")
@@ -134,7 +223,8 @@ class Tests(unittest.TestCase):
         self.error("source_changed", b.load_verifier, path)
 
     @contextlib.contextmanager
-    def scenario(self, *, download_error=None, signature_error=None, cleanup_error=False, unreaped=False):
+    def scenario(self, *, download_error=None, signature_error=None, cleanup_error=False, unreaped=False,
+                 archive_data=None):
         inputs = self.root / "inputs"
         inputs.mkdir()
         source = b"# synthetic reviewed source; module loader is mocked\n"
@@ -146,7 +236,8 @@ class Tests(unittest.TestCase):
         names = ("source.py", "manifest.json", "config.json", "Dockerfile")
         for name, data in zip(names, (source, manifest, config, recipe)):
             (inputs / name).write_bytes(data)
-        payloads = {"maven.tar.gz": archive(), "maven.tar.gz.asc": b"synthetic detached signature\n",
+        payloads = {"maven.tar.gz": archive() if archive_data is None else archive_data,
+                    "maven.tar.gz.asc": b"synthetic detached signature\n",
                     "maven-KEYS.txt": b"synthetic public-key bundle\n"}
         calls = []
         def download(root, activity):
@@ -199,6 +290,8 @@ class Tests(unittest.TestCase):
                 self.assertIs(current, lease)
                 root = lease.root
                 self.assertFalse(lease.report["success"])
+                for field in ("material", "verification", "layout"):
+                    self.assertIsNone(lease.report[field])
                 self.assertTrue((root / "maven.tar.gz").is_file())
                 value = lease.material
                 self.assertEqual(set(value), b.MATERIAL_KEYS)
@@ -212,6 +305,10 @@ class Tests(unittest.TestCase):
                 self.assertTrue(lease.material["signature_verified"])
             self.assertEqual(calls, ["download", "signature", "cleanup"])
             self.assertTrue(lease.report["success"])
+            self.assertEqual(lease.report["checks"], {"checksums_verified": True, "signature_verified": True,
+                                                     "layout_inspected": True})
+            self.assertIsNone(lease.report["layout_diagnostic"])
+            self.assertEqual(lease.report["adapter_source_sha256"], hashlib.sha256(Path(b.__file__).read_bytes()).hexdigest())
             self.assertFalse(root.exists())
             self.assertFalse(lease.report["ledger_eligible"])
             self.error("material_invalid", lambda: lease.material)
@@ -306,6 +403,54 @@ class Tests(unittest.TestCase):
             self.assertEqual(calls, ["download", "signature", "cleanup"])
             self.assertFalse(lease.root.exists())
             self.assertNotIn("CANARY", json.dumps(lease.report))
+            self.assertEqual(lease.report["checks"], {"checksums_verified": True, "signature_verified": False,
+                                                     "layout_inspected": False})
+
+    def test_duplicate_failure_retains_verified_stages_but_no_material_and_cli_stays_private(self):
+        name, payload = ROOT_NAME + "/PRIVATE_NAME_CANARY", b"PRIVATE_PAYLOAD_CANARY"
+        data = archive([(name, tarfile.REGTYPE, payload, 0o644), (name, tarfile.REGTYPE, payload, 0o600)])
+        with self.scenario(archive_data=data) as (lease, calls, _), mock.patch.object(b, "BootstrapLease", return_value=lease):
+            report_path = self.root / "public.json"
+            args = ["--verifier", str(lease.paths[0]), "--jdk-manifest", str(lease.paths[1]),
+                    "--jdk-config", str(lease.paths[2]), "--jdk-source", str(lease.paths[3]), "--report", str(report_path)]
+            self.assertEqual(b.main(args), 1)
+            result = json.loads(report_path.read_bytes())
+            self.assertEqual(set(result), {"schema_version", "scope", "ledger_eligible", "started_utc", "finished_utc",
+                "duration_seconds", "material", "verification", "layout", "adapter_source_sha256", "layout_diagnostic",
+                "checks", "success", "errors", "cleanup"})
+            self.assertEqual(calls, ["download", "signature", "cleanup"])
+            self.assertFalse(lease.root.exists())
+            self.assertEqual(result["errors"], ["layout_duplicate"])
+            self.assertFalse(result["success"])
+            self.assertFalse(result["ledger_eligible"])
+            self.assertEqual(result["cleanup"], {"children_stopped": True, "temporary_removed": True})
+            self.assertEqual(result["checks"], {"checksums_verified": True, "signature_verified": True,
+                                              "layout_inspected": False})
+            self.assertEqual(result["adapter_source_sha256"], hashlib.sha256(Path(b.__file__).read_bytes()).hexdigest())
+            for field in ("material", "verification", "layout"):
+                self.assertIsNone(result[field])
+            self.assertTrue(result["layout_diagnostic"]["same_content"])
+            self.assertFalse(result["layout_diagnostic"]["same_mode"])
+            for canary in ("PRIVATE", ROOT_NAME, str(self.root)):
+                self.assertNotIn(canary, report_path.read_text())
+            changed = lease.report
+            changed["layout_diagnostic"]["new"]["size"] = 99
+            self.assertEqual(lease.report["layout_diagnostic"]["new"]["size"], len(payload))
+            self.error("material_invalid", lambda: lease.material)
+
+    def test_invalid_diagnostic_cannot_escape_record_allowlist(self):
+        lease = b.BootstrapLease(*(self.root / name for name in ("a", "b", "c", "d")))
+        lease._record(SimpleNamespace(code="layout_duplicate", diagnostic={"path": "PRIVATE_CANARY"}))
+        self.assertEqual(lease.report["errors"], ["layout_duplicate"])
+        self.assertIsNone(lease.report["layout_diagnostic"])
+        self.assertNotIn("PRIVATE_CANARY", json.dumps(lease.report))
+
+    def test_early_failure_binds_adapter_but_claims_no_completed_stage(self):
+        with self.scenario(download_error=b.MaterialError("download_timeout")) as (lease, _, _):
+            self.error("download_timeout", lease.__enter__)
+            self.assertEqual(lease.report["checks"], {"checksums_verified": False, "signature_verified": False,
+                                                     "layout_inspected": False})
+            self.assertEqual(lease.report["adapter_source_sha256"], hashlib.sha256(Path(b.__file__).read_bytes()).hexdigest())
 
     def test_unreaped_child_prevents_directory_deletion_and_success(self):
         with self.scenario(unreaped=True) as (lease, calls, _):
@@ -327,6 +472,9 @@ class Tests(unittest.TestCase):
                 with lease:
                     pass
             self.assertFalse(lease.report["success"])
+            self.assertTrue(all(lease.report["checks"].values()))
+            for field in ("material", "verification", "layout"):
+                self.assertIsNone(lease.report[field])
 
     def test_consumer_exception_is_not_published_and_still_cleans(self):
         with self.scenario() as (lease, _, _):

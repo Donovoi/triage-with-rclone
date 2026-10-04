@@ -59,11 +59,49 @@ CODES = frozenset({
 
 
 class MaterialError(Exception):
-    def __init__(self, code):
+    def __init__(self, code, diagnostic=None):
         if code not in CODES:
             raise ValueError("unknown_material_error")
+        if diagnostic is not None and code != "layout_duplicate":
+            raise ValueError("invalid_layout_diagnostic")
         self.code = code
+        self.diagnostic = validate_layout_diagnostic(diagnostic) if diagnostic is not None else None
         super().__init__(code)
+
+
+def validate_layout_diagnostic(value):
+    """Closed public data only; never retain an archive name or exception text."""
+    keys = {"schema_version", "code", "canonical_path_sha256", "existing", "new",
+            "same_type", "same_size", "same_mode", "same_content"}
+    entry_keys = {"index", "type", "size", "mode", "payload_sha256"}
+    def digest(item):
+        return type(item) is str and re.fullmatch(r"[0-9a-f]{64}", item) is not None
+    valid = (type(value) is dict and set(value) == keys
+             and type(value["schema_version"]) is int and value["schema_version"] == 1
+             and type(value["code"]) is str and value["code"] == "layout_duplicate"
+             and digest(value["canonical_path_sha256"]))
+    if not valid:
+        raise ValueError("invalid_layout_diagnostic")
+    for item in (value["existing"], value["new"]):
+        valid = (type(item) is dict and set(item) == entry_keys
+                 and type(item["index"]) is int and 1 <= item["index"] <= MAX_MEMBERS
+                 and type(item["type"]) is str and item["type"] in {"file", "directory"}
+                 and type(item["size"]) is int and 0 <= item["size"] <= MAX_PAYLOAD
+                 and type(item["mode"]) is int and 0 <= item["mode"] <= 0o777
+                 and (digest(item["payload_sha256"]) if item["type"] == "file"
+                      else item["size"] == 0 and item["payload_sha256"] is None))
+        if not valid:
+            raise ValueError("invalid_layout_diagnostic")
+    old, new = value["existing"], value["new"]
+    # Directories have zero bytes and null hashes; two directories share empty content.
+    expected = {"same_type": old["type"] == new["type"], "same_size": old["size"] == new["size"],
+                "same_mode": old["mode"] == new["mode"],
+                "same_content": old["type"] == new["type"] and old["size"] == new["size"]
+                    and old["payload_sha256"] == new["payload_sha256"]}
+    if not old["index"] < new["index"] or any(type(value[key]) is not bool or value[key] != flag
+                                              for key, flag in expected.items()):
+        raise ValueError("invalid_layout_diagnostic")
+    return copy.deepcopy(value)
 
 
 def need(condition, code):
@@ -199,11 +237,10 @@ def inspect_layout(path):
                      and ".." not in parts.parts and "\\" not in name
                      and all(ord(char) >= 32 and ord(char) != 127 for char in name)
                      and parts.parts[0] == MAVEN_ROOT and (info.isdir() or not raw.endswith("/")), "layout_alias")
-                need(name not in names, "layout_duplicate")
                 need(len(rows) < MAX_MEMBERS and type(info.size) is int and info.size >= 0
                      and size_total + info.size <= MAX_PAYLOAD, "layout_bounds")
                 need(not info.isdir() or info.size == 0, "layout_invalid")
-                need(not info.mode & 0o7000, "layout_invalid")
+                need(type(info.mode) is int and 0 <= info.mode <= 0o777, "layout_invalid")
                 content = hashlib.sha256()
                 remaining = info.size
                 while remaining:
@@ -216,16 +253,29 @@ def inspect_layout(path):
                 need(len(pad) == padding, "layout_truncated")
                 need(pad == b"\0" * padding, "layout_invalid")
                 kind = "directory" if info.isdir() else "file"
+                entry = {"index": len(rows) + 1, "type": kind, "size": info.size, "mode": info.mode,
+                         "payload_sha256": content.hexdigest() if kind == "file" else None}
+                if name in names:
+                    old = names[name]
+                    raise MaterialError("layout_duplicate", {
+                        "schema_version": 1, "code": "layout_duplicate",
+                        "canonical_path_sha256": hashlib.sha256(name.encode("utf-8")).hexdigest(),
+                        "existing": old, "new": entry,
+                        "same_type": old["type"] == kind, "same_size": old["size"] == info.size,
+                        "same_mode": old["mode"] == info.mode,
+                        "same_content": old["type"] == kind and old["size"] == info.size
+                            and old["payload_sha256"] == entry["payload_sha256"],
+                    })
                 row = {"path": name, "type": kind, "size": info.size, "mode": info.mode,
                        "sha256": content.hexdigest() if kind == "file" else None}
                 rows.append(row)
-                names[name] = kind
+                names[name] = entry
                 size_total += info.size
                 if name == MAVEN_ROOT + "/bin/mvn":
                     need(kind == "file" and info.size > 0 and info.mode & 0o111, "layout_mvn_invalid")
                     mvn = {"size": info.size, "sha256": content.hexdigest(), "executable": True}
             for name in names:
-                need(all(names.get(str(parent), "directory") == "directory"
+                need(all(names.get(str(parent), {"type": "directory"})["type"] == "directory"
                          for parent in PurePosixPath(name).parents if str(parent) != "."), "layout_invalid")
         need(mvn is not None, "layout_mvn_invalid")
     except (OSError, EOFError, UnicodeError, tarfile.TarError, ValueError):
@@ -314,11 +364,15 @@ class BootstrapLease:
         self._verifier = None
         self._used = False
         self._material = None
+        self._verification = None
+        self._layout = None
         self._old_umask = None
         self._clock = None
         self._report = {"schema_version": 1, "scope": "hdfs_bootstrap_material_inspection", "ledger_eligible": False,
                         "started_utc": None, "finished_utc": None, "duration_seconds": None,
                         "material": None, "verification": None, "layout": None,
+                        "adapter_source_sha256": None, "layout_diagnostic": None,
+                        "checks": {name: False for name in ("checksums_verified", "signature_verified", "layout_inspected")},
                         "success": False, "errors": [],
                         "cleanup": {"children_stopped": True, "temporary_removed": True}}
 
@@ -335,6 +389,12 @@ class BootstrapLease:
         candidate = getattr(error, "code", None)
         code = candidate if type(candidate) is str and candidate in CODES else "lease_failed"
         self._report["errors"].append(code)
+        if code == "layout_duplicate":
+            try:
+                diagnostic = validate_layout_diagnostic(getattr(error, "diagnostic", None))
+            except (ValueError, TypeError, KeyError):
+                return
+            self._report["layout_diagnostic"] = diagnostic
 
     def __enter__(self):
         need(not self._used, "lease_reused")
@@ -344,9 +404,10 @@ class BootstrapLease:
         self._old_umask = os.umask(0o077)
         failed = False
         try:
+            self._adapter_sha = sha(Path(__file__).absolute(), maximum=128 * 1024)
+            self._report["adapter_source_sha256"] = self._adapter_sha
             self._verifier = load_verifier(self.paths[0])
             self._verifier.hosted_guard()
-            self._adapter_sha = sha(Path(__file__).absolute(), maximum=128 * 1024)
             self.root = Path(tempfile.mkdtemp(prefix="hdfs-material-", dir="/tmp"))
             self._report["cleanup"]["temporary_removed"] = False
             self._identity = identity(self.root)
@@ -356,16 +417,20 @@ class BootstrapLease:
             jdk_bindings(self.root)
             self._verifier.download_inputs(self.root, self._report["cleanup"])
             self._verifier.verify_hashes(self.root)
+            artifact_hashes(self.root)
+            self._report["checks"]["checksums_verified"] = True
             self._verifier.signature_check(self.root, self._report["cleanup"])
+            self._report["checks"]["signature_verified"] = True
             artifact_hashes(self.root)
             layout = inspect_layout(self.root / "maven.tar.gz")
+            self._report["checks"]["layout_inspected"] = True
             write_new(self.root / "maven-layout.json", canonical(layout))
             verification = {**verification_fields(self._adapter_sha), "started_utc": self._report["started_utc"],
                             "finished_utc": utc_now()}
             write_new(self.root / "verification-receipt.json", canonical(verification))
             self._material = material_value(self.root, self._adapter_sha)
             validate_material(self._material, self.root)
-            self._report.update(material=copy.deepcopy(self._material), verification=verification, layout=layout)
+            self._verification, self._layout = verification, layout
         except BaseException as error:
             self._record(error)
             failed = True
@@ -392,6 +457,8 @@ class BootstrapLease:
         self._report["finished_utc"] = utc_now()
         self._report["duration_seconds"] = round(time.monotonic() - self._clock, 6)
         self._report["success"] = self._material is not None and not self._report["errors"] and all(self._report["cleanup"].values())
+        if self._report["success"]:
+            self._report.update(material=copy.deepcopy(self._material), verification=self._verification, layout=self._layout)
 
     def __exit__(self, exc_type, exc, traceback):
         if exc_type is not None:
