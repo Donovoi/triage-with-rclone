@@ -204,6 +204,65 @@ class GraphExportTests(unittest.TestCase):
         for extra in ('<!DOCTYPE project>', '<!ENTITY x "secret">', '<?external value?>', '<bad xmlns="https://private.invalid"/>'):
             self.reject("pom_invalid", poms=[pom(self.a, extra)])
 
+    def test_exact_https_namespace_alias_is_explicitly_incomplete_not_canonical(self):
+        source = pom(self.a, '<description>PRIVATE_METADATA_CANARY</description>')["content"]
+        content = source.replace(b'http://maven.apache.org/POM/4.0.0', b'https://maven.apache.org/POM/4.0.0')
+        record = {"coordinate": dict(self.a, type="pom"), "content": content, "size": len(content),
+                  "sha256": hashlib.sha256(content).hexdigest()}
+        result = self.export(poms=[record])
+        self.assertIn("noncanonical_https_pom_namespace", result["incomplete_reasons"])
+        self.assertIn("noncanonical_https_pom_namespace", result["poms"][0]["incomplete_reasons"])
+        self.assertEqual(result["poms"][0]["sha256"], hashlib.sha256(content).hexdigest())
+        self.assertEqual(result["poms"][0]["semantics"]["redacted_metadata_element_count"], 1)
+        self.assertFalse(result["semantics_complete"])
+        self.assertFalse(result["ledger_eligible"])
+        self.assertNotIn("PRIVATE_METADATA_CANARY", json.dumps(result))
+
+    def test_http_and_no_namespace_preserved_without_https_incomplete_label(self):
+        original = pom(self.a)["content"]
+        for content in (original, original.replace(b' xmlns="http://maven.apache.org/POM/4.0.0"', b'')):
+            with self.subTest(namespaced=content == original):
+                record = {"coordinate": dict(self.a, type="pom"), "content": content, "size": len(content),
+                          "sha256": hashlib.sha256(content).hexdigest()}
+                result = self.export(poms=[record])
+                self.assertNotIn("noncanonical_https_pom_namespace", result["incomplete_reasons"])
+                self.assertNotIn("noncanonical_https_pom_namespace", result["poms"][0]["incomplete_reasons"])
+
+    def test_https_namespace_lookalikes_and_foreign_children_still_reject(self):
+        source = pom(self.a)["content"]
+        for namespace in ("https://maven.apache.org/POM/4.0.0/", "https://maven.apache.org/POM/4.0.1",
+                          "https://maven.apache.org.evil/POM/4.0.0", "https://maven.apache.org:443/POM/4.0.0",
+                          "HTTPS://maven.apache.org/POM/4.0.0", "https://MAVEN.apache.org/POM/4.0.0",
+                          "https://maven.apache.org/POM/4.0.0#project", "urn:PRIVATE_NAMESPACE_CANARY"):
+            with self.subTest(namespace=namespace):
+                self.rejected_pom(source.replace(b'http://maven.apache.org/POM/4.0.0', namespace.encode()), "project_root")
+                content = pom(self.a, f'<description xmlns="{namespace}">PRIVATE_CANARY</description>')["content"]
+                self.rejected_pom(content, "namespace")
+
+    def test_mixed_known_namespaces_cannot_hide_duplicate_fields(self):
+        for root_namespace in ("http://maven.apache.org/POM/4.0.0", "https://maven.apache.org/POM/4.0.0"):
+            for duplicate_namespace in ("", "http://maven.apache.org/POM/4.0.0", "https://maven.apache.org/POM/4.0.0"):
+                with self.subTest(root=root_namespace, duplicate=duplicate_namespace):
+                    source = pom(self.a)["content"].replace(b'http://maven.apache.org/POM/4.0.0', root_namespace.encode())
+                    duplicate = f'<version xmlns="{duplicate_namespace}">1</version>'.encode()
+                    self.rejected_pom(source.replace(b'</project>', duplicate + b'</project>'), "duplicate_field")
+
+    def test_https_alias_does_not_bypass_coordinate_or_element_bounds(self):
+        content = pom(coord("different"))["content"].replace(b'http://maven.apache.org/POM/4.0.0',
+                                                            b'https://maven.apache.org/POM/4.0.0')
+        self.rejected_pom(content, "coordinate_mismatch")
+        valid = pom(self.a)["content"].replace(b'http://maven.apache.org/POM/4.0.0',
+                                             b'https://maven.apache.org/POM/4.0.0')
+        with mock.patch.object(g, "MAX_ELEMENTS", 2):
+            self.rejected_pom(valid, "element_bounds", expected_code="input_limit")
+
+    def test_https_child_alias_is_flagged_even_with_canonical_root(self):
+        record = pom(self.a, '<description xmlns="https://maven.apache.org/POM/4.0.0">PRIVATE_CANARY</description>')
+        result = self.export(poms=[record])
+        self.assertIn("noncanonical_https_pom_namespace", result["poms"][0]["incomplete_reasons"])
+        self.assertEqual(result["poms"][0]["semantics"]["redacted_metadata_element_count"], 1)
+        self.assertNotIn("PRIVATE_CANARY", json.dumps(result))
+
     def test_pom_encoding_preflight_xml_and_root_failures_have_finite_reasons(self):
         for content, reason in (
                 (b"\xffPRIVATE_ENCODING_CANARY", "utf8_decode"),

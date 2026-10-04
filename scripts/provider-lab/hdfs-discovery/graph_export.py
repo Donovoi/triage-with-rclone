@@ -328,7 +328,8 @@ def pom_semantics(content, c, issues, budget):
     except (UnicodeError, ET.ParseError, ValueError):
         raise ExportError("pom_invalid", pom_reason="xml_parse") from None
     ns = "{http://maven.apache.org/POM/4.0.0}"
-    pom_need(root.tag in {"project", ns + "project"}, "project_root")
+    https_ns = "{https://maven.apache.org/POM/4.0.0}"
+    pom_need(root.tag in {"project", ns + "project", https_ns + "project"}, "project_root")
     pending, count = [(root, 0)], 0
     while pending:
         element, depth = pending.pop()
@@ -338,6 +339,9 @@ def pom_semantics(content, c, issues, budget):
         pom_need(type(element.tag) is str, "element_tag")
         if element.tag.startswith(ns):
             element.tag = element.tag[len(ns):]
+        elif element.tag.startswith(https_ns):
+            element.tag = element.tag[len(https_ns):]
+            issues.add("noncanonical_https_pom_namespace")
         pom_need("{" not in element.tag, "namespace")
         pom_need(len(element.tag) <= 128, "element_name")
         if element.attrib:
