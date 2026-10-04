@@ -45,12 +45,13 @@ class HostedTests(unittest.TestCase):
                     self.assertTrue(metadata.entered)
                     self.assertFalse(metadata.exited)
                     self.assertEqual(args[2:], metadata.paths)
-                    return {"success": True, "ledger_eligible": False}
+                    return {"success": True, "ledger_eligible": False, "offline_reproduced": True}
                 with patch.object(H.J, "JdkMetadataLease", return_value=metadata), \
                         patch.object(H.B, "BootstrapLease") as bootstrap, patch.object(H.R, "run", side_effect=discover):
                     result = H.run(Path("candidate"), Path("verifier"), "discover")
                 bootstrap.assert_not_called()
                 self.assertEqual(result["success"], failure is None)
+                self.assertEqual(result["offline_reproduced"], failure is None)
                 self.assertTrue(metadata.exited)
 
     def test_metadata_failure_prevents_all_consumers_and_hides_exception_text(self):

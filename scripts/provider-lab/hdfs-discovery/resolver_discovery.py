@@ -23,6 +23,7 @@ import time
 import uuid
 import bootstrap_material
 import graph_export
+import offline_cache
 
 
 INPUT_HASHES = {
@@ -36,6 +37,8 @@ COMPONENT = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.+-]{0,127}\Z")
 LABEL = "org.openai.triage.hdfs-discovery"
 MAX_ARCHIVE = 1024 * 1024 * 1024
 MAX_FILES = 12000
+# Two end blocks plus record padding can exceed one record by one block.
+MAX_ZERO_TAIL = tarfile.RECORDSIZE + tarfile.BLOCKSIZE
 STATUS_RECORDS = {
     ("failed\n" + stage + "\n").encode("ascii"): "maven_status_failed_" + stage
     for stage in ("bootstrap", "versions", "enforce", "tree_json", "tree_text", "classpath", "complete")
@@ -55,7 +58,7 @@ CODES = frozenset({
     "container_binding_invalid", "container_failed", "container_cleanup_failed", "image_cleanup_failed",
     "context_cleanup_failed", "source_changed", "discovery_failed", "discovery_interrupted", "artifact_archive_invalid", "artifact_limit",
     "artifact_coordinate_invalid", "artifact_metadata_invalid", "artifact_status_invalid", "classpath_invalid",
-    "artifact_semantics_invalid",
+    "artifact_semantics_invalid", "offline_cache_invalid", "cache_cleanup_failed",
 }) | frozenset(STATUS_RECORDS.values()) | frozenset("artifact_semantics_" + code for code in graph_export.CODES)
 
 
@@ -144,7 +147,7 @@ def validate_bootstrap(value, archive):
         raise DiscoveryError("bootstrap_invalid") from None
 
 
-def driver_script():
+def driver_script(*, offline=False):
     lines = ["#!/bin/sh", "set -eu", "umask 077", "mkdir -p /work/project /work/m2 /work/output /work/home /work/tmp",
              "cp /opt/resolver/*.xml /work/project/", "status=failed", "stage=bootstrap",
              "finish() { code=$?; trap - EXIT; printf '%s\\n%s\\n' \"$status\" \"$stage\" > /work/output/status; tar -C /work -cf - m2 output; exit \"$code\"; }",
@@ -154,7 +157,9 @@ def driver_script():
              # Maven 3.9.16's documented -B disables color, including version output.
              "/opt/apache-maven-3.9.16/bin/mvn -B -version > /work/output/maven-version.log 2>&1",
              "grep -Eq '^Apache Maven 3[.]9[.]16([[:space:]]|$)' /work/output/maven-version.log"]
-    prefix = "/opt/apache-maven-3.9.16/bin/mvn -B -ntp -C -nsu -s /work/project/settings.xml -gs /work/project/global-settings.xml -Dmaven.repo.local=/work/m2 -f /work/project/pom.xml"
+    if offline:
+        lines += ["tar --no-same-owner -xf /opt/resolver/offline-seed.tar -C /work"]
+    prefix = "/opt/apache-maven-3.9.16/bin/mvn " + ("-o " if offline else "") + "-B -ntp -C -nsu -s /work/project/settings.xml -gs /work/project/global-settings.xml -Dmaven.repo.local=/work/m2 -f /work/project/pom.xml"
     for name, args in GOALS:
         lines += ["stage=" + name,
                   "timeout --signal=TERM --kill-after=3s 150s " + prefix + " " + " ".join(args) +
@@ -163,20 +168,23 @@ def driver_script():
     return "\n".join(lines) + "\n"
 
 
-def dockerfile(bootstrap):
+def dockerfile(bootstrap, *, offline=False, seed_sha256=None):
+    need(not offline or type(seed_sha256) is str and HASH.fullmatch(seed_sha256), "offline_cache_invalid")
     return ("FROM " + bootstrap["jdk_image"] + "\nUSER 0\n"
             "COPY maven.tar.gz /tmp/maven.tar.gz\n"
             "RUN echo '" + MAVEN_SHA512 + "  /tmp/maven.tar.gz' | sha512sum -c - && "
             "tar --no-same-owner -xzf /tmp/maven.tar.gz -C /opt && rm /tmp/maven.tar.gz && "
             "mkdir -p /opt/resolver && chmod -R a-w /opt/apache-maven-3.9.16\n"
             "COPY pom.xml settings.xml global-settings.xml driver.sh /opt/resolver/\n"
+            + ("COPY offline-seed.tar /opt/resolver/offline-seed.tar\nRUN echo '" + seed_sha256 +
+               "  /opt/resolver/offline-seed.tar' | sha256sum -c -\n" if offline else "") +
             "RUN chmod -R a=rX /opt/resolver\nUSER 10001:10001\nWORKDIR /work\n")
 
 
-def container_args(name, image, run_id):
+def container_args(name, image, run_id, *, offline=False):
     need(re.fullmatch(r"hdfs-discovery-[a-f0-9]{32}", name) and name == "hdfs-discovery-" + run_id
          and re.fullmatch(r"sha256:[a-f0-9]{64}", image), "container_binding_invalid")
-    return ["create", "--name", name, "--label", LABEL + "=" + run_id, "--network", "bridge",
+    return ["create", "--name", name, "--label", LABEL + "=" + run_id, "--network", "none" if offline else "bridge",
             "--read-only", "--user", "10001:10001", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
             "--pids-limit", "128", "--memory", "4g", "--cpus", "2", "--init", "--cgroupns", "private", "--ipc", "private",
             "--tmpfs", "/work:rw,nosuid,nodev,noexec,size=2g,mode=0700,uid=10001,gid=10001",
@@ -270,14 +278,14 @@ class Docker:
         return value[0]
 
 
-def inspect_container(value, name, image, run_id):
+def inspect_container(value, name, image, run_id, *, offline=False):
     need(type(value) is dict and value.get("Name") == "/" + name and value.get("Image") == image
          and re.fullmatch(r"[a-f0-9]{64}", value.get("Id", "")), "container_binding_invalid")
     config, host = value.get("Config", {}), value.get("HostConfig", {})
     need(config.get("Labels", {}).get(LABEL) == run_id and config.get("User") == "10001:10001"
-         and config.get("Entrypoint") == ["/usr/bin/env"] and config.get("Cmd") == container_args(name, image, run_id)[container_args(name, image, run_id).index(image)+1:]
+         and config.get("Entrypoint") == ["/usr/bin/env"] and config.get("Cmd") == container_args(name, image, run_id, offline=offline)[container_args(name, image, run_id, offline=offline).index(image)+1:]
          and not config.get("Volumes") and not config.get("ExposedPorts") and not config.get("Healthcheck"), "container_binding_invalid")
-    need(host.get("NetworkMode") == "bridge" and host.get("ReadonlyRootfs") is True and not host.get("Privileged")
+    need(host.get("NetworkMode") == ("none" if offline else "bridge") and host.get("ReadonlyRootfs") is True and not host.get("Privileged")
          and not host.get("Binds") and not host.get("PortBindings") and host.get("CapDrop") == ["ALL"]
          and not host.get("CapAdd") and host.get("SecurityOpt") in (["no-new-privileges"], ["no-new-privileges=true"])
          and host.get("Memory") == 4 * 1024**3 and host.get("NanoCpus") == 2 * 10**9 and host.get("PidsLimit") == 128
@@ -331,8 +339,9 @@ def discovery_status(archive):
             need(status in STATUS_RECORDS, "artifact_status_invalid")
         with archive.open("rb") as stream:
             stream.seek(last)
-            tail = stream.read(10241)
-            need(1024 <= len(tail) <= 10240 and not any(tail) and not stream.read(1), "artifact_archive_invalid")
+            tail = stream.read(MAX_ZERO_TAIL + 1)
+            need(1024 <= len(tail) <= MAX_ZERO_TAIL and len(tail) % 512 == 0
+                 and not any(tail) and not stream.read(1), "artifact_archive_invalid")
         return STATUS_RECORDS[status]
     except (DiscoveryError, tarfile.TarError, OSError, ValueError, IndexError, UnicodeError):
         return None
@@ -437,8 +446,9 @@ def artifact_manifest(archive):
                 raise DiscoveryError("artifact_semantics_invalid") from None
         with archive.open("rb") as stream:
             stream.seek(last)
-            tail = stream.read(10241)
-            need(1024 <= len(tail) <= 10240 and not any(tail) and not stream.read(1), "artifact_archive_invalid")
+            tail = stream.read(MAX_ZERO_TAIL + 1)
+            need(1024 <= len(tail) <= MAX_ZERO_TAIL and len(tail) % 512 == 0
+                 and not any(tail) and not stream.read(1), "artifact_archive_invalid")
     except (tarfile.TarError, OSError, IndexError):
         raise DiscoveryError("artifact_archive_invalid") from None
     need(records and len(records) <= 4096, "artifact_limit")
@@ -472,7 +482,8 @@ def hosted_guard():
          "hosted_linux_required")
 
 
-def discover(candidate, bootstrap, archive, output_parent, *, runner_factory=Docker):
+def discover(candidate, bootstrap, archive, output_parent, *, runner_factory=Docker,
+             cache_destination=None, seed_cache=None):
     """One fresh hosted discovery; raw logs/archive stay private, never uploaded here."""
     hosted_guard()
     started_utc = datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
@@ -480,6 +491,9 @@ def discover(candidate, bootstrap, archive, output_parent, *, runner_factory=Doc
     supervisor_sha = file_hash(Path(__file__).resolve())
     exporter_source = Path(graph_export.__file__).absolute()
     exporter_sha = file_hash(exporter_source)
+    cache_source = Path(offline_cache.__file__).absolute()
+    cache_lock = cache_source.with_name("artifact-lock.json")
+    cache_source_sha, cache_lock_sha = file_hash(cache_source), file_hash(cache_lock)
     inputs = candidate_inputs(candidate)
     bootstrap = validate_bootstrap(bootstrap, archive)
     parent = Path(output_parent).absolute()
@@ -488,6 +502,18 @@ def discover(candidate, bootstrap, archive, output_parent, *, runner_factory=Doc
         need(not stat.S_ISLNK(item.st_mode) and not getattr(item, "st_file_attributes", 0) & 0x400, "unsafe_path")
     need(parent.is_dir() and not parent.is_symlink() and stat.S_IMODE(parent.stat().st_mode) == 0o700,
          "private_directory_required")
+    need(cache_destination is None or seed_cache is None, "offline_cache_invalid")
+    offline = seed_cache is not None
+    seed_receipt = None
+    for value in (cache_destination, seed_cache):
+        if value is not None:
+            need(Path(value).is_absolute() and Path(value).parent == parent
+                 and Path(value).name == "offline-seed.tar", "offline_cache_invalid")
+    if offline:
+        try:
+            seed_receipt = offline_cache.verify_cache(seed_cache)
+        except offline_cache.CacheError:
+            raise DiscoveryError("offline_cache_invalid") from None
     run_id = uuid.uuid4().hex
     root = parent / ("hdfs-discovery-" + run_id)
     root.mkdir(mode=0o700)
@@ -496,8 +522,11 @@ def discover(candidate, bootstrap, archive, output_parent, *, runner_factory=Doc
     report = {"schema_version": 1, "scope": "hdfs_dependency_discovery", "ledger_eligible": False,
               "success": False, "offline_reproduced": False, "daemon_accepted": False,
               "review_status": "quarantined", "errors": [], "manifest": None, "pom_diagnostic": None,
+              "mode": "offline" if offline else "online", "cache_preparation": None,
               "started_utc": started_utc, "finished_utc": None, "duration_seconds": None,
               "inputs": {"supervisor_sha256": supervisor_sha, "graph_export_sha256": exporter_sha,
+                         "cache_source_sha256": cache_source_sha, "cache_lock_sha256": cache_lock_sha,
+                         "seed_cache": seed_receipt,
                          "candidate_sha256": dict(INPUT_HASHES),
                          "maven": {"version": bootstrap["maven_version"], "archive_sha256": bootstrap["maven_archive_sha256"],
                                    "archive_sha512": bootstrap["maven_archive_sha512"]},
@@ -515,11 +544,16 @@ def discover(candidate, bootstrap, archive, output_parent, *, runner_factory=Doc
             (context / filename).write_bytes(inputs[filename])
         shutil.copyfile(archive, context / "maven.tar.gz")
         need(file_hash(context / "maven.tar.gz") == bootstrap["maven_archive_sha256"], "bootstrap_archive_mismatch")
-        (context / "Dockerfile").write_text(dockerfile(bootstrap), newline="\n")
-        (context / "driver.sh").write_text(driver_script(), newline="\n")
+        if offline:
+            shutil.copyfile(seed_cache, context / "offline-seed.tar")
+            need(offline_cache.verify_cache(context / "offline-seed.tar") == seed_receipt, "offline_cache_invalid")
+        (context / "Dockerfile").write_text(dockerfile(bootstrap, offline=offline,
+                                                     seed_sha256=seed_receipt["sha256"] if offline else None), newline="\n")
+        (context / "driver.sh").write_text(driver_script(offline=offline), newline="\n")
         info = json_value(docker.call(["info", "--format", "{{json .}}"] ).stdout.read_bytes())
         need(info.get("OSType") == "linux" and info.get("Architecture") in ("amd64", "x86_64"), "docker_platform_invalid")
-        docker.call(["image", "pull", "--quiet", "--platform", "linux/amd64", bootstrap["jdk_image"]], timeout=120)
+        if not offline:
+            docker.call(["image", "pull", "--quiet", "--platform", "linux/amd64", bootstrap["jdk_image"]], timeout=120)
         base = docker.inspect("image", bootstrap["jdk_image"])
         need(base is not None and base.get("Id") == bootstrap["jdk_image_id"] and base.get("Os") == "linux"
              and base.get("Architecture") == "amd64", "base_image_mismatch")
@@ -534,15 +568,15 @@ def discover(candidate, bootstrap, archive, output_parent, *, runner_factory=Doc
              "image_binding_invalid")
         report["image_id"] = image
         attempted_create = True
-        docker.call(container_args(name, image, run_id))
+        docker.call(container_args(name, image, run_id, offline=offline))
         created = docker.inspect("container", name)
-        inspect_container(created, name, image, run_id)
+        inspect_container(created, name, image, run_id, offline=offline)
         need(created.get("State", {}).get("Status") == "created" and created["State"].get("Running") is False,
              "container_binding_invalid")
         container = created["Id"]
         result = docker.call(["start", "--attach", container], timeout=630, limit=MAX_ARCHIVE, allow_failure=True)
         ended = docker.inspect("container", container)
-        inspect_container(ended, name, image, run_id)
+        inspect_container(ended, name, image, run_id, offline=offline)
         need(ended["Id"] == container and ended.get("State", {}).get("Running") is False
              and ended["State"].get("Status") == "exited" and ended["State"].get("OOMKilled") is False
              and type(ended["State"].get("ExitCode")) is int,
@@ -551,7 +585,13 @@ def discover(candidate, bootstrap, archive, output_parent, *, runner_factory=Doc
             status_diagnostic = discovery_status(result.stdout)
             raise DiscoveryError("container_failed")
         report["manifest"] = artifact_manifest(result.stdout)
+        if cache_destination is not None:
+            report["cache_preparation"] = offline_cache.prepare_cache(result.stdout, cache_destination)
         report["success"] = True
+    except offline_cache.CacheError as error:
+        report["errors"].append("offline_cache_invalid")
+        if error.cleanup_failed:
+            report["errors"].append("cache_cleanup_failed")
     except DiscoveryError as error:
         report["errors"].append(error.code)
         if error.pom_diagnostic is not None:
@@ -601,9 +641,14 @@ def discover(candidate, bootstrap, archive, output_parent, *, runner_factory=Doc
         try:
             need(candidate_inputs(candidate) == inputs and file_hash(archive) == bootstrap["maven_archive_sha256"]
                  and file_hash(Path(__file__).resolve()) == supervisor_sha
-                 and file_hash(exporter_source) == exporter_sha, "source_changed")
+                 and file_hash(exporter_source) == exporter_sha
+                 and file_hash(cache_source) == cache_source_sha and file_hash(cache_lock) == cache_lock_sha, "source_changed")
             need(validate_bootstrap(bootstrap, archive) == bootstrap, "source_changed")
-        except (DiscoveryError, OSError): report["errors"].append("source_changed")
+            if offline:
+                need(offline_cache.verify_cache(seed_cache) == seed_receipt, "source_changed")
+            elif cache_destination is not None and report["cache_preparation"] is not None:
+                need(offline_cache.verify_cache(cache_destination) == report["cache_preparation"], "source_changed")
+        except (DiscoveryError, offline_cache.CacheError, OSError): report["errors"].append("source_changed")
         report["success"] = report["success"] and not report["errors"] and all(report["cleanup"].values())
         report["finished_utc"] = datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
         report["duration_seconds"] = round(time.monotonic() - started_clock, 6)

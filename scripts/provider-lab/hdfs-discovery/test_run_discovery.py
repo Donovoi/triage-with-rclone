@@ -24,26 +24,39 @@ class FakeLease:
         return False
 
 
-def discovery_result():
+def discovery_result(*, offline=False):
+    seed = {"success": True, "sha256": "1" * 64}
     return {"success": True, "ledger_eligible": False, "errors": [],
+            "mode": "offline" if offline else "online",
+            "inputs": {"synthetic_binding": "same", "seed_cache": seed if offline else None},
+            "cache_preparation": None if offline else seed,
+            "manifest": {"synthetic": "no runtime data"},
             "cleanup": {"container_removed": True, "image_removed": True, "context_removed": True}}
 
 
 class LifecycleTests(unittest.TestCase):
-    def invoke(self, root, result=None, error=None, lease_failure=None):
+    def invoke(self, root, result=None, error=None, lease_failure=None,
+               offline_result=None, offline_error=None, comparison_error=None):
         output = root / "owned-output"
         output.mkdir()
         (output / "private.log").write_text("PRIVATE_SYNTHETIC_CANARY")
         fake = FakeLease(root, lease_failure)
-        def discover(*args):
+        self.discovery_calls = []
+        def discover(*args, **kwargs):
             self.assertFalse(fake.report["success"])
-            if error:
-                raise error
-            return copy.deepcopy(result if result is not None else discovery_result())
+            self.discovery_calls.append(kwargs)
+            offline = len(self.discovery_calls) == 2
+            self.assertEqual(kwargs, {"seed_cache" if offline else "cache_destination": output / "offline-seed.tar"})
+            failure = offline_error if offline else error
+            chosen = offline_result if offline else result
+            if failure:
+                raise failure
+            return copy.deepcopy(chosen if chosen is not None else discovery_result(offline=offline))
         with patch.object(R.D, "hosted_guard"), patch.object(R.tempfile, "mkdtemp", return_value=str(output)), \
                 patch.object(R.stat, "S_IMODE", return_value=0o700), \
                 patch.object(R.B, "BootstrapLease", return_value=fake), \
                 patch.object(R.D, "discover", side_effect=discover), \
+                patch.object(R.O, "compare_manifests", return_value={"success": True}, side_effect=comparison_error), \
                 patch.object(R.D.subprocess, "Popen", side_effect=AssertionError("native forbidden")) as popen:
             report = R.run(root, root, root, root, root)
         popen.assert_not_called()
@@ -59,6 +72,8 @@ class LifecycleTests(unittest.TestCase):
             self.assertTrue(report["cleanup"]["raw_evidence_removed"])
             self.assertFalse(report["ledger_eligible"])
             self.assertFalse(report["daemon_accepted"])
+            self.assertTrue(report["offline_reproduced"])
+            self.assertEqual(len(self.discovery_calls), 2)
 
     def test_failed_lease_cleanup_prevents_success(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -66,6 +81,62 @@ class LifecycleTests(unittest.TestCase):
             self.assertFalse(report["success"])
             self.assertFalse(report["bootstrap"]["success"])
             self.assertFalse(output.exists())
+            self.assertFalse(report["offline_reproduced"])
+
+    def test_online_cleanup_must_finish_before_offline_starts(self):
+        with tempfile.TemporaryDirectory() as temp:
+            result = discovery_result()
+            result["cleanup"]["container_removed"] = False
+            report, output = self.invoke(Path(temp), result=result)
+            self.assertEqual(len(self.discovery_calls), 1)
+            self.assertIsNone(report["offline_discovery"])
+            self.assertFalse(report["offline_reproduced"])
+            self.assertTrue(output.exists())
+
+    def test_unreturned_or_unclean_offline_stage_preserves_raw_bytes(self):
+        for error in (None, RuntimeError("PRIVATE_SYNTHETIC_CANARY")):
+            with self.subTest(error=type(error).__name__), tempfile.TemporaryDirectory() as temp:
+                offline = discovery_result()
+                offline["cleanup"]["image_removed"] = False
+                report, output = self.invoke(Path(temp), offline_result=offline, offline_error=error)
+                self.assertEqual(len(self.discovery_calls), 2)
+                self.assertTrue(output.exists())
+                self.assertFalse(report["success"])
+                self.assertFalse(report["offline_reproduced"])
+                self.assertIn("raw_cleanup_unconfirmed", report["errors"])
+
+    def test_comparison_failure_does_not_promote_repeat_after_clean_stages(self):
+        with tempfile.TemporaryDirectory() as temp:
+            report, output = self.invoke(Path(temp), comparison_error=RuntimeError("PRIVATE_SYNTHETIC_CANARY"))
+            self.assertFalse(report["success"])
+            self.assertFalse(report["offline_reproduced"])
+            self.assertFalse(output.exists())
+
+    def test_failed_offline_stage_has_no_online_fallback(self):
+        with tempfile.TemporaryDirectory() as temp:
+            offline = discovery_result()
+            offline.update(success=False, errors=["container_failed"])
+            report, output = self.invoke(Path(temp), offline_result=offline)
+            self.assertEqual(len(self.discovery_calls), 2)
+            self.assertIn("offline_discovery_failed", report["errors"])
+            self.assertFalse(report["offline_reproduced"])
+            self.assertFalse(output.exists())
+
+    def test_changed_inputs_or_seed_cannot_count_as_offline_repeat(self):
+        for change in ("source", "seed", "network_mode"):
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as temp:
+                result = discovery_result(offline=True)
+                if change == "source":
+                    result["inputs"]["synthetic_binding"] = "different"
+                elif change == "seed":
+                    result["inputs"]["seed_cache"]["sha256"] = "2" * 64
+                else:
+                    result["mode"] = "online"
+                report, output = self.invoke(Path(temp), offline_result=result)
+                self.assertIn("offline_inputs_changed", report["errors"])
+                self.assertFalse(report["offline_reproduced"])
+                self.assertIsNone(report["comparison"])
+                self.assertFalse(output.exists())
 
     def test_acquisition_failure_does_not_claim_discovery(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -108,6 +179,17 @@ class LifecycleTests(unittest.TestCase):
             self.assertFalse(report["success"])
             self.assertEqual(report["errors"], ["discovery_failed"])
             self.assertEqual(report["discovery"]["errors"], ["artifact_semantics_tree_mismatch"])
+
+    def test_cache_cleanup_failure_preserves_root_even_after_native_cleanup(self):
+        with tempfile.TemporaryDirectory() as temp:
+            result = discovery_result()
+            result.update(success=False, errors=["offline_cache_invalid", "cache_cleanup_failed"])
+            report, output = self.invoke(Path(temp), result=result)
+            self.assertEqual(len(self.discovery_calls), 1)
+            self.assertFalse(report["success"])
+            self.assertFalse(report["offline_reproduced"])
+            self.assertTrue(output.exists())
+            self.assertIn("raw_cleanup_unconfirmed", report["errors"])
 
     def test_report_cannot_overwrite_existing_file(self):
         with tempfile.TemporaryDirectory() as temp:
