@@ -10,4 +10,5 @@
 *.json text eol=lf
 Dockerfile text eol=lf
 /scripts/provider-lab/requirements-*.txt text eol=lf
+/scripts/provider-lab/hdfs-discovery/candidate/*.xml text eol=lf
 *.ps1 text eol=crlf
