@@ -17,6 +17,7 @@ import time
 
 import bootstrap_material as B
 import resolver_discovery as D
+import offline_cache as O
 
 
 def utc_now():
@@ -32,10 +33,12 @@ def run(candidate, verifier, jdk_manifest, jdk_config, jdk_source):
         "review_status": "quarantined", "success": False, "errors": [],
         "started_utc": utc_now(), "finished_utc": None, "duration_seconds": None,
         "source_sha256": source_hash, "bootstrap": None, "discovery": None,
+        "offline_discovery": None, "comparison": None,
+        "offline_scope": "maven_resolution_in_network_none_container_not_host_egress_or_provider_acceptance",
         "cleanup": {"raw_evidence_removed": True},
     }
     root = lease = identity = None
-    discovery_started = False
+    discovery_started = offline_started = False
     old_umask = os.umask(0o077)
     try:
         D.hosted_guard()
@@ -47,26 +50,38 @@ def run(candidate, verifier, jdk_manifest, jdk_config, jdk_source):
             raise ValueError("private_directory_invalid")
         lease = B.BootstrapLease(verifier, jdk_manifest, jdk_config, jdk_source)
         with lease:
+            seed = root / "offline-seed.tar"
             discovery_started = True
             report["discovery"] = D.discover(
-                candidate, lease.material, lease.root / "maven.tar.gz", root)
-            if not report["discovery"]["success"]:
+                candidate, lease.material, lease.root / "maven.tar.gz", root, cache_destination=seed)
+            if report["discovery"].get("success") is not True or not clean_discovery(report["discovery"]):
                 report["errors"].append("discovery_failed")
+            else:
+                offline_started = True
+                report["offline_discovery"] = D.discover(
+                    candidate, lease.material, lease.root / "maven.tar.gz", root, seed_cache=seed)
+                if report["offline_discovery"].get("success") is not True or not clean_discovery(report["offline_discovery"]):
+                    report["errors"].append("offline_discovery_failed")
+                else:
+                    if not matching_stage_inputs(report["discovery"], report["offline_discovery"]):
+                        report["errors"].append("offline_inputs_changed")
+                    else:
+                        report["comparison"] = O.compare_manifests(
+                            report["discovery"]["manifest"], report["offline_discovery"]["manifest"])
     except B.MaterialError:
         report["errors"].append("bootstrap_failed")
     except D.DiscoveryError:
         report["errors"].append("discovery_failed")
+    except O.CacheError:
+        report["errors"].append("offline_comparison_failed")
     except BaseException:
         report["errors"].append("integration_failed")
     finally:
         if lease is not None:
             report["bootstrap"] = lease.report
         if root is not None:
-            discovery = report["discovery"]
-            safe = not discovery_started or (
-                type(discovery) is dict and all(value is True for value in discovery.get("cleanup", {}).values())
-                and set(discovery.get("cleanup", {})) == {"container_removed", "image_removed", "context_removed"}
-                and "command_cleanup_failed" not in discovery.get("errors", []))
+            safe = ((not discovery_started or clean_discovery(report["discovery"]))
+                    and (not offline_started or clean_discovery(report["offline_discovery"])))
             if safe:
                 try:
                     info = root.lstat()
@@ -90,8 +105,29 @@ def run(candidate, verifier, jdk_manifest, jdk_config, jdk_source):
     report["success"] = (
         not report["errors"] and report["cleanup"]["raw_evidence_removed"]
         and type(report["bootstrap"]) is dict and report["bootstrap"].get("success") is True
-        and type(report["discovery"]) is dict and report["discovery"].get("success") is True)
+        and type(report["discovery"]) is dict and report["discovery"].get("success") is True
+        and type(report["offline_discovery"]) is dict and report["offline_discovery"].get("success") is True
+        and type(report["comparison"]) is dict and report["comparison"].get("success") is True)
+    report["offline_reproduced"] = report["success"]
     return report
+
+
+def clean_discovery(value):
+    return (type(value) is dict and type(value.get("cleanup")) is dict
+            and set(value["cleanup"]) == {"container_removed", "image_removed", "context_removed"}
+            and all(item is True for item in value["cleanup"].values())
+            and not {"command_cleanup_failed", "cache_cleanup_failed"}.intersection(value.get("errors", [])))
+
+
+def matching_stage_inputs(online, offline):
+    first, second = online.get("inputs"), offline.get("inputs")
+    seed = online.get("cache_preparation")
+    return (online.get("mode") == "online" and offline.get("mode") == "offline"
+            and type(first) is dict and type(second) is dict
+            and first.get("seed_cache") is None and type(seed) is dict and seed.get("success") is True
+            and second.get("seed_cache") == seed
+            and {k: v for k, v in first.items() if k != "seed_cache"}
+                == {k: v for k, v in second.items() if k != "seed_cache"})
 
 
 def report_fd(path):

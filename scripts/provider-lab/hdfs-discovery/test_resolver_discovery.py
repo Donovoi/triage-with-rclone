@@ -77,6 +77,7 @@ class FakeDocker:
     def __init__(self, root, failure=None):
         self.root, self.failure = root, failure
         self.calls, self.built, self.created, self.started = [], False, False, False
+        self.offline = False
         self.exit_code = 0
 
     def call(self, args, **kwargs):
@@ -90,6 +91,7 @@ class FakeDocker:
             if self.failure == "build": raise D.DiscoveryError("command_failed")
         elif args[0] == "create":
             self.created = True
+            self.offline = args[args.index("--network") + 1] == "none"
             if self.failure == "create": raise D.DiscoveryError("command_failed")
         elif args[0] == "start":
             self.started = True
@@ -118,6 +120,8 @@ class FakeDocker:
             return {"Id": IMAGE, "RepoTags": tags, "Config": {"Labels": {D.LABEL: RUN}}}
         if not self.created: return None
         value = container_record("hdfs-discovery-" + RUN, IMAGE, RUN, self.started)
+        if self.offline:
+            value["HostConfig"]["NetworkMode"] = "none"
         value["State"]["ExitCode"] = self.exit_code
         if self.failure == "foreign_container" and self.started: value["Config"]["Labels"][D.LABEL] = "2" * 32
         if self.failure == "mount": value["Mounts"] = [{"Type": "bind", "Destination": "/host"}]
@@ -302,6 +306,34 @@ class ResolverTests(unittest.TestCase):
         path=make_tar(self.root/"tail-status.tar",suffix=b"PRIVATE_CANARY")
         self.assertIsNone(D.discovery_status(path))
 
+    def test_standard_record_padding_can_exceed_one_record(self):
+        path = make_tar(self.root / "record-boundary.tar")
+        with tarfile.open(path, "r:") as stream:
+            last = max(m.offset_data + ((m.size + 511) // 512) * 512 for m in stream)
+        # End at offset 9,728: tarfile writes two end blocks, then pads the
+        # following record, producing a valid 10,752-byte all-zero tail.
+        payload = b"x" * ((9728 - last - 512) % 10240)
+        with tarfile.open(path, "a", format=tarfile.USTAR_FORMAT) as stream:
+            item = tarfile.TarInfo("output/enforce.log"); item.size = len(payload)
+            stream.addfile(item, io.BytesIO(payload))
+        with tarfile.open(path, "r:") as stream:
+            last = max(m.offset_data + ((m.size + 511) // 512) * 512 for m in stream)
+        self.assertEqual(path.stat().st_size - last, 10752)
+        self.assertEqual(D.discovery_status(path), "maven_status_resolved_complete")
+        self.assertEqual(len(D.artifact_manifest(path)["artifacts"]), 6)
+
+    def test_partial_excessive_or_nonzero_end_padding_is_rejected(self):
+        path = make_tar(self.root / "invalid-padding.tar")
+        with tarfile.open(path, "r:") as stream:
+            last = max(m.offset_data + ((m.size + 511) // 512) * 512 for m in stream)
+        content = path.read_bytes()[:last]
+        for tail in (bytes(512), bytes(1025), bytes(11264), bytes(1023) + b"x"):
+            with self.subTest(size=len(tail), nonzero=any(tail)):
+                path.write_bytes(content + tail)
+                self.assertIsNone(D.discovery_status(path))
+                with self.assertRaisesRegex(D.DiscoveryError, "artifact_archive_invalid"):
+                    D.artifact_manifest(path)
+
     def test_arbitrary_output_path_partial_status_wrong_classpath_or_tail_fails(self):
         changes = [lambda e:e.update({"../outside": b"x"}), lambda e:e.update({"output/private-token": b"secret"}),
                    lambda e:e.update({"output/status": b"failed\nenforce\n"}),
@@ -362,16 +394,24 @@ class ResolverTests(unittest.TestCase):
             member=tarfile.TarInfo("output/status"); member.size=2; stream.addfile(member,io.BytesIO(b"xx"))
         with self.assertRaises(D.DiscoveryError): D.artifact_manifest(path)
 
-    def execute(self, failure=None):
+    def execute(self, failure=None, *, offline=False, verify_effect=None, prepare=False, prepare_effect=None):
         archive=self.root/"inert-bootstrap.tar.gz"; archive.write_bytes(b"not executed")
         bootstrap={"jdk_image":BASE,"jdk_image_id":BASE_ID,"maven_archive_sha256":hashlib.sha256(archive.read_bytes()).hexdigest(),
                    "maven_version":"3.9.16","maven_archive_sha512":D.MAVEN_SHA512}
         instances=[]
+        self.last_instances = instances
+        seed = self.root / "offline-seed.tar"
+        if offline:
+            seed.write_bytes(b"synthetic seed, never executed")
         def factory(root):
             obj=FakeDocker(root,failure); instances.append(obj); return obj
         with patch.object(D,"hosted_guard"), patch.object(D,"validate_bootstrap",return_value=bootstrap), \
              patch.object(D.uuid,"uuid4",return_value=types.SimpleNamespace(hex=RUN)), patch.object(D.stat,"S_IMODE",return_value=0o700):
-            result=D.discover(CANDIDATE,bootstrap,archive,self.root,runner_factory=factory)
+            with patch.object(D.offline_cache, "verify_cache", return_value={"sha256": "1" * 64}, side_effect=verify_effect), \
+                    patch.object(D.offline_cache, "prepare_cache", return_value={"sha256": "1" * 64}, side_effect=prepare_effect):
+                result=D.discover(CANDIDATE,bootstrap,archive,self.root,runner_factory=factory,
+                                  cache_destination=seed if prepare else None,
+                                  seed_cache=seed if offline else None)
         self.popen.assert_not_called()
         return result,instances[0]
 
@@ -387,7 +427,8 @@ class ResolverTests(unittest.TestCase):
         self.assertEqual(build[build.index("--network")+1],"none")
         self.assertFalse(result["ledger_eligible"])
         self.assertEqual(result["image_id"],IMAGE)
-        self.assertEqual(set(result["inputs"]),{"supervisor_sha256","graph_export_sha256","candidate_sha256","maven","jdk","bootstrap_material"})
+        self.assertEqual(set(result["inputs"]),{"supervisor_sha256","graph_export_sha256","candidate_sha256","maven","jdk","bootstrap_material",
+                                               "cache_source_sha256", "cache_lock_sha256", "seed_cache"})
         self.assertEqual(result["inputs"]["graph_export_sha256"], hashlib.sha256(Path(D.graph_export.__file__).read_bytes()).hexdigest())
         self.assertEqual(result["inputs"]["supervisor_sha256"],hashlib.sha256((HERE/"resolver_discovery.py").read_bytes()).hexdigest())
         self.assertEqual(result["inputs"]["candidate_sha256"],D.INPUT_HASHES)
@@ -395,6 +436,85 @@ class ResolverTests(unittest.TestCase):
         self.assertEqual(result["inputs"]["maven"],{"version":"3.9.16","archive_sha256":hashlib.sha256(b"not executed").hexdigest(),"archive_sha512":D.MAVEN_SHA512})
         self.assertLessEqual(datetime.fromisoformat(result["started_utc"]),datetime.fromisoformat(result["finished_utc"]))
         self.assertGreaterEqual(result["duration_seconds"],0)
+
+    def test_offline_runtime_has_no_network_or_online_fallback(self):
+        result, docker = self.execute(offline=True)
+        self.assertTrue(result["success"], result["errors"])
+        self.assertEqual(result["mode"], "offline")
+        self.assertFalse(result["offline_reproduced"])
+        self.assertFalse(result["ledger_eligible"])
+        self.assertFalse(any(args[:2] == ["image", "pull"] for args, _ in docker.calls))
+        create = next(args for args, _ in docker.calls if args[0] == "create")
+        self.assertEqual(create[create.index("--network") + 1], "none")
+        self.assertEqual(D.driver_script(offline=True).count("/bin/mvn -o -B"), 4)
+        self.assertIn("tar --no-same-owner -xf /opt/resolver/offline-seed.tar -C /work", D.driver_script(offline=True))
+        self.assertNotIn("offline-seed.tar", D.driver_script())
+        recipe = D.dockerfile({"jdk_image": BASE}, offline=True, seed_sha256="1" * 64)
+        self.assertIn("COPY offline-seed.tar", recipe)
+        self.assertIn("RUN echo '" + "1" * 64 + "  /opt/resolver/offline-seed.tar' | sha256sum -c -", recipe)
+        self.assertNotIn("offline-seed.tar", D.dockerfile({"jdk_image": BASE}))
+        bridge = container_record("hdfs-discovery-" + RUN, IMAGE, RUN)
+        with self.assertRaisesRegex(D.DiscoveryError, "container_binding_invalid"):
+            D.inspect_container(bridge, "hdfs-discovery-" + RUN, IMAGE, RUN, offline=True)
+
+    def test_invalid_seed_stops_before_docker_and_context_copy_mismatch_stops_before_build(self):
+        with self.assertRaisesRegex(D.DiscoveryError, "offline_cache_invalid"):
+            self.execute(offline=True, verify_effect=D.offline_cache.CacheError("seed_mismatch"))
+        self.assertEqual(self.last_instances, [])
+        good, changed = {"sha256": "1" * 64}, {"sha256": "2" * 64}
+        result, docker = self.execute(offline=True, verify_effect=[good, changed, good])
+        self.assertFalse(result["success"])
+        self.assertIn("offline_cache_invalid", result["errors"])
+        self.assertEqual(docker.calls, [])
+        self.assertTrue(all(result["cleanup"].values()))
+
+    def test_late_seed_drift_cannot_qualify_clean_offline_execution(self):
+        good, changed = {"sha256": "1" * 64}, {"sha256": "2" * 64}
+        result, docker = self.execute(offline=True, verify_effect=[good, good, changed])
+        self.assertTrue(any(args[0] == "start" for args, _ in docker.calls))
+        self.assertFalse(result["success"])
+        self.assertIn("source_changed", result["errors"])
+        self.assertTrue(all(result["cleanup"].values()))
+
+    def test_late_cache_source_or_lock_drift_cannot_qualify_offline_execution(self):
+        for name in ("offline_cache.py", "artifact-lock.json"):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as temporary:
+                original_root = self.root
+                self.root = Path(temporary).resolve()
+                original_hash = D.file_hash
+                target = HERE / name
+                calls = 0
+                def changed(path):
+                    nonlocal calls
+                    if Path(path) == target:
+                        calls += 1
+                        if calls > 1:
+                            return "0" * 64
+                    return original_hash(path)
+                try:
+                    with patch.object(D, "file_hash", side_effect=changed):
+                        result, _docker = self.execute(offline=True)
+                finally:
+                    self.root = original_root
+                self.assertFalse(result["success"])
+                self.assertIn("source_changed", result["errors"])
+
+    def test_failed_offline_container_is_not_retried_online(self):
+        result, docker = self.execute("maven", offline=True)
+        self.assertFalse(result["success"])
+        self.assertEqual(sum(args[0] == "start" for args, _ in docker.calls), 1)
+        self.assertTrue(all(result["cleanup"].values()))
+        self.assertFalse(any(args[:2] == ["image", "pull"] for args, _ in docker.calls))
+
+    def test_replaced_seed_cleanup_failure_survives_successful_native_cleanup(self):
+        def replaced(_source, destination):
+            destination.write_bytes(b"foreign replacement must survive")
+            raise D.offline_cache.CacheError("source_changed", cleanup_failed=True)
+        result, _docker = self.execute(prepare=True, prepare_effect=replaced)
+        self.assertFalse(result["success"])
+        self.assertTrue(all(result["cleanup"].values()))
+        self.assertIn("cache_cleanup_failed", result["errors"])
+        self.assertEqual((self.root / "offline-seed.tar").read_bytes(), b"foreign replacement must survive")
 
     def test_pom_diagnostic_survives_failed_discovery_without_promoting_manifest(self):
         error, raw = self.pom_error()

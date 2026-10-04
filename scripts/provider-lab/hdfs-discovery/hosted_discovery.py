@@ -53,6 +53,8 @@ def run(candidate, verifier, mode):
     result["success"] = (
         not result["errors"] and result["metadata"].get("success") is True
         and type(result["result"]) is dict and result["result"].get("success") is True)
+    result["offline_reproduced"] = (result["success"] and mode == "discover"
+                                    and result["result"].get("offline_reproduced") is True)
     return result
 
 
