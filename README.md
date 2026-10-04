@@ -91,6 +91,6 @@ The daily `Propose latest stable rclone` workflow reads [the official stable ver
 
 Updates use one guarded `automation/rclone-stable` branch and a reviewable PR. The workflow explicitly dispatches Windows/Linux CI for the exact proposed commit, including native provider-catalog checks, because bot-created PR events alone do not guarantee CI runs. Updates require passing checks and review before merge. Failed downloads, changed checksums or provider contracts keep the current pin intact. Daily scheduling and review introduce delay after an upstream release; the embedded runtime never silently self-updates.
 
-Run `python scripts/update-rclone.py` for a dry run, or `python scripts/update-rclone.py --write` to prepare the verified manifest change locally. Use `--refresh-current` to reverify the pinned release. Run the offline updater regressions with `python -m unittest discover -s scripts/tests -p 'test_*.py'`. Both bootstraps and CI consume the same manifest.
+Run `python scripts/update-rclone.py` for a dry run, or `python scripts/update-rclone.py --write` to prepare the verified manifest change locally. Use `--refresh-current` to reverify the pinned release. The full Python regression suite requires the isolated, hash-pinned [test environment](rclone-triage/tests/provider_testing.md#python-test-environment). Both bootstraps and CI consume the same runtime manifest.
 
 Licensed under [Apache-2.0](LICENSE).

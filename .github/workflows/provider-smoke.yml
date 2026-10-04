@@ -20,7 +20,44 @@ concurrency:
   group: provider-smoke
   cancel-in-progress: false
 jobs:
+  python-audit:
+    name: Python test dependency security audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - name: Install the pinned auditor in a fresh environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          AUDIT_ENV="$RUNNER_TEMP/provider-audit-venv"
+          test ! -e "$AUDIT_ENV"
+          python -m venv "$AUDIT_ENV"
+          "$AUDIT_ENV/bin/python" -m pip --isolated --disable-pip-version-check install \
+            --index-url https://pypi.org/simple --require-hashes --only-binary=:all: \
+            --no-input --timeout 30 --retries 2 -r scripts/provider-lab/requirements-audit.txt
+      - name: Audit both complete dependency locks
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/provider-audit-venv/bin/python" -m pip_audit \
+            --disable-pip --require-hashes --strict --progress-spinner off --timeout 15 \
+            -r scripts/provider-lab/requirements-fixture.txt \
+            -r scripts/provider-lab/requirements-audit.txt \
+            --format json --desc off --output "$RUNNER_TEMP/python-dependency-audit.json"
+      - name: Retain dependency audit evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: python-dependency-audit
+          path: ${{ runner.temp }}/python-dependency-audit.json
+          if-no-files-found: warn
+          retention-days: 14
   provider-smoke-linux:
+    needs: python-audit
     runs-on: ubuntu-latest
     timeout-minutes: 30
     defaults:
@@ -31,6 +68,17 @@ jobs:
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.12'
+      - name: Install pinned fixture dependencies in a fresh environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          TEST_ENV="$RUNNER_TEMP/provider-test-venv"
+          test ! -e "$TEST_ENV"
+          python -m venv "$TEST_ENV"
+          "$TEST_ENV/bin/python" -m pip --isolated --disable-pip-version-check install \
+            --index-url https://pypi.org/simple --require-hashes --only-binary=:all: \
+            --no-input --timeout 30 --retries 2 -r ../scripts/provider-lab/requirements-fixture.txt
+          printf '%s\n' "$TEST_ENV/bin" >> "$GITHUB_PATH"
       - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067
         with:
           toolchain: 1.95.0
