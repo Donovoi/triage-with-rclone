@@ -24,8 +24,8 @@ HERE = Path(__file__).resolve().parent
 SUPPORT = HERE.parent / "hdfs-kerberos-ticket" / "ticket_probe_container.py"
 SUPPORT_SHA = "538a81005d67123930fb9711474f3b681861fb0866a2443661e401833982624f"
 JAVA_INPUTS = {"SecureKdc.java": "645dfda75faa24279f3cb7e1680f06cdb56b4ba85236a5a9543fbcf83d81a91e",
-    "SecureHdfsRoles.java": "bfba2bdc721ca3cbf2958e5dc7039f737c05042c2acb31b48fef13a430832767",
-    "SecureHdfsController.java": "d01af17d9adc04846a8128403f075d9f5cadfa2f7495cae08c65ccf049ad542e"}
+    "SecureHdfsRoles.java": "4dd361d0c376e11601874ff3bf15d4b327760c22d36124f32f2c3e81713898e5",
+    "SecureHdfsController.java": "1174ed49a8d196c938a854222c02b5bc4574d82bbec16df8ecef785c25fa006f"}
 LABEL = "org.openai.triage.hdfs-kerberos-fixture"
 TMPFS = "rw,nosuid,nodev,noexec,size=1g,mode=0700,uid=10001,gid=10001"
 FALSE_CLAIMS = dict(ledger_eligible=False, authentication_verified=False, hdfs_authenticated=False,
@@ -54,6 +54,21 @@ CONTROLLER_CODES = frozenset("environment_invalid path_invalid input_changed cla
     "role_origin_datastreamer_create_block role_origin_datastreamer_setup_pipeline role_origin_datastreamer_bad_datanode role_origin_datastreamer_recovery "
     "role_origin_output_flush role_origin_output_complete role_origin_output_close_threads "
     "role_exception_sasl role_exception_invalid_block_token role_exception_invalid_encryption_key "
+    "role_pipeline_observer_failed "
+    "role_pipeline_observer_cleanup_failed "
+    "role_logged_pipeline_create_block "
+    "role_logged_pipeline_connect "
+    "role_logged_pipeline_timeout "
+    "role_logged_pipeline_socket "
+    "role_logged_pipeline_eof "
+    "role_logged_pipeline_sasl "
+    "role_logged_pipeline_block_token "
+    "role_logged_pipeline_encryption_key "
+    "role_logged_pipeline_connect_stage "
+    "role_logged_pipeline_sasl_handshake "
+    "role_logged_pipeline_sasl_message "
+    "role_logged_pipeline_block_ack "
+    "role_logged_pipeline_observer_failed "
     "role_configuration_default_uri_loopback_alias role_configuration_https_loopback_alias "
     "role_source_check_failed role_source_mkdir_failed role_source_create_failed role_source_write_failed role_source_close_failed role_source_metadata_failed role_source_inventory_failed role_source_read_failed "
     "role_kerberos_asn_identifier".split())
