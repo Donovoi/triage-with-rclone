@@ -35,6 +35,18 @@ PROBE_CLEANUP = {"children_stopped", "listeners_closed", "temporary_removed"}
 PROBE_RUNTIME = {"platform", "uid", "gid", "samba_version", "rclone_version", "smbd_sha256",
                  "rclone_sha256", "probe_sha256", "lock_sha256"}
 BUILD_PHASE = re.compile(rb"^(?:#[0-9]+ +[0-9.]+ +)?SMB_BUILD_PHASE=(metadata|deb-download|install|seed|manifest)\r?$", re.MULTILINE)
+BUILD_CODES = {
+    "bootstrap_cleanup_complete", "bootstrap_cleanup_failed", "bootstrap_cleanup_started",
+    "install_apt_failed", "install_apt_passed", "install_apt_started",
+    "install_cache_failed", "install_cache_passed", "install_cache_started",
+    "install_dependency_check_failed", "install_dependency_check_passed", "install_dependency_check_started",
+    "validation_artifact_parity_failed", "validation_complete", "validation_excluded_package_present",
+    "validation_input_read_failed", "validation_locked_version_failed", "validation_package_inventory_failed",
+    "validation_package_removed", "validation_python_version_failed", "validation_started",
+    "validation_unexpected_error", "validation_unlocked_package_change",
+}
+BUILD_DIAGNOSTIC = re.compile(rb"^(?:#[0-9]+ +[0-9.]+ +)?SMB_BUILD_DIAGNOSTIC=("
+                              + b"|".join(code.encode("ascii") for code in sorted(BUILD_CODES)) + rb")\r?$", re.MULTILINE)
 
 
 class SupervisorError(RuntimeError):
@@ -174,6 +186,7 @@ class Docker:
         self.root, self.sequence = root, 0
         self.last_stderr = b""
         self.build_phase = None
+        self.build_diagnostic = None
         self.config = root / "docker-config"
         self.config.mkdir(mode=0o700)
         binary = shutil.which("docker")
@@ -209,9 +222,13 @@ class Docker:
                 # Fixed markers only. Neither the transcript nor arbitrary error
                 # text may enter the public report, even when the build fails.
                 with error.open("rb") as stream:
-                    phases = BUILD_PHASE.findall(stream.read(4 * 1024 * 1024))
+                    transcript = stream.read(4 * 1024 * 1024)
+                phases = BUILD_PHASE.findall(transcript)
                 if phases:
                     self.build_phase = phases[-1].decode("ascii")
+                diagnostics = BUILD_DIAGNOSTIC.findall(transcript)
+                if diagnostics:
+                    self.build_diagnostic = diagnostics[-1].decode("ascii")
 
     def inspect(self, kind, target):
         code, data = self.run([kind, "inspect", target], allow_failure=True)
@@ -291,7 +308,7 @@ def run(binary, report_path):
               "success": False, "runtime": identity, "source_sha256": source_hashes, "base_image": lock["base_image"],
               "image_id": None, "container_isolation_verified": False, "probe": None, "errors": [],
               "cleanup": {"container_removed": False, "image_removed": False, "temporary_removed": False},
-              "stage": "preflight", "build_phase": None,
+              "stage": "preflight", "build_phase": None, "build_diagnostic": None,
               "build_cache_scope": "shared_daemon_cache_not_pruned"}
     root = Path(tempfile.mkdtemp(prefix="triage-smb-container-"))
     root_identity = (root.stat().st_dev, root.stat().st_ino)
@@ -344,6 +361,7 @@ def run(binary, report_path):
     finally:
         if docker is not None:
             report["build_phase"] = docker.build_phase
+            report["build_diagnostic"] = docker.build_diagnostic
         try:
             if docker is not None and (attempted_build or attempted_create):
                 report["cleanup"].update(cleanup_owned(docker, name, tag, image, run_id))

@@ -226,12 +226,19 @@ class CleanupContract(unittest.TestCase):
                 b"echo SMB_BUILD_PHASE=install\nSMB_BUILD_PHASE=secret-value\n")
         self.assertEqual(SUBJECT.BUILD_PHASE.findall(data), [b"metadata", b"deb-download"])
 
+    def test_build_diagnostics_are_a_finite_allowlist(self):
+        for code in SUBJECT.BUILD_CODES:
+            data = ("#8 0.250 SMB_BUILD_DIAGNOSTIC=" + code + "\n").encode()
+            self.assertEqual(SUBJECT.BUILD_DIAGNOSTIC.findall(data), [code.encode()])
+        for code in ("private_account_name", "install_apt_failed_extra", "example@example.invalid", "validation_complete token"):
+            self.assertEqual(SUBJECT.BUILD_DIAGNOSTIC.findall(("SMB_BUILD_DIAGNOSTIC=" + code + "\n").encode()), [])
+
     def test_resource_cleanup_failure_still_removes_private_logs(self):
         with tempfile.TemporaryDirectory() as directory:
             binary, output = Path(directory) / "synthetic", Path(directory) / "receipt.json"
             binary.write_bytes(b"synthetic non-executable input")
             identity = {"version": "1.75.1", "sha256": SUBJECT.digest(binary)}
-            docker = mock.Mock(build_phase="metadata")
+            docker = mock.Mock(build_phase="metadata", build_diagnostic=None)
             docker.run.side_effect = [(0, b'{"OSType":"linux","Architecture":"amd64"}'),
                                      (0, b""), SUBJECT.SupervisorError("docker_command_failed")]
             cleanup = SUBJECT.cleanup_temporary
