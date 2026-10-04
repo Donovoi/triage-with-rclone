@@ -411,7 +411,7 @@ class BoundedHttpsServer(AbstractContextManager):
         self._stopping = self._closed = self._started = False
         self.cleanup_complete = False
         self._deadline = time.monotonic() + self.limits.lifetime_seconds
-        self._sockets, self._socket_deadlines = set(), {}
+        self._sockets, self._socket_deadlines, self._expired_sockets = set(), {}, set()
         self._workers, self._timers = [], []
         self._failures = set()
         self._counts = dict.fromkeys(("accepted_connections", "admission_denied", "handshake_successes", "handshake_failures",
@@ -420,6 +420,49 @@ class BoundedHttpsServer(AbstractContextManager):
         class QuietHandler(handler_class):
             def log_message(self, *args):
                 pass
+
+            def parse_request(self):
+                # http.client.parse_headers accepts EOF as a header terminator.
+                # Closing a timed-out TLS socket can therefore wake the parser
+                # with success. Check framing and ownership after that read,
+                # immediately before BaseHTTPRequestHandler dispatches do_*.
+                original = self.rfile
+
+                class HeaderReader:
+                    complete = False
+
+                    def readline(self, *args):
+                        line = original.readline(*args)
+                        if line in (b"\r\n", b"\n"):
+                            self.complete = True
+                        return line
+
+                    def __getattr__(self, name):
+                        return getattr(original, name)
+
+                reader = HeaderReader()
+                self.rfile = reader
+                try:
+                    parsed = super().parse_request()
+                finally:
+                    self.rfile = original
+                transport = self.server.transport
+                with transport._lock:
+                    deadline = transport._socket_deadlines.get(self.connection)
+                    timed_out = deadline is not None and time.monotonic() >= deadline
+                    if timed_out:
+                        transport._mark_expired(self.connection)
+                    allowed = (deadline is not None and self.connection in transport._sockets
+                               and self.connection not in transport._expired_sockets
+                               and not transport._stopping and not timed_out)
+                    if not allowed:
+                        transport._failures.add("tls_http_dispatch_rejected")
+                    if parsed and not reader.complete:
+                        transport._failures.add("tls_incomplete_http_headers")
+                if not parsed or not reader.complete or not allowed:
+                    self.close_connection = True
+                    return False
+                return True
 
         try:
             self._server = _HttpServer(self, QuietHandler, state)
@@ -468,23 +511,23 @@ class BoundedHttpsServer(AbstractContextManager):
             tracked = request in self._sockets
             self._sockets.discard(request)
             self._socket_deadlines.pop(request, None)
+            self._expired_sockets.discard(request)
             if tracked:
                 self._counts["closed_connections"] += 1
         request.close()
 
+    def _mark_expired(self, request):
+        with self._lock:
+            if request in self._sockets and request not in self._expired_sockets:
+                self._expired_sockets.add(request)
+                self._counts["request_timeouts"] += 1
+                self._failures.add("tls_request_deadline")
+
     def _worker(self, request, address):
         phase, timer, timer_started = "setup", None, False
-        expired = threading.Event()
-
-        def mark_expired():
-            with self._lock:
-                if not expired.is_set():
-                    expired.set()
-                    self._counts["request_timeouts"] += 1
-                    self._failures.add("tls_request_deadline")
 
         def expire():
-            mark_expired()
+            self._mark_expired(request)
             try:
                 request.shutdown(socket.SHUT_RDWR)
             except OSError:
@@ -508,7 +551,7 @@ class BoundedHttpsServer(AbstractContextManager):
             phase = "http"
             self._server.finish_request(request, address)
             if time.monotonic() >= deadline:
-                mark_expired()
+                self._mark_expired(request)
         except BaseException:
             with self._lock:
                 if self._stopping:
@@ -578,6 +621,7 @@ class BoundedHttpsServer(AbstractContextManager):
                     timer.join(max(0, end - time.monotonic()))
             with self._lock:
                 self.cleanup_complete = (not self._thread.is_alive() and not self._sockets and not self._socket_deadlines
+                                         and not self._expired_sockets
                                          and all(not worker.is_alive() for worker in self._workers)
                                          and all(not timer.is_alive() for timer in self._timers)
                                          and self._server.socket.fileno() == -1)
