@@ -214,6 +214,66 @@ class ResolverTests(unittest.TestCase):
         self.assertIn("dependency_semantics", result)
         self.assertNotIn("PRIVATE_SYNTHETIC_CANARY", json.dumps(result))
 
+    def test_normalized_classpath_keeps_loading_order_and_binds_exact_bytes(self):
+        order = tuple(reversed(ROOTS))
+        value = ":".join("/work/m2/org/apache/hadoop/" + name + "/3.5.0/" + name + "-3.5.0.jar" for name in order)
+        result = D.artifact_manifest(make_tar(self.root / "ordered.tar", lambda e: e.update({
+            "output/runtime-classpath.txt": value.encode() + b"\r\n"})))
+        normalized = result["runtime_classpath"]
+        self.assertEqual([row["artifact"] for row in normalized["entries"]], list(order))
+        for row in normalized["entries"]:
+            body = (row["artifact"] + " synthetic bytes").encode()
+            self.assertEqual(row, {"group": "org.apache.hadoop", "artifact": row["artifact"],
+                                  "version": "3.5.0", "classifier": "", "type": "jar",
+                                  "size": len(body), "sha256": hashlib.sha256(body).hexdigest()})
+        encoded = json.dumps(normalized["entries"], sort_keys=True, separators=(",", ":")).encode("ascii")
+        self.assertEqual(normalized["normalized_sha256"], hashlib.sha256(encoded).hexdigest())
+        baseline = D.artifact_manifest(make_tar(self.root / "baseline.tar"))["runtime_classpath"]
+        self.assertNotEqual(normalized["normalized_sha256"], baseline["normalized_sha256"])
+        self.assertNotIn("/work/", json.dumps(normalized))
+        with self.assertRaisesRegex(D.DiscoveryError, "classpath_invalid"):
+            D.artifact_manifest(make_tar(self.root / "duplicate-cp.tar", lambda e: e.update({
+                "output/runtime-classpath.txt": (value + ":" + value.split(":")[0]).encode()})))
+
+    def test_archive_accounting_separates_directories_metadata_outputs_and_unselected_jars(self):
+        private = "PRIVATE_SYNTHETIC_CANARY"
+        extra = {
+            "m2/g/tool/1/tool-1.jar": b"tooling is not a selected runtime dependency",
+            "m2/g/tool/1/_remote.repositories": private.encode(),
+            "m2/g/tool/1/tool-1.jar.sha1": b"sha1",
+            "m2/g/tool/1/tool-1.jar.sha256": b"sha256",
+            "m2/g/tool/1/tool-1.jar.sha512": b"sha512",
+            "m2/g/tool/1/tool-1.jar.md5": b"md5",
+            "m2/g/tool/1/" + private + ".lastUpdated": private.encode(),
+            "m2/g/tool/resolver-status.properties": private.encode(),
+            "m2/g/tool/maven-metadata-owned-central.xml": private.encode(),
+            "m2/g/tool/maven-metadata-central.xml": private.encode(),
+            "output/enforce.log": private.encode(),
+        }
+        path = make_tar(self.root / "accounting.tar", lambda e: e.update(extra))
+        with tarfile.open(path, "a") as stream:
+            member = tarfile.TarInfo("m2/g/tool/1"); member.type = tarfile.DIRTYPE
+            stream.addfile(member)
+        result = D.artifact_manifest(path)
+        counts = result["archive_inventory"]
+        self.assertEqual(counts["directories"], 1)
+        self.assertEqual(counts["artifacts"]["files"], 7)
+        self.assertEqual(counts["artifacts"]["poms"], 3)
+        self.assertEqual(counts["artifacts"]["selected_runtime_jars"], 3)
+        self.assertEqual(counts["artifacts"]["other_jars"], 1)
+        self.assertEqual(counts["outputs"]["files"], 5)
+        self.assertEqual(counts["auxiliary_cache"]["repository_metadata"], {"files": 2, "bytes": 2 * len(private)})
+        self.assertEqual(sum(row["files"] for row in counts["auxiliary_cache"].values()), 9)
+        with tarfile.open(path, "r:") as stream:
+            members = stream.getmembers()
+        self.assertEqual(counts["total_entries"], len(members))
+        self.assertEqual(counts["total_file_bytes"], sum(m.size for m in members))
+        self.assertEqual(counts["total_file_bytes"], counts["artifacts"]["bytes"] + counts["outputs"]["bytes"] +
+                         sum(row["bytes"] for row in counts["auxiliary_cache"].values()))
+        self.assertIs(counts["auxiliary_contents_reviewed"], False)
+        self.assertIs(counts["plugin_dependency_closure_reviewed"], False)
+        self.assertNotIn(private, json.dumps(result))
+
     def test_finite_failed_stage_reader_is_diagnostic_only(self):
         for stage in ("bootstrap", "versions", "enforce", "tree_json", "tree_text", "classpath", "complete"):
             path=make_tar(self.root/"status.tar",lambda e:e.update({"output/status":("failed\n"+stage+"\n").encode()}))

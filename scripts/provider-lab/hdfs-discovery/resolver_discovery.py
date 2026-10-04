@@ -342,6 +342,19 @@ def artifact_manifest(archive):
     regular(archive, MAX_ARCHIVE)
     records, files, total, last, graphs = [], {}, 0, 0, {}
     poms, pom_bytes = [], 0
+    directories, output_files, output_bytes = 0, 0, 0
+    # Publish only finite categories and totals for auxiliary cache data. Its
+    # names and contents may contain repository addresses or local identities.
+    metadata_suffixes = {
+        ".sha1": "sha1_checksum", ".sha256": "sha256_checksum",
+        ".sha512": "sha512_checksum", ".md5": "md5_checksum",
+        "/_remote.repositories": "repository_tracking",
+        ".lastUpdated": "download_status",
+        "resolver-status.properties": "resolver_status",
+        "maven-metadata-owned-central.xml": "repository_metadata",
+        "maven-metadata-central.xml": "repository_metadata",
+    }
+    auxiliary = {kind: {"files": 0, "bytes": 0} for kind in sorted(set(metadata_suffixes.values()))}
     try:
         with tarfile.open(archive, "r:") as source:
             for member in source:
@@ -357,11 +370,15 @@ def artifact_manifest(archive):
                      and (member.isfile() or member.size == 0), "artifact_limit")
                 last = max(last, member.offset_data + ((member.size + 511) // 512) * 512)
                 files[canonical] = None
-                if not member.isfile(): continue
+                if not member.isfile():
+                    directories += 1
+                    continue
                 if path.parts[0] == "output":
                     need(member.name in {"output/" + n for n in ("status", "java-version.log", "maven-version.log",
                          "enforce.log", "tree_json.log", "tree_text.log", "classpath.log", "runtime-tree.json",
                          "runtime-tree.txt", "runtime-classpath.txt")}, "artifact_metadata_invalid")
+                    output_files += 1
+                    output_bytes += member.size
                 stream = source.extractfile(member)
                 digest = hashlib.file_digest(stream, "sha256").hexdigest()
                 files[member.name] = (member, digest)
@@ -375,7 +392,10 @@ def artifact_manifest(archive):
                         poms.append({"coordinate": coordinate, "size": member.size, "sha256": digest,
                                      "content": source.extractfile(member).read()})
                 elif path.parts[0] == "m2":
-                    need(member.name.endswith((".sha1", ".sha256", ".sha512", ".md5", "/_remote.repositories", ".lastUpdated", "resolver-status.properties", "maven-metadata-owned-central.xml", "maven-metadata-central.xml")), "artifact_metadata_invalid")
+                    kinds = [kind for suffix, kind in metadata_suffixes.items() if member.name.endswith(suffix)]
+                    need(len(kinds) == 1, "artifact_metadata_invalid")
+                    auxiliary[kinds[0]]["files"] += 1
+                    auxiliary[kinds[0]]["bytes"] += member.size
             def small(name, maximum):
                 entry = files.get(name)
                 need(entry is not None and entry[0].size <= maximum, "artifact_status_invalid")
@@ -393,12 +413,14 @@ def artifact_manifest(archive):
                 raise DiscoveryError("artifact_metadata_invalid") from None
             selected = classpath.split(":")
             need(1 <= len(selected) <= 2048 and len(selected) == len(set(selected)), "classpath_invalid")
+            ordered_runtime = []
             for name in selected:
                 need(name.startswith("/work/m2/") and name[6:] in files and name.endswith(".jar"), "classpath_invalid")
                 coordinate = artifact_coordinate(name[6:])
                 matching = [r for r in records if all(r[k] == coordinate[k] for k in coordinate)]
                 need(len(matching) == 1, "classpath_invalid")
                 matching[0]["selected_runtime"] = True
+                ordered_runtime.append(dict(coordinate, size=matching[0]["size"], sha256=matching[0]["sha256"]))
             need(all(any(r["group"] == "org.apache.hadoop" and r["artifact"] == artifact and r["version"] == "3.5.0"
                          and r["selected_runtime"] and r["type"] == "jar" and not r["classifier"] for r in records)
                      for artifact in ("hadoop-common", "hadoop-hdfs-client", "hadoop-hdfs")), "classpath_invalid")
@@ -420,11 +442,26 @@ def artifact_manifest(archive):
     except (tarfile.TarError, OSError, IndexError):
         raise DiscoveryError("artifact_archive_invalid") from None
     need(records and len(records) <= 4096, "artifact_limit")
+    artifact_bytes = sum(row["size"] for row in records)
+    need(directories + output_files + len(records) + sum(row["files"] for row in auxiliary.values()) == len(files)
+         and output_bytes + artifact_bytes + sum(row["bytes"] for row in auxiliary.values()) == total,
+         "artifact_metadata_invalid")
+    normalized = json.dumps(ordered_runtime, sort_keys=True, separators=(",", ":")).encode("ascii")
     return {"schema_version": 1, "scope": "hdfs_dependency_discovery", "ledger_eligible": False,
             "review_status": "quarantined", "offline_reproduced": False, "daemon_accepted": False,
             "repository_policy_is_os_egress_confinement": False, "graph_semantics_reviewed": False,
             "publisher_audit_completed": False, "artifacts": sorted(records, key=lambda r: (r["group"], r["artifact"], r["version"], r["classifier"], r["type"])),
             "graph_outputs": graphs,
+            "runtime_classpath": {"schema_version": 1, "entries": ordered_runtime,
+                                  "normalized_sha256": hashlib.sha256(normalized).hexdigest()},
+            "archive_inventory": {
+                "total_entries": len(files), "directories": directories, "total_file_bytes": total,
+                "artifacts": {"files": len(records), "bytes": artifact_bytes,
+                              "poms": sum(row["type"] == "pom" for row in records),
+                              "selected_runtime_jars": len(ordered_runtime),
+                              "other_jars": sum(row["type"] == "jar" and not row["selected_runtime"] for row in records)},
+                "auxiliary_cache": auxiliary, "outputs": {"files": output_files, "bytes": output_bytes},
+                "auxiliary_contents_reviewed": False, "plugin_dependency_closure_reviewed": False},
             "dependency_semantics": semantics,
             "private_archive_sha256": file_hash(archive), "private_file_count": len(files)}
 
