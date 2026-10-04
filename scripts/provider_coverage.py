@@ -74,12 +74,20 @@ PIXELDRAIN_REQUIRED_CAPABILITIES = frozenset({
 })
 # The only reviewed Internet Archive protocol mode is anonymous public reads.
 # It cannot assert credential rejection, credential N/A or any login lifecycle.
-INTERNETARCHIVE_ONLY_CAPABILITIES = frozenset({"anonymous_read", "read_denial"})
+INTERNETARCHIVE_ONLY_CAPABILITIES = frozenset({"anonymous_read"})
 INTERNETARCHIVE_REQUIRED_CAPABILITIES = INTERNETARCHIVE_ONLY_CAPABILITIES | {
-    "listing", "download_hash", "missing_object_rejection", "source_preservation",
+    "listing", "download_hash", "missing_object_rejection", "read_denial", "source_preservation",
     "config_preservation", "fixture_write_rejection", "cleanup",
 }
 INTERNETARCHIVE_ANONYMOUS_MODE = "internetarchive_anonymous_read_v1"
+# Saved synthetic-token reads/rejections do not establish fresh OAuth consent,
+# refresh, revocation or hosted-account acceptance.
+PCLOUD_ONLY_CAPABILITIES = frozenset({"saved_token_read", "saved_token_rejection"})
+PCLOUD_REQUIRED_CAPABILITIES = PCLOUD_ONLY_CAPABILITIES | {
+    "listing", "download_hash", "missing_object_rejection", "read_denial",
+    "source_preservation", "config_preservation", "fixture_write_rejection", "cleanup",
+}
+PCLOUD_SAVED_TOKEN_MODE = "pcloud_saved_token_read_v1"
 NETSTORAGE_REQUIRED_CAPABILITIES = frozenset({
     "listing", "download_hash", "missing_object_rejection", "authentication_rejection",
     "source_preservation", "config_preservation", "fixture_write_rejection", "cleanup",
@@ -111,13 +119,14 @@ READ_FIXTURE_CONTRACTS = {
     "filefabric": FILEFABRIC_REQUIRED_CAPABILITIES,
     "internetarchive": INTERNETARCHIVE_REQUIRED_CAPABILITIES,
     "netstorage": NETSTORAGE_REQUIRED_CAPABILITIES,
+    "pcloud": PCLOUD_REQUIRED_CAPABILITIES,
 }
 CAPABILITIES = {
     "authentication", "listing", "download_hash", "manifest_integrity",
     "source_preservation", "cleanup", "refresh", "reauthentication", "cancellation", "denial",
-    "revocation", "missing_object_rejection", "authentication_rejection",
+    "revocation", "missing_object_rejection", "authentication_rejection", "read_denial",
     "truncated_download_rejection", "cancellation_cleanup", "fixture_write_rejection", "host_key_rejection", "renewal_denial",
-} | ARCHIVE_CAPABILITIES | SWIFT_ONLY_CAPABILITIES | B2_ONLY_CAPABILITIES | FILEFABRIC_ONLY_CAPABILITIES | INTERNETARCHIVE_ONLY_CAPABILITIES
+} | ARCHIVE_CAPABILITIES | SWIFT_ONLY_CAPABILITIES | B2_ONLY_CAPABILITIES | FILEFABRIC_ONLY_CAPABILITIES | INTERNETARCHIVE_ONLY_CAPABILITIES | PCLOUD_ONLY_CAPABILITIES
 FIXTURE_KINDS = {
     "http": "independent_loopback", "webdav": "independent_loopback",
     "ftp": "independent_loopback", "sftp": "rclone_loopback",
@@ -127,13 +136,14 @@ FIXTURE_KINDS = {
     "pixeldrain": "independent_loopback", "filefabric": "independent_loopback",
     "internetarchive": "independent_loopback",
     "netstorage": "independent_loopback",
+    "pcloud": "independent_loopback",
 }
 FIXTURE_CAPABILITIES = {
     "listing", "download_hash", "missing_object_rejection", "source_preservation",
-    "authentication_rejection", "cleanup", "truncated_download_rejection",
+    "authentication_rejection", "cleanup", "truncated_download_rejection", "read_denial",
     "cancellation_cleanup", "fixture_write_rejection", "host_key_rejection", "renewal_denial",
-} | ARCHIVE_CAPABILITIES | SWIFT_ONLY_CAPABILITIES | B2_ONLY_CAPABILITIES | FILEFABRIC_ONLY_CAPABILITIES | INTERNETARCHIVE_ONLY_CAPABILITIES
-HARNESSES = ("fixture_servers.py", "run_lab.py")
+} | ARCHIVE_CAPABILITIES | SWIFT_ONLY_CAPABILITIES | B2_ONLY_CAPABILITIES | FILEFABRIC_ONLY_CAPABILITIES | INTERNETARCHIVE_ONLY_CAPABILITIES | PCLOUD_ONLY_CAPABILITIES
+HARNESSES = ("fixture_servers.py", "run_lab.py", "fixture_tls.py", "fixture_pcloud.py", "requirements-fixture.txt")
 HASH_PATTERN = re.compile(r"[a-f0-9]{64}")
 ID_PATTERN = re.compile(r"[a-z0-9_]{1,80}")
 MAX_JSON = 32 * 1024 * 1024
@@ -502,7 +512,7 @@ def validate_receipt(receipt, runtime, harness_sha256, now, max_age_hours=MAX_AG
                 fail("invalid_fixture_mode")
         elif set(row) & {"fixture_mode", "modes", "subscenarios"}:
             fail("invalid_fixture_mode")
-        if backend in ("internetarchive", "netstorage") and (
+        if backend in ("internetarchive", "netstorage", "pcloud") and (
                 set(row) != {"backend", "fixture_kind", "capabilities", "errors"}
                 or set(receipt) != {"schema_version", "scope", "runtime", "platform", "harness_sha256",
                                     "fixture_manifest_sha256", "started_utc", "finished_utc", "success",
@@ -515,13 +525,15 @@ def validate_receipt(receipt, runtime, harness_sha256, now, max_age_hours=MAX_AG
         if not isinstance(capabilities, dict) or not capabilities or set(capabilities) - FIXTURE_CAPABILITIES:
             fail("invalid_fixture_capability")
         if (backend not in ("http", "webdav") and set(capabilities) & {"truncated_download_rejection", "cancellation_cleanup"}
-                or backend not in ("http", "webdav", "ftp", "archive", "swift", "b2", "azureblob", "azurefiles", "seafile", "koofr", "pixeldrain", "filefabric", "internetarchive", "netstorage") and "fixture_write_rejection" in capabilities
+                or backend not in ("http", "webdav", "ftp", "archive", "swift", "b2", "azureblob", "azurefiles", "seafile", "koofr", "pixeldrain", "filefabric", "internetarchive", "netstorage", "pcloud") and "fixture_write_rejection" in capabilities
                 or backend != "sftp" and "host_key_rejection" in capabilities
                 or backend != "archive" and set(capabilities) & ARCHIVE_ONLY_CAPABILITIES
-                or backend not in ("archive", "memory", "swift", "b2", "azureblob", "azurefiles", "seafile", "koofr", "pixeldrain", "filefabric", "internetarchive", "netstorage") and "config_preservation" in capabilities
+                or backend not in ("archive", "memory", "swift", "b2", "azureblob", "azurefiles", "seafile", "koofr", "pixeldrain", "filefabric", "internetarchive", "netstorage", "pcloud") and "config_preservation" in capabilities
                 or backend != "swift" and set(capabilities) & SWIFT_ONLY_CAPABILITIES
                 or backend != "b2" and set(capabilities) & B2_ONLY_CAPABILITIES
                 or backend != "internetarchive" and set(capabilities) & INTERNETARCHIVE_ONLY_CAPABILITIES
+                or backend not in ("internetarchive", "pcloud") and "read_denial" in capabilities
+                or backend != "pcloud" and set(capabilities) & PCLOUD_ONLY_CAPABILITIES
                 or not renewal_receipt and set(capabilities) & FILEFABRIC_ONLY_CAPABILITIES
                 or backend not in ("swift", "b2") and not renewal_receipt and "renewal_denial" in capabilities):
             fail("invalid_fixture_capability")
@@ -618,6 +630,8 @@ def evaluate(catalog, policy, runtime, receipts, harness_sha256, now=None, max_a
                 contributed = row["capabilities"]
                 if row["backend"] == "internetarchive":
                     run["fixture_mode"] = INTERNETARCHIVE_ANONYMOUS_MODE
+                if row["backend"] == "pcloud":
+                    run["fixture_mode"] = PCLOUD_SAVED_TOKEN_MODE
                 if row["backend"] == "filefabric":
                     mode = row.get("fixture_mode", FILEFABRIC_CACHED_MODE)
                     run["fixture_mode"] = mode

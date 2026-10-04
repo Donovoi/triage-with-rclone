@@ -36,8 +36,8 @@ from fixture_servers import FILES, State, SwiftState, B2State, AzureBlobState, A
 from email.utils import format_datetime
 
 
-BACKENDS = ("local", "http", "webdav", "ftp", "sftp", "s3", "archive", "swift", "b2", "azureblob", "azurefiles", "seafile", "memory", "koofr", "pixeldrain", "filefabric", "internetarchive", "netstorage")
-HARNESS_FILES = ("fixture_servers.py", "run_lab.py")
+BACKENDS = ("local", "http", "webdav", "ftp", "sftp", "s3", "archive", "swift", "b2", "azureblob", "azurefiles", "seafile", "memory", "koofr", "pixeldrain", "filefabric", "internetarchive", "netstorage", "pcloud")
+HARNESS_FILES = ("fixture_servers.py", "run_lab.py", "fixture_tls.py", "fixture_pcloud.py", "requirements-fixture.txt")
 MAX_OUTPUT = 2 * 1024 * 1024
 COMMAND_TIMEOUT = 20
 
@@ -1851,6 +1851,256 @@ def pixeldrain_checks(runtime, root, row, expected):
 
 
 FILEFABRIC_MISSING = "missing-synthetic-object.bin"
+PCLOUD_MEMBER = "README-synthetic.txt"
+PCLOUD_MISSING = "missing-synthetic-object.bin"
+PCLOUD_IDS = {"README-synthetic.txt": "f301", "nested/space name.txt": "f302", "nested/bytes.bin": "f303"}
+PCLOUD_CAPABILITIES = ("listing", "download_hash", "missing_object_rejection", "saved_token_read",
+                       "saved_token_rejection", "read_denial", "source_preservation", "config_preservation",
+                       "fixture_write_rejection", "cleanup")
+
+
+def pcloud_dependencies():
+    # Bind the installed metadata AND the modules actually loaded to the hashed
+    # lock. This is not an attestation of wheel contents or an ambient install.
+    import importlib
+    import importlib.metadata
+    expected = {"cffi": "2.1.1", "cryptography": "50.0.2", "pycparser": "3.0"}
+    # The pycparser 3.0 wheel reports the literal module version "3.00".
+    loaded_versions = dict(expected, pycparser="3.00")
+    lock = (Path(__file__).parent / "requirements-fixture.txt").read_text(encoding="utf-8")
+    declared = re.findall(r"^([a-z][a-z0-9_-]*)==([0-9.]+) \\", lock, re.MULTILINE)
+    check(len(declared) == len(expected) and dict(declared) == expected, "pcloud_dependency_lock_mismatch")
+    try:
+        for name, version in expected.items():
+            check(importlib.metadata.version(name) == version, "pcloud_dependency_version_mismatch")
+            check(getattr(importlib.import_module(name), "__version__", None) == loaded_versions[name],
+                  "pcloud_loaded_dependency_version_mismatch")
+    except (ImportError, importlib.metadata.PackageNotFoundError):
+        raise LabError("pcloud_dependencies_missing") from None
+
+
+def pcloud_options(state, port, *, wrong_token=False):
+    check(type(port) is int and 0 < port < 65536 and type(wrong_token) is bool
+          and all(isinstance(token, str) and re.fullmatch(r"[A-Za-z0-9_-]{24,96}", token)
+                  for token in (state.token, state.wrong_token)) and state.token != state.wrong_token,
+          "pcloud_invalid_fixture")
+    authority = f"127.0.0.1:{port}"
+    # NewClient precedes the backend's token-URL update. Both overrides are
+    # necessary even though this closed saved-token mode permits no OAuth calls.
+    return {"type": "pcloud", "hostname": authority, "root_folder_id": "d100",
+            "client_id": "synthetic-client", "client_secret": "", "client_credentials": "false",
+            "auth_url": "https://" + authority + "/oauth2/authorize",
+            "token_url": "https://" + authority + "/oauth2_token",
+            "token": json.dumps({"access_token": state.wrong_token if wrong_token else state.token,
+                                 "token_type": "Bearer", "expiry": "0001-01-01T00:00:00Z"}, separators=(",", ":"))}
+
+
+def pcloud_metadata_matches(output, expected, *, stat_result=False):
+    try:
+        data = memory_json(output)
+        key = "item" if stat_result else "list"
+        if not isinstance(data, dict) or set(data) != {key}:
+            return False
+        entries = [data[key]] if stat_result else data[key]
+        if not isinstance(entries, list) or len(entries) != len(expected):
+            return False
+        actual = []
+        for entry in entries:
+            if (not isinstance(entry, dict) or set(entry) != {"Path", "Name", "Size", "ModTime", "IsDir", "ID", "Hashes"}
+                    or not isinstance(entry["Path"], str) or entry["Path"] not in FILES
+                    or entry["Name"] != entry["Path"].rsplit("/", 1)[-1]
+                    or entry["ID"] != PCLOUD_IDS[entry["Path"]] or type(entry["Size"]) is not int
+                    or entry["IsDir"] is not False or not isinstance(entry["ModTime"], str)
+                    or entry["Hashes"] != {"md5": hashlib.md5(FILES[entry["Path"]]).hexdigest(),
+                                           "sha1": hashlib.sha1(FILES[entry["Path"]]).hexdigest()}):
+                return False
+            match = re.fullmatch(r"([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(Z|[+-](?:[01][0-9]|2[0-3]):[0-5][0-9])", entry["ModTime"])
+            if not match or match[2] == "-00:00":
+                return False
+            instant = datetime.fromisoformat(entry["ModTime"].replace("Z", "+00:00"))
+            if instant.astimezone(timezone.utc) != datetime(2024, 1, 1, tzinfo=timezone.utc):
+                return False
+            actual.append((entry["Path"], entry["Size"]))
+        return sorted(actual) == [(item["path"], item["size"]) for item in expected]
+    except (LabError, ValueError, TypeError, KeyError, OverflowError):
+        return False
+
+
+def pcloud_error_matches(output, kind):
+    causes = {"missing": "object not found",
+              "wrong_token": "couldn't list files: pcloud error: synthetic token rejected (2000)",
+              "member_denied": "failed to open source object: pcloud error: synthetic member denied (2003)"}
+    if kind not in causes:
+        return False
+    try:
+        data = memory_json(output)
+        return (isinstance(data, dict) and set(data) == {"error", "path", "status"}
+                and type(data["status"]) is int and data["status"] == 500
+                and data["path"] == "operations/copyfile" and data["error"] == "loopback: call failed: " + causes[kind])
+    except LabError:
+        return False
+
+
+def pcloud_flow_matches(state, kind, member="", size=0):
+    counts = ("requests", "authenticated", "auth_denied", "member_denied", "rejected_mutations", "payload_bytes",
+              "unexpected", "rejected_payload_bytes", "oauth_requests")
+    if any(type(getattr(state, key)) is not int or getattr(state, key) < 0 for key in counts):
+        return False
+    if state.budget_exceeded or state.unexpected or state.rejected_payload_bytes or state.oauth_requests:
+        return False
+    auth_denied = denied = writes = payload = 0
+    events = [("root_list", "")]
+    if kind == "listing" and member == "":
+        # Listing can schedule independent checksum calls in either order.
+        expected_tail = sorted(("checksum", name) for name in FILES)
+        if (state.events[:1] != [("list_recursive", "")] or sorted(state.events[1:]) != expected_tail):
+            return False
+        events = state.events
+    elif kind in ("stat", "download") and member in FILES:
+        if member.startswith("nested/"):
+            events.append(("nested_list", "nested"))
+        # Native copy fingerprints the source for its local partial-file name
+        # before Open; pCloud caches those hashes for post-copy verification.
+        events.append(("checksum", member))
+        if kind == "download":
+            if type(size) is not int or size != len(FILES[member]):
+                return False
+            events.extend((("link", member), ("content", member)))
+            payload = size
+    elif kind == "missing" and member == PCLOUD_MISSING:
+        pass
+    elif kind == "wrong_token" and member == PCLOUD_MEMBER:
+        events = [("auth_denied", "")]
+        auth_denied = 1
+    elif kind == "member_denied" and member == PCLOUD_MEMBER:
+        events.extend((("checksum", member), ("link", member), ("content_denied", member)))
+        denied = 1
+    elif kind == "write" and member == PCLOUD_MEMBER:
+        events.extend((("checksum", member), ("write_denied", member)))
+        writes = 1
+    else:
+        return False
+    return (state.events == events and state.requests == len(events) and state.authenticated == len(events) - auth_denied
+            and state.auth_denied == auth_denied and state.member_denied == denied
+            and state.rejected_mutations == writes and state.payload_bytes == payload)
+
+
+def pcloud_metadata_args(kind, member=""):
+    check((kind == "list" and member == "") or (kind == "stat" and member in (*FILES, PCLOUD_MISSING)),
+          "pcloud_invalid_metadata_request")
+    options = {"filesOnly": True, "showHash": True, "noModTime": False, "noMimeType": True}
+    if kind == "list":
+        options["recurse"] = True
+    return ["rc", "--loopback", "operations/" + kind, "--json",
+            json.dumps({"fs": "Synthetic:", "remote": member, "opt": options}, separators=(",", ":"))]
+
+
+def pcloud_checks(runtime, root, row, expected):
+    from fixture_pcloud import PCloudState, serve_pcloud
+    caps, states, fixtures, preserved, empty_directories = row["capabilities"], [], [], {}, []
+    before, completed = len(runtime.children), False
+    token, wrong_token = "synthetic-" + uuid.uuid4().hex, "wrong-synthetic-" + uuid.uuid4().hex
+
+    @contextmanager
+    def case(label, mode="normal"):
+        state = PCloudState(FILES, token, wrong_token, PCLOUD_MEMBER if mode == "member_denied" else None)
+        states.append(state)
+        with serve_pcloud(root, state) as fixture:
+            fixtures.append(fixture)
+            options = pcloud_options(state, fixture.port)
+            if mode == "wrong_token":
+                valid = config_file(root, "pcloud-" + label + "-valid.conf", options)
+                data = valid.read_bytes()
+                preserved[valid] = (data, hashlib.sha256(data).hexdigest())
+                options = pcloud_options(state, fixture.port, wrong_token=True)
+            config = config_file(root, "pcloud-" + label + ".conf", options)
+            data = config.read_bytes()
+            preserved[config] = (data, hashlib.sha256(data).hexdigest())
+            yield state, config, fixture
+
+    def run(fixture, config, args):
+        # Revalidate dependency and CA bindings immediately before every child.
+        pcloud_dependencies()
+        start = len(runtime.children)
+        result = runtime.run([*fixture.rclone_ca_args(), *args], config)
+        check(len(runtime.children) == start + 1 and type(result[0]) is int and result[0] >= 0
+              and runtime.children[-1][0].poll() == result[0], "pcloud_process_count_or_exit")
+        return result
+
+    def copy(fixture, config, member, destination):
+        return run(fixture, config, ["rc", "--loopback", "operations/copyfile", "srcFs=Synthetic:",
+                   "srcRemote=" + member, "dstFs=" + str(destination), "dstRemote=" + member])
+
+    try:
+        check(memory_plain_path(root), "pcloud_unsafe_root")
+        pcloud_dependencies()
+        downloads = root / "downloads"
+        downloads.mkdir(mode=0o700)
+        for phase in ("initial", "final"):
+            with case("listing-" + phase) as (state, config, fixture):
+                code, output, _ = run(fixture, config, pcloud_metadata_args("list"))
+                check(code == 0 and pcloud_metadata_matches(output, expected) and pcloud_flow_matches(state, "listing"),
+                      "pcloud_listing_mismatch")
+            if phase == "final":
+                break
+            for index, item in enumerate(expected):
+                with case("stat-" + str(index)) as (state, config, fixture):
+                    code, output, _ = run(fixture, config, pcloud_metadata_args("stat", item["path"]))
+                    check(code == 0 and pcloud_metadata_matches(output, [item], stat_result=True)
+                          and pcloud_flow_matches(state, "stat", item["path"]), "pcloud_stat_mismatch")
+                with case("download-" + str(index)) as (state, config, fixture):
+                    code, _, _ = copy(fixture, config, item["path"], downloads)
+                    check(code == 0 and memory_tree_matches(downloads, expected[:index + 1])
+                          and pcloud_flow_matches(state, "download", item["path"], item["size"]), "pcloud_download_mismatch")
+            with case("missing-stat") as (state, config, fixture):
+                code, output, _ = run(fixture, config, pcloud_metadata_args("stat", PCLOUD_MISSING))
+                check(code == 0 and memory_json(output) == {"item": None} and pcloud_flow_matches(state, "missing", PCLOUD_MISSING),
+                      "pcloud_missing_stat_mismatch")
+            for label, member in (("missing", PCLOUD_MISSING), ("wrong_token", PCLOUD_MEMBER), ("member_denied", PCLOUD_MEMBER)):
+                with case(label, label) as (state, config, fixture):
+                    destination = root / ("negative-" + label)
+                    destination.mkdir(mode=0o700)
+                    empty_directories.append(destination)
+                    code, output, _ = copy(fixture, config, member, destination)
+                    check(code > 0 and pcloud_error_matches(output, label) and memory_tree_matches(destination, [])
+                          and pcloud_flow_matches(state, label, member), "pcloud_" + label + "_not_observed")
+            item = next(item for item in expected if item["path"] == PCLOUD_MEMBER)
+            with case("write-guard") as (state, config, fixture):
+                code, output, _ = run(fixture, config, pcloud_metadata_args("stat", PCLOUD_MEMBER))
+                check(code == 0 and pcloud_metadata_matches(output, [item], stat_result=True)
+                      and pcloud_flow_matches(state, "stat", PCLOUD_MEMBER), "pcloud_write_setup_failed")
+                client = http.client.HTTPSConnection("127.0.0.1", fixture.port, timeout=3, context=fixture.client_context())
+                try:
+                    client.request("POST", "/deletefile?fileid=301", headers={"Authorization": "Bearer " + token})
+                    response = client.getresponse()
+                    body = response.read(1025)
+                    check(response.status == 405 and len(body) <= 1024 and memory_json(body) == {"status": "fixture_read_only"}
+                          and pcloud_flow_matches(state, "write", PCLOUD_MEMBER), "pcloud_write_guard_not_observed")
+                finally:
+                    client.close()
+        check(len(runtime.children) == before + 13 and sum(state.requests for state in states) == 40,
+              "pcloud_total_process_or_request_mismatch")
+        check(memory_tree_matches(downloads, expected) and all(memory_tree_matches(path, []) for path in empty_directories),
+              "pcloud_final_inventory_changed")
+        completed = True
+    finally:
+        closed = (all(state.cleanup_complete for state in states) and all(fixture.cleanup_complete for fixture in fixtures)
+                  and all(listener_closed(fixture.port) for fixture in fixtures)
+                  and all(record[0].poll() is not None for record in runtime.children[before:]))
+        caps["cleanup"] = "passed" if closed else "failed"
+        check(closed, "pcloud_cleanup_failed")
+        check(all(not fixture.snapshot()["transport"]["failure_codes"] for fixture in fixtures), "pcloud_transport_failure")
+        check(all(not state.unexpected and not state.budget_exceeded and not state.rejected_payload_bytes
+                  and not state.oauth_requests for state in states), "pcloud_unexpected_request_or_budget")
+        check(all(state.source_preserved() and served_source_unchanged(state, expected) for state in states), "pcloud_source_changed")
+        check(all(memory_plain_path(path) and path.is_file() and path.stat().st_nlink == 1
+                  and path.read_bytes() == data and digest(path) == sha256 for path, (data, sha256) in preserved.items()),
+              "pcloud_config_changed")
+        if completed:
+            for name in caps:
+                caps[name] = "passed"
+
+
 NETSTORAGE_MEMBER = "README-synthetic.txt"
 NETSTORAGE_MISSING = "missing-synthetic-object.bin"
 NETSTORAGE_FS = "Synthetic:"
@@ -2748,7 +2998,7 @@ def filefabric_session_checks(runtime, root, row, expected):
 
 def run_backend(runtime, backend, root):
     root.mkdir(mode=0o700)
-    independent = backend in ("http", "webdav", "ftp", "swift", "b2", "azureblob", "azurefiles", "seafile", "koofr", "pixeldrain", "filefabric", "internetarchive", "netstorage")
+    independent = backend in ("http", "webdav", "ftp", "swift", "b2", "azureblob", "azurefiles", "seafile", "koofr", "pixeldrain", "filefabric", "internetarchive", "netstorage", "pcloud")
     row = {"backend": backend,
            "fixture_kind": "local" if backend in ("local", "archive", "memory") else "independent_loopback" if independent else "rclone_loopback",
            "capabilities": {key: "not_run" for key in (
@@ -2758,6 +3008,8 @@ def run_backend(runtime, backend, root):
         row["capabilities"]["authentication_rejection"] = "not_applicable"
     if backend == "netstorage":
         row["capabilities"] = {key: "not_run" for key in NETSTORAGE_CAPABILITIES}
+    if backend == "pcloud":
+        row["capabilities"] = {key: "not_run" for key in PCLOUD_CAPABILITIES}
     if backend == "internetarchive":
         row["capabilities"] = {key: "not_run" for key in INTERNETARCHIVE_CAPABILITIES}
     if backend == "archive":
@@ -2787,6 +3039,9 @@ def run_backend(runtime, backend, root):
         prepare_files(files_root)
     port = None
     try:
+        if backend == "pcloud":
+            pcloud_checks(runtime, root, row, expected)
+            return row
         if backend == "netstorage":
             netstorage_checks(runtime, root, row, expected)
             return row
