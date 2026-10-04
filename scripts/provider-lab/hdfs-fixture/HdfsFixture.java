@@ -13,6 +13,7 @@
  */
 import java.io.InputStream;
 import java.io.IOException;
+import java.io.FileNotFoundException;
 import java.net.InetSocketAddress;
 import java.net.URI;
 import java.nio.ByteBuffer;
@@ -87,6 +88,18 @@ public final class HdfsFixture {
     }
   }
 
+  private static boolean missingWebAppResource(FileNotFoundException failure) {
+    // Pinned HttpServer2.getWebAppsPath throws this subtype for unavailable
+    // webapp resources. Inspect only this exact marker; never expose a frame.
+    try {
+      StackTraceElement[] frames = failure.getStackTrace();
+      for (int i = 0; i < frames.length && i < 32; i++) {
+        if (frames[i].getClassName().equals("org.apache.hadoop.http.HttpServer2")
+            && frames[i].getMethodName().equals("getWebAppsPath")) return true;
+      }
+    } catch (Throwable ignored) { return false; }
+    return false;
+  }
   private static String failureReason(Throwable failure) {
     String selected = "unclassified";
     int selectedRank = 6;
@@ -106,8 +119,11 @@ public final class HdfsFixture {
         category = "invalid_config"; rank = 2;
       } else if (current instanceof LinkageError) {
         category = "linkage_failure"; rank = 3;
+      } else if (current instanceof FileNotFoundException) {
+        category = "file_missing"; rank = 4;
+        if (missingWebAppResource((FileNotFoundException) current)) category = "http_webapp_missing";
       } else if (current instanceof IOException) {
-        category = "io_failure"; rank = 4;
+        category = "io_failure"; rank = 5;
       }
       if (rank < selectedRank) { selected = category; selectedRank = rank; }
       try { current = current.getCause(); }
@@ -426,11 +442,16 @@ public final class HdfsFixture {
       UserGroupInformation.setLoginUser(UserGroupInformation.createRemoteUser(OWNER));
       require(!UserGroupInformation.isSecurityEnabled(), "simple_required");
       // dfs.reformat.disabled overrides the public format API's force defaults.
+      stage = "format_failed";
       NameNode.format(conf);
+      stage = "namenode_start_failed";
       nn = new NameNode(conf);
+      stage = "datanode_start_failed";
       dn = DataNode.createDataNode(new String[0], conf);
       require(dn != null, "datanode_missing");
+      stage = "client_start_failed";
       fs = new DistributedFileSystem(); fs.initialize(URI.create("hdfs://127.0.0.1:19000"), conf);
+      stage = "readiness_failed";
       ready(nn, dn, fs);
       stage = "seed_failed";
       seed(fs, files); verifySource(fs, files);

@@ -52,6 +52,8 @@ work_permissions_invalid exit_requested halt_requested missing_class resource_fa
 linkage_failure io_failure unclassified environment_failed startup_failed seed_failed ready_report_failed
 shutdown_request_failed source_preservation_failed configuration_preservation_failed client_close_failed
 datanode_shutdown_failed namenode_shutdown_failed termination_requested final_report_failed
+format_failed namenode_start_failed datanode_start_failed client_start_failed readiness_failed
+file_missing http_webapp_missing
 """.split())
 
 
