@@ -51,18 +51,26 @@ def make_tar(path, mutate=None, suffix=b"", *, kerberos=False):
     entries.update({"output/status": b"resolved\ncomplete\n", "output/runtime-tree.json": tree_json,
                     "output/runtime-tree.txt": tree_text, "output/runtime-classpath.txt": classpath})
     if kerberos:
-        base = "m2/org/apache/kerby/kerb-simplekdc/2.0.3/kerb-simplekdc-2.0.3"
-        entries[base + ".jar"] = b"synthetic KDC bytes; never executed"
-        entries[base + ".pom"] = (b'<project><modelVersion>4.0.0</modelVersion>'
-            b'<groupId>org.apache.kerby</groupId><artifactId>kerb-simplekdc</artifactId>'
-            b'<version>2.0.3</version></project>')
-        entries["output/runtime-classpath.txt"] += (":/work/" + base + ".jar").encode()
+        names = ("kerb-simplekdc", "kerb-server", "kerby-asn1")
+        nodes = []
+        for name in names:
+            base = "m2/org/apache/kerby/" + name + "/2.1.2/" + name + "-2.1.2"
+            entries[base + ".jar"] = b"synthetic KDC bytes; never executed"
+            entries[base + ".pom"] = (b'<project><modelVersion>4.0.0</modelVersion>'
+                b'<groupId>org.apache.kerby</groupId><artifactId>' + name.encode() + b'</artifactId>'
+                b'<version>2.1.2</version></project>')
+            entries["output/runtime-classpath.txt"] += (":/work/" + base + ".jar").encode()
+            nodes.append({"groupId": "org.apache.kerby", "artifactId": name,
+                          "version": "2.1.2", "type": "jar", "scope": "compile",
+                          "classifier": "", "optional": "false"})
+        nodes[0]["children"] = nodes[1:]
         tree = json.loads(tree_json)
-        tree["children"].append({"groupId": "org.apache.kerby", "artifactId": "kerb-simplekdc",
-                                 "version": "2.0.3", "type": "jar", "scope": "compile",
-                                 "classifier": "", "optional": "false"})
+        tree["children"].append(nodes[0])
         entries["output/runtime-tree.json"] = json.dumps(tree).encode()
-        entries["output/runtime-tree.txt"] = tree_text.replace(b"\\- ", b"+- ") + b"\\- org.apache.kerby:kerb-simplekdc:jar:2.0.3:compile\n"
+        entries["output/runtime-tree.txt"] = tree_text.replace(b"\\- ", b"+- ") + (
+            b"\\- org.apache.kerby:kerb-simplekdc:jar:2.1.2:compile\n"
+            b"   +- org.apache.kerby:kerb-server:jar:2.1.2:compile\n"
+            b"   \\- org.apache.kerby:kerby-asn1:jar:2.1.2:compile\n")
     if mutate: mutate(entries)
     with tarfile.open(path, "w", format=tarfile.USTAR_FORMAT) as stream:
         for name, data in entries.items():
@@ -508,7 +516,7 @@ class ResolverTests(unittest.TestCase):
         original = D.artifact_manifest(make_tar(self.root / "kerberos.tar", kerberos=True))
         D.validate_profile_manifest(original, "kerberos")
         for target, field, value in (("artifact", "selected_runtime", False),
-                                     ("artifact", "version", "2.0.4"),
+                                     ("artifact", "version", "2.0.3"),
                                      ("artifact", "classifier", "tests"),
                                      ("node", "parent", 1),
                                      ("node", "resolution", "omitted_duplicate"),
@@ -523,6 +531,23 @@ class ResolverTests(unittest.TestCase):
                 row[field] = value
                 with self.assertRaises(D.DiscoveryError):
                     D.validate_profile_manifest(changed, "kerberos")
+
+    def test_kerberos_rejects_old_or_missing_server_asn1_and_mixed_family_versions(self):
+        original = D.artifact_manifest(make_tar(self.root / "kerberos.tar", kerberos=True))
+        for name in ("kerb-simplekdc", "kerb-server", "kerby-asn1"):
+            for field, value in (("version", "2.0.3"), ("selected_runtime", False)):
+                with self.subTest(name=name, field=field):
+                    changed = copy.deepcopy(original)
+                    row = next(r for r in changed["artifacts"] if r["artifact"] == name and r["type"] == "jar")
+                    row[field] = value
+                    with self.assertRaisesRegex(D.DiscoveryError, "classpath_invalid"):
+                        D.validate_profile_manifest(changed, "kerberos")
+        changed = copy.deepcopy(original)
+        old_extra = dict(next(r for r in changed["artifacts"] if r["selected_runtime"] is True),
+                         group="org.apache.kerby", artifact="kerb-util", version="2.0.3")
+        changed["artifacts"].append(old_extra)
+        with self.assertRaisesRegex(D.DiscoveryError, "classpath_invalid"):
+            D.validate_profile_manifest(changed, "kerberos")
 
     def test_offline_runtime_has_no_network_or_online_fallback(self):
         result, docker = self.execute(offline=True)
