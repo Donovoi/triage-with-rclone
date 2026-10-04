@@ -8,6 +8,7 @@ the current harness, not cryptographic attestations or hosted-account evidence.
 
 import argparse
 from datetime import datetime, timedelta, timezone
+import errno
 import hashlib
 import importlib.util
 import json
@@ -168,6 +169,66 @@ MAX_RUN_MINUTES = 30
 
 class CoverageError(Exception):
     """Static, non-secret diagnostic code only."""
+
+
+METADATA_STAGES = frozenset({
+    "runtime_preflight", "runtime_verification", "temporary_create",
+    "temporary_permissions", "runtime_copy", "runtime_permissions", "runtime_rehash",
+    "config_create", "version_probe", "providers_probe", "catalog_parse",
+    "temporary_cleanup", "initial_catalog_summary",
+})
+METADATA_CATEGORIES = frozenset({
+    "access_denied", "sharing_violation", "not_found", "os_error", "timeout",
+    "subprocess_error", "value_error", "type_error", "key_error", "runtime_error",
+})
+METADATA_EXCEPTIONS = (OSError, ValueError, TypeError, KeyError,
+                       subprocess.SubprocessError, RuntimeError)
+
+
+class MetadataDiagnosticError(CoverageError):
+    """Only static codes survive cleanup; never retain the original exception."""
+
+    def __init__(self, primary_code, diagnostics):
+        allowed = {f"metadata_{stage}_{category}"
+                   for stage in METADATA_STAGES for category in METADATA_CATEGORIES}
+        if (not diagnostics or any(code not in allowed for code in diagnostics)
+                or (primary_code is not None and
+                    (not isinstance(primary_code, str)
+                     or re.fullmatch(r"[a-z][a-z0-9_]{0,100}", primary_code) is None))):
+            raise ValueError("invalid_metadata_diagnostic")
+        # primary_code comes only from an existing CoverageError, whose contract
+        # already requires a static code. New boundary codes use the closed set.
+        self.codes = ((primary_code,) if primary_code is not None else ()) + tuple(diagnostics)
+        super().__init__(self.codes[0])
+
+
+def metadata_diagnostic(stage, error):
+    if stage not in METADATA_STAGES:
+        raise ValueError("invalid_metadata_stage")
+    if isinstance(error, subprocess.TimeoutExpired):
+        category = "timeout"
+    elif isinstance(error, subprocess.SubprocessError):
+        category = "subprocess_error"
+    elif isinstance(error, OSError):
+        if getattr(error, "winerror", None) in (32, 33):
+            category = "sharing_violation"
+        elif isinstance(error, PermissionError) or error.errno in (errno.EACCES, errno.EPERM):
+            category = "access_denied"
+        elif isinstance(error, FileNotFoundError) or error.errno == errno.ENOENT:
+            category = "not_found"
+        else:
+            category = "os_error"
+    elif isinstance(error, ValueError):
+        category = "value_error"
+    elif isinstance(error, TypeError):
+        category = "type_error"
+    elif isinstance(error, KeyError):
+        category = "key_error"
+    elif isinstance(error, RuntimeError):
+        category = "runtime_error"
+    else:
+        raise ValueError("invalid_metadata_exception")
+    return f"metadata_{stage}_{category}"
 
 
 def fail(code):
@@ -936,56 +997,85 @@ def run_metadata(binary, arguments, config, environment):
 
 
 def query_runtime(binary, manifest_path):
-    binary = plain_path(binary)
-    if not binary.is_file() or binary.stat().st_size > 512 * 1024 * 1024:
-        fail("invalid_runtime_file")
-    system = platform_module.system().lower()
-    key = {"windows": "RCLONE_EXE_SHA256", "linux": "RCLONE_LINUX_EXE_SHA256"}.get(system)
-    if key is None:
-        fail("unsupported_runtime_platform")
+    temporary = None
+    primary_code, diagnostics = None, []
+    stage = "runtime_preflight"
     try:
-        manifest = {}
-        for line in plain_path(manifest_path).read_text(encoding="utf-8").splitlines():
-            if not line or line.startswith("#"):
-                continue
-            name, separator, value = line.partition("=")
-            if not separator or name in manifest:
+        binary = plain_path(binary)
+        if not binary.is_file() or binary.stat().st_size > 512 * 1024 * 1024:
+            fail("invalid_runtime_file")
+        system = platform_module.system().lower()
+        key = {"windows": "RCLONE_EXE_SHA256", "linux": "RCLONE_LINUX_EXE_SHA256"}.get(system)
+        if key is None:
+            fail("unsupported_runtime_platform")
+        stage = "runtime_verification"
+        try:
+            manifest = {}
+            for line in plain_path(manifest_path).read_text(encoding="utf-8").splitlines():
+                if not line or line.startswith("#"):
+                    continue
+                name, separator, value = line.partition("=")
+                if not separator or name in manifest:
+                    fail("invalid_runtime_manifest")
+                manifest[name] = value
+            expected, version = manifest.get(key), manifest.get("RCLONE_VERSION")
+            if not valid_hash(expected) or not isinstance(version, str) or not re.fullmatch(r"\d+\.\d+\.\d+", version):
                 fail("invalid_runtime_manifest")
-            manifest[name] = value
-        expected, version = manifest.get(key), manifest.get("RCLONE_VERSION")
-        if not valid_hash(expected) or not isinstance(version, str) or not re.fullmatch(r"\d+\.\d+\.\d+", version):
-            fail("invalid_runtime_manifest")
-        with binary.open("rb") as source:
-            actual = hashlib.file_digest(source, "sha256").hexdigest()
-        if actual != expected:
-            fail("runtime_hash_mismatch")
-    except CoverageError:
-        raise
-    except (OSError, ValueError):
-        fail("runtime_verification_failed")
-    with tempfile.TemporaryDirectory(prefix="triage-catalog-") as temporary:
-        root = Path(temporary)
+            with binary.open("rb") as source:
+                actual = hashlib.file_digest(source, "sha256").hexdigest()
+            if actual != expected:
+                fail("runtime_hash_mismatch")
+        except CoverageError:
+            raise
+        except (OSError, ValueError):
+            fail("runtime_verification_failed")
+        stage = "temporary_create"
+        temporary = tempfile.TemporaryDirectory(prefix="triage-catalog-")
+        root = Path(temporary.name)
+        stage = "temporary_permissions"
         root.chmod(0o700)
         # Run an independently rehashed owned copy, preventing replacement of
         # the supplied executable between verification and the metadata calls.
         executable = root / ("rclone.exe" if system == "windows" else "rclone")
+        stage = "runtime_copy"
         shutil.copyfile(binary, executable)
+        stage = "runtime_permissions"
         executable.chmod(0o700)
+        stage = "runtime_rehash"
         with executable.open("rb") as source:
             if hashlib.file_digest(source, "sha256").hexdigest() != actual:
                 fail("runtime_copy_hash_mismatch")
+        stage = "config_create"
         config = root / "empty.conf"
         fd = os.open(config, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         os.close(fd)
         environment = isolated_environment(root)
+        stage = "version_probe"
         reported = run_metadata(executable, ["version"], config, environment)
         if reported.splitlines()[:1] != [f"rclone v{version}".encode("ascii")]:
             fail("runtime_version_mismatch")
+        stage = "providers_probe"
         raw = run_metadata(executable, ["config", "providers"], config, environment)
+        stage = "catalog_parse"
         try:
             catalog = catalog_from_schemas(json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_object))
         except (ValueError, UnicodeError):
             fail("invalid_catalog")
+    except CoverageError as error:
+        # Do not keep an exception/traceback alive across owned cleanup.
+        primary_code = str(error)
+    except METADATA_EXCEPTIONS as error:
+        diagnostics.append(metadata_diagnostic(stage, error))
+    finally:
+        if temporary is not None:
+            try:
+                temporary.cleanup()
+            except METADATA_EXCEPTIONS as error:
+                diagnostics.append(metadata_diagnostic("temporary_cleanup", error))
+    if diagnostics:
+        raise MetadataDiagnosticError(primary_code, diagnostics)
+    if primary_code is not None:
+        raise CoverageError(primary_code)
     return {"version": version, "sha256": actual, "platform": system}, catalog
 
 
@@ -1034,7 +1124,13 @@ def main(argv=None):
         # the failure receipt; a policy failure cannot erase the coverage gap.
         unreviewed = {"schema_version": 2, "profiles": {"unreviewed": {
             "required": {"application": ["cleanup"]}, "review_required": True}}, "providers": {}}
-        report = evaluate(catalog, unreviewed, runtime, [], None)
+        summary_diagnostic = None
+        try:
+            report = evaluate(catalog, unreviewed, runtime, [], None)
+        except METADATA_EXCEPTIONS as error:
+            summary_diagnostic = metadata_diagnostic("initial_catalog_summary", error)
+        if summary_diagnostic is not None:
+            raise MetadataDiagnosticError(None, [summary_diagnostic])
         policy = read_json(args.policy)
         harness_sha = compute_harness_sha256(ROOT / "scripts" / "provider-lab") if args.fixture_receipt else None
         fixture_sha = compute_fixture_manifest_sha256(ROOT / "scripts" / "provider-lab") if args.fixture_receipt else None
@@ -1055,6 +1151,9 @@ def main(argv=None):
         report["errors"] = sorted(set(report["errors"] + receipt_errors))
         report["all_complete"] = report["all_complete"] and not report["errors"]
         report["gate_errors"] = gate_errors(report, args.require_plans, required, args.require_complete)
+    except MetadataDiagnosticError as error:
+        report["errors"].extend(error.codes)
+        report["gate_errors"] = list(report["errors"])
     except CoverageError as error:
         report["errors"].append(str(error))
         report["gate_errors"] = list(report["errors"])
