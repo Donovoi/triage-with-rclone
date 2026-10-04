@@ -23,9 +23,9 @@ import uuid
 HERE = Path(__file__).resolve().parent
 SUPPORT = HERE.parent / "hdfs-kerberos-ticket" / "ticket_probe_container.py"
 SUPPORT_SHA = "538a81005d67123930fb9711474f3b681861fb0866a2443661e401833982624f"
-JAVA_INPUTS = {"SecureKdc.java": "9288e5a3db2c3beb71126905fceabebe2dd39914863988ea251b7989f6e3ea09",
+JAVA_INPUTS = {"SecureKdc.java": "d7e9d712400f386c1c688fad7d7482c854d88a7cf61285a1a05473ad3e8764bb",
     "SecureHdfsRoles.java": "dfdb5407dabc1ac5b32ce4cd0203feb70ada6adb633cef05c5a05887d52627f8",
-    "SecureHdfsController.java": "3ec0672f9597f33a04081514b4fb143dca5deaaa96af443fa3dc93741086030a"}
+    "SecureHdfsController.java": "c4b376ebb2946175e67613561139351d78b93b24abaf9c21eda08f5e654033b6"}
 LABEL = "org.openai.triage.hdfs-kerberos-fixture"
 TMPFS = "rw,nosuid,nodev,noexec,size=1g,mode=0700,uid=10001,gid=10001"
 FALSE_CLAIMS = dict(ledger_eligible=False, authentication_verified=False, hdfs_authenticated=False,
@@ -41,7 +41,12 @@ CONTROLLER_CODES = frozenset("environment_invalid path_invalid input_changed cla
     "listener_mismatch tls_generation_failed tls_material_invalid tls_verification_failed tls_negative_mismatch "
     "kdc_start_failed format_failed nn_start_failed dn_start_failed seed_failed ticket_failed stop_invalid "
     "source_verification_failed role_stop_failed forced_termination process_cleanup_failed private_cleanup_failed "
-    "report_failed simple_rpc_rejection_failed io_failure interrupted unclassified".split())
+    "report_failed simple_rpc_rejection_failed io_failure interrupted unclassified "
+    "role_environment_failed role_material_failed role_configuration_failed role_login_failed role_format_failed "
+    "role_format_preexisting role_format_incomplete role_source_failed role_service_start_failed role_cleanup_failed "
+    "role_preservation_failed role_report_failed role_invalid_config role_io_failure role_file_missing role_security_failure "
+    "role_illegal_state role_null_state role_missing_class role_linkage_failure role_resource_failure role_exit_requested "
+    "role_halt_requested role_unclassified".split())
 CODES = frozenset("hosted_linux_required input_invalid input_changed unsafe_path support_invalid runtime_invalid "
     "source_not_frozen download_failed download_cleanup_failed command_cleanup_failed platform_invalid base_invalid "
     "image_invalid container_invalid controller_invalid controller_failed listing_invalid sample_mismatch "

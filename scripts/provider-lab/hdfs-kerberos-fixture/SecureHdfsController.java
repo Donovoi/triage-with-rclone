@@ -84,7 +84,13 @@ public final class SecureHdfsController {
         tls_verification_failed, tls_negative_mismatch, kdc_start_failed, format_failed,
         nn_start_failed, dn_start_failed, seed_failed, ticket_failed, stop_invalid,
         source_verification_failed, role_stop_failed, forced_termination, process_cleanup_failed,
-        private_cleanup_failed, report_failed, simple_rpc_rejection_failed, io_failure, interrupted, unclassified
+        private_cleanup_failed, report_failed, simple_rpc_rejection_failed, io_failure, interrupted, unclassified,
+        role_environment_failed, role_material_failed, role_configuration_failed, role_login_failed,
+        role_format_failed, role_format_preexisting, role_format_incomplete, role_source_failed,
+        role_service_start_failed, role_cleanup_failed, role_preservation_failed, role_report_failed,
+        role_invalid_config, role_io_failure, role_file_missing, role_security_failure,
+        role_illegal_state, role_null_state, role_missing_class, role_linkage_failure,
+        role_resource_failure, role_exit_requested, role_halt_requested, role_unclassified
     }
     private static final class Failure extends Exception {
         final Code code;
@@ -500,18 +506,73 @@ public final class SecureHdfsController {
         if(publisher)need(Boolean.FALSE.equals(report.get("publisher_audit_completed")),Code.receipt_invalid);
     }
     private static Set<String> plus(Set<String> base,String... names) { Set<String> result=new HashSet<>(base);result.addAll(List.of(names));return result; }
+    private static Set<String> roleChecks(String role) {
+        Set<String> checks=new HashSet<>(Set.of("environment","material_paths","secure_configuration","keytab_login","configuration_preserved"));
+        if(role.equals("format"))checks.add("fresh_format");else checks.add("bound_service_addresses");
+        if(role.equals("seed")||role.equals("verify"))checks.add("source_preserved");return checks;
+    }
+    private static void classifyRoleFailure(Map<String,Object> report,String role) throws Exception {
+        // Called only after the exact public envelope and every false claim
+        // were checked. This never promotes a failed receipt to acceptance.
+        Map<String,Object> checks=object(report.get("checks"));
+        need(checks.keySet().equals(roleChecks(role))&&checks.values().stream().allMatch(v->v instanceof Boolean)
+            &&report.get("api_shutdown_complete") instanceof Boolean,Code.receipt_invalid);
+        Object digest=report.get("configuration_sha256");
+        need(digest==null||(digest instanceof String&&((String)digest).matches("[a-f0-9]{64}")),Code.receipt_invalid);
+        Object files=report.get("files");
+        need(files==null||((role.equals("seed")||role.equals("verify"))&&expectedManifest().equals(files)),Code.receipt_invalid);
+        need(report.get("errors") instanceof List<?>,Code.receipt_invalid);
+        List<?> errors=(List<?>)report.get("errors");need(!errors.isEmpty()&&errors.size()<=16,Code.receipt_invalid);
+        Set<String> seen=new HashSet<>();
+        for(Object value:errors)need(value instanceof String&&((String)value).length()<=64&&seen.add((String)value),Code.receipt_invalid);
+        // No valueOf, interpolated prefix, exception message, path or arbitrary
+        // child string can reach ERRORS. Only these literal enum values leave
+        // the private role boundary, even for an unknown/malicious child code.
+        for(Object value:errors) {
+            Code code=switch((String)value) {
+                case "arguments_invalid","environment_failed","environment_invalid" -> Code.role_environment_failed;
+                case "material_failed","material_invalid","material_changed","root_identity_changed" -> Code.role_material_failed;
+                case "configuration_failed","configuration_changed","secure_configuration_invalid","ssl_resource_invalid",
+                     "webapp_resources_failed","webapp_resources_invalid" -> Code.role_configuration_failed;
+                case "login_failed","keytab_login_invalid" -> Code.role_login_failed;
+                case "format_failed" -> Code.role_format_failed;
+                case "format_preexisting" -> Code.role_format_preexisting;
+                case "format_incomplete" -> Code.role_format_incomplete;
+                case "source_failed","source_preexisting","source_scope","source_inventory_bound","source_duplicate",
+                     "source_inventory_changed","source_metadata_changed","source_bytes_changed","missing_member_present","mkdir_failed" -> Code.role_source_failed;
+                case "namenode_start_failed","datanode_start_failed","client_start_failed","startup_timeout",
+                     "extra_service","endpoint_mismatch","datanode_not_ready" -> Code.role_service_start_failed;
+                case "stop_failed","shutdown_invalid","shutdown_preexisting","shutdown_timeout","client_close_failed",
+                     "datanode_close_failed","namenode_close_failed","login_close_failed","constructor_cleanup_unconfirmed" -> Code.role_cleanup_failed;
+                case "preservation_failed" -> Code.role_preservation_failed;
+                case "report_failed","report_invalid","report_preexisting" -> Code.role_report_failed;
+                case "invalid_config" -> Code.role_invalid_config;
+                case "io_failure" -> Code.role_io_failure;
+                case "file_missing" -> Code.role_file_missing;
+                case "security_failure" -> Code.role_security_failure;
+                case "illegal_state" -> Code.role_illegal_state;
+                case "null_state" -> Code.role_null_state;
+                case "missing_class" -> Code.role_missing_class;
+                case "linkage_failure" -> Code.role_linkage_failure;
+                case "resource_failure" -> Code.role_resource_failure;
+                case "exit_requested" -> Code.role_exit_requested;
+                case "halt_requested" -> Code.role_halt_requested;
+                default -> Code.role_unclassified;
+            };
+            ERRORS.add(code.name());
+        }
+    }
     private static void commonReceipt(Map<String,Object> report,String scope,String role,String phase,Set<String> keys,boolean publisher) throws Exception {
         Set<String> expected=plus(keys,CLAIMS.toArray(String[]::new));if(publisher)expected.add("publisher_audit_completed");
         need(report.keySet().equals(expected)&&Long.valueOf(1).equals(report.get("schema_version"))&&scope.equals(report.get("scope"))
-            &&role.equals(report.get("role"))&&phase.equals(report.get("phase"))&&Boolean.TRUE.equals(report.get("success"))
-            &&List.of().equals(report.get("errors")),Code.receipt_invalid);falseClaims(report,publisher);
+            &&role.equals(report.get("role"))&&phase.equals(report.get("phase")),Code.receipt_invalid);falseClaims(report,publisher);
+        if(publisher&&Boolean.FALSE.equals(report.get("success")))classifyRoleFailure(report,role);
+        need(Boolean.TRUE.equals(report.get("success"))&&List.of().equals(report.get("errors")),Code.receipt_invalid);
     }
     private static void roleReceipt(String role,String phase) throws Exception {
         Map<String,Object> report=receipt(role+"-"+phase+".json");
         commonReceipt(report,"secure_hdfs_role_feasibility",role,phase,Set.of("schema_version","scope","role","phase","success","checks","configuration_sha256","files","api_shutdown_complete","errors"),true);
-        Set<String> checks=new HashSet<>(Set.of("environment","material_paths","secure_configuration","keytab_login","configuration_preserved"));
-        if(role.equals("format"))checks.add("fresh_format");else checks.add("bound_service_addresses");
-        if(role.equals("seed")||role.equals("verify"))checks.add("source_preserved");trueMap(report.get("checks"),checks);
+        trueMap(report.get("checks"),roleChecks(role));
         need(report.get("configuration_sha256") instanceof String&&((String)report.get("configuration_sha256")).matches("[a-f0-9]{64}"),Code.receipt_invalid);
         String binding=role.equals("verify")?"seed":role;
         String digest=(String)report.get("configuration_sha256");
