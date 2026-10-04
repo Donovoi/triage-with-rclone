@@ -770,6 +770,9 @@ public final class SecureHdfsRoles {
     value.put("dfs.domain.socket.path", "");
     value.put("dfs.datanode.max.locked.memory", "0");
     value.put("dfs.blocksize", "1048576");
+    // Hadoop's 1 GiB default reserve cannot fit inside this 1 GiB lab tmpfs.
+    // Keep 64 MiB of headroom for the bounded synthetic data instead.
+    value.put("dfs.datanode.round-robin-volume-choosing-policy.additional-available-space", "67108864");
     value.put("dfs.client.socket-timeout", "10000");
     value.put("ipc.client.connect.timeout", "5000");
     value.put("ipc.client.connect.max.retries", "0");
