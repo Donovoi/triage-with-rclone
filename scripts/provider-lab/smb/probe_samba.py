@@ -30,8 +30,6 @@ RCLONE = BASE / "rclone"
 PORT = 15445
 USER = "synthetic-smb"
 UID = 10001
-RCLONE_VERSION = "1.75.1"
-RCLONE_SHA = "f66d8c1d552ad90296a11bc8b46d56a7fa5da1a7fa05e7ca522d95df92c4a4c0"
 FILES = {
     "README-synthetic.txt": b"Synthetic provider protocol fixture. No account or user data.\n",
     "nested/space name.txt": b"Nested synthetic payload.\n",
@@ -94,6 +92,43 @@ def regular(path, *, private=False):
         require(info.st_uid == UID and stat.S_IMODE(info.st_mode) == 0o600,
                 "private_seed_required")
     return info
+
+
+def read_runtime_pins(path):
+    """Read the sole repository runtime pin format without executing anything."""
+    path = Path(path)
+    require(regular(path).st_size <= 4096, "rclone_manifest_size_limit")
+    with path.open("rb") as stream:
+        body = stream.read(4097)
+    require(len(body) <= 4096, "rclone_manifest_size_limit")
+    try:
+        text = body.decode("ascii")
+    except UnicodeError:
+        raise ProbeError("rclone_manifest_invalid") from None
+    keys = {"RCLONE_VERSION", "RCLONE_EXE_SHA256", "RCLONE_WINDOWS_ZIP_SHA256",
+            "RCLONE_LINUX_ZIP_SHA256", "RCLONE_LINUX_EXE_SHA256"}
+    values = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        key, separator, value = line.partition("=")
+        require(separator and key in keys and key not in values, "rclone_manifest_invalid")
+        values[key] = value
+    require(set(values) == keys
+            and re.fullmatch(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)", values["RCLONE_VERSION"]),
+            "rclone_manifest_invalid")
+    require(all(re.fullmatch(r"[a-f0-9]{64}", values[key]) for key in keys - {"RCLONE_VERSION"}),
+            "rclone_manifest_invalid")
+    return {"version": values["RCLONE_VERSION"], "sha256": values["RCLONE_LINUX_EXE_SHA256"]}
+
+
+def bind_runtime_identity(report):
+    pins = read_runtime_pins(BASE / "rclone-version.env")
+    regular(RCLONE)
+    require(sha256(RCLONE) == pins["sha256"], "rclone_pin_mismatch")
+    report["runtime"].update(rclone_version=pins["version"], rclone_sha256=pins["sha256"])
+    return pins
 
 
 def private_write(path, body):
@@ -414,7 +449,7 @@ class Children:
 def new_report():
     return {"schema_version": 1, "scope": "smb_samba_feasibility_only", "status": "failed", "ledger_eligible": False,
             "runtime": {"platform": "linux/amd64", "uid": UID, "gid": UID, "samba_version": None,
-                        "rclone_version": RCLONE_VERSION, "smbd_sha256": None, "rclone_sha256": RCLONE_SHA,
+                        "rclone_version": None, "smbd_sha256": None, "rclone_sha256": None,
                         "probe_sha256": None, "lock_sha256": None},
             "checks": dict.fromkeys(CHECKS, False),
             "cleanup": dict.fromkeys(("children_stopped", "listeners_closed", "temporary_removed"), False),
@@ -423,14 +458,16 @@ def new_report():
 
 def verify_build(report):
     lock_path, manifest_path = BASE / "build-lock.json", BASE / "runtime-manifest.json"
+    pins = bind_runtime_identity(report)
     for path in (lock_path, manifest_path, SMBD, TESTPARM, RCLONE, BASE / "probe_samba.py"):
         regular(path)
     lock = strict_json(lock_path.read_bytes())
     manifest = strict_json(manifest_path.read_bytes())
-    keys = {"schema_version", "smbd_sha256", "testparm_sha256", "rclone_sha256", "probe_sha256", "lock_sha256", "samba_version"}
+    keys = {"schema_version", "smbd_sha256", "testparm_sha256", "rclone_sha256", "probe_sha256",
+            "lock_sha256", "samba_version", "rclone_version", "rclone_manifest_sha256"}
     require(type(manifest) is dict and set(manifest) == keys and type(manifest["schema_version"]) is int
             and manifest["schema_version"] == 1, "runtime_manifest_invalid")
-    for key in keys - {"schema_version", "samba_version"}:
+    for key in keys - {"schema_version", "samba_version", "rclone_version"}:
         require(type(manifest[key]) is str and re.fullmatch(r"[0-9a-f]{64}", manifest[key]), "runtime_manifest_invalid")
     expected = lock.get("runtime_expected", {}) if type(lock) is dict else {}
     version = manifest["samba_version"]
@@ -439,10 +476,12 @@ def verify_build(report):
             and expected.get("gid") == UID and expected.get("username") == USER,
             "build_identity_mismatch")
     paths = {SMBD: "smbd_sha256", TESTPARM: "testparm_sha256", RCLONE: "rclone_sha256",
-             BASE / "probe_samba.py": "probe_sha256", lock_path: "lock_sha256"}
+             BASE / "probe_samba.py": "probe_sha256", lock_path: "lock_sha256",
+             BASE / "rclone-version.env": "rclone_manifest_sha256"}
     for path, key in paths.items():
         require(sha256(path) == manifest[key], "build_hash_mismatch")
-    require(manifest["rclone_sha256"] == RCLONE_SHA, "rclone_pin_mismatch")
+    require(manifest["rclone_sha256"] == pins["sha256"] and manifest["rclone_version"] == pins["version"],
+            "rclone_pin_mismatch")
     for key in ("samba_version", "smbd_sha256", "probe_sha256", "lock_sha256"):
         report["runtime"][key] = manifest[key]
     return {path: manifest[paths[path]] for path in (SMBD, TESTPARM, RCLONE)}
@@ -515,6 +554,8 @@ def run_probe():
     children = None
     root_identity = source_before = config_before = seed_before = None
     try:
+        # Read-only binding preserves legitimate identity on later preflight failure.
+        bind_runtime_identity(report)
         environment_checks()
         report["checks"]["environment"] = True
         root_identity = (ROOT.stat().st_dev, ROOT.stat().st_ino)
@@ -525,7 +566,9 @@ def run_probe():
         code, body, _ = children.run(SMBD, ["--version"])
         require(code == 0 and body.decode("ascii").strip() == "Version " + report["runtime"]["samba_version"], "samba_version_mismatch")
         code, body, _ = children.rclone(["version"])
-        require(code == 0 and body.splitlines()[0] == b"rclone v1.75.1", "rclone_version_mismatch")
+        require(code == 0 and body.splitlines()
+                and body.splitlines()[0] == ("rclone v" + report["runtime"]["rclone_version"]).encode("ascii"),
+                "rclone_version_mismatch")
         report["checks"]["version_binding"] = True
         for label, value in (("good", password), ("bad", password + "-wrong")):
             code, body, _ = children.rclone(["obscure", "-"], stdin=(value + "\n").encode())
