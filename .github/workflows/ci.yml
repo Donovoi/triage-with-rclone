@@ -175,8 +175,14 @@ jobs:
           PROVIDER_BINARY: ${{ runner.os == 'Windows' && format('{0}/rclone-triage/assets/rclone.exe', github.workspace) || format('{0}/rclone-native', runner.temp) }}
         shell: bash
         run: python -B ../scripts/provider-lab/run_lab.py --rclone "$PROVIDER_BINARY" --filefabric-renewal --report "$RUNNER_TEMP/filefabric-renewal-fixture.json"
-      # Internet Archive anonymous and pCloud saved-token reads must pass above.
-      # Their authentication gaps keep the full ledger gate limited to 17 profiles.
+      - name: Isolated Internet Archive LOW credential rejection fixture
+        if: ${{ !cancelled() }}
+        env:
+          PROVIDER_BINARY: ${{ runner.os == 'Windows' && format('{0}/rclone-triage/assets/rclone.exe', github.workspace) || format('{0}/rclone-native', runner.temp) }}
+        shell: bash
+        run: python -B ../scripts/provider-lab/run_lab.py --rclone "$PROVIDER_BINARY" --internetarchive-low-auth --report "$RUNNER_TEMP/internetarchive-low-auth-fixture.json"
+      # Internet Archive requires both anonymous reads and separate LOW evidence.
+      # pCloud remains partial; the matrix requires 18 complete protocol profiles.
       - name: Require current provider plans and protocol evidence
         if: ${{ !cancelled() }}
         env:
@@ -187,7 +193,8 @@ jobs:
             --report "$RUNNER_TEMP/provider-evidence.json" \
             --fixture-receipt "$RUNNER_TEMP/provider-fixtures.json" \
             --fixture-receipt "$RUNNER_TEMP/filefabric-renewal-fixture.json" \
-            --require-plans --require-fixtures local,archive,http,webdav,ftp,sftp,s3,swift,b2,azureblob,azurefiles,seafile,memory,koofr,pixeldrain,filefabric,netstorage
+            --fixture-receipt "$RUNNER_TEMP/internetarchive-low-auth-fixture.json" \
+            --require-plans --require-fixtures local,archive,http,webdav,ftp,sftp,s3,swift,b2,azureblob,azurefiles,seafile,memory,koofr,pixeldrain,filefabric,netstorage,internetarchive
       - name: Retain sanitized protocol evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -196,6 +203,7 @@ jobs:
           path: |
             ${{ runner.temp }}/provider-fixtures.json
             ${{ runner.temp }}/filefabric-renewal-fixture.json
+            ${{ runner.temp }}/internetarchive-low-auth-fixture.json
             ${{ runner.temp }}/provider-evidence.json
           if-no-files-found: warn
           retention-days: 14
@@ -262,14 +270,15 @@ jobs:
           path: ${{ runner.temp }}/provider-smb
       - name: Prepare verified Linux runtime
         run: bash scripts/download-rclone.sh --linux "$RUNNER_TEMP/rclone-ledger"
-      - name: Require all 18 reviewed Linux protocol profiles
+      - name: Require all 19 reviewed Linux protocol profiles
         run: |
           python -B scripts/provider_coverage.py --rclone "$RUNNER_TEMP/rclone-ledger" \
             --report "$RUNNER_TEMP/provider-evidence-linux-combined.json" \
             --fixture-receipt "$RUNNER_TEMP/provider-baseline/provider-fixtures.json" \
             --fixture-receipt "$RUNNER_TEMP/provider-baseline/filefabric-renewal-fixture.json" \
+            --fixture-receipt "$RUNNER_TEMP/provider-baseline/internetarchive-low-auth-fixture.json" \
             --fixture-receipt "$RUNNER_TEMP/provider-smb/smb-protocol.json" \
-            --require-plans --require-fixtures local,archive,http,webdav,ftp,sftp,s3,swift,b2,azureblob,azurefiles,seafile,memory,koofr,pixeldrain,filefabric,netstorage,smb
+            --require-plans --require-fixtures local,archive,http,webdav,ftp,sftp,s3,swift,b2,azureblob,azurefiles,seafile,memory,koofr,pixeldrain,filefabric,netstorage,internetarchive,smb
       - name: Retain sanitized combined ledger
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

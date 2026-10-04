@@ -32,7 +32,7 @@ import urllib.parse
 import zipfile
 import zlib
 
-from fixture_servers import FILES, State, SwiftState, B2State, AzureBlobState, AzureFilesState, SeafileState, KoofrState, PixeldrainState, FileFabricState, FileFabricSessionState, InternetArchiveState, NetStorageState, azure_string_to_sign, probe_write_rejection, serve
+from fixture_servers import FILES, State, SwiftState, B2State, AzureBlobState, AzureFilesState, SeafileState, KoofrState, PixeldrainState, FileFabricState, FileFabricSessionState, InternetArchiveState, InternetArchiveLowState, NetStorageState, azure_string_to_sign, probe_write_rejection, serve
 from email.utils import format_datetime
 
 
@@ -2542,6 +2542,120 @@ def internetarchive_checks(runtime, root, row, expected):
                 caps[name] = "passed"
 
 
+INTERNETARCHIVE_LOW_MODE = "internetarchive_low_read_auth_v1"
+INTERNETARCHIVE_LOW_CAPABILITIES = ("authentication_rejection", "source_preservation", "config_preservation", "cleanup")
+INTERNETARCHIVE_LOW_CASES = (
+    ("valid-before", "valid", "valid", "normal"),
+    ("wrong-secret", "wrong_secret", "wrong_secret", "normal"),
+    ("valid-after", "valid", "valid", "normal"),
+    ("both-empty", "absent", "both_empty", "normal"),
+    ("key-only", "absent", "key_only", "normal"),
+    ("secret-only", "absent", "secret_only", "normal"),
+    ("content-denied", "valid", "valid", "member_denied"),
+)
+
+
+def internetarchive_low_options(state, port, variant):
+    check(variant in ("valid", "wrong_secret", "both_empty", "key_only", "secret_only"), "internetarchive_low_invalid_variant")
+    options = internetarchive_options(state, port)
+    options.update(access_key_id=state.key if variant not in ("both_empty", "secret_only") else "",
+                   secret_access_key=(state.wrong_secret if variant == "wrong_secret" else
+                                      state.secret if variant not in ("both_empty", "key_only") else ""))
+    return options
+
+
+def internetarchive_low_error_matches(output, member_denied=False):
+    if member_denied:
+        return internetarchive_error_matches(output, "member_denied")
+    try:
+        value = memory_json(output)
+        return (type(value) is dict and set(value) == {"error", "path", "status"}
+                and type(value["status"]) is int and value["status"] == 500
+                and value["path"] == "operations/copyfile"
+                and value["error"] == 'loopback: call failed: HTTP error 403 (403 Forbidden) returned body: "Synthetic credentials denied"')
+    except LabError:
+        return False
+
+
+def internetarchive_low_flow_matches(state, auth_case, mode, size):
+    counts = ("requests", "authenticated", "auth_denied", "anonymous", "metadata_reads", "member_denied", "rejected_mutations",
+              "payload_bytes", "response_bytes", "unexpected", "rejected_payload_bytes", "accepted_connections", "admission_denied")
+    if (auth_case not in ("valid", "wrong_secret", "absent") or mode not in ("normal", "member_denied")
+            or type(size) is not int or size != len(FILES[INTERNETARCHIVE_MEMBER])
+            or any(type(getattr(state, name)) is not int or getattr(state, name) < 0 for name in counts)
+            or state.budget_exceeded is not False or state.unexpected or state.rejected_payload_bytes
+            or state.rejected_mutations or state.admission_denied or state.anonymous != 0
+            or not 0 < state.accepted_connections <= state.connection_limit
+            or not 0 < state.response_bytes <= state.byte_limit):
+        return False
+    if auth_case != "valid":
+        return (state.events == [("auth_denied", "1"), ("auth_denied", "2")]
+                and state.requests == state.auth_denied == 2 and state.authenticated == state.metadata_reads == 0
+                and state.member_denied == state.payload_bytes == 0)
+    denied = mode == "member_denied"
+    return (state.events == [("metadata", "1"), ("metadata", "2"),
+                             ("content_denied" if denied else "content", INTERNETARCHIVE_MEMBER)]
+            and state.requests == state.authenticated == 3 and state.metadata_reads == 2 and state.auth_denied == 0
+            and state.member_denied == int(denied) and state.payload_bytes == (0 if denied else size))
+
+
+def internetarchive_low_checks(runtime, root, row, expected):
+    """Seven independent LOW-header cases; no live account or renewal claim."""
+    caps, states, ports, preserved, snapshots, destinations = row["capabilities"], [], [], {}, [], []
+    before, completed = len(runtime.children), False
+    key, secret, wrong_secret = ("synthetic-" + uuid.uuid4().hex for _ in range(3))
+    try:
+        check(memory_plain_path(root) and expected == fixture_manifest(), "internetarchive_low_invalid_fixture")
+        check(len({key, secret, wrong_secret}) == 3, "internetarchive_low_credential_collision")
+        item = next(item for item in expected if item["path"] == INTERNETARCHIVE_MEMBER)
+        for label, auth_case, variant, mode in INTERNETARCHIVE_LOW_CASES:
+            state = InternetArchiveLowState(key, secret, wrong_secret, mode=mode, auth_case=auth_case)
+            states.append(state)
+            snapshots.append(json.dumps(state.metadata, sort_keys=True, separators=(",", ":")))
+            destination = root / label
+            destination.mkdir(mode=0o700)
+            wanted = [item] if auth_case == "valid" and mode == "normal" else []
+            destinations.append((destination, wanted))
+            with serve("internetarchive-low-auth", state) as port:
+                ports.append(port)
+                config = config_file(root, "internetarchive-low-" + label + ".conf", internetarchive_low_options(state, port, variant))
+                data = config.read_bytes()
+                preserved[config] = (data, hashlib.sha256(data).hexdigest())
+                code, output, _ = internetarchive_one_process(runtime, lambda: exact_copy(
+                    runtime, config, INTERNETARCHIVE_FS, INTERNETARCHIVE_MEMBER, str(destination), INTERNETARCHIVE_MEMBER))
+                check(internetarchive_low_flow_matches(state, auth_case, mode, item["size"]), "internetarchive_low_flow_mismatch")
+                check(memory_tree_matches(destination, wanted), "internetarchive_low_output_mismatch")
+                if wanted:
+                    check(code == 0 and memory_json(output) == {}, "internetarchive_low_positive_failed")
+                else:
+                    check(code > 0 and internetarchive_low_error_matches(output, mode == "member_denied"),
+                          "internetarchive_low_denial_mismatch")
+        check(len(runtime.children) - before == len(INTERNETARCHIVE_LOW_CASES) == len(states) == 7
+              and sum(state.requests for state in states) == 17, "internetarchive_low_case_budget")
+        check(all(memory_tree_matches(path, wanted) for path, wanted in destinations), "internetarchive_low_final_outputs_changed")
+        completed = True
+    finally:
+        closed = (all(state.cleanup_complete is True for state in states) and all(listener_closed(port) for port in ports)
+                  and all(record[0].poll() is not None for record in runtime.children[before:]))
+        caps["cleanup"] = "passed" if closed else "failed"
+        check(closed, "internetarchive_low_cleanup_failed")
+        check(all(not state.unexpected and not state.budget_exceeded and not state.rejected_payload_bytes
+                  and not state.admission_denied for state in states), "internetarchive_low_unexpected_request_or_budget")
+        check(all(served_source_unchanged(state, expected) and state.source_preserved()
+                  and (state.key, state.secret, state.wrong_secret) == (key, secret, wrong_secret)
+                  and (state.auth_case, state.mode) == (INTERNETARCHIVE_LOW_CASES[index][1], INTERNETARCHIVE_LOW_CASES[index][3])
+                  and state.item == "synthetic-item" and state.user == state.password == ""
+                  and state.modified == "2024-01-01T00:00:00.123456789Z" and state.raw_mtime == "1704153600.999"
+                  and json.dumps(state.metadata, sort_keys=True, separators=(",", ":")) == snapshots[index]
+                  for index, state in enumerate(states)), "internetarchive_low_source_changed")
+        check(all(memory_plain_path(path) and path.is_file() and path.stat().st_nlink == 1
+                  and path.read_bytes() == data and digest(path) == sha256 for path, (data, sha256) in preserved.items()),
+              "internetarchive_low_config_changed")
+        if completed:
+            for name in caps:
+                caps[name] = "passed"
+
+
 FILEFABRIC_MEMBER = "README-synthetic.txt"
 
 
@@ -3220,6 +3334,50 @@ def run_filefabric_renewal(binary, report_path):
     return report
 
 
+def run_internetarchive_low_auth(binary, report_path):
+    validate_report_path(report_path)
+    repository = Path(__file__).resolve().parents[2]
+    original, identity, platform = verified_runtime(binary, repository / "rclone-version.env")
+    report = {"schema_version": 4, "scope": "rclone_backend_protocol_fixture", "runtime": identity,
+              "harness_sha256": compute_harness_sha256(Path(__file__).parent),
+              "fixture_manifest_sha256": fixture_manifest_sha256(), "started_utc": utc_now(),
+              "finished_utc": None, "platform": platform, "success": False,
+              "cleanup_passed": False, "backends": [], "errors": []}
+    root = Path(tempfile.mkdtemp(prefix="triage-provider-lab-"))
+    runtime = None
+    try:
+        runtime = Runtime(original, identity, root)
+        code, output, _ = runtime.run(["version"])
+        check(code == 0 and output.decode().splitlines()[0] == "rclone v" + identity["version"], "runtime_version_mismatch")
+        case_root = root / "internetarchive-low-auth"
+        case_root.mkdir(mode=0o700)
+        row = {"backend": "internetarchive", "fixture_kind": "independent_loopback",
+               "fixture_mode": INTERNETARCHIVE_LOW_MODE,
+               "capabilities": {name: "not_run" for name in INTERNETARCHIVE_LOW_CAPABILITIES}, "errors": []}
+        report["backends"].append(row)
+        internetarchive_low_checks(runtime, case_root, row, fixture_manifest())
+    except (LabError, OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as error:
+        report["errors"].append(str(error) if isinstance(error, LabError) else "lab_setup_failed")
+    except KeyboardInterrupt:
+        report["errors"].append("lab_interrupted")
+    finally:
+        try:
+            processes_closed = runtime.close() if runtime else True
+            shutil.rmtree(root)
+            report["cleanup_passed"] = processes_closed and not root.exists()
+        except OSError:
+            report["errors"].append("lab_cleanup_failed")
+        if not report["cleanup_passed"]:
+            for row in report["backends"]:
+                row["capabilities"]["cleanup"] = "failed"
+        report["finished_utc"] = utc_now()
+        report["success"] = (report["cleanup_passed"] and not report["errors"] and len(report["backends"]) == 1
+                             and all(not row["errors"] and set(row["capabilities"]) == set(INTERNETARCHIVE_LOW_CAPABILITIES)
+                                     and all(value == "passed" for value in row["capabilities"].values()) for row in report["backends"]))
+        atomic_report(report_path, report)
+    return report
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--rclone", required=True, type=Path)
@@ -3227,12 +3385,18 @@ def main():
     selection = parser.add_mutually_exclusive_group()
     selection.add_argument("--backends")
     selection.add_argument("--filefabric-renewal", action="store_true")
+    selection.add_argument("--internetarchive-low-auth", action="store_true")
     args = parser.parse_args()
     selected = args.backends.split(",") if args.backends is not None else list(BACKENDS)
     if not selected or len(set(selected)) != len(selected) or any(item not in BACKENDS for item in selected):
         parser.error("backends must be a unique comma-separated subset of supported fixture IDs")
     try:
-        report = run_filefabric_renewal(args.rclone, args.report) if args.filefabric_renewal else run_lab(args.rclone, args.report, selected)
+        if args.internetarchive_low_auth:
+            report = run_internetarchive_low_auth(args.rclone, args.report)
+        elif args.filefabric_renewal:
+            report = run_filefabric_renewal(args.rclone, args.report)
+        else:
+            report = run_lab(args.rclone, args.report, selected)
     except (LabError, OSError):
         print("Provider fixture preflight/report failure", file=sys.stderr)
         return 1

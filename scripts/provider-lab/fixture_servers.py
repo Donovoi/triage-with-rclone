@@ -1666,6 +1666,158 @@ class InternetArchiveHandler(SeafileHandler):
     do_GET = do_HEAD = do_POST = do_PUT = do_DELETE = do_PATCH = do_OPTIONS = do_PROPFIND = dispatch
 
 
+class InternetArchiveLowState(InternetArchiveState):
+    """One protected synthetic read; credentials are never included in events."""
+
+    def __init__(self, key, secret, wrong_secret, mode="normal", auth_case="valid"):
+        if (any(type(value) is not str or not re.fullmatch(r"[A-Za-z0-9_-]{16,128}", value)
+                for value in (key, secret, wrong_secret)) or secret == wrong_secret
+                or mode not in ("normal", "member_denied")
+                or auth_case not in ("valid", "wrong_secret", "absent")
+                or (mode != "normal" and auth_case != "valid")):
+            raise ValueError("invalid_internetarchive_low_fixture")
+        super().__init__(mode)
+        self.lock = threading.RLock()
+        self.key, self.secret, self.wrong_secret = key, secret, wrong_secret
+        self.auth_case = auth_case
+        self.authenticated = self.auth_denied = 0
+        self.request_limit = self.connection_limit = 3 if auth_case == "valid" else 2
+        self._original = self._source_snapshot()
+
+    def _source_snapshot(self):
+        return (self.key, self.secret, self.wrong_secret, self.mode, self.auth_case,
+                self.user, self.password, self.item, self.modified, self.raw_mtime,
+                tuple(sorted(self.files.items())), json.dumps(self.metadata, sort_keys=True, separators=(",", ":")))
+
+    def source_preserved(self):
+        with self.lock:
+            try:
+                return self._source_snapshot() == self._original
+            except (AttributeError, TypeError, ValueError):
+                return False
+
+
+class InternetArchiveLowFixture(SeafileFixture):
+    def __init__(self, state):
+        self.state = state
+        HTTPServer.__init__(self, ("127.0.0.1", 0), InternetArchiveLowHandler)
+
+
+class InternetArchiveLowHandler(SeafileHandler):
+    # Only the bounded transport is shared; the anonymous wire mode is unchanged.
+    def handle(self):
+        state = self.server.state
+        self._request_deadline = min(state.deadline, time.monotonic() + state.request_timeout)
+        super().handle()
+
+    def parse_request(self):
+        # HTTP header parsing treats EOF as termination. Require a real blank
+        # line and recheck ownership/deadline before any method is dispatched.
+        original = self.rfile
+
+        class HeaderReader:
+            complete = False
+            invalid = False
+            size = 0
+            lines = 0
+
+            def readline(self, limit=-1):
+                line = original.readline(min(limit, 8193) if limit >= 0 else 8193)
+                self.size += len(line)
+                self.lines += 1
+                if self.size > 8192 or self.lines > 32 or (line and not line.endswith(b"\r\n")):
+                    self.invalid = True
+                    return b""
+                if line == b"\r\n":
+                    self.complete = True
+                elif line and not re.fullmatch(rb"[!#$%&'*+.^_`|~0-9A-Za-z-]+", line.partition(b":")[0]):
+                    self.invalid = True
+                return line
+
+            def __getattr__(self, name):
+                return getattr(original, name)
+
+        reader = HeaderReader()
+        self.rfile = reader
+        try:
+            parsed = super().parse_request()
+        finally:
+            self.rfile = original
+        state = self.server.state
+        with state.lock:
+            expired = time.monotonic() >= self._request_deadline
+            if expired:
+                state.budget_exceeded = True
+            if (not parsed or not reader.complete or reader.invalid or self.headers.defects or expired
+                    or state.stopping.is_set() or self.connection not in state.sockets):
+                state.unexpected += 1
+                self.close_connection = True
+                return False
+        return True
+
+    def dispatch(self):
+        with self.server.state.lock:
+            state = self.server.state
+            state.requests += 1
+            if (state.requests > state.request_limit or time.monotonic() >= self._request_deadline
+                    or state.stopping.is_set()):
+                state.budget_exceeded = True
+                self.reject(429)
+                return
+            headers = list(self.headers.items())
+            names = [name.lower() for name, _ in headers]
+            try:
+                wire = self.raw_requestline.rstrip(b"\r\n").split(b" ")
+                if (not state.source_preserved() or len(wire) != 3
+                        or wire[0] != b"GET" or wire[1].decode("ascii") != self.path
+                        or wire[2] not in (b"HTTP/1.0", b"HTTP/1.1") or self.command != "GET"
+                        or self.headers.get_all("Host") != [f"127.0.0.1:{self.server.server_address[1]}"]
+                        or len(names) != len(set(names))
+                        or not set(names) <= {"host", "user-agent", "accept-encoding", "connection", "content-length", "authorization"}
+                        or any("\r" in value or "\n" in value for _, value in headers)
+                        or self.headers.get("Content-Length", "0") != "0"):
+                    raise ValueError("invalid_request")
+                routes = {"/front/metadata/synthetic-item": "metadata",
+                          "/front/download/synthetic-item/README-synthetic.txt": "content"}
+                route = routes.get(self.path)
+                if (route is None or state.member_denied or state.payload_bytes
+                        or (route == "metadata" and state.metadata_reads + state.auth_denied >= 2)
+                        or (route == "content" and (state.auth_case != "valid" or state.metadata_reads != 2))):
+                    raise ValueError("invalid_route_or_order")
+                authorization = self.headers.get("Authorization")
+                if state.auth_case == "absent":
+                    if authorization is not None:
+                        raise ValueError("unexpected_authorization")
+                else:
+                    expected_secret = state.secret if state.auth_case == "valid" else state.wrong_secret
+                    expected = ("LOW " + state.key + ":" + expected_secret).encode("ascii")
+                    if (type(authorization) is not str
+                            or not hmac.compare_digest(authorization.encode("ascii"), expected)):
+                        raise ValueError("unexpected_authorization")
+            except (UnicodeError, ValueError):
+                self.reject()
+                return
+            if state.auth_case != "valid":
+                state.auth_denied += 1
+                state.events.append(("auth_denied", str(state.auth_denied)))
+                self.reply(403, b"Synthetic credentials denied", {"Content-Type": "text/plain"})
+                return
+            state.authenticated += 1
+            if route == "metadata":
+                state.metadata_reads += 1
+                state.events.append(("metadata", str(state.metadata_reads)))
+                self.json_reply(200, state.metadata)
+            elif state.mode == "member_denied":
+                state.member_denied += 1
+                state.events.append(("content_denied", "README-synthetic.txt"))
+                self.reply(403, b"Synthetic member denied", {"Content-Type": "text/plain"})
+            else:
+                state.events.append(("content", "README-synthetic.txt"))
+                self.reply(200, state.files["README-synthetic.txt"], {"Content-Type": "application/octet-stream"}, object_payload=True)
+
+    do_GET = do_HEAD = do_POST = do_PUT = do_DELETE = do_PATCH = do_OPTIONS = do_PROPFIND = dispatch
+
+
 class FileFabricState(State):
     """Seeded-session RPC reads only; grant, renewal and appliance calls forbidden."""
     root_id, nested_id = "100", "200"
@@ -2601,7 +2753,9 @@ def serve(kind, state):
     server = (FtpFixture(state) if kind == "ftp" else SwiftFixture(state) if kind == "swift"
               else B2Fixture(state) if kind == "b2" else AzureBlobFixture(state) if kind == "azureblob"
               else AzureFilesFixture(state) if kind == "azurefiles" else SeafileFixture(state) if kind == "seafile"
-              else NetStorageFixture(state) if kind == "netstorage" else InternetArchiveFixture(state) if kind == "internetarchive" else FileFabricSessionFixture(state) if kind == "filefabric-renewal" else FileFabricFixture(state) if kind == "filefabric" else KoofrFixture(state) if kind == "koofr" else PixeldrainFixture(state) if kind == "pixeldrain" else HttpFixture(state))
+              else NetStorageFixture(state) if kind == "netstorage" else InternetArchiveFixture(state) if kind == "internetarchive"
+              else InternetArchiveLowFixture(state) if kind == "internetarchive-low-auth"
+              else FileFabricSessionFixture(state) if kind == "filefabric-renewal" else FileFabricFixture(state) if kind == "filefabric" else KoofrFixture(state) if kind == "koofr" else PixeldrainFixture(state) if kind == "pixeldrain" else HttpFixture(state))
     thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05})
     thread.start()
     try:
@@ -2621,6 +2775,8 @@ def serve(kind, state):
         if thread.is_alive():
             raise RuntimeError("fixture_cleanup_failed")
         state.cleanup_complete = True
+        if kind == "internetarchive-low-auth" and not state.source_preserved():
+            raise RuntimeError("internetarchive_low_source_changed")
 
 
 def probe_write_rejection(kind, port, state):

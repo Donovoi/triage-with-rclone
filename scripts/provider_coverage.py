@@ -72,14 +72,22 @@ PIXELDRAIN_REQUIRED_CAPABILITIES = frozenset({
     "listing", "download_hash", "missing_object_rejection", "authentication_rejection",
     "source_preservation", "config_preservation", "cleanup", "fixture_write_rejection",
 })
-# The only reviewed Internet Archive protocol mode is anonymous public reads.
-# It cannot assert credential rejection, credential N/A or any login lifecycle.
+# Anonymous reads and LOW header rejection have separate closed contracts.
+# Neither supplies application/vendor login or any credential lifecycle evidence.
 INTERNETARCHIVE_ONLY_CAPABILITIES = frozenset({"anonymous_read"})
 INTERNETARCHIVE_REQUIRED_CAPABILITIES = INTERNETARCHIVE_ONLY_CAPABILITIES | {
     "listing", "download_hash", "missing_object_rejection", "read_denial", "source_preservation",
     "config_preservation", "fixture_write_rejection", "cleanup",
 }
 INTERNETARCHIVE_ANONYMOUS_MODE = "internetarchive_anonymous_read_v1"
+INTERNETARCHIVE_LOW_MODE = "internetarchive_low_read_auth_v1"
+INTERNETARCHIVE_LOW_REQUIRED_CAPABILITIES = frozenset({
+    "authentication_rejection", "source_preservation", "config_preservation", "cleanup",
+})
+INTERNETARCHIVE_MODE_CONTRACTS = {
+    INTERNETARCHIVE_ANONYMOUS_MODE: INTERNETARCHIVE_REQUIRED_CAPABILITIES,
+    INTERNETARCHIVE_LOW_MODE: INTERNETARCHIVE_LOW_REQUIRED_CAPABILITIES,
+}
 # Saved synthetic-token reads/rejections do not establish fresh OAuth consent,
 # refresh, revocation or hosted-account acceptance.
 PCLOUD_ONLY_CAPABILITIES = frozenset({"saved_token_read", "saved_token_rejection"})
@@ -512,12 +520,13 @@ def validate_receipt(receipt, runtime, harness_sha256, now, max_age_hours=MAX_AG
     if isinstance(receipt, dict) and type(receipt.get("schema_version")) is int and receipt["schema_version"] == 3:
         return validate_smb_receipt(receipt, runtime, smb_bindings, now, max_age_hours, fixture_manifest_sha256)
     if (not isinstance(receipt, dict) or type(receipt.get("schema_version")) is not int
-            or receipt["schema_version"] not in (1, 2) or receipt.get("scope") != "rclone_backend_protocol_fixture"):
+            or receipt["schema_version"] not in (1, 2, 4) or receipt.get("scope") != "rclone_backend_protocol_fixture"):
         fail("unknown_receipt_schema")
     renewal_receipt = receipt["schema_version"] == 2
-    # Schema 1 retains each predefined backend contract. Schema 2 is a closed,
-    # separately invoked FileFabric experiment, never a generic mode override.
-    if renewal_receipt:
+    low_receipt = receipt["schema_version"] == 4
+    # Schemas 2 and 4 are separately invoked, closed experiments, never
+    # generic mode overrides for the predefined schema-1 backend contracts.
+    if renewal_receipt or low_receipt:
         if set(receipt) != {"schema_version", "scope", "runtime", "platform", "harness_sha256",
                             "fixture_manifest_sha256", "started_utc", "finished_utc", "success",
                             "cleanup_passed", "backends", "errors"}:
@@ -527,6 +536,8 @@ def validate_receipt(receipt, runtime, harness_sha256, now, max_age_hours=MAX_AG
     if not isinstance(receipt.get("runtime"), dict) or any(
         receipt["runtime"].get(key) != runtime[key] for key in ("version", "sha256")
     ) or receipt.get("platform") != runtime["platform"]:
+        fail("receipt_runtime_mismatch")
+    if low_receipt and set(receipt["runtime"]) != {"version", "sha256"}:
         fail("receipt_runtime_mismatch")
     if not valid_hash(harness_sha256) or receipt.get("harness_sha256") != harness_sha256:
         fail("receipt_harness_mismatch")
@@ -551,7 +562,7 @@ def validate_receipt(receipt, runtime, harness_sha256, now, max_age_hours=MAX_AG
     backends = receipt.get("backends")
     if not isinstance(backends, list) or not backends or len(backends) > len(FIXTURE_KINDS):
         fail("invalid_receipt_backends")
-    if renewal_receipt and len(backends) != 1:
+    if (renewal_receipt or low_receipt) and len(backends) != 1:
         fail("invalid_fixture_mode")
     seen = set()
     for row in backends:
@@ -564,9 +575,13 @@ def validate_receipt(receipt, runtime, harness_sha256, now, max_age_hours=MAX_AG
             if (backend != "filefabric" or row.get("fixture_mode") != FILEFABRIC_RENEWAL_MODE
                     or set(row) != {"backend", "fixture_kind", "fixture_mode", "capabilities", "errors"}):
                 fail("invalid_fixture_mode")
+        elif low_receipt:
+            if (backend != "internetarchive" or row.get("fixture_mode") != INTERNETARCHIVE_LOW_MODE
+                    or set(row) != {"backend", "fixture_kind", "fixture_mode", "capabilities", "errors"}):
+                fail("invalid_fixture_mode")
         elif set(row) & {"fixture_mode", "modes", "subscenarios"}:
             fail("invalid_fixture_mode")
-        if backend in ("internetarchive", "netstorage", "pcloud") and (
+        if not low_receipt and backend in ("internetarchive", "netstorage", "pcloud") and (
                 set(row) != {"backend", "fixture_kind", "capabilities", "errors"}
                 or set(receipt) != {"schema_version", "scope", "runtime", "platform", "harness_sha256",
                                     "fixture_manifest_sha256", "started_utc", "finished_utc", "success",
@@ -616,7 +631,9 @@ def validate_receipt(receipt, runtime, harness_sha256, now, max_age_hours=MAX_AG
         # auth semantics. No result proves another service, mode or lifecycle.
         if renewal_receipt and set(capabilities) != FILEFABRIC_RENEWAL_REQUIRED_CAPABILITIES:
             fail("invalid_fixture_capability")
-        if not renewal_receipt and backend in READ_FIXTURE_CONTRACTS and set(capabilities) != READ_FIXTURE_CONTRACTS[backend]:
+        if low_receipt and set(capabilities) != INTERNETARCHIVE_LOW_REQUIRED_CAPABILITIES:
+            fail("invalid_fixture_capability")
+        if not (renewal_receipt or low_receipt) and backend in READ_FIXTURE_CONTRACTS and set(capabilities) != READ_FIXTURE_CONTRACTS[backend]:
             fail("invalid_fixture_capability")
         errors = row.get("errors")
         if not isinstance(errors, list) or len(errors) > 32 or any(not isinstance(code, str) or not re.fullmatch(r"[a-z][a-z0-9_]{0,80}", code) for code in errors):
@@ -694,7 +711,16 @@ def evaluate(catalog, policy, runtime, receipts, harness_sha256, now=None, max_a
                         SMB_MODE, {"capabilities": {}, "failed": False, "runs": []})
                     merge_fixture_observation(mode_observed, contributed, failed, run)
                 if row["backend"] == "internetarchive":
-                    run["fixture_mode"] = INTERNETARCHIVE_ANONYMOUS_MODE
+                    mode = row.get("fixture_mode", INTERNETARCHIVE_ANONYMOUS_MODE)
+                    run["fixture_mode"] = mode
+                    mode_observed = observed.setdefault("modes", {}).setdefault(
+                        mode, {"capabilities": {}, "failed": False, "runs": []})
+                    merge_fixture_observation(mode_observed, contributed, failed, run)
+                    # LOW tests header rejection; its bounded reads cannot
+                    # substitute for the complete anonymous inventory contract.
+                    if mode == INTERNETARCHIVE_LOW_MODE:
+                        contributed = {key: value for key, value in contributed.items()
+                                       if key in INTERNETARCHIVE_LOW_REQUIRED_CAPABILITIES}
                 if row["backend"] == "pcloud":
                     run["fixture_mode"] = PCLOUD_SAVED_TOKEN_MODE
                 if row["backend"] == "filefabric":
@@ -750,9 +776,10 @@ def evaluate(catalog, policy, runtime, receipts, harness_sha256, now=None, max_a
                     if value in ("passed", "failed"):
                         capabilities[capability] = value
                 evidence["runs"] = observed["runs"]
-                if backend in ("filefabric", "smb"):
+                if backend in ("filefabric", "smb", "internetarchive"):
                     evidence["modes"] = {}
                     contracts = ({SMB_MODE: SMB_REQUIRED_CAPABILITIES} if backend == "smb"
+                                 else INTERNETARCHIVE_MODE_CONTRACTS if backend == "internetarchive"
                                  else FILEFABRIC_MODE_CONTRACTS)
                     for mode, contract in contracts.items():
                         mode_observed = observed.get("modes", {}).get(mode, {})
