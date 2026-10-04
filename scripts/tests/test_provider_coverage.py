@@ -142,6 +142,16 @@ def internetarchive_receipt():
     return candidate
 
 
+def netstorage_receipt():
+    # Independent literal signed-read contract; not a general auth grant.
+    candidate = receipt("netstorage")
+    candidate["backends"][0]["capabilities"] = {key: "passed" for key in (
+        "listing", "download_hash", "missing_object_rejection", "authentication_rejection",
+        "source_preservation", "config_preservation", "fixture_write_rejection", "cleanup",
+    )}
+    return candidate
+
+
 def memory_receipt():
     candidate = receipt("memory")
     candidate["backends"][0]["capabilities"] = {
@@ -770,7 +780,7 @@ class CoverageTests(unittest.TestCase):
                          "azurefiles": azurefiles_receipt, "seafile": seafile_receipt,
                          "memory": memory_receipt, "koofr": koofr_receipt,
                          "pixeldrain": pixeldrain_receipt, "filefabric": filefabric_receipt,
-                         "internetarchive": internetarchive_receipt}.get(backend, lambda: receipt(backend))()
+                         "internetarchive": internetarchive_receipt, "netstorage": netstorage_receipt}.get(backend, lambda: receipt(backend))()
             if backend == "archive":
                 candidate["backends"][0]["capabilities"] = {
                     key: "passed" for key in coverage.ARCHIVE_REQUIRED_CAPABILITIES
@@ -779,7 +789,7 @@ class CoverageTests(unittest.TestCase):
             candidate["backends"][0]["capabilities"]["config_preservation"] = "passed"
             report = self.evaluate([candidate], policy, catalog)
             with self.subTest(backend=backend):
-                if backend in ("archive", "memory", "swift", "b2", "azureblob", "azurefiles", "seafile", "koofr", "pixeldrain", "filefabric", "internetarchive"):
+                if backend in ("archive", "memory", "swift", "b2", "azureblob", "azurefiles", "seafile", "koofr", "pixeldrain", "filefabric", "internetarchive", "netstorage"):
                     self.assertEqual(report["providers"][0]["evidence"]["local_protocol"]["status"], "passed")
                 else:
                     self.assertIn("invalid_fixture_capability", report["errors"])
@@ -1261,6 +1271,96 @@ class CoverageTests(unittest.TestCase):
         result = self.evaluate([receipt("http")], policy, catalog)
         rows = {row["backend"]: row for row in result["providers"]}
         self.assertEqual(rows["internetarchive"]["evidence"]["local_protocol"]["status"], "not_verified")
+
+    def test_netstorage_exact_eight_contract_despite_weaker_policy(self):
+        self.assert_read_fixture_requires_exact_capabilities_despite_weaker_policy("netstorage")
+        self.assertEqual(coverage.NETSTORAGE_REQUIRED_CAPABILITIES,
+                         set(netstorage_receipt()["backends"][0]["capabilities"]))
+
+    def test_netstorage_requires_typed_observed_results_and_independent_server(self):
+        self.assert_read_fixture_requires_executed_typed_outcomes_and_independent_kind("netstorage")
+
+    def test_netstorage_provenance_and_freshness_are_required(self):
+        self.assert_read_fixture_requires_current_runtime_harness_manifest_and_time("netstorage")
+
+    def test_netstorage_failures_stay_failed_without_private_fields(self):
+        self.assert_read_fixture_failures_are_sticky_and_private_fields_omitted("netstorage")
+
+    def test_netstorage_protocol_does_not_promote_auth_lifecycle_or_other_tiers(self):
+        self.assert_read_fixture_never_qualifies_other_modes_or_acceptance_tiers("netstorage")
+
+    def test_netstorage_actual_policy_passes_only_protocol_and_preserves_ia_gap(self):
+        catalog = coverage.catalog_from_schemas([schema("netstorage"), schema("internetarchive")])
+        actual = json.loads((ROOT / "provider-coverage-policy.json").read_text(encoding="utf-8"))
+        policy = {"schema_version": 2, "providers": {}, "profiles": {}}
+        for item in catalog:
+            backend = item["backend"]
+            entry = copy.deepcopy(actual["providers"][backend])
+            entry["schema_sha256"] = item["schema_sha256"]
+            policy["providers"][backend] = entry
+            policy["profiles"][entry["profile"]] = copy.deepcopy(actual["profiles"][entry["profile"]])
+        candidate = netstorage_receipt()
+        candidate["backends"].extend(internetarchive_receipt()["backends"])
+        result = self.evaluate([candidate], policy, catalog)
+        self.assertEqual(result["errors"], [])
+        rows = {row["backend"]: row for row in result["providers"]}
+        self.assertEqual(rows["netstorage"]["evidence"]["local_protocol"]["capabilities"],
+                         netstorage_receipt()["backends"][0]["capabilities"])
+        self.assertEqual(coverage.gate_errors(result, require_plans=True, require_fixtures=["netstorage"]), [])
+        self.assertEqual(rows["internetarchive"]["evidence"]["local_protocol"]["status"], "not_verified")
+        self.assertEqual(rows["internetarchive"]["evidence"]["local_protocol"]["capabilities"]["authentication_rejection"],
+                         "not_verified")
+        self.assertIn("required_fixture_not_verified", coverage.gate_errors(result, require_fixtures=["internetarchive"]))
+        for tier in ("application", "vendor"):
+            evidence = rows["netstorage"]["evidence"][tier]
+            self.assertEqual(evidence["status"], "not_verified")
+            self.assertEqual(evidence["capabilities"]["authentication"], "not_verified")
+            self.assertEqual(evidence["capabilities"]["denial"], "not_verified")
+            self.assertEqual(evidence["capabilities"]["revocation"], "not_verified")
+        self.assertEqual(policy["providers"]["netstorage"]["auth_applicability"], "credentials")
+        self.assertFalse(result["all_complete"])
+
+    def test_netstorage_scope_fields_and_schema_two_injection_are_rejected(self):
+        catalog = coverage.catalog_from_schemas([schema("netstorage"), schema("filefabric")])
+        policy = policy_for(catalog)
+        for where in ("row", "receipt"):
+            for field in ("fixture_mode", "modes", "subscenarios", "auth_mode", "endpoint", "account", "secret"):
+                candidate = netstorage_receipt()
+                target = candidate if where == "receipt" else candidate["backends"][0]
+                target[field] = "PRIVATE_SCOPE_CANARY"
+                result = self.evaluate([candidate], policy, catalog)
+                with self.subTest(where=where, field=field):
+                    self.assertIn("invalid_fixture_mode", result["errors"])
+                    self.assertNotIn("PRIVATE_SCOPE_CANARY", json.dumps(result))
+        for mixed in (False, True):
+            candidate = netstorage_receipt()
+            candidate["schema_version"] = 2
+            candidate["backends"][0]["fixture_mode"] = "filefabric_later_call_renewal_v1"
+            if mixed:
+                candidate["backends"].extend(filefabric_renewal_receipt()["backends"])
+            self.assertIn("invalid_fixture_mode", self.evaluate([candidate], policy, catalog)["errors"])
+
+    def test_netstorage_read_receipt_cannot_satisfy_another_backend(self):
+        catalog = coverage.catalog_from_schemas([schema("netstorage"), schema("koofr")])
+        policy = policy_for(catalog)
+        result = self.evaluate([netstorage_receipt()], policy, catalog)
+        rows = {row["backend"]: row for row in result["providers"]}
+        self.assertEqual(rows["koofr"]["evidence"]["local_protocol"]["status"], "not_verified")
+        self.assertIn("required_fixture_not_verified", coverage.gate_errors(result, require_fixtures=["koofr"]))
+        for capability in ("anonymous_read", "read_denial", "refresh", "reauthentication", "session_token_reacquisition"):
+            candidate = netstorage_receipt()
+            candidate["backends"][0]["capabilities"][capability] = "passed"
+            self.assertIn("invalid_fixture_capability", self.evaluate([candidate], policy, catalog)["errors"])
+
+    def test_netstorage_cleanup_failure_is_sticky_in_either_order(self):
+        catalog = coverage.catalog_from_schemas([schema("netstorage")])
+        policy = policy_for(catalog)
+        failed = netstorage_receipt()
+        failed["success"] = failed["cleanup_passed"] = False
+        for candidates in ([failed, netstorage_receipt()], [netstorage_receipt(), failed]):
+            result = self.evaluate(candidates, policy, catalog)
+            self.assertEqual(result["providers"][0]["evidence"]["local_protocol"]["status"], "failed")
+            self.assertIn("required_fixture_not_verified", coverage.gate_errors(result, require_fixtures=["netstorage"]))
 
     def filefabric_combined_policy(self):
         catalog = coverage.catalog_from_schemas([schema("filefabric")])

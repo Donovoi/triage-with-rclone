@@ -78,7 +78,7 @@ jobs:
         run: bash ../scripts/download-rclone.sh --linux "$RUNNER_TEMP/rclone-native"
       - name: Runtime updater and provider evidence regressions
         run: python -B -m unittest discover -s ../scripts/tests -p "test_*.py"
-      - name: All 17 isolated backend protocol fixtures
+      - name: All 18 isolated backend protocol fixtures
         env:
           PROVIDER_BINARY: ${{ runner.os == 'Windows' && format('{0}/rclone-triage/assets/rclone.exe', github.workspace) || format('{0}/rclone-native', runner.temp) }}
         shell: bash
@@ -90,7 +90,7 @@ jobs:
         shell: bash
         run: python -B ../scripts/provider-lab/run_lab.py --rclone "$PROVIDER_BINARY" --filefabric-renewal --report "$RUNNER_TEMP/filefabric-renewal-fixture.json"
       # Internet Archive anonymous reads run above and fail that step on any error.
-      # Its credential-rejection gap keeps the full ledger gate limited to the other 16.
+      # Its credential-rejection gap keeps the full ledger gate limited to the other 17.
       - name: Require current provider plans and protocol evidence
         if: ${{ !cancelled() }}
         env:
@@ -101,7 +101,7 @@ jobs:
             --report "$RUNNER_TEMP/provider-evidence.json" \
             --fixture-receipt "$RUNNER_TEMP/provider-fixtures.json" \
             --fixture-receipt "$RUNNER_TEMP/filefabric-renewal-fixture.json" \
-            --require-plans --require-fixtures local,archive,http,webdav,ftp,sftp,s3,swift,b2,azureblob,azurefiles,seafile,memory,koofr,pixeldrain,filefabric
+            --require-plans --require-fixtures local,archive,http,webdav,ftp,sftp,s3,swift,b2,azureblob,azurefiles,seafile,memory,koofr,pixeldrain,filefabric,netstorage
       - name: Retain sanitized protocol evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
