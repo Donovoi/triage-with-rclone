@@ -31,6 +31,13 @@ INPUT_HASHES = {
     "settings.xml": "73c88f4d9660338f35a6e56978f8567f89f5a85641d5338f189fc489440b364c",
     "global-settings.xml": "aeb786c97c2a0103b71c04ab1b29508d7ec1c402a9d36e22301407b23670edf2",
 }
+# This is a separate, online-only dependency experiment. Its additional KDC
+# closure has no reviewed offline lock yet; never reuse the SIMPLE cache.
+KERBEROS_INPUT_HASHES = {
+    "pom.xml": "5e3c22ab3d657f1e5c3028830bab7783e8984bdcd1fe972cdbe2be1f58ffde11",
+    "settings.xml": "73c88f4d9660338f35a6e56978f8567f89f5a85641d5338f189fc489440b364c",
+    "global-settings.xml": "aeb786c97c2a0103b71c04ab1b29508d7ec1c402a9d36e22301407b23670edf2",
+}
 MAVEN_SHA512 = "831a8591fe20c8243b1dbe7d71e3244f31d1665b0804b2e825e38cbbe5ce0cafb8338851f90780735568773e0a6cd07bbec107cda0b896b008b861075358b6f6"
 HASH = re.compile(r"[a-f0-9]{64}\Z")
 COMPONENT = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.+-]{0,127}\Z")
@@ -124,11 +131,17 @@ def json_value(raw):
         raise DiscoveryError("docker_json_invalid") from None
 
 
-def candidate_inputs(root):
+def candidate_hashes(profile):
+    need(type(profile) is str and profile in {"hdfs", "kerberos"}, "candidate_invalid")
+    return dict(INPUT_HASHES if profile == "hdfs" else KERBEROS_INPUT_HASHES)
+
+
+def candidate_inputs(root, profile="hdfs"):
+    hashes = candidate_hashes(profile)
     root = Path(root).absolute()
-    need(root.is_dir() and {p.name for p in root.iterdir()} == set(INPUT_HASHES), "candidate_invalid")
+    need(root.is_dir() and {p.name for p in root.iterdir()} == set(hashes), "candidate_invalid")
     result = {}
-    for name, digest in INPUT_HASHES.items():
+    for name, digest in hashes.items():
         path = regular(root / name, 256 * 1024)
         need(file_hash(path) == digest, "candidate_invalid")
         result[name] = path.read_bytes()
@@ -478,6 +491,24 @@ def artifact_manifest(archive):
             "private_archive_sha256": file_hash(archive), "private_file_count": len(files)}
 
 
+def validate_profile_manifest(manifest, profile):
+    candidate_hashes(profile)
+    if profile == "hdfs":
+        return  # artifact_manifest already requires all three Hadoop roots.
+    expected = {"group": "org.apache.kerby", "artifact": "kerb-simplekdc",
+                "version": "2.0.3", "classifier": "", "type": "jar"}
+    selected = [r for r in manifest["artifacts"]
+                if r["group"] == expected["group"] and r["artifact"] == expected["artifact"]
+                and r["selected_runtime"] is True]
+    need(len(selected) == 1 and all(selected[0][key] == value for key, value in expected.items()),
+         "classpath_invalid")
+    roots = [n for n in manifest["dependency_semantics"]["nodes"]
+             if n["parent"] == 0 and n["coordinate"] == expected]
+    need(len(roots) == 1 and roots[0]["resolution"] == "included"
+         and roots[0]["reachable_included"] is True and roots[0]["selected_classpath"] is True,
+         "artifact_semantics_invalid")
+
+
 def hosted_guard():
     need(sys.platform == "linux" and os.environ.get("GITHUB_ACTIONS") == "true"
          and os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted" and os.environ.get("RUNNER_OS") == "Linux",
@@ -485,9 +516,12 @@ def hosted_guard():
 
 
 def discover(candidate, bootstrap, archive, output_parent, *, runner_factory=Docker,
-             cache_destination=None, seed_cache=None):
+             cache_destination=None, seed_cache=None, candidate_profile="hdfs"):
     """One fresh hosted discovery; raw logs/archive stay private, never uploaded here."""
     hosted_guard()
+    hashes = candidate_hashes(candidate_profile)
+    need(candidate_profile == "hdfs" or (cache_destination is None and seed_cache is None),
+         "offline_cache_invalid")
     started_utc = datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
     started_clock = time.monotonic()
     supervisor_sha = file_hash(Path(__file__).resolve())
@@ -496,7 +530,7 @@ def discover(candidate, bootstrap, archive, output_parent, *, runner_factory=Doc
     cache_source = Path(offline_cache.__file__).absolute()
     cache_lock = cache_source.with_name("artifact-lock.json")
     cache_source_sha, cache_lock_sha = file_hash(cache_source), file_hash(cache_lock)
-    inputs = candidate_inputs(candidate)
+    inputs = candidate_inputs(candidate, candidate_profile)
     bootstrap = validate_bootstrap(bootstrap, archive)
     parent = Path(output_parent).absolute()
     for path in (parent, *parent.parents):
@@ -529,7 +563,7 @@ def discover(candidate, bootstrap, archive, output_parent, *, runner_factory=Doc
               "inputs": {"supervisor_sha256": supervisor_sha, "graph_export_sha256": exporter_sha,
                          "cache_source_sha256": cache_source_sha, "cache_lock_sha256": cache_lock_sha,
                          "seed_cache": seed_receipt,
-                         "candidate_sha256": dict(INPUT_HASHES),
+                         "candidate_profile": candidate_profile, "candidate_sha256": hashes,
                          "maven": {"version": bootstrap["maven_version"], "archive_sha256": bootstrap["maven_archive_sha256"],
                                    "archive_sha512": bootstrap["maven_archive_sha512"]},
                          "jdk": {"manifest": bootstrap["jdk_image"], "config_id": bootstrap["jdk_image_id"]},
@@ -587,6 +621,7 @@ def discover(candidate, bootstrap, archive, output_parent, *, runner_factory=Doc
             status_diagnostic = discovery_status(result.stdout)
             raise DiscoveryError("container_failed")
         report["manifest"] = artifact_manifest(result.stdout)
+        validate_profile_manifest(report["manifest"], candidate_profile)
         if cache_destination is not None:
             report["cache_preparation"] = offline_cache.prepare_cache(result.stdout, cache_destination)
         report["success"] = True
@@ -641,7 +676,9 @@ def discover(candidate, bootstrap, archive, output_parent, *, runner_factory=Doc
             report["cleanup"]["context_removed"] = not context.exists()
         except (DiscoveryError, OSError): report["errors"].append("context_cleanup_failed")
         try:
-            need(candidate_inputs(candidate) == inputs and file_hash(archive) == bootstrap["maven_archive_sha256"]
+            need(candidate_inputs(candidate, candidate_profile) == inputs
+                 and candidate_hashes(candidate_profile) == hashes
+                 and file_hash(archive) == bootstrap["maven_archive_sha256"]
                  and file_hash(Path(__file__).resolve()) == supervisor_sha
                  and file_hash(exporter_source) == exporter_sha
                  and file_hash(cache_source) == cache_source_sha and file_hash(cache_lock) == cache_lock_sha, "source_changed")
