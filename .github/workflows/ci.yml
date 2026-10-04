@@ -78,7 +78,7 @@ jobs:
         run: bash ../scripts/download-rclone.sh --linux "$RUNNER_TEMP/rclone-native"
       - name: Runtime updater and provider evidence regressions
         run: python -B -m unittest discover -s ../scripts/tests -p "test_*.py"
-      - name: Isolated backend protocol fixtures
+      - name: All 17 isolated backend protocol fixtures
         env:
           PROVIDER_BINARY: ${{ runner.os == 'Windows' && format('{0}/rclone-triage/assets/rclone.exe', github.workspace) || format('{0}/rclone-native', runner.temp) }}
         shell: bash
@@ -89,6 +89,8 @@ jobs:
           PROVIDER_BINARY: ${{ runner.os == 'Windows' && format('{0}/rclone-triage/assets/rclone.exe', github.workspace) || format('{0}/rclone-native', runner.temp) }}
         shell: bash
         run: python -B ../scripts/provider-lab/run_lab.py --rclone "$PROVIDER_BINARY" --filefabric-renewal --report "$RUNNER_TEMP/filefabric-renewal-fixture.json"
+      # Internet Archive anonymous reads run above and fail that step on any error.
+      # Its credential-rejection gap keeps the full ledger gate limited to the other 16.
       - name: Require current provider plans and protocol evidence
         if: ${{ !cancelled() }}
         env:

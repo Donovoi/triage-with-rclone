@@ -19,6 +19,7 @@ import socketserver
 import threading
 import time
 import urllib.parse
+import zlib
 import xml.etree.ElementTree as ET
 from xml.sax.saxutils import escape
 
@@ -1409,6 +1410,101 @@ class PixeldrainHandler(SeafileHandler):
     do_DELETE = dispatch
 
 
+class InternetArchiveState(State):
+    """Fixed anonymous item; no accounts, IAS3 reads, redirects or uploads."""
+    item = "synthetic-item"
+    modified = "2024-01-01T00:00:00.123456789Z"
+    raw_mtime = "1704153600.999"
+
+    def __init__(self, mode="normal"):
+        if mode not in ("normal", "member_denied", "summation"):
+            raise ValueError("invalid_internetarchive_fixture")
+        super().__init__("", "")
+        self.mode = mode
+        self.deadline = time.monotonic() + 60
+        self.request_timeout, self.request_limit = 3, 8
+        self.byte_limit, self.response_bytes = 64 * 1024, 0
+        self.unexpected = self.rejected_payload_bytes = self.member_denied = self.metadata_reads = self.anonymous = 0
+        self.budget_exceeded = False
+        self.events = []
+        self.accepted_connections = self.admission_denied = 0
+        self.connection_limit, self.active_connection_limit = 8, 4
+        self.metadata = {"item_size": sum(map(len, self.files.values())), "files": []}
+        for name, body in sorted(self.files.items()):
+            entry = {"name": name, "size": str(len(body)), "mtime": self.raw_mtime,
+                     "rclone-mtime": ["invalid-synthetic-time", self.modified] if name.startswith("nested/") else self.modified,
+                     "md5": hashlib.md5(body).hexdigest(), "sha1": hashlib.sha1(body).hexdigest(),
+                     "crc32": f"{zlib.crc32(body) & 0xffffffff:08x}"}
+            if mode == "summation" and name == "README-synthetic.txt":
+                entry.update(summation="md5", md5="0" * 32, sha1="0" * 40, crc32="00000000")
+            self.metadata["files"].append(entry)
+
+
+class InternetArchiveFixture(SeafileFixture):
+    def __init__(self, state):
+        self.state = state
+        HTTPServer.__init__(self, ("127.0.0.1", 0), InternetArchiveHandler)
+
+
+class InternetArchiveHandler(SeafileHandler):
+    # Reuse only bounded transport/admission, static failures and cleanup.
+    def dispatch(self):
+        with self.server.state.lock:
+            state = self.server.state
+            state.requests += 1
+            if state.requests > state.request_limit or time.monotonic() > state.deadline:
+                state.budget_exceeded = True
+                self.reject(429)
+                return
+            headers = list(self.headers.items())
+            names = [name.lower() for name, _ in headers]
+            try:
+                wire = self.raw_requestline.rstrip(b"\r\n").split(b" ")
+                if (len(wire) != 3 or wire[1].decode("ascii") != self.path or len(self.path) > 2048
+                        or self.headers.get_all("Host") != [f"127.0.0.1:{self.server.server_address[1]}"]
+                        or len(names) != len(set(names)) or sum(len(k) + len(v) for k, v in headers) > 8192
+                        or any("\r" in v or "\n" in v for _, v in headers)
+                        or any(self.headers.get(key) is not None for key in
+                               ("Authorization", "Proxy-Authorization", "Cookie", "Transfer-Encoding", "Content-Encoding", "Range"))
+                        or self.headers.get("Content-Length", "0") != "0"):
+                    raise ValueError("invalid_request")
+                routes = {"/front/metadata/synthetic-item": ("metadata", "")}
+                routes.update({"/front/download/synthetic-item/" + urllib.parse.quote(name, safe="/-._~"): ("content", name)
+                               for name in FILES})
+                routes["/ias3/synthetic-item%2FREADME-synthetic.txt"] = ("write", "README-synthetic.txt")
+                if self.path not in routes:
+                    raise ValueError("invalid_target")
+                route, member = routes[self.path]
+                if self.command != ("DELETE" if route == "write" else "GET"):
+                    raise ValueError("invalid_method")
+                if ((route == "metadata" and state.metadata_reads >= 2)
+                        or (route != "metadata" and state.metadata_reads != 2)
+                        or any(event[0] in ("content", "content_denied", "write_denied") for event in state.events)):
+                    raise ValueError("invalid_order")
+            except (UnicodeError, ValueError):
+                self.reject()
+                return
+            state.anonymous += 1
+            if route == "metadata":
+                state.metadata_reads += 1
+                state.events.append(("metadata", str(state.metadata_reads)))
+                self.json_reply(200, state.metadata)
+            elif route == "write":
+                # A direct fixture guard probe, never a native write or vendor ACL claim.
+                state.rejected_mutations += 1
+                state.events.append(("write_denied", member))
+                self.json_reply(405, {"status": "fixture_read_only"})
+            elif state.mode == "member_denied" and member == "README-synthetic.txt":
+                state.member_denied += 1
+                state.events.append(("content_denied", member))
+                self.reply(403, b"Synthetic member denied", {"Content-Type": "text/plain"})
+            else:
+                state.events.append(("content", member))
+                self.reply(200, state.files[member], {"Content-Type": "application/octet-stream"}, object_payload=True)
+
+    do_GET = do_HEAD = do_POST = do_PUT = do_DELETE = do_PATCH = do_OPTIONS = do_PROPFIND = dispatch
+
+
 class FileFabricState(State):
     """Seeded-session RPC reads only; grant, renewal and appliance calls forbidden."""
     root_id, nested_id = "100", "200"
@@ -2344,7 +2440,7 @@ def serve(kind, state):
     server = (FtpFixture(state) if kind == "ftp" else SwiftFixture(state) if kind == "swift"
               else B2Fixture(state) if kind == "b2" else AzureBlobFixture(state) if kind == "azureblob"
               else AzureFilesFixture(state) if kind == "azurefiles" else SeafileFixture(state) if kind == "seafile"
-              else FileFabricSessionFixture(state) if kind == "filefabric-renewal" else FileFabricFixture(state) if kind == "filefabric" else KoofrFixture(state) if kind == "koofr" else PixeldrainFixture(state) if kind == "pixeldrain" else HttpFixture(state))
+              else InternetArchiveFixture(state) if kind == "internetarchive" else FileFabricSessionFixture(state) if kind == "filefabric-renewal" else FileFabricFixture(state) if kind == "filefabric" else KoofrFixture(state) if kind == "koofr" else PixeldrainFixture(state) if kind == "pixeldrain" else HttpFixture(state))
     thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05})
     thread.start()
     try:

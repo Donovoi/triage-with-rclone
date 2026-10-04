@@ -934,6 +934,45 @@
       "unresolved_applicability": [
         "reauthentication"
       ]
+    },
+    "internetarchive-anonymous-read-partial-fixture": {
+      "required": {
+        "application": [
+          "listing",
+          "download_hash",
+          "manifest_integrity",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation"
+        ],
+        "vendor": [
+          "listing",
+          "download_hash",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation"
+        ],
+        "local_protocol": [
+          "listing",
+          "download_hash",
+          "missing_object_rejection",
+          "anonymous_read",
+          "read_denial",
+          "source_preservation",
+          "config_preservation",
+          "fixture_write_rejection",
+          "cleanup",
+          "authentication_rejection"
+        ]
+      },
+      "review_required": false,
+      "unresolved_applicability": []
     }
   },
   "providers": {
@@ -1982,15 +2021,23 @@
     "internetarchive": {
       "canonical_name": "internetarchive",
       "schema_sha256": "85443e0c86eee55520acbfad45c2603e36ea8d8ea5329de3b1f1b8ed6958d095",
-      "profile": "hosted-static-credentials",
+      "profile": "internetarchive-anonymous-read-partial-fixture",
       "notes": [
         "Internet Archive account and IAS3 access/secret keys for task-owned item fixture. Public item reads are a separate anonymous profile, not account-login evidence.",
         "Free account/API eligibility: review_required",
-        "IAS3 read profile only; account login cookies, uploads and publishing a public item are separate operations."
+        "IAS3 read profile only; account login cookies, uploads and publishing a public item are separate operations.",
+        "The predefined schema-1 internetarchive_anonymous_read_v1 fixture uses empty access/secret keys and separate front/S3 paths on one owned loopback listener. All observed requests must omit authentication and cookies.",
+        "Its exact nine-capability receipt covers complete synthetic public listing/stat/downloads, known-member read denial, missing-object rejection, source/config preservation, direct fixture write rejection and cleanup. Read denial is not credential rejection or fresh login.",
+        "Local authentication_rejection remains required and unverified: an anonymous receipt contributes partial evidence only and cannot qualify the full local_protocol tier or the internetarchive fixture gate. Application, vendor and lifecycle requirements remain unchanged.",
+        "No hosted Internet Archive, LOW credential validation, account login, TLS, redirect/CDN containment, upload/derive queue, native empty-file or lifecycle acceptance is established. The local archive ZIP fixture is a different backend."
       ],
       "source_links": [
         "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/internetarchive.md",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/internetarchive/internetarchive.go#L366-L376"
+        "https://github.com/rclone/rclone/blob/v1.75.1/backend/internetarchive/internetarchive.go#L366-L376",
+        "https://github.com/rclone/rclone/blob/v1.75.1/backend/internetarchive/internetarchive.go#L333-L386",
+        "https://github.com/rclone/rclone/blob/v1.75.1/backend/internetarchive/internetarchive.go#L766-L791",
+        "https://github.com/rclone/rclone/blob/v1.75.1/backend/internetarchive/internetarchive.go#L1025-L1088",
+        "https://archive.org/developers/md-read.html"
       ],
       "auth_applicability": "credentials",
       "refresh_applicability": "not_applicable",
