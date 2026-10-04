@@ -20,7 +20,9 @@ MAX_GRAPH = 8 * 1024 * 1024
 MAX_NODES = 8192
 MAX_DEPTH = 64
 MAX_ELEMENTS = 20000
-MAX_TOTAL_ELEMENTS = 100000
+# The observed Maven dependency cache exceeds 100,000 POM elements.
+# Retain per-file elements, file/aggregate bytes, depth and output bounds.
+MAX_TOTAL_ELEMENTS = 500000
 MAX_OUTPUT = 32 * 1024 * 1024
 TOKEN = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.+-]{0,127}\Z")
 SCOPES = {"", "compile", "runtime", "provided", "test", "system", "import"}
@@ -36,7 +38,8 @@ POM_REASON_CODES = {
         "element_tag", "namespace", "element_name", "model_version", "coordinate_mismatch",
         "duplicate_field", "exclusion_shape", "dependency_shape", "dependency_management_shape",
         "plugin_shape", "extension_shape", "profile_shape")},
-    "content_bounds": "input_limit", "element_bounds": "input_limit",
+    "content_bounds": "input_limit", "pom_element_limit": "input_limit",
+    "aggregate_element_limit": "input_limit", "pom_depth_limit": "input_limit",
 }
 SOURCES = [
     "https://raw.githubusercontent.com/apache/maven-dependency-plugin/maven-dependency-plugin-3.11.0/src/main/java/org/apache/maven/plugins/dependency/tree/JsonDependencyNodeVisitor.java",
@@ -335,7 +338,9 @@ def pom_semantics(content, c, issues, budget):
         element, depth = pending.pop()
         count += 1
         budget[0] += 1
-        pom_need(count <= MAX_ELEMENTS and budget[0] <= MAX_TOTAL_ELEMENTS and depth <= MAX_DEPTH, "element_bounds")
+        pom_need(count <= MAX_ELEMENTS, "pom_element_limit")
+        pom_need(budget[0] <= MAX_TOTAL_ELEMENTS, "aggregate_element_limit")
+        pom_need(depth <= MAX_DEPTH, "pom_depth_limit")
         pom_need(type(element.tag) is str, "element_tag")
         if element.tag.startswith(ns):
             element.tag = element.tag[len(ns):]
@@ -506,6 +511,7 @@ def export_semantics(json_bytes, text_bytes, poms, selected_runtime):
               "repository_policy_is_os_egress_confinement": False,
               "source_contract": {"plugin_version": "3.11.0", "tree_library_version": "3.3.0", "urls": SOURCES},
               "input_sha256": {"runtime_tree_json": digest(json_bytes), "runtime_tree_text": digest(text_bytes)},
+              "processed_pom_totals": {"poms": len(records), "bytes": total, "elements": budget[0]},
               "nodes": nodes, "edges": [{"parent": n["parent"], "child": n["id"]} for n in nodes if n["parent"] is not None],
               "poms": sorted(records, key=lambda r: coord_key(r["coordinate"])),
               "missing_graph_pom_count": len(missing), "incomplete_reasons": sorted(issues)}
