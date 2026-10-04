@@ -254,8 +254,9 @@ public final class SecureKdc {
             +"[realms]\n "+realm+" = {\n  kdc = 127.0.0.1:19006\n }\n").getBytes(StandardCharsets.US_ASCII);
     }
     private static byte[] rcloneBytes(String realm,boolean secure) {
+        // gokrb5 v8.4.4 GetServiceTicket splits only on '/'; it resolves the realm separately.
         return ("[test]\ntype = hdfs\nnamenode = 127.0.0.1:19000\n"+(secure
-            ? "service_principal_name = nn/127.0.0.1@"+realm+"\ndata_transfer_protection = privacy\n"
+            ? "service_principal_name = nn/127.0.0.1\ndata_transfer_protection = privacy\n"
             : "username = reader\n")).getBytes(StandardCharsets.US_ASCII);
     }
     private static void replaceGeneratedConfig(String realm) throws Exception {
