@@ -1,0 +1,88 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-04",
+  "scope": "live_application_cli_synthetic_scope",
+  "backend": "koofr",
+  "account_variant": "free_native_storage",
+  "ledger_importable": false,
+  "complete_provider_acceptance": false,
+  "application": {
+    "commit": "260f9878142c4818b960f801cecd6a46c54cc00b",
+    "executable_sha256": "5b5f4bd4ff851cedb8b298f36e7afcdf2594095f4c91953ee6196b721baa112a",
+    "platform": "windows-amd64",
+    "interface": "CLI",
+    "observed_rclone_version": "1.75.1"
+  },
+  "provenance": {
+    "task_local_sources_published": false,
+    "orchestrator_sha256": "a0635d25a303df9c1e96951d1a9c59cfbf89d4e13d51848cffc5a6d3ecde8cf4",
+    "guest_worker_sha256": "e521db00a2ef2a70a0ba1c872132afdcb5cd64c84653e3343358566a9ee80518",
+    "fixture_manifest_sha256": "0e5d39a6f576dd586ea3fe36d393b0f03138a023196b85764997b499a25126f7",
+    "validation_basis": "Exact-run private application manifest counts and classified failure diagnostics. No successful acquisition export receipt was produced; retained file bytes were not independently revalidated for this failed run."
+  },
+  "setup": {
+    "account_created": true,
+    "application_password_authentication": "observed_working_for_synthetic_scope",
+    "credential_vault_save_and_readback": "verified_unattended",
+    "synthetic_provisioning": "verified",
+    "scoped_listing_files": 10,
+    "scoped_listing_bytes": 66578,
+    "listing_size_and_md5_against_local_fixture": "pass"
+  },
+  "baseline": {
+    "scenario_verdict": "fail",
+    "application_exit_code": 1,
+    "manifest_complete": false,
+    "planned_files": 10,
+    "application_reported_verified_files": 7,
+    "application_reported_failed_files": 3,
+    "independent_acquisition_export_validation": "not_available",
+    "failures": [
+      {
+        "category": "vendor_content_restriction",
+        "count": 2,
+        "http_status": 403,
+        "provider_error_code": "FileBlocked",
+        "fixture_class": "binary_extension_files",
+        "retried": false,
+        "coverage_status": "restricted_not_passed"
+      },
+      {
+        "category": "windows_staging_path_publication",
+        "count": 1,
+        "os_error_code": 3,
+        "coverage_status": "failed"
+      }
+    ]
+  },
+  "windows_fix": {
+    "commit": "7b5c16ec8ca469da252e3de1670e6c544c1ef943",
+    "pull_request": "https://github.com/Donovoi/triage-with-rclone/pull/36",
+    "local_regression_tests_passed": 4,
+    "pre_fix_long_path_regressions_failed": 2,
+    "required_windows_linux_ci": "pass",
+    "fixed_build_live_retest": "not_run"
+  },
+  "cleanup": {
+    "vm": "stopped_and_disconnected",
+    "owned_processes_after_diagnosis": 0,
+    "timeout": false,
+    "forced_termination": false,
+    "synthetic_remote_folder": "retained_for_future_tests",
+    "remote_deletion_test": "not_tested"
+  },
+  "not_established": [
+    "complete_ten_file_acquisition",
+    "fixed_build_permitted_eight_file_acquisition",
+    "hash_mismatch_scenario",
+    "missing_object_scenario",
+    "application_fresh_login",
+    "authentication_denial_or_revocation",
+    "refresh_applicability_or_behavior",
+    "download_cancellation",
+    "independently_validated_before_after_source_preservation",
+    "live_tui_acceptance"
+  ],
+  "provider_restriction_reference": "https://koofr.eu/help/share-files-and-folders/i-have-a-free-account-and-cannot-share-certain-files-why/",
+  "privacy": "No credentials, account identifiers, cloud-root identifiers, private paths, raw errors, response headers or transcripts are included."
+}
