@@ -171,12 +171,34 @@ class FixtureTests(unittest.TestCase):
         source, checks, classpath = F.dockerfile(F.runtime_rows(), "a"*64)
         self.assertIn("-proc:none -implicit:none", source)
         self.assertIn("sha256sum -c", source)
-        self.assertEqual(len(checks.splitlines()), 130)
+        self.assertEqual(len(checks.splitlines()), 135)
         self.assertEqual(classpath.count(".jar"), 128)
         self.assertIn("240s", F.driver_script())
         args = F.command_args("hdfs-fixture-"+RUN, IMAGE, RUN)
         self.assertIn("300s", args)
         self.assertNotIn("--publish", args)
+
+    def test_webapp_scaffolding_has_fixed_bytes_and_is_verified_before_copy(self):
+        resources = F.webapp_resources()
+        expected = {
+            "webapps/hdfs/WEB-INF/web.xml": (113, "6d0d825985f36b71b961bcf21a33c0f21d5b732bd571962549585287071c48a9"),
+            "webapps/datanode/WEB-INF/web.xml": (113, "6d0d825985f36b71b961bcf21a33c0f21d5b732bd571962549585287071c48a9"),
+            "webapps/hdfs/index.html": (74, "c91ab4f8efeb470f733249fa2077f6cdfa2a0b185092bb6cd7ef94a6f1500c5e"),
+            "webapps/datanode/index.html": (74, "c91ab4f8efeb470f733249fa2077f6cdfa2a0b185092bb6cd7ef94a6f1500c5e"),
+            "webapps/static/fixture.txt": (30, "a934e6055b850ef89bab9e02e895da2d13ad073d49e8054a59a5bdee4d7b04af"),
+        }
+        self.assertEqual({path: (len(data), F.digest(data)) for path, data in resources.items()}, expected)
+        build, checks, _ = F.dockerfile(F.runtime_rows(), "a"*64)
+        for path, (_, sha256) in expected.items():
+            self.assertIn(sha256 + "  /opt/hdfs/resources/" + path + "\n", checks)
+        self.assertLess(build.index("sha256sum -c"), build.index("cp -R /opt/hdfs/resources/webapps"))
+        self.assertLess(build.index("cp -R /opt/hdfs/resources/webapps"), build.index("chmod -R a=rX"))
+        import xml.etree.ElementTree as ET
+        for path, data in resources.items():
+            if path.endswith(".xml"):
+                root = ET.fromstring(data)
+                self.assertEqual(root.tag, "{http://java.sun.com/xml/ns/j2ee}web-app")
+                self.assertEqual(len(root), 0)
 
     def test_cli_never_uses_ambient_config_or_kerberos(self):
         args = F.rclone_args("lsjson", F.remote())
@@ -253,6 +275,7 @@ class FixtureTests(unittest.TestCase):
         self.assertTrue(result["success"])
         self.assertTrue(all(result["cleanup"].values()))
         self.assertEqual(result["cleanup_excludes"], ["shared_base_image", "shared_build_cache"])
+        self.assertEqual(result["webapp_scope"], "synthetic_scaffolding_not_vendor_ui")
         self.assertFalse(output.exists())
         for key in F.FALSE_CLAIMS: self.assertIs(result[key], False)
 

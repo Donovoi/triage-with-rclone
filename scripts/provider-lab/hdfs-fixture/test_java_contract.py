@@ -182,7 +182,7 @@ class JavaContractTests(unittest.TestCase):
         self.assertEqual(len(codes), len(set(codes)))
         used = set(re.findall(r'require\(.*?"([a-z0-9_]+)"\);', self.source, re.S))
         self.assertEqual(set(codes), used)
-        self.assertEqual(len(codes), 41)
+        self.assertEqual(len(codes), 42)
         for canary in ("PRIVATE_SYNTHETIC_CANARY", "/private/synthetic/file", "source_scope extra",
                        "prefix_source_scope", "source_scope\n", "unclassified"):
             self.assertNotIn(canary, codes)
@@ -251,6 +251,63 @@ class JavaContractTests(unittest.TestCase):
         self.assertEqual(blocks['readiness_failed'].strip(), 'ready(nn, dn, fs);')
         self.assertIn('new HdfsConfiguration(false)', self.source)
         self.assertIn('conf.set("dfs.reformat.disabled", "true")', self.source)
+
+    def test_webapp_scaffolding_has_independent_exact_five_file_oracle(self):
+        resources = self.source[self.source.index('private static void verifyWebAppResources('):
+                                self.source.index('private static Configuration configuration(')]
+        descriptor = (b'<?xml version="1.0" encoding="UTF-8"?>\n'
+                      b'<web-app xmlns="http://java.sun.com/xml/ns/j2ee" version="2.4"></web-app>\n')
+        index = b'<!doctype html><title>Synthetic fixture</title><p>Protocol test only.</p>\n'
+        payloads = {'hdfs/WEB-INF/web.xml': descriptor, 'datanode/WEB-INF/web.xml': descriptor,
+                    'hdfs/index.html': index, 'datanode/index.html': index,
+                    'static/fixture.txt': b'Protocol test resources only.\n'}
+        rows = re.findall(r'"([^"]+)", new WebAppFile\(([0-9]+), "([0-9a-f]{64})"\)', resources)
+        self.assertEqual(len(rows), 5)
+        self.assertEqual({path: (int(size), digest) for path, size, digest in rows},
+                         {path: (len(data), hashlib.sha256(data).hexdigest())
+                          for path, data in payloads.items()})
+        self.assertIn('Set.of("", "hdfs", "hdfs/WEB-INF", "datanode", "datanode/WEB-INF", "static")', resources)
+        self.assertIn('foundFiles.equals(files.keySet()) && foundDirs.equals(directories)', resources)
+        self.assertIn('Fixture-only scaffolding, not vendor UI', resources)
+
+    def test_webapp_files_are_fixed_readonly_root_owned_no_links_and_bounded(self):
+        resources = self.source[self.source.index('private static void verifyWebAppResources('):
+                                self.source.index('private static Configuration configuration(')]
+        for guard in ('Path.of("/opt/hdfs/classes/webapps")',
+                      'ancestor = ancestor.getParent()', '!Files.isSymbolicLink(ancestor)',
+                      'Files.isDirectory(ancestor, NOFOLLOW)', '!Files.isSymbolicLink(path)',
+                      'Files.isRegularFile(path, NOFOLLOW)', 'Files.newInputStream(path, NOFOLLOW)',
+                      'Files.getAttribute(path, "unix:uid", NOFOLLOW)).intValue() == 0',
+                      'Files.getAttribute(path, "unix:gid", NOFOLLOW)).intValue() == 0',
+                      'Files.getPosixFilePermissions(path, NOFOLLOW).equals(',
+                      'directory ? "r-xr-xr-x" : "r--r--r--"', '++observed <= 11',
+                      'pending.size() < 11', 'directories.contains(relative)',
+                      'files.containsKey(relative)', 'Files.size(path) == expected.size()',
+                      'input.readNBytes(4097)', 'bytes.length == expected.size()',
+                      'sha256(bytes).equals(expected.sha256())'):
+            self.assertIn(guard, resources)
+        self.assertNotIn('Files.write', resources)
+        self.assertNotIn('Files.create', resources)
+        self.assertNotIn('setPosixFilePermissions', resources)
+
+    def test_webapp_classloader_identity_and_safe_failure_before_startup(self):
+        resources = self.source[self.source.index('private static void verifyWebAppResources('):
+                                self.source.index('private static Configuration configuration(')]
+        for guard in ('List.of("hdfs", "datanode", "static")',
+                      'HdfsFixture.class.getClassLoader().getResource("webapps/" + name)',
+                      'resource != null && resource.getProtocol().equals("file")',
+                      'resource.getAuthority() == null || resource.getAuthority().isEmpty()',
+                      'resource.getQuery() == null && resource.getRef() == null',
+                      'Path.of(resource.toURI()).equals(root.resolve(name))'):
+            self.assertIn(guard, resources)
+        self.assertIn('catch (Exception ignored)', resources)
+        self.assertIn('throw new FixtureFailure("webapp_resources_invalid")', resources)
+        self.assertNotIn('.normalize()', resources)
+        self.assertNotIn('.getMessage(', resources)
+        main = self.source[self.source.index('public static void main('):]
+        self.assertIn('environment(args);\n      stage = "webapp_resources_failed";\n'
+                      '      verifyWebAppResources();\n      stage = "startup_failed";', main)
+        self.assertLess(main.index('verifyWebAppResources()'), main.index('NameNode.format(conf)'))
 
     def test_cause_inspection_is_bounded_and_does_not_parse_private_messages(self):
         reason = self.source[self.source.index('private static String failureReason('):
