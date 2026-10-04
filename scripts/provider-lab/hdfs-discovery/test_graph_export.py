@@ -57,6 +57,21 @@ class GraphExportTests(unittest.TestCase):
             self.export(**kwargs)
         self.assertEqual(str(e.exception), code)
 
+    def rejected_pom(self, content, expected_reason, *, expected_code="pom_invalid", c=None):
+        identity = dict(self.a, type="pom") if c is None else c
+        record = {"coordinate": identity, "content": content, "size": len(content),
+                  "sha256": hashlib.sha256(content).hexdigest()}
+        with self.assertRaises(g.ExportError) as caught:
+            self.export(poms=[record])
+        error = caught.exception
+        self.assertEqual((str(error), error.code, error.pom_reason),
+                         (expected_code, expected_code, expected_reason))
+        result = g.pom_failure_diagnostic(error)
+        self.assertEqual(result, {"schema_version": 1, "scope": "hdfs_pom_rejection", "code": expected_code,
+                                 "reason": expected_reason, "coordinate": identity, "size": len(content),
+                                 "sha256": hashlib.sha256(content).hexdigest()})
+        return error
+
     def test_selected_omitted_occurrence_edges_reasons_and_management(self):
         result = self.export()
         self.assertEqual(result["edges"], [{"parent": 0, "child": 1}, {"parent": 1, "child": 2},
@@ -188,6 +203,137 @@ class GraphExportTests(unittest.TestCase):
         self.export(poms=[pom(self.a, '<!-- PRIVATE_CANARY -->')])
         for extra in ('<!DOCTYPE project>', '<!ENTITY x "secret">', '<?external value?>', '<bad xmlns="https://private.invalid"/>'):
             self.reject("pom_invalid", poms=[pom(self.a, extra)])
+
+    def test_pom_encoding_preflight_xml_and_root_failures_have_finite_reasons(self):
+        for content, reason in (
+                (b"\xffPRIVATE_ENCODING_CANARY", "utf8_decode"),
+                (b"<project><PRIVATE_XML_CANARY>", "xml_parse"),
+                (b'<!DOCTYPE project [<!ENTITY test "PRIVATE_CANARY">]><project/>', "doctype"),
+                (b'<!ENTITY test "PRIVATE_CANARY"><project/>', "entity"),
+                (b'<?private PRIVATE_CANARY?><project/>', "processing_instruction"),
+                (b'<PRIVATE_ROOT_CANARY/>', "project_root")):
+            with self.subTest(reason=reason):
+                error = self.rejected_pom(content, reason)
+                self.assertNotIn("PRIVATE", json.dumps(g.pom_failure_diagnostic(error)))
+
+    def test_pom_namespace_model_and_coordinate_rejections_remain_bound_to_actual_bytes(self):
+        source = pom(self.a)["content"]
+        cases = [
+            (pom(self.a, '<x xmlns="https://PRIVATE_CANARY.invalid"/>')["content"], "namespace"),
+            (pom(self.a, '<' + 'x' * 129 + '/>')["content"], "element_name"),
+            (source.replace(b'<modelVersion>4.0.0</modelVersion>', b''), "model_version"),
+            (source.replace(b'<modelVersion>4.0.0</modelVersion>', b'<modelVersion> 4.0.0 </modelVersion>'), "model_version"),
+            (pom(coord("different"))["content"], "coordinate_mismatch"),
+            (pom(self.a, '<version>1</version>')["content"], "duplicate_field"),
+        ]
+        for content, reason in cases:
+            with self.subTest(reason=reason):
+                self.rejected_pom(content, reason)
+
+    def test_pom_structural_reasons_do_not_export_offending_element_names(self):
+        for extra, reason in (
+                ('<dependencies><PRIVATE_CANARY/></dependencies>', "dependency_shape"),
+                ('<dependencyManagement><dependencies><PRIVATE_CANARY/></dependencies></dependencyManagement>',
+                 "dependency_management_shape"),
+                ('<dependencies><dependency><exclusions><PRIVATE_CANARY/></exclusions></dependency></dependencies>',
+                 "exclusion_shape"),
+                ('<build><plugins><PRIVATE_CANARY/></plugins></build>', "plugin_shape"),
+                ('<build><extensions><PRIVATE_CANARY/></extensions></build>', "extension_shape"),
+                ('<profiles><PRIVATE_CANARY/></profiles>', "profile_shape")):
+            with self.subTest(reason=reason):
+                error = self.rejected_pom(pom(self.a, extra)["content"], reason)
+                self.assertNotIn("PRIVATE_CANARY", json.dumps(g.pom_failure_diagnostic(error)))
+
+    def test_pom_element_budget_failure_remains_input_limit_with_diagnostic(self):
+        with mock.patch.object(g, "MAX_ELEMENTS", 2):
+            self.rejected_pom(pom(self.a)["content"], "element_bounds", expected_code="input_limit")
+
+    def test_diagnostic_is_unavailable_before_identity_and_byte_validation(self):
+        for change, expected_code in (
+                ({"coordinate": dict(self.a, type="pom", artifact="private@example.test")}, "coordinate_invalid"),
+                ({"coordinate": dict(self.a)}, "pom_invalid"),
+                ({"size": True}, "input_limit"), ({"size": 1}, "input_limit"),
+                ({"content": "PRIVATE_TEXT_CANARY"}, "input_limit"),
+                ({"sha256": "a" * 64}, "pom_hash_mismatch"),
+                ({"extra": "PRIVATE_CANARY"}, "pom_invalid")):
+            with self.subTest(expected_code=expected_code, fields=list(change)):
+                record = pom(self.a)
+                record.update(change)
+                with self.assertRaises(g.ExportError) as caught:
+                    self.export(poms=[record])
+                self.assertEqual(caught.exception.code, expected_code)
+                self.assertIsNone(g.pom_failure_diagnostic(caught.exception))
+        with self.assertRaises(g.ExportError) as caught:
+            self.export(poms=[*self.poms, self.poms[0]])
+        self.assertEqual(caught.exception.code, "duplicate_pom")
+        self.assertIsNone(g.pom_failure_diagnostic(caught.exception))
+
+    def test_pom_diagnostic_validator_closes_types_fields_code_reason_and_coordinates(self):
+        error = self.rejected_pom(b"<project><PRIVATE_CANARY>", "xml_parse")
+        good = g.pom_failure_diagnostic(error)
+        for field, value in (
+                ("schema_version", True), ("schema_version", 2), ("scope", "PRIVATE_CANARY"),
+                ("code", "input_limit"), ("code", "PRIVATE_CANARY"), ("reason", "PRIVATE_CANARY"),
+                ("reason", None), ("reason", "element_bounds"), ("size", True), ("size", 0),
+                ("size", -1), ("size", g.MAX_POM + 1), ("size", 1.5),
+                ("sha256", "A" * 64), ("sha256", "PRIVATE_PATH"), ("sha256", None),
+                ("coordinate", dict(good["coordinate"], type="jar")),
+                ("coordinate", dict(good["coordinate"], classifier="sources")),
+                ("coordinate", dict(good["coordinate"], group="user@example.test")),
+                ("coordinate", dict(good["coordinate"], version="${env.SECRET}")),
+                ("coordinate", dict(good["coordinate"], version="LATEST")),
+                ("coordinate", dict(good["coordinate"], artifact=True)),
+                ("coordinate", dict(good["coordinate"], path="PRIVATE_PATH")),
+                ("raw_xml", "PRIVATE_CANARY")):
+            with self.subTest(field=field, value=value):
+                changed = copy.deepcopy(good)
+                changed[field] = value
+                with self.assertRaises(g.ExportError) as caught:
+                    g.validate_pom_diagnostic(changed)
+                self.assertNotIn("PRIVATE", str(caught.exception))
+                error.pom_diagnostic = changed
+                self.assertIsNone(g.pom_failure_diagnostic(error))
+        for changed in (None, [], {}, {k: v for k, v in good.items() if k != "scope"}):
+            with self.assertRaises(g.ExportError):
+                g.validate_pom_diagnostic(changed)
+
+    def test_pom_diagnostic_accessor_rejects_foreign_errors_and_mismatched_binding(self):
+        error = self.rejected_pom(b"<project><PRIVATE_CANARY>", "xml_parse")
+        good = g.pom_failure_diagnostic(error)
+        foreign = ValueError("PRIVATE_EXCEPTION_CANARY")
+        foreign.pom_diagnostic, foreign.code, foreign.pom_reason = good, "pom_invalid", "xml_parse"
+        self.assertIsNone(g.pom_failure_diagnostic(foreign))
+        for code, reason in (("input_limit", "element_bounds"), ("pom_invalid", "model_version"),
+                             ("pom_invalid", None)):
+            typed = g.ExportError(code, pom_reason=reason)
+            typed.pom_diagnostic = copy.deepcopy(good)
+            self.assertIsNone(g.pom_failure_diagnostic(typed))
+        for value in (None, "PRIVATE_PATH", {"content": "PRIVATE_XML"}):
+            error.pom_diagnostic = value
+            self.assertIsNone(g.pom_failure_diagnostic(error))
+
+    def test_pom_diagnostic_copies_are_defensive_and_public_output_is_private(self):
+        content = b'<project><!-- user@example.test C:\\PRIVATE_PATH https://private.invalid -->'
+        error = self.rejected_pom(content, "xml_parse")
+        public = g.pom_failure_diagnostic(error)
+        serialized = json.dumps(public)
+        for canary in ("user@example.test", "PRIVATE_PATH", "private.invalid", "<project", str(content)):
+            self.assertNotIn(canary, serialized)
+        public["coordinate"]["artifact"] = "modified"
+        self.assertEqual(g.pom_failure_diagnostic(error)["coordinate"]["artifact"], "a")
+        validated = g.validate_pom_diagnostic(error.pom_diagnostic)
+        validated["coordinate"]["group"] = "modified"
+        self.assertEqual(error.pom_diagnostic["coordinate"]["group"], "org.example")
+
+    def test_later_rejected_pom_reports_only_that_artifact_and_returns_no_partial_graph(self):
+        rejected = pom(self.b, '<version>2</version>')
+        with self.assertRaises(g.ExportError) as caught:
+            self.export(poms=[self.poms[0], rejected, self.poms[2]])
+        result = g.pom_failure_diagnostic(caught.exception)
+        self.assertEqual(result["coordinate"], dict(self.b, type="pom"))
+        self.assertEqual(result["sha256"], hashlib.sha256(rejected["content"]).hexdigest())
+        self.assertEqual(result["reason"], "duplicate_field")
+        self.assertEqual(set(result), {"schema_version", "scope", "code", "reason", "coordinate", "size", "sha256"})
 
     def test_duplicate_model_fields_rejected(self):
         self.reject("pom_invalid", poms=[pom(self.a, '<version>1</version>')])

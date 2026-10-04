@@ -258,6 +258,24 @@ class ResolverTests(unittest.TestCase):
         with self.assertRaisesRegex(D.DiscoveryError, "artifact_semantics_tree_mismatch"):
             D.artifact_manifest(path)
 
+    def pom_error(self):
+        raw = b"<project>PRIVATE_SYNTHETIC_CANARY"
+        path = make_tar(self.root / "rejected-pom.tar", lambda entries: entries.update({
+            "m2/org/apache/hadoop/hadoop-common/3.5.0/hadoop-common-3.5.0.pom": raw}))
+        with self.assertRaisesRegex(D.DiscoveryError, "artifact_semantics_pom_invalid") as caught:
+            D.artifact_manifest(path)
+        return caught.exception, raw
+
+    def test_pom_failure_binds_only_validated_coordinate_bytes_and_finite_reason(self):
+        error, raw = self.pom_error()
+        self.assertEqual(error.pom_diagnostic, {
+            "schema_version": 1, "scope": "hdfs_pom_rejection", "code": "pom_invalid", "reason": "xml_parse",
+            "coordinate": {"group": "org.apache.hadoop", "artifact": "hadoop-common", "version": "3.5.0",
+                           "classifier": "", "type": "pom"}, "size": len(raw), "sha256": hashlib.sha256(raw).hexdigest()})
+        self.assertNotIn("PRIVATE_SYNTHETIC_CANARY", json.dumps(error.pom_diagnostic))
+        with self.assertRaisesRegex(ValueError, "invalid_diagnostic_code"):
+            D.DiscoveryError("container_failed", error.pom_diagnostic)
+
     def test_directory_alias_and_duplicate_are_rejected(self):
         for names in (("m2//extra",), ("m2/extra", "m2/extra/")):
             with self.subTest(names=names):
@@ -317,6 +335,30 @@ class ResolverTests(unittest.TestCase):
         self.assertEqual(result["inputs"]["maven"],{"version":"3.9.16","archive_sha256":hashlib.sha256(b"not executed").hexdigest(),"archive_sha512":D.MAVEN_SHA512})
         self.assertLessEqual(datetime.fromisoformat(result["started_utc"]),datetime.fromisoformat(result["finished_utc"]))
         self.assertGreaterEqual(result["duration_seconds"],0)
+
+    def test_pom_diagnostic_survives_failed_discovery_without_promoting_manifest(self):
+        error, raw = self.pom_error()
+        with patch.object(D, "artifact_manifest", side_effect=error):
+            result, _docker = self.execute()
+        self.assertFalse(result["success"])
+        self.assertIsNone(result["manifest"])
+        self.assertEqual(result["pom_diagnostic"], error.pom_diagnostic)
+        self.assertIsNot(result["pom_diagnostic"], error.pom_diagnostic)
+        self.assertEqual(result["errors"], ["artifact_semantics_pom_invalid"])
+        self.assertTrue(all(result["cleanup"].values()))
+        self.assertNotIn("PRIVATE_SYNTHETIC_CANARY", json.dumps(result))
+
+    def test_malformed_pom_diagnostic_is_dropped_and_cleanup_still_runs(self):
+        error, _raw = self.pom_error()
+        error.pom_diagnostic["raw"] = "PRIVATE_SYNTHETIC_CANARY"
+        with patch.object(D, "artifact_manifest", side_effect=error):
+            result, _docker = self.execute()
+        self.assertFalse(result["success"])
+        self.assertIsNone(result["manifest"])
+        self.assertIsNone(result["pom_diagnostic"])
+        self.assertEqual(result["errors"], ["artifact_semantics_pom_invalid", "artifact_semantics_invalid"])
+        self.assertTrue(all(result["cleanup"].values()))
+        self.assertNotIn("PRIVATE_SYNTHETIC_CANARY", json.dumps(result))
 
     def test_nonzero_exit_status_diagnostic_never_promotes_inventory(self):
         for failure,extra in (("maven",["maven_status_failed_enforce"]),("maven_unknown",[]),

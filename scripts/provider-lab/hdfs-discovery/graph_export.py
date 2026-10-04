@@ -7,6 +7,7 @@ Source contract: dependency-plugin 3.11.0 JsonDependencyNodeVisitor and
 dependency-tree 3.3.0 VerboseDependencyNode/SerializingDependencyNodeVisitor.
 """
 
+import copy
 import hashlib
 import json
 import re
@@ -29,6 +30,14 @@ ROOT = {"group": "org.example.synthetic", "artifact": "hdfs-normal-runtime-resol
 CODES = {"input_invalid", "input_limit", "coordinate_invalid", "json_invalid",
          "tree_invalid", "tree_mismatch", "text_invalid", "classpath_mismatch",
          "pom_invalid", "pom_hash_mismatch", "duplicate_pom", "output_limit"}
+POM_REASON_CODES = {
+    **{reason: "pom_invalid" for reason in (
+        "doctype", "entity", "processing_instruction", "utf8_decode", "xml_parse", "project_root",
+        "element_tag", "namespace", "element_name", "model_version", "coordinate_mismatch",
+        "duplicate_field", "exclusion_shape", "dependency_shape", "dependency_management_shape",
+        "plugin_shape", "extension_shape", "profile_shape")},
+    "content_bounds": "input_limit", "element_bounds": "input_limit",
+}
 SOURCES = [
     "https://raw.githubusercontent.com/apache/maven-dependency-plugin/maven-dependency-plugin-3.11.0/src/main/java/org/apache/maven/plugins/dependency/tree/JsonDependencyNodeVisitor.java",
     "https://raw.githubusercontent.com/apache/maven-dependency-tree/maven-dependency-tree-3.3.0/src/main/java/org/apache/maven/shared/dependency/graph/internal/VerboseDependencyNode.java",
@@ -38,14 +47,24 @@ SOURCES = [
 
 
 class ExportError(ValueError):
-    def __init__(self, code):
+    def __init__(self, code, *, pom_reason=None):
         super().__init__(code if code in CODES else "input_invalid")
         self.code = str(self)
+        if pom_reason is not None and (type(pom_reason) is not str
+                                       or POM_REASON_CODES.get(pom_reason) != self.code):
+            raise ValueError("invalid_pom_reason")
+        self.pom_reason = pom_reason
+        self.pom_diagnostic = None
 
 
 def need(value, code):
     if not value:
         raise ExportError(code)
+
+
+def pom_need(value, reason):
+    if not value:
+        raise ExportError(POM_REASON_CODES[reason], pom_reason=reason)
 
 
 def digest(data):
@@ -67,6 +86,34 @@ def coordinate(value):
     need(version_token(value["version"]), "coordinate_invalid")
     need(all(token(p) for p in value["group"].split(".")), "coordinate_invalid")
     return dict(value)
+
+
+def validate_pom_diagnostic(value):
+    """Validate closed public failure data; return a defensive copy, never raw XML."""
+    keys = {"schema_version", "scope", "code", "reason", "coordinate", "size", "sha256"}
+    need(type(value) is dict and set(value) == keys, "input_invalid")
+    need(type(value["schema_version"]) is int and value["schema_version"] == 1
+         and type(value["scope"]) is str and value["scope"] == "hdfs_pom_rejection"
+         and type(value["code"]) is str and value["code"] in {"pom_invalid", "input_limit"}
+         and type(value["reason"]) is str and POM_REASON_CODES.get(value["reason"]) == value["code"]
+         and type(value["size"]) is int and 0 < value["size"] <= MAX_POM
+         and type(value["sha256"]) is str and re.fullmatch(r"[0-9a-f]{64}", value["sha256"]), "input_invalid")
+    c = coordinate(value["coordinate"])
+    need(c["type"] == "pom" and c["classifier"] == "", "input_invalid")
+    return copy.deepcopy(value)
+
+
+def pom_failure_diagnostic(error):
+    """Only export a well-formed diagnostic attached to our matching typed failure."""
+    if type(error) is not ExportError:
+        return None
+    try:
+        result = validate_pom_diagnostic(error.pom_diagnostic)
+        need(type(error.code) is str and error.code == result["code"]
+             and type(error.pom_reason) is str and error.pom_reason == result["reason"], "input_invalid")
+    except (ExportError, AttributeError, TypeError, ValueError):
+        return None
+    return result
 
 
 def coord_key(value):
@@ -243,7 +290,7 @@ def children(element, name):
 
 def one(element, name):
     found = children(element, name)
-    need(len(found) <= 1, "pom_invalid")
+    pom_need(len(found) <= 1, "duplicate_field")
     return found[0] if found else None
 
 
@@ -255,7 +302,7 @@ def declaration(element, issues, kind):
     node = one(element, "exclusions")
     if node is not None:
         for exclusion in node:
-            need(exclusion.tag == "exclusion", "pom_invalid")
+            pom_need(exclusion.tag == "exclusion", "exclusion_shape")
             exclusions.append({k: value(one(exclusion, k), issues) for k in ("groupId", "artifactId")})
             if any(c.tag not in {"groupId", "artifactId"} for c in exclusion):
                 issues.add("unsupported_pom_elements")
@@ -267,31 +314,36 @@ def declaration(element, issues, kind):
 
 
 def pom_semantics(content, c, issues, budget):
-    need(type(content) is bytes and 0 < len(content) <= MAX_POM, "input_limit")
+    pom_need(type(content) is bytes and 0 < len(content) <= MAX_POM, "content_bounds")
     upper = content.upper()
-    need(b"<!DOCTYPE" not in upper and b"<!ENTITY" not in upper
-         and content.count(b"<?") <= int(content.lstrip().startswith(b"<?xml ")), "pom_invalid")
+    pom_need(b"<!DOCTYPE" not in upper, "doctype")
+    pom_need(b"<!ENTITY" not in upper, "entity")
+    pom_need(content.count(b"<?") <= int(content.lstrip().startswith(b"<?xml ")), "processing_instruction")
     try:
         text = content.decode("utf-8")
+    except UnicodeError:
+        raise ExportError("pom_invalid", pom_reason="utf8_decode") from None
+    try:
         root = ET.fromstring(text)
     except (UnicodeError, ET.ParseError, ValueError):
-        raise ExportError("pom_invalid") from None
+        raise ExportError("pom_invalid", pom_reason="xml_parse") from None
     ns = "{http://maven.apache.org/POM/4.0.0}"
-    need(root.tag in {"project", ns + "project"}, "pom_invalid")
+    pom_need(root.tag in {"project", ns + "project"}, "project_root")
     pending, count = [(root, 0)], 0
     while pending:
         element, depth = pending.pop()
         count += 1
         budget[0] += 1
-        need(count <= MAX_ELEMENTS and budget[0] <= MAX_TOTAL_ELEMENTS and depth <= MAX_DEPTH, "input_limit")
-        need(type(element.tag) is str, "pom_invalid")
+        pom_need(count <= MAX_ELEMENTS and budget[0] <= MAX_TOTAL_ELEMENTS and depth <= MAX_DEPTH, "element_bounds")
+        pom_need(type(element.tag) is str, "element_tag")
         if element.tag.startswith(ns):
             element.tag = element.tag[len(ns):]
-        need("{" not in element.tag and len(element.tag) <= 128, "pom_invalid")
+        pom_need("{" not in element.tag, "namespace")
+        pom_need(len(element.tag) <= 128, "element_name")
         if element.attrib:
             issues.add("uninterpreted_xml_attributes")
         pending.extend((child, depth + 1) for child in element)
-    need(one(root, "modelVersion") is not None and one(root, "modelVersion").text == "4.0.0", "pom_invalid")
+    pom_need(one(root, "modelVersion") is not None and one(root, "modelVersion").text == "4.0.0", "model_version")
     parent = one(root, "parent")
     parent_ref = None if parent is None else declaration(parent, issues, "parent")
     if parent is not None and one(parent, "relativePath") is not None:
@@ -300,18 +352,18 @@ def pom_semantics(content, c, issues, budget):
     for field, key in (("groupId", "group"), ("artifactId", "artifact"), ("version", "version")):
         declared = value(one(root, field), issues)
         if declared["kind"] == "literal":
-            need(declared["value"] == c[key], "pom_invalid")
+            pom_need(declared["value"] == c[key], "coordinate_mismatch")
     def body(element):
         rows, plugins, extensions, properties, repos = [], [], [], [], []
         deps = one(element, "dependencies")
         if deps is not None:
-            need(all(child.tag == "dependency" for child in deps), "pom_invalid")
+            pom_need(all(child.tag == "dependency" for child in deps), "dependency_shape")
             rows.extend(declaration(child, issues, "dependency") for child in deps)
         dm = one(element, "dependencyManagement")
         if dm is not None:
             deps = one(dm, "dependencies")
             if deps is not None:
-                need(all(child.tag == "dependency" for child in deps), "pom_invalid")
+                pom_need(all(child.tag == "dependency" for child in deps), "dependency_management_shape")
                 rows.extend(declaration(child, issues, "dependency_management") for child in deps)
         props = one(element, "properties")
         if props is not None:
@@ -333,11 +385,11 @@ def pom_semantics(content, c, issues, budget):
                     continue
                 container = one(container, "plugins")
                 if container is not None:
-                    need(all(p.tag == "plugin" for p in container), "pom_invalid")
+                    pom_need(all(p.tag == "plugin" for p in container), "plugin_shape")
                     plugins.extend(dict(declaration(p, issues, "plugin"), context=context) for p in container)
             container = one(build, "extensions")
             if container is not None:
-                need(all(p.tag == "extension" for p in container), "pom_invalid")
+                pom_need(all(p.tag == "extension" for p in container), "extension_shape")
                 extensions.extend(declaration(p, issues, "build_extension") for p in container)
             issues.add("plugin_execution_and_build_model_not_evaluated")
         return {"declarations": rows, "plugins": plugins, "build_extensions": extensions,
@@ -349,7 +401,7 @@ def pom_semantics(content, c, issues, budget):
     if profiles is not None:
         issues.add("profile_activation_not_evaluated")
         for index, profile in enumerate(profiles):
-            need(profile.tag == "profile", "pom_invalid")
+            pom_need(profile.tag == "profile", "profile_shape")
             activation = one(profile, "activation")
             activation_record = None
             if activation is not None:
@@ -424,7 +476,15 @@ def export_semantics(json_bytes, text_bytes, poms, selected_runtime):
         need(total <= MAX_POMS_BYTES, "input_limit")
         need(type(entry["sha256"]) is str and entry["sha256"] == digest(b), "pom_hash_mismatch")
         local_issues = set()
-        semantics = pom_semantics(b, c, local_issues, budget)
+        try:
+            semantics = pom_semantics(b, c, local_issues, budget)
+        except ExportError as error:
+            if error.pom_reason is not None:
+                error.pom_diagnostic = validate_pom_diagnostic({
+                    "schema_version": 1, "scope": "hdfs_pom_rejection", "code": error.code,
+                    "reason": error.pom_reason, "coordinate": c, "size": len(b), "sha256": digest(b),
+                })
+            raise
         records.append({"coordinate": c, "size": len(b), "sha256": entry["sha256"],
                         "central_refetch_url": locator(c), "origin": "unverified_private_cache",
                         "semantics": semantics, "incomplete_reasons": sorted(local_issues)})
