@@ -81,6 +81,37 @@ jobs:
           path: ${{ runner.temp }}/python-dependency-audit.json
           if-no-files-found: warn
           retention-days: 14
+  smb-feasibility:
+    name: Isolated Samba feasibility
+    needs: revision
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - name: Prepare verified Linux runtime
+        shell: bash
+        run: bash scripts/download-rclone.sh --linux "$RUNNER_TEMP/rclone-smb-probe"
+      - name: Verify the disposable unprivileged SMB fixture
+        shell: bash
+        run: |
+          python -B scripts/provider-lab/smb/run_container.py \
+            --rclone "$RUNNER_TEMP/rclone-smb-probe" \
+            --report "$RUNNER_TEMP/smb-feasibility.json"
+      # This receipt is deliberately ineligible for the provider coverage ledger.
+      # Never upload the image, Docker cache, synthetic credentials or raw logs.
+      - name: Retain sanitized feasibility result
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: smb-feasibility
+          path: ${{ runner.temp }}/smb-feasibility.json
+          if-no-files-found: warn
+          retention-days: 14
   test:
     name: Test (${{ matrix.os }})
     needs: revision
@@ -208,7 +239,7 @@ jobs:
           retention-days: 14
   release:
     name: Publish checked prerelease
-    needs: [test, audit, python-audit]
+    needs: [test, audit, python-audit, smb-feasibility]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
