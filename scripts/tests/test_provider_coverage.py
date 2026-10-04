@@ -152,6 +152,17 @@ def netstorage_receipt():
     return candidate
 
 
+def pcloud_receipt():
+    # Independent literal saved-token contract, with no fresh OAuth result.
+    candidate = receipt("pcloud")
+    candidate["backends"][0]["capabilities"] = {key: "passed" for key in (
+        "listing", "download_hash", "missing_object_rejection", "saved_token_read",
+        "saved_token_rejection", "read_denial", "source_preservation",
+        "config_preservation", "fixture_write_rejection", "cleanup",
+    )}
+    return candidate
+
+
 def memory_receipt():
     candidate = receipt("memory")
     candidate["backends"][0]["capabilities"] = {
@@ -780,7 +791,8 @@ class CoverageTests(unittest.TestCase):
                          "azurefiles": azurefiles_receipt, "seafile": seafile_receipt,
                          "memory": memory_receipt, "koofr": koofr_receipt,
                          "pixeldrain": pixeldrain_receipt, "filefabric": filefabric_receipt,
-                         "internetarchive": internetarchive_receipt, "netstorage": netstorage_receipt}.get(backend, lambda: receipt(backend))()
+                         "internetarchive": internetarchive_receipt, "netstorage": netstorage_receipt,
+                         "pcloud": pcloud_receipt}.get(backend, lambda: receipt(backend))()
             if backend == "archive":
                 candidate["backends"][0]["capabilities"] = {
                     key: "passed" for key in coverage.ARCHIVE_REQUIRED_CAPABILITIES
@@ -789,7 +801,7 @@ class CoverageTests(unittest.TestCase):
             candidate["backends"][0]["capabilities"]["config_preservation"] = "passed"
             report = self.evaluate([candidate], policy, catalog)
             with self.subTest(backend=backend):
-                if backend in ("archive", "memory", "swift", "b2", "azureblob", "azurefiles", "seafile", "koofr", "pixeldrain", "filefabric", "internetarchive", "netstorage"):
+                if backend in ("archive", "memory", "swift", "b2", "azureblob", "azurefiles", "seafile", "koofr", "pixeldrain", "filefabric", "internetarchive", "netstorage", "pcloud"):
                     self.assertEqual(report["providers"][0]["evidence"]["local_protocol"]["status"], "passed")
                 else:
                     self.assertIn("invalid_fixture_capability", report["errors"])
@@ -1219,6 +1231,8 @@ class CoverageTests(unittest.TestCase):
             catalog = coverage.catalog_from_schemas([schema(backend)])
             policy = policy_for(catalog)
             for capability in ("anonymous_read", "read_denial"):
+                if backend == "pcloud" and capability == "read_denial":
+                    continue  # Shared label, separately closed saved-token contract.
                 candidate = receipt(backend)
                 candidate["backends"][0]["capabilities"][capability] = "passed"
                 with self.subTest(backend=backend, capability=capability):
@@ -1271,6 +1285,147 @@ class CoverageTests(unittest.TestCase):
         result = self.evaluate([receipt("http")], policy, catalog)
         rows = {row["backend"]: row for row in result["providers"]}
         self.assertEqual(rows["internetarchive"]["evidence"]["local_protocol"]["status"], "not_verified")
+
+    def pcloud_partial_policy(self):
+        catalog = coverage.catalog_from_schemas([schema("pcloud")])
+        actual = json.loads((ROOT / "provider-coverage-policy.json").read_text(encoding="utf-8"))
+        entry = copy.deepcopy(actual["providers"]["pcloud"])
+        entry["schema_sha256"] = catalog[0]["schema_sha256"]
+        return catalog, {"schema_version": 2, "providers": {"pcloud": entry},
+                         "profiles": {entry["profile"]: copy.deepcopy(actual["profiles"][entry["profile"]])}}
+
+    def test_pcloud_saved_token_receipt_leaves_fresh_authentication_unproved(self):
+        catalog, policy = self.pcloud_partial_policy()
+        result = self.evaluate([pcloud_receipt()], policy, catalog)
+        self.assertEqual(result["errors"], [])
+        row = result["providers"][0]
+        local = row["evidence"]["local_protocol"]
+        self.assertEqual(local["status"], "not_verified")
+        self.assertEqual(local["capabilities"], dict(
+            pcloud_receipt()["backends"][0]["capabilities"], authentication="not_verified"))
+        self.assertEqual(local["runs"][0]["fixture_mode"], "pcloud_saved_token_read_v1")
+        self.assertEqual(row["lifecycle_applicability"], {
+            "credential_renewal": "review_required", "connection_session_reauthentication": "review_required"})
+        self.assertEqual(row["capability_applicability_review_required"], ["reauthentication", "refresh"])
+        self.assertEqual(policy["providers"]["pcloud"]["auth_applicability"], "oauth")
+        for tier in ("application", "vendor"):
+            self.assertEqual(row["evidence"][tier]["status"], "not_verified")
+            self.assertTrue(all(value == "not_verified" for value in row["evidence"][tier]["capabilities"].values()))
+            for capability in ("authentication", "denial", "revocation", "cancellation"):
+                self.assertEqual(row["evidence"][tier]["capabilities"][capability], "not_verified")
+        self.assertEqual(coverage.gate_errors(result, require_plans=True), [])
+        self.assertIn("required_fixture_not_verified", coverage.gate_errors(result, require_fixtures=["pcloud"]))
+        self.assertIn("provider_coverage_incomplete", coverage.gate_errors(result, require_complete=True))
+        self.assertFalse(row["complete"])
+
+    def test_pcloud_exact_saved_token_contract_even_with_weaker_policy(self):
+        self.assertEqual(coverage.PCLOUD_REQUIRED_CAPABILITIES,
+                         set(pcloud_receipt()["backends"][0]["capabilities"]))
+        self.assert_read_fixture_requires_exact_capabilities_despite_weaker_policy("pcloud")
+
+    def test_pcloud_requires_executed_typed_outcomes_and_independent_kind(self):
+        self.assert_read_fixture_requires_executed_typed_outcomes_and_independent_kind("pcloud")
+
+    def test_pcloud_cannot_forge_authentication_or_lifecycle_results(self):
+        catalog, policy = self.pcloud_partial_policy()
+        for capability in ("authentication", "authentication_rejection", "refresh", "reauthentication",
+                           "revocation", "denial", "anonymous_read", "saved_token_reuse"):
+            for outcome in ("passed", "not_applicable"):
+                candidate = pcloud_receipt()
+                candidate["backends"][0]["capabilities"][capability] = outcome
+                result = self.evaluate([candidate], policy, catalog)
+                with self.subTest(capability=capability, outcome=outcome):
+                    self.assertTrue(result["errors"])
+                    self.assertIn("required_fixture_not_verified", coverage.gate_errors(result, require_fixtures=["pcloud"]))
+                    self.assertEqual(result["providers"][0]["evidence"]["local_protocol"]["capabilities"]["authentication"],
+                                     "not_verified")
+
+    def test_pcloud_saved_token_capabilities_never_transfer_to_another_backend(self):
+        for backend in coverage.FIXTURE_KINDS:
+            if backend == "pcloud":
+                continue
+            catalog = coverage.catalog_from_schemas([schema(backend)])
+            policy = policy_for(catalog)
+            for capability in ("saved_token_read", "saved_token_rejection"):
+                candidate = (read_fixture_receipt(backend) if backend in coverage.READ_FIXTURE_CONTRACTS
+                             else receipt(backend))
+                candidate["backends"][0]["capabilities"][capability] = "passed"
+                with self.subTest(backend=backend, capability=capability):
+                    self.assertIn("invalid_fixture_capability", self.evaluate([candidate], policy, catalog)["errors"])
+        catalog = coverage.catalog_from_schemas([schema("filefabric")])
+        candidate = filefabric_renewal_receipt()
+        candidate["backends"][0]["capabilities"]["saved_token_read"] = "passed"
+        self.assertIn("invalid_fixture_capability", self.evaluate([candidate], policy_for(catalog), catalog)["errors"])
+
+    def test_pcloud_scope_is_closed_and_cannot_select_another_auth_profile(self):
+        catalog, policy = self.pcloud_partial_policy()
+        for where in ("row", "receipt"):
+            for field, value in (("fixture_mode", "pcloud_saved_token_read_v1"),
+                                 ("modes", []), ("subscenarios", []), ("auth_mode", "fresh_oauth"),
+                                 ("profile", "complete"), ("scope_override", "vendor"),
+                                 ("token", "PRIVATE_PCLOUD_CANARY"), ("dependencies", {"cryptography": "unverified"})):
+                candidate = pcloud_receipt()
+                target = candidate if where == "receipt" else candidate["backends"][0]
+                target[field] = value
+                result = self.evaluate([candidate], policy, catalog)
+                with self.subTest(where=where, field=field):
+                    self.assertIn("invalid_fixture_mode", result["errors"])
+                    self.assertNotIn("PRIVATE_PCLOUD_CANARY", json.dumps(result))
+        candidate = pcloud_receipt()
+        candidate["scope"] = "vendor_acceptance"
+        self.assertIn("unknown_receipt_schema", self.evaluate([candidate], policy, catalog)["errors"])
+
+    def test_pcloud_cannot_enter_schema_two_alone_or_with_renewal_receipt(self):
+        catalog = coverage.catalog_from_schemas([schema("pcloud"), schema("filefabric")])
+        policy = policy_for(catalog)
+        for mixed in (False, True):
+            for mode in (None, "pcloud_saved_token_read_v1", "filefabric_later_call_renewal_v1"):
+                candidate = pcloud_receipt()
+                candidate["schema_version"] = 2
+                if mode is not None:
+                    candidate["backends"][0]["fixture_mode"] = mode
+                if mixed:
+                    candidate["backends"].extend(filefabric_renewal_receipt()["backends"])
+                self.assertIn("invalid_fixture_mode", self.evaluate([candidate], policy, catalog)["errors"])
+
+    def test_pcloud_current_runtime_full_manifest_and_freshness_are_required(self):
+        self.assert_read_fixture_requires_current_runtime_harness_manifest_and_time("pcloud")
+
+    def test_pcloud_failures_cleanup_and_partial_evidence_remain_sticky(self):
+        self.assert_read_fixture_failures_are_sticky_and_private_fields_omitted("pcloud")
+        catalog, policy = self.pcloud_partial_policy()
+        good = pcloud_receipt()
+        for kind in ("receipt", "cleanup", "row"):
+            bad = copy.deepcopy(good)
+            bad["success"] = False
+            if kind == "cleanup":
+                bad["cleanup_passed"] = False
+            if kind == "row":
+                bad["backends"][0]["errors"] = ["synthetic_read_failed"]
+            for candidates in ([good, bad], [bad, good]):
+                result = self.evaluate(candidates, policy, catalog)
+                self.assertEqual(result["providers"][0]["evidence"]["local_protocol"]["status"], "failed")
+                self.assertIn("required_fixture_not_verified", coverage.gate_errors(result, require_fixtures=["pcloud"]))
+
+    def test_pcloud_and_anonymous_or_signed_receipts_retain_separate_obligations(self):
+        actual = json.loads((ROOT / "provider-coverage-policy.json").read_text(encoding="utf-8"))
+        catalog = coverage.catalog_from_schemas([schema(key) for key in ("pcloud", "internetarchive", "netstorage")])
+        providers = {row["backend"]: copy.deepcopy(actual["providers"][row["backend"]]) for row in catalog}
+        for row in catalog:
+            providers[row["backend"]]["schema_sha256"] = row["schema_sha256"]
+        policy = {"schema_version": 2, "providers": providers,
+                  "profiles": {entry["profile"]: actual["profiles"][entry["profile"]] for entry in providers.values()}}
+        candidate = pcloud_receipt()
+        candidate["backends"].extend(internetarchive_receipt()["backends"] + netstorage_receipt()["backends"])
+        result = self.evaluate([candidate], policy, catalog)
+        self.assertEqual(result["errors"], [])
+        rows = {row["backend"]: row for row in result["providers"]}
+        self.assertEqual(rows["pcloud"]["evidence"]["local_protocol"]["status"], "not_verified")
+        self.assertEqual(rows["internetarchive"]["evidence"]["local_protocol"]["status"], "not_verified")
+        self.assertEqual(rows["netstorage"]["evidence"]["local_protocol"]["status"], "passed")
+        for backend in ("pcloud", "internetarchive"):
+            self.assertIn("required_fixture_not_verified", coverage.gate_errors(result, require_fixtures=[backend]))
+        self.assertEqual(coverage.gate_errors(result, require_fixtures=["netstorage"]), [])
 
     def test_netstorage_exact_eight_contract_despite_weaker_policy(self):
         self.assert_read_fixture_requires_exact_capabilities_despite_weaker_policy("netstorage")
@@ -1713,6 +1868,36 @@ class CoverageTests(unittest.TestCase):
             self.assertEqual(first, coverage.compute_harness_sha256(root))
             (root / "run_lab.py").write_bytes(b"changed source")
             self.assertNotEqual(first, coverage.compute_harness_sha256(root))
+
+    def test_pcloud_tls_and_dependency_lock_drift_invalidate_receipts(self):
+        expected_files = {"fixture_servers.py", "run_lab.py", "fixture_tls.py", "fixture_pcloud.py",
+                          "requirements-fixture.txt"}
+        self.assertEqual(set(coverage.HARNESSES), expected_files)
+        catalog, policy = self.pcloud_partial_policy()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for filename in expected_files:
+                (root / filename).write_bytes(b"synthetic source\n")
+            initial = coverage.compute_harness_sha256(root)
+            candidate = pcloud_receipt()
+            candidate["harness_sha256"] = initial
+            def evaluate_current():
+                return coverage.evaluate(catalog, policy, RUNTIME, [candidate],
+                                         coverage.compute_harness_sha256(root), NOW,
+                                         fixture_manifest_sha256="c" * 64)
+            self.assertEqual(evaluate_current()["errors"], [])
+            for filename in sorted(expected_files):
+                original = (root / filename).read_bytes()
+                (root / filename).write_bytes(b"changed source or dependency pin\n")
+                with self.subTest(changed=filename):
+                    self.assertIn("receipt_harness_mismatch", evaluate_current()["errors"])
+                (root / filename).write_bytes(original)
+            # The old two-file receipt cannot survive the additional TLS/dependency binding.
+            old_framing = b"".join(filename.encode() + b"\0synthetic source\n\0"
+                                   for filename in ("fixture_servers.py", "run_lab.py"))
+            candidate["harness_sha256"] = coverage.sha256_bytes(old_framing)
+            self.assertIn("receipt_harness_mismatch", evaluate_current()["errors"])
+            self.assertNotEqual(candidate["harness_sha256"], initial)
 
     def test_fixture_manifest_recomputed_from_fixed_definition(self):
         with tempfile.TemporaryDirectory() as directory:
