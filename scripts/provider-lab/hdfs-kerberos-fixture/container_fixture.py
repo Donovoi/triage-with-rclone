@@ -24,8 +24,8 @@ HERE = Path(__file__).resolve().parent
 SUPPORT = HERE.parent / "hdfs-kerberos-ticket" / "ticket_probe_container.py"
 SUPPORT_SHA = "538a81005d67123930fb9711474f3b681861fb0866a2443661e401833982624f"
 JAVA_INPUTS = {"SecureKdc.java": "645dfda75faa24279f3cb7e1680f06cdb56b4ba85236a5a9543fbcf83d81a91e",
-    "SecureHdfsRoles.java": "42432d9112720c9a52806e562ae6a23235319a63304fffe7cca0efdfee522f0b",
-    "SecureHdfsController.java": "01ff8fcfcaa675d25f496178d4916a6474cca620927cc35a2a528de3e33fec05"}
+    "SecureHdfsRoles.java": "bfba2bdc721ca3cbf2958e5dc7039f737c05042c2acb31b48fef13a430832767",
+    "SecureHdfsController.java": "d01af17d9adc04846a8128403f075d9f5cadfa2f7495cae08c65ccf049ad542e"}
 LABEL = "org.openai.triage.hdfs-kerberos-fixture"
 TMPFS = "rw,nosuid,nodev,noexec,size=1g,mode=0700,uid=10001,gid=10001"
 FALSE_CLAIMS = dict(ledger_eligible=False, authentication_verified=False, hdfs_authenticated=False,
@@ -51,6 +51,9 @@ CONTROLLER_CODES = frozenset("environment_invalid path_invalid input_changed cla
     "role_kerberos_policy_rejected role_kerberos_etype_unsupported role_kerberos_preauth_failed role_kerberos_preauth_required "
     "role_kerberos_integrity_failed role_kerberos_clock_skew role_kerberos_message_modified role_kerberos_generic_error "
     "role_origin_http_ssl_configuration role_origin_http_spnego role_origin_http_start role_origin_jetty_ssl_start role_origin_kerberos_auth_init role_origin_namespace_load role_origin_rpc_constructor "
+    "role_origin_datastreamer_create_block role_origin_datastreamer_setup_pipeline role_origin_datastreamer_bad_datanode role_origin_datastreamer_recovery "
+    "role_origin_output_flush role_origin_output_complete role_origin_output_close_threads "
+    "role_exception_sasl role_exception_invalid_block_token role_exception_invalid_encryption_key "
     "role_configuration_default_uri_loopback_alias role_configuration_https_loopback_alias "
     "role_source_check_failed role_source_mkdir_failed role_source_create_failed role_source_write_failed role_source_close_failed role_source_metadata_failed role_source_inventory_failed role_source_read_failed "
     "role_kerberos_asn_identifier".split())

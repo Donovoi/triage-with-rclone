@@ -90,6 +90,10 @@ public final class SecureHdfsController {
         role_service_start_failed, role_cleanup_failed, role_preservation_failed, role_report_failed,
         role_origin_http_ssl_configuration, role_origin_http_spnego, role_origin_http_start,
         role_origin_jetty_ssl_start, role_origin_kerberos_auth_init, role_origin_namespace_load, role_origin_rpc_constructor,
+        role_origin_datastreamer_create_block, role_origin_datastreamer_setup_pipeline,
+        role_origin_datastreamer_bad_datanode, role_origin_datastreamer_recovery,
+        role_origin_output_flush, role_origin_output_complete, role_origin_output_close_threads,
+        role_exception_sasl, role_exception_invalid_block_token, role_exception_invalid_encryption_key,
         role_configuration_default_uri_loopback_alias, role_configuration_https_loopback_alias,
         role_source_check_failed, role_source_mkdir_failed, role_source_create_failed, role_source_write_failed,
         role_source_close_failed, role_source_metadata_failed, role_source_inventory_failed, role_source_read_failed,
@@ -619,6 +623,16 @@ public final class SecureHdfsController {
                 case "origin_kerberos_auth_init" -> Code.role_origin_kerberos_auth_init;
                 case "origin_namespace_load" -> Code.role_origin_namespace_load;
                 case "origin_rpc_constructor" -> Code.role_origin_rpc_constructor;
+                case "origin_datastreamer_create_block" -> Code.role_origin_datastreamer_create_block;
+                case "origin_datastreamer_setup_pipeline" -> Code.role_origin_datastreamer_setup_pipeline;
+                case "origin_datastreamer_bad_datanode" -> Code.role_origin_datastreamer_bad_datanode;
+                case "origin_datastreamer_recovery" -> Code.role_origin_datastreamer_recovery;
+                case "origin_output_flush" -> Code.role_origin_output_flush;
+                case "origin_output_complete" -> Code.role_origin_output_complete;
+                case "origin_output_close_threads" -> Code.role_origin_output_close_threads;
+                case "exception_sasl" -> Code.role_exception_sasl;
+                case "exception_invalid_block_token" -> Code.role_exception_invalid_block_token;
+                case "exception_invalid_encryption_key" -> Code.role_exception_invalid_encryption_key;
                 case "file_missing" -> Code.role_file_missing;
                 case "security_failure" -> Code.role_security_failure;
                 case "illegal_state" -> Code.role_illegal_state;
