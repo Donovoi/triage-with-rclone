@@ -90,7 +90,12 @@ public final class SecureHdfsController {
         role_service_start_failed, role_cleanup_failed, role_preservation_failed, role_report_failed,
         role_invalid_config, role_io_failure, role_file_missing, role_security_failure,
         role_illegal_state, role_null_state, role_missing_class, role_linkage_failure,
-        role_resource_failure, role_exit_requested, role_halt_requested, role_unclassified
+        role_resource_failure, role_exit_requested, role_halt_requested, role_unclassified,
+        role_keytab_unreadable, role_login_exception, role_socket_timeout, role_connection_failed,
+        role_kerberos_failure, role_kerberos_client_unknown, role_kerberos_server_unknown,
+        role_kerberos_policy_rejected, role_kerberos_etype_unsupported, role_kerberos_preauth_failed,
+        role_kerberos_preauth_required, role_kerberos_integrity_failed, role_kerberos_clock_skew,
+        role_kerberos_message_modified, role_kerberos_generic_error, role_kerberos_asn_identifier
     }
     private static final class Failure extends Exception {
         final Code code;
@@ -535,6 +540,22 @@ public final class SecureHdfsController {
                 case "configuration_failed","configuration_changed","secure_configuration_invalid","ssl_resource_invalid",
                      "webapp_resources_failed","webapp_resources_invalid" -> Code.role_configuration_failed;
                 case "login_failed","keytab_login_invalid" -> Code.role_login_failed;
+                case "keytab_unreadable" -> Code.role_keytab_unreadable;
+                case "login_exception" -> Code.role_login_exception;
+                case "socket_timeout" -> Code.role_socket_timeout;
+                case "connection_failed" -> Code.role_connection_failed;
+                case "kerberos_failure" -> Code.role_kerberos_failure;
+                case "kerberos_client_unknown" -> Code.role_kerberos_client_unknown;
+                case "kerberos_server_unknown" -> Code.role_kerberos_server_unknown;
+                case "kerberos_policy_rejected" -> Code.role_kerberos_policy_rejected;
+                case "kerberos_etype_unsupported" -> Code.role_kerberos_etype_unsupported;
+                case "kerberos_preauth_failed" -> Code.role_kerberos_preauth_failed;
+                case "kerberos_preauth_required" -> Code.role_kerberos_preauth_required;
+                case "kerberos_integrity_failed" -> Code.role_kerberos_integrity_failed;
+                case "kerberos_clock_skew" -> Code.role_kerberos_clock_skew;
+                case "kerberos_message_modified" -> Code.role_kerberos_message_modified;
+                case "kerberos_generic_error" -> Code.role_kerberos_generic_error;
+                case "kerberos_asn_identifier" -> Code.role_kerberos_asn_identifier;
                 case "format_failed" -> Code.role_format_failed;
                 case "format_preexisting" -> Code.role_format_preexisting;
                 case "format_incomplete" -> Code.role_format_incomplete;

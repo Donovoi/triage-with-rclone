@@ -23,9 +23,9 @@ import uuid
 HERE = Path(__file__).resolve().parent
 SUPPORT = HERE.parent / "hdfs-kerberos-ticket" / "ticket_probe_container.py"
 SUPPORT_SHA = "538a81005d67123930fb9711474f3b681861fb0866a2443661e401833982624f"
-JAVA_INPUTS = {"SecureKdc.java": "d7e9d712400f386c1c688fad7d7482c854d88a7cf61285a1a05473ad3e8764bb",
-    "SecureHdfsRoles.java": "dfdb5407dabc1ac5b32ce4cd0203feb70ada6adb633cef05c5a05887d52627f8",
-    "SecureHdfsController.java": "c4b376ebb2946175e67613561139351d78b93b24abaf9c21eda08f5e654033b6"}
+JAVA_INPUTS = {"SecureKdc.java": "645dfda75faa24279f3cb7e1680f06cdb56b4ba85236a5a9543fbcf83d81a91e",
+    "SecureHdfsRoles.java": "eea64dbd43991cad572a6650dbe9c0861e1dea6f4ed6e82ecd16548e8619926b",
+    "SecureHdfsController.java": "82404a39e41f0fe029a681b85573b9a5172193aeacfcd967677af4a15f90e5e4"}
 LABEL = "org.openai.triage.hdfs-kerberos-fixture"
 TMPFS = "rw,nosuid,nodev,noexec,size=1g,mode=0700,uid=10001,gid=10001"
 FALSE_CLAIMS = dict(ledger_eligible=False, authentication_verified=False, hdfs_authenticated=False,
@@ -46,7 +46,11 @@ CONTROLLER_CODES = frozenset("environment_invalid path_invalid input_changed cla
     "role_format_preexisting role_format_incomplete role_source_failed role_service_start_failed role_cleanup_failed "
     "role_preservation_failed role_report_failed role_invalid_config role_io_failure role_file_missing role_security_failure "
     "role_illegal_state role_null_state role_missing_class role_linkage_failure role_resource_failure role_exit_requested "
-    "role_halt_requested role_unclassified".split())
+    "role_halt_requested role_unclassified role_keytab_unreadable role_login_exception role_socket_timeout "
+    "role_connection_failed role_kerberos_failure role_kerberos_client_unknown role_kerberos_server_unknown "
+    "role_kerberos_policy_rejected role_kerberos_etype_unsupported role_kerberos_preauth_failed role_kerberos_preauth_required "
+    "role_kerberos_integrity_failed role_kerberos_clock_skew role_kerberos_message_modified role_kerberos_generic_error "
+    "role_kerberos_asn_identifier".split())
 CODES = frozenset("hosted_linux_required input_invalid input_changed unsafe_path support_invalid runtime_invalid "
     "source_not_frozen download_failed download_cleanup_failed command_cleanup_failed platform_invalid base_invalid "
     "image_invalid container_invalid controller_invalid controller_failed listing_invalid sample_mismatch "
