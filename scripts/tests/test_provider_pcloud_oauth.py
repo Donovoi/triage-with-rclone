@@ -62,6 +62,11 @@ class OAuthFixtureTests(unittest.TestCase):
     def state(self):
         return oauth.OAuthState(FILES, *self.credentials)
 
+    def negative_state(self, mode):
+        return oauth.OAuthState(FILES, *self.credentials, mode=mode, alternate_state=secrets.token_urlsafe(16),
+                                alternate_code="alternate-code-" + secrets.token_hex(16),
+                                alternate_secret="alternate-secret-" + secrets.token_hex(16))
+
     @contextmanager
     def fixture(self, state=None, *, bind=True):
         state = state or self.state()
@@ -118,6 +123,44 @@ class OAuthFixtureTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertNotIn("Location", headers)
         self.assertEqual(json.loads(body), {"result": 0, "access_token": state.token, "token_type": "bearer", "uid": 10001})
+
+    def negative_authorize(self, fixture, state):
+        status, body, headers = self.request(fixture, self.authorize_path(state))
+        self.assertEqual(status, 302)
+        parsed = urlsplit(headers["Location"])
+        self.assertEqual((parsed.scheme, parsed.netloc, parsed.path, parsed.fragment), ("http", "localhost:53682", "/", ""))
+        values = {"hostname": fixture.host, "locationid": "1",
+                  "state": state.alternate_state if state.mode == "wrong_state" else BOUND_STATE}
+        if state.mode == "consent_denied":
+            values.update(error="access_denied", error_description="synthetic consent denied")
+            self.assertEqual(json.loads(body), {"status": "synthetic_consent_denied"})
+        else:
+            values["code"] = state.alternate_code if state.mode == "invalid_code" else state.code
+            self.assertEqual(json.loads(body), {"status": "synthetic_code_issued"})
+        self.assertEqual(parse_qsl(parsed.query), sorted(values.items()))
+
+    def denial_parameters(self, state, style):
+        secret = state.alternate_secret if state.mode == "wrong_client_secret" else state.client_secret
+        values = {"code": state.alternate_code if state.mode == "invalid_code" else state.code,
+                  "grant_type": "authorization_code", "redirect_uri": "http://localhost:53682/"}
+        headers = {"Content-Type": "application/x-www-form-urlencoded"}
+        if style == "basic":
+            headers["Authorization"] = "Basic " + base64.b64encode((state.client_id + ":" + secret).encode()).decode()
+        elif style == "form":
+            values.update(client_id=state.client_id, client_secret=secret)
+        else:
+            raise AssertionError("unsupported test style")
+        return headers, urlencode(sorted(values.items())).encode()
+
+    def expected_denial(self, fixture, state, style):
+        headers, body = self.denial_parameters(state, style)
+        status, response, response_headers = self.request(fixture, "/oauth2_token", method="POST", headers=headers, body=body)
+        self.assertEqual(status, 400)
+        self.assertNotIn("Location", response_headers)
+        expected = ({"error": "invalid_grant", "error_description": "synthetic authorization code rejected"}
+                    if state.mode == "invalid_code" else
+                    {"error": "invalid_client", "error_description": "synthetic client secret rejected"})
+        self.assertEqual(json.loads(response), expected)
 
     def read(self, fixture, state, path, **kwargs):
         return self.request(fixture, path, headers={"Authorization": "Bearer " + state.token}, **kwargs)
@@ -573,6 +616,161 @@ class OAuthFixtureTests(unittest.TestCase):
             self.assertEqual(output.getvalue(), "")
             self.assertTrue(state.failed)
             self.assertEqual(state.events, [])
+
+    def test_negative_modes_require_distinct_canonical_generated_alternates(self):
+        good = {"mode": "invalid_code", "alternate_state": secrets.token_urlsafe(16),
+                "alternate_code": "alternate-code-synthetic", "alternate_secret": "alternate-secret-synthetic"}
+        for mode in (True, None, "denied", "", "positive\n"):
+            with self.subTest(mode=mode), self.assertRaisesRegex(oauth.OAuthError, "oauth_invalid_fixture_mode"):
+                oauth.OAuthState(FILES, *self.credentials, **dict(good, mode=mode))
+        for key, bad in (("alternate_state", None), ("alternate_code", None), ("alternate_secret", None),
+                         ("alternate_state", BOUND_STATE + "="), ("alternate_state", BOUND_STATE[:-1] + "x"),
+                         ("alternate_code", self.credentials[2]), ("alternate_secret", self.credentials[1]),
+                         ("alternate_code", "short"), ("alternate_secret", "bad\r\nsecret")):
+            with self.subTest(key=key), self.assertRaisesRegex(oauth.OAuthError, "oauth_invalid_fixture_mode"):
+                oauth.OAuthState(FILES, *self.credentials, **dict(good, **{key: bad}))
+        for mode in ("wrong_state", "consent_denied", "invalid_code", "wrong_client_secret", "cancelled"):
+            with self.subTest(mode=mode), self.assertRaises(oauth.OAuthError):
+                oauth.OAuthState(FILES, *self.credentials, mode=mode)
+        collision = oauth.OAuthState(FILES, *self.credentials, **dict(good, alternate_state=BOUND_STATE))
+        with self.fixture(collision, bind=False) as (_, state):
+            with self.assertRaisesRegex(oauth.OAuthError, "oauth_state_binding_refused"):
+                state.bind_state(BOUND_STATE)
+            self.assertTrue(state.failed)
+
+    def test_wrong_state_and_consent_redirects_do_not_claim_observed_callback_rejection(self):
+        for mode in ("wrong_state", "consent_denied"):
+            with self.subTest(mode=mode), self.fixture(self.negative_state(mode)) as (fixture, state):
+                self.negative_authorize(fixture, state)
+                self.assertEqual(state.events, [("authorize", "")])
+                self.assertEqual((state.requests, state.oauth_requests, state.authorize_requests, state.token_requests), (1, 1, 1, 0))
+                self.assertEqual((state.token_denials, state.basic_denials, state.form_denials, state.auth_denied), (0, 0, 0, 0))
+                self.assertEqual(state.phase, "authorized")
+                self.assertFalse(state.token_issued)
+                self.assertFalse(state.failed)
+                self.assertTrue(state.source_preserved())
+                self.assertEqual(fixture.snapshot()["transport"]["failure_codes"], [])
+
+    def test_cancelled_mode_is_unbound_and_http_free(self):
+        with self.fixture(self.negative_state("cancelled"), bind=False) as (fixture, state):
+            self.assertEqual((state.requests, state.oauth_requests, state.token_requests, state.authorize_requests), (0, 0, 0, 0))
+            self.assertEqual(state.events, [])
+            self.assertEqual(state.phase, "unbound")
+            self.assertFalse(state.snapshot()["bound_state"])
+            self.assertFalse(state.token_issued)
+            self.assertFalse(state.failed)
+        self.assertTrue(fixture.cleanup_complete)
+        with self.fixture(self.negative_state("cancelled"), bind=False) as (_, state):
+            with self.assertRaisesRegex(oauth.OAuthError, "oauth_state_binding_refused"):
+                state.bind_state(BOUND_STATE)
+            self.assertTrue(state.failed)
+
+    def test_mode_specific_request_ceilings_reject_unsolicited_operations(self):
+        for mode in ("wrong_state", "consent_denied", "cancelled"):
+            with self.subTest(mode=mode), self.fixture(self.negative_state(mode), bind=mode != "cancelled") as (fixture, state):
+                if mode != "cancelled": self.negative_authorize(fixture, state)
+                status, _, _ = self.read(fixture, state, "/listfolder?folderid=100")
+                self.assertEqual(status, 429)
+                self.assertTrue(state.budget_exceeded)
+                self.assertTrue(state.failed)
+                self.assertEqual(state.token_denials, 0)
+                self.assertEqual(state.payload_bytes, 0)
+
+    def test_exact_code_and_client_denials_require_basic_then_form(self):
+        for mode, error in (("invalid_code", "invalid_grant"), ("wrong_client_secret", "invalid_client")):
+            with self.subTest(mode=mode), self.fixture(self.negative_state(mode)) as (fixture, state):
+                before = state.source_snapshot()
+                self.negative_authorize(fixture, state)
+                self.expected_denial(fixture, state, "basic")
+                self.assertEqual(state.phase, "basic_denied")
+                self.assertEqual((state.token_denials, state.basic_denials, state.form_denials), (1, 1, 0))
+                self.expected_denial(fixture, state, "form")
+                self.assertEqual(state.phase, "denied")
+                self.assertEqual(state.events, [("authorize", ""), ("token_denied_basic", error), ("token_denied_form", error)])
+                self.assertEqual((state.requests, state.oauth_requests, state.token_requests, state.authorize_requests), (3, 3, 2, 1))
+                self.assertEqual((state.token_denials, state.basic_denials, state.form_denials, state.auth_denied), (2, 1, 1, 2))
+                self.assertEqual((state.payload_bytes, state.authenticated, state.unexpected, state.rejected_payload_bytes), (0, 0, 0, 0))
+                self.assertFalse(state.token_issued)
+                self.assertFalse(state.failed)
+                self.assertFalse(state.budget_exceeded)
+                self.assertEqual(state.source_snapshot(), before)
+                self.assertTrue(state.source_preserved())
+                self.assertEqual(fixture.snapshot()["transport"]["failure_codes"], [])
+
+    def test_generic_malformed_or_unexpected_credentials_cannot_earn_denial(self):
+        for mode in ("invalid_code", "wrong_client_secret"):
+            for mutation in ("canonical_valid_value", "wrong_client", "duplicate", "mixed", "wrong_grant"):
+                with self.subTest(mode=mode, mutation=mutation), self.fixture(self.negative_state(mode)) as (fixture, state):
+                    self.negative_authorize(fixture, state)
+                    headers, body = self.denial_parameters(state, "basic")
+                    if mutation == "canonical_valid_value":
+                        if mode == "invalid_code": body = body.replace(state.alternate_code.encode(), state.code.encode())
+                        else: headers["Authorization"] = self.basic(state)
+                    if mutation == "wrong_client": headers["Authorization"] = "Basic " + base64.b64encode(b"unexpected:unexpected").decode()
+                    if mutation == "duplicate": body += b"&code=" + state.code.encode()
+                    if mutation == "mixed": body += b"&client_secret=" + state.client_secret.encode()
+                    if mutation == "wrong_grant": body = body.replace(b"authorization_code", b"client_credentials")
+                    status, response, _ = self.request(fixture, "/oauth2_token", method="POST", headers=headers, body=body)
+                    self.assertEqual(status, 400)
+                    self.assertEqual(json.loads(response), {"status": "fixture_invalid_request"})
+                    self.assertEqual((state.token_denials, state.basic_denials, state.form_denials, state.auth_denied), (0, 0, 0, 0))
+                    self.assertEqual(state.events, [("authorize", "")])
+                    self.assertTrue(state.failed)
+                    self.assertFalse(state.token_issued)
+
+    def test_form_first_or_repeated_basic_is_not_two_style_denial(self):
+        for mode in ("invalid_code", "wrong_client_secret"):
+            for first in ("form", "repeat_basic"):
+                with self.subTest(mode=mode, first=first), self.fixture(self.negative_state(mode)) as (fixture, state):
+                    self.negative_authorize(fixture, state)
+                    if first == "repeat_basic": self.expected_denial(fixture, state, "basic")
+                    headers, body = self.denial_parameters(state, "form" if first == "form" else "basic")
+                    status, response, _ = self.request(fixture, "/oauth2_token", method="POST", headers=headers, body=body)
+                    self.assertEqual((status, json.loads(response)), (400, {"status": "fixture_invalid_request"}))
+                    self.assertEqual(state.token_denials, 0 if first == "form" else 1)
+                    self.assertEqual(state.form_denials, 0)
+                    self.assertTrue(state.failed)
+                    self.assertFalse(state.token_issued)
+
+    def test_second_style_empty_auth_duplicate_fields_and_wrong_values_are_not_denials(self):
+        for mutation in ("authorization", "duplicate", "missing_client", "wrong_secret", "wrong_code"):
+            with self.subTest(mutation=mutation), self.fixture(self.negative_state("wrong_client_secret")) as (fixture, state):
+                self.negative_authorize(fixture, state)
+                self.expected_denial(fixture, state, "basic")
+                headers, body = self.denial_parameters(state, "form")
+                if mutation == "authorization": headers["Authorization"] = ""
+                if mutation == "duplicate": body += b"&client_id=" + state.client_id.encode()
+                if mutation == "missing_client": body = body.replace(b"client_id=" + state.client_id.encode() + b"&", b"")
+                if mutation == "wrong_secret": body = body.replace(state.alternate_secret.encode(), state.client_secret.encode())
+                if mutation == "wrong_code": body = body.replace(state.code.encode(), state.alternate_code.encode())
+                status, response, _ = self.request(fixture, "/oauth2_token", method="POST", headers=headers, body=body)
+                self.assertEqual((status, json.loads(response)), (400, {"status": "fixture_invalid_request"}))
+                self.assertEqual((state.token_denials, state.basic_denials, state.form_denials), (1, 1, 0))
+                self.assertTrue(state.failed)
+                self.assertFalse(state.token_issued)
+
+    def test_api_reads_are_never_enabled_by_negative_modes(self):
+        for mode in ("invalid_code", "wrong_client_secret"):
+            with self.subTest(mode=mode), self.fixture(self.negative_state(mode)) as (fixture, state):
+                self.negative_authorize(fixture, state)
+                status, body, _ = self.read(fixture, state, "/listfolder?folderid=100")
+                self.assertEqual((status, json.loads(body)), (400, {"status": "fixture_invalid_request"}))
+                self.assertEqual(state.events, [("authorize", "")])
+                self.assertEqual(state.token_denials, 0)
+                self.assertFalse(state.token_issued)
+                self.assertTrue(state.failed)
+
+    def test_negative_mode_and_alternate_values_are_immutable_and_private(self):
+        for field in ("mode", "alternate_state", "alternate_code", "alternate_secret"):
+            with self.subTest(field=field):
+                with self.assertRaisesRegex(oauth.OAuthError, "oauth_source_changed"):
+                    with self.fixture(self.negative_state("invalid_code")) as (fixture, state):
+                        before = json.dumps(fixture.snapshot())
+                        for value in (*self.credentials, state.alternate_state, state.alternate_code, state.alternate_secret, BOUND_STATE):
+                            self.assertNotIn(value, before)
+                        setattr(state, field, getattr(state, field) + "changed")
+                        self.assertFalse(state.source_preserved())
+                self.assertTrue(fixture.cleanup_complete)
 
 
 if __name__ == "__main__":

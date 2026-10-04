@@ -1,4 +1,4 @@
-# pCloud OAuth callback feasibility
+# pCloud OAuth protocol tests
 
 This Linux/amd64 experiment exercises the pinned rclone backend through a fresh
 OAuth callback, an independent authorization-code exchange, exact persisted
@@ -29,11 +29,11 @@ read-only root, bounded private tmpfs, no capabilities and bounded resource use.
 The supervisor verifies container isolation, image/source identity and cleanup.
 Do not run the inner probe or build/run this fixture on a production host.
 
-The sanitized JSON is explicitly `ledger_eligible: false`. CI retains it
+The default sanitized JSON is explicitly `ledger_eligible: false`. CI retains it
 separately for 14 days and never submits it to `provider_coverage.py`. A positive
 result does not establish negative callback/token cases, renewal, revocation,
 interactive cancellation, regional behavior, application acceptance or vendor
-acceptance. The existing pCloud local protocol tier stays partial. In particular,
+acceptance. This receipt alone leaves the local protocol tier partial. In particular,
 the upstream backend permits blank callback state and can derive its token host
 from callback input; this positive experiment does not prove those paths safe.
 The network-none namespace is a required boundary.
@@ -42,3 +42,33 @@ Offline probe/supervisor tests use mocked child processes and temporary files;
 the separate HTTPS server tests establish fixture behavior. Neither substitutes
 for the native container run. Build logs, child output, generated credentials,
 image layers and caches are not public evidence artifacts.
+
+## Fresh authentication evidence
+
+The separate `--authentication-evidence` option runs a new six-case suite and
+emits schema 5 only after validating its supervised native result. It cannot
+convert the default feasibility receipt or historical output into evidence.
+
+The suite repeats the positive control, then verifies wrong nonempty state,
+consent denial, invalid code, wrong client secret and cancellation while awaiting
+the callback. Each case uses a fresh config and fixture. Token denials must match
+the exact Basic request followed by form authentication, with no token issuance,
+saved token or API read. Generic malformed-request refusals do not qualify.
+Cancellation must terminate and reap the owned waiting process after verifying
+its listener and process identity. It does not establish application cancellation.
+
+A successful suite requires nineteen native commands, ten callback requests and
+fourteen fixture HTTPS requests. Negative cases preserve the exact pre-auth config
+and source bytes. Every case cleans its resources before the next; a failure
+stops the suite and retains an explicitly failed ordered prefix. Runtime/source
+identity and chronological bounds are checked for each nested case.
+
+Schema 5 contributes only `authentication` to the Linux/amd64 local protocol tier.
+The existing saved-token fixture must independently supply the other ten required
+capabilities. The importer rejects wrong identities, unknown fields, expired or
+future receipts and inconsistent success. Missing cases and failed cleanup cannot
+earn a pass; valid failed observations remain failures even alongside another
+passing receipt. The suite runs
+under the same isolation constraints, with a 240-second outer execution limit;
+the default positive experiment retains its 90-second limit. Shared daemon build
+cache is not pruned, and no image or cache is uploaded.

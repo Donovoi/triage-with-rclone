@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fresh isolated pCloud OAuth feasibility; never ledger or vendor evidence.
+"""Fresh isolated pCloud OAuth feasibility or explicit local authentication evidence.
 
 Only GitHub-hosted Linux, an exact minimal context and owned image/container
 labels are accepted. Private process transcripts never enter the public receipt.
@@ -37,6 +37,20 @@ PROBE_CHECKS = {"environment", "version_binding", "initial_config_question", "ca
                 "post_auth_config_preserved", "request_sequence"}
 PROBE_CLEANUP = {"children_stopped", "listeners_closed", "temporary_removed"}
 OBSERVATIONS = {"native_commands": 4, "http_transactions": 8, "callback_requests": 2, "https_requests": 6}
+AUTH_MODE = "pcloud_oauth_authentication_v1"
+AUTH_CASES = ("positive", "wrong_state", "consent_denied", "invalid_code", "wrong_client_secret", "cancelled")
+NEGATIVE_CHECKS = {"environment", "version_binding", "initial_config_question", "callback_ownership",
+                   "no_token_persisted", "config_preserved", "no_read", "source_preserved", "request_sequence"}
+CASE_CHECKS = {"positive": PROBE_CHECKS,
+               **{name: NEGATIVE_CHECKS | {"authorize", "callback_denial"} for name in AUTH_CASES[1:3]},
+               **{name: NEGATIVE_CHECKS | {"authorize", "token_denial"} for name in AUTH_CASES[3:5]},
+               "cancelled": NEGATIVE_CHECKS | {"owned_process_cancel"}}
+CASE_OBSERVATIONS = {"positive": OBSERVATIONS,
+    **{name: {"native_commands": 3, "http_transactions": 3, "callback_requests": 2, "https_requests": 1}
+       for name in AUTH_CASES[1:3]},
+    **{name: {"native_commands": 3, "http_transactions": 5, "callback_requests": 2, "https_requests": 3}
+       for name in AUTH_CASES[3:5]},
+    "cancelled": {"native_commands": 3, "http_transactions": 0, "callback_requests": 0, "https_requests": 0}}
 FIXTURE_SHA256 = "c990bbd4909b227aae4c70d26f9da5534740a2eb10337ced47977f915fa617be"
 ENTRYPOINT = ["/opt/fixture/venv/bin/python"]
 COMMAND = ["/opt/fixture/scripts/provider-lab/pcloud-oauth/probe.py", "--rclone", "/opt/fixture/rclone",
@@ -108,16 +122,19 @@ def runtime_identity(binary):
     check(digest(binary) == pins["RCLONE_LINUX_EXE_SHA256"], "runtime_hash_mismatch")
     return {"version": pins["RCLONE_VERSION"], "sha256": pins["RCLONE_LINUX_EXE_SHA256"]}
 
-def source_hashes():
+def source_hashes(repository=None):
+    repository = REPOSITORY if repository is None else repository
     result = {}
     for name in SOURCE_FILES:
-        path = REPOSITORY / name
+        path = repository / name
         regular(path, 1024 * 1024)
         result[name] = digest(path)
     return result
 
-def read_lock():
-    path = ROOT / "build-lock.json"
+def read_lock(root=None):
+    root = ROOT if root is None else root
+    repository = root.parents[2]
+    path = root / "build-lock.json"
     regular(path, 16384)
     lock = parse_json(path.read_bytes())
     check(type(lock) is dict and set(lock) == {"schema_version", "platform", "base_image", "base_config_digest", "python_version", "requirements", "provenance"}, "lock_schema_invalid")
@@ -129,9 +146,9 @@ def read_lock():
     check(type(req) is dict and set(req) == {"path", "sha256", "distributions"}
           and req["path"] == "scripts/provider-lab/requirements-fixture.txt" and type(req["sha256"]) is str
           and HASH.fullmatch(req["sha256"]) and req["distributions"] == {"cryptography": "50.0.2", "cffi": "2.1.1", "pycparser": "3.0"}, "dependency_lock_invalid")
-    check(digest(REPOSITORY / req["path"]) == req["sha256"], "dependency_lock_changed")
+    check(digest(repository / req["path"]) == req["sha256"], "dependency_lock_changed")
     # Docker's FROM and the in-build lock assertion must match the reviewed lock.
-    recipe = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+    recipe = (root / "Dockerfile").read_text(encoding="utf-8")
     check(re.findall(r"^FROM (.+)$", recipe, re.MULTILINE) == [lock["base_image"]]
           and digest(path) in recipe, "recipe_lock_mismatch")
     return lock
@@ -146,17 +163,20 @@ def parse_time(value):
     except ValueError:
         raise SupervisorError("probe_time_invalid") from None
 
-def validate_probe(probe, identity, sources, lock, started, finished):
+def validate_probe(probe, identity, sources, lock, started, finished, case="positive"):
+    check(case in AUTH_CASES, "unknown_authentication_case")
+    expected_scope = "pcloud_oauth_callback_feasibility" if case == "positive" else "pcloud_oauth_authentication_case"
+    observations = CASE_OBSERVATIONS[case]
     check(type(probe) is dict and set(probe) == {"schema_version", "scope", "ledger_eligible", "started_utc", "finished_utc", "runtime", "checks", "observations", "cleanup", "success", "errors"}, "probe_schema_mismatch")
-    check(type(probe["schema_version"]) is int and probe["schema_version"] == 1 and probe["scope"] == "pcloud_oauth_callback_feasibility"
+    check(type(probe["schema_version"]) is int and probe["schema_version"] == 1 and probe["scope"] == expected_scope
           and probe["ledger_eligible"] is False and type(probe["success"]) is bool, "probe_scope_mismatch")
     check(parse_time(started) <= parse_time(probe["started_utc"]) <= parse_time(probe["finished_utc"]) <= parse_time(finished), "probe_time_unbound")
     check((parse_time(probe["finished_utc"]) - parse_time(probe["started_utc"])).total_seconds() <= 90, "probe_time_limit")
     check(type(probe["errors"]) is list and len(probe["errors"]) <= 32 and all(type(x) is str and re.fullmatch(r"[a-z][a-z0-9_]{0,79}", x) for x in probe["errors"]), "probe_errors_invalid")
-    for field, keys in (("checks", PROBE_CHECKS), ("cleanup", PROBE_CLEANUP)):
+    for field, keys in (("checks", CASE_CHECKS[case]), ("cleanup", PROBE_CLEANUP)):
         check(type(probe[field]) is dict and set(probe[field]) == keys and all(type(v) is bool for v in probe[field].values()), "probe_boolean_contract_invalid")
     obs = probe["observations"]
-    check(type(obs) is dict and set(obs) == set(OBSERVATIONS) and all(type(v) is int and 0 <= v <= OBSERVATIONS[k] for k, v in obs.items()), "probe_observation_invalid")
+    check(type(obs) is dict and set(obs) == set(observations) and all(type(v) is int and 0 <= v <= observations[k] for k, v in obs.items()), "probe_observation_invalid")
     expected = {"platform": "linux", "architecture": "amd64", "uid": 10001, "gid": 10001,
                 "python_version": lock["python_version"], "cryptography_version": lock["requirements"]["distributions"]["cryptography"],
                 "rclone_version": identity["version"], "rclone_sha256": identity["sha256"],
@@ -172,18 +192,44 @@ def validate_probe(probe, identity, sources, lock, started, finished):
         expected.update(dict.fromkeys(pending, ""))
     check(runtime == expected and type(runtime["uid"]) is int and type(runtime["gid"]) is int,
           "probe_runtime_mismatch")
-    complete = all(probe["checks"].values()) and all(probe["cleanup"].values()) and obs == OBSERVATIONS and not probe["errors"]
+    complete = all(probe["checks"].values()) and all(probe["cleanup"].values()) and obs == observations and not probe["errors"]
     check(probe["success"] == complete, "probe_success_contradiction")
     return probe
 
-def create_args(name, image, run_id):
+def validate_suite(suite, identity, sources, lock, started, finished):
+    check(type(suite) is dict and set(suite) == {"schema_version", "scope", "ledger_eligible", "started_utc",
+          "finished_utc", "runtime", "cases", "success", "errors"}, "suite_schema_mismatch")
+    check(type(suite["schema_version"]) is int and suite["schema_version"] == 1
+          and suite["scope"] == "pcloud_oauth_authentication_suite" and suite["ledger_eligible"] is False
+          and type(suite["success"]) is bool, "suite_scope_mismatch")
+    first, last = parse_time(suite["started_utc"]), parse_time(suite["finished_utc"])
+    check(parse_time(started) <= first <= last <= parse_time(finished)
+          and (last - first).total_seconds() <= 240, "suite_time_unbound")
+    cases = suite["cases"]
+    check(type(cases) is list and 1 <= len(cases) <= 6, "suite_cases_invalid")
+    previous = first
+    for index, row in enumerate(cases):
+        check(type(row) is dict and set(row) == {"name", "report"} and row["name"] == AUTH_CASES[index], "suite_cases_invalid")
+        report = validate_probe(row["report"], identity, sources, lock, suite["started_utc"], suite["finished_utc"], row["name"])
+        check(previous <= parse_time(report["started_utc"]), "suite_cases_overlap")
+        previous = parse_time(report["finished_utc"])
+        check(index == len(cases) - 1 or report["success"], "suite_continued_after_failure")
+    check(canonical_hash(suite["runtime"]) == canonical_hash(cases[0]["report"]["runtime"]), "suite_runtime_mismatch")
+    complete = len(cases) == 6 and all(row["report"]["success"] for row in cases)
+    check(suite["success"] == complete and suite["errors"] == ([] if complete else ["authentication_case_failed"]), "suite_success_contradiction")
+    check(complete or cases[-1]["report"]["success"] is False, "suite_unexplained_partial_run")
+    return suite
+
+
+def create_args(name, image, run_id, authentication=False):
     check(re.fullmatch(r"triage-pcloud-oauth-[a-f0-9]{32}", name) and re.fullmatch(r"sha256:[a-f0-9]{64}", image)
           and re.fullmatch(r"[a-f0-9]{32}", run_id), "invalid_owned_identity")
     return ["create", "--name", name, "--label", LABEL + "=" + run_id, "--label", KIND + "=pcloud-oauth-probe",
             "--network", "none", "--read-only", "--user", "10001:10001", "--cap-drop", "ALL",
             "--security-opt", "no-new-privileges", "--pids-limit", "64", "--memory", "512m", "--cpus", "1",
             "--cgroupns", "private", "--ipc", "private", "--init", "--hostname", "synthetic-oauth",
-            "--tmpfs", "/work:" + TMPFS, "--entrypoint", ENTRYPOINT[0], image, *COMMAND]
+            "--tmpfs", "/work:" + TMPFS, "--entrypoint", ENTRYPOINT[0], image, *COMMAND,
+            *(["--authentication-suite"] if authentication else [])]
 
 def validate_image(info, image, run_id, source_digest):
     check(type(info) is dict and info.get("Id") == image and info.get("Architecture") == "amd64" and info.get("Os") == "linux", "built_image_mismatch")
@@ -195,7 +241,7 @@ def validate_image(info, image, run_id, source_digest):
           and config.get("WorkingDir") == "/work" and not config.get("Volumes") and not config.get("ExposedPorts")
           and not config.get("Healthcheck"), "image_config_mismatch")
 
-def validate_container(info, image, run_id, expected_env):
+def validate_container(info, image, run_id, expected_env, authentication=False):
     check(type(info) is dict, "container_inspect_invalid")
     config, host = info.get("Config", {}), info.get("HostConfig", {})
     check(type(config) is dict and type(host) is dict and type(config.get("Labels")) is dict, "container_inspect_invalid")
@@ -212,7 +258,7 @@ def validate_container(info, image, run_id, expected_env):
     mounts = info.get("Mounts", [])
     check(type(mounts) is list and len(mounts) <= 1 and all(type(m) is dict and m.get("Type") == "tmpfs"
           and m.get("Destination") == "/work" and not m.get("Source") for m in mounts), "container_unexpected_mount")
-    check(config.get("Entrypoint") == ENTRYPOINT and config.get("Cmd") == COMMAND and config.get("WorkingDir") == "/work"
+    check(config.get("Entrypoint") == ENTRYPOINT and config.get("Cmd") == COMMAND + (["--authentication-suite"] if authentication else []) and config.get("WorkingDir") == "/work"
           and config.get("Env") == expected_env, "container_command_mismatch")
     network = info.get("NetworkSettings")
     check(type(network) is dict and type(network.get("Networks")) is dict and set(network["Networks"]) <= {"none"}, "container_unexpected_network")
@@ -332,7 +378,108 @@ def stage_context(context, binary, identity, sources):
         json.dump(sources, stream, sort_keys=True, separators=(",", ":"))
 
 
-def run(binary, report_path):
+def compute_bindings(root=None):
+    """Read the fixed reviewed source closure; no executable or network actions."""
+    root = ROOT if root is None else Path(root)
+    check(plain(root) and root.is_dir(), "invalid_binding_root")
+    sources = source_hashes(root.parents[2])
+    return {"harness_sha256": canonical_hash(sources), "fixture_manifest_sha256": FIXTURE_SHA256,
+            "source_sha256": sources, "lock": read_lock(root)}
+
+
+def validate_native_authentication(native, identity, bindings):
+    keys = {"schema_version", "scope", "ledger_eligible", "started_utc", "finished_utc", "success", "runtime",
+            "platform", "source_sha256", "source_digest", "dependency_lock_sha256", "dependency_versions",
+            "python_version", "base_image", "base_config_digest", "image_id", "container_isolation_verified", "probe",
+            "errors", "cleanup", "stage", "build_phase", "container_exit_code", "container_stdout_bytes",
+            "container_stderr_bytes", "container_oom_killed", "container_start_error_present", "build_cache_scope",
+            "probe_started_utc", "probe_finished_utc"}
+    check(type(native) is dict and set(native) == keys, "native_schema_mismatch")
+    check(type(native["schema_version"]) is int and native["schema_version"] == 1
+          and native["scope"] == "pcloud_oauth_authentication_supervision" and native["ledger_eligible"] is False
+          and type(native["success"]) is bool and native["platform"] == "linux/amd64", "native_scope_mismatch")
+    sources, lock = bindings["source_sha256"], bindings["lock"]
+    check(native["runtime"] == identity and type(native["runtime"]) is dict and set(native["runtime"]) == {"version", "sha256"}
+          and native["source_sha256"] == sources and native["source_digest"] == bindings["harness_sha256"], "native_source_mismatch")
+    check(native["dependency_lock_sha256"] == lock["requirements"]["sha256"]
+          and native["dependency_versions"] == lock["requirements"]["distributions"]
+          and native["python_version"] == lock["python_version"] and native["base_image"] == lock["base_image"]
+          and native["base_config_digest"] == lock["base_config_digest"], "native_dependency_mismatch")
+    start, finish = parse_time(native["started_utc"]), parse_time(native["finished_utc"])
+    check(0 <= (finish - start).total_seconds() <= 900, "native_time_invalid")
+    check(type(native["container_isolation_verified"]) is bool
+          and (native["image_id"] is None or type(native["image_id"]) is str and re.fullmatch(r"sha256:[a-f0-9]{64}", native["image_id"]))
+          and native["build_cache_scope"] == "shared_daemon_cache_not_pruned"
+          and native["stage"] in ("preflight", "pull", "build", "create", "probe", "completed")
+          and native["build_phase"] in (None, "verify", "dependencies", "manifest"), "native_state_invalid")
+    check(type(native["cleanup"]) is dict and set(native["cleanup"]) == {"container_removed", "image_removed", "temporary_removed"}
+          and all(type(v) is bool for v in native["cleanup"].values()), "native_cleanup_invalid")
+    check(type(native["errors"]) is list and len(native["errors"]) <= 32
+          and all(type(x) is str and re.fullmatch(r"[a-z][a-z0-9_]{0,79}", x) for x in native["errors"]), "native_errors_invalid")
+    for field, maximum in (("container_exit_code", 255), ("container_stdout_bytes", 262144), ("container_stderr_bytes", 262144)):
+        value = native[field]
+        check(value is None or type(value) is int and (-255 if field == "container_exit_code" else 0) <= value <= maximum,
+              "native_diagnostic_invalid")
+    for field in ("container_oom_killed", "container_start_error_present"):
+        check(native[field] is None or type(native[field]) is bool, "native_diagnostic_invalid")
+    suite = native["probe"]
+    if suite is not None:
+        check(native["container_isolation_verified"] and native["image_id"] is not None
+              and all(native[key] is not None for key in ("container_exit_code", "container_stdout_bytes", "container_stderr_bytes",
+                                                          "container_oom_killed", "container_start_error_present")), "native_probe_unbound")
+        first, last = parse_time(native["probe_started_utc"]), parse_time(native["probe_finished_utc"])
+        check(start <= first <= last <= finish and (last - first).total_seconds() <= 240, "native_probe_time_invalid")
+        validate_suite(suite, identity, sources, lock, native["probe_started_utc"], native["probe_finished_utc"])
+    else:
+        check(native["success"] is False, "native_probe_missing")
+        for value in (native["probe_started_utc"], native["probe_finished_utc"]):
+            check(value is None or start <= parse_time(value) <= finish, "native_probe_time_invalid")
+    inner_cleanup = suite is not None and all(all(row["report"]["cleanup"].values()) for row in suite["cases"])
+    cleaned = inner_cleanup and all(native["cleanup"].values())
+    complete = (suite is not None and suite["success"] and cleaned and native["stage"] == "completed"
+                and native["build_phase"] == "manifest" and native["container_exit_code"] == 0
+                and native["container_stdout_bytes"] > 0 and native["container_stderr_bytes"] == 0
+                and native["container_oom_killed"] is False and native["container_start_error_present"] is False
+                and not native["errors"])
+    check(native["success"] == complete, "native_success_contradiction")
+    return cleaned
+
+
+def authentication_evidence(native, bindings):
+    cleaned = validate_native_authentication(native, native["runtime"], bindings)
+    errors = [] if native["success"] else ["pcloud_authentication_failed"]
+    return {"schema_version": 5, "scope": "rclone_backend_protocol_fixture", "runtime": dict(native["runtime"]),
+            "platform": "linux", "architecture": "amd64", "harness_sha256": bindings["harness_sha256"],
+            "fixture_manifest_sha256": bindings["fixture_manifest_sha256"],
+            "started_utc": native["started_utc"], "finished_utc": native["finished_utc"],
+            "success": native["success"], "cleanup_passed": cleaned, "errors": errors,
+            "backends": [{"backend": "pcloud", "fixture_kind": "independent_oauth_container", "fixture_mode": AUTH_MODE,
+                          "capabilities": {"authentication": "passed" if native["success"] else "failed"}, "errors": errors.copy()}],
+            "native_evidence": native}
+
+
+def validate_authentication_evidence(receipt, runtime, bindings, now, max_age_hours=24):
+    check(type(bindings) is dict and set(bindings) == {"harness_sha256", "fixture_manifest_sha256", "source_sha256", "lock"}
+          and bindings["fixture_manifest_sha256"] == FIXTURE_SHA256
+          and set(bindings["source_sha256"]) == set(SOURCE_FILES)
+          and all(type(v) is str and HASH.fullmatch(v) for v in bindings["source_sha256"].values())
+          and bindings["harness_sha256"] == canonical_hash(bindings["source_sha256"]), "authentication_bindings_invalid")
+    check(type(receipt) is dict and set(receipt) == {"schema_version", "scope", "runtime", "platform", "architecture",
+          "harness_sha256", "fixture_manifest_sha256", "started_utc", "finished_utc", "success", "cleanup_passed",
+          "errors", "backends", "native_evidence"}, "authentication_receipt_schema_invalid")
+    identity = {key: runtime[key] for key in ("version", "sha256")}
+    check(runtime.get("platform") == "linux", "authentication_platform_invalid")
+    expected = authentication_evidence(receipt["native_evidence"], bindings)
+    # Canonical JSON preserves bool/int distinctions at every nested level.
+    check(canonical_hash(receipt) == canonical_hash(expected) and receipt["runtime"] == identity, "authentication_receipt_mismatch")
+    finished = parse_time(receipt["finished_utc"])
+    check(type(max_age_hours) is int and 1 <= max_age_hours <= 168
+          and 0 <= (now - finished).total_seconds() <= max_age_hours * 3600,
+          "authentication_receipt_stale_or_future")
+    return receipt
+
+
+def run(binary, report_path, authentication=False):
     check(sys.platform == "linux" and os.environ.get("GITHUB_ACTIONS") == "true"
           and os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted", "github_hosted_linux_required")
     check(report_path.is_absolute() and plain(report_path.parent) and report_path.parent.is_dir()
@@ -353,6 +500,9 @@ def run(binary, report_path):
               "container_stdout_bytes": None, "container_stderr_bytes": None,
               "container_oom_killed": None, "container_start_error_present": None,
               "build_cache_scope": "shared_daemon_cache_not_pruned"}
+    if authentication:
+        report.update(scope="pcloud_oauth_authentication_supervision", probe_started_utc=None, probe_finished_utc=None)
+    bindings = {"harness_sha256": source_digest, "fixture_manifest_sha256": FIXTURE_SHA256, "source_sha256": sources, "lock": lock}
     root = Path(tempfile.mkdtemp(prefix="triage-pcloud-oauth-"))
     root_identity = (root.stat().st_dev, root.stat().st_ino)
     docker, image, attempted_build, attempted_create = None, None, False, False
@@ -384,9 +534,9 @@ def run(binary, report_path):
         check(type(expected_env) is list and all(type(x) is str for x in expected_env), "image_environment_invalid")
         attempted_create = True
         report["stage"] = "create"
-        docker.run(create_args(name, image, run_id))
+        docker.run(create_args(name, image, run_id, authentication))
         initial = docker.inspect("container", name) or {}
-        validate_container(initial, image, run_id, expected_env)
+        validate_container(initial, image, run_id, expected_env, authentication)
         check(type(initial.get("State")) is dict and initial["State"].get("Running") is False
               and initial["State"].get("Status") == "created" and type(initial.get("Id")) is str
               and HASH.fullmatch(initial["Id"]), "container_initial_state_invalid")
@@ -394,11 +544,15 @@ def run(binary, report_path):
         report["container_isolation_verified"] = True
         report["stage"] = "probe"
         probe_started = utc_now()
-        code, raw = docker.run(["start", "--attach", container_id], timeout=90, allow_failure=True, output_limit=262144)
+        if authentication:
+            report["probe_started_utc"] = probe_started
+        code, raw = docker.run(["start", "--attach", container_id], timeout=240 if authentication else 90, allow_failure=True, output_limit=262144)
         probe_finished = utc_now()
+        if authentication:
+            report["probe_finished_utc"] = probe_finished
         stderr = docker.last_stderr
         final = docker.inspect("container", container_id) or {}
-        validate_container(final, image, run_id, expected_env)
+        validate_container(final, image, run_id, expected_env, authentication)
         check(final.get("Id") == container_id and type(final.get("State")) is dict
               and final["State"].get("Running") is False and final["State"].get("Status") == "exited", "container_final_state_invalid")
         state = final["State"]
@@ -406,7 +560,8 @@ def run(binary, report_path):
               and type(state.get("OOMKilled")) is bool and type(state.get("Error")) is str, "container_state_invalid")
         report.update(container_exit_code=state["ExitCode"], container_stdout_bytes=len(raw), container_stderr_bytes=len(stderr),
                       container_oom_killed=state["OOMKilled"], container_start_error_present=bool(state["Error"]))
-        report["probe"] = validate_probe(parse_json(raw), identity, sources, lock, probe_started, probe_finished)
+        validator = validate_suite if authentication else validate_probe
+        report["probe"] = validator(parse_json(raw), identity, sources, lock, probe_started, probe_finished)
         check(code == 0 and state["ExitCode"] == 0 and not state["OOMKilled"] and not state["Error"]
               and not stderr and report["probe"]["success"], "oauth_probe_failed")
         report["success"] = True
@@ -435,6 +590,8 @@ def run(binary, report_path):
             report["errors"].append("source_or_runtime_changed")
         report["success"] = report["success"] and not report["errors"] and all(report["cleanup"].values())
         report["finished_utc"] = utc_now()
+        if authentication:
+            report = authentication_evidence(report, bindings)
         with report_path.open("x", encoding="utf-8") as stream:
             json.dump(report, stream, indent=2, sort_keys=True)
             stream.write("\n")
@@ -445,16 +602,21 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--rclone", required=True, type=Path)
     parser.add_argument("--report", required=True, type=Path)
+    parser.add_argument("--authentication-evidence", action="store_true",
+                        help="Run the fresh six-case suite and emit closed schema-5 local authentication evidence")
     args = parser.parse_args()
     def interrupted(_signum, _frame):
         raise KeyboardInterrupt
     signal.signal(signal.SIGTERM, interrupted)
     try:
-        result = run(args.rclone, args.report)
+        result = run(args.rclone, args.report, authentication=args.authentication_evidence)
     except (SupervisorError, OSError, ValueError, KeyError, TypeError, KeyboardInterrupt):
         print("pCloud OAuth feasibility preflight failed", file=sys.stderr)
         return 1
-    print(json.dumps({"success": result["success"], "ledger_eligible": False, "errors": result["errors"]}))
+    summary = {"success": result["success"], "errors": result["errors"]}
+    summary.update({"schema_version": 5, "scope": "rclone_backend_protocol_fixture"}
+                   if args.authentication_evidence else {"ledger_eligible": False})
+    print(json.dumps(summary))
     return 0 if result["success"] else 1
 
 

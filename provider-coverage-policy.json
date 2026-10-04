@@ -1011,7 +1011,7 @@
       "review_required": false,
       "unresolved_applicability": []
     },
-    "pcloud-saved-token-read-partial-fixture": {
+    "pcloud-read-authentication-fixture": {
       "required": {
         "application": [
           "listing",
@@ -2624,7 +2624,7 @@
     "pcloud": {
       "canonical_name": "pcloud",
       "schema_sha256": "4c3f969b6f5f1dc69f7d4912adb7c6bcec2da68bd84a75f14822597d29246b00",
-      "profile": "pcloud-saved-token-read-partial-fixture",
+      "profile": "pcloud-read-authentication-fixture",
       "notes": [
         "pCloud account and OAuth consent with region hostname retained. Pinned docs show a zero-expiry client token; this does not establish universal vendor token lifetime. Revocation/denial and explicit recovery remain required.",
         "Free account/API eligibility: review_required",
@@ -2632,7 +2632,8 @@
         "Do not claim tokens can never be revoked or expire server-side. A zero-expiry config value is client behavior, not a vendor lifetime guarantee.",
         "Provider-supported refresh contract for nonstandard/expiring imported tokens remains unestablished.",
         "The predefined pcloud_saved_token_read_v1 local protocol fixture uses only generated synthetic saved tokens, an owned loopback HTTPS endpoint and a per-child CA. Its ten observed capabilities cover the complete three-file synthetic inventory, hashes and readback, saved-token use/rejection, member read denial, missing objects, fixture write rejection, byte-preserved config/source and cleanup.",
-        "Fresh OAuth authentication remains an explicit unproved local requirement. Saved-token read/rejection and member denial do not establish fresh consent, token refresh, vendor revocation, cancellation, regional service behavior or application/vendor acceptance. Both existing lifecycle applicability reviews and all application/vendor obligations remain unchanged.",
+        "The separate Linux/amd64 schema-5 pcloud_oauth_authentication_v1 suite contributes only authentication: full callback/exchange/persistence/fresh-child read, wrong nonempty state, denied consent, exact invalid-code and wrong-secret Basic-then-form denials, and owned waiting-process cancellation. The saved-token and authentication receipts must both pass with current runtime/source bindings; default positive feasibility receipts remain ineligible.",
+        "Process cancellation is not application cancellation. Blank state is accepted upstream, and callback hostname influences the token endpoint; the fixture retains network-none containment and never claims comprehensive CSRF or authority confinement. Token refresh, vendor revocation, regional service behavior and application/vendor acceptance remain separate. Both lifecycle applicability reviews and all application/vendor obligations are unchanged.",
         "Current receipt provenance includes the TLS and pCloud fixture sources and the fully hashed fixture dependency lock. The producer must also validate its loaded dependency versions; a lock hash alone is not proof of the installed environment."
       ],
       "source_links": [

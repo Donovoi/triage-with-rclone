@@ -114,8 +114,14 @@ jobs:
           python -B ../scripts/provider-lab/pcloud-oauth/run_container.py \
             --rclone "$RUNNER_TEMP/rclone-smoke" \
             --report "$RUNNER_TEMP/pcloud-oauth-feasibility.json"
-      # Internet Archive requires anonymous plus LOW evidence; pCloud stays partial.
-      # The independent Linux SMB contract brings the complete-profile gate to 19.
+      - name: Isolated pCloud OAuth authentication evidence
+        if: ${{ !cancelled() }}
+        run: |
+          python -B ../scripts/provider-lab/pcloud-oauth/run_container.py \
+            --rclone "$RUNNER_TEMP/rclone-smoke" --authentication-evidence \
+            --report "$RUNNER_TEMP/pcloud-oauth-authentication.json"
+      # IA requires both read modes; pCloud requires saved-token plus fresh auth.
+      # Independent Linux SMB and pCloud evidence bring the local gate to 20.
       - name: Require current provider plans and protocol evidence
         if: ${{ !cancelled() }}
         run: |
@@ -125,7 +131,8 @@ jobs:
             --fixture-receipt "$RUNNER_TEMP/filefabric-renewal-fixture.json" \
             --fixture-receipt "$RUNNER_TEMP/internetarchive-low-auth-fixture.json" \
             --fixture-receipt "$RUNNER_TEMP/smb-protocol.json" \
-            --require-plans --require-fixtures local,archive,http,webdav,ftp,sftp,s3,swift,b2,azureblob,azurefiles,seafile,memory,koofr,pixeldrain,filefabric,netstorage,internetarchive,smb
+            --fixture-receipt "$RUNNER_TEMP/pcloud-oauth-authentication.json" \
+            --require-plans --require-fixtures local,archive,http,webdav,ftp,sftp,s3,swift,b2,azureblob,azurefiles,seafile,memory,koofr,pixeldrain,filefabric,netstorage,internetarchive,smb,pcloud
       - name: Offline provider contracts
         run: cargo test --locked --release --test provider_smoke --test provider_matrix -- --test-threads=1
       - name: Login and credential regressions without accounts
@@ -218,6 +225,7 @@ jobs:
             ${{ runner.temp }}/filefabric-renewal-fixture.json
             ${{ runner.temp }}/internetarchive-low-auth-fixture.json
             ${{ runner.temp }}/smb-protocol.json
+            ${{ runner.temp }}/pcloud-oauth-authentication.json
             ${{ runner.temp }}/provider-evidence.json
           if-no-files-found: warn
           retention-days: 14

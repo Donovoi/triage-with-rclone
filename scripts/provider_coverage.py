@@ -96,6 +96,7 @@ PCLOUD_REQUIRED_CAPABILITIES = PCLOUD_ONLY_CAPABILITIES | {
     "source_preservation", "config_preservation", "fixture_write_rejection", "cleanup",
 }
 PCLOUD_SAVED_TOKEN_MODE = "pcloud_saved_token_read_v1"
+PCLOUD_AUTHENTICATION_MODE = "pcloud_oauth_authentication_v1"
 NETSTORAGE_REQUIRED_CAPABILITIES = frozenset({
     "listing", "download_hash", "missing_object_rejection", "authentication_rejection",
     "source_preservation", "config_preservation", "fixture_write_rejection", "cleanup",
@@ -326,6 +327,44 @@ def compute_smb_bindings(root):
         fail("smb_evidence_bindings_invalid")
 
 
+def pcloud_evidence_module():
+    """Import definitions only from the current owned stdlib supervisor."""
+    path = plain_path(ROOT / "scripts" / "provider-lab" / "pcloud-oauth" / "run_container.py")
+    try:
+        source = path.read_bytes()
+        if len(source) > MAX_RECEIPT:
+            fail("pcloud_evidence_helper_size_limit")
+        spec = importlib.util.spec_from_file_location("coverage_pcloud_evidence", path)
+        module = importlib.util.module_from_spec(spec)
+        exec(compile(source, str(path), "exec"), module.__dict__)
+        return module
+    except (ImportError, OSError, SyntaxError, AttributeError, TypeError):
+        fail("pcloud_evidence_helper_unavailable")
+
+
+def compute_pcloud_bindings(root):
+    try:
+        return pcloud_evidence_module().compute_bindings(plain_path(Path(root).absolute()))
+    except (OSError, ValueError, TypeError, KeyError, RuntimeError):
+        fail("pcloud_evidence_bindings_invalid")
+
+
+def validate_pcloud_receipt(receipt, runtime, bindings, now, max_age_hours, fixture_manifest_sha256):
+    if bindings is None:
+        fail("unknown_receipt_schema")
+    if (not isinstance(bindings, dict) or not valid_hash(fixture_manifest_sha256)
+            or bindings.get("fixture_manifest_sha256") != fixture_manifest_sha256):
+        fail("pcloud_evidence_bindings_invalid")
+    try:
+        pcloud_evidence_module().validate_authentication_evidence(receipt, runtime, bindings, now, max_age_hours)
+    except (ValueError, RuntimeError) as error:
+        code = str(error)
+        fail(code if re.fullmatch(r"[a-z][a-z0-9_]{0,80}", code) else "invalid_pcloud_evidence")
+    except (TypeError, KeyError, AttributeError, OverflowError):
+        fail("invalid_pcloud_evidence")
+    return receipt
+
+
 def validate_smb_receipt(receipt, runtime, bindings, now, max_age_hours, fixture_manifest_sha256):
     if bindings is None:
         # Existing callers have not opted into the separately bound format.
@@ -516,9 +555,11 @@ def parse_utc(value):
 
 
 def validate_receipt(receipt, runtime, harness_sha256, now, max_age_hours=MAX_AGE_HOURS,
-                     fixture_manifest_sha256=None, smb_bindings=None):
+                     fixture_manifest_sha256=None, smb_bindings=None, pcloud_bindings=None):
     if isinstance(receipt, dict) and type(receipt.get("schema_version")) is int and receipt["schema_version"] == 3:
         return validate_smb_receipt(receipt, runtime, smb_bindings, now, max_age_hours, fixture_manifest_sha256)
+    if isinstance(receipt, dict) and type(receipt.get("schema_version")) is int and receipt["schema_version"] == 5:
+        return validate_pcloud_receipt(receipt, runtime, pcloud_bindings, now, max_age_hours, fixture_manifest_sha256)
     if (not isinstance(receipt, dict) or type(receipt.get("schema_version")) is not int
             or receipt["schema_version"] not in (1, 2, 4) or receipt.get("scope") != "rclone_backend_protocol_fixture"):
         fail("unknown_receipt_schema")
@@ -659,7 +700,7 @@ def merge_fixture_observation(observed, capabilities, failed, run):
 
 
 def evaluate(catalog, policy, runtime, receipts, harness_sha256, now=None, max_age_hours=MAX_AGE_HOURS,
-             fixture_manifest_sha256=None, smb_bindings=None):
+             fixture_manifest_sha256=None, smb_bindings=None, pcloud_bindings=None):
     """Receipts are explicit batch inputs. Failed current evidence stays failed."""
     now = now or datetime.now(timezone.utc)
     validate_policy(policy)
@@ -685,7 +726,7 @@ def evaluate(catalog, policy, runtime, receipts, harness_sha256, now=None, max_a
     for receipt in receipts:
         try:
             validate_receipt(receipt, runtime, harness_sha256, now, max_age_hours, fixture_manifest_sha256,
-                             smb_bindings=smb_bindings)
+                             smb_bindings=smb_bindings, pcloud_bindings=pcloud_bindings)
             for row in receipt["backends"]:
                 if row["backend"] not in {entry["backend"] for entry in catalog}:
                     fail("fixture_backend_absent_from_catalog")
@@ -722,7 +763,18 @@ def evaluate(catalog, policy, runtime, receipts, harness_sha256, now=None, max_a
                         contributed = {key: value for key, value in contributed.items()
                                        if key in INTERNETARCHIVE_LOW_REQUIRED_CAPABILITIES}
                 if row["backend"] == "pcloud":
-                    run["fixture_mode"] = PCLOUD_SAVED_TOKEN_MODE
+                    mode = row.get("fixture_mode", PCLOUD_SAVED_TOKEN_MODE)
+                    run["fixture_mode"] = mode
+                    if mode == PCLOUD_AUTHENTICATION_MODE:
+                        native = receipt["native_evidence"]
+                        run.update(platform="linux", architecture="amd64", base_image=native["base_image"],
+                                   image_id=native["image_id"], python_version=native["python_version"],
+                                   dependency_lock_sha256=native["dependency_lock_sha256"],
+                                   source_sha256=dict(native["source_sha256"]), harness_sha256=receipt["harness_sha256"])
+                        contributed = {"authentication": contributed["authentication"]}
+                    mode_observed = observed.setdefault("modes", {}).setdefault(
+                        mode, {"capabilities": {}, "failed": False, "runs": []})
+                    merge_fixture_observation(mode_observed, contributed, failed, run)
                 if row["backend"] == "filefabric":
                     mode = row.get("fixture_mode", FILEFABRIC_CACHED_MODE)
                     run["fixture_mode"] = mode
@@ -776,9 +828,11 @@ def evaluate(catalog, policy, runtime, receipts, harness_sha256, now=None, max_a
                     if value in ("passed", "failed"):
                         capabilities[capability] = value
                 evidence["runs"] = observed["runs"]
-                if backend in ("filefabric", "smb", "internetarchive"):
+                if backend in ("filefabric", "smb", "internetarchive", "pcloud"):
                     evidence["modes"] = {}
                     contracts = ({SMB_MODE: SMB_REQUIRED_CAPABILITIES} if backend == "smb"
+                                 else {PCLOUD_SAVED_TOKEN_MODE: PCLOUD_REQUIRED_CAPABILITIES,
+                                       PCLOUD_AUTHENTICATION_MODE: {"authentication"}} if backend == "pcloud"
                                  else INTERNETARCHIVE_MODE_CONTRACTS if backend == "internetarchive"
                                  else FILEFABRIC_MODE_CONTRACTS)
                     for mode, contract in contracts.items():
@@ -993,8 +1047,11 @@ def main(argv=None):
         smb_bindings = (compute_smb_bindings(ROOT / "scripts" / "provider-lab" / "smb")
                         if any(isinstance(receipt, dict) and type(receipt.get("schema_version")) is int
                                and receipt["schema_version"] == 3 for receipt in receipts) else None)
+        pcloud_bindings = (compute_pcloud_bindings(ROOT / "scripts" / "provider-lab" / "pcloud-oauth")
+                           if any(isinstance(receipt, dict) and type(receipt.get("schema_version")) is int
+                                  and receipt["schema_version"] == 5 for receipt in receipts) else None)
         report = evaluate(catalog, policy, runtime, receipts, harness_sha, max_age_hours=args.max_age_hours,
-                          fixture_manifest_sha256=fixture_sha, smb_bindings=smb_bindings)
+                          fixture_manifest_sha256=fixture_sha, smb_bindings=smb_bindings, pcloud_bindings=pcloud_bindings)
         report["errors"] = sorted(set(report["errors"] + receipt_errors))
         report["all_complete"] = report["all_complete"] and not report["errors"]
         report["gate_errors"] = gate_errors(report, args.require_plans, required, args.require_complete)

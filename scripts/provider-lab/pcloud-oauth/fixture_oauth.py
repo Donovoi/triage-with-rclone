@@ -1,4 +1,4 @@
-"""Owned pCloud OAuth positive-feasibility service; no acceptance/ledger claim.
+"""Owned pCloud OAuth synthetic protocol service; no vendor/ledger verdict.
 
 The caller validates and owns rclone's separate callback listener before binding
 its state. This service cannot prove callback receipt or native persistence; the
@@ -24,6 +24,10 @@ MAX_RESPONSE_BYTES = 32768
 LIFETIME_SECONDS = 60
 READ_STEPS = (("root_list", ""), ("checksum", MEMBERS[0]),
               ("link", MEMBERS[0]), ("content", MEMBERS[0]))
+MODE_REQUESTS = {"positive": 6, "wrong_state": 1, "consent_denied": 1,
+                 "invalid_code": 3, "wrong_client_secret": 3, "cancelled": 0}
+DENIALS = {"invalid_code": ("invalid_grant", "synthetic authorization code rejected"),
+           "wrong_client_secret": ("invalid_client", "synthetic client secret rejected")}
 
 
 class OAuthError(PCloudError):
@@ -38,22 +42,37 @@ def _state_value(value):
 
 
 class OAuthState(PCloudState):
-    def __init__(self, files, client_id, client_secret, code, token, wrong_token):
+    def __init__(self, files, client_id, client_secret, code, token, wrong_token, *, mode="positive",
+                 alternate_state=None, alternate_code=None, alternate_secret=None):
         credentials = (client_id, client_secret, code, token, wrong_token)
         if (any(type(value) is not str or not re.fullmatch(r"[A-Za-z0-9_-]{16,128}", value)
                 for value in credentials) or len(set(credentials)) != len(credentials)):
             raise OAuthError("oauth_invalid_fixture_credentials")
+        alternates = (alternate_state, alternate_code, alternate_secret)
+        if (type(mode) is not str or mode not in MODE_REQUESTS
+                or (mode != "positive" and any(value is None for value in alternates))
+                or (any(value is not None for value in alternates)
+                    and (not _state_value(alternate_state)
+                         or any(type(value) is not str or not re.fullmatch(r"[A-Za-z0-9_-]{16,128}", value)
+                                for value in (alternate_code, alternate_secret))
+                         or len(set((*credentials, *alternates))) != 8))):
+            raise OAuthError("oauth_invalid_fixture_mode")
         super().__init__(files, token, wrong_token)
         self.client_id, self.client_secret, self.code = client_id, client_secret, code
         self._original_credentials = credentials
+        self.mode = mode
+        self.alternate_state, self.alternate_code, self.alternate_secret = alternates
+        self._original_mode = (mode, *alternates)
         self._bound_state = self._original_bound_state = None
         self.authorize_requests = self.token_requests = 0
+        self.token_denials = self.basic_denials = self.form_denials = 0
         self.token_issued = self.failed = False
         self.phase = "unbound"
 
     def bind_state(self, value):
         with self.lock:
-            if (not _state_value(value) or self._bound_state is not None or not self._started
+            if (not _state_value(value) or self.mode == "cancelled" or value == self.alternate_state
+                    or self._bound_state is not None or not self._started
                     or self.requests or self.failed or self.phase != "unbound" or not self.source_preserved()):
                 self.failed = True
                 raise OAuthError("oauth_state_binding_refused")
@@ -66,6 +85,7 @@ class OAuthState(PCloudState):
                 return (super().source_preserved()
                         and (self.client_id, self.client_secret, self.code, self.token, self.wrong_token)
                         == self._original_credentials
+                        and (self.mode, self.alternate_state, self.alternate_code, self.alternate_secret) == self._original_mode
                         and self._bound_state == self._original_bound_state)
             except (AttributeError, TypeError, ValueError):
                 return False
@@ -75,7 +95,8 @@ class OAuthState(PCloudState):
             result = super().snapshot()
             result.update(authorize_requests=self.authorize_requests, token_requests=self.token_requests,
                           token_issued=self.token_issued, bound_state=self._bound_state is not None,
-                          phase=self.phase, failed=self.failed)
+                          phase=self.phase, failed=self.failed, mode=self.mode,
+                          token_denials=self.token_denials, basic_denials=self.basic_denials, form_denials=self.form_denials)
             return result
 
 
@@ -162,9 +183,15 @@ class _OAuthHandler(_PCloudHandler):
                     "redirect_uri": CALLBACK, "response_type": "code", "state": state._bound_state}.items()))
         if state.phase != "bound" or not hmac.compare_digest(self.path, expected):
             raise OAuthError("oauth_authorize_refused")
-        location = CALLBACK + "?" + urlencode(sorted({"code": state.code, "hostname": f"127.0.0.1:{self.server.server_address[1]}",
-                                                   "locationid": "1", "state": state._bound_state}.items()))
-        body = b'{"status":"synthetic_code_issued"}'
+        values = {"hostname": f"127.0.0.1:{self.server.server_address[1]}", "locationid": "1",
+                  "state": state.alternate_state if state.mode == "wrong_state" else state._bound_state}
+        if state.mode == "consent_denied":
+            values.update(error="access_denied", error_description="synthetic consent denied")
+            body = b'{"status":"synthetic_consent_denied"}'
+        else:
+            values["code"] = state.alternate_code if state.mode == "invalid_code" else state.code
+            body = b'{"status":"synthetic_code_issued"}'
+        location = CALLBACK + "?" + urlencode(sorted(values.items()))
         if state.response_bytes + len(body) > MAX_RESPONSE_BYTES:
             state.budget_exceeded = True
             raise OAuthError("oauth_response_limit")
@@ -200,6 +227,11 @@ class _OAuthHandler(_PCloudHandler):
         if self.headers.get("Content-Type") != "application/x-www-form-urlencoded":
             state.rejected_payload_bytes += len(body)
             raise OAuthError("oauth_form_type_refused")
+        if state.mode in DENIALS:
+            self._deny_exchange(body)
+            return
+        if state.mode != "positive":
+            raise OAuthError("oauth_exchange_mode_refused")
         if state.phase != "authorized":
             raise OAuthError("oauth_exchange_order_refused")
         # oauth2 v0.36.0 AuthStyleAutoDetect first tries escaped client credentials
@@ -217,13 +249,46 @@ class _OAuthHandler(_PCloudHandler):
         state.token_issued = True
         state.phase = "exchanged"
 
+    def _deny_exchange(self, body):
+        state = self.server.state
+        if state.phase not in ("authorized", "basic_denied"):
+            raise OAuthError("oauth_denial_order_refused")
+        basic_style = state.phase == "authorized"
+        secret = state.alternate_secret if state.mode == "wrong_client_secret" else state.client_secret
+        code = state.alternate_code if state.mode == "invalid_code" else state.code
+        values = {"code": code, "grant_type": "authorization_code", "redirect_uri": CALLBACK}
+        if basic_style:
+            expected_auth = "Basic " + base64.b64encode((state.client_id + ":" + secret).encode("ascii")).decode("ascii")
+            valid_auth = hmac.compare_digest(self.headers.get("Authorization", ""), expected_auth)
+        else:
+            values.update(client_id=state.client_id, client_secret=secret)
+            valid_auth = self.headers.get_all("Authorization") is None
+        expected_body = urlencode(sorted(values.items())).encode("ascii")
+        if not valid_auth or not hmac.compare_digest(body, expected_body):
+            state.rejected_payload_bytes += len(body)
+            raise OAuthError("oauth_expected_denial_mismatch")
+        # Only the exact source-derived bad-code/secret request earns this
+        # observation. Generic malformed or out-of-order refusals stay failures.
+        error, description = DENIALS[state.mode]
+        self._json(400, {"error": error, "error_description": description})
+        state.token_denials += 1
+        state.auth_denied += 1
+        if basic_style:
+            state.basic_denials += 1
+            state.events.append(("token_denied_basic", error))
+            state.phase = "basic_denied"
+        else:
+            state.form_denials += 1
+            state.events.append(("token_denied_form", error))
+            state.phase = "denied"
+
     def dispatch(self):
         with self.server.state.lock:
             state = self.server.state
             self._count_request()
             if self.path.startswith("/oauth"):
                 state.oauth_requests += 1
-            if state.requests > MAX_REQUESTS or time.monotonic() >= state.deadline:
+            if state.requests > min(MAX_REQUESTS, MODE_REQUESTS.get(state.mode, 0)) or time.monotonic() >= state.deadline:
                 state.budget_exceeded = True
                 self._invalid(429)
                 return
