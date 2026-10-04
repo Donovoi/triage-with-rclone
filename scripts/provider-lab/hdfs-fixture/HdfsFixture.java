@@ -48,6 +48,8 @@ import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants;
 import org.apache.hadoop.hdfs.server.datanode.DataNode;
 import org.apache.hadoop.hdfs.server.namenode.NameNode;
+import org.apache.hadoop.metrics2.MetricsException;
+import org.apache.hadoop.metrics2.lib.DefaultMetricsSystem;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.util.ExitUtil;
 import org.apache.hadoop.util.VersionInfo;
@@ -103,7 +105,7 @@ public final class HdfsFixture {
   }
   private static String failureReason(Throwable failure) {
     String selected = "unclassified";
-    int selectedRank = 10;
+    int selectedRank = 11;
     Throwable current = failure;
     // A cycle or unexpectedly deep chain cannot make inspection unbounded.
     for (int depth = 0; current != null && depth < 8; depth++) {
@@ -111,7 +113,7 @@ public final class HdfsFixture {
       if (current instanceof ExitUtil.ExitException) return "exit_requested";
       if (current instanceof ExitUtil.HaltException) return "halt_requested";
       String category = "unclassified";
-      int rank = 10;
+      int rank = 11;
       if (current instanceof ClassNotFoundException || current instanceof NoClassDefFoundError) {
         category = "missing_class"; rank = 0;
       } else if (current instanceof OutOfMemoryError || current instanceof StackOverflowError) {
@@ -120,19 +122,21 @@ public final class HdfsFixture {
         category = "invalid_config"; rank = 2;
       } else if (current instanceof LinkageError) {
         category = "linkage_failure"; rank = 3;
+      } else if (current instanceof MetricsException) {
+        category = "metrics_failure"; rank = 4;
       } else if (current instanceof NullPointerException) {
-        category = "null_state"; rank = 4;
+        category = "null_state"; rank = 5;
       } else if (current instanceof IllegalStateException) {
-        category = "illegal_state"; rank = 5;
+        category = "illegal_state"; rank = 6;
       } else if (current instanceof UnsupportedOperationException) {
-        category = "unsupported_operation"; rank = 6;
+        category = "unsupported_operation"; rank = 7;
       } else if (current instanceof SecurityException) {
-        category = "security_failure"; rank = 7;
+        category = "security_failure"; rank = 8;
       } else if (current instanceof FileNotFoundException) {
-        category = "file_missing"; rank = 8;
+        category = "file_missing"; rank = 9;
         if (missingWebAppResource((FileNotFoundException) current)) category = "http_webapp_missing";
       } else if (current instanceof IOException) {
-        category = "io_failure"; rank = 9;
+        category = "io_failure"; rank = 10;
       }
       if (rank < selectedRank) { selected = category; selectedRank = rank; }
       try { current = current.getCause(); }
@@ -551,6 +555,9 @@ public final class HdfsFixture {
       // Pinned common-JAR embedding API; intercepted exits still fail evidence.
       ExitUtil.disableSystemExit();
       ExitUtil.disableSystemHalt();
+      // Co-located normal daemons need unique metrics source/MBean names and
+      // shared metrics lifecycle accounting; filesystem security is unchanged.
+      DefaultMetricsSystem.setMiniClusterMode(true);
       Configuration conf = configuration();
       UserGroupInformation.setConfiguration(conf);
       UserGroupInformation.setLoginUser(UserGroupInformation.createRemoteUser(OWNER));

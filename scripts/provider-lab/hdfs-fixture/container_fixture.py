@@ -59,6 +59,7 @@ null_state illegal_state unsupported_operation security_failure
 origin_datanode_constructor origin_datanode_instantiate origin_datanode_make_instance
 origin_datanode_start origin_datanode_xceiver origin_datanode_config origin_datanode_http
 origin_datanode_http_filters
+metrics_failure
 """.split())
 
 
@@ -455,6 +456,7 @@ def run(rclone, *, runner_factory=D.Docker, downloader=download_jars):
                   stage="preflight", java_diagnostic=dict(status="not_requested"),
                   cleanup_excludes=["shared_base_image", "shared_build_cache"],
                   webapp_scope="synthetic_scaffolding_not_vendor_ui",
+                  metrics_scope="shared_metrics_for_colocated_test_daemons",
                   review_status="partial_protocol_only", authentication_mode="SIMPLE",
                   http_services_present=True, network_scope="network_none_container_not_host_or_build_registry",
                   cleanup=dict(container_removed=False, image_removed=False, context_removed=False,
