@@ -556,6 +556,10 @@ def validate_plan_metadata(entry, profile):
 def validate_policy(policy):
     if not isinstance(policy, dict) or type(policy.get("schema_version")) is not int or policy["schema_version"] != 2:
         fail("invalid_policy")
+    reviewed_version = policy.get("reviewed_runtime_version")
+    if not isinstance(reviewed_version, str) or not re.fullmatch(
+            r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)", reviewed_version):
+        fail("invalid_policy")
     profiles, providers = policy.get("profiles"), policy.get("providers")
     if not isinstance(profiles, dict) or not profiles or not isinstance(providers, dict):
         fail("invalid_policy")
@@ -856,6 +860,9 @@ def evaluate(catalog, policy, runtime, receipts, harness_sha256, now=None, max_a
         profile = None
         if planned is None:
             policy_status = "missing_plan"
+        elif policy["reviewed_runtime_version"] != runtime.get("version"):
+            # Matching option schemas cannot establish review of a new runtime.
+            policy_status = "unreviewed_runtime"
         elif ("schema_sha256_by_platform" in planned
               and runtime["platform"] not in planned["schema_sha256_by_platform"]):
             policy_status = "unreviewed_platform"
@@ -1122,7 +1129,8 @@ def main(argv=None):
         runtime, catalog = query_runtime(args.rclone, args.manifest)
         # Even a malformed/missing policy must leave every discovered backend in
         # the failure receipt; a policy failure cannot erase the coverage gap.
-        unreviewed = {"schema_version": 2, "profiles": {"unreviewed": {
+        unreviewed = {"schema_version": 2, "reviewed_runtime_version": runtime["version"],
+            "profiles": {"unreviewed": {
             "required": {"application": ["cleanup"]}, "review_required": True}}, "providers": {}}
         summary_diagnostic = None
         try:

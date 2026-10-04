@@ -36,7 +36,7 @@ def policy_catalog():
     entry = copy.deepcopy(actual["providers"]["pcloud"])
     catalog = C.catalog_from_schemas([{"Name": "pcloud", "Prefix": "pcloud", "Options": []}])
     entry.pop("schema_sha256_by_platform", None); entry["schema_sha256"] = catalog[0]["schema_sha256"]
-    return {"schema_version": 2, "providers": {"pcloud": entry},
+    return {"schema_version": 2, "reviewed_runtime_version": RUNTIME["version"], "providers": {"pcloud": entry},
             "profiles": {entry["profile"]: copy.deepcopy(actual["profiles"][entry["profile"]])}}, catalog
 
 
