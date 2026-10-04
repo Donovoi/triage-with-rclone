@@ -39,7 +39,8 @@ def policy_for(catalog, application=True, vendor=True):
         if "authentication" not in required["application"]:
             required["application"].append("authentication")
     refresh = "required" if vendor else "not_applicable"
-    return {"schema_version": 2, "profiles": {"test": {"required": required}},
+    return {"schema_version": 2, "reviewed_runtime_version": RUNTIME["version"],
+            "profiles": {"test": {"required": required}},
             "providers": {row["backend"]: {"canonical_name": row["canonical_name"],
                  "schema_sha256": row["schema_sha256"], "profile": "test",
                  "auth_applicability": "credentials" if application or vendor else "none",
@@ -208,6 +209,62 @@ class CoverageTests(unittest.TestCase):
                      [{"Name": "http", "Options": [{"Name": "x", "Type": "string", "Required": "true"}]}]]:
             with self.assertRaises(coverage.CoverageError):
                 coverage.catalog_from_schemas(data)
+
+    def test_policy_requires_a_stable_reviewed_runtime_version(self):
+        missing = copy.deepcopy(self.policy)
+        del missing["reviewed_runtime_version"]
+        with self.assertRaisesRegex(coverage.CoverageError, "^invalid_policy$"):
+            coverage.validate_policy(missing)
+        for value in (None, True, 1751, 1.75, [], {}, "", "1.75", "1.75.1.0", "v1.75.1",
+                      "1.75.1-beta.1", "1.75.1+build", "01.75.1", "1.075.1", "1.75.01",
+                      " 1.75.1", "1.75.1\n", "１.75.1"):
+            with self.subTest(value=value):
+                policy = copy.deepcopy(self.policy)
+                policy["reviewed_runtime_version"] = value
+                with self.assertRaisesRegex(coverage.CoverageError, "^invalid_policy$"):
+                    coverage.validate_policy(policy)
+        for value in ("0.0.0", "1.75.1", "2.0.0"):
+            policy = copy.deepcopy(self.policy)
+            policy["reviewed_runtime_version"] = value
+            coverage.validate_policy(policy)
+
+    def test_version_only_drift_invalidates_every_existing_plan_without_promoting_receipts(self):
+        catalog = coverage.catalog_from_schemas([schema("http"), schema("local"), schema("newbackend")])
+        policy = policy_for([row for row in catalog if row["backend"] != "newbackend"])
+        original_policy = copy.deepcopy(policy)
+        for version in ("1.76.0", "1.74.0"):
+            with self.subTest(version=version):
+                runtime = dict(RUNTIME, version=version)
+                current_receipt = receipt()
+                current_receipt["runtime"]["version"] = version
+                result = coverage.evaluate(catalog, policy, runtime, [current_receipt], HARNESS, NOW,
+                                           fixture_manifest_sha256="c" * 64)
+                self.assertEqual(result["errors"], [])
+                self.assertEqual([{key: row[key] for key in original}
+                                  for row, original in zip(result["providers"], catalog)], catalog)
+                self.assertEqual({row["backend"]: row["policy_status"] for row in result["providers"]}, {
+                    "http": "unreviewed_runtime", "local": "unreviewed_runtime", "newbackend": "missing_plan"})
+                for row in result["providers"]:
+                    self.assertFalse(row["complete"])
+                    self.assertTrue(all(value == "not_verified" for value in row["lifecycle_applicability"].values()))
+                    self.assertEqual(row["evidence"], {tier: {"status": "not_verified", "capabilities": {}}
+                                                      for tier in coverage.TIERS})
+                self.assertFalse(result["all_plans_current"])
+                self.assertFalse(result["all_complete"])
+                self.assertEqual(coverage.gate_errors(result, require_plans=True,
+                                 require_fixtures=["http"], require_complete=True),
+                                 ["provider_coverage_incomplete", "provider_plans_incomplete", "required_fixture_not_verified"])
+        self.assertEqual(policy, original_policy)
+
+    def test_matching_reviewed_runtime_preserves_current_plan_and_protocol_evidence(self):
+        result = self.evaluate([receipt()])
+        self.assertTrue(result["all_plans_current"])
+        row = result["providers"][0]
+        self.assertEqual(row["policy_status"], "current")
+        self.assertEqual(row["evidence"]["local_protocol"]["status"], "passed")
+        self.assertEqual(row["evidence"]["application"]["status"], "not_verified")
+        self.assertEqual(row["evidence"]["vendor"]["status"], "not_verified")
+        self.assertEqual(coverage.gate_errors(result, require_plans=True, require_fixtures=["http"]), [])
 
     def test_type_is_required_and_type_only_drift_invalidates_plan(self):
         for value in (None, "", False, [], "string\nprivate", "string/unsafe", "string|"):
@@ -1172,7 +1229,8 @@ class CoverageTests(unittest.TestCase):
         actual = json.loads((ROOT / "provider-coverage-policy.json").read_text(encoding="utf-8"))
         entry = copy.deepcopy(actual["providers"]["internetarchive"])
         entry["schema_sha256"] = catalog[0]["schema_sha256"]
-        policy = {"schema_version": 2, "providers": {"internetarchive": entry},
+        policy = {"schema_version": 2, "reviewed_runtime_version": RUNTIME["version"],
+                  "providers": {"internetarchive": entry},
                   "profiles": {entry["profile"]: copy.deepcopy(actual["profiles"][entry["profile"]])}}
         result = self.evaluate([internetarchive_receipt()], policy, catalog)
         self.assertEqual(result["errors"], [])
@@ -1291,7 +1349,8 @@ class CoverageTests(unittest.TestCase):
         actual = json.loads((ROOT / "provider-coverage-policy.json").read_text(encoding="utf-8"))
         entry = copy.deepcopy(actual["providers"]["pcloud"])
         entry["schema_sha256"] = catalog[0]["schema_sha256"]
-        return catalog, {"schema_version": 2, "providers": {"pcloud": entry},
+        return catalog, {"schema_version": 2, "reviewed_runtime_version": RUNTIME["version"],
+                         "providers": {"pcloud": entry},
                          "profiles": {entry["profile"]: copy.deepcopy(actual["profiles"][entry["profile"]])}}
 
     def test_pcloud_saved_token_receipt_leaves_fresh_authentication_unproved(self):
@@ -1413,7 +1472,7 @@ class CoverageTests(unittest.TestCase):
         providers = {row["backend"]: copy.deepcopy(actual["providers"][row["backend"]]) for row in catalog}
         for row in catalog:
             providers[row["backend"]]["schema_sha256"] = row["schema_sha256"]
-        policy = {"schema_version": 2, "providers": providers,
+        policy = {"schema_version": 2, "reviewed_runtime_version": RUNTIME["version"], "providers": providers,
                   "profiles": {entry["profile"]: actual["profiles"][entry["profile"]] for entry in providers.values()}}
         candidate = pcloud_receipt()
         candidate["backends"].extend(internetarchive_receipt()["backends"] + netstorage_receipt()["backends"])
@@ -1447,7 +1506,7 @@ class CoverageTests(unittest.TestCase):
     def test_netstorage_actual_policy_passes_only_protocol_and_preserves_ia_gap(self):
         catalog = coverage.catalog_from_schemas([schema("netstorage"), schema("internetarchive")])
         actual = json.loads((ROOT / "provider-coverage-policy.json").read_text(encoding="utf-8"))
-        policy = {"schema_version": 2, "providers": {}, "profiles": {}}
+        policy = {"schema_version": 2, "reviewed_runtime_version": RUNTIME["version"], "providers": {}, "profiles": {}}
         for item in catalog:
             backend = item["backend"]
             entry = copy.deepcopy(actual["providers"][backend])
@@ -1998,6 +2057,50 @@ class CoverageTests(unittest.TestCase):
             report = json.loads(output.read_text())
             self.assertEqual(len(report["providers"]), 1)
             self.assertNotIn("PRIVATE_CANARY", captured.getvalue() + output.read_text())
+
+    def test_cli_preserves_catalog_when_reviewed_runtime_is_missing_or_malformed(self):
+        for value in (None, "PRIVATE_CANARY-invalid-version"):
+            with self.subTest(value=value), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                candidate = copy.deepcopy(self.policy)
+                if value is None:
+                    del candidate["reviewed_runtime_version"]
+                else:
+                    candidate["reviewed_runtime_version"] = value
+                policy, output = root / "policy.json", root / "report.json"
+                policy.write_text(json.dumps(candidate))
+                captured = io.StringIO()
+                with patch.object(coverage, "query_runtime", return_value=(RUNTIME, self.catalog)), \
+                        contextlib.redirect_stdout(captured), contextlib.redirect_stderr(captured):
+                    status = coverage.main(["--rclone", str(root / "unused"), "--policy", str(policy),
+                                            "--report", str(output), "--require-plans"])
+                self.assertEqual(status, 1)
+                report = json.loads(output.read_text())
+                self.assertEqual(report["errors"], ["invalid_policy"])
+                self.assertEqual(report["gate_errors"], ["invalid_policy"])
+                self.assertEqual([{key: row[key] for key in original}
+                                  for row, original in zip(report["providers"], self.catalog)], self.catalog)
+                self.assertFalse(report["all_plans_current"])
+                self.assertFalse(report["all_complete"])
+                self.assertEqual(report["providers"][0]["policy_status"], "missing_plan")
+                self.assertNotIn("PRIVATE_CANARY", captured.getvalue() + output.read_text())
+
+    def test_cli_version_only_drift_fails_plan_gate_and_retains_catalog(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            policy, output = root / "policy.json", root / "report.json"
+            policy.write_text(json.dumps(self.policy))
+            runtime = dict(RUNTIME, version="1.76.0")
+            with patch.object(coverage, "query_runtime", return_value=(runtime, self.catalog)), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                status = coverage.main(["--rclone", str(root / "unused"), "--policy", str(policy),
+                                        "--report", str(output), "--require-plans"])
+            self.assertEqual(status, 1)
+            report = json.loads(output.read_text())
+            self.assertEqual(report["errors"], [])
+            self.assertEqual(report["gate_errors"], ["provider_plans_incomplete"])
+            self.assertEqual(report["providers"][0]["policy_status"], "unreviewed_runtime")
+            self.assertEqual(report["providers"][0]["schema_sha256"], self.catalog[0]["schema_sha256"])
 
     def test_invalid_freshness_or_filter_cannot_weaken_gates(self):
         for value in [0, -1, 169]:
