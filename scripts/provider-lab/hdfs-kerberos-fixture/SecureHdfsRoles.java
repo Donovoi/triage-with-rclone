@@ -269,6 +269,130 @@ public final class SecureHdfsRoles {
       for (String code : observations) addError(errors, code);
     }
   }
+  private static final class DatanodeDiagnostics extends AppenderSkeleton {
+    // Hadoop 3.5.0 DataXceiver.LOG is DataNode.LOG. This observes ERROR events
+    // only; InvalidToken TRACE and benign close paths are deliberately absent.
+    private static final String LOGGER = "org.apache.hadoop.hdfs.server.datanode.DataNode";
+    private final Logger logger = Logger.getLogger(LOGGER);
+    private final TreeSet<String> observations = new TreeSet<>(Comparator
+        .comparingInt(DatanodeDiagnostics::priority).thenComparing(Comparator.naturalOrder()));
+    private int inspectedEvents, matchedEvents;
+    private boolean attached, detached, observationFailed, truncated;
+    void attach() {
+      try {
+        if (!LoggerFactory.getILoggerFactory().getClass().getName().equals("org.slf4j.impl.Reload4jLoggerFactory")
+            || !logger.isEnabledFor(Level.ERROR) || logger.isAttached(this)) {
+          observationFailed = true; return;
+        }
+        setName("secure-datanode-diagnostics"); logger.addAppender(this);
+        attached = logger.isAttached(this); if (!attached) observationFailed = true;
+      } catch (Throwable ignored) { observationFailed = true; }
+    }
+    void freezeAndDetach() {
+      // Freeze before shutdown and never acquire the logger lock while holding
+      // this observer's lock. Observations cannot change daemon success.
+      close();
+      try {
+        logger.removeAppender(this);
+        boolean removed = !logger.isAttached(this);
+        synchronized (this) { detached = removed; if (!removed) observationFailed = true; }
+      } catch (Throwable ignored) { synchronized (this) { observationFailed = true; } }
+    }
+    @Override public synchronized void close() { closed = true; }
+    @Override public boolean requiresLayout() { return false; }
+    private static int priority(String code) {
+      if (code.equals("dn_observed_other")) return 3;
+      if (code.equals("dn_observed_io") || code.equals("dn_origin_write_block")) return 2;
+      return code.startsWith("dn_origin_") ? 1 : 0;
+    }
+    private static String exceptionCode(Throwable value) {
+      if (value instanceof ClassNotFoundException || value instanceof NoClassDefFoundError) return "dn_observed_missing_class";
+      if (value instanceof LinkageError) return "dn_observed_linkage";
+      if (value instanceof NullPointerException) return "dn_observed_null_state";
+      if (value instanceof IllegalStateException) return "dn_observed_illegal_state";
+      if (value instanceof IllegalArgumentException) return "dn_observed_invalid_argument";
+      if (value instanceof SecurityException) return "dn_observed_security";
+      if (value instanceof OutOfMemoryError || value instanceof StackOverflowError) return "dn_observed_resource";
+      if (value instanceof java.io.EOFException) return "dn_observed_eof";
+      if (value instanceof SocketTimeoutException) return "dn_observed_timeout";
+      if (value instanceof java.net.SocketException) return "dn_observed_socket";
+      if (value instanceof javax.security.sasl.SaslException) return "dn_observed_sasl";
+      String exact = switch (value.getClass().getName()) {
+        case "org.apache.hadoop.security.token.SecretManager$InvalidToken",
+             "org.apache.hadoop.hdfs.security.token.block.InvalidBlockTokenException" -> "dn_observed_invalid_token";
+        case "org.apache.hadoop.hdfs.protocol.datatransfer.InvalidEncryptionKeyException" -> "dn_observed_invalid_encryption_key";
+        case "org.apache.hadoop.hdfs.protocol.datatransfer.sasl.InvalidMagicNumberException" -> "dn_observed_invalid_magic";
+        default -> null;
+      };
+      return exact != null ? exact : value instanceof IOException ? "dn_observed_io" : "dn_observed_other";
+    }
+    private static String originCode(StackTraceElement frame) {
+      String method = frame.getMethodName();
+      // Exact tagged normal-runtime methods, not inferred disk/auth causes.
+      return switch (frame.getClassName()) {
+        case "org.apache.hadoop.hdfs.protocol.datatransfer.sasl.SaslDataTransferServer" -> switch (method) {
+          case "receive" -> "dn_origin_sasl_receive";
+          case "doSaslHandshake" -> "dn_origin_sasl_handshake";
+          default -> null;
+        };
+        case "org.apache.hadoop.hdfs.server.datanode.DataXceiver" -> method.equals("writeBlock") ? "dn_origin_write_block" : null;
+        case "org.apache.hadoop.hdfs.server.datanode.BlockReceiver" -> method.equals("<init>") ? "dn_origin_block_receiver" : null;
+        case "org.apache.hadoop.hdfs.server.datanode.fsdataset.impl.FsDatasetImpl" -> method.equals("createRbw") ? "dn_origin_dataset_create_rbw" : null;
+        case "org.apache.hadoop.hdfs.server.datanode.fsdataset.impl.FsVolumeImpl" -> method.equals("createRbwFile") ? "dn_origin_volume_create_rbw_file" : null;
+        default -> null;
+      };
+    }
+    private void note(TreeSet<String> codes, String code) {
+      if (code == null) return;
+      codes.add(code);
+      if (codes.size() > 4) { codes.pollLast(); truncated = true; }
+    }
+    @Override protected synchronized void append(LoggingEvent event) {
+      // No message access, rendering, raw stack export or retained Throwable.
+      // Eight candidate ERROR events bound even unrelated logger traffic.
+      try {
+        if (closed || event == null || !LOGGER.equals(event.getLoggerName()) || !Level.ERROR.equals(event.getLevel())) return;
+        if (inspectedEvents >= 8) { truncated = true; return; }
+        inspectedEvents++;
+        if (event.getThrowableInformation() == null) return;
+        Throwable failure = event.getThrowableInformation().getThrowable(); if (failure == null) return;
+        TreeSet<String> codes = new TreeSet<>(observations.comparator());
+        Set<Throwable> seen = Collections.newSetFromMap(new IdentityHashMap<>());
+        ArrayDeque<Throwable> pending = new ArrayDeque<>(); seen.add(failure); pending.add(failure);
+        boolean xceiver = false;
+        while (!pending.isEmpty()) {
+          Throwable current = pending.removeFirst(); note(codes, exceptionCode(current));
+          StackTraceElement[] frames = current.getStackTrace(); if (frames.length > 32) truncated = true;
+          for (int index = 0; index < Math.min(32, frames.length); index++) {
+            StackTraceElement frame = frames[index];
+            if (frame.getClassName().equals("org.apache.hadoop.hdfs.server.datanode.DataXceiver")
+                && frame.getMethodName().equals("run")) xceiver = true;
+            note(codes, originCode(frame));
+          }
+          Throwable cause = current.getCause();
+          if (cause != null && !seen.contains(cause)) {
+            if (seen.size() < 8) { seen.add(cause); pending.addLast(cause); } else truncated = true;
+          }
+          Throwable[] suppressed = current.getSuppressed(); if (suppressed.length > 8) truncated = true;
+          for (int index = 0; index < Math.min(8, suppressed.length); index++) {
+            Throwable sibling = suppressed[index];
+            if (sibling != null && !seen.contains(sibling)) {
+              if (seen.size() < 8) { seen.add(sibling); pending.addLast(sibling); } else truncated = true;
+            }
+          }
+        }
+        if (xceiver) { matchedEvents++; for (String code : codes) note(observations, code); }
+      } catch (Throwable ignored) { observationFailed = true; }
+    }
+    synchronized String report() {
+      List<String> codes = new ArrayList<>();
+      for (String code : new TreeSet<>(observations)) codes.add(quoted(code));
+      return "{\"schema_version\":1,\"scope\":\"secure_hdfs_datanode_observations\",\"role\":\"dn\",\"phase\":\"final\","
+          + "\"ledger_eligible\":false,\"observer_attached\":" + attached + ",\"observer_detached\":" + detached
+          + ",\"observation_failed\":" + observationFailed + ",\"truncated\":" + truncated
+          + ",\"matched_events\":" + matchedEvents + ",\"codes\":[" + String.join(",", codes) + "]}\n";
+    }
+  }
   private static void appendConfigurationAliases(List<String> errors, Configuration conf, Map<String, String> values) {
     if (conf == null || values == null) return;
     // Failure-only observations of two exact public endpoint aliases. These
@@ -860,6 +984,19 @@ public final class SecureHdfsRoles {
     // and no ATOMIC_MOVE option whose specified target-exists behavior varies.
     Files.move(pending, target);
   }
+  private static void publishDatanodeDiagnostics(String report) throws Exception {
+    rootGuard(); byte[] bytes = report.getBytes(StandardCharsets.US_ASCII);
+    require(bytes.length <= 2048, "report_invalid");
+    Path target = ROOT.resolve("dn-diagnostics.json"), pending = ROOT.resolve("dn-diagnostics.pending");
+    require(!Files.exists(target, NOFOLLOW) && !Files.exists(pending, NOFOLLOW), "report_preexisting");
+    try (FileChannel channel = FileChannel.open(pending,
+        Set.of(StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS),
+        PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------")))) {
+      ByteBuffer buffer = ByteBuffer.wrap(bytes); while (buffer.hasRemaining()) channel.write(buffer); channel.force(true);
+    }
+    privatePath(pending, false); rootGuard(); Files.move(pending, target);
+    privatePath(target, false); rootGuard();
+  }
   private static void waitForStop(String service, long deadline) throws Exception {
     Path stop = ROOT.resolve("stop-" + service);
     while (true) {
@@ -880,6 +1017,7 @@ public final class SecureHdfsRoles {
     Map<String, Boolean> checks = checks(role); List<String> errors = new ArrayList<>();
     NameNode nn = null; DataNode dn = null; DistributedFileSystem fs = null;
     PipelineDiagnostics pipelineDiagnostics = null;
+    DatanodeDiagnostics datanodeDiagnostics = null;
     Configuration conf = null; Map<String, String> values = null; Material material = null;
     UserGroupInformation login = null; String configHash = null, files = "null", stage = "environment_failed";
     boolean closed = true, constructorPending = false;
@@ -922,6 +1060,8 @@ public final class SecureHdfsRoles {
         checks.put("keytab_login", true); nnAddresses(nn); checks.put("bound_service_addresses", true);
       } else if (role.equals("dn")) {
         stage = "webapp_resources_failed"; verifyWebAppResources();
+        try { datanodeDiagnostics = new DatanodeDiagnostics(); datanodeDiagnostics.attach(); }
+        catch (Throwable ignored) { datanodeDiagnostics = null; }
         stage = "datanode_start_failed"; constructorPending = true; dn = DataNode.createDataNode(new String[0], conf);
         require(dn != null, "datanode_not_ready"); login = loginProof("dn", material.realm()); checks.put("keytab_login", true);
         constructorPending = false;
@@ -956,6 +1096,9 @@ public final class SecureHdfsRoles {
     finally {
       if (constructorPending) { closed = false; addError(errors, "constructor_cleanup_unconfirmed"); }
       if (fs != null) try { fs.close(); } catch (Throwable failure) { closed = false; addError(errors, "client_close_failed"); addError(errors, reason(failure)); }
+      // A diagnostic observer has no authority over the daemon result. Freeze
+      // before shutdown so expected teardown cannot supply a seed-failure cause.
+      if (datanodeDiagnostics != null) try { datanodeDiagnostics.freezeAndDetach(); } catch (Throwable ignored) { }
       if (dn != null) try { dn.shutdown(); } catch (Throwable failure) { closed = false; addError(errors, "datanode_close_failed"); addError(errors, reason(failure)); }
       if (nn != null) try { nn.stop(); nn.join(); } catch (Throwable failure) { closed = false; addError(errors, "namenode_close_failed"); addError(errors, reason(failure)); }
       // Only an observed login has a cleanup API handle. An unreturned
@@ -974,6 +1117,8 @@ public final class SecureHdfsRoles {
         catch (Throwable ignored) { closed = false; addError(errors, "pipeline_observer_cleanup_failed"); }
         pipelineDiagnostics.appendFailure(errors);
       }
+      if (datanodeDiagnostics != null) try { publishDatanodeDiagnostics(datanodeDiagnostics.report()); }
+      catch (Throwable ignored) { /* Parent reports only diagnostic unavailability on an already-failed run. */ }
       try { publish(role, "final", report(role, "final", checks, configHash, files, closed, errors)); }
       catch (Throwable ignored) { /* No raw fallback output; missing final is failure. */ }
     }

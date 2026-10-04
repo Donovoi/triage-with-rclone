@@ -109,6 +109,13 @@ public final class SecureHdfsController {
         role_logged_pipeline_sasl_message,
         role_logged_pipeline_block_ack,
         role_logged_pipeline_observer_failed,
+        dn_diagnostics_unavailable, dn_diagnostics_truncated,
+        dn_observed_missing_class, dn_observed_linkage, dn_observed_null_state, dn_observed_illegal_state,
+        dn_observed_invalid_argument, dn_observed_security, dn_observed_resource, dn_observed_eof,
+        dn_observed_timeout, dn_observed_socket, dn_observed_sasl, dn_observed_invalid_token,
+        dn_observed_invalid_encryption_key, dn_observed_invalid_magic, dn_observed_io, dn_observed_other,
+        dn_origin_sasl_receive, dn_origin_sasl_handshake, dn_origin_write_block, dn_origin_block_receiver,
+        dn_origin_dataset_create_rbw, dn_origin_volume_create_rbw_file,
         role_configuration_default_uri_loopback_alias, role_configuration_https_loopback_alias,
         role_source_check_failed, role_source_mkdir_failed, role_source_create_failed, role_source_write_failed,
         role_source_close_failed, role_source_metadata_failed, role_source_inventory_failed, role_source_read_failed,
@@ -740,6 +747,52 @@ public final class SecureHdfsController {
         need(!c.process.isAlive(),Code.role_stop_failed);finishPumps(c);need(c.process.exitValue()==0,Code.role_stop_failed);
         if(receiptRole.equals("serve"))kdcReceipt("serve","final");else roleReceipt(receiptRole,"final");
     }
+    private static final Set<String> DN_OBSERVATION_CODES = Set.of(
+        "dn_observed_missing_class", "dn_observed_linkage", "dn_observed_null_state", "dn_observed_illegal_state",
+        "dn_observed_invalid_argument", "dn_observed_security", "dn_observed_resource", "dn_observed_eof",
+        "dn_observed_timeout", "dn_observed_socket", "dn_observed_sasl", "dn_observed_invalid_token",
+        "dn_observed_invalid_encryption_key", "dn_observed_invalid_magic", "dn_observed_io", "dn_observed_other",
+        "dn_origin_sasl_receive", "dn_origin_sasl_handshake", "dn_origin_write_block", "dn_origin_block_receiver",
+        "dn_origin_dataset_create_rbw", "dn_origin_volume_create_rbw_file");
+    private static void consumeDatanodeDiagnostics(boolean failedBeforeCleanup) {
+        // Auxiliary evidence only: never change dn_stopped, other cleanup,
+        // success checks or a successful parent's outcome. A role may shut down
+        // successfully after a seed failure; its ordinary receipt stays intact.
+        if(!failedBeforeCleanup || ERRORS.isEmpty())return;
+        Child dn=child("dn"); if(dn==null)return;
+        try {
+            need(!dn.process.isAlive() && dn.process.waitFor(0,TimeUnit.MILLISECONDS)
+                && dn.pumps.stream().noneMatch(Thread::isAlive),Code.receipt_invalid);
+            guard(); need(rootCreated,Code.receipt_invalid);
+            Path path=ROOT.resolve("dn-diagnostics.json"); regular(path,2048,true);
+            Snapshot binding=new Snapshot(path); byte[] bytes=read(path,2048);
+            need(bytes.length==binding.size && MessageDigest.isEqual(binding.hash,
+                MessageDigest.getInstance("SHA-256").digest(bytes)),Code.receipt_invalid);
+            binding.verify(path); regular(path,2048,true); guard();
+            Json parser=new Json(bytes); Map<String,Object> value=object(parser.value(0)); parser.ws();
+            need(parser.i==parser.s.length() && value.keySet().equals(Set.of("schema_version","scope","role","phase",
+                "ledger_eligible","observer_attached","observer_detached","observation_failed","truncated","matched_events","codes")),Code.receipt_invalid);
+            need(Long.valueOf(1).equals(value.get("schema_version")) && "secure_hdfs_datanode_observations".equals(value.get("scope"))
+                && "dn".equals(value.get("role")) && "final".equals(value.get("phase"))
+                && Boolean.FALSE.equals(value.get("ledger_eligible")),Code.receipt_invalid);
+            need(Boolean.TRUE.equals(value.get("observer_attached")) && Boolean.TRUE.equals(value.get("observer_detached"))
+                && Boolean.FALSE.equals(value.get("observation_failed")) && value.get("truncated") instanceof Boolean,Code.receipt_invalid);
+            need(value.get("matched_events") instanceof Long && (Long)value.get("matched_events")>=0
+                && (Long)value.get("matched_events")<=8 && value.get("codes") instanceof List<?>,Code.receipt_invalid);
+            List<?> codes=(List<?>)value.get("codes"); need(codes.size()<=4
+                && (((Long)value.get("matched_events")==0)==codes.isEmpty()),Code.receipt_invalid);
+            List<Code> accepted=new ArrayList<>(); String previous=null;
+            for(Object item:codes) {
+                need(item instanceof String && DN_OBSERVATION_CODES.contains((String)item)
+                    && (previous==null || previous.compareTo((String)item)<0),Code.receipt_invalid);
+                previous=(String)item; accepted.add(Code.valueOf(previous));
+            }
+            // No code is retained until the entire owned, closed sidecar passes.
+            binding.verify(path); guard();
+            for(Code code:accepted)ERRORS.add(code.name());
+            if(Boolean.TRUE.equals(value.get("truncated")))ERRORS.add(Code.dn_diagnostics_truncated.name());
+        } catch(Throwable ignored) { ERRORS.add(Code.dn_diagnostics_unavailable.name()); }
+    }
     private static void terminate(Child c) {
         if(!c.process.isAlive())return;FORCED.set(true);ERRORS.add(Code.forced_termination.name());
         try { c.process.descendants().forEach(p->DESCENDANTS.putIfAbsent(p.pid(),p)); c.process.destroy();
@@ -766,6 +819,7 @@ public final class SecureHdfsController {
         rootCreated=false;need(!Files.exists(ROOT,N),Code.private_cleanup_failed);
     }
     private static void cleanup() {
+        boolean failedBeforeCleanup=!ERRORS.isEmpty();
         for(String key:CLEANUP_KEYS)CLEANUP.put(key,false);
         for(Child c:CHILDREN)if(!c.service)terminate(c);
         for(String role:List.of("dn","nn","serve")) {
@@ -782,6 +836,7 @@ public final class SecureHdfsController {
         // reaped process is alive or prevent safe private-file removal.
         for(Child c:CHILDREN)try{joinPumps(c);}catch(Throwable error){record(error,Code.output_failed);processes=false;}
         if(OUTPUT_FAILURE.get())ERRORS.add(Code.output_failed.name());
+        consumeDatanodeDiagnostics(failedBeforeCleanup);
         CLEANUP.put("processes_reaped",processes);boolean absent=false;
         try{listeners(Set.of());absent=true;}catch(Throwable error){record(error,Code.listener_mismatch);}CLEANUP.put("listeners_absent",absent);
         if(processes&&absent) {
