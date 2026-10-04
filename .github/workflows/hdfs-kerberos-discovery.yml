@@ -1,0 +1,52 @@
+name: HDFS Kerberos dependency preparation
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/hdfs-kerberos-discovery.yml
+      - scripts/provider-lab/hdfs-discovery/**
+      - scripts/provider-lab/hdfs-bootstrap/verify_bootstrap.py
+      - scripts/tests/test_hdfs_dependency_discovery.py
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hdfs-kerberos-discovery-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  prepare:
+    name: Capture the added KDC dependencies for review
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - name: Check contracts without downloads or native tools
+        run: python -B -m unittest discover -s scripts/provider-lab/hdfs-discovery -p 'test_*.py'
+      # This runs networked build tools, not Hadoop or a KDC. The container has
+      # no host mounts, credentials or published ports. Network destinations
+      # are not confined by Maven settings. The result remains quarantined.
+      - name: Inspect the added dependency closure
+        run: >-
+          python -B scripts/provider-lab/hdfs-discovery/hosted_kerberos_discovery.py
+          --candidate scripts/provider-lab/hdfs-discovery/candidate-kerberos
+          --verifier scripts/provider-lab/hdfs-bootstrap/verify_bootstrap.py
+          --report "${{ runner.temp }}/hdfs-kerberos-dependency-preparation.json"
+      # Only sanitized facts are retained. Raw archives, POMs and logs stay
+      # private to this disposable runner. No provider coverage is awarded.
+      - name: Keep the sanitized result for review
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: hdfs-kerberos-dependency-preparation
+          path: ${{ runner.temp }}/hdfs-kerberos-dependency-preparation.json
+          if-no-files-found: warn
+          retention-days: 14

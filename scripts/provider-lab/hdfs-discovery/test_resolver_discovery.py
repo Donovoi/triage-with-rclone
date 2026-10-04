@@ -43,13 +43,26 @@ def pom_bytes(name):
             '<developers><developer><name>PRIVATE_SYNTHETIC_CANARY</name></developer></developers></project>').encode()
 
 
-def make_tar(path, mutate=None, suffix=b""):
+def make_tar(path, mutate=None, suffix=b"", *, kerberos=False):
     entries = {"m2/org/apache/hadoop/" + name + "/3.5.0/" + name + "-3.5.0.jar": (name + " synthetic bytes").encode() for name in ROOTS}
     classpath = ":".join("/work/" + name for name in entries).encode()
     entries.update({"m2/org/apache/hadoop/" + name + "/3.5.0/" + name + "-3.5.0.pom": pom_bytes(name) for name in ROOTS})
     tree_json, tree_text = graph_bytes()
     entries.update({"output/status": b"resolved\ncomplete\n", "output/runtime-tree.json": tree_json,
                     "output/runtime-tree.txt": tree_text, "output/runtime-classpath.txt": classpath})
+    if kerberos:
+        base = "m2/org/apache/kerby/kerb-simplekdc/2.0.3/kerb-simplekdc-2.0.3"
+        entries[base + ".jar"] = b"synthetic KDC bytes; never executed"
+        entries[base + ".pom"] = (b'<project><modelVersion>4.0.0</modelVersion>'
+            b'<groupId>org.apache.kerby</groupId><artifactId>kerb-simplekdc</artifactId>'
+            b'<version>2.0.3</version></project>')
+        entries["output/runtime-classpath.txt"] += (":/work/" + base + ".jar").encode()
+        tree = json.loads(tree_json)
+        tree["children"].append({"groupId": "org.apache.kerby", "artifactId": "kerb-simplekdc",
+                                 "version": "2.0.3", "type": "jar", "scope": "compile",
+                                 "classifier": "", "optional": "false"})
+        entries["output/runtime-tree.json"] = json.dumps(tree).encode()
+        entries["output/runtime-tree.txt"] = tree_text.replace(b"\\- ", b"+- ") + b"\\- org.apache.kerby:kerb-simplekdc:jar:2.0.3:compile\n"
     if mutate: mutate(entries)
     with tarfile.open(path, "w", format=tarfile.USTAR_FORMAT) as stream:
         for name, data in entries.items():
@@ -74,8 +87,9 @@ def container_record(name, image, run_id, started=False):
 
 
 class FakeDocker:
-    def __init__(self, root, failure=None):
+    def __init__(self, root, failure=None, *, kerberos=False):
         self.root, self.failure = root, failure
+        self.kerberos = kerberos
         self.calls, self.built, self.created, self.started = [], False, False, False
         self.offline = False
         self.exit_code = 0
@@ -101,7 +115,8 @@ class FakeDocker:
             self.exit_code = 1 if self.failure in ("maven", "maven_unknown", "maven_partial", "maven_resolved") else 0
             failed_status = b"failed\nprivate-canary-stage\n" if self.failure == "maven_unknown" else b"failed\nenforce\n"
             make_tar(out, (lambda entries: entries.update({"output/status": failed_status}))
-                     if self.failure in ("maven", "maven_unknown", "maven_partial") else None)
+                     if self.failure in ("maven", "maven_unknown", "maven_partial") else None,
+                     kerberos=self.kerberos and self.failure != "missing_kerberos")
             if self.failure == "maven_partial": out.write_bytes(out.read_bytes()[:-1])
         elif args[:2] == ["container", "rm"]:
             if self.failure == "container_cleanup": raise D.DiscoveryError("command_failed")
@@ -142,6 +157,35 @@ class ResolverTests(unittest.TestCase):
         for name, body in result.items(): (copied/name).write_bytes(body)
         (copied/"pom.xml").write_bytes(result["pom.xml"] + b" ")
         with self.assertRaisesRegex(D.DiscoveryError, "candidate_invalid"): D.candidate_inputs(copied)
+
+    def test_kerberos_candidate_is_separate_exactly_bound_and_default_rejects_it(self):
+        candidate = HERE / "candidate-kerberos"
+        result = D.candidate_inputs(candidate, "kerberos")
+        self.assertEqual({name: hashlib.sha256(body).hexdigest() for name, body in result.items()},
+                         D.KERBEROS_INPUT_HASHES)
+        with self.assertRaisesRegex(D.DiscoveryError, "candidate_invalid"):
+            D.candidate_inputs(candidate)
+        with self.assertRaisesRegex(D.DiscoveryError, "candidate_invalid"):
+            D.candidate_inputs(CANDIDATE, "kerberos")
+        for profile in (None, True, [], "", "KERBEROS", "unreviewed"):
+            with self.subTest(profile=profile), self.assertRaisesRegex(D.DiscoveryError, "candidate_invalid"):
+                D.candidate_hashes(profile)
+        hashes = D.candidate_hashes("kerberos")
+        hashes["pom.xml"] = "0" * 64
+        self.assertNotEqual(hashes, D.KERBEROS_INPUT_HASHES)
+
+    def test_kerberos_cannot_use_or_prepare_existing_offline_lock_before_native(self):
+        for kwargs in ({"seed_cache": self.root / "offline-seed.tar"},
+                       {"cache_destination": self.root / "offline-seed.tar"}):
+            with self.subTest(kwargs=kwargs), patch.object(D, "hosted_guard"), \
+                    patch.object(D, "validate_bootstrap") as bootstrap, \
+                    patch.object(D, "candidate_inputs") as inputs, \
+                    self.assertRaisesRegex(D.DiscoveryError, "offline_cache_invalid"):
+                D.discover(HERE / "candidate-kerberos", None, None, self.root,
+                           candidate_profile="kerberos", **kwargs)
+            inputs.assert_not_called()
+            bootstrap.assert_not_called()
+        self.popen.assert_not_called()
 
     def test_old_flat_bootstrap_fails_before_any_native_access(self):
         pending = json.loads((HERE / "bootstrap.pending.json").read_text())
@@ -394,7 +438,8 @@ class ResolverTests(unittest.TestCase):
             member=tarfile.TarInfo("output/status"); member.size=2; stream.addfile(member,io.BytesIO(b"xx"))
         with self.assertRaises(D.DiscoveryError): D.artifact_manifest(path)
 
-    def execute(self, failure=None, *, offline=False, verify_effect=None, prepare=False, prepare_effect=None):
+    def execute(self, failure=None, *, offline=False, verify_effect=None, prepare=False, prepare_effect=None,
+                candidate_profile="hdfs"):
         archive=self.root/"inert-bootstrap.tar.gz"; archive.write_bytes(b"not executed")
         bootstrap={"jdk_image":BASE,"jdk_image_id":BASE_ID,"maven_archive_sha256":hashlib.sha256(archive.read_bytes()).hexdigest(),
                    "maven_version":"3.9.16","maven_archive_sha512":D.MAVEN_SHA512}
@@ -404,14 +449,15 @@ class ResolverTests(unittest.TestCase):
         if offline:
             seed.write_bytes(b"synthetic seed, never executed")
         def factory(root):
-            obj=FakeDocker(root,failure); instances.append(obj); return obj
+            obj=FakeDocker(root,failure,kerberos=candidate_profile == "kerberos"); instances.append(obj); return obj
         with patch.object(D,"hosted_guard"), patch.object(D,"validate_bootstrap",return_value=bootstrap), \
              patch.object(D.uuid,"uuid4",return_value=types.SimpleNamespace(hex=RUN)), patch.object(D.stat,"S_IMODE",return_value=0o700):
             with patch.object(D.offline_cache, "verify_cache", return_value={"sha256": "1" * 64}, side_effect=verify_effect), \
                     patch.object(D.offline_cache, "prepare_cache", return_value={"sha256": "1" * 64}, side_effect=prepare_effect):
-                result=D.discover(CANDIDATE,bootstrap,archive,self.root,runner_factory=factory,
+                candidate = CANDIDATE if candidate_profile == "hdfs" else HERE / "candidate-kerberos"
+                result=D.discover(candidate,bootstrap,archive,self.root,runner_factory=factory,
                                   cache_destination=seed if prepare else None,
-                                  seed_cache=seed if offline else None)
+                                  seed_cache=seed if offline else None, candidate_profile=candidate_profile)
         self.popen.assert_not_called()
         return result,instances[0]
 
@@ -428,7 +474,8 @@ class ResolverTests(unittest.TestCase):
         self.assertFalse(result["ledger_eligible"])
         self.assertEqual(result["image_id"],IMAGE)
         self.assertEqual(set(result["inputs"]),{"supervisor_sha256","graph_export_sha256","candidate_sha256","maven","jdk","bootstrap_material",
-                                               "cache_source_sha256", "cache_lock_sha256", "seed_cache"})
+                                               "cache_source_sha256", "cache_lock_sha256", "seed_cache", "candidate_profile"})
+        self.assertEqual(result["inputs"]["candidate_profile"], "hdfs")
         self.assertEqual(result["inputs"]["graph_export_sha256"], hashlib.sha256(Path(D.graph_export.__file__).read_bytes()).hexdigest())
         self.assertEqual(result["inputs"]["supervisor_sha256"],hashlib.sha256((HERE/"resolver_discovery.py").read_bytes()).hexdigest())
         self.assertEqual(result["inputs"]["candidate_sha256"],D.INPUT_HASHES)
@@ -436,6 +483,46 @@ class ResolverTests(unittest.TestCase):
         self.assertEqual(result["inputs"]["maven"],{"version":"3.9.16","archive_sha256":hashlib.sha256(b"not executed").hexdigest(),"archive_sha512":D.MAVEN_SHA512})
         self.assertLessEqual(datetime.fromisoformat(result["started_utc"]),datetime.fromisoformat(result["finished_utc"]))
         self.assertGreaterEqual(result["duration_seconds"],0)
+
+    def test_kerberos_mock_discovery_is_online_only_without_acceptance_or_cache(self):
+        result, docker = self.execute(candidate_profile="kerberos")
+        self.assertTrue(result["success"], result["errors"])
+        self.assertTrue(all(result["cleanup"].values()))
+        self.assertEqual(result["inputs"]["candidate_profile"], "kerberos")
+        self.assertEqual(result["inputs"]["candidate_sha256"], D.KERBEROS_INPUT_HASHES)
+        self.assertEqual(result["mode"], "online")
+        self.assertIsNone(result["cache_preparation"])
+        self.assertIsNone(result["inputs"]["seed_cache"])
+        for key in ("offline_reproduced", "ledger_eligible", "daemon_accepted"):
+            self.assertIs(result[key], False)
+        create = next(args for args, _ in docker.calls if args[0] == "create")
+        self.assertEqual(create[create.index("--network") + 1], "bridge")
+
+    def test_kerberos_missing_kdc_root_fails_and_still_cleans_up(self):
+        result, _ = self.execute("missing_kerberos", candidate_profile="kerberos")
+        self.assertIs(result["success"], False)
+        self.assertIn("classpath_invalid", result["errors"])
+        self.assertTrue(all(result["cleanup"].values()))
+
+    def test_kerberos_kdc_must_be_exact_selected_ordinary_direct_dependency(self):
+        original = D.artifact_manifest(make_tar(self.root / "kerberos.tar", kerberos=True))
+        D.validate_profile_manifest(original, "kerberos")
+        for target, field, value in (("artifact", "selected_runtime", False),
+                                     ("artifact", "version", "2.0.4"),
+                                     ("artifact", "classifier", "tests"),
+                                     ("node", "parent", 1),
+                                     ("node", "resolution", "omitted_duplicate"),
+                                     ("node", "reachable_included", False),
+                                     ("node", "selected_classpath", False)):
+            with self.subTest(target=target, field=field):
+                changed = copy.deepcopy(original)
+                rows = (changed["artifacts"] if target == "artifact"
+                        else changed["dependency_semantics"]["nodes"])
+                row = next(r for r in rows if (r if target == "artifact" else r["coordinate"])["artifact"] == "kerb-simplekdc"
+                           and (target == "node" or r["type"] == "jar"))
+                row[field] = value
+                with self.assertRaises(D.DiscoveryError):
+                    D.validate_profile_manifest(changed, "kerberos")
 
     def test_offline_runtime_has_no_network_or_online_fallback(self):
         result, docker = self.execute(offline=True)
