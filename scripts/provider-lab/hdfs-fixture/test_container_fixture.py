@@ -276,6 +276,7 @@ class FixtureTests(unittest.TestCase):
         self.assertTrue(all(result["cleanup"].values()))
         self.assertEqual(result["cleanup_excludes"], ["shared_base_image", "shared_build_cache"])
         self.assertEqual(result["webapp_scope"], "synthetic_scaffolding_not_vendor_ui")
+        self.assertEqual(result["metrics_scope"], "shared_metrics_for_colocated_test_daemons")
         self.assertFalse(output.exists())
         for key in F.FALSE_CLAIMS: self.assertIs(result[key], False)
 

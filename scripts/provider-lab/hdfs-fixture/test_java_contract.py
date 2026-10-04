@@ -196,23 +196,42 @@ class JavaContractTests(unittest.TestCase):
                          {"unclassified", "missing_class", "resource_failure", "invalid_config",
                           "linkage_failure", "file_missing", "http_webapp_missing", "io_failure",
                           "exit_requested", "halt_requested", "null_state", "illegal_state",
-                          "unsupported_operation", "security_failure"})
+                          "unsupported_operation", "security_failure", "metrics_failure"})
         expected = {
             "ClassNotFoundException || current instanceof NoClassDefFoundError": ("missing_class", "0"),
             "OutOfMemoryError || current instanceof StackOverflowError": ("resource_failure", "1"),
             "IllegalArgumentException": ("invalid_config", "2"),
             "LinkageError": ("linkage_failure", "3"),
-            "NullPointerException": ("null_state", "4"),
-            "IllegalStateException": ("illegal_state", "5"),
-            "UnsupportedOperationException": ("unsupported_operation", "6"),
-            "SecurityException": ("security_failure", "7"),
-            "FileNotFoundException": ("file_missing", "8"),
-            "IOException": ("io_failure", "9"),
+            "MetricsException": ("metrics_failure", "4"),
+            "NullPointerException": ("null_state", "5"),
+            "IllegalStateException": ("illegal_state", "6"),
+            "UnsupportedOperationException": ("unsupported_operation", "7"),
+            "SecurityException": ("security_failure", "8"),
+            "FileNotFoundException": ("file_missing", "9"),
+            "IOException": ("io_failure", "10"),
         }
         actual = {types: (category, rank) for types, category, rank in re.findall(
             r'if \(current instanceof ([^\n]+?)\) \{\s+category = "([a-z_]+)"; rank = ([0-9]+);', reason)}
         self.assertEqual(actual, expected)
         self.assertIn('if (rank < selectedRank)', reason)
+
+    def test_colocated_metrics_mode_precedes_format_and_both_normal_daemons(self):
+        self.assertIn('import org.apache.hadoop.metrics2.lib.DefaultMetricsSystem;', self.source)
+        self.assertIn('import org.apache.hadoop.metrics2.MetricsException;', self.source)
+        main = self.source[self.source.index('public static void main('):]
+        call = 'DefaultMetricsSystem.setMiniClusterMode(true);'
+        self.assertEqual(self.source.count(call), 1)
+        self.assertLess(main.index('environment(args)'), main.index(call))
+        for operation in ('Configuration conf = configuration()', 'NameNode.format(conf)',
+                          'new NameNode(conf)', 'DataNode.createDataNode('):
+            self.assertLess(main.index(call), main.index(operation))
+        self.assertNotIn('setMiniClusterMode(false)', self.source)
+        imports = re.findall(r'^import ([^;]+);', self.source, re.M)
+        self.assertFalse(any('MiniDFS' in value or value.startswith(('org.junit', 'org.mockito'))
+                             for value in imports))
+        self.assertIn('conf.set("dfs.permissions.enabled", "true")', self.source)
+        self.assertIn('conf.set("hadoop.security.authentication", "simple")', self.source)
+        self.assertIn('HTTP/WebHDFS services ARE present, confined to loopback and network-none', self.source)
 
     def test_webapp_marker_is_exact_subtype_gated_bounded_and_private(self):
         marker = self.source[self.source.index('private static boolean missingWebAppResource('):
