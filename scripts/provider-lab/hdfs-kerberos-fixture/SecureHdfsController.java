@@ -297,10 +297,38 @@ public final class SecureHdfsController {
         command.add(klass);command.add(role);return command;
     }
     private static Child javaRole(String klass,String role,boolean service) throws Exception { return start(role,javaCommand(klass,role),service); }
+    private static void rejectStartupFinal(Child child) throws Exception {
+        need(CHILDREN.contains(child)&&child.service&&!child.expectedStop,Code.child_start_failed);
+        Path finalPath=switch(child.label) {
+            case "serve" -> ROOT.resolve("kdc-final.json");
+            case "nn" -> ROOT.resolve("nn-final.json");
+            case "dn" -> ROOT.resolve("dn-final.json");
+            default -> throw new Failure(Code.child_start_failed);
+        };
+        guard();
+        if(!Files.exists(finalPath,N))return;
+        // A constructor may be caught and a final receipt published while
+        // library threads keep this exact owned JVM alive. Read only its fixed
+        // closed receipt to retain finite failure diagnostics; never treat a
+        // final receipt (even success=true) as startup/readiness proof.
+        if(child.label.equals("serve"))kdcReceipt("serve","final");
+        else roleReceipt(child.label,"final");
+        throw new Failure(Code.child_failed);
+    }
     private static void waitReady(Child child,String name,int seconds) throws Exception {
+        String expected=switch(child.label) {
+            case "serve" -> "kdc-ready.json";
+            case "nn" -> "nn-ready.json";
+            case "dn" -> "dn-ready.json";
+            default -> throw new Failure(Code.child_start_failed);
+        };
+        need(name.equals(expected),Code.child_start_failed);
         Path p=ROOT.resolve(name); long end=Math.min(deadline,System.nanoTime()+TimeUnit.SECONDS.toNanos(seconds));
-        while(!Files.exists(p,N)) { monitor(); need(child.process.isAlive(),Code.child_failed); need(System.nanoTime()<end,Code.child_timeout); Thread.sleep(50); }
-        monitor(); regular(p,JSON_LIMIT,true);
+        while(true) {
+            rejectStartupFinal(child);monitor();need(child.process.isAlive(),Code.child_failed);
+            if(Files.exists(p,N)) { regular(p,JSON_LIMIT,true);rejectStartupFinal(child);return; }
+            need(System.nanoTime()<end,Code.child_timeout);Thread.sleep(50);
+        }
     }
     private static void keytool(String... args) throws Exception {
         List<String> command=new ArrayList<>(); command.add(JDK.resolve("bin/keytool").toString()); command.add("-J-Xmx128m");

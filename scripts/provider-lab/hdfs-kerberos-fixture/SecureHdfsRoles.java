@@ -415,6 +415,8 @@ public final class SecureHdfsRoles {
     value.put("dfs.datanode.use.datanode.hostname", "false");
     value.put("dfs.http.policy", "HTTPS_ONLY");
     value.put("hadoop.security.authentication", "kerberos");
+    // Defaults are disabled; secure HttpServer2 requires an explicit authentication type.
+    value.put("hadoop.http.authentication.type", "kerberos");
     value.put("hadoop.security.authorization", "false");
     value.put("hadoop.rpc.protection", "authentication");
     value.put("ipc.client.fallback-to-simple-auth-allowed", "false");
