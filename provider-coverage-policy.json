@@ -1010,6 +1010,49 @@
       },
       "review_required": false,
       "unresolved_applicability": []
+    },
+    "pcloud-saved-token-read-partial-fixture": {
+      "required": {
+        "application": [
+          "listing",
+          "download_hash",
+          "manifest_integrity",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation"
+        ],
+        "vendor": [
+          "listing",
+          "download_hash",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation"
+        ],
+        "local_protocol": [
+          "listing",
+          "download_hash",
+          "missing_object_rejection",
+          "saved_token_read",
+          "saved_token_rejection",
+          "read_denial",
+          "source_preservation",
+          "config_preservation",
+          "fixture_write_rejection",
+          "cleanup",
+          "authentication"
+        ]
+      },
+      "review_required": false,
+      "unresolved_applicability": [
+        "refresh",
+        "reauthentication"
+      ]
     }
   },
   "providers": {
@@ -2580,13 +2623,16 @@
     "pcloud": {
       "canonical_name": "pcloud",
       "schema_sha256": "4c3f969b6f5f1dc69f7d4912adb7c6bcec2da68bd84a75f14822597d29246b00",
-      "profile": "hosted-renewal-review-session-review",
+      "profile": "pcloud-saved-token-read-partial-fixture",
       "notes": [
         "pCloud account and OAuth consent with region hostname retained. Pinned docs show a zero-expiry client token; this does not establish universal vendor token lifetime. Revocation/denial and explicit recovery remain required.",
         "Free account/API eligibility: review_required",
         "Policy integration conservatively leaves connection/session applicability unresolved for the untraced alternative auth profile; frozen research is preserved and no N/A conclusion is inferred from a helper default.",
         "Do not claim tokens can never be revoked or expire server-side. A zero-expiry config value is client behavior, not a vendor lifetime guarantee.",
-        "Provider-supported refresh contract for nonstandard/expiring imported tokens remains unestablished."
+        "Provider-supported refresh contract for nonstandard/expiring imported tokens remains unestablished.",
+        "The predefined pcloud_saved_token_read_v1 local protocol fixture uses only generated synthetic saved tokens, an owned loopback HTTPS endpoint and a per-child CA. Its ten observed capabilities cover the complete three-file synthetic inventory, hashes and readback, saved-token use/rejection, member read denial, missing objects, fixture write rejection, byte-preserved config/source and cleanup.",
+        "Fresh OAuth authentication remains an explicit unproved local requirement. Saved-token read/rejection and member denial do not establish fresh consent, token refresh, vendor revocation, cancellation, regional service behavior or application/vendor acceptance. Both existing lifecycle applicability reviews and all application/vendor obligations remain unchanged.",
+        "Current receipt provenance includes the TLS and pCloud fixture sources and the fully hashed fixture dependency lock. The producer must also validate its loaded dependency versions; a lock hash alone is not proof of the installed environment."
       ],
       "source_links": [
         "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/pcloud.md",
