@@ -34,7 +34,7 @@ INPUT_HASHES = {
 # This is a separate, online-only dependency experiment. Its additional KDC
 # closure has no reviewed offline lock yet; never reuse the SIMPLE cache.
 KERBEROS_INPUT_HASHES = {
-    "pom.xml": "5e3c22ab3d657f1e5c3028830bab7783e8984bdcd1fe972cdbe2be1f58ffde11",
+    "pom.xml": "f2b4397a3e096770be70663bcb801ff942ee4d84f294b75826a4934b13e7bb28",
     "settings.xml": "73c88f4d9660338f35a6e56978f8567f89f5a85641d5338f189fc489440b364c",
     "global-settings.xml": "aeb786c97c2a0103b71c04ab1b29508d7ec1c402a9d36e22301407b23670edf2",
 }
@@ -496,7 +496,14 @@ def validate_profile_manifest(manifest, profile):
     if profile == "hdfs":
         return  # artifact_manifest already requires all three Hadoop roots.
     expected = {"group": "org.apache.kerby", "artifact": "kerb-simplekdc",
-                "version": "2.0.3", "classifier": "", "type": "jar"}
+                "version": "2.1.2", "classifier": "", "type": "jar"}
+    family = [r for r in manifest["artifacts"]
+              if r["group"] == "org.apache.kerby" and r["selected_runtime"] is True]
+    # Hadoop also brings older Kerby libraries. The imported BOM must replace
+    # every selected family member, including the vulnerable server and ASN1.
+    need({"kerb-simplekdc", "kerb-server", "kerby-asn1"} <= {r["artifact"] for r in family}
+         and all(r["version"] == "2.1.2" and r["type"] == "jar" and not r["classifier"] for r in family),
+         "classpath_invalid")
     selected = [r for r in manifest["artifacts"]
                 if r["group"] == expected["group"] and r["artifact"] == expected["artifact"]
                 and r["selected_runtime"] is True]
