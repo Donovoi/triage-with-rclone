@@ -480,6 +480,9 @@ public final class SecureHdfsRoles {
     value.put("dfs.namenode.kerberos.internal.spnego.principal", "HTTP/127.0.0.1@" + realm);
     value.put("dfs.web.authentication.kerberos.principal", "HTTP/127.0.0.1@" + realm);
     value.put("dfs.web.authentication.kerberos.keytab", ROOT.resolve("auth/http.keytab").toString());
+    // DFSUtil also installs AuthFilterInitializer, which reads the hadoop.http prefix independently of SPNEGO.
+    value.put("hadoop.http.authentication.kerberos.principal", "HTTP/127.0.0.1@" + realm);
+    value.put("hadoop.http.authentication.kerberos.keytab", ROOT.resolve("auth/http.keytab").toString());
     StringBuilder rules = new StringBuilder();
     for (String role : List.of("nn", "dn", "HTTP"))
       rules.append("RULE:[2:$1/$2@$0](").append(Pattern.quote(role + "/127.0.0.1@" + realm)).append(")s/.*/").append(role).append("/ ");
