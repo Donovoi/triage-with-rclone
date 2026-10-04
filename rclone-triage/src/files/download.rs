@@ -555,25 +555,10 @@ impl DownloadQueue {
         match output {
             Ok(output) if output.success() => {
                 if staging.is_some() {
-                    let publish = || -> Result<()> {
-                        let staged = Path::new(&transfer.destination);
-                        crate::utils::path::ensure_no_link_components(staged)?;
-                        crate::utils::path::ensure_no_link_components(Path::new(
-                            &request.destination,
-                        ))?;
-                        if !std::fs::symlink_metadata(staged)?.is_file() {
-                            bail!("Transfer did not produce an individual file");
-                        }
-                        std::fs::OpenOptions::new()
-                            .read(true)
-                            .write(true)
-                            .open(staged)?
-                            .sync_all()?;
-                        tempfile::TempPath::from_path(staged)
-                            .persist_noclobber(&request.destination)?;
-                        Ok(())
-                    };
-                    if let Err(error) = publish() {
+                    if let Err(error) = publish_staged_file(
+                        Path::new(&transfer.destination),
+                        Path::new(&request.destination),
+                    ) {
                         return failed_result(
                             request,
                             format!("Cannot publish acquired file safely: {error}"),
@@ -702,6 +687,40 @@ impl DownloadQueue {
         }
         result
     }
+}
+
+fn publish_staged_file(staged: &Path, destination: &Path) -> Result<()> {
+    crate::utils::path::ensure_no_link_components(staged)?;
+    crate::utils::path::ensure_no_link_components(destination)?;
+    if !std::fs::symlink_metadata(staged)?.is_file() {
+        bail!("Transfer did not produce an individual file");
+    }
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(staged)?
+        .sync_all()?;
+
+    // tempfile's Windows persist calls Win32 directly without adding the
+    // extended-length prefix. A short destination can still have a staging
+    // path beyond MAX_PATH. Canonicalize existing parents only, retaining the
+    // final components and the no-replace rename (never a copy fallback).
+    #[cfg(windows)]
+    let (staged, destination) = {
+        let extended_path = |path: &Path| -> Result<std::path::PathBuf> {
+            let parent = path
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .unwrap_or_else(|| Path::new("."));
+            let name = path
+                .file_name()
+                .context("Publication path has no file name")?;
+            Ok(std::fs::canonicalize(parent)?.join(name))
+        };
+        (extended_path(staged)?, extended_path(destination)?)
+    };
+    tempfile::TempPath::from_path(staged).persist_noclobber(destination)?;
+    Ok(())
 }
 
 fn failed_result(
@@ -925,6 +944,91 @@ mod tests {
 
     #[cfg(windows)]
     use crate::embedded::ExtractedBinary;
+
+    #[test]
+    fn publish_staged_file_preserves_bytes() {
+        let root = tempdir().unwrap();
+        let staged = root.path().join("payload");
+        let destination = root.path().join("acquired.txt");
+        fs::write(&staged, b"acquired bytes\0\xff").unwrap();
+
+        publish_staged_file(&staged, &destination).unwrap();
+
+        assert_eq!(fs::read(&destination).unwrap(), b"acquired bytes\0\xff");
+        assert!(!staged.exists());
+    }
+
+    #[test]
+    fn publish_staged_file_never_replaces_existing_destination() {
+        let root = tempdir().unwrap();
+        let staged = root.path().join("payload");
+        let destination = root.path().join("acquired.txt");
+        fs::write(&staged, b"new acquisition").unwrap();
+        fs::write(&destination, b"earlier evidence").unwrap();
+
+        assert!(publish_staged_file(&staged, &destination).is_err());
+
+        assert_eq!(fs::read(&destination).unwrap(), b"earlier evidence");
+    }
+
+    #[cfg(windows)]
+    fn long_publish_parent(root: &Path, length: usize) -> std::path::PathBuf {
+        use std::os::windows::ffi::OsStrExt;
+        let mut parent = root.to_path_buf();
+        assert!(!parent.to_string_lossy().starts_with(r"\\?\"));
+        while parent.as_os_str().encode_wide().count() < length {
+            let remaining = length - parent.as_os_str().encode_wide().count();
+            assert!(remaining >= 2, "test parent must fit a path component");
+            let component_length = if remaining > 42 { 40 } else { remaining - 1 };
+            parent.push("p".repeat(component_length));
+        }
+        fs::create_dir_all(&parent).unwrap();
+        parent
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn publish_staged_file_accepts_long_staging_path_with_short_destination() {
+        use std::os::windows::ffi::OsStrExt;
+        let root = tempdir().unwrap();
+        let parent = long_publish_parent(root.path(), 230);
+        let staging = tempfile::Builder::new()
+            .prefix(".triage-transfer-")
+            .tempdir_in(&parent)
+            .unwrap();
+        let staged = staging.path().join("payload");
+        let destination = parent.join("a spaced name.txt");
+        assert!(staged.as_os_str().encode_wide().count() > 260);
+        assert_eq!(destination.as_os_str().encode_wide().count(), 248);
+        fs::write(&staged, b"long staging path bytes").unwrap();
+
+        publish_staged_file(&staged, &destination).unwrap();
+
+        assert_eq!(fs::read(&destination).unwrap(), b"long staging path bytes");
+        assert!(!staged.exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn publish_staged_file_accepts_long_destination_without_replacing_it() {
+        use std::os::windows::ffi::OsStrExt;
+        let root = tempdir().unwrap();
+        let parent = long_publish_parent(root.path(), 270);
+        let staging = tempfile::Builder::new()
+            .prefix(".triage-transfer-")
+            .tempdir_in(&parent)
+            .unwrap();
+        let staged = staging.path().join("payload");
+        let destination = parent.join("a spaced name.txt");
+        assert!(destination.as_os_str().encode_wide().count() > 260);
+        fs::write(&staged, b"earlier evidence").unwrap();
+        publish_staged_file(&staged, &destination).unwrap();
+        assert!(!staged.exists());
+
+        fs::write(&staged, b"replacement bytes").unwrap();
+        assert!(publish_staged_file(&staged, &destination).is_err());
+        assert_eq!(fs::read(&destination).unwrap(), b"earlier evidence");
+    }
 
     #[test]
     fn test_build_args_copy() {
