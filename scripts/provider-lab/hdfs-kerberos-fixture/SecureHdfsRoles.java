@@ -12,6 +12,7 @@ import java.io.ByteArrayInputStream;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.ConnectException;
 import java.net.SocketTimeoutException;
@@ -734,7 +735,20 @@ public final class SecureHdfsRoles {
       environment(); checks.put("environment", true);
       stage = "material_failed"; material = material(service); checks.put("material_paths", true);
       require(!Files.exists(ROOT.resolve("stop-" + service), NOFOLLOW), "shutdown_preexisting");
-      stage = "configuration_failed"; values = settings(service, material.realm()); conf = configuration(values);
+      stage = "configuration_failed"; values = settings(service, material.realm());
+      if (role.equals("nn")) {
+        // Match the two observed NameNode hostname rewrites before hashing;
+        // format and client roles retain their literal numeric configuration.
+        long resolveStarted = System.nanoTime();
+        InetAddress[] addresses = InetAddress.getAllByName("localhost");
+        require(System.nanoTime() - resolveStarted < TimeUnit.SECONDS.toNanos(3)
+            && addresses.length > 0 && addresses.length <= 4, "environment_invalid");
+        for (InetAddress address : addresses)
+          require(Arrays.equals(address.getAddress(), new byte[]{127, 0, 0, 1}), "environment_invalid");
+        values.put("fs.defaultFS", "hdfs://localhost:19000");
+        values.put("dfs.namenode.https-address", "localhost:19003");
+      }
+      conf = configuration(values);
       UserGroupInformation.setConfiguration(conf); require(UserGroupInformation.isSecurityEnabled(), "secure_configuration_invalid");
       configHash = configurationHash(conf, values, material); checks.put("secure_configuration", true);
       ExitUtil.disableSystemExit(); ExitUtil.disableSystemHalt();
