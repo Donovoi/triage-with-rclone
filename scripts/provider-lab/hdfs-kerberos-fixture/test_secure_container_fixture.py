@@ -1,7 +1,9 @@
 """Offline contract tests. No Java, rclone, Docker or service is executed."""
 import importlib.util
 import json
+from contextlib import ExitStack
 from pathlib import Path
+import tempfile
 import types
 import unittest
 from unittest.mock import patch
@@ -87,6 +89,117 @@ class Docker:
                 if remote.endswith("missing-synthetic-file"): return result(stderr=b"directory not found\n", code=3)
                 return result(F.samples()[remote.removeprefix("test:/synthetic/")])
         raise AssertionError("unexpected_command")
+
+
+class RunSupport(Support):
+    """Synthetic local files only; never loads the native support modules."""
+    BASE = "synthetic-base"
+    BASE_ID = "sha256:" + "d" * 64
+    ORDER_SHA = "e" * 64
+    LOCK_SHA = "f" * 64
+
+    def __init__(self, root):
+        self.HERE = root / "ticket"; self.HERE.mkdir()
+        self.DISCOVERY = root / "discovery"; self.DISCOVERY.mkdir()
+        (self.HERE / "runtime-classpath.json").write_bytes(b"[]")
+        (self.DISCOVERY / "artifact-lock-kerberos.json").write_bytes(b"{}")
+
+    @staticmethod
+    def read(value, maximum=16*1024*1024):
+        return Support.read(value if type(value) is bytes else Path(value).read_bytes(), maximum)
+
+    @staticmethod
+    def file_hash(path, maximum=16*1024*1024):
+        return F.digest(RunSupport.read(path, maximum))
+
+    @staticmethod
+    def directory(path, identity=None):
+        info = Path(path).stat(); actual = (info.st_dev, info.st_ino)
+        if identity is not None and identity != actual: raise AssertionError("directory_changed")
+        return actual
+
+    @staticmethod
+    def regular(path, maximum):
+        RunSupport.read(path, maximum)
+
+    @staticmethod
+    def tree_hashes(path):
+        return {p.relative_to(path).as_posix(): RunSupport.file_hash(p)
+                for p in path.rglob("*") if p.is_file()}
+
+    def load_helpers(self): return types.SimpleNamespace(), {}
+    def runtime_rows(self, *_): return [dict(size=1)]
+    def verify_jars(self, *_): pass
+
+
+class RunDocker(Docker):
+    def __init__(self):
+        super().__init__(); self.built = False; self.created = False; self.running = False
+
+    def inspect(self, kind, identity, **kw):
+        if kind == "image":
+            if identity == RunSupport.BASE:
+                return dict(Id=RunSupport.BASE_ID, Os="linux", Architecture="amd64")
+            if not self.built: return None
+            return dict(Id=IMAGE, RepoTags=[NAME + ":latest"],
+                        Config=dict(User="10001:10001", Labels={F.LABEL: RUN}))
+        if not self.created: return None
+        value = inspected()
+        value["State"] = dict(Running=self.running, Status="running" if self.running else "created")
+        return value
+
+    def call(self, args, **kw):
+        if args[0] == "info": return result(b'{"OSType":"linux","Architecture":"amd64"}')
+        if args[:2] == ["image", "pull"]: return result()
+        if args[0] == "build": self.built = True; return result()
+        if args[0] == "create": self.created = True; return result()
+        if args[0] == "start": self.running = True; return result()
+        if args[:2] in (["container", "rm"], ["image", "rm"]):
+            self.calls.append((args, kw))
+            if args[0] == "container": self.created = self.running = False
+            else: self.built = False
+            return result()
+        return super().call(args, **kw)
+
+
+class RecoveryDocker(RunDocker):
+    def __init__(self):
+        super().__init__()
+        self.final_available = False; self.clients = 0; self.stop_error = None
+        self.ended = False; self.wrong_owner = False
+
+    def inspect(self, kind, identity, **kw):
+        value = super().inspect(kind, identity, **kw)
+        if kind == "container" and value is not None:
+            if self.wrong_owner: value["Config"]["Labels"][F.LABEL] = "unowned"
+            if self.ended:
+                value["State"] = dict(Running=False, Status="exited", OOMKilled=False,
+                                      ExitCode=0 if self.final["success"] else 1)
+        return value
+
+    def call(self, args, **kw):
+        exit_bytes = b"0\n" if self.final["success"] else b"1\n"
+        if args[:2] == ["exec", CONTAINER]:
+            cmd = args[2:]
+            if cmd == ["/bin/cat", "/work/secure-final.json"]:
+                self.calls.append((args, kw))
+                return result(F.canonical(self.final)) if self.final_available else result(code=1)
+            if cmd[:2] == ["/bin/sh", "-c"]:
+                script = cmd[2]
+                if script == F.no_client_script():
+                    self.calls.append((args, kw)); return result(code=self.clients)
+                if script == F.failure_marker_script("stop"):
+                    self.calls.append((args, kw))
+                    if self.stop_error: raise F.FixtureError(self.stop_error)
+                    self.final_available = True; return result()
+                if script == F.failure_marker_script("exit"):
+                    self.calls.append((args, kw)); return result()
+                if "/work/controller-exit" in script:
+                    self.calls.append((args, kw)); return result(exit_bytes)
+        if args == ["wait", CONTAINER]:
+            self.calls.append((args, kw)); self.running = False; self.ended = True
+            return result(exit_bytes)
+        return super().call(args, **kw)
 
 
 class ContractTests(unittest.TestCase):
@@ -212,6 +325,206 @@ class ContractTests(unittest.TestCase):
             def never(): raise AssertionError("support must not load")
             value = F.run("unused", support_loader=never)
         self.assertEqual(value["errors"], ["source_not_frozen"]); self.assertFalse(value["success"])
+
+
+class FailurePathTests(unittest.TestCase):
+    def failure(self, code, call, *args):
+        with self.assertRaises(F.FixtureError) as caught: call(*args)
+        self.assertEqual(caught.exception.code, code)
+        self.assertEqual(str(caught.exception), code)
+
+    def run_failed_probe(self, probe, docker=None):
+        docker = docker or RunDocker()
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
+            inputs = Path(directory); support = RunSupport(inputs)
+            java = inputs / "Synthetic.java"; java.write_bytes(b"synthetic source")
+            helper = inputs / "support.py"; helper.write_bytes(b"synthetic support")
+            pin = inputs / "runtime.env"; pin.write_bytes(b"synthetic pin")
+            binary = inputs / "rclone"; binary.write_bytes(b"inert bytes, never executable")
+            private = inputs / "owned-run"
+            def make_root(**kw):
+                self.assertEqual(kw, dict(prefix="hdfs-kerberos-", dir="/tmp"))
+                private.mkdir(); return str(private)
+            for name, replacement in {
+                "hosted_guard": lambda: None, "HERE": inputs, "SUPPORT": helper,
+                "JAVA_INPUTS": {java.name: F.digest(java.read_bytes())},
+                "runtime_pin": lambda _: (pin, "1.75.1", F.digest(binary.read_bytes())),
+                "build_files": lambda *_: {}, "webapp_resources": lambda: {}, "probe": probe,
+            }.items(): stack.enter_context(patch.object(F, name, replacement))
+            stack.enter_context(patch.object(F.tempfile, "mkdtemp", make_root))
+            stack.enter_context(patch.object(F.shutil, "disk_usage", return_value=types.SimpleNamespace(free=2*1024**3)))
+            stack.enter_context(patch.object(F.uuid, "uuid4", return_value=types.SimpleNamespace(hex=RUN)))
+            value = F.run(binary, support_loader=lambda: support,
+                          runner_factory=lambda *args, **kw: docker, downloader=lambda *_: None)
+            return value, docker, private.exists()
+
+    def test_finite_support_failures_survive_without_exception_text(self):
+        class SupportFailure(Exception):
+            def __init__(self, code): self.code = code; super().__init__("private diagnostic canary")
+        for code in ("command_failed", "command_timeout", "command_output_limit",
+                     "command_start_failed", "command_cleanup_failed"):
+            with self.subTest(code=code), patch.object(F, "hosted_guard"):
+                def fail(): raise SupportFailure(code)
+                value = F.run("unused", support_loader=fail)
+            self.assertEqual(value["errors"], [code]); self.assertFalse(value["success"])
+            self.assertNotIn("canary", F.canonical(value).decode())
+        with patch.object(F, "hosted_guard"):
+            def unknown(): raise SupportFailure("private diagnostic canary")
+            value = F.run("unused", support_loader=unknown)
+        self.assertEqual(value["errors"], ["fixture_failed"])
+
+    def test_client_failure_classification_is_exact_bounded_and_private(self):
+        for operation in ("version", "lsjson", "cat"):
+            for reason, code in (("EOF", "client_error_eof"), ("unexpected EOF", "client_error_unexpected_eof")):
+                with self.subTest(operation=operation, reason=reason):
+                    private = b"private@example.invalid /private/path\n"
+                    error = private + ("2026/10/05 01:02:03 NOTICE: Failed to " + operation + ": " + reason + "\n").encode()
+                    self.failure(code, F.require_client_success, Support, result(b"untrusted output", error, 1), operation)
+        for error in (b"EOF\n", b"NOTICE: Failed to cat: EOF appended\n",
+                      b"NOTICE: Failed to cat: EOF\nprivate trailing data\n",
+                      b"NOTICE: Failed to lsjson: EOF\n", b"unrecognized private cause\n"):
+            self.failure("client_failed", F.require_client_success, Support, result(stderr=error, code=1), "cat")
+        self.failure("client_diagnostic_unavailable", F.require_client_success, Support,
+                     result(stderr=b"x" * 65537, code=1), "cat")
+        self.failure("client_error_eof", F.require_client_success, Support,
+                     result(stderr=b"NOTICE: Failed to cat with 2 errors: last error was: EOF\n", code=1), "cat")
+        for error in (b"NOTICE: Failed to cat with 1 errors: last error was: EOF\n",
+                      b"NOTICE: Failed to cat with 10000 errors: last error was: EOF\n",
+                      b"x\n" * 128 + b"NOTICE: Failed to cat: EOF\n"):
+            self.failure("client_failed", F.require_client_success, Support, result(stderr=error, code=1), "cat")
+
+    def test_client_result_type_and_operation_are_closed(self):
+        for code in (True, False, None, "1", 1.0, 256, -256):
+            self.failure("client_result_invalid", F.require_client_success, Support, result(code=code), "cat")
+        self.failure("client_result_invalid", F.require_client_success, Support, result(code=1), "unknown")
+        F.require_client_success(Support, result(stderr=b"unparsed successful stderr", code=0), "cat")
+
+    def test_positive_nonzero_listing_is_not_accepted_despite_valid_stdout(self):
+        class FailedListing(Docker):
+            def call(inner, args, **kw):
+                if "lsjson" in args:
+                    self.assertIs(kw.get("allow_failure"), True)
+                    return result(F.canonical(listing()), b"private listing failure", 1)
+                return super(FailedListing, inner).call(args, **kw)
+        self.failure("client_failed", F.probe, Support, FailedListing(), CONTAINER, "1.75.1", {})
+
+    def test_empty_payload_limit_is_independent_of_private_stderr(self):
+        for code in (0, 1):
+            class EmptyPayload(Docker):
+                def call(inner, args, **kw):
+                    if "cat" in args and "test:/synthetic/empty.bin" in args:
+                        self.assertEqual(kw.get("limit"), 1)
+                        self.assertIs(kw.get("allow_failure"), True)
+                        return result(b"", b"NOTICE: Failed to cat: EOF\n", code)
+                    return super(EmptyPayload, inner).call(args, **kw)
+            with self.subTest(code=code):
+                if code:
+                    self.failure("client_error_eof", F.probe, Support, EmptyPayload(), CONTAINER, "1.75.1", {})
+                else:
+                    self.assertTrue(all(F.probe(Support, EmptyPayload(), CONTAINER, "1.75.1", {})["checks"].values()))
+
+    @staticmethod
+    def failed_client(_support, _docker, _container, _version, report):
+        report["controller_ready"] = receipt(); report["stage"] = "listing"
+        F.require_client_success(Support, result(stderr=b"NOTICE: Failed to lsjson: EOF\n", code=1), "lsjson")
+
+    @staticmethod
+    def recovery_report():
+        return dict(errors=["client_error_eof"], stage="listing", controller_ready=receipt(), controller_final=None)
+
+    @staticmethod
+    def ready_docker():
+        docker = RecoveryDocker(); docker.built = docker.created = docker.running = True
+        return docker
+
+    def test_failed_client_recovers_final_cleanup_without_promoting_original_failure(self):
+        value, docker, retained = self.run_failed_probe(self.failed_client, RecoveryDocker())
+        self.assertEqual(value["errors"], ["client_error_eof"])
+        self.assertEqual(value["stage"], "listing"); self.assertFalse(value["success"])
+        self.assertIsNone(value["result"]); self.assertTrue(value["controller_final"]["success"])
+        self.assertTrue(all(value["controller_final"]["cleanup"].values()))
+        self.assertTrue(all(value["cleanup"].values())); self.assertFalse(retained)
+        for key in F.FALSE_CLAIMS: self.assertIs(value[key], False)
+        scripts = [args[4] for args, _ in docker.calls if args[:4] == ["exec", CONTAINER, "/bin/sh", "-c"]]
+        self.assertLess(scripts.index(F.no_client_script()), scripts.index(F.failure_marker_script("stop")))
+        self.assertLess(scripts.index(F.failure_marker_script("stop")), scripts.index(F.failure_marker_script("exit")))
+
+    def test_orderly_shutdown_requires_valid_ready_and_exact_ownership_before_commands(self):
+        for ready in (None, {**receipt(), "success": False}, {**receipt(), "extra": "canary"}):
+            report = self.recovery_report(); report["controller_ready"] = ready; docker = self.ready_docker()
+            with self.assertRaises(F.FixtureError):
+                F.orderly_failure_shutdown(Support, docker, CONTAINER, NAME, IMAGE, RUN, report)
+            self.assertEqual(docker.calls, [])
+            self.assertEqual(report["errors"], ["client_error_eof"])
+        report = self.recovery_report(); docker = self.ready_docker(); docker.wrong_owner = True
+        self.failure("container_invalid", F.orderly_failure_shutdown, Support, docker, CONTAINER, NAME, IMAGE, RUN, report)
+        self.assertEqual(docker.calls, [])
+
+    def test_live_client_prevents_stop_without_killing_or_inventing_final(self):
+        report = self.recovery_report(); docker = self.ready_docker(); docker.clients = 3
+        self.failure("failure_shutdown_clients_present", F.orderly_failure_shutdown,
+                     Support, docker, CONTAINER, NAME, IMAGE, RUN, report)
+        self.assertEqual(len(docker.calls), 1)
+        args, options = docker.calls[0]
+        self.assertEqual(args, ["exec", CONTAINER, "/bin/sh", "-c", F.no_client_script()])
+        self.assertEqual(options, dict(timeout=8, limit=1, allow_failure=True))
+        self.assertIsNone(report["controller_final"]); self.assertEqual(report["errors"], ["client_error_eof"])
+        script = F.no_client_script()
+        self.assertIn('while [ "$i" -lt 5 ]', script)
+        self.assertIn('[ ! -d "$p" ] || return 1', script)
+        self.assertNotIn("kill", script)
+
+    def test_failed_final_remains_failed_and_existing_final_avoids_duplicate_stop(self):
+        report = self.recovery_report(); docker = self.ready_docker(); docker.final_available = True
+        docker.final.update(success=False, errors=["source_verification_failed"])
+        docker.final["checks"]["source_verified"] = False
+        F.orderly_failure_shutdown(Support, docker, CONTAINER, NAME, IMAGE, RUN, report)
+        self.assertEqual(report["errors"], ["client_error_eof", "controller_failed"])
+        self.assertFalse(report["controller_final"]["success"])
+        self.assertFalse(any(F.failure_marker_script("stop") in args for args, _ in docker.calls))
+        self.assertTrue(docker.ended)
+
+    def test_failed_final_with_unconfirmed_process_or_listener_cleanup_cannot_release(self):
+        for key in ("processes_reaped", "listeners_absent"):
+            report = self.recovery_report(); docker = self.ready_docker(); docker.final_available = True
+            docker.final.update(success=False, errors=["process_cleanup_failed"])
+            docker.final["cleanup"][key] = False
+            with self.subTest(key=key):
+                self.failure("failure_shutdown_release_failed", F.orderly_failure_shutdown,
+                             Support, docker, CONTAINER, NAME, IMAGE, RUN, report)
+            self.assertFalse(report["controller_final"]["success"])
+            self.assertFalse(any(F.failure_marker_script("exit") in args for args, _ in docker.calls))
+            self.assertFalse(docker.ended)
+
+    def test_malformed_final_cannot_be_copied_to_report_or_release_container(self):
+        report = self.recovery_report(); docker = self.ready_docker(); docker.final_available = True
+        docker.final["raw_log"] = "private diagnostic canary"
+        self.failure("controller_invalid", F.orderly_failure_shutdown,
+                     Support, docker, CONTAINER, NAME, IMAGE, RUN, report)
+        self.assertIsNone(report["controller_final"])
+        self.assertNotIn("canary", F.canonical(report).decode())
+        self.assertFalse(any(F.failure_marker_script("exit") in args for args, _ in docker.calls))
+
+    def test_bounded_stop_failure_falls_back_without_clearing_original_error(self):
+        docker = RecoveryDocker(); docker.stop_error = "command_timeout"
+        value, docker, retained = self.run_failed_probe(self.failed_client, docker)
+        self.assertFalse(value["success"]); self.assertEqual(value["stage"], "listing")
+        self.assertEqual(value["errors"], ["client_error_eof", "command_timeout", "failure_shutdown_failed"])
+        self.assertIsNone(value["controller_final"]); self.assertIsNone(value["result"])
+        self.assertTrue(all(value["cleanup"].values())); self.assertFalse(retained)
+        stops = [(args, opts) for args, opts in docker.calls if F.failure_marker_script("stop") in args]
+        self.assertEqual(len(stops), 1); self.assertEqual(stops[0][1]["timeout"], 5)
+        self.assertFalse(any(F.failure_marker_script("exit") in args for args, _ in docker.calls))
+        self.assertTrue(any(args == ["container", "rm", "--force", CONTAINER] for args, _ in docker.calls))
+
+    def test_unconfirmed_command_cleanup_keeps_raw_evidence(self):
+        def unreaped(_support, _docker, _container, _version, report):
+            report["controller_ready"] = receipt(); report["stage"] = "listing"
+            raise F.FixtureError("command_cleanup_failed")
+        value, docker, retained = self.run_failed_probe(unreaped, RecoveryDocker())
+        self.assertFalse(value["success"]); self.assertIn("command_cleanup_failed", value["errors"])
+        self.assertFalse(value["cleanup"]["raw_evidence_removed"]); self.assertTrue(retained)
+        self.assertFalse(any(F.failure_marker_script("stop") in args for args, _ in docker.calls))
 
 
 if __name__ == "__main__": unittest.main()

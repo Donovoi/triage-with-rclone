@@ -79,9 +79,12 @@ CONTROLLER_CODES = frozenset("environment_invalid path_invalid input_changed cla
     "role_source_check_failed role_source_mkdir_failed role_source_create_failed role_source_write_failed role_source_close_failed role_source_metadata_failed role_source_inventory_failed role_source_read_failed "
     "role_kerberos_asn_identifier".split())
 CODES = frozenset("hosted_linux_required input_invalid input_changed unsafe_path support_invalid runtime_invalid "
-    "source_not_frozen download_failed download_cleanup_failed command_cleanup_failed platform_invalid base_invalid "
+    "source_not_frozen download_failed download_cleanup_failed command_cleanup_failed command_failed command_timeout "
+    "command_output_limit command_start_failed platform_invalid base_invalid "
     "image_invalid container_invalid controller_invalid controller_failed listing_invalid sample_mismatch "
     "negative_failed cancellation_failed client_deadline shutdown_failed container_cleanup_failed image_cleanup_failed "
+    "client_result_invalid client_failed client_diagnostic_unavailable client_error_eof client_error_unexpected_eof "
+    "failure_shutdown_failed failure_shutdown_clients_present failure_shutdown_wait_failed failure_shutdown_release_failed "
     "raw_cleanup_failed interrupted fixture_failed".split())
 
 
@@ -265,6 +268,27 @@ def verify_sample(data, expected):
         and digest(data) == expected, "sample_mismatch")
 
 
+def require_client_success(T, result, operation):
+    # Raw stderr remains in the existing private command capture. Retain only
+    # a finite observation of the pinned CLI's final error template, not a cause.
+    need(operation in ("version", "lsjson", "cat") and type(result.code) is int
+        and -255 <= result.code <= 255, "client_result_invalid")
+    if result.code == 0: return
+    try:
+        error = T.read(result.stderr, 65536)
+    except Exception:
+        raise FixtureError("client_diagnostic_unavailable") from None
+    lines = error.splitlines()
+    if 0 < len(lines) <= 128 and all(len(line) <= 4096 for line in lines):
+        final = lines[-1]
+        pattern = (rb"(?:[0-9]{4}/[0-9]{2}/[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2} )?NOTICE: Failed to "
+            + operation.encode("ascii") + rb"(?:: | with ([1-9][0-9]{0,3}) errors: last error was: )(EOF|unexpected EOF)")
+        match = re.fullmatch(pattern, final)
+        if match and (match.group(1) is None or int(match.group(1)) >= 2):
+            raise FixtureError("client_error_eof" if match.group(2) == b"EOF" else "client_error_unexpected_eof")
+    raise FixtureError("client_failed")
+
+
 def simple_failed(T, result):
     # Go hdfs v2.4 checks response sequence before status; Hadoop sends its
     # authorization-failed call ID. This proves only client failure. The
@@ -342,6 +366,105 @@ def capture_failure(T, docker, container, name, image, run_id):
     return validate_controller(T, T.read(result.stdout, 32768), "final")
 
 
+def no_client_script():
+    # Only the isolated, identity-checked container is inspected. A failed read
+    # of a live PID is uncertainty, never evidence of client absence.
+    return """set -eu
+clients_absent() {
+  for p in /proc/[0-9]*; do
+    [ -d "$p" ] || continue
+    if name=$(cat "$p/comm" 2>/dev/null); then
+      [ "$name" != rclone ] || return 1
+    else
+      [ ! -d "$p" ] || return 1
+      continue
+    fi
+    if executable=$(readlink "$p/exe" 2>/dev/null); then
+      [ "$executable" != /opt/secure/rclone ] || return 1
+    else
+      [ ! -d "$p" ] || return 1
+    fi
+  done
+  return 0
+}
+i=0
+while [ "$i" -lt 5 ]; do
+  clients_absent && exit 0
+  sleep 1
+  i=$((i+1))
+done
+exit 3
+"""
+
+
+def failure_marker_script(marker):
+    need(marker in ("stop", "exit"), "failure_shutdown_failed")
+    parent = "/work/secure" if marker == "stop" else "/work"
+    path = parent + "/" + marker
+    return ("set -eu\numask 077\n"
+        "test ! -L /work && test \"$(stat -c '%u:%g:%a' /work)\" = '10001:10001:700'\n"
+        + "test ! -L " + parent + " && test \"$(stat -c '%u:%g:%a' " + parent + ")\" = '10001:10001:700'\n"
+        + "if [ ! -e " + path + " ] && [ ! -L " + path + " ]; then\n"
+        + "  set -C; : > " + path + "\nfi\n"
+        + "test ! -L " + path + " && test -f " + path + "\n"
+        + "test \"$(stat -c '%u:%g:%a:%h:%s' " + path + ")\" = '10001:10001:600:1:0'\n")
+
+
+def orderly_failure_shutdown(T, docker, container, name, image, run_id, report):
+    # This recovers source/cleanup evidence; it has no authority to clear the
+    # original acquisition error or promote the parent's result to success.
+    need(type(report.get("errors")) is list and report["errors"]
+        and all(type(code) is str and code in CODES for code in report["errors"])
+        and not {"command_cleanup_failed", "download_cleanup_failed"}.intersection(report["errors"])
+        and report.get("controller_final") is None, "failure_shutdown_failed")
+    ready = validate_controller(T, canonical(report.get("controller_ready")), "ready")
+    need(ready["success"] is True, "failure_shutdown_failed")
+
+    def owned_running():
+        current = docker.inspect("container", container)
+        inspect_container(current, name, image, run_id)
+        need(current.get("Id") == container and current.get("State", {}).get("Running") is True,
+            "failure_shutdown_failed")
+
+    owned_running()
+    absent = docker.call(["exec", container, "/bin/sh", "-c", no_client_script()],
+        timeout=8, limit=1, allow_failure=True)
+    need(type(absent.code) is int and absent.code == 0 and T.read(absent.stdout, 1) == b"",
+        "failure_shutdown_clients_present")
+    final = capture_failure(T, docker, container, name, image, run_id)
+    if final is not None: report["controller_final"] = final
+    if final is None:
+        owned_running()
+        stopped = docker.call(["exec", container, "/bin/sh", "-c", failure_marker_script("stop")],
+            timeout=5, limit=1, allow_failure=True)
+        need(type(stopped.code) is int and stopped.code == 0 and T.read(stopped.stdout, 1) == b"",
+            "failure_shutdown_failed")
+    exit_record = wait_file(T, docker, container, "final")
+    if final is None: final = capture_failure(T, docker, container, name, image, run_id)
+    need(final is not None, "failure_shutdown_wait_failed")
+    report["controller_final"] = final
+    if not final["success"] and "controller_failed" not in report["errors"]:
+        report["errors"].append("controller_failed")
+    expected_exit = b"0\n" if final["success"] else b"1\n"
+    need(exit_record == expected_exit, "failure_shutdown_wait_failed")
+    need(final["cleanup"]["processes_reaped"] is True and final["cleanup"]["listeners_absent"] is True,
+        "failure_shutdown_release_failed")
+    owned_running()
+    released = docker.call(["exec", container, "/bin/sh", "-c", failure_marker_script("exit")],
+        timeout=5, limit=1, allow_failure=True)
+    need(type(released.code) is int and released.code == 0 and T.read(released.stdout, 1) == b"",
+        "failure_shutdown_release_failed")
+    waited = docker.call(["wait", container], timeout=15, limit=128, allow_failure=True)
+    need(type(waited.code) is int and waited.code == 0 and T.read(waited.stdout, 128) == expected_exit,
+        "failure_shutdown_release_failed")
+    ended = docker.inspect("container", container)
+    inspect_container(ended, name, image, run_id)
+    state = ended.get("State", {})
+    need(ended.get("Id") == container and state.get("Running") is False and state.get("Status") == "exited"
+        and state.get("OOMKilled") is False and type(state.get("ExitCode")) is int
+        and state["ExitCode"] == int(expected_exit), "failure_shutdown_release_failed")
+
+
 def probe(T, docker, container, version, report):
     client_until = None
     def execute(args, **kw):
@@ -355,14 +478,20 @@ def probe(T, docker, container, version, report):
     report["controller_ready"] = ready; need(ready["success"], "controller_failed")
     client_until = time.monotonic()+90
     report["stage"] = "rclone_version"
-    actual = T.read(execute(["/usr/bin/env", "-i", "/opt/secure/rclone", "version"], limit=8192).stdout, 8192)
+    version_result = execute(["/usr/bin/env", "-i", "/opt/secure/rclone", "version"], limit=8192, allow_failure=True)
+    require_client_success(T, version_result, "version")
+    actual = T.read(version_result.stdout, 8192)
     need(actual.splitlines()[0] == ("rclone v" + version).encode("ascii"), "runtime_invalid")
     report["stage"] = "listing"
-    listing = T.parse(T.read(execute(rclone_args("lsjson", remote(), "--recursive", "--files-only"), timeout=25, limit=32768).stdout, 32768))
+    listing_result = execute(rclone_args("lsjson", remote(), "--recursive", "--files-only"),
+        timeout=25, limit=32768, allow_failure=True)
+    require_client_success(T, listing_result, "lsjson")
+    listing = T.parse(T.read(listing_result.stdout, 32768))
     validate_listing(listing)
     report["stage"] = "acquisition"; acquired = []
     for path, value in sorted(samples().items()):
-        result = execute(rclone_args("cat", remote(path)), timeout=20, limit=max(1, len(value)+1))
+        result = execute(rclone_args("cat", remote(path)), timeout=20, limit=max(1, len(value)+1), allow_failure=True)
+        require_client_success(T, result, "cat")
         data = T.read(result.stdout, len(value)+1)
         need(len(data) == len(value), "sample_mismatch"); verify_sample(data, digest(value))
         acquired.append(dict(path=path, size=len(data), sha256=digest(data)))
@@ -376,7 +505,9 @@ def probe(T, docker, container, version, report):
     denied = execute(rclone_args("cat", remote("nested/alpha.txt"), simple=True), timeout=20, limit=65536, allow_failure=True)
     simple_failed(T, denied)
     report["stage"] = "authenticated_recovery"
-    restored = T.read(execute(rclone_args("cat", remote("nested/alpha.txt")), timeout=20, limit=16).stdout, 16)
+    recovery = execute(rclone_args("cat", remote("nested/alpha.txt")), timeout=20, limit=16, allow_failure=True)
+    require_client_success(T, recovery, "cat")
+    restored = T.read(recovery.stdout, 16)
     verify_sample(restored, digest(samples()["nested/alpha.txt"]))
     report["stage"] = "cancellation"
     cancelled = execute(["/bin/sh", "-c", cancellation_script(), "hdfs-cancel", *rclone_args("copyto",
@@ -471,9 +602,21 @@ def run(rclone, *, support_loader=load_support, runner_factory=None, downloader=
         report["errors"].append(code if code in CODES else "fixture_failed")
     finally:
         if container is not None and report["errors"] and report["controller_final"] is None:
-            try: report["controller_final"] = capture_failure(T, docker, container, name, image, run_id)
+            try:
+                if (type(report["controller_ready"]) is dict and report["controller_ready"].get("success") is True
+                    and not {"command_cleanup_failed", "download_cleanup_failed"}.intersection(report["errors"])):
+                    orderly_failure_shutdown(T, docker, container, name, image, run_id, report)
+                else:
+                    report["controller_final"] = capture_failure(T, docker, container, name, image, run_id)
             except BaseException as error:
-                if getattr(error, "code", None) == "command_cleanup_failed": report["errors"].append("command_cleanup_failed")
+                code = getattr(error, "code", None)
+                if code in CODES and code not in report["errors"]: report["errors"].append(code)
+                if "failure_shutdown_failed" not in report["errors"]: report["errors"].append("failure_shutdown_failed")
+                if report["controller_final"] is None:
+                    try: report["controller_final"] = capture_failure(T, docker, container, name, image, run_id)
+                    except BaseException as capture_error:
+                        if getattr(capture_error, "code", None) == "command_cleanup_failed":
+                            report["errors"].append("command_cleanup_failed")
         for kind, attempted, ref, exact in (("container", create_attempted, container or name, container), ("image", build_attempted, image or tag, image)):
             try:
                 if attempted:
