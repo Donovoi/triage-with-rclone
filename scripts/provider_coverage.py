@@ -80,6 +80,10 @@ INTERNETARCHIVE_REQUIRED_CAPABILITIES = INTERNETARCHIVE_ONLY_CAPABILITIES | {
     "config_preservation", "fixture_write_rejection", "cleanup",
 }
 INTERNETARCHIVE_ANONYMOUS_MODE = "internetarchive_anonymous_read_v1"
+NETSTORAGE_REQUIRED_CAPABILITIES = frozenset({
+    "listing", "download_hash", "missing_object_rejection", "authentication_rejection",
+    "source_preservation", "config_preservation", "fixture_write_rejection", "cleanup",
+})
 FILEFABRIC_REQUIRED_CAPABILITIES = frozenset(PIXELDRAIN_REQUIRED_CAPABILITIES)
 FILEFABRIC_CACHED_MODE = "filefabric_cached_session_v1"
 FILEFABRIC_RENEWAL_MODE = "filefabric_later_call_renewal_v1"
@@ -106,6 +110,7 @@ READ_FIXTURE_CONTRACTS = {
     "pixeldrain": PIXELDRAIN_REQUIRED_CAPABILITIES,
     "filefabric": FILEFABRIC_REQUIRED_CAPABILITIES,
     "internetarchive": INTERNETARCHIVE_REQUIRED_CAPABILITIES,
+    "netstorage": NETSTORAGE_REQUIRED_CAPABILITIES,
 }
 CAPABILITIES = {
     "authentication", "listing", "download_hash", "manifest_integrity",
@@ -121,6 +126,7 @@ FIXTURE_KINDS = {
     "azurefiles": "independent_loopback", "seafile": "independent_loopback", "koofr": "independent_loopback",
     "pixeldrain": "independent_loopback", "filefabric": "independent_loopback",
     "internetarchive": "independent_loopback",
+    "netstorage": "independent_loopback",
 }
 FIXTURE_CAPABILITIES = {
     "listing", "download_hash", "missing_object_rejection", "source_preservation",
@@ -496,23 +502,23 @@ def validate_receipt(receipt, runtime, harness_sha256, now, max_age_hours=MAX_AG
                 fail("invalid_fixture_mode")
         elif set(row) & {"fixture_mode", "modes", "subscenarios"}:
             fail("invalid_fixture_mode")
-        if backend == "internetarchive" and (
+        if backend in ("internetarchive", "netstorage") and (
                 set(row) != {"backend", "fixture_kind", "capabilities", "errors"}
                 or set(receipt) != {"schema_version", "scope", "runtime", "platform", "harness_sha256",
                                     "fixture_manifest_sha256", "started_utc", "finished_utc", "success",
                                     "cleanup_passed", "backends", "errors"}):
-            # A keyed profile must be reviewed as a distinct contract. Unknown
-            # scope/auth fields cannot redefine this anonymous schema-1 mode.
+            # Unknown scope/auth fields cannot redefine these fixed schema-1
+            # contracts; another profile needs independent source review.
             fail("invalid_fixture_mode")
         seen.add(backend)
         capabilities = row.get("capabilities")
         if not isinstance(capabilities, dict) or not capabilities or set(capabilities) - FIXTURE_CAPABILITIES:
             fail("invalid_fixture_capability")
         if (backend not in ("http", "webdav") and set(capabilities) & {"truncated_download_rejection", "cancellation_cleanup"}
-                or backend not in ("http", "webdav", "ftp", "archive", "swift", "b2", "azureblob", "azurefiles", "seafile", "koofr", "pixeldrain", "filefabric", "internetarchive") and "fixture_write_rejection" in capabilities
+                or backend not in ("http", "webdav", "ftp", "archive", "swift", "b2", "azureblob", "azurefiles", "seafile", "koofr", "pixeldrain", "filefabric", "internetarchive", "netstorage") and "fixture_write_rejection" in capabilities
                 or backend != "sftp" and "host_key_rejection" in capabilities
                 or backend != "archive" and set(capabilities) & ARCHIVE_ONLY_CAPABILITIES
-                or backend not in ("archive", "memory", "swift", "b2", "azureblob", "azurefiles", "seafile", "koofr", "pixeldrain", "filefabric", "internetarchive") and "config_preservation" in capabilities
+                or backend not in ("archive", "memory", "swift", "b2", "azureblob", "azurefiles", "seafile", "koofr", "pixeldrain", "filefabric", "internetarchive", "netstorage") and "config_preservation" in capabilities
                 or backend != "swift" and set(capabilities) & SWIFT_ONLY_CAPABILITIES
                 or backend != "b2" and set(capabilities) & B2_ONLY_CAPABILITIES
                 or backend != "internetarchive" and set(capabilities) & INTERNETARCHIVE_ONLY_CAPABILITIES

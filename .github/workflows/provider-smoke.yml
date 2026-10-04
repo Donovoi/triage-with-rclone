@@ -44,13 +44,13 @@ jobs:
           bash ../scripts/download-rclone.sh --linux "$RUNNER_TEMP/rclone-smoke"
       - name: Provider evidence regressions
         run: python -B -m unittest discover -s ../scripts/tests -p 'test_*.py'
-      - name: All 17 isolated backend protocol fixtures
+      - name: All 18 isolated backend protocol fixtures
         run: python -B ../scripts/provider-lab/run_lab.py --rclone "$RUNNER_TEMP/rclone-smoke" --report "$RUNNER_TEMP/provider-fixtures.json"
       - name: Isolated FileFabric later-call renewal fixture
         if: ${{ !cancelled() }}
         run: python -B ../scripts/provider-lab/run_lab.py --rclone "$RUNNER_TEMP/rclone-smoke" --filefabric-renewal --report "$RUNNER_TEMP/filefabric-renewal-fixture.json"
       # Internet Archive anonymous reads run above and fail that step on any error.
-      # Its credential-rejection gap keeps the full ledger gate limited to the other 16.
+      # Its credential-rejection gap keeps the full ledger gate limited to the other 17.
       - name: Require current provider plans and protocol evidence
         if: ${{ !cancelled() }}
         run: |
@@ -58,7 +58,7 @@ jobs:
             --report "$RUNNER_TEMP/provider-evidence.json" \
             --fixture-receipt "$RUNNER_TEMP/provider-fixtures.json" \
             --fixture-receipt "$RUNNER_TEMP/filefabric-renewal-fixture.json" \
-            --require-plans --require-fixtures local,archive,http,webdav,ftp,sftp,s3,swift,b2,azureblob,azurefiles,seafile,memory,koofr,pixeldrain,filefabric
+            --require-plans --require-fixtures local,archive,http,webdav,ftp,sftp,s3,swift,b2,azureblob,azurefiles,seafile,memory,koofr,pixeldrain,filefabric,netstorage
       - name: Offline provider contracts
         run: cargo test --locked --release --test provider_smoke --test provider_matrix -- --test-threads=1
       - name: Login and credential regressions without accounts
