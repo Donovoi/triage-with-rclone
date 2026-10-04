@@ -91,6 +91,8 @@ public final class SecureHdfsController {
         role_origin_http_ssl_configuration, role_origin_http_spnego, role_origin_http_start,
         role_origin_jetty_ssl_start, role_origin_kerberos_auth_init, role_origin_namespace_load, role_origin_rpc_constructor,
         role_configuration_default_uri_loopback_alias, role_configuration_https_loopback_alias,
+        role_source_check_failed, role_source_mkdir_failed, role_source_create_failed, role_source_write_failed,
+        role_source_close_failed, role_source_metadata_failed, role_source_inventory_failed, role_source_read_failed,
         role_invalid_config, role_io_failure, role_file_missing, role_security_failure,
         role_illegal_state, role_null_state, role_missing_class, role_linkage_failure,
         role_resource_failure, role_exit_requested, role_halt_requested, role_unclassified,
@@ -602,6 +604,14 @@ public final class SecureHdfsController {
                 case "configuration_https_loopback_alias" -> Code.role_configuration_https_loopback_alias;
                 case "invalid_config" -> Code.role_invalid_config;
                 case "io_failure" -> Code.role_io_failure;
+                case "source_check_failed" -> Code.role_source_check_failed;
+                case "source_mkdir_failed" -> Code.role_source_mkdir_failed;
+                case "source_create_failed" -> Code.role_source_create_failed;
+                case "source_write_failed" -> Code.role_source_write_failed;
+                case "source_close_failed" -> Code.role_source_close_failed;
+                case "source_metadata_failed" -> Code.role_source_metadata_failed;
+                case "source_inventory_failed" -> Code.role_source_inventory_failed;
+                case "source_read_failed" -> Code.role_source_read_failed;
                 case "origin_http_ssl_configuration" -> Code.role_origin_http_ssl_configuration;
                 case "origin_http_spnego" -> Code.role_origin_http_spnego;
                 case "origin_http_start" -> Code.role_origin_http_start;
