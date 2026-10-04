@@ -1,9 +1,22 @@
-# Isolated Samba feasibility probe
+# Isolated Samba NTLM protocol fixture
 
-This experiment tests the pinned Linux rclone binary against an independent Samba
-server. Its report explicitly sets `ledger_eligible: false`. A successful run
-does not establish production application acceptance, a hosted SMB provider,
-Kerberos, renewal, cancellation, or complete SMB coverage.
+This fixture tests the pinned Linux rclone binary against an independent Samba
+server. `--protocol-evidence` emits the closed schema-3 `smb_samba_ntlm_read_v1`
+contract for the Linux/amd64 local protocol ledger. Its seven capabilities cover
+listing, independent download hashes, wrong-password and missing-object rejection,
+source/config preservation and cleanup. It does not establish Windows behavior,
+application acceptance, a hosted SMB provider, Kerberos, connection recovery,
+renewal, cancellation or write denial.
+
+The default invocation still produces feasibility evidence with
+`ledger_eligible: false`; those earlier receipts remain rejected by the ledger.
+The protocol option requires a new native run, with UTC timing around execution
+and cleanup. There is no command to convert an old receipt. Schema 3 includes the
+closed native observations and binds the current five-file harness, four native
+source hashes, Debian lock/base, immutable image ID, Samba and rclone identities,
+shared three-file manifest, platform, isolation and both cleanup layers. The
+importer recomputes expected source and manifest identities independently. These
+are reports from trusted runs, not cryptographic execution attestations.
 
 The CI supervisor runs only on a disposable GitHub-hosted Linux runner. It builds
 the official Debian image at an immutable amd64 digest and installs the complete
@@ -40,5 +53,10 @@ Build timeout or unavailable snapshots fail the experiment without a mirror,
 credential, or privilege fallback. The public report includes only fixed stage
 markers and diagnostic codes for failures.
 
+CI combines the new SMB receipt only with the same run's Linux baseline receipts
+and requires all eighteen reviewed Linux local protocol profiles. Windows retains
+seventeen; Internet Archive and pCloud remain partial on both platforms. The
+scheduled Linux provider workflow also runs and requires the SMB contract.
+
 The Python tests use mocks and local temporary files and do not start Docker,
-Samba, rclone, or a service. Native feasibility requires the isolated CI job.
+Samba, rclone, or a service. Native execution requires the isolated CI job.

@@ -3252,6 +3252,7 @@
       "profile": "smb-lifecycle-plan",
       "notes": [
         "Owned SMB server/share and test account. Guest access/domain/Kerberos variants are not established by a simple local password test.",
+        "The schema-3 smb_samba_ntlm_read_v1 fixture covers only Linux/amd64 against an independent hash-locked Samba container with NTLM password authentication. Complete three-file listing, independent download hashes, wrong-password rejection, repeat successful reads, missing-member rejection, source/config preservation and both cleanup layers satisfy the bounded local protocol plan. Windows, Kerberos, session recovery, renewal, cancellation and native write denial remain unverified; feasibility receipts alone cannot qualify this tier.",
         "Free account/API eligibility: no_vendor_account_needed",
         "Cache reload consumes an external replacement, while service-ticket renewal/reacquisition can independently occur through the KDC; neither proves automatic TGT renewal. A live session does not necessarily reauthenticate merely because the file changed.",
         "The current local protocol requirements do not attest connection recovery, replacement-credential renewal, or vendor-specific modes. Required application lifecycle cases remain unverified until separate evidence is supplied."
