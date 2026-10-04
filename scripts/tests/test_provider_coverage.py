@@ -132,6 +132,16 @@ def pixeldrain_receipt():
     return read_fixture_receipt("pixeldrain")
 
 
+def internetarchive_receipt():
+    # Independent literal public-read contract; no credential-auth result.
+    candidate = receipt("internetarchive")
+    candidate["backends"][0]["capabilities"] = {key: "passed" for key in (
+        "listing", "download_hash", "missing_object_rejection", "anonymous_read", "read_denial",
+        "source_preservation", "config_preservation", "fixture_write_rejection", "cleanup",
+    )}
+    return candidate
+
+
 def memory_receipt():
     candidate = receipt("memory")
     candidate["backends"][0]["capabilities"] = {
@@ -759,7 +769,8 @@ class CoverageTests(unittest.TestCase):
             candidate = {"swift": swift_receipt, "b2": b2_receipt, "azureblob": azureblob_receipt,
                          "azurefiles": azurefiles_receipt, "seafile": seafile_receipt,
                          "memory": memory_receipt, "koofr": koofr_receipt,
-                         "pixeldrain": pixeldrain_receipt, "filefabric": filefabric_receipt}.get(backend, lambda: receipt(backend))()
+                         "pixeldrain": pixeldrain_receipt, "filefabric": filefabric_receipt,
+                         "internetarchive": internetarchive_receipt}.get(backend, lambda: receipt(backend))()
             if backend == "archive":
                 candidate["backends"][0]["capabilities"] = {
                     key: "passed" for key in coverage.ARCHIVE_REQUIRED_CAPABILITIES
@@ -768,7 +779,7 @@ class CoverageTests(unittest.TestCase):
             candidate["backends"][0]["capabilities"]["config_preservation"] = "passed"
             report = self.evaluate([candidate], policy, catalog)
             with self.subTest(backend=backend):
-                if backend in ("archive", "memory", "swift", "b2", "azureblob", "azurefiles", "seafile", "koofr", "pixeldrain", "filefabric"):
+                if backend in ("archive", "memory", "swift", "b2", "azureblob", "azurefiles", "seafile", "koofr", "pixeldrain", "filefabric", "internetarchive"):
                     self.assertEqual(report["providers"][0]["evidence"]["local_protocol"]["status"], "passed")
                 else:
                     self.assertIn("invalid_fixture_capability", report["errors"])
@@ -1016,6 +1027,7 @@ class CoverageTests(unittest.TestCase):
         candidate["raw_stderr"] = canary
         candidate["backends"][0]["Authorization"] = canary
         self.assertNotIn(canary, json.dumps(self.evaluate([candidate], policy, catalog)))
+        candidate = read_fixture_receipt(backend)
         candidate["backends"][0]["errors"] = [canary]
         result = self.evaluate([candidate], policy, catalog)
         self.assertIn("invalid_fixture_errors", result["errors"])
@@ -1132,6 +1144,123 @@ class CoverageTests(unittest.TestCase):
 
     def test_filefabric_failures_are_sticky_and_private_fields_omitted(self):
         self.assert_read_fixture_failures_are_sticky_and_private_fields_omitted("filefabric")
+
+    def test_internetarchive_anonymous_receipt_is_partial_not_auth_or_vendor_acceptance(self):
+        catalog = coverage.catalog_from_schemas([schema("internetarchive")])
+        actual = json.loads((ROOT / "provider-coverage-policy.json").read_text(encoding="utf-8"))
+        entry = copy.deepcopy(actual["providers"]["internetarchive"])
+        entry["schema_sha256"] = catalog[0]["schema_sha256"]
+        policy = {"schema_version": 2, "providers": {"internetarchive": entry},
+                  "profiles": {entry["profile"]: copy.deepcopy(actual["profiles"][entry["profile"]])}}
+        result = self.evaluate([internetarchive_receipt()], policy, catalog)
+        self.assertEqual(result["errors"], [])
+        self.assertEqual(entry["auth_applicability"], "credentials")
+        evidence = result["providers"][0]["evidence"]
+        local = evidence["local_protocol"]
+        self.assertEqual(local["status"], "not_verified")
+        expected = internetarchive_receipt()["backends"][0]["capabilities"]
+        self.assertEqual(local["capabilities"], dict(expected, authentication_rejection="not_verified"))
+        self.assertEqual(local["runs"][0]["fixture_mode"], "internetarchive_anonymous_read_v1")
+        for tier in ("application", "vendor"):
+            self.assertEqual(evidence[tier]["status"], "not_verified")
+            self.assertEqual(evidence[tier]["capabilities"]["authentication"], "not_verified")
+            self.assertEqual(evidence[tier]["capabilities"]["denial"], "not_verified")
+            self.assertEqual(evidence[tier]["capabilities"]["revocation"], "not_verified")
+        self.assertEqual(coverage.gate_errors(result, require_plans=True), [])
+        self.assertIn("required_fixture_not_verified", coverage.gate_errors(result, require_fixtures=["internetarchive"]))
+        self.assertIn("provider_coverage_incomplete", coverage.gate_errors(result, require_complete=True))
+        self.assertFalse(result["providers"][0]["complete"])
+
+    def test_internetarchive_exact_anonymous_contract_even_with_weaker_policy(self):
+        self.assert_read_fixture_requires_exact_capabilities_despite_weaker_policy("internetarchive")
+        self.assertEqual(coverage.INTERNETARCHIVE_REQUIRED_CAPABILITIES,
+                         set(internetarchive_receipt()["backends"][0]["capabilities"]))
+
+    def test_internetarchive_requires_observed_typed_outcomes_not_auth_na(self):
+        self.assert_read_fixture_requires_executed_typed_outcomes_and_independent_kind("internetarchive")
+        catalog = coverage.catalog_from_schemas([schema("internetarchive")])
+        policy = policy_for(catalog)
+        for auth_result in ("passed", "not_applicable", "failed", "not_run"):
+            candidate = internetarchive_receipt()
+            candidate["backends"][0]["capabilities"]["authentication_rejection"] = auth_result
+            error = "invalid_fixture_not_applicable" if auth_result == "not_applicable" else "invalid_fixture_capability"
+            self.assertIn(error, self.evaluate([candidate], policy, catalog)["errors"])
+
+    def test_internetarchive_provenance_and_freshness_cannot_be_substituted(self):
+        self.assert_read_fixture_requires_current_runtime_harness_manifest_and_time("internetarchive")
+
+    def test_internetarchive_failure_and_cleanup_are_sticky_and_no_private_output(self):
+        self.assert_read_fixture_failures_are_sticky_and_private_fields_omitted("internetarchive")
+        catalog = coverage.catalog_from_schemas([schema("internetarchive")])
+        policy = policy_for(catalog)
+        good = internetarchive_receipt()
+        for field in ("success", "cleanup_passed"):
+            bad = copy.deepcopy(good)
+            bad["success"] = False
+            bad[field] = False
+            for receipts in ([good, bad], [bad, good]):
+                result = self.evaluate(receipts, policy, catalog)
+                self.assertEqual(result["providers"][0]["evidence"]["local_protocol"]["status"], "failed")
+
+    def test_internetarchive_public_read_caps_never_transfer_to_other_backends(self):
+        for backend in coverage.FIXTURE_KINDS:
+            if backend == "internetarchive":
+                continue
+            catalog = coverage.catalog_from_schemas([schema(backend)])
+            policy = policy_for(catalog)
+            for capability in ("anonymous_read", "read_denial"):
+                candidate = receipt(backend)
+                candidate["backends"][0]["capabilities"][capability] = "passed"
+                with self.subTest(backend=backend, capability=capability):
+                    result = self.evaluate([candidate], policy, catalog)
+                    self.assertIn("invalid_fixture_capability", result["errors"])
+
+    def test_internetarchive_schema_one_scope_cannot_be_redefined_or_keyed(self):
+        catalog = coverage.catalog_from_schemas([schema("internetarchive")])
+        policy = policy_for(catalog)
+        for where in ("row", "receipt"):
+            for field, value in (("fixture_mode", "internetarchive_anonymous_read_v1"),
+                                 ("modes", []), ("subscenarios", []), ("auth_mode", "keyed"),
+                                 ("access_key_id", "synthetic"), ("Authorization", "PRIVATE_CANARY")):
+                candidate = internetarchive_receipt()
+                target = candidate if where == "receipt" else candidate["backends"][0]
+                target[field] = value
+                result = self.evaluate([candidate], policy, catalog)
+                with self.subTest(where=where, field=field):
+                    self.assertIn("invalid_fixture_mode", result["errors"])
+                    self.assertNotIn("PRIVATE_CANARY", json.dumps(result))
+        candidate = internetarchive_receipt()
+        candidate["scope"] = "vendor_acceptance"
+        self.assertIn("unknown_receipt_schema", self.evaluate([candidate], policy, catalog)["errors"])
+
+    def test_internetarchive_cannot_enter_schema_two_or_filefabric_renewal(self):
+        catalog = coverage.catalog_from_schemas([schema("internetarchive"), schema("filefabric")])
+        policy = policy_for(catalog)
+        for mixed in (False, True):
+            candidate = internetarchive_receipt()
+            candidate["schema_version"] = 2
+            candidate["backends"][0]["fixture_mode"] = "filefabric_later_call_renewal_v1"
+            if mixed:
+                candidate["backends"].extend(filefabric_renewal_receipt()["backends"])
+            result = self.evaluate([candidate], policy, catalog)
+            self.assertIn("invalid_fixture_mode", result["errors"])
+        candidate = filefabric_renewal_receipt()
+        candidate["backends"][0]["capabilities"]["anonymous_read"] = "passed"
+        self.assertIn("invalid_fixture_capability", self.evaluate([candidate], policy, catalog)["errors"])
+
+    def test_internetarchive_and_existing_schema_one_rows_remain_independent(self):
+        catalog = coverage.catalog_from_schemas([schema("internetarchive"), schema("http")])
+        policy = policy_for(catalog)
+        candidate = internetarchive_receipt()
+        candidate["backends"].extend(receipt("http")["backends"])
+        result = self.evaluate([candidate], policy, catalog)
+        self.assertEqual(result["errors"], [])
+        rows = {row["backend"]: row for row in result["providers"]}
+        self.assertEqual(rows["http"]["evidence"]["local_protocol"]["status"], "passed")
+        self.assertNotIn("fixture_mode", rows["http"]["evidence"]["local_protocol"]["runs"][0])
+        result = self.evaluate([receipt("http")], policy, catalog)
+        rows = {row["backend"]: row for row in result["providers"]}
+        self.assertEqual(rows["internetarchive"]["evidence"]["local_protocol"]["status"], "not_verified")
 
     def filefabric_combined_policy(self):
         catalog = coverage.catalog_from_schemas([schema("filefabric")])
