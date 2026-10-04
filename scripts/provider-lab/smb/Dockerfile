@@ -8,7 +8,7 @@ COPY build-lock.json /opt/synthetic-smb/build-lock.json
 RUN <<'BOOTSTRAP'
 set -eu
 test "$(dpkg --print-architecture)" = amd64
-printf '%s  %s\n' '48323966663f34107cc950984bfb0fe2d00306f1a4a20cd0e77cc88c016613d2' /opt/synthetic-smb/build-lock.json | sha256sum -c -
+printf '%s  %s\n' 'b5e49497785d43a7ef41d4eeadf921e3eb6d9bfc2b790c540c6828652563bffb' /opt/synthetic-smb/build-lock.json | sha256sum -c -
 dpkg-query -W -f='${binary:Package}\t${Version}\t${db:Status-Abbrev}\n' > /tmp/smb-base-packages.tsv
 rm -f /etc/apt/sources.list /etc/apt/sources.list.d/*
 cat > /etc/apt/sources.list <<'SOURCES'
@@ -268,16 +268,19 @@ printf '%s\n' 'SMB_BUILD_PHASE=seed'
 groupadd --gid 10001 synthetic-smb
 useradd --uid 10001 --gid 10001 --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin synthetic-smb
 python3 - <<'PY'
-import hashlib, json, os, pathlib, secrets, shutil, stat, subprocess
+import hashlib, importlib.util, json, os, pathlib, secrets, shutil, stat, subprocess
 base = pathlib.Path("/opt/synthetic-smb")
 lock_path = base / "build-lock.json"
 lock = json.loads(lock_path.read_text())
 expected = lock["runtime_expected"]
 def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
-pins = dict(line.split("=", 1) for line in (base / "rclone-version.env").read_text().splitlines() if line and not line.startswith("#"))
-assert pins["RCLONE_VERSION"] == expected["rclone_version"] == "1.75.1"
-assert pins["RCLONE_LINUX_EXE_SHA256"] == expected["rclone_sha256"] == digest(base / "rclone")
+# The updater owns the root manifest; the Debian package lock does not duplicate it.
+spec = importlib.util.spec_from_file_location("synthetic_smb_probe", base / "probe_samba.py")
+probe = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(probe)
+runtime_pins = probe.read_runtime_pins(base / "rclone-version.env")
+assert runtime_pins["sha256"] == digest(base / "rclone"), "rclone binary pin mismatch"
 for name in ("rclone", "probe_samba.py"):
     (base / name).chmod(0o555)
 for name in ("build-lock.json", "rclone-version.env"):
@@ -332,6 +335,8 @@ manifest = {
     "schema_version": 1,
     "smbd_sha256": digest(pathlib.Path("/usr/sbin/smbd")),
     "testparm_sha256": digest(pathlib.Path("/usr/bin/testparm")),
+    "rclone_version": runtime_pins["version"],
+    "rclone_manifest_sha256": digest(base / "rclone-version.env"),
     "rclone_sha256": digest(base / "rclone"),
     "probe_sha256": digest(base / "probe_samba.py"),
     "lock_sha256": digest(lock_path),
