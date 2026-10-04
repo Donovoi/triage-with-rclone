@@ -60,10 +60,16 @@ CODES = frozenset({
 
 
 class DiscoveryError(Exception):
-    def __init__(self, code):
+    def __init__(self, code, pom_diagnostic=None):
         if code not in CODES:
             raise ValueError("invalid_diagnostic_code")
         self.code = code
+        self.pom_diagnostic = None
+        if pom_diagnostic is not None:
+            diagnostic = graph_export.validate_pom_diagnostic(pom_diagnostic)
+            if code != "artifact_semantics_" + diagnostic["code"]:
+                raise ValueError("invalid_diagnostic_code")
+            self.pom_diagnostic = diagnostic
         super().__init__(code)
 
 
@@ -403,7 +409,8 @@ def artifact_manifest(archive):
                     small("output/runtime-tree.json", 8 * 1024 * 1024),
                     small("output/runtime-tree.txt", 8 * 1024 * 1024), poms, selected_coordinates)
             except graph_export.ExportError as error:
-                raise DiscoveryError("artifact_semantics_" + error.code) from None
+                raise DiscoveryError("artifact_semantics_" + error.code,
+                                     graph_export.pom_failure_diagnostic(error)) from None
             except (ValueError, TypeError, KeyError, RecursionError):
                 raise DiscoveryError("artifact_semantics_invalid") from None
         with archive.open("rb") as stream:
@@ -451,7 +458,7 @@ def discover(candidate, bootstrap, archive, output_parent, *, runner_factory=Doc
     context_identity = (context.stat().st_dev, context.stat().st_ino)
     report = {"schema_version": 1, "scope": "hdfs_dependency_discovery", "ledger_eligible": False,
               "success": False, "offline_reproduced": False, "daemon_accepted": False,
-              "review_status": "quarantined", "errors": [], "manifest": None,
+              "review_status": "quarantined", "errors": [], "manifest": None, "pom_diagnostic": None,
               "started_utc": started_utc, "finished_utc": None, "duration_seconds": None,
               "inputs": {"supervisor_sha256": supervisor_sha, "graph_export_sha256": exporter_sha,
                          "candidate_sha256": dict(INPUT_HASHES),
@@ -510,6 +517,13 @@ def discover(candidate, bootstrap, archive, output_parent, *, runner_factory=Doc
         report["success"] = True
     except DiscoveryError as error:
         report["errors"].append(error.code)
+        if error.pom_diagnostic is not None:
+            try:
+                diagnostic = graph_export.validate_pom_diagnostic(error.pom_diagnostic)
+                need(error.code == "artifact_semantics_" + diagnostic["code"], "artifact_semantics_invalid")
+                report["pom_diagnostic"] = diagnostic
+            except (graph_export.ExportError, DiscoveryError, ValueError, TypeError, KeyError):
+                report["errors"].append("artifact_semantics_invalid")
         if status_diagnostic is not None:
             report["errors"].append(status_diagnostic)
     except KeyboardInterrupt:
