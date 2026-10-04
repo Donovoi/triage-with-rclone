@@ -75,6 +75,14 @@ class ProbeContract(unittest.TestCase):
                 with self.assertRaises(SUBJECT.SupervisorError):
                     SUBJECT.validate_probe(item, IDENTITY, SOURCES)
 
+    def test_future_verified_runtime_is_accepted_without_duplicate_pins(self):
+        identity = {"version": "99.88.77", "sha256": "1" * 64}
+        item = probe()
+        item["runtime"].update(rclone_version=identity["version"], rclone_sha256=identity["sha256"])
+        self.assertEqual(SUBJECT.validate_probe(item, identity, SOURCES), item)
+        with self.assertRaisesRegex(SUBJECT.SupervisorError, "probe_runtime_mismatch"):
+            SUBJECT.validate_probe(item, IDENTITY, SOURCES)
+
     def test_each_observation_and_cleanup_is_required(self):
         for field in ("checks", "cleanup"):
             for key in probe()[field]:
