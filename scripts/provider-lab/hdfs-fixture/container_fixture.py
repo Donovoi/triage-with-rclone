@@ -54,6 +54,7 @@ shutdown_request_failed source_preservation_failed configuration_preservation_fa
 datanode_shutdown_failed namenode_shutdown_failed termination_requested final_report_failed
 format_failed namenode_start_failed datanode_start_failed client_start_failed readiness_failed
 file_missing http_webapp_missing
+webapp_resources_invalid webapp_resources_failed
 """.split())
 
 
@@ -107,6 +108,17 @@ def expected_files():
     return [dict(path=path, size=len(data), sha256=digest(data),
                  mode="0600" if path == "private/owner-only.txt" else "0644")
             for path, data in sorted(samples().items())]
+
+
+def webapp_resources():
+    """Minimal fixture scaffolding for Hadoop's programmatic HTTP services."""
+    descriptor = (b'<?xml version="1.0" encoding="UTF-8"?>\n'
+                  b'<web-app xmlns="http://java.sun.com/xml/ns/j2ee" version="2.4"></web-app>\n')
+    index = b"<!doctype html><title>Synthetic fixture</title><p>Protocol test only.</p>\n"
+    return {"webapps/hdfs/WEB-INF/web.xml": descriptor,
+            "webapps/datanode/WEB-INF/web.xml": descriptor,
+            "webapps/hdfs/index.html": index, "webapps/datanode/index.html": index,
+            "webapps/static/fixture.txt": b"Protocol test resources only.\n"}
 
 
 def runtime_rows():
@@ -173,11 +185,14 @@ def dockerfile(rows, java_hash):
     classpath = ":".join("/opt/hdfs/jars/%03d.jar" % i for i in range(len(rows)))
     checks = "\n".join(row["sha256"] + "  /opt/hdfs/jars/%03d.jar" % i for i, row in enumerate(rows))
     checks += "\n" + RCLONE_SHA + "  /opt/hdfs/rclone\n" + java_hash + "  /opt/hdfs/HdfsFixture.java\n"
+    checks += "".join(digest(data) + "  /opt/hdfs/resources/" + path + "\n"
+                      for path, data in sorted(webapp_resources().items()))
     source = (
         "FROM " + BASE + "\nUSER 0\nCOPY . /opt/hdfs/\n"
         "RUN sha256sum -c /opt/hdfs/checksums && mkdir /opt/hdfs/classes && "
         "/opt/java/openjdk/bin/javac -J-Xmx768m -proc:none -implicit:none -encoding UTF-8 -cp '" + classpath +
         "' -d /opt/hdfs/classes /opt/hdfs/HdfsFixture.java && "
+        "cp -R /opt/hdfs/resources/webapps /opt/hdfs/classes/ && "
         "chmod -R a=rX /opt/hdfs && chmod 0555 /opt/hdfs/rclone\n"
         "USER 10001:10001\nWORKDIR /work\n")
     return source, checks, "/opt/hdfs/classes:" + classpath + "\n"
@@ -435,6 +450,7 @@ def run(rclone, *, runner_factory=D.Docker, downloader=download_jars):
                   started_utc=R.utc_now(), errors=[], inputs={}, result=None,
                   stage="preflight", java_diagnostic=dict(status="not_requested"),
                   cleanup_excludes=["shared_base_image", "shared_build_cache"],
+                  webapp_scope="synthetic_scaffolding_not_vendor_ui",
                   review_status="partial_protocol_only", authentication_mode="SIMPLE",
                   http_services_present=True, network_scope="network_none_container_not_host_or_build_registry",
                   cleanup=dict(container_removed=False, image_removed=False, context_removed=False,
@@ -478,6 +494,12 @@ def run(rclone, *, runner_factory=D.Docker, downloader=download_jars):
         for filename, data in {"Dockerfile": build, "checksums": checks, "classpath": classpath,
                                "driver.sh": driver_script()}.items():
             (context / filename).write_text(data, encoding="ascii", newline="\n")
+        for path, data in webapp_resources().items():
+            target = context / "resources" / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(data)
+        report["inputs"]["webapp_resources_sha256"] = digest(canonical(
+            {path: digest(data) for path, data in webapp_resources().items()}))
         context_hashes = {p.relative_to(context).as_posix(): D.file_hash(p) for p in context.rglob("*") if p.is_file()}
         report["inputs"]["context_sha256"] = digest(canonical(context_hashes))
         report["stage"] = "docker_preflight"

@@ -16,6 +16,7 @@ import java.io.IOException;
 import java.io.FileNotFoundException;
 import java.net.InetSocketAddress;
 import java.net.URI;
+import java.net.URL;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
@@ -79,7 +80,7 @@ public final class HdfsFixture {
       "source_inventory_bound", "source_inventory_changed", "source_metadata_changed",
       "source_preexisting", "source_scope", "startup_timeout", "unexpected_directory",
       "unexpected_file", "work_invalid", "work_owner_invalid", "work_permissions_invalid",
-      "exit_requested", "halt_requested");
+      "exit_requested", "halt_requested", "webapp_resources_invalid");
   private static final class FixtureFailure extends IOException {
     private final String code;
     FixtureFailure(String code) {
@@ -202,6 +203,66 @@ public final class HdfsFixture {
       privateDirectory(STATE.resolve(child));
     System.setProperty("java.io.tmpdir", STATE.resolve("tmp").toString());
     System.setProperty("io.netty.native.workdir", STATE.resolve("native").toString());
+  }
+
+  private record WebAppFile(int size, String sha256) {}
+  private static void verifyWebAppResources() throws Exception {
+    // Fixture-only scaffolding, not vendor UI. The parent binds these immutable
+    // image files to its reviewed build context; hashes here are independent.
+    Path root = Path.of("/opt/hdfs/classes/webapps");
+    Map<String, WebAppFile> files = Map.of(
+        "hdfs/WEB-INF/web.xml", new WebAppFile(113, "6d0d825985f36b71b961bcf21a33c0f21d5b732bd571962549585287071c48a9"),
+        "datanode/WEB-INF/web.xml", new WebAppFile(113, "6d0d825985f36b71b961bcf21a33c0f21d5b732bd571962549585287071c48a9"),
+        "hdfs/index.html", new WebAppFile(74, "c91ab4f8efeb470f733249fa2077f6cdfa2a0b185092bb6cd7ef94a6f1500c5e"),
+        "datanode/index.html", new WebAppFile(74, "c91ab4f8efeb470f733249fa2077f6cdfa2a0b185092bb6cd7ef94a6f1500c5e"),
+        "static/fixture.txt", new WebAppFile(30, "a934e6055b850ef89bab9e02e895da2d13ad073d49e8054a59a5bdee4d7b04af"));
+    Set<String> directories = Set.of("", "hdfs", "hdfs/WEB-INF", "datanode", "datanode/WEB-INF", "static");
+    try {
+      for (Path ancestor = root; ancestor != null; ancestor = ancestor.getParent())
+        require(Files.isDirectory(ancestor, NOFOLLOW) && !Files.isSymbolicLink(ancestor),
+            "webapp_resources_invalid");
+      for (String name : List.of("hdfs", "datanode", "static")) {
+        URL resource = HdfsFixture.class.getClassLoader().getResource("webapps/" + name);
+        require(resource != null && resource.getProtocol().equals("file")
+            && (resource.getAuthority() == null || resource.getAuthority().isEmpty())
+            && resource.getQuery() == null && resource.getRef() == null
+            && Path.of(resource.toURI()).equals(root.resolve(name)), "webapp_resources_invalid");
+      }
+      Set<String> foundFiles = new HashSet<>(), foundDirs = new HashSet<>();
+      ArrayDeque<Path> pending = new ArrayDeque<>(); pending.add(root);
+      int observed = 0;
+      while (!pending.isEmpty()) {
+        Path path = pending.remove();
+        require(++observed <= 11 && !Files.isSymbolicLink(path), "webapp_resources_invalid");
+        String relative = root.relativize(path).toString();
+        boolean directory = Files.isDirectory(path, NOFOLLOW);
+        require(((Number) Files.getAttribute(path, "unix:uid", NOFOLLOW)).intValue() == 0
+            && ((Number) Files.getAttribute(path, "unix:gid", NOFOLLOW)).intValue() == 0
+            && Files.getPosixFilePermissions(path, NOFOLLOW).equals(PosixFilePermissions.fromString(
+                directory ? "r-xr-xr-x" : "r--r--r--")), "webapp_resources_invalid");
+        if (directory) {
+          require(directories.contains(relative) && foundDirs.add(relative), "webapp_resources_invalid");
+          try (var children = Files.newDirectoryStream(path)) {
+            for (Path child : children) {
+              require(pending.size() < 11, "webapp_resources_invalid");
+              pending.add(child);
+            }
+          }
+        } else {
+          require(Files.isRegularFile(path, NOFOLLOW) && files.containsKey(relative)
+              && foundFiles.add(relative), "webapp_resources_invalid");
+          WebAppFile expected = files.get(relative);
+          require(expected.size() <= 4096 && Files.size(path) == expected.size(), "webapp_resources_invalid");
+          byte[] bytes;
+          try (InputStream input = Files.newInputStream(path, NOFOLLOW)) { bytes = input.readNBytes(4097); }
+          require(bytes.length == expected.size() && sha256(bytes).equals(expected.sha256()),
+              "webapp_resources_invalid");
+        }
+      }
+      require(foundFiles.equals(files.keySet()) && foundDirs.equals(directories), "webapp_resources_invalid");
+    } catch (Exception ignored) {
+      throw new FixtureFailure("webapp_resources_invalid");
+    }
   }
 
   private static Configuration configuration() {
@@ -433,6 +494,8 @@ public final class HdfsFixture {
     long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(LIFETIME_SECONDS);
     try {
       environment(args);
+      stage = "webapp_resources_failed";
+      verifyWebAppResources();
       stage = "startup_failed";
       // Pinned common-JAR embedding API; intercepted exits still fail evidence.
       ExitUtil.disableSystemExit();
