@@ -73,6 +73,19 @@ PIXELDRAIN_REQUIRED_CAPABILITIES = frozenset({
     "source_preservation", "config_preservation", "cleanup", "fixture_write_rejection",
 })
 FILEFABRIC_REQUIRED_CAPABILITIES = frozenset(PIXELDRAIN_REQUIRED_CAPABILITIES)
+FILEFABRIC_CACHED_MODE = "filefabric_cached_session_v1"
+FILEFABRIC_RENEWAL_MODE = "filefabric_later_call_renewal_v1"
+FILEFABRIC_ONLY_CAPABILITIES = frozenset({
+    "session_token_reacquisition", "config_scope_preservation", "saved_token_reuse",
+})
+FILEFABRIC_ADDITIONAL_CAPABILITIES = FILEFABRIC_ONLY_CAPABILITIES | {"renewal_denial"}
+FILEFABRIC_RENEWAL_REQUIRED_CAPABILITIES = FILEFABRIC_ADDITIONAL_CAPABILITIES | {
+    "source_preservation", "cleanup",
+}
+FILEFABRIC_MODE_CONTRACTS = {
+    FILEFABRIC_CACHED_MODE: FILEFABRIC_REQUIRED_CAPABILITIES,
+    FILEFABRIC_RENEWAL_MODE: FILEFABRIC_RENEWAL_REQUIRED_CAPABILITIES,
+}
 MEMORY_REQUIRED_CAPABILITIES = frozenset({
     "listing", "download_hash", "missing_object_rejection", "authentication_rejection",
     "source_preservation", "config_preservation", "cleanup",
@@ -90,7 +103,7 @@ CAPABILITIES = {
     "source_preservation", "cleanup", "refresh", "reauthentication", "cancellation", "denial",
     "revocation", "missing_object_rejection", "authentication_rejection",
     "truncated_download_rejection", "cancellation_cleanup", "fixture_write_rejection", "host_key_rejection", "renewal_denial",
-} | ARCHIVE_CAPABILITIES | SWIFT_ONLY_CAPABILITIES | B2_ONLY_CAPABILITIES
+} | ARCHIVE_CAPABILITIES | SWIFT_ONLY_CAPABILITIES | B2_ONLY_CAPABILITIES | FILEFABRIC_ONLY_CAPABILITIES
 FIXTURE_KINDS = {
     "http": "independent_loopback", "webdav": "independent_loopback",
     "ftp": "independent_loopback", "sftp": "rclone_loopback",
@@ -103,7 +116,7 @@ FIXTURE_CAPABILITIES = {
     "listing", "download_hash", "missing_object_rejection", "source_preservation",
     "authentication_rejection", "cleanup", "truncated_download_rejection",
     "cancellation_cleanup", "fixture_write_rejection", "host_key_rejection", "renewal_denial",
-} | ARCHIVE_CAPABILITIES | SWIFT_ONLY_CAPABILITIES | B2_ONLY_CAPABILITIES
+} | ARCHIVE_CAPABILITIES | SWIFT_ONLY_CAPABILITIES | B2_ONLY_CAPABILITIES | FILEFABRIC_ONLY_CAPABILITIES
 HARNESSES = ("fixture_servers.py", "run_lab.py")
 HASH_PATTERN = re.compile(r"[a-f0-9]{64}")
 ID_PATTERN = re.compile(r"[a-z0-9_]{1,80}")
@@ -419,8 +432,18 @@ def parse_utc(value):
 def validate_receipt(receipt, runtime, harness_sha256, now, max_age_hours=MAX_AGE_HOURS,
                      fixture_manifest_sha256=None):
     if (not isinstance(receipt, dict) or type(receipt.get("schema_version")) is not int
-            or receipt["schema_version"] != 1 or receipt.get("scope") != "rclone_backend_protocol_fixture"):
+            or receipt["schema_version"] not in (1, 2) or receipt.get("scope") != "rclone_backend_protocol_fixture"):
         fail("unknown_receipt_schema")
+    renewal_receipt = receipt["schema_version"] == 2
+    # Schema 1 remains the cached-read contract. Schema 2 is a closed,
+    # separately invoked FileFabric experiment, never a generic mode override.
+    if renewal_receipt:
+        if set(receipt) != {"schema_version", "scope", "runtime", "platform", "harness_sha256",
+                            "fixture_manifest_sha256", "started_utc", "finished_utc", "success",
+                            "cleanup_passed", "backends", "errors"}:
+            fail("invalid_fixture_mode")
+    elif set(receipt) & {"fixture_mode", "modes", "subscenarios"}:
+        fail("invalid_fixture_mode")
     if not isinstance(receipt.get("runtime"), dict) or any(
         receipt["runtime"].get(key) != runtime[key] for key in ("version", "sha256")
     ) or receipt.get("platform") != runtime["platform"]:
@@ -448,6 +471,8 @@ def validate_receipt(receipt, runtime, harness_sha256, now, max_age_hours=MAX_AG
     backends = receipt.get("backends")
     if not isinstance(backends, list) or not backends or len(backends) > len(FIXTURE_KINDS):
         fail("invalid_receipt_backends")
+    if renewal_receipt and len(backends) != 1:
+        fail("invalid_fixture_mode")
     seen = set()
     for row in backends:
         if not isinstance(row, dict):
@@ -455,6 +480,12 @@ def validate_receipt(receipt, runtime, harness_sha256, now, max_age_hours=MAX_AG
         backend = row.get("backend")
         if not isinstance(backend, str) or backend not in FIXTURE_KINDS or backend in seen or row.get("fixture_kind") != FIXTURE_KINDS[backend]:
             fail("unknown_fixture_backend")
+        if renewal_receipt:
+            if (backend != "filefabric" or row.get("fixture_mode") != FILEFABRIC_RENEWAL_MODE
+                    or set(row) != {"backend", "fixture_kind", "fixture_mode", "capabilities", "errors"}):
+                fail("invalid_fixture_mode")
+        elif set(row) & {"fixture_mode", "modes", "subscenarios"}:
+            fail("invalid_fixture_mode")
         seen.add(backend)
         capabilities = row.get("capabilities")
         if not isinstance(capabilities, dict) or not capabilities or set(capabilities) - FIXTURE_CAPABILITIES:
@@ -466,7 +497,8 @@ def validate_receipt(receipt, runtime, harness_sha256, now, max_age_hours=MAX_AG
                 or backend not in ("archive", "memory", "swift", "b2", "azureblob", "azurefiles", "seafile", "koofr", "pixeldrain", "filefabric") and "config_preservation" in capabilities
                 or backend != "swift" and set(capabilities) & SWIFT_ONLY_CAPABILITIES
                 or backend != "b2" and set(capabilities) & B2_ONLY_CAPABILITIES
-                or backend not in ("swift", "b2") and "renewal_denial" in capabilities):
+                or not renewal_receipt and set(capabilities) & FILEFABRIC_ONLY_CAPABILITIES
+                or backend not in ("swift", "b2") and not renewal_receipt and "renewal_denial" in capabilities):
             fail("invalid_fixture_capability")
         if any(value not in ("passed", "failed", "not_run", "not_applicable") for value in capabilities.values()):
             fail("invalid_fixture_outcome")
@@ -491,7 +523,9 @@ def validate_receipt(receipt, runtime, harness_sha256, now, max_age_hours=MAX_AG
             fail("invalid_fixture_capability")
         # These independent fixtures share capability names, not protocol or
         # auth semantics. No result proves another service, mode or lifecycle.
-        if backend in READ_FIXTURE_CONTRACTS and set(capabilities) != READ_FIXTURE_CONTRACTS[backend]:
+        if renewal_receipt and set(capabilities) != FILEFABRIC_RENEWAL_REQUIRED_CAPABILITIES:
+            fail("invalid_fixture_capability")
+        if not renewal_receipt and backend in READ_FIXTURE_CONTRACTS and set(capabilities) != READ_FIXTURE_CONTRACTS[backend]:
             fail("invalid_fixture_capability")
         errors = row.get("errors")
         if not isinstance(errors, list) or len(errors) > 32 or any(not isinstance(code, str) or not re.fullmatch(r"[a-z][a-z0-9_]{0,80}", code) for code in errors):
@@ -502,6 +536,18 @@ def validate_receipt(receipt, runtime, harness_sha256, now, max_age_hours=MAX_AG
     if receipt["success"] and not receipt["cleanup_passed"]:
         fail("inconsistent_fixture_success")
     return receipt
+
+
+def merge_fixture_observation(observed, capabilities, failed, run):
+    """A later successful run cannot erase an observed failure."""
+    observed["failed"] |= failed
+    observed["runs"].append(run)
+    for capability, status in capabilities.items():
+        prior = observed["capabilities"].get(capability)
+        if status == "failed" or prior == "failed":
+            observed["capabilities"][capability] = "failed"
+        elif status == "passed" or prior != "passed":
+            observed["capabilities"][capability] = status
 
 
 def evaluate(catalog, policy, runtime, receipts, harness_sha256, now=None, max_age_hours=MAX_AGE_HOURS,
@@ -536,21 +582,27 @@ def evaluate(catalog, policy, runtime, receipts, harness_sha256, now=None, max_a
                     fail("fixture_backend_absent_from_catalog")
             for row in receipt["backends"]:
                 observed = observations.setdefault(row["backend"], {"capabilities": {}, "failed": False, "runs": []})
-                if not receipt["success"] or not receipt["cleanup_passed"] or row["errors"]:
-                    observed["failed"] = True
-                observed["runs"].append({
+                failed = not receipt["success"] or not receipt["cleanup_passed"] or bool(row["errors"])
+                run = {
                     "receipt_sha256": sha256_bytes(compact_json(receipt)),
                     "finished_utc": receipt["finished_utc"],
                     "expires_utc": utc_text(parse_utc(receipt["finished_utc"]) + timedelta(hours=max_age_hours)),
                     "fixture_kind": row["fixture_kind"],
                     "fixture_manifest_sha256": receipt["fixture_manifest_sha256"],
-                })
-                for capability, status in row["capabilities"].items():
-                    prior = observed["capabilities"].get(capability)
-                    if status == "failed" or prior == "failed":
-                        observed["capabilities"][capability] = "failed"
-                    elif status == "passed" or prior != "passed":
-                        observed["capabilities"][capability] = status
+                }
+                contributed = row["capabilities"]
+                if row["backend"] == "filefabric":
+                    mode = row.get("fixture_mode", FILEFABRIC_CACHED_MODE)
+                    run["fixture_mode"] = mode
+                    mode_observed = observed.setdefault("modes", {}).setdefault(
+                        mode, {"capabilities": {}, "failed": False, "runs": []})
+                    merge_fixture_observation(mode_observed, contributed, failed, run)
+                    # Renewal reads one member; it cannot replace the complete
+                    # cached-read inventory or its byte-preserved config proof.
+                    if mode == FILEFABRIC_RENEWAL_MODE:
+                        contributed = {key: value for key, value in contributed.items()
+                                       if key in FILEFABRIC_ADDITIONAL_CAPABILITIES}
+                merge_fixture_observation(observed, contributed, failed, run)
         except CoverageError as error:
             report["errors"].append(str(error))
     for entry in catalog:
@@ -592,6 +644,17 @@ def evaluate(catalog, policy, runtime, receipts, harness_sha256, now=None, max_a
                     if value in ("passed", "failed"):
                         capabilities[capability] = value
                 evidence["runs"] = observed["runs"]
+                if backend == "filefabric":
+                    evidence["modes"] = {}
+                    for mode, contract in FILEFABRIC_MODE_CONTRACTS.items():
+                        mode_observed = observed.get("modes", {}).get(mode, {})
+                        mode_capabilities = {key: mode_observed.get("capabilities", {}).get(key, "not_verified")
+                                             for key in sorted(contract)}
+                        mode_status = ("failed" if mode_observed.get("failed")
+                                       else "passed" if all(value == "passed" for value in mode_capabilities.values())
+                                       else "not_verified")
+                        evidence["modes"][mode] = {"status": mode_status, "capabilities": mode_capabilities,
+                                                   "runs": mode_observed.get("runs", [])}
                 if observed["failed"] or "failed" in capabilities.values():
                     evidence["status"] = "failed"
                 elif all(value == "passed" for value in capabilities.values()):

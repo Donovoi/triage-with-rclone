@@ -889,6 +889,51 @@
       "unresolved_applicability": [
         "reauthentication"
       ]
+    },
+    "filefabric-cached-and-renewal-fixture": {
+      "required": {
+        "application": [
+          "listing",
+          "download_hash",
+          "manifest_integrity",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation",
+          "refresh"
+        ],
+        "vendor": [
+          "listing",
+          "download_hash",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation",
+          "refresh"
+        ],
+        "local_protocol": [
+          "listing",
+          "download_hash",
+          "missing_object_rejection",
+          "authentication_rejection",
+          "source_preservation",
+          "config_preservation",
+          "fixture_write_rejection",
+          "cleanup",
+          "session_token_reacquisition",
+          "renewal_denial",
+          "config_scope_preservation",
+          "saved_token_reuse"
+        ]
+      },
+      "review_required": false,
+      "unresolved_applicability": [
+        "reauthentication"
+      ]
     }
   },
   "providers": {
@@ -1412,7 +1457,7 @@
     "filefabric": {
       "canonical_name": "filefabric",
       "schema_sha256": "043189412a12be7db296a53f98592cf7191c2e63b1a165679ff8f695b77755f4",
-      "profile": "filefabric-cached-session-fixture",
+      "profile": "filefabric-cached-and-renewal-fixture",
       "notes": [
         "Enterprise File Fabric endpoint and permanent authentication token; derived session token expiry is documented. Local installation is not evidence of free licensing.",
         "Free account/API eligibility: review_required",
@@ -1420,7 +1465,10 @@
         "The independent loopback RPC fixture seeds a synthetic cached session token, future expiry, explicit version and fixed root folder ID. It accepts only getFolderContents, checkPathExists, getFile and a denied doDeleteFile guard on a closed synthetic graph. Token grants and appliance discovery are forbidden in this baseline.",
         "Every native operation has fresh fixture state and exact request/event binding. Listing and stat verify complete typed file metadata and second-precision fi_localtime precedence over differing fi_modified. FileFabric exposes no backend hash; downloaded bytes use independent size and SHA256 checks.",
         "Wrong cached-session metadata and a separate synthetic member denial require distinct semantic errors, a nonzero copy outcome and no artifact. Missing metadata must be the explicit exists=n response; malformed success cannot stand in for intended absence. HTTP200 raw getFile bodies are ordinary content and never qualify as authentication rejection.",
-        "The eight fixture capabilities cover cached-session reads only. Permanent-token provisioning, fresh login, session acquisition/renewal, token persistence, general session reauthentication, hosted appliances, TLS, pagination, native empty/range objects, application acceptance and account permissions remain unverified. Existing application/vendor lifecycle obligations are unchanged."
+        "The eight baseline capabilities cover all three cached-session fixture files. A separate schema-2, one-member experiment requires later-call session-token reacquisition, denied reacquisition, semantic config-scope preservation and saved-token reuse by a fresh child. Both receipts are required; the renewal experiment cannot replace baseline listing, independent download hashes or byte-identical config preservation.",
+        "The renewal experiment injects a semantic expired-token response inside one bounded synchronous rclone process. That failed call must remain failed; only a later call may obtain and use the replacement session token. This is not OAuth refresh, elapsed-time expiry or automatic retry evidence.",
+        "Only token, token_expiry and version may change in the successful working config; endpoint, permanent-token input, root scope and all other settings remain fixed. The saved expiry is bounded against the observed grant interval. A fresh child must read the same synthetic member using the saved replacement token without a new grant or discovery; its config bytes must remain unchanged. This establishes clean-exit persistence only, not atomic multi-setting saves or power-loss durability.",
+        "Permanent-token provisioning, fresh account login, real appliance expiry/revocation, general session reauthentication, hosted appliances, TLS, pagination, native empty/range objects, application acceptance and account permissions remain unverified. Existing application/vendor lifecycle obligations are unchanged."
       ],
       "source_links": [
         "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/filefabric.md",
@@ -1429,7 +1477,12 @@
         "https://github.com/rclone/rclone/blob/v1.75.1/backend/filefabric/filefabric.go#L584-L678",
         "https://github.com/rclone/rclone/blob/v1.75.1/backend/filefabric/filefabric.go#L1095-L1203",
         "https://github.com/rclone/rclone/blob/v1.75.1/backend/filefabric/api/types.go#L15-L246",
-        "https://github.com/rclone/rclone/blob/v1.75.1/lib/dircache/dircache.go#L369-L380"
+        "https://github.com/rclone/rclone/blob/v1.75.1/lib/dircache/dircache.go#L369-L380",
+        "https://github.com/rclone/rclone/blob/v1.75.1/fs/cache/cache.go",
+        "https://github.com/rclone/rclone/blob/v1.75.1/fs/configmap.go",
+        "https://github.com/rclone/rclone/blob/v1.75.1/fs/config/config.go",
+        "https://github.com/rclone/rclone/blob/v1.75.1/fs/config/configfile/configfile.go",
+        "https://github.com/rclone/rclone/blob/v1.75.1/fs/rc/jobs/job.go"
       ],
       "auth_applicability": "provider_specific",
       "refresh_applicability": "required",
