@@ -292,7 +292,16 @@ jobs:
       - name: Record dependency inventory
         if: runner.os == 'Windows'
         shell: bash
-        run: cargo metadata --locked --format-version 1 > target/release/dependencies.json
+        # Publish only the closed inventory schema. Raw Cargo metadata contains
+        # contributor contacts and machine paths and must never be uploaded.
+        run: |
+          if ! cargo metadata --locked --format-version 1 2>/dev/null | \
+            python -B ../scripts/sanitize_dependency_inventory.py \
+              --metadata - --lockfile "$GITHUB_WORKSPACE/rclone-triage/Cargo.lock" \
+              --output - > target/release/dependencies.json; then
+            echo 'Dependency inventory generation failed.' >&2
+            exit 1
+          fi
       - name: Upload checked Windows build
         if: runner.os == 'Windows'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
