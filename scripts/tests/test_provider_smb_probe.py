@@ -342,13 +342,14 @@ class ExecutionGuardsTests(unittest.TestCase):
                 self.assertEqual(args[0], [str(binary), "obscure", "-"])
                 self.assertNotIn("shell", kwargs)
                 self.assertTrue(kwargs["close_fds"])
+                self.assertFalse(kwargs["start_new_session"])
                 self.assertNotIn("synthetic password", repr(args))
                 self.assertEqual((root / "child-1.in").read_bytes(), b"synthetic password\n")
                 self.assertEqual(kwargs["env"]["NO_PROXY"], "*")
                 self.assertNotIn("HTTP_PROXY", kwargs["env"])
                 self.assertNotIn("RCLONE_CONFIG", kwargs["env"])
 
-    def test_daemon_retains_stdin_pipe_to_avoid_foreground_eof(self):
+    def test_only_daemon_has_private_session_and_retained_stdin(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "logs").mkdir()
@@ -356,9 +357,13 @@ class ExecutionGuardsTests(unittest.TestCase):
             binary.write_bytes(b"never executed")
             with mock.patch.object(P, "ROOT", root), mock.patch.object(P, "SMBD", binary), \
                  mock.patch.object(P.subprocess, "Popen", return_value=SimpleNamespace(stdin=io.BytesIO())) as spawn:
-                P.Children({binary: P.sha256(binary)}).start(binary, ["--foreground", "--no-process-group"], keep_stdin=True)
+                children = P.Children({binary: P.sha256(binary)})
+                children.start(binary, ["--foreground", "--no-process-group"], keep_stdin=True)
                 self.assertEqual(spawn.call_args.kwargs["stdin"], P.subprocess.PIPE)
-                self.assertNotIn("start_new_session", spawn.call_args.kwargs)
+                self.assertTrue(spawn.call_args.kwargs["start_new_session"])
+                children.start(binary, ["--version"])
+                self.assertFalse(spawn.call_args.kwargs["start_new_session"])
+                self.assertNotEqual(spawn.call_args.kwargs["stdin"], P.subprocess.PIPE)
 
     def test_binary_change_unknown_command_deadline_and_budget_prevent_spawn(self):
         with tempfile.TemporaryDirectory() as directory:
