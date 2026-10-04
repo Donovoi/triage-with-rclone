@@ -68,9 +68,9 @@ class OfflineCacheTests(unittest.TestCase):
         self.online = self.root / "online.tar"
         self.seed = self.root / "seed.tar"
 
-    def assert_code(self, code, fn, *args):
+    def assert_code(self, code, fn, *args, **kwargs):
         with self.assertRaises(m.CacheError) as found:
-            fn(*args)
+            fn(*args, **kwargs)
         self.assertEqual(found.exception.code, code)
         self.assertNotIn("private-person", str(found.exception))
         self.assertIn(found.exception.code, m.CODES)
@@ -92,7 +92,7 @@ class OfflineCacheTests(unittest.TestCase):
 
     def test_lock_drift_rejected_without_echoing_bytes(self):
         self.pinned.stop()
-        with patch.object(Path, "read_bytes", return_value=CANARY):
+        with patch.object(m, "_bound_bytes", return_value=(CANARY, None)):
             self.assert_code("lock_invalid", m._load_lock)
 
     def test_exact_seed_reconstructs_metadata_and_does_not_copy_private_auxiliary(self):
@@ -284,7 +284,7 @@ class OfflineCacheTests(unittest.TestCase):
     def test_replaced_destination_is_never_accepted_or_removed(self):
         self.make_source()
         displaced = self.root / "owned-displaced.tar"
-        def replace(path):
+        def replace(path, *, profile="hdfs"):
             path.rename(displaced)
             path.write_bytes(b"foreign original bytes")
             return {"success": True}
@@ -346,6 +346,153 @@ class OfflineCacheTests(unittest.TestCase):
                      lambda x:x.update(dependency_semantics={})):
             second = copy.deepcopy(first); edit(second)
             self.assert_code("manifest_invalid", m.compare_manifests, first, second)
+
+    def test_kerberos_lock_exact_hash_count_roles_and_paths(self):
+        self.pinned.stop()
+        rows = m._load_lock("kerberos")
+        self.assertEqual(m.lock_path().name, "artifact-lock.json")
+        self.assertEqual(m.lock_path("kerberos").name, "artifact-lock-kerberos.json")
+        self.assertEqual(m.sha(m.lock_path("kerberos").read_bytes()),
+                         "a62e2a60bbb3f6c8b95b849760ff597e4e05e1c93bf61987c175502c3fe2ac74")
+        self.assertEqual(m.sha(m.encoded(rows)),
+                         "a2152c3451b85c3f5e2093a4086c6b28db64e394e355401f8e4b5b93de5ad638")
+        self.assertEqual(m._counts(rows), {"artifacts": 645, "poms": 447,
+            "selected_runtime_jars": 142, "other_jars": 56, "artifact_bytes": 98990688})
+        self.assertEqual(len(m._tracking({m._artifact_path(r): r for r in rows})), 447)
+        self.assertEqual(len({m._artifact_path(r) for r in rows}), 645)
+        rows[0]["size"] = 1
+        self.assertNotEqual(m._load_lock("kerberos")[0]["size"], 1)
+
+    def test_closed_profiles_reject_before_any_file_io(self):
+        self.pinned.stop()
+        with patch.object(m, "_bound_bytes", side_effect=AssertionError("unexpected read")), \
+             patch.object(m.os, "open", side_effect=AssertionError("unexpected write")):
+            for invalid in (None, True, 1, {}, [], "", "Kerberos", "hdfs/../kerberos", "other"):
+                self.assert_code("profile_invalid", m.lock_path, invalid)
+                self.assert_code("profile_invalid", m._load_lock, invalid)
+                self.assert_code("profile_invalid", m.prepare_cache, self.online, self.seed, profile=invalid)
+                self.assert_code("profile_invalid", m.verify_cache, self.seed, profile=invalid)
+                self.assert_code("profile_invalid", m.compare_manifests, {}, {}, profile=invalid)
+
+    def test_swapped_real_locks_rejected_in_both_directions(self):
+        self.pinned.stop()
+        for expected, wrong in (("hdfs", "kerberos"), ("kerberos", "hdfs")):
+            wrong_bytes = m.lock_path(wrong).read_bytes()
+            with patch.object(m, "_bound_bytes", return_value=(wrong_bytes, None)):
+                self.assert_code("lock_invalid", m._load_lock, expected)
+
+    def test_kerberos_seed_is_explicit_and_no_auth_or_execution_credit(self):
+        self.make_source()
+        receipt = m.prepare_cache(self.online, self.seed, profile="kerberos")
+        self.assertEqual(receipt, m.verify_cache(self.seed, profile="kerberos"))
+        self.assertEqual(receipt["candidate_profile"], "kerberos")
+        self.assertEqual(receipt["lock_sha256"],
+                         "a62e2a60bbb3f6c8b95b849760ff597e4e05e1c93bf61987c175502c3fe2ac74")
+        for claim in set(m.FALSE_CLAIMS) | {"authentication_verified", "application_accepted", "vendor_accepted"}:
+            self.assertIs(receipt[claim], False)
+        self.assertEqual(receipt["seed_regular_files"], 8)
+        self.assertEqual(dict(self.seed_entries())[next(iter(self.payloads))], next(iter(self.payloads.values())))
+        self.assertNotIn("private-person", json.dumps(receipt))
+
+    def test_default_hdfs_receipt_and_seed_remain_equivalent_to_explicit_hdfs(self):
+        self.make_source()
+        default = m.prepare_cache(self.online, self.seed)
+        other = self.root / "explicit.tar"
+        explicit = m.prepare_cache(self.online, other, profile="hdfs")
+        self.assertEqual(default, explicit)
+        self.assertEqual(self.seed.read_bytes(), other.read_bytes())
+        self.assertEqual(default["lock_sha256"],
+                         "e0c4a34dc8999bc0b53ec5d8fc5d4d5fd2b72400424b4e110d45e70f8ab780e6")
+        self.assertNotIn("candidate_profile", default)
+        self.assertNotIn("authentication_verified", default)
+
+    def test_profile_seed_mismatch_rejects_before_destination_creation(self):
+        original_rows = copy.deepcopy(self.rows)
+        kerberos_rows = copy.deepcopy(self.rows)
+        kerberos_rows[0]["version"] = "2.1.2"
+        def selected(profile="hdfs"):
+            return copy.deepcopy(original_rows if profile == "hdfs" else kerberos_rows)
+        with patch.object(m, "_load_lock", side_effect=selected):
+            self.make_source()
+            m.prepare_cache(self.online, self.seed)
+            wrong = self.root / "wrong.tar"
+            for source in (self.online, self.seed):
+                with self.assertRaises(m.CacheError):
+                    m.prepare_cache(source, wrong, profile="kerberos")
+                self.assertFalse(wrong.exists())
+            with self.assertRaises(m.CacheError): m.verify_cache(self.seed, profile="kerberos")
+
+    def test_real_manifest_both_wrong_profile_is_not_a_match(self):
+        self.pinned.stop()
+        hdfs = manifest(m._load_lock())
+        kerberos = manifest(m._load_lock("kerberos"))
+        for chosen, wrong in (("hdfs", kerberos), ("kerberos", hdfs)):
+            self.assert_code("manifest_mismatch", m.compare_manifests, wrong, copy.deepcopy(wrong), profile=chosen)
+        self.assert_code("manifest_mismatch", m.compare_manifests, hdfs, kerberos, profile="kerberos")
+        match = m.compare_manifests(kerberos, copy.deepcopy(kerberos), profile="kerberos")
+        self.assertEqual(match["candidate_profile"], "kerberos")
+        self.assertEqual(match["counts"]["selected_runtime_jars"], 142)
+        self.assertFalse(match["authentication_verified"])
+
+    def test_explicit_manifest_profile_must_be_exact(self):
+        original = manifest(self.rows)
+        for value in ("hdfs", "other", None, True, 1, {}, []):
+            changed = copy.deepcopy(original); changed["candidate_profile"] = value
+            self.assert_code("manifest_mismatch", m.compare_manifests, changed, changed, profile="kerberos")
+        original["candidate_profile"] = "kerberos"
+        self.assertTrue(m.compare_manifests(original, copy.deepcopy(original), profile="kerberos")["success"])
+
+    def test_source_and_lock_drift_before_seed_write_reject(self):
+        self.make_source()
+        original = m._binding("kerberos")
+        for index in (0, 1, 2, 3):
+            changed = list(original); changed[index] = "changed"
+            with patch.object(m, "_binding", side_effect=[original, tuple(changed)]):
+                self.assert_code("source_changed", m.prepare_cache, self.online, self.seed, profile="kerberos")
+            self.assertFalse(self.seed.exists())
+
+    def test_late_source_lock_drift_removes_only_owned_seed(self):
+        self.make_source()
+        original = m._binding("kerberos")
+        changed = ("a" * 64, *original[1:])
+        # prepare start/pre-write; verify start/end; prepare final recheck.
+        with patch.object(m, "_binding", side_effect=[original] * 4 + [changed]):
+            self.assert_code("source_changed", m.prepare_cache, self.online, self.seed, profile="kerberos")
+        self.assertFalse(self.seed.exists())
+
+    def test_verifier_and_comparator_recheck_source_and_selected_lock(self):
+        self.make_source(); m.prepare_cache(self.online, self.seed, profile="kerberos")
+        initial = m._binding("kerberos")
+        changed = (*initial[:2], "b" * 64, initial[3])
+        for fn, args in ((m.verify_cache, (self.seed,)),
+                         (m.compare_manifests, (manifest(self.rows), manifest(self.rows)))):
+            with patch.object(m, "_binding", side_effect=[initial, changed]):
+                self.assert_code("source_changed", fn, *args, profile="kerberos")
+
+    def test_bound_source_read_rejects_hardlinks_and_oversize(self):
+        path = self.root / "source.py"; path.write_bytes(b"synthetic")
+        self.assert_code("path_invalid", m._bound_bytes, path, 3)
+        os.link(path, self.root / "alias.py")
+        self.assert_code("path_invalid", m._bound_bytes, path, 1024)
+
+    def test_binding_io_failure_is_finite_in_comparator_too(self):
+        with patch.object(m, "_bound_bytes", side_effect=OSError(CANARY.decode())):
+            self.assert_code("source_changed", m.compare_manifests,
+                             manifest(self.rows), manifest(self.rows), profile="kerberos")
+
+    def test_bound_read_compares_ctime_within_each_metadata_api(self):
+        path = self.root / "source.py"; path.write_bytes(b"synthetic")
+        current = path.stat()
+        fields = {key: getattr(current, key) for key in
+                  ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns", "st_nlink")}
+        # Windows path/fd ctime may differ while describing the same stable file.
+        fd_fields = dict(fields, st_ctime_ns=fields["st_ctime_ns"] + 10000)
+        with patch.object(m.os, "fstat", return_value=types.SimpleNamespace(**fd_fields)):
+            self.assertEqual(m._bound_bytes(path, 1024)[0], b"synthetic")
+        changed = dict(fd_fields, st_ctime_ns=fd_fields["st_ctime_ns"] + 1)
+        with patch.object(m.os, "fstat", side_effect=[types.SimpleNamespace(**fd_fields),
+                                                      types.SimpleNamespace(**changed)]):
+            self.assert_code("source_changed", m._bound_bytes, path, 1024)
 
 
 if __name__ == "__main__":

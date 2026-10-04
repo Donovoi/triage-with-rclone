@@ -527,16 +527,17 @@ def discover(candidate, bootstrap, archive, output_parent, *, runner_factory=Doc
     """One fresh hosted discovery; raw logs/archive stay private, never uploaded here."""
     hosted_guard()
     hashes = candidate_hashes(candidate_profile)
-    need(candidate_profile == "hdfs" or (cache_destination is None and seed_cache is None),
-         "offline_cache_invalid")
     started_utc = datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
     started_clock = time.monotonic()
     supervisor_sha = file_hash(Path(__file__).resolve())
     exporter_source = Path(graph_export.__file__).absolute()
     exporter_sha = file_hash(exporter_source)
     cache_source = Path(offline_cache.__file__).absolute()
-    cache_lock = cache_source.with_name("artifact-lock.json")
+    cache_lock = offline_cache.lock_path(candidate_profile)
     cache_source_sha, cache_lock_sha = file_hash(cache_source), file_hash(cache_lock)
+    expected_lock_sha = (offline_cache.LOCK_SHA256 if candidate_profile == "hdfs"
+                         else offline_cache.KERBEROS_LOCK_SHA256)
+    need(cache_lock_sha == expected_lock_sha, "offline_cache_invalid")
     inputs = candidate_inputs(candidate, candidate_profile)
     bootstrap = validate_bootstrap(bootstrap, archive)
     parent = Path(output_parent).absolute()
@@ -554,7 +555,7 @@ def discover(candidate, bootstrap, archive, output_parent, *, runner_factory=Doc
                  and Path(value).name == "offline-seed.tar", "offline_cache_invalid")
     if offline:
         try:
-            seed_receipt = offline_cache.verify_cache(seed_cache)
+            seed_receipt = offline_cache.verify_cache(seed_cache, profile=candidate_profile)
         except offline_cache.CacheError:
             raise DiscoveryError("offline_cache_invalid") from None
     run_id = uuid.uuid4().hex
@@ -589,7 +590,8 @@ def discover(candidate, bootstrap, archive, output_parent, *, runner_factory=Doc
         need(file_hash(context / "maven.tar.gz") == bootstrap["maven_archive_sha256"], "bootstrap_archive_mismatch")
         if offline:
             shutil.copyfile(seed_cache, context / "offline-seed.tar")
-            need(offline_cache.verify_cache(context / "offline-seed.tar") == seed_receipt, "offline_cache_invalid")
+            need(offline_cache.verify_cache(context / "offline-seed.tar", profile=candidate_profile) == seed_receipt,
+                 "offline_cache_invalid")
         (context / "Dockerfile").write_text(dockerfile(bootstrap, offline=offline,
                                                      seed_sha256=seed_receipt["sha256"] if offline else None), newline="\n")
         (context / "driver.sh").write_text(driver_script(offline=offline), newline="\n")
@@ -630,7 +632,8 @@ def discover(candidate, bootstrap, archive, output_parent, *, runner_factory=Doc
         report["manifest"] = artifact_manifest(result.stdout)
         validate_profile_manifest(report["manifest"], candidate_profile)
         if cache_destination is not None:
-            report["cache_preparation"] = offline_cache.prepare_cache(result.stdout, cache_destination)
+            report["cache_preparation"] = offline_cache.prepare_cache(result.stdout, cache_destination,
+                                                                       profile=candidate_profile)
         report["success"] = True
     except offline_cache.CacheError as error:
         report["errors"].append("offline_cache_invalid")
@@ -691,9 +694,10 @@ def discover(candidate, bootstrap, archive, output_parent, *, runner_factory=Doc
                  and file_hash(cache_source) == cache_source_sha and file_hash(cache_lock) == cache_lock_sha, "source_changed")
             need(validate_bootstrap(bootstrap, archive) == bootstrap, "source_changed")
             if offline:
-                need(offline_cache.verify_cache(seed_cache) == seed_receipt, "source_changed")
+                need(offline_cache.verify_cache(seed_cache, profile=candidate_profile) == seed_receipt, "source_changed")
             elif cache_destination is not None and report["cache_preparation"] is not None:
-                need(offline_cache.verify_cache(cache_destination) == report["cache_preparation"], "source_changed")
+                need(offline_cache.verify_cache(cache_destination, profile=candidate_profile)
+                     == report["cache_preparation"], "source_changed")
         except (DiscoveryError, offline_cache.CacheError, OSError): report["errors"].append("source_changed")
         report["success"] = report["success"] and not report["errors"] and all(report["cleanup"].values())
         report["finished_utc"] = datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
