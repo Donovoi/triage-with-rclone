@@ -481,7 +481,12 @@ fn pinned_rclone_catalog_matches_provider_contracts() {
         "expected an absolute executable path"
     );
     let hash_key = if cfg!(target_os = "windows") {
-        "RCLONE_EXE_SHA256"
+        match std::env::consts::ARCH {
+            "x86_64" => "RCLONE_EXE_SHA256",
+            "x86" => "RCLONE_WINDOWS_X86_EXE_SHA256",
+            "aarch64" => "RCLONE_WINDOWS_ARM64_EXE_SHA256",
+            _ => panic!("No native executable pin defined for this Windows architecture"),
+        }
     } else if cfg!(target_os = "linux") {
         "RCLONE_LINUX_EXE_SHA256"
     } else {
