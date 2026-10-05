@@ -1,6 +1,30 @@
 # triage-with-rclone
 
-Windows cloud acquisition CLI and terminal UI, built in Rust with a verified rclone runtime embedded in the executable. The current development version is **0.2.0**; [rclone-version.env](rclone-version.env) records the embedded runtime version and hashes. Windows 10/11 are the deployment targets; Linux CI exercises the portable library and mocked integrations.
+Windows cloud acquisition CLI and terminal UI, built in Rust with a verified rclone runtime embedded in the executable. The current development version is **0.2.0**; [rclone-version.env](rclone-version.env) records the embedded runtime version and hashes. Windows 10/11 are the deployment targets; Linux CI exercises the portable library, mocked integrations and isolated native protocol fixtures.
+
+## Current status and next priorities
+
+Coverage snapshot, **2026-10-04**, from [passing CI for revision `a0028e7`](https://github.com/Donovoi/triage-with-rclone/actions/runs/37200782723). Counts describe that revision and its pinned runtime, not universal provider compatibility.
+
+| Evidence layer | Verified status | Remaining work |
+| --- | --- | --- |
+| Runtime catalog and test plans | Current plans for all 61 selectable backends | Recheck changed schemas and every runtime update |
+| Local protocol fixtures, Linux | 20 of 21 applicable profiles pass | HDFS remains unverified |
+| Local protocol fixtures, Windows | 18 of 21 applicable profiles pass | HDFS, SMB and fresh pCloud authentication remain unverified |
+| Application acceptance | All 61 backends remain unverified for the current build | Exercise the actual application in the isolated lab |
+| Real vendor acceptance | All 51 applicable backends remain unverified for the current build | Verify approved test accounts against their real services |
+
+The other 40 backends have no applicable local protocol profile under the current policy; this does not count as a pass. See [layered provider evidence](rclone-triage/tests/provider_testing.md#layered-provider-evidence) for capability requirements and evidence boundaries. Earlier application or account tests do not automatically carry forward to a different build.
+
+Recent work added fresh pCloud OAuth success, denial and cancellation tests, plus privacy-preserving diagnostics for runtime metadata failures. Current work is preparing a reproducible HDFS dependency set and isolated daemon fixture; dependency research is not passing HDFS evidence.
+
+Next priorities, in order:
+
+1. Complete the HDFS protocol fixture and remaining Windows protocol gaps, with Kerberos authentication and ticket renewal tracked separately from HDFS simple mode.
+2. Verify application and real-service setup/authentication, listing, independent sample hashes, renewal where applicable, denial/cancellation and cleanup, using dedicated synthetic data and evidence tied to the tested build.
+3. Continue [stable rclone maintenance](#runtime-maintenance) and catalog checks. New backends begin unverified; retired backends stay documented instead of disappearing from coverage.
+
+This snapshot and the next priorities are updated as verified work lands. Credentials, account identifiers and raw test transcripts stay outside the repository; detailed test contracts live in [provider testing](rclone-triage/tests/provider_testing.md).
 
 ## Build and run
 
