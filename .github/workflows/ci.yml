@@ -210,6 +210,31 @@ jobs:
             --index-url https://pypi.org/simple --require-hashes --only-binary=:all: \
             --no-input --timeout 30 --retries 2 -r ../scripts/provider-lab/requirements-fixture.txt
           printf '%s\n' "$TEST_BIN" >> "$GITHUB_PATH"
+      - name: Validate Windows acceptance harnesses
+        if: runner.os == 'Windows'
+        timeout-minutes: 2
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $phase = 'acceptance_source_validation'
+          $clock = [Diagnostics.Stopwatch]::StartNew()
+          try {
+            Get-ChildItem ../scripts/acceptance/windows -Filter *.ps1 | ForEach-Object {
+              $parseErrors = $null
+              [void][System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$null, [ref]$parseErrors)
+              if ($parseErrors) { throw 'acceptance_source_invalid' }
+            }
+            $phase = 'standalone_conpty_add_type'
+            $clock.Restart()
+            [pscustomobject]@{ phase=$phase; result='started'; elapsed_ms=0 } | ConvertTo-Json -Compress
+            Add-Type -Path ../scripts/acceptance/windows/ConPtyHarness.cs -ErrorAction Stop -WarningAction SilentlyContinue 2>$null
+            [pscustomobject]@{ phase=$phase; result='passed'; elapsed_ms=$clock.ElapsedMilliseconds } | ConvertTo-Json -Compress
+            & ../scripts/tests/test_hosted_session_pure.ps1
+          } catch {
+            [pscustomobject]@{ phase=$phase; result='failed'; elapsed_ms=$clock.ElapsedMilliseconds } | ConvertTo-Json -Compress
+            [Console]::Error.WriteLine('windows_harness_validation_failed')
+            exit 1
+          }
       - name: Check hosted Windows test folder setup
         if: runner.os == 'Windows'
         run: python -B ../scripts/application-lab/run_windows_http.py --setup-probe
@@ -271,18 +296,6 @@ jobs:
           retention-days: 14
       - name: Formatting
         run: cargo fmt --all -- --check
-      - name: Validate Windows acceptance harnesses
-        if: runner.os == 'Windows'
-        shell: powershell
-        run: |
-          $ErrorActionPreference = 'Stop'
-          Get-ChildItem ../scripts/acceptance/windows -Filter *.ps1 | ForEach-Object {
-            $parseErrors = $null
-            [void][System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$null, [ref]$parseErrors)
-            if ($parseErrors) { throw ($parseErrors | Out-String) }
-          }
-          Add-Type -Path ../scripts/acceptance/windows/ConPtyHarness.cs
-          & ../scripts/tests/test_hosted_session_pure.ps1
       - name: Clippy
         run: cargo clippy --locked --all-targets --all-features -- -D warnings
       - name: Offline tests and local transfer regressions
