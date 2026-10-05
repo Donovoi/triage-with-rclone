@@ -1,4 +1,5 @@
 """Runtime architecture data/source contracts. No executable or network calls."""
+import ast
 import hashlib
 import importlib.util
 from pathlib import Path
@@ -113,6 +114,66 @@ class RuntimeArchitectureTests(unittest.TestCase):
             source = (ROOT / "rclone-triage/tests" / relative).read_text()
             self.assertIn('"x86" => "RCLONE_WINDOWS_X86_EXE_SHA256', source)
             self.assertIn('"aarch64" => "RCLONE_WINDOWS_ARM64_EXE_SHA256', source)
+
+    def docker_runtime_parser(self):
+        path = ROOT / "scripts/provider-lab/pcloud-oauth/Dockerfile"
+        body = path.read_text().split("python3 - <<'PY'\n", 1)[1].split("\nPY\n", 1)[0]
+        tree = ast.parse(body)
+        starts = [index for index, node in enumerate(tree.body)
+                  if isinstance(node, ast.Assign) and len(node.targets) == 1
+                  and isinstance(node.targets[0], ast.Name) and node.targets[0].id == "keys"]
+        self.assertEqual(len(starts), 1)
+        # Exercise the actual build-time parser and Linux byte binding without
+        # running the surrounding image/source-closure or dependency commands.
+        return compile(ast.Module(body=tree.body[starts[0]:], type_ignores=[]), str(path), "exec")
+
+    def test_docker_inline_parser_accepts_only_legacy_or_all_four_architecture_pins(self):
+        parser = self.docker_runtime_parser()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            binary = root / "rclone"
+            binary.write_bytes(b"synthetic data only, never executable")
+            digest = hashlib.sha256(binary.read_bytes()).hexdigest()
+            legacy = {"RCLONE_VERSION": "1.75.1", "RCLONE_EXE_SHA256": "a" * 64,
+                      "RCLONE_WINDOWS_ZIP_SHA256": "b" * 64, "RCLONE_LINUX_ZIP_SHA256": "c" * 64,
+                      "RCLONE_LINUX_EXE_SHA256": digest}
+            path = root / "rclone-version.env"
+            for mask in range(16):
+                pins = dict(legacy, **{key: "d" * 64 for i, key in enumerate(ARCH_KEYS) if mask & (1 << i)})
+                path.write_text("".join(f"{key}={value}\n" for key, value in pins.items()), encoding="ascii")
+                namespace = {"root": root, "re": re, "hashlib": hashlib}
+                with self.subTest(mask=mask):
+                    if mask not in (0, 15):
+                        with self.assertRaises(AssertionError):
+                            exec(parser, namespace)
+                    else:
+                        exec(parser, namespace)
+                        self.assertEqual(namespace["pins"], pins)
+
+    def test_docker_inline_parser_preserves_hash_shape_size_and_binary_guards(self):
+        parser = self.docker_runtime_parser()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            binary = root / "rclone"
+            binary.write_bytes(b"synthetic data only")
+            digest = hashlib.sha256(binary.read_bytes()).hexdigest()
+            body = (ROOT / "rclone-version.env").read_text()
+            body = re.sub(r"(?m)^RCLONE_LINUX_EXE_SHA256=.*$", "RCLONE_LINUX_EXE_SHA256=" + digest, body)
+            mutations = [body + "UNKNOWN_PIN=" + "a" * 64 + "\n",
+                         body + ARCH_KEYS[0] + "=" + "a" * 64 + "\n",
+                         re.sub(r"(?m)^RCLONE_VERSION=.*$", "RCLONE_VERSION=1.75.1-beta", body),
+                         body.replace(digest, "f" * 64), body + "#" * 4097]
+            for key in ARCH_KEYS:
+                for invalid in ("a" * 63, "A" * 64, "g" * 64):
+                    mutations.append(re.sub(r"(?m)^" + key + r"=.*$", key + "=" + invalid, body))
+            path = root / "rclone-version.env"
+            for index, mutation in enumerate(mutations):
+                path.write_text(mutation, encoding="ascii")
+                with self.subTest(index=index), self.assertRaises(AssertionError):
+                    exec(parser, {"root": root, "re": re, "hashlib": hashlib})
+            path.write_bytes(body.encode("ascii") + b"\xff")
+            with self.assertRaises(UnicodeError):
+                exec(parser, {"root": root, "re": re, "hashlib": hashlib})
 
 
 if __name__ == "__main__":

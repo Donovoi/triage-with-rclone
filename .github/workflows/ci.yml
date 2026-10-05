@@ -347,6 +347,7 @@ jobs:
         with:
           key: windows-${{ matrix.arch }}
           workspaces: rclone-triage -> target
+          cache-on-failure: true
       - name: Prepare matching verified runtime
         run: ../scripts/download-rclone.ps1 -Architecture '${{ matrix.arch }}'
       - name: Offline tests and local transfer regressions on the target
