@@ -210,6 +210,9 @@ jobs:
             --index-url https://pypi.org/simple --require-hashes --only-binary=:all: \
             --no-input --timeout 30 --retries 2 -r ../scripts/provider-lab/requirements-fixture.txt
           printf '%s\n' "$TEST_BIN" >> "$GITHUB_PATH"
+      - name: Check hosted Windows test folder setup
+        if: runner.os == 'Windows'
+        run: python -B ../scripts/application-lab/run_windows_http.py --setup-probe
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: rclone-triage -> target
@@ -306,17 +309,20 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Windows application acceptance failed.' }
       - name: Require the same-build HTTP application evidence
         if: ${{ !cancelled() && runner.os == 'Windows' && (steps.application_acceptance.outcome == 'success' || steps.application_acceptance.outcome == 'failure') }}
+        env:
+          PROVIDER_BINARY: ${{ format('{0}/rclone-triage/assets/rclone.exe', github.workspace) }}
+          APPLICATION_BINARY: ${{ format('{0}/rclone-triage/target/release/rclone-triage.exe', github.workspace) }}
         shell: bash
         run: |
           set -euo pipefail
           BUILD_COMMIT="$(git rev-parse --verify HEAD)"
-          python -B ../scripts/provider_coverage.py --rclone assets/rclone.exe \
+          python -B ../scripts/provider_coverage.py --rclone "$PROVIDER_BINARY" \
             --report "$RUNNER_TEMP/provider-evidence-windows-application.json" \
             --fixture-receipt "$RUNNER_TEMP/provider-fixtures.json" \
             --fixture-receipt "$RUNNER_TEMP/filefabric-renewal-fixture.json" \
             --fixture-receipt "$RUNNER_TEMP/internetarchive-low-auth-fixture.json" \
             --application-receipt "$RUNNER_TEMP/http-application.json" \
-            --application target/release/rclone-triage.exe --application-build-commit "$BUILD_COMMIT" \
+            --application "$APPLICATION_BINARY" --application-build-commit "$BUILD_COMMIT" \
             --require-plans --require-application http \
             --require-fixtures local,archive,http,webdav,ftp,sftp,s3,swift,b2,azureblob,azurefiles,seafile,memory,koofr,pixeldrain,filefabric,netstorage,internetarchive,gcs
       - name: Retain sanitized Windows application evidence

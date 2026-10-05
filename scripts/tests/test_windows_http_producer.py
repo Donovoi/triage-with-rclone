@@ -1,5 +1,6 @@
 """Offline producer tests. No application, helper, runtime or listener executes."""
 import copy
+from contextlib import redirect_stderr, redirect_stdout
 import csv
 import hashlib
 import importlib.util
@@ -412,6 +413,146 @@ class ProducerTests(unittest.TestCase):
         state.events = [["observation", ""], ["content", "large/cancel.bin"], ["cancel_prefix", "large/cancel.bin"]]
         with self.assertRaisesRegex(P.ProducerError, "cancellation_failed"):
             P.fixture_valid("cancellation", state.snapshot())
+
+    @staticmethod
+    def setup_stream(action="Create", stages=None, final=True):
+        # Literal sequence is independent of the parser's constants.
+        if stages is None:
+            stages = ["input", "parent", "identity", "acl", "compile", "create", "verify", "complete"] if action == "Create" else ["input", "parent", "identity", "verify", "complete"]
+        records = [{"schema_version": 1, "stage": stage} for stage in stages]
+        if final is not None:
+            records.append({"schema_version": 1, "ok": final})
+        return b"".join(json.dumps(value, separators=(",", ":")).encode() + b"\r\n" for value in records)
+
+    def prepare_result(self, result=None, error=None, identity_effect=None, action="Create"):
+        output = io.StringIO()
+        with mock.patch.object(P, "hosted_guard"), mock.patch.object(P, "powershell", return_value="fixed-system-powershell"), \
+             mock.patch.object(P, "hidden", return_value={}), mock.patch.object(P.subprocess, "run", return_value=result, side_effect=error) as child:
+            if identity_effect is not None:
+                with mock.patch.object(P, "identity", side_effect=identity_effect), redirect_stdout(output):
+                    with self.assertRaisesRegex(P.ProducerError, "^case_setup_failed$"):
+                        P.prepare(self.root, "app-http-" + "c" * 32, action)
+            else:
+                with redirect_stdout(output):
+                    with self.assertRaisesRegex(P.ProducerError, "^case_setup_failed$"):
+                        P.prepare(self.root, "app-http-" + "c" * 32, action)
+        lines = output.getvalue().splitlines()
+        self.assertEqual(len(lines), 1)
+        self.assertTrue(lines[0].startswith("application_setup_diagnostic="))
+        value = json.loads(lines[0].split("=", 1)[1])
+        self.assertEqual(set(value), {"outcome", "action", "scope", "exit_code", "last_stage"})
+        self.assertEqual(value["scope"], "suite")
+        self.assertEqual(value["action"], action)
+        self.assertNotIn("private-canary", output.getvalue())
+        self.assertNotIn(str(self.root), output.getvalue())
+        self.assertNotIn("c" * 32, output.getvalue())
+        self.assertEqual(child.call_args.kwargs["timeout"], 20)
+        self.assertEqual(child.call_args.kwargs["env"]["RUNNER_ENVIRONMENT"], "github-hosted")
+        return value
+
+    def test_prepare_accepts_only_complete_exact_success_protocol(self):
+        for action in ("Create", "Verify"):
+            with self.subTest(action=action):
+                result = types.SimpleNamespace(returncode=0, stdout=self.setup_stream(action))
+                with mock.patch.object(P, "hosted_guard"), mock.patch.object(P, "powershell", return_value="fixed-system-powershell"), \
+                     mock.patch.object(P, "hidden", return_value={}), mock.patch.object(P.subprocess, "run", return_value=result), redirect_stdout(io.StringIO()) as output:
+                    self.assertEqual(P.prepare(self.root, "listing", action), self.root / "listing")
+                self.assertEqual(output.getvalue(), "")
+        missing = self.setup_stream(stages=["input", "parent", "identity", "compile", "create", "verify", "complete"])
+        value = self.prepare_result(types.SimpleNamespace(returncode=0, stdout=missing))
+        self.assertEqual(value, {"outcome": "protocol_failed", "action": "Create", "scope": "suite", "exit_code": 0, "last_stage": None})
+
+    def test_prepare_timeout_retains_only_validated_finite_prefix(self):
+        prefix = self.setup_stream(stages=["input", "parent", "identity", "acl", "compile"], final=None)
+        for raw, expected in ((prefix, "compile"), (prefix + b'private-canary', None),
+                              (prefix + b'{"schema_version":1,"stage":"create"', None), (None, None)):
+            with self.subTest(expected=expected, raw_present=raw is not None):
+                error = P.subprocess.TimeoutExpired(["private-canary"], 20, output=raw, stderr=b"private-canary")
+                value = self.prepare_result(error=error)
+                self.assertEqual(value["outcome"], "timeout")
+                self.assertIsNone(value["exit_code"])
+                self.assertEqual(value["last_stage"], expected)
+
+    def test_prepare_exit_launch_protocol_and_parent_drift_are_distinct(self):
+        failed = self.setup_stream(stages=["input", "parent", "identity", "acl", "compile", "create"], final=False)
+        value = self.prepare_result(types.SimpleNamespace(returncode=1, stdout=failed))
+        self.assertEqual((value["outcome"], value["exit_code"], value["last_stage"]), ("exit_failed", 1, "create"))
+        value = self.prepare_result(error=OSError("private-canary"))
+        self.assertEqual((value["outcome"], value["exit_code"], value["last_stage"]), ("launch_failed", None, None))
+        value = self.prepare_result(types.SimpleNamespace(returncode=0, stdout=b"private-canary\n"))
+        self.assertEqual((value["outcome"], value["last_stage"]), ("protocol_failed", None))
+        value = self.prepare_result(types.SimpleNamespace(returncode=0, stdout=self.setup_stream()), identity_effect=[(1, 2), (1, 3)])
+        self.assertEqual((value["outcome"], value["last_stage"]), ("parent_changed", "complete"))
+
+    def test_setup_parser_rejects_forged_unknown_oversize_or_partial_data(self):
+        valid = self.setup_stream()
+        mutations = [valid.replace(b'"input"', b'"private-canary"'), valid.replace(b'"schema_version":1', b'"schema_version":true', 1),
+            valid.replace(b'"stage":"input"', b'"stage":"input","extra":"private-canary"'),
+            valid.replace(b'"stage":"input"', b'"stage":"input","stage":"input"'),
+            valid + b"\n", valid[:-1], b"x" * 4097, valid.replace(b'"input"', b'NaN')]
+        for raw in mutations:
+            with self.assertRaises(P.ProducerError):
+                P.setup_progress(raw, "Create")
+        value = self.prepare_result(types.SimpleNamespace(returncode=True, stdout=valid))
+        self.assertEqual((value["outcome"], value["exit_code"]), ("protocol_failed", None))
+
+    def probe_patches(self):
+        # App, fixture and session entry points must remain unreachable.
+        stack = __import__("contextlib").ExitStack()
+        stack.enter_context(mock.patch.object(P, "hosted_guard"))
+        stack.enter_context(mock.patch.object(P, "run", side_effect=AssertionError("application forbidden")))
+        stack.enter_context(mock.patch.object(P, "run_case", side_effect=AssertionError("case forbidden")))
+        stack.enter_context(mock.patch.object(P.F, "serve_http", side_effect=AssertionError("listener forbidden")))
+        return stack
+
+    def test_setup_probe_cli_only_verifies_and_removes_exact_empty_suite(self):
+        with self.probe_patches(), mock.patch.object(P, "prepare", side_effect=fake_prepare) as prep, redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(P.main(["--setup-probe"]), 0)
+        self.assertEqual(output.getvalue(), "application_setup_probe_passed\n")
+        self.assertEqual(prep.call_count, 2)
+        self.assertEqual(prep.call_args_list[0].args[:2], prep.call_args_list[1].args[:2])
+        self.assertEqual(prep.call_args_list[1].args[2], "Verify")
+        self.assertEqual(list(self.root.glob("app-http-*")), [])
+        self.assertEqual(list(self.root.glob("*.json")), [])
+
+    def test_setup_probe_rejects_all_application_receipt_arguments(self):
+        for flag in ("--application", "--application-sha256", "--build-commit", "--report"):
+            with mock.patch.object(P, "setup_probe") as run_probe, redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as error:
+                P.main(["--setup-probe", flag, "synthetic"])
+            self.assertEqual(error.exception.code, 2)
+            run_probe.assert_not_called()
+
+    def test_setup_probe_timeout_or_verification_failure_never_deletes(self):
+        for failing_action in ("Create", "Verify"):
+            with self.subTest(action=failing_action):
+                def prepare(parent, name, action="Create"):
+                    if action == "Create":
+                        (parent / name).mkdir()
+                    if action == failing_action:
+                        raise P.ProducerError("case_setup_failed")
+                    return parent / name
+                with self.probe_patches(), mock.patch.object(P, "prepare", side_effect=prepare), \
+                     mock.patch.object(P, "remove_owned") as remove, redirect_stdout(io.StringIO()) as output:
+                    self.assertEqual(P.setup_probe(), 1)
+                self.assertEqual(output.getvalue(), "application_setup_probe_failed\n")
+                remove.assert_not_called()
+        self.assertEqual(len(list(self.root.glob("app-http-*"))), 2)
+
+    def test_setup_probe_cleanup_failure_and_unexpected_content_fail_closed(self):
+        with self.probe_patches(), mock.patch.object(P, "prepare", side_effect=fake_prepare), \
+             mock.patch.object(P, "remove_owned", side_effect=P.ProducerError("cleanup_failed")), redirect_stdout(io.StringIO()):
+            self.assertEqual(P.setup_probe(), 1)
+        self.assertEqual(len(list(self.root.glob("app-http-*"))), 1)
+        def extra(parent, name, action="Create"):
+            root = fake_prepare(parent, name, action)
+            if action == "Verify":
+                (root / "unexpected").write_bytes(b"private-canary")
+            return root
+        with self.probe_patches(), mock.patch.object(P, "prepare", side_effect=extra), \
+             mock.patch.object(P, "remove_owned") as remove, redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(P.setup_probe(), 1)
+        self.assertNotIn("private-canary", output.getvalue())
+        remove.assert_not_called()
 
 
 if __name__ == "__main__":
