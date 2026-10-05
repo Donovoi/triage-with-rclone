@@ -87,6 +87,8 @@ CODES = frozenset("hosted_linux_required input_invalid input_changed unsafe_path
     "client_sasl_cipher_unavailable client_sasl_qop_rejected client_sasl_rspauth_mismatch client_sasl_empty_rspauth "
     "client_sasl_rspauth_format client_sasl_challenge_format client_reopen_limit "
     "client_datanode_invalid_response client_datanode_response_length client_datanode_hmac_failed "
+    "client_hdfs_invalid_offset client_hdfs_no_datanodes client_hdfs_checksum_invalid "
+    "client_hdfs_protobuf_invalid_wire client_hdfs_read_status_rejected "
     "failure_shutdown_failed failure_shutdown_clients_present failure_shutdown_wait_failed failure_shutdown_release_failed "
     "raw_cleanup_failed interrupted fixture_failed".split())
 
@@ -340,6 +342,25 @@ def require_client_success(T, result, operation, *, report=None, sample_ordinal=
                     (rb"failed to reopen: too many retries", "client_reopen_limit"),
                 ):
                     if re.fullmatch(template, payload): raise FixtureError(code)
+                if observation["object_error_stage"] == "send_output":
+                    # HDFS v2.4.0 read errors, observed only for the exact requested
+                    # object. Protobuf v1.36.11 deliberately uses either literal
+                    # separator below; do not normalize arbitrary whitespace.
+                    read_fixed = {
+                        b"invalid offset": "client_hdfs_invalid_offset",
+                        b"no available datanodes": "client_hdfs_no_datanodes",
+                        b"invalid checksum": "client_hdfs_checksum_invalid",
+                        b"proto: cannot parse invalid wire-format data": "client_hdfs_protobuf_invalid_wire",
+                        b"proto:\xc2\xa0cannot parse invalid wire-format data": "client_hdfs_protobuf_invalid_wire",
+                    }
+                    if payload in read_fixed: raise FixtureError(read_fixed[payload])
+                    # connectNext rejects every non-SUCCESS status. Unknown
+                    # numeric enums and opaque message bytes never become codes.
+                    status = (rb"(?:ERROR|ERROR_CHECKSUM|ERROR_INVALID|ERROR_EXISTS|ERROR_ACCESS_TOKEN|CHECKSUM_OK|"
+                              rb"ERROR_UNSUPPORTED|OOB_RESTART|OOB_RESERVED1|OOB_RESERVED2|OOB_RESERVED3|"
+                              rb"IN_PROGRESS|ERROR_BLOCK_PINNED)")
+                    if re.fullmatch(rb"read failed: " + status + rb" \([\x20-\x7e]{0,1024}\)", payload):
+                        raise FixtureError("client_hdfs_read_status_rejected")
     raise FixtureError("client_failed")
 
 
