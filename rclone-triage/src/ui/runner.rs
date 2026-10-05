@@ -82,6 +82,59 @@ fn apply_discovered_providers(
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum ProviderAuthRoute {
+    Browser,
+    Manual,
+    Rejected,
+}
+
+// The same decision is used for interactive, smart and mobile authentication.
+// Unknown protocols must reach schema setup, never a guessed OAuth request.
+fn prepare_provider_auth(
+    app: &mut App,
+    providers: &[crate::providers::ProviderEntry],
+) -> ProviderAuthRoute {
+    if providers.is_empty() {
+        app.provider.status = "Select a provider to authenticate.".to_string();
+        app.clear_auth_batch();
+        return ProviderAuthRoute::Rejected;
+    }
+    let has_manual = providers
+        .iter()
+        .any(|provider| provider.auth_kind() != crate::providers::ProviderAuthKind::OAuth);
+    if !has_manual {
+        return ProviderAuthRoute::Browser;
+    }
+    app.clear_auth_batch();
+    if providers.len() > 1 {
+        app.provider.status = "Multi-select auth supports browser OAuth flows only. Configure manual backends one at a time.".to_string();
+        return ProviderAuthRoute::Rejected;
+    }
+    app.menu_status.clear();
+    app.browser.chosen = None;
+    app.browser.chosen_multiple.clear();
+    app.state = crate::ui::AppState::Authenticating;
+    ProviderAuthRoute::Manual
+}
+
+fn prepare_mobile_flow_menu(app: &mut App, providers: &[crate::providers::ProviderEntry]) {
+    // Device grants must support the scopes required for acquisition. Google
+    // Drive/Photos scopes are not in Google's limited-input device allowlist.
+    let device_supported = !providers.is_empty()
+        && providers
+            .iter()
+            .all(|provider| provider.known == Some(crate::providers::CloudProvider::OneDrive));
+    app.mobile_flow_items = App::mobile_flow_items()
+        .into_iter()
+        .filter(|item| {
+            device_supported || item.action != crate::ui::MenuAction::MobileAuthDeviceCode
+        })
+        .collect();
+    app.mobile_flow_selected = 0;
+    app.mobile_auth_flow = None;
+}
+
 fn record_provider_refresh(app: &mut App, error: Option<String>) {
     app.provider.last_updated = Some(Local::now());
     app.provider.last_error = error;
@@ -941,64 +994,27 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                                 } else {
                                     app.provider.chosen.clone().into_iter().collect()
                                 };
-                                let first_provider = selected_providers
-                                    .first()
-                                    .cloned()
-                                    .or_else(|| app.provider.chosen.clone());
-
                                 let needs_oauth = matches!(
                                     app.selected_action,
                                     Some(crate::ui::MenuAction::Authenticate)
                                         | Some(crate::ui::MenuAction::SmartAuth)
                                         | Some(crate::ui::MenuAction::MobileAuth)
                                 );
-                                let auth_kind = first_provider.as_ref().map(|p| p.auth_kind());
                                 if needs_oauth {
-                                    let has_manual_backend =
-                                        selected_providers.iter().any(|provider| {
-                                            matches!(
-                                                provider.auth_kind(),
-                                                crate::providers::ProviderAuthKind::KeyBased
-                                                    | crate::providers::ProviderAuthKind::UserPass
-                                            )
-                                        });
-
-                                    if has_manual_backend && selected_providers.len() > 1 {
-                                        app.provider.status = "Multi-select auth currently supports OAuth/browser flows only. Authenticate manual backends one at a time.".to_string();
-                                        app.clear_auth_batch();
-                                        continue;
-                                    }
-
-                                    match auth_kind {
-                                        Some(crate::providers::ProviderAuthKind::KeyBased)
-                                        | Some(crate::providers::ProviderAuthKind::UserPass)
-                                            if selected_providers.len() == 1 =>
-                                        {
-                                            app.menu_status.clear();
-                                            app.browser.chosen = None;
-                                            app.browser.chosen_multiple.clear();
-                                            app.clear_auth_batch();
-                                            app.state = crate::ui::AppState::Authenticating;
+                                    match prepare_provider_auth(app, &selected_providers) {
+                                        ProviderAuthRoute::Manual => {
                                             crate::ui::flows::manual_config::perform_manual_config_flow(
-                                            app,
-                                            &mut terminal,
-                                        )?;
+                                                app, &mut terminal,
+                                            )?;
                                             continue;
                                         }
-                                        Some(crate::providers::ProviderAuthKind::Unknown) => {
-                                            if let Some(provider) = first_provider.as_ref() {
-                                                // Best-effort: allow trying OAuth even if we can't confidently classify the backend.
-                                                app.menu_status = format!(
-                                                "Backend '{}' auth type is unknown. Attempting OAuth anyway; if it fails, configure it in an rclone config and use Retrieve List / Mount / Download from CSV.",
-                                                provider.display_name()
-                                            );
-                                            }
-                                        }
-                                        _ => {}
+                                        ProviderAuthRoute::Rejected => continue,
+                                        ProviderAuthRoute::Browser => {}
                                     }
                                 }
                                 match app.selected_action {
                                     Some(crate::ui::MenuAction::MobileAuth) => {
+                                        prepare_mobile_flow_menu(app, &selected_providers);
                                         app.state = crate::ui::AppState::MobileAuthFlow;
                                     }
                                     Some(crate::ui::MenuAction::SmartAuth) => {
@@ -1892,6 +1908,94 @@ fn perform_post_auth_mount<
 mod tests {
     use super::*;
     use crossterm::event::KeyModifiers;
+
+    #[test]
+    fn mobile_menu_only_offers_device_code_for_supported_selections() {
+        use crate::providers::{CloudProvider, ProviderEntry};
+        let mut app = App::new();
+        let onedrive = ProviderEntry::from_known(CloudProvider::OneDrive);
+        for provider in CloudProvider::all() {
+            let entry = ProviderEntry::from_known(*provider);
+            app.mobile_flow_selected = usize::MAX;
+            prepare_mobile_flow_menu(&mut app, std::slice::from_ref(&entry));
+            assert_eq!(app.mobile_flow_selected, 0);
+            assert_eq!(
+                app.mobile_flow_items
+                    .iter()
+                    .any(|item| item.action == crate::ui::MenuAction::MobileAuthDeviceCode),
+                *provider == CloudProvider::OneDrive
+            );
+            assert!(app
+                .mobile_flow_items
+                .iter()
+                .any(|item| item.action == crate::ui::MenuAction::MobileAuthRedirect));
+            if *provider != CloudProvider::OneDrive {
+                prepare_mobile_flow_menu(&mut app, &[onedrive.clone(), entry]);
+                assert!(!app
+                    .mobile_flow_items
+                    .iter()
+                    .any(|item| item.action == crate::ui::MenuAction::MobileAuthDeviceCode));
+            }
+        }
+        // Going back and selecting OneDrive restores the option after filtering.
+        prepare_mobile_flow_menu(&mut app, &[onedrive]);
+        assert!(app
+            .mobile_flow_items
+            .iter()
+            .any(|item| item.action == crate::ui::MenuAction::MobileAuthDeviceCode));
+    }
+
+    #[test]
+    fn unknown_backend_enters_manual_setup_for_each_auth_action() {
+        let catalog = crate::providers::discovery::providers_from_rclone_json(
+            r#"[{"Prefix":"new_backend","Options":[{"Name":"client_id"}]}]"#,
+        )
+        .unwrap();
+        for action in [
+            crate::ui::MenuAction::Authenticate,
+            crate::ui::MenuAction::SmartAuth,
+            crate::ui::MenuAction::MobileAuth,
+        ] {
+            let mut app = App::new();
+            app.selected_action = Some(action);
+            apply_discovered_providers(&mut app, catalog.clone());
+            let selected = vec![app.provider.entries[0].clone()];
+            assert_eq!(
+                prepare_provider_auth(&mut app, &selected),
+                ProviderAuthRoute::Manual
+            );
+            assert_eq!(app.state, crate::ui::AppState::Authenticating);
+            assert!(app.browser.chosen.is_none());
+        }
+    }
+
+    #[test]
+    fn manual_backend_cannot_hide_in_a_browser_auth_batch() {
+        let mut app = App::new();
+        let browser = crate::providers::ProviderEntry::from_known(
+            crate::providers::CloudProvider::GoogleDrive,
+        );
+        let manual = crate::providers::ProviderEntry::from_known(
+            crate::providers::CloudProvider::Jottacloud,
+        );
+        assert_eq!(
+            prepare_provider_auth(&mut app, std::slice::from_ref(&browser)),
+            ProviderAuthRoute::Browser
+        );
+        assert_eq!(
+            prepare_provider_auth(&mut app, &[browser, manual.clone()]),
+            ProviderAuthRoute::Rejected
+        );
+        assert!(app.provider.status.contains("one at a time"));
+        assert_eq!(
+            prepare_provider_auth(&mut app, &[manual]),
+            ProviderAuthRoute::Manual
+        );
+        assert_eq!(
+            prepare_provider_auth(&mut app, &[]),
+            ProviderAuthRoute::Rejected
+        );
+    }
 
     #[test]
     fn test_refresh_providers_from_json_replaces_defaults() {

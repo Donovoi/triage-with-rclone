@@ -96,42 +96,61 @@ pub fn providers_from_rclone_json(json: &str) -> Result<Vec<ProviderSchema>> {
     serde_json::from_str(json).context("Failed to parse rclone providers JSON")
 }
 
-/// Find a provider schema for `prefix` in rclone provider JSON.
+/// Find a schema by canonical backend name, option prefix, or FileName alias.
 pub fn provider_schema_from_rclone_json(
     json: &str,
-    prefix: &str,
+    backend: &str,
 ) -> Result<Option<ProviderSchema>> {
-    let wanted = prefix.trim().to_ascii_lowercase();
+    let wanted = backend.trim();
     if wanted.is_empty() {
-        bail!("Provider prefix cannot be empty");
+        bail!("Provider name or prefix cannot be empty");
     }
 
     let providers = providers_from_rclone_json(json)?;
     Ok(providers.into_iter().find(|p| {
-        p.prefix
-            .as_deref()
-            .unwrap_or("")
-            .trim()
-            .eq_ignore_ascii_case(&wanted)
+        super::backend_matches(
+            p.name.as_deref().unwrap_or("").trim(),
+            p.prefix.as_deref().unwrap_or("").trim(),
+            wanted,
+        )
     }))
 }
 
-/// Ask rclone for provider schemas and return the schema for `prefix`, if any.
+/// Ask rclone for provider schemas and match a backend name or prefix.
 pub fn provider_schema_from_rclone(
     runner: &RcloneRunner,
-    prefix: &str,
+    backend: &str,
 ) -> Result<Option<ProviderSchema>> {
     let output = runner.run(&["config", "providers"])?;
     if !output.success() {
         bail!("rclone config providers failed: {}", output.stderr_string());
     }
 
-    provider_schema_from_rclone_json(&output.stdout_string(), prefix)
+    provider_schema_from_rclone_json(&output.stdout_string(), backend)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn schema_lookup_accepts_backend_name_prefix_and_filename_but_not_display_label() {
+        let json = r#"[{"Name":"future storage","Prefix":"fsx",
+            "Description":"Friendly product label","Options":[{"Name":"api_key","Required":true}]}]"#;
+        for identifier in ["future storage", "fsx", "futurestorage"] {
+            let schema = provider_schema_from_rclone_json(json, identifier)
+                .unwrap()
+                .unwrap();
+            assert_eq!(schema.name.as_deref(), Some("future storage"));
+            assert_eq!(schema.options[0].name, "api_key");
+            assert!(schema.options[0].required);
+        }
+        assert!(
+            provider_schema_from_rclone_json(json, "Friendly product label")
+                .unwrap()
+                .is_none()
+        );
+    }
 
     #[test]
     fn test_provider_schema_parse_and_extract() {

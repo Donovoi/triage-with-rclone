@@ -36,7 +36,11 @@ pub enum ProviderAuthKind {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderEntry {
+    /// Stable selection identifier (the option prefix for discovered backends).
     pub id: String,
+    /// rclone registry Name, which can differ from the option Prefix and label.
+    #[serde(default)]
+    pub backend_name: String,
     pub name: String,
     pub description: Option<String>,
     pub known: Option<CloudProvider>,
@@ -62,10 +66,35 @@ impl ProviderEntry {
         &self.id
     }
 
+    /// Canonical name to write as the remote's `type`.
+    pub fn backend_name(&self) -> &str {
+        if !self.backend_name.is_empty() {
+            &self.backend_name
+        } else if let Some(provider) = self.known {
+            provider.rclone_name()
+        } else {
+            &self.id
+        }
+    }
+
+    /// Match registry Name, option Prefix, or the space-free FileName alias.
+    /// These are the forms accepted by rclone's fs.Find; display labels are not.
+    pub fn matches_rclone_type(&self, remote_type: &str) -> bool {
+        backend_matches(self.backend_name(), &self.id, remote_type)
+            || self.known.is_some_and(|provider| {
+                backend_matches(
+                    provider.rclone_name(),
+                    provider.rclone_prefix(),
+                    remote_type,
+                )
+            })
+    }
+
     pub fn from_known(provider: CloudProvider) -> Self {
         let auth_kind = provider.auth_kind();
         Self {
             id: provider.rclone_type().to_string(),
+            backend_name: provider.rclone_name().to_string(),
             name: provider.display_name().to_string(),
             description: None,
             known: Some(provider),
@@ -83,35 +112,52 @@ impl ProviderEntry {
     }
 }
 
-/// Supported cloud providers
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum CloudProvider {
-    /// Google Drive
-    GoogleDrive,
-    /// Microsoft OneDrive
-    OneDrive,
-    /// Dropbox
-    Dropbox,
-    /// Box
-    Box,
-    /// Apple iCloud Drive
-    ICloud,
-    /// Google Photos
-    GooglePhotos,
-    /// pCloud
-    PCloud,
+pub(crate) fn backend_matches(name: &str, prefix: &str, candidate: &str) -> bool {
+    let candidate = candidate.trim();
+    !candidate.is_empty()
+        && (name.eq_ignore_ascii_case(candidate)
+            || prefix.eq_ignore_ascii_case(candidate)
+            || name.replace(' ', "").eq_ignore_ascii_case(candidate))
+}
+
+// Keep the enum and its iterable catalog in one declaration. An added variant
+// cannot silently disappear from the UI, discovery fallback, or provider tests.
+macro_rules! cloud_providers {
+    ($( $(#[$meta:meta])* $variant:ident, )+) => {
+        /// Supported cloud providers.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+        pub enum CloudProvider {
+            $( $(#[$meta])* $variant, )+
+        }
+
+        impl CloudProvider {
+            /// Every known provider, in the default menu order.
+            pub fn all() -> &'static [CloudProvider] {
+                &[$(CloudProvider::$variant),+]
+            }
+        }
+    };
+}
+
+cloud_providers! {
     /// Azure Blob Storage
     AzureBlob,
     /// Azure Files
     AzureFiles,
     /// Backblaze B2
     B2,
+    /// Box
+    Box,
     /// Cloudinary
     Cloudinary,
     /// Doi (Digital Object Identifier)
     Doi,
     /// Drime
     Drime,
+    /// Google Drive
+    GoogleDrive,
+    /// Dropbox
+    Dropbox,
     /// 1Fichier
     Fichier,
     /// Enterprise File Fabric
@@ -128,12 +174,16 @@ pub enum CloudProvider {
     Gofile,
     /// Google Cloud Storage
     GoogleCloudStorage,
+    /// Google Photos
+    GooglePhotos,
     /// HDFS (Hadoop Distributed File System)
     Hdfs,
     /// HiDrive
     HiDrive,
     /// HTTP
     Http,
+    /// Apple iCloud Drive
+    ICloud,
     /// ImageKit
     ImageKit,
     /// Internet Archive
@@ -156,10 +206,14 @@ pub enum CloudProvider {
     Memory,
     /// Akamai NetStorage
     NetStorage,
+    /// Microsoft OneDrive
+    OneDrive,
     /// OpenDrive
     OpenDrive,
     /// Oracle Object Storage
     OracleObjectStorage,
+    /// pCloud
+    PCloud,
     /// PikPak
     PikPak,
     /// Pixeldrain
@@ -205,8 +259,25 @@ pub enum CloudProvider {
 }
 
 impl CloudProvider {
-    /// Best-effort default auth classification used before dynamic discovery
-    /// from `rclone config providers` is available.
+    /// Canonical rclone registry name, as emitted in `config providers` Name.
+    pub fn rclone_name(&self) -> &'static str {
+        match self {
+            CloudProvider::GoogleCloudStorage => "google cloud storage",
+            CloudProvider::GooglePhotos => "google photos",
+            _ => self.rclone_type(),
+        }
+    }
+
+    /// Prefix used by backend flags and the provider option schema.
+    pub fn rclone_prefix(&self) -> &'static str {
+        match self {
+            CloudProvider::OracleObjectStorage => "oos",
+            _ => self.rclone_type(),
+        }
+    }
+
+    /// Supported authentication route. OAuth means a browser authorization-code
+    /// flow is supported, not merely that the backend stores an OAuth token.
     pub fn auth_kind(&self) -> ProviderAuthKind {
         match self {
             CloudProvider::GoogleDrive
@@ -214,17 +285,10 @@ impl CloudProvider {
             | CloudProvider::Dropbox
             | CloudProvider::Box
             | CloudProvider::GooglePhotos
-            | CloudProvider::PCloud
             | CloudProvider::HiDrive
-            | CloudProvider::Jottacloud
-            | CloudProvider::Mailru
-            | CloudProvider::PikPak
             | CloudProvider::PremiumizeMe
             | CloudProvider::Putio
-            | CloudProvider::ShareFile
-            | CloudProvider::SugarSync
-            | CloudProvider::YandexDisk
-            | CloudProvider::Zoho => ProviderAuthKind::OAuth,
+            | CloudProvider::YandexDisk => ProviderAuthKind::OAuth,
 
             CloudProvider::AzureBlob
             | CloudProvider::AzureFiles
@@ -242,7 +306,10 @@ impl CloudProvider {
             | CloudProvider::S3
             | CloudProvider::Storj => ProviderAuthKind::KeyBased,
 
-            CloudProvider::ICloud
+            CloudProvider::Mailru
+            | CloudProvider::PikPak
+            | CloudProvider::SugarSync
+            | CloudProvider::ICloud
             | CloudProvider::Doi
             | CloudProvider::Drime
             | CloudProvider::FileFabric
@@ -269,71 +336,15 @@ impl CloudProvider {
             | CloudProvider::Swift
             | CloudProvider::Ulozto
             | CloudProvider::WebDav => ProviderAuthKind::UserPass,
-        }
-    }
 
-    /// Get all supported providers
-    pub fn all() -> &'static [CloudProvider] {
-        &[
-            CloudProvider::AzureBlob,
-            CloudProvider::AzureFiles,
-            CloudProvider::B2,
-            CloudProvider::Box,
-            CloudProvider::Cloudinary,
-            CloudProvider::Doi,
-            CloudProvider::Drime,
-            CloudProvider::GoogleDrive,
-            CloudProvider::Dropbox,
-            CloudProvider::Fichier,
-            CloudProvider::FileFabric,
-            CloudProvider::Filelu,
-            CloudProvider::Filen,
-            CloudProvider::FilesCom,
-            CloudProvider::Ftp,
-            CloudProvider::Gofile,
-            CloudProvider::GoogleCloudStorage,
-            CloudProvider::GooglePhotos,
-            CloudProvider::Hdfs,
-            CloudProvider::HiDrive,
-            CloudProvider::Http,
-            CloudProvider::ICloud,
-            CloudProvider::ImageKit,
-            CloudProvider::InternetArchive,
-            CloudProvider::Internxt,
-            CloudProvider::Jottacloud,
-            CloudProvider::Koofr,
-            CloudProvider::Linkbox,
-            CloudProvider::Local,
-            CloudProvider::Mailru,
-            CloudProvider::Mega,
-            CloudProvider::Memory,
-            CloudProvider::NetStorage,
-            CloudProvider::OneDrive,
-            CloudProvider::OpenDrive,
-            CloudProvider::OracleObjectStorage,
-            CloudProvider::PCloud,
-            CloudProvider::PikPak,
-            CloudProvider::Pixeldrain,
-            CloudProvider::PremiumizeMe,
-            CloudProvider::ProtonDrive,
-            CloudProvider::Putio,
-            CloudProvider::QingStor,
-            CloudProvider::Quatrix,
-            CloudProvider::S3,
-            CloudProvider::Seafile,
-            CloudProvider::Sftp,
-            CloudProvider::Shade,
-            CloudProvider::ShareFile,
-            CloudProvider::Sia,
-            CloudProvider::Smb,
-            CloudProvider::Storj,
-            CloudProvider::SugarSync,
-            CloudProvider::Swift,
-            CloudProvider::Ulozto,
-            CloudProvider::WebDav,
-            CloudProvider::YandexDisk,
-            CloudProvider::Zoho,
-        ]
+            // These require a complete provider-specific configuration, not
+            // only an OAuth token: personal login token (Jottacloud), callback
+            // host/tenant (pCloud/ShareFile), or region and root setup (Zoho).
+            CloudProvider::Jottacloud
+            | CloudProvider::PCloud
+            | CloudProvider::ShareFile
+            | CloudProvider::Zoho => ProviderAuthKind::Unknown,
+        }
     }
 
     pub fn entries() -> Vec<ProviderEntry> {
@@ -651,7 +662,7 @@ impl FromStr for CloudProvider {
             "filescom" | "files.com" | "files_com" => Ok(CloudProvider::FilesCom),
             "ftp" => Ok(CloudProvider::Ftp),
             "gofile" => Ok(CloudProvider::Gofile),
-            "gcs" | "googlecloudstorage" | "google_cloud_storage" => {
+            "gcs" | "googlecloudstorage" | "google_cloud_storage" | "google cloud storage" => {
                 Ok(CloudProvider::GoogleCloudStorage)
             }
             "hdfs" => Ok(CloudProvider::Hdfs),

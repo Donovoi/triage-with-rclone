@@ -13,7 +13,7 @@
 //! }
 
 use super::CloudProvider;
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::env;
@@ -23,7 +23,8 @@ use std::path::{Path, PathBuf};
 const CUSTOM_OAUTH_ENV: &str = "RCLONE_TRIAGE_OAUTH_CONFIG";
 
 /// OAuth credentials for a provider
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct OAuthCredentials {
     /// OAuth client ID
     pub client_id: String,
@@ -32,12 +33,52 @@ pub struct OAuthCredentials {
     pub client_secret: Option<String>,
 }
 
+impl std::fmt::Debug for OAuthCredentials {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("OAuthCredentials")
+            .field("client_id", &"[REDACTED]")
+            .field(
+                "client_secret",
+                &self.client_secret.as_ref().map(|_| "[REDACTED]"),
+            )
+            .finish()
+    }
+}
+
 /// Custom OAuth config file structure
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Default)]
 pub struct CustomOAuthConfig {
     /// Map of provider name -> credentials
     #[serde(flatten)]
     pub providers: HashMap<String, OAuthCredentials>,
+}
+
+impl<'de> Deserialize<'de> for CustomOAuthConfig {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        struct ConfigVisitor;
+        impl<'de> serde::de::Visitor<'de> for ConfigVisitor {
+            type Value = CustomOAuthConfig;
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("an OAuth provider map with unique keys")
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> std::result::Result<Self::Value, A::Error> {
+                let mut providers = HashMap::new();
+                while let Some((key, value)) = map.next_entry::<String, OAuthCredentials>()? {
+                    if providers.insert(key, value).is_some() {
+                        return Err(serde::de::Error::custom("Duplicate OAuth provider key"));
+                    }
+                }
+                Ok(CustomOAuthConfig { providers })
+            }
+        }
+        deserializer.deserialize_map(ConfigVisitor)
+    }
 }
 
 impl CustomOAuthConfig {
@@ -66,7 +107,51 @@ impl std::str::FromStr for CustomOAuthConfig {
     type Err = anyhow::Error;
 
     fn from_str(content: &str) -> Result<Self, Self::Err> {
-        serde_json::from_str(content).context("Failed to parse custom OAuth JSON")
+        // Serde type errors can quote the offending value (including a secret).
+        let config: Self = serde_json::from_str(content)
+            .map_err(|_| anyhow::anyhow!("Failed to parse custom OAuth JSON"))?;
+        config.validate()?;
+        Ok(config)
+    }
+}
+
+impl CustomOAuthConfig {
+    fn validate(&self) -> Result<()> {
+        let mut keys = std::collections::HashSet::new();
+        for (key, credentials) in &self.providers {
+            if !keys.insert(normalize_key(key)) {
+                bail!("Ambiguous custom OAuth provider keys");
+            }
+            if credentials.client_id.trim().is_empty()
+                || credentials.client_id.contains(['\r', '\n', '\0'])
+                || credentials.client_secret.as_ref().is_some_and(|value| {
+                    value.trim().is_empty() || value.contains(['\r', '\n', '\0'])
+                })
+            {
+                bail!("Custom OAuth credentials contain an empty or invalid field");
+            }
+        }
+        for provider in CloudProvider::all() {
+            let aliases = [
+                provider.short_name(),
+                provider.rclone_type(),
+                provider.display_name(),
+            ];
+            if self
+                .providers
+                .keys()
+                .filter(|key| {
+                    aliases
+                        .iter()
+                        .any(|alias| normalize_key(key) == normalize_key(alias))
+                })
+                .count()
+                > 1
+            {
+                bail!("Multiple OAuth registrations configured for one provider");
+            }
+        }
+        Ok(())
     }
 }
 
@@ -104,12 +189,19 @@ pub fn load_custom_oauth_config() -> Result<Option<CustomOAuthConfig>> {
         None => return Ok(None),
     };
 
-    if !path.exists() {
+    let explicit = env::var(CUSTOM_OAUTH_ENV).is_ok_and(|value| !value.trim().is_empty());
+    load_custom_oauth_config_at(&path, explicit)
+}
+
+fn load_custom_oauth_config_at(path: &Path, explicit: bool) -> Result<Option<CustomOAuthConfig>> {
+    if !explicit
+        && !path
+            .try_exists()
+            .context("Unable to inspect OAuth configuration")?
+    {
         return Ok(None);
     }
-
-    let config = load_custom_oauth_config_from_path(&path)?;
-    Ok(Some(config))
+    load_custom_oauth_config_from_path(path).map(Some)
 }
 
 /// Get custom OAuth credentials for a provider (if configured)
@@ -133,6 +225,7 @@ pub fn load_or_init_custom_oauth_config(path: &Path) -> Result<CustomOAuthConfig
 
 /// Write the custom OAuth config to disk.
 pub fn write_custom_oauth_config(path: &Path, config: &CustomOAuthConfig) -> Result<()> {
+    config.validate()?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).with_context(|| format!("Failed to create {:?}", parent))?;
     }
@@ -184,8 +277,7 @@ mod tests {
         let json = r#"
         {
             "drive": { "client_id": "id1", "client_secret": "secret1" },
-            "onedrive": { "client_id": "id2" },
-            "google drive": { "client_id": "id3", "client_secret": "secret3" }
+            "onedrive": { "client_id": "id2" }
         }"#;
 
         let config: CustomOAuthConfig = json.parse().unwrap();
@@ -210,6 +302,37 @@ mod tests {
         let creds = config.credentials_for(CloudProvider::Dropbox).unwrap();
         assert_eq!(creds.client_id, "dbx");
         assert_eq!(creds.client_secret, None);
+    }
+
+    #[test]
+    fn malformed_or_ambiguous_credentials_never_fall_back_or_echo_values() {
+        for json in [
+            r#"{"onedrive":{"client_id":" "}}"#,
+            r#"{"onedrive":{"client_id":"id","client_secret":" "}}"#,
+            r#"{"onedrive":{"client_id":"id\nextra=value"}}"#,
+            r#"{"onedrive":{"client_id":"id","client_secert":"SYNTHETIC_SECRET_DO_NOT_ECHO"}}"#,
+            r#"{"drive":{"client_id":"first"},"google drive":{"client_id":"second"}}"#,
+            r#"{"OneDrive":{"client_id":"first"},"one-drive":{"client_id":"second"}}"#,
+            r#"{"onedrive":{"client_id":"first"},"onedrive":{"client_id":"second"}}"#,
+            r#"{"onedrive":{"client_id":{"SYNTHETIC_SECRET_DO_NOT_ECHO":"value"}}}"#,
+        ] {
+            let error = json.parse::<CustomOAuthConfig>().unwrap_err();
+            assert!(!format!("{error:#}").contains("SYNTHETIC_SECRET_DO_NOT_ECHO"));
+        }
+        let directory = tempdir().unwrap();
+        let missing = directory.path().join("missing.json");
+        assert!(load_custom_oauth_config_at(&missing, false)
+            .unwrap()
+            .is_none());
+        assert!(load_custom_oauth_config_at(&missing, true).is_err());
+        let malformed = directory.path().join("malformed.json");
+        fs::write(&malformed, "not JSON").unwrap();
+        assert!(load_custom_oauth_config_at(&malformed, false).is_err());
+        let credentials = OAuthCredentials {
+            client_id: "private-id".into(),
+            client_secret: Some("private-secret".into()),
+        };
+        assert!(!format!("{credentials:?}").contains("private-"));
     }
 
     #[test]

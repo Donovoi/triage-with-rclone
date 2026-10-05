@@ -93,6 +93,15 @@ fn format_option_key_hint(known_keys_preview: Option<&str>) -> String {
     lines.join("\n")
 }
 
+fn write_manual_remote(
+    config: &crate::rclone::RcloneConfig,
+    provider: &crate::providers::ProviderEntry,
+    remote_name: &str,
+    options: &[(&str, &str)],
+) -> Result<()> {
+    config.set_remote(remote_name, provider.backend_name(), options)
+}
+
 /// Configure a backend that doesn't use OAuth by prompting for config options.
 ///
 /// This is best-effort. It writes a remote section to the case's rclone config and then
@@ -111,7 +120,7 @@ pub(crate) fn perform_manual_config_flow<
     app.auth_status = format!(
         "Manual backend configuration\n\nProvider: {}\nBackend: {}\n\nTip: You can copy an existing rclone config into the case directory, or refer to rclone docs for this backend.\n\nPassword fields (pass/password) will be obscured for rclone. Prefix the value with 'raw:' to skip obscuring.",
         provider.display_name(),
-        provider.short_name(),
+        provider.backend_name(),
     );
     terminal.draw(|f| render_state(f, app))?;
 
@@ -180,19 +189,20 @@ pub(crate) fn perform_manual_config_flow<
 
     let mut options: Vec<(String, String)> = Vec::new();
 
-    let schema =
-        match crate::providers::schema::provider_schema_from_rclone(&rclone, provider.short_name())
-        {
-            Ok(schema) => schema,
-            Err(e) => {
-                app.log_info(format!(
-                    "Provider option schema unavailable for {}: {}",
-                    provider.short_name(),
-                    e
-                ));
-                None
-            }
-        };
+    let schema = match crate::providers::schema::provider_schema_from_rclone(
+        &rclone,
+        provider.backend_name(),
+    ) {
+        Ok(schema) => schema,
+        Err(e) => {
+            app.log_info(format!(
+                "Provider option schema unavailable for {}: {}",
+                provider.short_name(),
+                e
+            ));
+            None
+        }
+    };
 
     let known_keys_preview = schema.as_ref().map(|schema| {
         let mut keys = schema
@@ -353,7 +363,7 @@ pub(crate) fn perform_manual_config_flow<
         .map(|(k, v)| (k.as_str(), v.as_str()))
         .collect();
 
-    if let Err(e) = config.set_remote(&remote_name, provider.short_name(), &options_ref) {
+    if let Err(e) = write_manual_remote(&config, &provider, &remote_name, &options_ref) {
         app.auth_status = format!("Manual config failed (write remote): {}", e);
         app.log_error(format!("Manual config failed (write remote): {}", e));
         return Ok(());
@@ -426,4 +436,49 @@ pub(crate) fn perform_manual_config_flow<
         return Ok(());
     }
     crate::ui::flows::list::perform_list_flow(app, terminal)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn manual_configuration_persists_canonical_type_and_finds_imported_aliases() {
+        let discovered = crate::providers::discovery::providers_from_rclone_json(
+            r#"[{"Name":"future storage","Prefix":"fsx","Description":"Friendly label"},
+                 {"Name":"oracleobjectstorage","Prefix":"oos","Description":"Oracle Object Storage"}]"#,
+        ).unwrap();
+        for provider in discovered.providers {
+            let scratch = tempfile::tempdir().unwrap();
+            let config =
+                crate::rclone::RcloneConfig::new(scratch.path().join("synthetic.conf")).unwrap();
+            write_manual_remote(
+                &config,
+                &provider,
+                "TestCanonical",
+                &[("synthetic_option", "unchanged")],
+            )
+            .unwrap();
+            let parsed = config.parse().unwrap();
+            let remote = parsed.get_remote("TestCanonical").unwrap();
+            assert_eq!(remote.remote_type, provider.backend_name());
+            assert_ne!(remote.remote_type, provider.short_name());
+            config
+                .set_remote("TestPrefix", provider.short_name(), &[])
+                .unwrap();
+            config
+                .set_remote(
+                    "TestFileName",
+                    &provider.backend_name().replace(' ', ""),
+                    &[],
+                )
+                .unwrap();
+            config
+                .set_remote("TestWrongLabel", provider.display_name(), &[])
+                .unwrap();
+            let names =
+                crate::ui::flows::remotes::resolve_provider_remotes(&config, &provider).unwrap();
+            assert_eq!(names, ["TestCanonical", "TestPrefix", "TestFileName"]);
+        }
+    }
 }
