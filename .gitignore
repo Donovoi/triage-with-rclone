@@ -30,3 +30,7 @@ rclone-triage/assets/rclone.exe
 triage-*/
 rclone-triage/triage-*/
 .idea/
+
+# Local Python maintenance/test bytecode
+__pycache__/
+*.py[cod]

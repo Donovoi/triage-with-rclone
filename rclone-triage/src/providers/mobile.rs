@@ -5,9 +5,15 @@ use chrono::{Duration, Utc};
 use qrcode::QrCode;
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
+use std::io::Read;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration as StdDuration, Instant};
 
-use super::{config::ProviderConfig, credentials::custom_oauth_credentials_for, CloudProvider};
+use super::{
+    config::ProviderConfig,
+    credentials::{custom_oauth_credentials_for, OAuthCredentials},
+    CloudProvider,
+};
 
 fn oauth_agent() -> ureq::Agent {
     ureq::AgentBuilder::new()
@@ -15,7 +21,27 @@ fn oauth_agent() -> ureq::Agent {
         .timeout_read(StdDuration::from_secs(20))
         .timeout_write(StdDuration::from_secs(20))
         .timeout(StdDuration::from_secs(30))
+        .redirects(0)
         .build()
+}
+
+const MAX_OAUTH_RESPONSE_BYTES: u64 = 64 * 1024;
+
+pub(super) fn read_oauth_response<T: serde::de::DeserializeOwned>(
+    response: ureq::Response,
+) -> Result<T> {
+    let mut bytes = Vec::new();
+    response
+        .into_reader()
+        .take(MAX_OAUTH_RESPONSE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| anyhow::anyhow!("Failed to read OAuth response"))?;
+    if bytes.len() as u64 > MAX_OAUTH_RESPONSE_BYTES {
+        bail!("OAuth response exceeds size limit");
+    }
+    // Provider JSON/type errors may contain tokens or client secrets. Never
+    // expose the body or serde's value-bearing diagnostic through an error chain.
+    serde_json::from_slice(&bytes).map_err(|_| anyhow::anyhow!("Invalid OAuth response JSON"))
 }
 
 #[derive(Debug, Deserialize)]
@@ -152,44 +178,43 @@ pub fn exchange_code_for_token_with_pkce(
 
     let response = match response {
         Ok(ok) => ok,
-        Err(ureq::Error::Status(code, resp)) => {
-            let text = resp.into_string().unwrap_or_default();
-            bail!("Token exchange failed ({}): {}", code, text);
+        Err(ureq::Error::Status(code, _)) => {
+            bail!("Token exchange failed (HTTP {})", code);
         }
-        Err(e) => return Err(e.into()),
+        Err(_) => bail!("Token exchange transport failed"),
     };
-
-    let token: TokenResponse =
-        serde_json::from_reader(response.into_reader()).context("Failed to parse token JSON")?;
-
-    Ok(token_response_to_rclone_json(token))
+    if !(200..300).contains(&response.status()) {
+        bail!("Token exchange failed (HTTP {})", response.status());
+    }
+    token_response_to_rclone_json(read_oauth_response(response)?)
 }
 
 /// Return device code config for providers that support it.
 pub fn device_code_config(provider: CloudProvider) -> Result<Option<DeviceCodeConfig>> {
+    if provider != CloudProvider::OneDrive {
+        return Ok(None);
+    }
+    device_code_config_with_credentials(provider, custom_oauth_credentials_for(provider)?)
+}
+
+pub(super) fn device_code_config_with_credentials(
+    provider: CloudProvider,
+    custom: Option<OAuthCredentials>,
+) -> Result<Option<DeviceCodeConfig>> {
+    // Google's limited-input flow excludes Drive read-only and Photos scopes.
+    // A Desktop OAuth registration also cannot be reused as a TV registration.
+    // Keep those providers on browser authorization instead of offering a flow
+    // that cannot issue the permissions required by this application.
+    if provider != CloudProvider::OneDrive {
+        return Ok(None);
+    }
+    super::auth::ensure_new_auth_credentials_with_custom(provider, custom.as_ref())?;
     let provider_config = ProviderConfig::for_provider(provider);
     if !provider_config.uses_oauth() {
         return Ok(None);
     }
 
-    let custom = custom_oauth_credentials_for(provider).ok().flatten();
-    let client_id = custom
-        .as_ref()
-        .map(|c| c.client_id.as_str())
-        .unwrap_or(provider_config.oauth.client_id)
-        .to_string();
-    let client_secret = custom
-        .as_ref()
-        .and_then(|c| c.client_secret.clone())
-        .filter(|s| !s.trim().is_empty())
-        .or_else(|| {
-            let secret = provider_config.oauth.client_secret;
-            if secret.trim().is_empty() {
-                None
-            } else {
-                Some(secret.to_string())
-            }
-        });
+    let (client_id, client_secret) = device_code_credentials(&provider_config, custom.as_ref());
 
     let scope = if !provider_config.oauth.scopes.is_empty() {
         provider_config.oauth.scopes.join(" ")
@@ -201,9 +226,6 @@ pub fn device_code_config(provider: CloudProvider) -> Result<Option<DeviceCodeCo
         CloudProvider::OneDrive => {
             "https://login.microsoftonline.com/common/oauth2/v2.0/devicecode".to_string()
         }
-        CloudProvider::GoogleDrive | CloudProvider::GooglePhotos => {
-            "https://oauth2.googleapis.com/device/code".to_string()
-        }
         _ => return Ok(None),
     };
 
@@ -214,6 +236,28 @@ pub fn device_code_config(provider: CloudProvider) -> Result<Option<DeviceCodeCo
         client_id,
         client_secret,
     }))
+}
+
+fn device_code_credentials(
+    provider_config: &ProviderConfig,
+    custom: Option<&OAuthCredentials>,
+) -> (String, Option<String>) {
+    let client_id = custom
+        .map(|credentials| credentials.client_id.as_str())
+        .unwrap_or(provider_config.oauth.client_id)
+        .to_owned();
+    let client_secret = custom
+        .and_then(|credentials| credentials.client_secret.as_deref())
+        .filter(|secret| !secret.trim().is_empty())
+        .or_else(|| {
+            // A secret belongs to one client registration. Public custom
+            // clients must never borrow the unrelated bundled client's secret.
+            let uses_bundled_client = client_id.trim() == provider_config.oauth.client_id;
+            (uses_bundled_client && !provider_config.oauth.client_secret.trim().is_empty())
+                .then_some(provider_config.oauth.client_secret)
+        })
+        .map(str::to_owned);
+    (client_id, client_secret)
 }
 
 /// Request a device code from the OAuth device authorization endpoint.
@@ -231,15 +275,15 @@ pub fn request_device_code(config: &DeviceCodeConfig) -> Result<DeviceCodeInfo> 
 
     let response = match response {
         Ok(ok) => ok,
-        Err(ureq::Error::Status(code, resp)) => {
-            let text = resp.into_string().unwrap_or_default();
-            bail!("Device code request failed ({}): {}", code, text);
+        Err(ureq::Error::Status(code, _)) => {
+            bail!("Device code request failed (HTTP {})", code);
         }
-        Err(e) => return Err(e.into()),
+        Err(_) => bail!("Device code request transport failed"),
     };
-
-    let payload: DeviceCodeResponse =
-        serde_json::from_reader(response.into_reader()).context("Failed to parse device code")?;
+    if !(200..300).contains(&response.status()) {
+        bail!("Device code request failed (HTTP {})", response.status());
+    }
+    let payload: DeviceCodeResponse = read_oauth_response(response)?;
 
     let verification_uri = payload
         .verification_uri
@@ -264,10 +308,21 @@ pub fn poll_device_code_for_token(
     interval_secs: u64,
     expires_in: u64,
 ) -> Result<Value> {
+    poll_device_code_for_token_with_cancel(config, device_code, interval_secs, expires_in, None)
+}
+
+pub(super) fn poll_device_code_for_token_with_cancel(
+    config: &DeviceCodeConfig,
+    device_code: &str,
+    interval_secs: u64,
+    expires_in: u64,
+    cancel: Option<&AtomicBool>,
+) -> Result<Value> {
     let start = Instant::now();
     let mut interval = interval_secs.max(1);
 
     loop {
+        ensure_not_cancelled(cancel)?;
         if start.elapsed() >= StdDuration::from_secs(expires_in) {
             bail!("Device code expired before authorization completed");
         }
@@ -293,52 +348,82 @@ pub fn poll_device_code_for_token(
             .set("Content-Type", "application/x-www-form-urlencoded")
             .send_string(&body);
 
+        ensure_not_cancelled(cancel)?;
+
         match response {
             Ok(ok) => {
-                let token: TokenResponse = serde_json::from_reader(ok.into_reader())
-                    .context("Failed to parse token response")?;
-                return Ok(token_response_to_rclone_json(token));
+                if !(200..300).contains(&ok.status()) {
+                    bail!("Token polling failed (HTTP {})", ok.status());
+                }
+                return token_response_to_rclone_json(read_oauth_response(ok)?);
             }
             Err(ureq::Error::Status(code, resp)) => {
-                let text = resp.into_string().unwrap_or_default();
-                if let Ok(error_json) = serde_json::from_str::<serde_json::Value>(&text) {
+                if let Ok(error_json) = read_oauth_response::<serde_json::Value>(resp) {
                     if let Some(err) = error_json.get("error").and_then(|v| v.as_str()) {
                         match err {
                             "authorization_pending" => {
-                                std::thread::sleep(
+                                wait_for_next_poll(
                                     StdDuration::from_secs(interval).min(
                                         StdDuration::from_secs(expires_in)
                                             .saturating_sub(start.elapsed()),
                                     ),
-                                );
+                                    cancel,
+                                )?;
                                 continue;
                             }
                             "slow_down" => {
                                 interval = interval.saturating_add(5);
-                                std::thread::sleep(
+                                wait_for_next_poll(
                                     StdDuration::from_secs(interval).min(
                                         StdDuration::from_secs(expires_in)
                                             .saturating_sub(start.elapsed()),
                                     ),
-                                );
+                                    cancel,
+                                )?;
                                 continue;
                             }
                             "access_denied" => bail!("User denied access"),
                             "expired_token" => bail!("Device code expired"),
                             _ => {
-                                bail!("Token polling failed ({}): {}", code, text);
+                                bail!("Token polling failed (HTTP {})", code);
                             }
                         }
                     }
                 }
-                bail!("Token polling failed ({}): {}", code, text);
+                bail!("Token polling failed (HTTP {})", code);
             }
-            Err(e) => return Err(e.into()),
+            Err(_) => bail!("Token polling transport failed"),
         }
     }
 }
 
-fn token_response_to_rclone_json(token: TokenResponse) -> Value {
+fn ensure_not_cancelled(cancel: Option<&AtomicBool>) -> Result<()> {
+    if cancel.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
+        bail!("Authorization cancelled");
+    }
+    Ok(())
+}
+
+fn wait_for_next_poll(duration: StdDuration, cancel: Option<&AtomicBool>) -> Result<()> {
+    if cancel.is_none() {
+        std::thread::sleep(duration);
+        return Ok(());
+    }
+    let start = Instant::now();
+    loop {
+        ensure_not_cancelled(cancel)?;
+        let remaining = duration.saturating_sub(start.elapsed());
+        if remaining.is_zero() {
+            return Ok(());
+        }
+        std::thread::sleep(remaining.min(StdDuration::from_millis(100)));
+    }
+}
+
+fn token_response_to_rclone_json(token: TokenResponse) -> Result<Value> {
+    if token.access_token.trim().is_empty() {
+        bail!("OAuth response has no access token");
+    }
     let mut map = Map::new();
     map.insert("access_token".to_string(), json!(token.access_token));
 
@@ -352,11 +437,14 @@ fn token_response_to_rclone_json(token: TokenResponse) -> Value {
         map.insert("id_token".to_string(), json!(id_token));
     }
     if let Some(expires_in) = token.expires_in {
-        let expiry = Utc::now() + Duration::seconds(expires_in as i64);
+        let seconds = i64::try_from(expires_in).context("Invalid OAuth expiry")?;
+        let lifetime = Duration::try_seconds(seconds).context("Invalid OAuth expiry")?;
+        let expiry = Utc::now()
+            .checked_add_signed(lifetime)
+            .context("Invalid OAuth expiry")?;
         map.insert("expiry".to_string(), json!(expiry.to_rfc3339()));
     }
-
-    Value::Object(map)
+    Ok(Value::Object(map))
 }
 
 fn urlencoded(s: &str) -> String {
@@ -378,6 +466,167 @@ fn urlencoded(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn token_http_failures_are_bounded_redacted_and_do_not_follow_redirects() {
+        for (status, body) in [
+            (400, r#"{"error":"SYNTHETIC_PRIVATE_ERROR"}"#.to_string()),
+            (
+                200,
+                r#"{"access_token":{"SYNTHETIC_PRIVATE_ERROR":"value"}}"#.to_string(),
+            ),
+            (200, r#"{"access_token":""}"#.to_string()),
+            (
+                200,
+                r#"{"access_token":"test","expires_in":18446744073709551615}"#.to_string(),
+            ),
+            (200, "x".repeat(MAX_OAUTH_RESPONSE_BYTES as usize + 1)),
+            (307, "SYNTHETIC_PRIVATE_ERROR".to_string()),
+        ] {
+            let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+            let forbidden_redirect = tiny_http::Server::http("127.0.0.1:0").unwrap();
+            let endpoint = format!("http://{}/SYNTHETIC_PRIVATE_URL", server.server_addr());
+            let redirect_url = format!("http://{}/stolen", forbidden_redirect.server_addr());
+            let worker = std::thread::spawn(move || {
+                let request = server
+                    .recv_timeout(StdDuration::from_secs(3))
+                    .unwrap()
+                    .unwrap();
+                let response = tiny_http::Response::from_string(body)
+                    .with_status_code(status)
+                    .with_header(tiny_http::Header::from_bytes("Location", redirect_url).unwrap());
+                let _ = request.respond(response);
+                assert!(forbidden_redirect
+                    .recv_timeout(StdDuration::from_millis(50))
+                    .unwrap()
+                    .is_none());
+            });
+            let error = exchange_code_for_token_with_pkce(
+                &endpoint,
+                "private-code",
+                "http://localhost/",
+                "private-client",
+                Some("private-secret"),
+                Some("private-verifier"),
+            )
+            .unwrap_err();
+            worker.join().unwrap();
+            let diagnostic = format!("{error:#}");
+            assert!(!diagnostic.contains("PRIVATE"));
+            assert!(!diagnostic.contains("private-"));
+        }
+    }
+
+    #[test]
+    fn device_poll_uses_actual_grant_and_handles_pending_success_and_denial() {
+        for terminal_status in [200, 400] {
+            let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+            let base = format!("http://{}", server.server_addr());
+            let mut config = device_code_config_with_credentials(
+                CloudProvider::OneDrive,
+                Some(OAuthCredentials {
+                    client_id: "synthetic-public-client".into(),
+                    client_secret: None,
+                }),
+            )
+            .unwrap()
+            .unwrap();
+            config.device_code_url = format!("{base}/device");
+            config.token_url = format!("{base}/token");
+            let expected_scope = config.scope.clone();
+            let worker = std::thread::spawn(move || {
+                for step in 0..3 {
+                    let mut request = server
+                        .recv_timeout(StdDuration::from_secs(4))
+                        .unwrap()
+                        .expect("device flow request");
+                    assert_eq!(request.method(), &tiny_http::Method::Post);
+                    let mut body = String::new();
+                    request.as_reader().read_to_string(&mut body).unwrap();
+                    assert!(body.contains("client_id=synthetic-public-client"));
+                    assert!(!body.contains("client_secret"));
+                    let (status, response) = if step == 0 {
+                        assert_eq!(request.url(), "/device");
+                        assert!(body.contains(&format!("scope={}", urlencoded(&expected_scope))));
+                        (
+                            200,
+                            r#"{"device_code":"synthetic-device","user_code":"CODE","verification_uri":"https://example.invalid/verify","expires_in":10,"interval":1}"#,
+                        )
+                    } else {
+                        assert_eq!(request.url(), "/token");
+                        assert!(body
+                            .contains("grant_type=urn:ietf:params:oauth:grant-type:device_code"));
+                        assert!(body.contains("device_code=synthetic-device"));
+                        if step == 1 {
+                            (400, r#"{"error":"authorization_pending"}"#)
+                        } else if terminal_status == 200 {
+                            (
+                                200,
+                                r#"{"access_token":"synthetic-access","refresh_token":"synthetic-refresh"}"#,
+                            )
+                        } else {
+                            (
+                                400,
+                                r#"{"error":"access_denied","error_description":"PRIVATE_ERROR"}"#,
+                            )
+                        }
+                    };
+                    request
+                        .respond(
+                            tiny_http::Response::from_string(response).with_status_code(status),
+                        )
+                        .unwrap();
+                }
+            });
+            let challenge = request_device_code(&config).unwrap();
+            let result = poll_device_code_for_token_with_cancel(
+                &config,
+                &challenge.device_code,
+                challenge.interval,
+                challenge.expires_in,
+                Some(&AtomicBool::new(false)),
+            );
+            worker.join().unwrap();
+            if terminal_status == 200 {
+                assert_eq!(result.unwrap()["refresh_token"], "synthetic-refresh");
+            } else {
+                let error = format!("{:#}", result.unwrap_err());
+                assert!(!error.contains("PRIVATE_ERROR"));
+                assert!(error.contains("denied"));
+            }
+            assert!(poll_device_code_for_token_with_cancel(
+                &config,
+                "unused",
+                1,
+                10,
+                Some(&AtomicBool::new(true))
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("cancelled"));
+            assert!(
+                poll_device_code_for_token_with_cancel(&config, "unused", 1, 0, None)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("expired")
+            );
+        }
+    }
+
+    #[test]
+    fn device_poll_interval_observes_cancellation() {
+        let cancel = std::sync::Arc::new(AtomicBool::new(false));
+        let cancel_worker = cancel.clone();
+        let worker = std::thread::spawn(move || {
+            std::thread::sleep(StdDuration::from_millis(50));
+            cancel_worker.store(true, Ordering::Relaxed);
+        });
+        let start = Instant::now();
+        let result = wait_for_next_poll(StdDuration::from_secs(30), Some(&cancel));
+        worker.join().unwrap();
+        assert!(result.unwrap_err().to_string().contains("cancelled"));
+        assert!(start.elapsed() < StdDuration::from_secs(2));
+    }
 
     #[test]
     fn token_request_binds_code_to_proof_key() {
@@ -416,11 +665,77 @@ mod tests {
 
     #[test]
     fn test_device_code_config_for_onedrive() {
-        let config = device_code_config(CloudProvider::OneDrive)
+        let config = device_code_config_with_credentials(CloudProvider::OneDrive, None)
             .unwrap()
             .unwrap();
         assert!(config.device_code_url.contains("devicecode"));
         assert!(config.token_url.contains("token"));
         assert!(config.scope.contains("Files"));
+    }
+
+    #[test]
+    fn custom_device_code_client_never_borrows_another_clients_secret() {
+        let mut defaults = ProviderConfig::for_provider(CloudProvider::OneDrive);
+        defaults.oauth.client_id = "bundled-client";
+        defaults.oauth.client_secret = "bundled-secret";
+        for secret in [None, Some(String::new()), Some("  ".to_string())] {
+            let custom = OAuthCredentials {
+                client_id: "custom-public-client".into(),
+                client_secret: secret,
+            };
+            let (client_id, secret) = device_code_credentials(&defaults, Some(&custom));
+            assert_eq!(client_id, "custom-public-client");
+            assert_eq!(secret, None);
+        }
+        let custom = OAuthCredentials {
+            client_id: "custom-confidential-client".into(),
+            client_secret: Some("custom-secret".into()),
+        };
+        assert_eq!(
+            device_code_credentials(&defaults, Some(&custom)),
+            (
+                "custom-confidential-client".into(),
+                Some("custom-secret".into())
+            )
+        );
+        assert_eq!(
+            device_code_credentials(&defaults, None),
+            ("bundled-client".into(), Some("bundled-secret".into()))
+        );
+    }
+
+    #[test]
+    fn google_device_code_is_unavailable_for_required_read_only_scopes() {
+        for provider in [CloudProvider::GoogleDrive, CloudProvider::GooglePhotos] {
+            assert!(device_code_config_with_credentials(provider, None)
+                .unwrap()
+                .is_none());
+            let custom_public = OAuthCredentials {
+                client_id: "synthetic-public-google-client".into(),
+                client_secret: None,
+            };
+            assert!(
+                device_code_config_with_credentials(provider, Some(custom_public))
+                    .unwrap()
+                    .is_none()
+            );
+            let shared = OAuthCredentials {
+                client_id: ProviderConfig::for_provider(provider)
+                    .oauth
+                    .client_id
+                    .into(),
+                client_secret: Some("synthetic-secret".into()),
+            };
+            assert!(device_code_config_with_credentials(provider, Some(shared))
+                .unwrap()
+                .is_none());
+            let custom = OAuthCredentials {
+                client_id: "synthetic-own-google-client".into(),
+                client_secret: Some("synthetic-own-secret".into()),
+            };
+            assert!(device_code_config_with_credentials(provider, Some(custom))
+                .unwrap()
+                .is_none());
+        }
     }
 }

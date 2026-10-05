@@ -457,12 +457,22 @@ set -eu
 if [ "${1-}" = "--config" ]; then shift 2; fi
 case "$1" in
   lsjson)
-    if [ "${2-}" = "--stat" ]; then
-      printf '{"IsDir":false}'
-    else
-      printf '[{"Path":"accountA/same.txt","Size":5,"IsDir":false},{"Path":"accountB/same.txt","Size":4,"IsDir":false},{"Path":"accountA","Size":0,"IsDir":true}]'
-    fi ;;
+    [ "${2-}" != "--stat" ] || exit 7
+    printf '[{"Path":"accountA/same.txt","Size":5,"IsDir":false},{"Path":"accountB/same.txt","Size":4,"IsDir":false},{"Path":"accountA","Size":0,"IsDir":true}]' ;;
   rc)
+    if [ "${2-}" = "--loopback" ] && [ "${3-}" = "operations/stat" ]; then
+      [ "$#" -eq 6 ] && [ "$5" = 'remote=same.txt' ] &&
+        [ "$6" = 'opt={"noModTime":true,"noMimeType":true,"filesOnly":true}' ] || {
+        printf 'invalid exact-file stat request\n' >&2; exit 7;
+      }
+      case "$4" in
+        fs=accountA:) size=5 ;;
+        fs=accountB:) size=4 ;;
+        *) printf 'unknown source filesystem\n' >&2; exit 7 ;;
+      esac
+      printf '{"item":{"Path":"same.txt","Size":%s,"IsDir":false}}\n' "$size"
+      exit 0
+    fi
     [ "${2-}" = "--loopback" ] && [ "${3-}" = "operations/copyfile" ] || {
       printf 'unsupported RC operation\n' >&2; exit 7;
     }
