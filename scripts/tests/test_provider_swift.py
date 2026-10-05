@@ -2,12 +2,16 @@
 
 import hashlib
 import http.client
+from email.message import Message
+import io
 import json
 from pathlib import Path
 import socket
 import sys
 import time
+from types import SimpleNamespace
 import unittest
+from unittest.mock import Mock
 
 
 LAB_ROOT = Path(__file__).parents[1] / "provider-lab"
@@ -250,14 +254,65 @@ class SwiftServerTests(unittest.TestCase):
         token = self.grant()
         for method in ("PUT", "POST", "DELETE", "COPY"):
             with self.subTest(method=method):
+                # The server refuses writes without consuming a body. Send only
+                # its declared length so unread input cannot race the HTTP close.
                 self.reject_without_payload(method, README, status=405, token=token,
-                                            headers=(("Content-Length", "5"),), body=b"write")
+                                            headers=(("Content-Length", "5"),))
         for path in (BASE + "/missing.txt", BASE + "/nested"):
             self.reject_without_payload("GET", path, status=404, token=token)
         self.assertEqual(self.state.rejected_mutations, 4)
         self.assertEqual(self.state.missing, 2)
         self.assertEqual(self.state.files, EXPECTED)
         self.assertEqual(self.state.payload_bytes, 0)
+        self.assertEqual(self.state.rejected_payload_bytes, 0)
+        self.assertEqual((self.state.generation, self.state.token, self.state.tokens), (1, token, {token}))
+        self.assertEqual(self.state.events, [("grant", 1)])
+        self.assertEqual((self.state.requests, self.state.auth_denied, self.state.storage_denied,
+                          self.state.unexpected), (7, 0, 0, 0))
+        self.assertFalse(self.state.budget_exceeded)
+        self.assertTrue(self.doCleanups())
+        self.assertTrue(self.state.cleanup_complete)
+        self.assertTrue(self.state.stopping.is_set())
+        self.assertEqual(self.state.sockets, set())
+
+    def test_forbidden_write_body_is_unread_and_authentication_precedes_rejection(self):
+        for method in ("PUT", "POST", "DELETE", "COPY"):
+            for valid_token in (True, False):
+                with self.subTest(method=method, valid_token=valid_token):
+                    state = FIXTURES.SwiftState("synthetic-user", "synthetic-key")
+                    handler = object.__new__(FIXTURES.SwiftHandler)
+                    handler.server = SimpleNamespace(state=state, server_address=("127.0.0.1", 12345))
+                    handler.command, handler.path = "GET", "/auth/v1.0"
+                    handler.headers = Message()
+                    for key, value in (("Host", "127.0.0.1:12345"), ("X-Auth-User", "synthetic-user"),
+                                       ("X-Auth-Key", "synthetic-key")):
+                        handler.headers[key] = value
+                    handler.rfile = io.BytesIO()
+                    handler.reply = Mock()
+                    handler.dispatch()
+                    token = state.token
+                    handler.reply.assert_called_once_with(200, headers={"X-Auth-Token": token,
+                        "X-Storage-Url": "http://127.0.0.1:12345/v1/AUTH_synthetic"})
+                    handler.reply.reset_mock()
+                    handler.command, handler.path = method, README
+                    handler.headers = Message()
+                    for key, value in (("Host", "127.0.0.1:12345"), ("Content-Length", "5"),
+                                       ("X-Auth-Token", token if valid_token else "wrong-synthetic-token")):
+                        handler.headers[key] = value
+                    handler.rfile = io.BytesIO(b"write")
+                    handler.dispatch()
+                    handler.reply.assert_called_once_with(405 if valid_token else 401)
+                    self.assertEqual(handler.rfile.tell(), 0)
+                    self.assertEqual(handler.rfile.getvalue(), b"write")
+                    self.assertEqual(state.files, EXPECTED)
+                    self.assertEqual((state.generation, state.token, state.tokens), (1, token, {token}))
+                    self.assertEqual(state.revoked, set())
+                    self.assertEqual(state.events, [("grant", 1)] + ([] if valid_token else [("storage_denied", 1)]))
+                    self.assertEqual((state.requests, state.rejected_mutations, state.storage_denied),
+                                     (2, int(valid_token), int(not valid_token)))
+                    self.assertEqual((state.payload_bytes, state.rejected_payload_bytes, state.auth_denied,
+                                      state.renewal_denied, state.missing, state.unexpected), (0, 0, 0, 0, 0, 0))
+                    self.assertFalse(state.budget_exceeded)
 
     def test_request_budget_stops_before_authentication(self):
         self.start()
