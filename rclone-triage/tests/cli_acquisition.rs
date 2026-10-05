@@ -125,6 +125,289 @@ fn files(root: &Path) -> Vec<PathBuf> {
     result
 }
 
+fn listing_command(fixture: &Fixture, remote: &str) -> Command {
+    let mut command = fixture.command();
+    command
+        .arg("--list-remote")
+        .arg(remote)
+        .arg("--rclone-config-path")
+        .arg(&fixture.config);
+    command
+}
+
+fn listing_path(fixture: &Fixture) -> PathBuf {
+    fixture
+        .temp
+        .path()
+        .join("output/review-case/listings/inventory.csv")
+}
+
+fn read_listing(path: &Path) -> Vec<csv::StringRecord> {
+    let bytes = fs::read(path).unwrap();
+    assert!(bytes.starts_with(&[0xef, 0xbb, 0xbf]));
+    let mut reader = csv::Reader::from_reader(&bytes[3..]);
+    assert_eq!(
+        reader.headers().unwrap(),
+        &csv::StringRecord::from(vec![
+            "path_encoding",
+            "remote",
+            "path",
+            "size",
+            "modified",
+            "is_dir",
+            "hash",
+            "hash_type",
+        ])
+    );
+    reader.records().map(Result::unwrap).collect()
+}
+
+fn assert_no_published_listing(fixture: &Fixture) {
+    assert!(!listing_path(fixture).exists());
+    assert!(files(&fixture.temp.path().join("output/review-case/listings")).is_empty());
+}
+
+#[test]
+fn cli_imported_listing_is_complete_recursive_and_preserves_exact_provenance() {
+    let fixture = Fixture::new();
+    let source = fixture.temp.path().join("a");
+    fs::create_dir(source.join("nested")).unwrap();
+    let payloads: &[(&str, &[u8])] = &[
+        ("same.txt", b"SOURCE A"),
+        ("nested/empty.bin", b""),
+        ("nested/space name.txt", b"NESTED SYNTHETIC\n"),
+        ("=formula.txt", b"SYNTHETIC FORMULA NAME\n"),
+    ];
+    for (path, bytes) in payloads {
+        fs::write(source.join(path), bytes).unwrap();
+    }
+    let output = listing_command(&fixture, "RemoteA").output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let rows = read_listing(&listing_path(&fixture));
+    let mut expected = std::collections::BTreeMap::new();
+    expected.insert("nested".to_owned(), None);
+    for (path, bytes) in payloads {
+        let exported = if path.starts_with('=') {
+            format!("'{path}")
+        } else {
+            (*path).to_owned()
+        };
+        expected.insert(exported, Some(bytes.len()));
+    }
+    assert_eq!(rows.len(), expected.len());
+    for row in rows {
+        assert_eq!(&row[0], "excel-safe-v1");
+        assert_eq!(&row[1], "RemoteA");
+        assert_eq!(&row[6], "");
+        assert_eq!(&row[7], "");
+        match expected
+            .remove(&row[2])
+            .expect("unexpected or duplicate path")
+        {
+            Some(size) => {
+                assert_eq!(row[3].parse::<usize>().unwrap(), size);
+                assert_eq!(&row[5], "false");
+            }
+            None => assert_eq!(&row[5], "true"),
+        }
+    }
+    assert!(expected.is_empty());
+    for (path, bytes) in payloads {
+        assert_eq!(fs::read(source.join(path)).unwrap(), *bytes);
+    }
+    assert_eq!(
+        fs::read_to_string(&fixture.config).unwrap(),
+        fixture.original
+    );
+    let config_files = files(&fixture.temp.path().join("output/review-case/config"));
+    let snapshots: Vec<_> = config_files
+        .iter()
+        .filter(|p| p.extension().is_some_and(|e| e == "conf"))
+        .collect();
+    assert_eq!(snapshots.len(), 1);
+    assert_eq!(fs::read_to_string(snapshots[0]).unwrap(), fixture.original);
+    let provenance: serde_json::Value =
+        serde_json::from_slice(&fs::read(snapshots[0].with_extension("provenance.json")).unwrap())
+            .unwrap();
+    assert_eq!(
+        provenance["source_sha256"],
+        hex::encode(Sha256::digest(fixture.original.as_bytes()))
+    );
+    assert_eq!(
+        provenance["working_path"],
+        snapshots[0].to_string_lossy().as_ref()
+    );
+    assert!(files(&fixture.temp.path().join("output/review-case/downloads")).is_empty());
+    assert_eq!(
+        files(&fixture.temp.path().join("output/review-case/listings")),
+        vec![listing_path(&fixture)]
+    );
+}
+
+#[test]
+fn cli_imported_listing_empty_remote_publishes_explicit_empty_csv_schema() {
+    let fixture = Fixture::new();
+    fs::remove_file(fixture.temp.path().join("a/same.txt")).unwrap();
+    let output = listing_command(&fixture, "RemoteA").output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(read_listing(&listing_path(&fixture)).is_empty());
+    assert_eq!(
+        fs::read_to_string(&fixture.config).unwrap(),
+        fixture.original
+    );
+}
+
+#[test]
+fn cli_imported_listing_ignores_inherited_config_and_backend_overrides() {
+    let fixture = Fixture::new();
+    fs::write(fixture.temp.path().join("b/foreign.txt"), b"FOREIGN").unwrap();
+    let output = listing_command(&fixture, "RemoteA")
+        .env("RCLONE_CONFIG", fixture.temp.path().join("missing.conf"))
+        .env(
+            "RCLONE_CONFIG_REMOTEA_REMOTE",
+            fixture.temp.path().join("b"),
+        )
+        .env("RCLONE_CONFIG_REMOTEA_TYPE", "memory")
+        .env("RCLONE_DRY_RUN", "true")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let rows = read_listing(&listing_path(&fixture));
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        (&rows[0][1], &rows[0][2], &rows[0][3]),
+        ("RemoteA", "same.txt", "8")
+    );
+    assert_eq!(
+        fs::read_to_string(&fixture.config).unwrap(),
+        fixture.original
+    );
+}
+
+#[test]
+fn cli_imported_listing_refuses_unknown_ambiguous_or_typeless_sections() {
+    for (config, requested, reason) in [
+        ("[Other]\ntype = invalid-synthetic-backend\n", "RemoteA", "unknown or ambiguous"),
+        ("[RemoteA]\ntype = invalid-synthetic-backend\n[RemoteA]\ntype = invalid-synthetic-backend\n", "RemoteA", "unknown or ambiguous"),
+        ("[RemoteA]\ntype = invalid-synthetic-backend\n[remotea]\ntype = invalid-synthetic-backend\n", "RemoteA", "unknown or ambiguous"),
+        ("[RemoteA]\ntype = invalid-synthetic-backend\n", "remotea", "unknown or ambiguous"),
+        ("[RemoteA]\nremote = synthetic\n", "RemoteA", "no backend type"),
+    ] {
+        let fixture = Fixture::new();
+        fs::write(&fixture.config, config).unwrap();
+        let output = listing_command(&fixture, requested).output().unwrap();
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains(reason));
+        assert_no_published_listing(&fixture);
+        assert_eq!(fs::read_to_string(&fixture.config).unwrap(), config);
+    }
+}
+
+#[test]
+fn cli_imported_listing_refuses_inline_override_even_when_literal_section_exists() {
+    let fixture = Fixture::new();
+    // There is a real base remote and a different literal section. Passing this
+    // selector to rclone would instead parse RemoteA plus an alias-root override.
+    let config = format!(
+        "{}\n[RemoteA,remote=other]\ntype = alias\nremote = {}\n",
+        fixture.original,
+        fixture.temp.path().join("b").display()
+    );
+    fs::write(&fixture.config, &config).unwrap();
+    fs::create_dir(fixture.temp.path().join("other")).unwrap();
+    fs::write(
+        fixture.temp.path().join("other/foreign.txt"),
+        b"FOREIGN ROOT",
+    )
+    .unwrap();
+    let output = listing_command(&fixture, "RemoteA,remote=other")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2)); // Clap rejects before extraction/remote reads.
+    assert!(String::from_utf8_lossy(&output.stderr).contains("without a path or inline options"));
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("Case initialized"));
+    assert!(!fixture.temp.path().join("output").exists());
+    assert_eq!(fs::read_to_string(&fixture.config).unwrap(), config);
+    assert_eq!(
+        fs::read(fixture.temp.path().join("a/same.txt")).unwrap(),
+        b"SOURCE A"
+    );
+    assert_eq!(
+        fs::read(fixture.temp.path().join("b/same.txt")).unwrap(),
+        b"SOURCE B"
+    );
+    assert_eq!(
+        fs::read(fixture.temp.path().join("other/foreign.txt")).unwrap(),
+        b"FOREIGN ROOT"
+    );
+}
+
+#[test]
+fn cli_imported_listing_remote_failure_never_publishes_a_partial_inventory() {
+    let fixture = Fixture::new();
+    let config = format!(
+        "[MissingRoot]\ntype = alias\nremote = {}\n",
+        fixture.temp.path().join("absent-source").display()
+    );
+    fs::write(&fixture.config, &config).unwrap();
+    let output = listing_command(&fixture, "MissingRoot").output().unwrap();
+    assert!(!output.status.success());
+    assert_no_published_listing(&fixture);
+    assert_eq!(fs::read_to_string(&fixture.config).unwrap(), config);
+}
+
+#[test]
+fn cli_imported_listing_requires_a_fresh_case_and_preserves_existing_outputs() {
+    let fixture = Fixture::new();
+    let path = listing_path(&fixture);
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(&path, b"PRIOR SYNTHETIC INVENTORY").unwrap();
+    let output = listing_command(&fixture, "RemoteA").output().unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("requires a new case directory"));
+    assert_eq!(fs::read(path).unwrap(), b"PRIOR SYNTHETIC INVENTORY");
+    assert_eq!(
+        fs::read_to_string(&fixture.config).unwrap(),
+        fixture.original
+    );
+}
+
+#[test]
+fn cli_imported_listing_missing_input_and_invalid_output_fail_without_publication() {
+    let fixture = Fixture::new();
+    fs::remove_file(&fixture.config).unwrap();
+    let output = listing_command(&fixture, "RemoteA").output().unwrap();
+    assert!(!output.status.success());
+    assert_no_published_listing(&fixture);
+    assert!(!fixture.config.exists());
+
+    let fixture = Fixture::new();
+    fs::write(fixture.temp.path().join("output"), b"OUTPUT SENTINEL").unwrap();
+    let output = listing_command(&fixture, "RemoteA").output().unwrap();
+    assert!(!output.status.success());
+    assert_no_published_listing(&fixture);
+    assert_eq!(
+        fs::read(fixture.temp.path().join("output")).unwrap(),
+        b"OUTPUT SENTINEL"
+    );
+    assert_eq!(
+        fs::read_to_string(&fixture.config).unwrap(),
+        fixture.original
+    );
+}
+
 #[test]
 fn cli_preserves_remote_identity_and_original_config() {
     let fixture = Fixture::new();
