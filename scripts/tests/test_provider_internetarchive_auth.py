@@ -2,11 +2,13 @@
 import copy
 import hashlib
 import http.client
+import io
 import json
 from pathlib import Path
 import socket
 import sys
 import time
+from types import SimpleNamespace
 import unittest
 from unittest import mock
 
@@ -30,10 +32,11 @@ class InternetArchiveLowTests(unittest.TestCase):
     def state(self, mode="normal", auth_case="valid"):
         return F.InternetArchiveLowState(KEY, SECRET, WRONG, mode, auth_case)
 
-    def request(self, port, target=META, *, auth=UNSET, method="GET", extra=(), omit=(), body=b""):
+    def request(self, port, target=META, *, auth=UNSET, method="GET", extra=(), omit=(), body=b"", timeout=2):
+        self.assertTrue(type(timeout) in (int, float) and 0 < timeout <= 5)
         if auth is UNSET:
             auth = "LOW " + KEY + ":" + SECRET
-        client = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        client = http.client.HTTPConnection("127.0.0.1", port, timeout=timeout)
         try:
             client.putrequest(method, target, skip_host=True, skip_accept_encoding=True)
             headers = [("Host", f"127.0.0.1:{port}"), ("Content-Length", str(len(body)))]
@@ -199,21 +202,51 @@ class InternetArchiveLowTests(unittest.TestCase):
 
     def test_request_response_byte_and_admission_limits_are_sticky(self):
         for key, value in (("request_limit", 0), ("byte_limit", 1)):
-            with self.subTest(key=key), F.serve("internetarchive-low-auth", state := self.state()) as port:
-                setattr(state, key, value)
-                self.assertEqual(self.request(port)[0], 429)
-            self.assertTrue(state.budget_exceeded)
-            self.assertEqual(state.payload_bytes, 0)
-            self.assert_closed(state, port)
+            with self.subTest(key=key):
+                with F.serve("internetarchive-low-auth", state := self.state()) as port:
+                    setattr(state, key, value)
+                    # Let the unchanged three-second handler deadline precede
+                    # the bounded client wait, including thread startup margin.
+                    self.assertEqual(self.request(port, timeout=5)[0], 429)
+                self.assertTrue(state.budget_exceeded)
+                self.assertEqual(state.payload_bytes, 0)
+                self.assert_closed(state, port)
         for key in ("connection_limit", "active_connection_limit"):
-            with self.subTest(key=key), F.serve("internetarchive-low-auth", state := self.state()) as port:
-                setattr(state, key, 0)
-                with self.assertRaises((OSError, http.client.HTTPException)):
-                    self.request(port)
-            self.assertTrue(state.budget_exceeded)
-            self.assertEqual(state.admission_denied, 1)
-            self.assertEqual(state.events, [])
-            self.assert_closed(state, port)
+            with self.subTest(key=key):
+                with F.serve("internetarchive-low-auth", state := self.state()) as port:
+                    setattr(state, key, 0)
+                    with self.assertRaises((OSError, http.client.HTTPException)):
+                        self.request(port, timeout=5)
+                self.assertTrue(state.budget_exceeded)
+                self.assertEqual(state.admission_denied, 1)
+                self.assertEqual(state.events, [])
+                self.assert_closed(state, port)
+
+    def test_reply_byte_budget_is_deterministic_and_sticky(self):
+        state = self.state()
+        state.byte_limit = 1
+        handler = object.__new__(F.InternetArchiveLowHandler)
+        handler.server = SimpleNamespace(state=state)
+        handler.command = "GET"
+        handler.wfile = io.BytesIO()
+        handler.send_response = mock.Mock()
+        handler.send_header = mock.Mock()
+        handler.end_headers = mock.Mock()
+        handler.reply(200, PAYLOAD, {"Content-Type": "application/octet-stream"}, object_payload=True)
+        refusal = b'{"detail":"fixture byte limit"}'
+        handler.send_response.assert_called_once_with(429)
+        handler.send_header.assert_any_call("Content-Length", str(len(refusal)))
+        self.assertEqual(handler.wfile.getvalue(), refusal)
+        self.assertNotIn(PAYLOAD, handler.wfile.getvalue())
+        self.assertEqual((state.payload_bytes, state.rejected_payload_bytes), (0, 0))
+        self.assertTrue(state.budget_exceeded)
+        self.assertTrue(handler.close_connection)
+        self.assertEqual(state.response_bytes, len(refusal))
+        # Later replies cannot clear an already observed resource failure.
+        state.byte_limit = 32768
+        handler.reply(200, b"{}")
+        self.assertTrue(state.budget_exceeded)
+        self.assertEqual((state.payload_bytes, state.rejected_payload_bytes), (0, 0))
 
     def test_object_payload_exceeding_remaining_budget_is_never_delivered(self):
         state = self.state()
