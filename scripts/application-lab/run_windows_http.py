@@ -410,7 +410,7 @@ class Bridge:
         self.stage_bytes = bytearray()
         self.stage_invalid = False
         self.deadline = time.monotonic() + 165
-        env = environment(case)
+        env = environment(case / "helper-env")
         env.update(GITHUB_ACTIONS="true", RUNNER_OS="Windows", RUNNER_ENVIRONMENT="github-hosted")
         try:
             self.process = subprocess.Popen([powershell(), "-NoProfile", "-NonInteractive", "-File", str(HERE / "hosted_session.ps1")],
@@ -633,8 +633,22 @@ def check_listing(case):
 CLEANUP_STAGES = frozenset({"case_identity", "configuration", "application_bytes", "queue_bytes",
                             "private_inventory", "acl_verify", "owned_removal"})
 PRIVATE_LOCATIONS = ("temp", "home", "profile", "appdata", "localappdata")
-PRESTART_STAGES = frozenset({"profile_identity", "profile_inventory", "profile_limit", "profile_directories",
-                             "private_inventory", "private_empty"})
+PRESTART_STAGES = frozenset({"helper_identity", "helper_inventory", "helper_limit", "helper_directories", "helper_layout",
+                             "private_identity", "private_inventory", "private_empty"})
+
+
+def create_private_roots(case):
+    leases = {"application": {}, "helper": {}}
+    for name in PRIVATE_LOCATIONS:
+        (case / name).mkdir()
+        leases["application"][name] = identity(case / name)
+    helper = case / "helper-env"
+    helper.mkdir()
+    leases["helper_root"] = identity(helper)
+    for name in PRIVATE_LOCATIONS:
+        (helper / name).mkdir()
+        leases["helper"][name] = identity(helper / name)
+    return leases
 
 
 def inventory_summary(entries):
@@ -655,48 +669,69 @@ def diagnostic_counts(summary):
     return counts
 
 
-def profile_baseline(case, expected_identity, *, observation=None):
-    """Private directory identities captured before the app is allowed to start."""
+def helper_baseline(case, leases, *, observation=None):
+    """Helper-only directories observed before any application may start."""
     def observe(stage, summary=None):
         if observation is not None:
-            observation.update(stage=stage, location="profile", summary=summary)
-    observe("profile_identity")
-    root = case / "profile"
-    original = identity(root)
-    need(original == expected_identity, "cleanup_failed")
-    observe("profile_inventory")
+            observation.update(stage=stage, location="helper_env", summary=summary)
+    def preserved():
+        need(identity(root) == leases["helper_root"] and
+             all(identity(root / name) == value for name, value in leases["helper"].items()), "cleanup_failed")
+    root = case / "helper-env"
+    observe("helper_identity")
+    preserved()
+    observe("helper_inventory")
     entries = inventory(root)
-    observe("profile_identity")
-    need(identity(root) == original, "cleanup_failed")
+    observe("helper_identity")
+    preserved()
     summary = inventory_summary(entries)
-    observe("profile_limit", summary)
+    observe("helper_limit", summary)
     need(len(entries) <= 32, "cleanup_failed")
-    observe("profile_directories", summary)
+    observe("helper_directories", summary)
     need(all(value[0] for value in entries.values()), "cleanup_failed")
-    return original, tuple(sorted((path, value[2], value[3]) for path, value in entries.items()))
+    observe("helper_layout", summary)
+    need(set(PRIVATE_LOCATIONS).issubset(entries) and
+         all(path.split("/", 1)[0] in PRIVATE_LOCATIONS for path in entries), "cleanup_failed")
+    return {path: (value[2], value[3]) for path, value in entries.items()}
+
+
+def application_roots_empty(case, leases, *, observation=None):
+    for name in PRIVATE_LOCATIONS:
+        if observation is not None:
+            observation.update(stage="private_identity", location=name, summary=None)
+        need(identity(case / name) == leases["application"][name], "cleanup_failed")
+        if observation is not None:
+            observation.update(stage="private_inventory", summary=None)
+        entries = inventory(case / name)
+        if observation is not None:
+            observation.update(stage="private_identity", summary=None)
+        need(identity(case / name) == leases["application"][name], "cleanup_failed")
+        if observation is not None:
+            observation.update(stage="private_empty", summary=inventory_summary(entries))
+        need(not entries, "cleanup_failed")
+
+
+def helper_cleanup_preserved(current, baseline):
+    # Root/fixed-five identities were just checked by helper_baseline. Only
+    # already-observed descendant directories may disappear during shutdown.
+    need(baseline is not None and set(current).issubset(baseline) and
+         all(baseline[path] == value for path, value in current.items()), "cleanup_failed")
 
 
 def prestart_diagnostic(name, stage, location, summary=None):
     """Only fixed stages and validated counts; names and identities remain private."""
     need(name in E.CASE_ORDER and stage in PRESTART_STAGES and
-         (location == "profile" if stage.startswith("profile_") else
-          location in PRIVATE_LOCATIONS and location != "profile"), "cleanup_failed")
-    need(summary is None or stage in {"profile_limit", "profile_directories", "private_empty"}, "cleanup_failed")
+         (location == "helper_env" if stage.startswith("helper_") else location in PRIVATE_LOCATIONS), "cleanup_failed")
+    need(summary is None or stage in {"helper_limit", "helper_directories", "helper_layout", "private_empty"}, "cleanup_failed")
     print("application_prestart_diagnostic=" + E.compact(dict(scope=name, stage=stage, location=location,
           **diagnostic_counts(summary))).decode("ascii"), flush=True)
 
 
-def prestart_baseline(name, case, expected_identity):
-    observation = dict(stage="profile_identity", location="profile", summary=None)
+def prestart_baseline(name, case, leases):
+    observation = dict(stage="private_identity", location="temp", summary=None)
     try:
-        baseline = profile_baseline(case, expected_identity, observation=observation)
-        for child in PRIVATE_LOCATIONS:
-            if child != "profile":
-                observation.update(stage="private_inventory", location=child, summary=None)
-                entries = inventory(case / child)
-                observation.update(stage="private_empty", summary=inventory_summary(entries))
-                need(not entries, "cleanup_failed")
-        return baseline
+        application_roots_empty(case, leases, observation=observation)
+        return helper_baseline(case, leases, observation=observation)
     except BaseException:
         # Diagnostic output must never replace the original failure.
         try:
@@ -709,7 +744,7 @@ def prestart_baseline(name, case, expected_identity):
 def cleanup_diagnostic(name, stage, location=None, summary=None):
     """Failure-only counts from an already bounded, link-checked inventory."""
     need(name in E.CASE_ORDER and stage in CLEANUP_STAGES and
-         (location in PRIVATE_LOCATIONS if stage == "private_inventory" else location is None),
+         (location in (*PRIVATE_LOCATIONS, "helper_env") if stage == "private_inventory" else location is None),
          "cleanup_failed")
     need(summary is None or stage == "private_inventory", "cleanup_failed")
     counts = diagnostic_counts(summary)
@@ -841,8 +876,7 @@ def run_case(name, suite, application, application_sha, runtime, session_factory
     session_attempted = fixture_attempted = entered = prepared = False
     helper_closed = False
     config_bytes = None
-    profile_before = None
-    profile_lease = None
+    helper_before = private_leases = None
     def fail(code):
         if record["failure_code"] is None:
             record["failure_code"] = code
@@ -850,10 +884,8 @@ def run_case(name, suite, application, application_sha, runtime, session_factory
         prepare(suite, name)
         prepared = True
         lease = identity(case)
-        for child in ("temp", "home", "profile", "appdata", "localappdata", "output"):
-            (case / child).mkdir()
-            if child == "profile":
-                profile_lease = identity(case / child)
+        private_leases = create_private_roots(case)
+        (case / "output").mkdir()
         # Cargo may hardlink the release output. Only this read permits links;
         # the helper locks and executes a fresh, single-link owned copy.
         application_bytes = read(application, 512 * 1024 * 1024, allow_hardlinks=True)
@@ -878,7 +910,7 @@ def run_case(name, suite, application, application_sha, runtime, session_factory
         session_attempted = True
         bridge = session_factory(case)
         validate_ready(bridge.command("ready"))
-        profile_before = prestart_baseline(name, case, profile_lease)
+        helper_before = prestart_baseline(name, case, private_leases)
         response = bridge.command("start", app_path=str(owned_application), app_sha256=application_sha,
             args=app_args(name, case), case_root=str(case), environment=environment(case),
             transcript_path=str(case / "transcript.private"), max_output_bytes=8 * 1024 * 1024, deadline_ms=150000)
@@ -971,12 +1003,15 @@ def run_case(name, suite, application, application_sha, runtime, session_factory
                         need(read(case / "queue.csv", 65536) == queue_bytes(name), "preservation_failed")
                 for child in PRIVATE_LOCATIONS:
                     cleanup_stage, cleanup_location, cleanup_summary = "private_inventory", child, None
+                    need(identity(case / child) == private_leases["application"][child], "cleanup_failed")
                     entries = inventory(case / child)
+                    need(identity(case / child) == private_leases["application"][child], "cleanup_failed")
                     cleanup_summary = inventory_summary(entries)
-                    if child == "profile":
-                        need(profile_before is not None and profile_baseline(case, profile_lease) == profile_before, "cleanup_failed")
-                    else:
-                        need(not entries, "cleanup_failed")
+                    need(not entries, "cleanup_failed")
+                cleanup_stage, cleanup_location, cleanup_summary = "private_inventory", "helper_env", None
+                current_helper = helper_baseline(case, private_leases)
+                cleanup_summary = dict(entries=len(current_helper), directories=len(current_helper), files=0, total_bytes=0)
+                helper_cleanup_preserved(current_helper, helper_before)
                 cleanup_stage, cleanup_location, cleanup_summary = "acl_verify", None, None
                 checks["process_cleanup"] = False
                 prepare(suite, name, "Verify")
@@ -1113,17 +1148,13 @@ def bridge_probe(session_factory=None):
         prepare(suite, "listing")
         case = suite / "listing"
         case_id = identity(case)
-        private_ids = {}
-        for name in PRIVATE_LOCATIONS:
-            (case / name).mkdir()
-            private_ids[name] = identity(case / name)
+        private_leases = create_private_roots(case)
         stage = "helper_launch"
         bridge = (Bridge if session_factory is None else session_factory)(case)
         stage = "ready"
         validate_ready(bridge.command("ready"))
         stage = "prestart"
-        need(all(identity(case / name) == value for name, value in private_ids.items()), "preservation_failed")
-        baseline = prestart_baseline("listing", case, private_ids["profile"])
+        baseline = prestart_baseline("listing", case, private_leases)
         stage = "close_ready"
         validate_close_ready(bridge.command("close_ready"))
         stage = "helper_cleanup"
@@ -1132,14 +1163,12 @@ def bridge_probe(session_factory=None):
         stage = "identity"
         need(identity(parent) == parent_id and identity(suite) == suite_id and identity(case) == case_id,
              "preservation_failed")
-        need(all(identity(case / name) == value for name, value in private_ids.items()), "preservation_failed")
         stage = "private_inventory"
-        need(profile_baseline(case, private_ids["profile"]) == baseline, "cleanup_failed")
-        for name in PRIVATE_LOCATIONS:
-            if name != "profile":
-                need(not inventory(case / name), "cleanup_failed")
+        application_roots_empty(case, private_leases)
+        current_helper = helper_baseline(case, private_leases)
+        helper_cleanup_preserved(current_helper, baseline)
         entries = inventory(case)
-        expected_dirs = set(PRIVATE_LOCATIONS) | {"profile/" + path for path, _dev, _ino in baseline[1]}
+        expected_dirs = set(PRIVATE_LOCATIONS) | {"helper-env"} | {"helper-env/" + path for path in current_helper}
         need({p for p, v in entries.items() if v[0]} == expected_dirs and
              {p for p, v in entries.items() if not v[0]} == {"bridge-stdout.private", "bridge-stderr.private"} and
              all(v[1] <= 1024 * 1024 for v in entries.values() if not v[0]), "cleanup_failed")
