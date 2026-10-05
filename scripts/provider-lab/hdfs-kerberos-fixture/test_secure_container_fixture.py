@@ -399,6 +399,105 @@ class FailurePathTests(unittest.TestCase):
         self.failure("client_result_invalid", F.require_client_success, Support, result(code=1), "unknown")
         F.require_client_success(Support, result(stderr=b"unparsed successful stderr", code=0), "cat")
 
+    @staticmethod
+    def cat_failures():
+        # Literal expected categories, independent of the producer's patterns.
+        return (
+            (b"rspauth did not match digest", "client_sasl_rspauth_mismatch"),
+            (b"invalid response from datanode", "client_datanode_invalid_response"),
+            (b"invalid response from datanode: bad response length", "client_datanode_response_length"),
+            (b"invalid response from datanode: HMAC check failed", "client_datanode_hmac_failed"),
+            (b"no available cipher among choices: [private-canary aes128]", "client_sasl_cipher_unavailable"),
+            (b"negotiating data protection: invalid qop: [private-canary]", "client_sasl_qop_rejected"),
+            (b"negotiating data protection: invalid qop: 'integrity'", "client_sasl_qop_rejected"),
+        )
+
+    def test_cat_failure_categories_use_exact_final_notice_envelope(self):
+        for payload, code in self.cat_failures():
+            for prefix in (b"NOTICE: Failed to cat: ",
+                           b"2026/10/05 01:02:03 NOTICE: Failed to cat with 2 errors: last error was: "):
+                with self.subTest(payload=payload, prefix=prefix):
+                    raw = b"private@example.invalid /private/path\n" + prefix + payload + b"\n"
+                    self.failure(code, F.require_client_success, Support, result(b"untrusted output", raw, 1), "cat")
+
+    def test_sasl_and_datanode_categories_are_cat_only_and_require_nonzero_exit(self):
+        for payload, _ in self.cat_failures():
+            for operation in ("version", "lsjson"):
+                with self.subTest(payload=payload, operation=operation):
+                    raw = b"NOTICE: Failed to " + operation.encode() + b": " + payload + b"\n"
+                    self.failure("client_failed", F.require_client_success, Support, result(stderr=raw, code=1), operation)
+                    self.failure("client_failed", F.require_client_success, Support, result(stderr=raw, code=1), "cat")
+            F.require_client_success(Support, result(stderr=b"NOTICE: Failed to cat: " + payload, code=0), "cat")
+
+    def test_cipher_and_qop_lists_have_exact_positive_token_boundaries(self):
+        lists = (b"[]", b"[0]", b"[aes128]", b"[a-]", b"[" + b"a" * 32 + b"]",
+                 b"[a b c d e f g h]")
+        for prefix, code in (
+            (b"no available cipher among choices: ", "client_sasl_cipher_unavailable"),
+            (b"negotiating data protection: invalid qop: ", "client_sasl_qop_rejected"),
+        ):
+            for value in lists:
+                with self.subTest(prefix=prefix, value=value):
+                    self.failure(code, F.require_client_success, Support,
+                                 result(stderr=b"NOTICE: Failed to cat: " + prefix + value + b"\n", code=1), "cat")
+
+    def test_cat_payloads_reject_malformed_lists_controls_and_dynamic_challenges(self):
+        malformed = (b"[a b c d e f g h i]", b"[" + b"a" * 33 + b"]", b"[ a]", b"[a ]",
+                     b"[a  b]", b"[a\tb]", b"[a\x00b]", b"[a\x1bb]", b"[a\nb]", b"[a\rb]",
+                     b"[A]", b"[-a]", b"[a_b]", b"[a,b]", b"[a/b]", b"[a=b]", b"[caf\xc3\xa9]",
+                     b"['a']", b"[a][b]", b"a", b"[a", b"a]", b"[] trailing")
+        for prefix in (b"no available cipher among choices: ", b"negotiating data protection: invalid qop: "):
+            for value in malformed:
+                with self.subTest(prefix=prefix, value=value):
+                    self.failure("client_failed", F.require_client_success, Support,
+                                 result(stderr=b"NOTICE: Failed to cat: " + prefix + value + b"\n", code=1), "cat")
+        for payload in (
+            b"rspauth did not match digest: expected=private-canary actual=private-canary",
+            b"rspauth did not match digest private-canary", b"invalid response from datanode: private-canary",
+            b"invalid response from datanode: HMAC check failed: private-canary",
+            b"invalid response from datanode: bad response length 1234",
+            b"negotiating data protection: invalid qop: 'auth'",
+            b"negotiating data protection: invalid qop: 'integrity' trailing",
+            b"no available cipher among choices: 'integrity'",
+        ):
+            with self.subTest(payload=payload):
+                self.failure("client_failed", F.require_client_success, Support,
+                             result(stderr=b"NOTICE: Failed to cat: " + payload + b"\n", code=1), "cat")
+
+    def test_cat_categories_keep_existing_count_and_diagnostic_bounds(self):
+        payload = b"rspauth did not match digest"
+        for raw in (
+            payload + b"\n", b"ERROR: Failed to cat: " + payload + b"\n",
+            b"NOTICE: Failed to cat with 1 errors: last error was: " + payload + b"\n",
+            b"NOTICE: Failed to cat with 02 errors: last error was: " + payload + b"\n",
+            b"NOTICE: Failed to cat with 10000 errors: last error was: " + payload + b"\n",
+            b"NOTICE: Failed to cat: " + payload + b"\nprivate trailing line\n",
+            b"x\n" * 128 + b"NOTICE: Failed to cat: " + payload + b"\n",
+            b"x" * 4097 + b"\nNOTICE: Failed to cat: " + payload + b"\n",
+        ):
+            self.failure("client_failed", F.require_client_success, Support, result(stderr=raw, code=1), "cat")
+        self.failure("client_diagnostic_unavailable", F.require_client_success, Support,
+                     result(stderr=b"x" * 65537, code=1), "cat")
+        self.failure("client_sasl_rspauth_mismatch", F.require_client_success, Support,
+                     result(stderr=b"NOTICE: Failed to cat with 9999 errors: last error was: " + payload + b"\n", code=1), "cat")
+
+    def test_each_cat_category_survives_orderly_cleanup_without_raw_values_or_promotion(self):
+        for payload, code in self.cat_failures():
+            def fail(_support, _docker, _container, _version, report):
+                report["controller_ready"] = receipt(); report["stage"] = "acquisition"
+                raw = b"private@example.invalid /private/path\nNOTICE: Failed to cat: " + payload + b"\n"
+                F.require_client_success(Support, result(b"private stdout canary", raw, 1), "cat")
+            with self.subTest(code=code, payload=payload):
+                value, _, retained = self.run_failed_probe(fail, RecoveryDocker())
+                self.assertEqual(value["errors"], [code]); self.assertFalse(value["success"])
+                self.assertEqual(value["stage"], "acquisition"); self.assertIsNone(value["result"])
+                self.assertTrue(value["controller_final"]["success"])
+                self.assertTrue(all(value["cleanup"].values())); self.assertFalse(retained)
+                public = F.canonical(value)
+                for secret in (b"private-canary", b"private@example.invalid", b"/private/path", b"private stdout canary", payload):
+                    self.assertNotIn(secret, public)
+                for claim in F.FALSE_CLAIMS: self.assertIs(value[claim], False)
+
     def test_positive_nonzero_listing_is_not_accepted_despite_valid_stdout(self):
         class FailedListing(Docker):
             def call(inner, args, **kw):
