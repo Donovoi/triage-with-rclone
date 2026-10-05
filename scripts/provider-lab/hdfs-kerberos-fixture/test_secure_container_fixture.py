@@ -412,6 +412,9 @@ class FailurePathTests(unittest.TestCase):
             (b"no available cipher among choices: [private-canary aes128]", "client_sasl_cipher_unavailable"),
             (b"negotiating data protection: invalid qop: [private-canary]", "client_sasl_qop_rejected"),
             (b"negotiating data protection: invalid qop: 'integrity'", "client_sasl_qop_rejected"),
+            (b"rspauth not in 'private-canary'", "client_sasl_rspauth_format"),
+            (b"invalid token challenge: private-canary", "client_sasl_challenge_format"),
+            (b"failed to reopen: too many retries", "client_reopen_limit"),
         )
 
     def test_cat_failure_categories_use_exact_final_notice_envelope(self):
@@ -443,7 +446,7 @@ class FailurePathTests(unittest.TestCase):
                     self.failure(code, F.require_client_success, Support,
                                  result(stderr=b"NOTICE: Failed to cat: " + prefix + value + b"\n", code=1), "cat")
 
-    def test_cat_payloads_reject_malformed_lists_controls_and_dynamic_challenges(self):
+    def test_cat_payloads_reject_malformed_lists_controls_and_unknown_templates(self):
         malformed = (b"[a b c d e f g h i]", b"[" + b"a" * 33 + b"]", b"[ a]", b"[a ]",
                      b"[a  b]", b"[a\tb]", b"[a\x00b]", b"[a\x1bb]", b"[a\nb]", b"[a\rb]",
                      b"[A]", b"[-a]", b"[a_b]", b"[a,b]", b"[a/b]", b"[a=b]", b"[caf\xc3\xa9]",
@@ -456,7 +459,7 @@ class FailurePathTests(unittest.TestCase):
         for payload in (
             b"rspauth did not match digest: expected=private-canary actual=private-canary",
             b"rspauth did not match digest private-canary", b"invalid response from datanode: private-canary",
-            b"rspauth not in 'private-canary'", b"rspauth not in ' '", b"rspauth not in '\x00'",
+            b"rspauth not in '\x00'",
             b'rspauth not in ""', b"rspauth not in '' trailing",
             b"invalid response from datanode: HMAC check failed: private-canary",
             b"invalid response from datanode: bad response length 1234",
@@ -485,6 +488,98 @@ class FailurePathTests(unittest.TestCase):
         self.failure("client_sasl_rspauth_mismatch", F.require_client_success, Support,
                      result(stderr=b"NOTICE: Failed to cat with 9999 errors: last error was: " + payload + b"\n", code=1), "cat")
 
+    def test_dynamic_families_have_literal_templates_and_printable_byte_bounds(self):
+        families = (
+            (b"rspauth not in '", b"'", "client_sasl_rspauth_format"),
+            (b"invalid token challenge: ", b"", "client_sasl_challenge_format"),
+        )
+        for prefix, suffix, code in families:
+            for opaque in (b"", b" ", b"'quoted' [opaque] \\", b"x" * 1024):
+                expected = "client_sasl_empty_rspauth" if prefix == b"rspauth not in '" and not opaque else code
+                raw = b"NOTICE: Failed to cat: " + prefix + opaque + suffix + b"\n"
+                with self.subTest(prefix=prefix, length=len(opaque)):
+                    self.failure(expected, F.require_client_success, Support, result(stderr=raw, code=1), "cat")
+            for opaque in (b"x" * 1025, b"\x00", b"\t", b"\r", b"\n", b"\x1b", b"\x7f", b"\x80", b"caf\xc3\xa9"):
+                raw = b"NOTICE: Failed to cat: " + prefix + opaque + suffix + b"\n"
+                with self.subTest(prefix=prefix, opaque=opaque[:8]):
+                    self.failure("client_failed", F.require_client_success, Support, result(stderr=raw, code=1), "cat")
+        for payload in (b"Rspauth not in 'x'", b"rspauth not in x", b"rspauth not in 'x' suffix",
+                        b"invalid token challenge:x", b"Invalid token challenge: x",
+                        b"failed to reopen: too many retries suffix", b"failed to reopen: too many retries\x00"):
+            self.failure("client_failed", F.require_client_success, Support,
+                         result(stderr=b"NOTICE: Failed to cat: " + payload + b"\n", code=1), "cat")
+
+    def test_object_stage_matches_literal_basename_and_equal_final_payload(self):
+        # These labels are literal expectations for the closed eight-file fixture.
+        labels = (b"README.txt", b"empty.bin", b"cancel.bin", b"alpha.txt",
+                  b"data.bin", b"space name.txt", b"owner-only.txt", b"utf8.txt")
+        payload = b"unrecognized private@example.invalid /private/path"
+        for ordinal, label in enumerate(labels, 1):
+            for message, stage in ((b"open", "open"), (b"send to output", "send_output")):
+                raw = (b"2026/10/05 01:02:03 ERROR : " + label + b": Failed to " + message + b": " + payload
+                       + b"\n2026/10/05 01:02:04 NOTICE: Failed to cat: " + payload + b"\n")
+                report = {}
+                with self.subTest(ordinal=ordinal, stage=stage):
+                    self.failure("client_failed", F.require_client_success, Support, result(stderr=raw, code=1),
+                                 "cat", report=report, sample_ordinal=ordinal)
+                    self.assertEqual(report["client_failure"]["object_error_stage"], stage)
+                    self.assertTrue(report["client_failure"]["final_error_template"])
+                    public = F.canonical(report)
+                    for private in (label, payload, b"private@example.invalid", b"/private/path"):
+                        self.assertNotIn(private, public)
+
+    def test_object_stage_rejects_unknown_contradictory_and_nonmatching_records(self):
+        final = b"NOTICE: Failed to cat: private-canary\n"
+        good = b"ERROR : README.txt: Failed to open: private-canary\n"
+        other_stage = b"ERROR : README.txt: Failed to send to output: private-canary\n"
+        for records in (
+            b"", b"private preamble\n", good + good, good + other_stage, other_stage + good,
+            b"ERROR : other.txt: Failed to open: private-canary\n", good + b"ERROR : other.txt: unknown\n",
+            b"ERROR: README.txt: Failed to open: private-canary\n",
+            b"ERROR : /synthetic/README.txt: Failed to open: private-canary\n",
+            b"ERROR : README.txt: Failed to open: different-private-canary\n",
+            b"ERROR : README.txt: Failed to read: private-canary\n",
+            b"ERROR : README.txt: Failed to open: private-canary\x00\n",
+        ):
+            report = {}
+            self.failure("client_failed", F.require_client_success, Support, result(stderr=records + final, code=1),
+                         "cat", report=report, sample_ordinal=1)
+            self.assertEqual(report["client_failure"]["object_error_stage"], "unrecognized")
+            self.assertNotIn(b"private-canary", F.canonical(report))
+        report = {}
+        self.failure("client_failed", F.require_client_success, Support,
+                     result(stderr=good + b"NOTICE: Failed to cat with 1 errors: last error was: private-canary\n", code=1),
+                     "cat", report=report, sample_ordinal=1)
+        self.assertFalse(report["client_failure"]["final_error_template"])
+        self.assertEqual(report["client_failure"]["object_error_stage"], "unrecognized")
+        report = {}
+        self.failure("client_failed", F.require_client_success, Support, result(stderr=good + final, code=1),
+                     "cat", report=report)
+        self.assertIsNone(report["client_failure"]["object_error_stage"])
+
+    def test_real_probe_dynamic_family_stage_survives_cleanup_without_promotion(self):
+        for payload, expected in (
+            (b"rspauth not in 'private-canary'", "client_sasl_rspauth_format"),
+            (b"invalid token challenge: private-canary", "client_sasl_challenge_format"),
+            (b"failed to reopen: too many retries", "client_reopen_limit"),
+        ):
+            raw = b"ERROR : README.txt: Failed to send to output: " + payload + b"\nNOTICE: Failed to cat: " + payload + b"\n"
+            class FailedAcquisition(RecoveryDocker):
+                def call(inner, args, **kw):
+                    if "cat" in args and "test:/synthetic/README.txt" in args:
+                        inner.calls.append((args, kw)); return result(b"", raw, 1)
+                    return super(FailedAcquisition, inner).call(args, **kw)
+            with self.subTest(expected=expected):
+                value, _, retained = self.run_failed_probe(F.probe, FailedAcquisition())
+                self.assertEqual(value["errors"], [expected]); self.assertFalse(value["success"])
+                self.assertEqual(value["stage"], "acquisition"); self.assertIsNone(value["result"])
+                self.assertEqual(value["client_failure"], dict(operation="cat", exit_code=1, sample_ordinal=1,
+                    stderr_bytes=len(raw), stderr_line_count=2, final_error_template=True, object_error_stage="send_output"))
+                self.assertTrue(value["controller_final"]["success"])
+                self.assertTrue(all(value["cleanup"].values())); self.assertFalse(retained)
+                for secret in (b"private-canary", b"README.txt", payload): self.assertNotIn(secret, F.canonical(value))
+                for claim in F.FALSE_CLAIMS: self.assertIs(value[claim], False)
+
     def test_each_cat_category_survives_orderly_cleanup_without_raw_values_or_promotion(self):
         for payload, code in self.cat_failures():
             def fail(_support, _docker, _container, _version, report):
@@ -508,11 +603,11 @@ class FailurePathTests(unittest.TestCase):
         self.failure("client_sasl_empty_rspauth", F.require_client_success, Support,
                      result(b"private stdout canary", raw, 1), "cat", report=report, sample_ordinal=8)
         expected = dict(operation="cat", exit_code=1, sample_ordinal=8, stderr_bytes=len(raw),
-                        stderr_line_count=2, final_error_template=True)
+                        stderr_line_count=2, final_error_template=True, object_error_stage="unrecognized")
         self.assertEqual(report, {"client_failure": expected})
         self.assertEqual({key: type(value) for key, value in report["client_failure"].items()},
                          dict(operation=str, exit_code=int, sample_ordinal=int, stderr_bytes=int,
-                              stderr_line_count=int, final_error_template=bool))
+                              stderr_line_count=int, final_error_template=bool, object_error_stage=str))
         public = F.canonical(report)
         for private in (b"private@example.invalid", b"/private/path", b"private stdout canary", b"rspauth not in"):
             self.assertNotIn(private, public)
@@ -562,7 +657,7 @@ class FailurePathTests(unittest.TestCase):
                                  result(stderr=raw, code=1), operation, report=report)
                     self.assertEqual(report, {"client_failure": dict(operation=operation, exit_code=1,
                         sample_ordinal=None, stderr_bytes=len(raw), stderr_line_count=len(raw.splitlines()),
-                        final_error_template=template)})
+                        final_error_template=template, object_error_stage=None)})
                     self.assertNotIn(b"private", F.canonical(report))
 
     def test_unreadable_or_oversize_diagnostics_keep_null_measurements(self):
@@ -574,7 +669,8 @@ class FailurePathTests(unittest.TestCase):
             self.failure("client_diagnostic_unavailable", F.require_client_success, support,
                          result(stderr=raw, code=1), "cat", report=report, sample_ordinal=2)
             self.assertEqual(report, {"client_failure": dict(operation="cat", exit_code=1,
-                sample_ordinal=2, stderr_bytes=None, stderr_line_count=None, final_error_template=False)})
+                sample_ordinal=2, stderr_bytes=None, stderr_line_count=None, final_error_template=False,
+                object_error_stage="unrecognized")})
         for raw in (b"", b"x" * 4097, b"x\n" * 128 + b"NOTICE: Failed to cat: EOF\n"):
             report = {}
             self.failure("client_failed", F.require_client_success, Support,
@@ -598,7 +694,8 @@ class FailurePathTests(unittest.TestCase):
                 self.failure("client_sasl_empty_rspauth", F.probe, Support, docker, CONTAINER, "1.75.1", report)
                 self.assertEqual(report["stage"], "acquisition")
                 self.assertEqual(report["client_failure"], dict(operation="cat", exit_code=1,
-                    sample_ordinal=ordinal, stderr_bytes=len(raw), stderr_line_count=1, final_error_template=True))
+                    sample_ordinal=ordinal, stderr_bytes=len(raw), stderr_line_count=1, final_error_template=True,
+                    object_error_stage="unrecognized"))
                 cats = [args for args, _ in docker.calls if "cat" in args]
                 self.assertEqual(len(cats), ordinal)
 
@@ -614,7 +711,7 @@ class FailurePathTests(unittest.TestCase):
         self.assertFalse(value["success"]); self.assertIsNone(value["result"])
         self.assertEqual(value["stage"], "acquisition")
         self.assertEqual(value["client_failure"], dict(operation="cat", exit_code=1, sample_ordinal=2,
-            stderr_bytes=len(raw), stderr_line_count=2, final_error_template=True))
+            stderr_bytes=len(raw), stderr_line_count=2, final_error_template=True, object_error_stage="unrecognized"))
         self.assertTrue(value["controller_final"]["success"])
         self.assertTrue(all(value["cleanup"].values())); self.assertFalse(retained)
         for private in (b"private@example.invalid", b"/private/path", b"private stdout canary", b"rspauth not in"):
@@ -636,7 +733,7 @@ class FailurePathTests(unittest.TestCase):
         self.failure("client_sasl_empty_rspauth", F.probe, Support, FailedRecovery(), CONTAINER, "1.75.1", report)
         self.assertEqual(report["stage"], "authenticated_recovery")
         self.assertEqual(report["client_failure"], dict(operation="cat", exit_code=1, sample_ordinal=None,
-            stderr_bytes=len(raw), stderr_line_count=1, final_error_template=True))
+            stderr_bytes=len(raw), stderr_line_count=1, final_error_template=True, object_error_stage=None))
 
     def test_positive_nonzero_listing_is_not_accepted_despite_valid_stdout(self):
         class FailedListing(Docker):

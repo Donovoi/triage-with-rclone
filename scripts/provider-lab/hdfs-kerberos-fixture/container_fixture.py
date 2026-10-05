@@ -85,6 +85,7 @@ CODES = frozenset("hosted_linux_required input_invalid input_changed unsafe_path
     "negative_failed cancellation_failed client_deadline shutdown_failed container_cleanup_failed image_cleanup_failed "
     "client_result_invalid client_failed client_diagnostic_unavailable client_error_eof client_error_unexpected_eof "
     "client_sasl_cipher_unavailable client_sasl_qop_rejected client_sasl_rspauth_mismatch client_sasl_empty_rspauth "
+    "client_sasl_rspauth_format client_sasl_challenge_format client_reopen_limit "
     "client_datanode_invalid_response client_datanode_response_length client_datanode_hmac_failed "
     "failure_shutdown_failed failure_shutdown_clients_present failure_shutdown_wait_failed failure_shutdown_release_failed "
     "raw_cleanup_failed interrupted fixture_failed".split())
@@ -279,22 +280,37 @@ def require_client_success(T, result, operation, *, report=None, sample_ordinal=
              and 1 <= sample_ordinal <= len(samples())), "client_result_invalid")
     if result.code == 0: return
     observation = dict(operation=operation, exit_code=result.code, sample_ordinal=sample_ordinal,
-        stderr_bytes=None, stderr_line_count=None, final_error_template=False)
+        stderr_bytes=None, stderr_line_count=None, final_error_template=False,
+        object_error_stage=None if sample_ordinal is None else "unrecognized")
     if report is not None: report["client_failure"] = observation
     try:
         error = T.read(result.stderr, 65536)
     except Exception:
         raise FixtureError("client_diagnostic_unavailable") from None
-    lines = error.splitlines()
+    # The pinned Linux logger emits LF. Preserve CR and other payload controls
+    # instead of allowing splitlines() to erase them before template matching.
+    lines = error.split(b"\n") if error else []
+    if lines and lines[-1] == b"": lines.pop()
     observation.update(stderr_bytes=len(error), stderr_line_count=len(lines))
     if 0 < len(lines) <= 128 and all(len(line) <= 4096 for line in lines):
         final = lines[-1]
-        pattern = (rb"(?:[0-9]{4}/[0-9]{2}/[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2} )?NOTICE: Failed to "
+        log_header = rb"(?:[0-9]{4}/[0-9]{2}/[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2} )?"
+        pattern = (log_header + rb"NOTICE: Failed to "
             + operation.encode("ascii") + rb"(?:: | with ([1-9][0-9]{0,3}) errors: last error was: )(.+)")
         match = re.fullmatch(pattern, final)
         if match and (match.group(1) is None or int(match.group(1)) >= 2):
             observation["final_error_template"] = True
             payload = match.group(2)
+            if sample_ordinal is not None:
+                # A single-file CLI source is re-rooted to its parent. Match only
+                # its known basename, one ERROR record, and the same final error.
+                label = sorted(samples())[sample_ordinal - 1].rsplit("/", 1)[-1].encode("utf-8")
+                records = [line for line in lines[:-1] if re.match(log_header + rb"ERROR", line)]
+                if len(records) == 1:
+                    detail = re.fullmatch(log_header + rb"ERROR : " + re.escape(label)
+                        + rb": Failed to (open|send to output): (.+)", records[0])
+                    if detail and detail.group(2) == payload:
+                        observation["object_error_stage"] = "open" if detail.group(1) == b"open" else "send_output"
             if payload in (b"EOF", b"unexpected EOF"):
                 raise FixtureError("client_error_eof" if payload == b"EOF" else "client_error_unexpected_eof")
             if operation == "cat":
@@ -316,6 +332,14 @@ def require_client_success(T, result, operation, *, report=None, sample_ordinal=
                 ):
                     if payload.startswith(prefix) and re.fullmatch(token_list, payload[len(prefix):]):
                         raise FixtureError(code)
+                # Observe only source-defined error families. Challenge content
+                # is opaque, bounded printable ASCII and never retained.
+                for template, code in (
+                    (rb"rspauth not in '[\x20-\x7e]{0,1024}'", "client_sasl_rspauth_format"),
+                    (rb"invalid token challenge: [\x20-\x7e]{0,1024}", "client_sasl_challenge_format"),
+                    (rb"failed to reopen: too many retries", "client_reopen_limit"),
+                ):
+                    if re.fullmatch(template, payload): raise FixtureError(code)
     raise FixtureError("client_failed")
 
 
