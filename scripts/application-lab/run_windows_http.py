@@ -528,11 +528,34 @@ def check_listing(case):
     except (UnicodeError, csv.Error):
         raise ProducerError("listing_invalid") from None
     expected = [["excel-safe-v1", REMOTE, path, str(size), MODIFIED, "false", "", ""] for path, size, _ in ROWS]
-    expected += [["excel-safe-v1", REMOTE, path, "", "0001-01-01T00:00:00+00:00", "true", "", ""] for path in ("large", "nested")]
+    # rclone v1.75.1 fs.Dir.ModTime uses fs.ConfigOptionsInfo default_time for
+    # HTTP directories with an unknown time; Rust exports that UTC instant.
+    expected += [["excel-safe-v1", REMOTE, path, "", "2000-01-01T00:00:00+00:00", "true", "", ""] for path in ("large", "nested")]
     need(rows and rows[0] == HEADERS and sorted(rows[1:]) == sorted(expected), "listing_invalid")
     need(inventory(path.parent).keys() == {"inventory.csv"}, "listing_invalid")
     need(not inventory(case / "output" / CASE_NAME / "downloads"), "outputs_invalid")
     return {"inventory_exact": True, "listing_complete": True}
+
+
+CLEANUP_STAGES = frozenset({"case_identity", "configuration", "application_bytes", "queue_bytes",
+                            "private_inventory", "acl_verify", "owned_removal"})
+PRIVATE_LOCATIONS = ("temp", "home", "profile", "appdata", "localappdata")
+
+
+def cleanup_diagnostic(name, stage, location=None, summary=None):
+    """Failure-only counts from an already bounded, link-checked inventory."""
+    need(name in E.CASE_ORDER and stage in CLEANUP_STAGES and
+         (location in PRIVATE_LOCATIONS if stage == "private_inventory" else location is None),
+         "cleanup_failed")
+    counts = dict(entries=None, directories=None, files=None, total_bytes=None)
+    if summary is not None:
+        need(stage == "private_inventory" and type(summary) is dict and set(summary) == set(counts), "cleanup_failed")
+        need(all(type(summary[key]) is int and 0 <= summary[key] <= 1024 for key in ("entries", "directories", "files")) and
+             summary["entries"] == summary["directories"] + summary["files"] and
+             type(summary["total_bytes"]) is int and 0 <= summary["total_bytes"] <= 512 * 1024 * 1024,
+             "cleanup_failed")
+        counts = summary
+    print("application_cleanup_diagnostic=" + E.compact(dict(scope=name, stage=stage, location=location, **counts)).decode("ascii"), flush=True)
 
 
 def output_files(root):
@@ -771,22 +794,34 @@ def run_case(name, suite, application, application_sha, runtime, session_factory
         else:
             checks["fixture_cleanup"] = not fixture_attempted
         if lease is not None and checks["process_cleanup"] and checks["fixture_cleanup"]:
+            cleanup_stage, cleanup_location, cleanup_summary = "case_identity", None, None
             try:
                 need(identity(case) == lease, "cleanup_failed")
                 if checks["configuration_preserved"]:
+                    cleanup_stage = "configuration"
                     configuration_preserved(case, config_bytes)
+                    cleanup_stage = "application_bytes"
                     need(sha(read(case / "application.exe", 512 * 1024 * 1024)) == application_sha, "preservation_failed")
                     if name != "listing":
+                        cleanup_stage = "queue_bytes"
                         need(read(case / "queue.csv", 65536) == queue_bytes(name), "preservation_failed")
-                for child in ("temp", "home", "profile", "appdata", "localappdata"):
-                    need(not inventory(case / child), "cleanup_failed")
+                for child in PRIVATE_LOCATIONS:
+                    cleanup_stage, cleanup_location, cleanup_summary = "private_inventory", child, None
+                    entries = inventory(case / child)
+                    directories = sum(value[0] for value in entries.values())
+                    cleanup_summary = dict(entries=len(entries), directories=directories,
+                        files=len(entries) - directories, total_bytes=sum(value[1] for value in entries.values() if not value[0]))
+                    need(not entries, "cleanup_failed")
+                cleanup_stage, cleanup_location, cleanup_summary = "acl_verify", None, None
                 checks["process_cleanup"] = False
                 prepare(suite, name, "Verify")
                 checks["process_cleanup"] = True
+                cleanup_stage = "owned_removal"
                 remove_owned(case, lease)
                 checks["temp_cleanup"] = True
             except BaseException:
                 fail("cleanup_failed")
+                cleanup_diagnostic(name, cleanup_stage, cleanup_location, cleanup_summary)
         elif not case.exists():
             checks["temp_cleanup"] = True
     if not all(checks.values()) and record["failure_code"] is None:
