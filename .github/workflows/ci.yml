@@ -75,7 +75,7 @@ jobs:
             --format json --desc off --output "$RUNNER_TEMP/python-dependency-audit.json"
       - name: Retain dependency audit evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: python-dependency-audit
           path: ${{ runner.temp }}/python-dependency-audit.json
@@ -106,7 +106,7 @@ jobs:
       # Never upload the image, Docker cache, synthetic credentials or raw logs.
       - name: Retain sanitized SMB protocol result
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: smb-protocol
           path: ${{ runner.temp }}/smb-protocol.json
@@ -136,7 +136,7 @@ jobs:
       # Positive feasibility only: never import this receipt into the coverage ledger.
       - name: Retain sanitized pCloud feasibility result
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: pcloud-oauth-feasibility
           path: ${{ runner.temp }}/pcloud-oauth-feasibility.json
@@ -165,7 +165,7 @@ jobs:
             --report "$RUNNER_TEMP/pcloud-oauth-authentication.json"
       - name: Retain sanitized pCloud authentication evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: pcloud-oauth-authentication
           path: ${{ runner.temp }}/pcloud-oauth-authentication.json
@@ -256,7 +256,7 @@ jobs:
             --require-plans --require-fixtures local,archive,http,webdav,ftp,sftp,s3,swift,b2,azureblob,azurefiles,seafile,memory,koofr,pixeldrain,filefabric,netstorage,internetarchive,gcs
       - name: Retain sanitized protocol evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: provider-evidence-${{ runner.os }}
           path: |
@@ -304,7 +304,7 @@ jobs:
           fi
       - name: Upload checked Windows build
         if: runner.os == 'Windows'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: rclone-triage-windows
           path: |
@@ -371,7 +371,7 @@ jobs:
             --output "$env:INVENTORY_OUTPUT"
           if ($LASTEXITCODE -ne 0) { throw 'Dependency inventory failed' }
       - name: Upload checked Windows target
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: rclone-triage-windows-${{ matrix.arch }}
           path: |
@@ -421,7 +421,7 @@ jobs:
             --require-plans --require-fixtures local,archive,http,webdav,ftp,sftp,s3,swift,b2,azureblob,azurefiles,seafile,memory,koofr,pixeldrain,filefabric,netstorage,internetarchive,gcs,smb,pcloud
       - name: Retain sanitized combined ledger
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: provider-evidence-Linux-combined
           path: ${{ runner.temp }}/provider-evidence-linux-combined.json
