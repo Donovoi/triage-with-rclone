@@ -1,0 +1,1205 @@
+"""Account-free fixture/harness regressions; native rclone requires explicit lab CLI."""
+
+import ftplib
+import base64
+from contextlib import contextmanager
+import hashlib
+import http.client
+import importlib.util
+import io
+import json
+import os
+from pathlib import Path
+import socket
+import sys
+import tempfile
+import unittest
+from unittest import mock
+import zipfile
+import zlib
+
+
+LAB_ROOT = Path(__file__).parents[1] / "provider-lab"
+sys.path.insert(0, str(LAB_ROOT))
+try:
+    import fixture_servers as FIXTURES
+    import run_lab as LAB
+finally:
+    sys.path.pop(0)
+
+
+class ProviderLabTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+
+    def test_environment_excludes_credentials_proxy_agent_and_socket_activation(self):
+        with mock.patch.dict(os.environ, {"RCLONE_CONFIG": "private", "AWS_SECRET_ACCESS_KEY": "private",
+                                          "HTTPS_PROXY": "private", "SSH_AUTH_SOCK": "private",
+                                          "LISTEN_FDS": "3", "PATH": "private"}):
+            env = LAB.isolated_environment(self.root)
+        for key in ("RCLONE_CONFIG", "AWS_SECRET_ACCESS_KEY", "HTTPS_PROXY", "SSH_AUTH_SOCK", "LISTEN_FDS", "PATH"):
+            self.assertNotIn(key, env)
+        self.assertEqual(env["HOME"], str(self.root))
+        self.assertEqual(env["AWS_EC2_METADATA_DISABLED"], "true")
+
+    def test_explicit_absolute_runtime_must_match_platform_pin_before_execution(self):
+        binary = self.root / "synthetic-runtime"
+        binary.write_bytes(b"not executable; hashing test only")
+        key = "RCLONE_EXE_SHA256" if sys.platform == "win32" else "RCLONE_LINUX_EXE_SHA256"
+        manifest = self.root / "manifest"
+        manifest.write_text(f"RCLONE_VERSION=1.2.3\n{key}={LAB.digest(binary)}\n")
+        resolved, identity, _ = LAB.verified_runtime(binary, manifest)
+        self.assertEqual(resolved, binary.resolve())
+        self.assertEqual(identity["version"], "1.2.3")
+        with self.assertRaisesRegex(LAB.LabError, "absolute_runtime"):
+            LAB.verified_runtime(Path("synthetic-runtime"), manifest)
+        binary.write_bytes(b"altered")
+        with self.assertRaisesRegex(LAB.LabError, "runtime_hash_mismatch"):
+            LAB.verified_runtime(binary, manifest)
+
+    def test_duplicate_manifest_pin_is_rejected(self):
+        binary = self.root / "synthetic"
+        binary.write_bytes(b"test")
+        manifest = self.root / "manifest"
+        manifest.write_text("RCLONE_VERSION=1.2.3\nRCLONE_VERSION=1.2.4\n")
+        with self.assertRaisesRegex(LAB.LabError, "invalid_runtime_manifest"):
+            LAB.verified_runtime(binary, manifest)
+
+    def test_harness_hash_binds_names_contents_and_both_modules(self):
+        for name in LAB.HARNESS_FILES:
+            (self.root / name).write_bytes(b"initial")
+        before = LAB.compute_harness_sha256(self.root)
+        (self.root / "fixture_servers.py").write_bytes(b"changed")
+        self.assertNotEqual(before, LAB.compute_harness_sha256(self.root))
+        (self.root / "run_lab.py").unlink()
+        with self.assertRaises(FileNotFoundError):
+            LAB.compute_harness_sha256(self.root)
+
+    def test_fixture_manifest_has_independent_fixed_payload_hashes(self):
+        manifest = LAB.fixture_manifest()
+        self.assertEqual(len(manifest), 3)
+        self.assertEqual([row["path"] for row in manifest], sorted(FIXTURES.FILES))
+        for row in manifest:
+            self.assertEqual(row["sha256"], hashlib.sha256(FIXTURES.FILES[row["path"]]).hexdigest())
+        expected = hashlib.sha256(json.dumps(manifest, separators=(",", ":")).encode()).hexdigest()
+        self.assertEqual(LAB.fixture_manifest_sha256(), expected)
+
+    def test_report_publication_is_create_new_without_partial_or_leftover_temp(self):
+        path = self.root / "receipt.json"
+        LAB.atomic_report(path, {"synthetic": True})
+        before = path.read_bytes()
+        with self.assertRaises(LAB.LabError):
+            LAB.atomic_report(path, {"synthetic": False})
+        self.assertEqual(path.read_bytes(), before)
+        self.assertEqual(list(self.root.iterdir()), [path])
+
+    def test_report_concurrent_claim_cannot_be_replaced(self):
+        path = self.root / "receipt.json"
+        real_link = os.link
+
+        def raced_link(source, destination):
+            Path(destination).write_text("other writer")
+            return real_link(source, destination)
+
+        with mock.patch.object(LAB.os, "link", side_effect=raced_link):
+            with self.assertRaises(FileExistsError):
+                LAB.atomic_report(path, {"synthetic": True})
+        self.assertEqual(path.read_text(), "other writer")
+        self.assertEqual(list(self.root.iterdir()), [path])
+
+    def test_protocol_paths_reject_traversal_without_touching_filesystem(self):
+        for value in ("/../private", "/%2e%2e/private", "/dir/../private", "/x\\private", "/%00"):
+            with self.assertRaises(ValueError):
+                FIXTURES.safe_path(value)
+        self.assertEqual(FIXTURES.safe_path("/nested/space%20name.txt"), "nested/space name.txt")
+
+    def test_source_preservation_detects_added_file_and_payload_corruption(self):
+        source = self.root / "source"
+        LAB.prepare_files(source)
+        self.assertTrue(LAB.source_unchanged(source))
+        extra = source / "unexpected"
+        extra.write_bytes(b"new")
+        self.assertFalse(LAB.source_unchanged(source))
+        extra.unlink()
+        (source / "README-synthetic.txt").write_bytes(b"corrupt")
+        self.assertFalse(LAB.source_unchanged(source))
+
+    def test_served_source_snapshot_cannot_change_with_mutable_fixture_mapping(self):
+        expected = LAB.fixture_manifest()
+        state = FIXTURES.State("synthetic", "synthetic-pass")
+        self.assertIsNot(state.files, FIXTURES.FILES)
+        self.assertTrue(LAB.served_source_unchanged(state, expected))
+        state.files["README-synthetic.txt"] = b"corrupt"
+        with mock.patch.dict(FIXTURES.FILES, {"README-synthetic.txt": b"corrupt"}):
+            self.assertFalse(LAB.served_source_unchanged(state, expected))
+        state.files = dict(FIXTURES.FILES)
+        state.files["unexpected"] = b"added"
+        self.assertFalse(LAB.served_source_unchanged(state, expected))
+        del state.files["unexpected"]
+        del state.files["README-synthetic.txt"]
+        self.assertFalse(LAB.served_source_unchanged(state, expected))
+
+    def test_generated_config_refuses_line_injection(self):
+        with self.assertRaises(LAB.LabError):
+            LAB.config_file(self.root, "config", {"url": "synthetic\n[Other]"})
+        self.assertFalse((self.root / "config").exists())
+
+    def test_http_rejects_wrong_auth_and_serves_no_payload(self):
+        state = FIXTURES.State("synthetic", "synthetic-pass")
+        with FIXTURES.serve("http", state) as port:
+            connection = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
+            connection.request("GET", "/README-synthetic.txt", headers={"Authorization": "Basic wrong"})
+            response = connection.getresponse()
+            self.assertEqual(response.status, 401)
+            self.assertEqual(response.read(), b"")
+            connection.close()
+            self.assertEqual(state.denied, 1)
+            self.assertEqual(state.payload_bytes, 0)
+        self.assertTrue(LAB.listener_closed(port))
+
+    def test_webdav_metadata_and_download_are_independent_of_rclone(self):
+        import base64
+        state = FIXTURES.State("synthetic", "synthetic-pass")
+        headers = {"Authorization": "Basic " + base64.b64encode(b"synthetic:synthetic-pass").decode()}
+        with FIXTURES.serve("webdav", state) as port:
+            connection = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
+            connection.request("PROPFIND", "/", headers=dict(headers, Depth="1"))
+            response = connection.getresponse()
+            self.assertEqual(response.status, 207)
+            self.assertIn(b"/nested/", response.read())
+            connection.close()
+            connection = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
+            connection.request("GET", "/nested/bytes.bin", headers=headers)
+            response = connection.getresponse()
+            self.assertEqual(response.status, 200)
+            self.assertEqual(response.read(), FIXTURES.FILES["nested/bytes.bin"])
+            connection.close()
+            expected = LAB.fixture_manifest()
+            FIXTURES.probe_write_rejection("webdav", port, state)
+            self.assertEqual(state.rejected_mutations, 1)
+            self.assertTrue(LAB.served_source_unchanged(state, expected))
+        self.assertTrue(LAB.listener_closed(port))
+
+    def test_ftp_auth_read_data_binding_and_active_mode_refusal(self):
+        state = FIXTURES.State("synthetic", "synthetic-pass")
+        with FIXTURES.serve("ftp", state) as port:
+            client = ftplib.FTP()
+            client.connect("127.0.0.1", port, timeout=3)
+            with self.assertRaises(ftplib.error_perm):
+                client.login("synthetic", "wrong")
+            self.assertEqual(state.denied, 1)
+            self.assertEqual(state.payload_bytes, 0)
+            client.login("synthetic", "synthetic-pass")
+            self.assertIn("type=file;", client.sendcmd("MLST README-synthetic.txt"))
+            self.assertIn("type=dir;", client.sendcmd("MLST nested"))
+            with self.assertRaises(ftplib.error_perm):
+                client.sendcmd("PORT 127,0,0,1,1,1")
+            with self.assertRaises(ftplib.error_perm):
+                client.sendcmd("EPRT |1|127.0.0.1|1000|")
+            address, _ = ftplib.parse227(client.sendcmd("PASV"))
+            self.assertEqual(address, "127.0.0.1")
+            output = io.BytesIO()
+            client.retrbinary("RETR README-synthetic.txt", output.write)
+            self.assertEqual(output.getvalue(), FIXTURES.FILES["README-synthetic.txt"])
+            listing = []
+            client.retrlines("LIST README-synthetic.txt", listing.append)
+            self.assertEqual(len(listing), 1)
+            self.assertIn("README-synthetic.txt", listing[0])
+            client.quit()
+            expected = LAB.fixture_manifest()
+            FIXTURES.probe_write_rejection("ftp", port, state)
+            self.assertEqual(state.rejected_mutations, 1)
+            self.assertTrue(LAB.served_source_unchanged(state, expected))
+        self.assertTrue(LAB.listener_closed(port))
+
+    def test_sftp_pins_owned_public_files_not_network_tofu(self):
+        cache = self.root / "cache"
+        keys = cache / "serve-sftp"
+        keys.mkdir(parents=True)
+        for name, algorithm in (("id_rsa", "ssh-rsa"), ("id_ecdsa", "ecdsa-sha2-nistp256"), ("id_ed25519", "ssh-ed25519")):
+            (keys / (name + ".pub")).write_text(algorithm + " c3ludGhldGlj\n")
+        runtime = mock.Mock(cache=cache)
+        path = LAB.pin_sftp_key(runtime, 12345, self.root)
+        lines = path.read_text().splitlines()
+        self.assertEqual(len(lines), 3)
+        self.assertTrue(all(line.startswith("[127.0.0.1]:12345 ") for line in lines))
+
+    def sftp_options(self):
+        blob = b"\x00\x00\x00\x0bssh-ed25519\x00\x00\x00\x20" + bytes(range(32))
+        known = self.root / "known_hosts"
+        known.write_text("[127.0.0.1]:12345 ssh-ed25519 " + base64.b64encode(blob).decode() + "\n")
+        return {"type": "sftp", "host": "127.0.0.1", "port": "12345", "user": "synthetic",
+                "pass": "synthetic-obscured", "known_hosts_file": str(known),
+                "key_use_agent": "false", "disable_hashcheck": "true", "shell_type": "none"}
+
+    def test_sftp_mismatch_is_valid_wire_key_for_same_host_without_changing_pin(self):
+        options = self.sftp_options()
+        known = Path(options["known_hosts_file"])
+        original = known.read_bytes()
+        mismatch = LAB.mismatched_sftp_key(known, 12345, self.root)
+        entries = mismatch.read_text().splitlines()
+        self.assertEqual(len(entries), 1)
+        host, algorithm, key = entries[0].split()
+        self.assertEqual((host, algorithm), ("[127.0.0.1]:12345", "ssh-ed25519"))
+        changed = base64.b64decode(key, validate=True)
+        expected = base64.b64decode(original.split()[2], validate=True)
+        self.assertEqual(len(changed), 51)
+        self.assertEqual(changed[:-1], expected[:-1])
+        self.assertNotEqual(changed[-1], expected[-1])
+        self.assertEqual(known.read_bytes(), original)
+
+    def test_sftp_mismatch_refuses_missing_or_malformed_owned_key(self):
+        known = self.root / "known_hosts"
+        for value in ("", "[127.0.0.1]:9999 ssh-ed25519 c3ludGhldGlj\n",
+                      "[127.0.0.1]:12345 ssh-ed25519 invalid*\n",
+                      "[127.0.0.1]:12345 ssh-ed25519 c3ludGhldGlj\n"):
+            with self.subTest(value=value):
+                known.write_text(value)
+                with self.assertRaises(LAB.LabError):
+                    LAB.mismatched_sftp_key(known, 12345, self.root)
+                self.assertFalse((self.root / "mismatched_known_hosts").exists())
+
+    def test_sftp_host_key_rejection_keeps_correct_credentials_and_checks_read_and_copy(self):
+        options = self.sftp_options()
+        runtime = mock.Mock()
+        runtime.run.return_value = (1, b"", b"ssh: handshake failed: knownhosts: key mismatch")
+        row = {"capabilities": {}}
+        LAB.sftp_host_key_check(runtime, self.root, options, "Synthetic:", row)
+        self.assertEqual(row["capabilities"], {"host_key_rejection": "passed"})
+        self.assertEqual(runtime.run.call_count, 2)
+        config = self.root / "mismatched-host.conf"
+        expected = dict(options, known_hosts_file=str(self.root / "mismatched_known_hosts"))
+        self.assertEqual(config.read_text(), "[Synthetic]\n" + "".join(f"{key} = {value}\n" for key, value in expected.items()))
+        calls = runtime.run.call_args_list
+        self.assertEqual(calls[0].args, (["cat", "Synthetic:README-synthetic.txt"], config))
+        self.assertEqual(calls[1].args, (["copyto", "Synthetic:README-synthetic.txt",
+                                        str(self.root / "host-key-mismatch-must-not-exist")], config))
+
+    def test_sftp_host_key_verdict_rejects_unrelated_failure_success_or_payload(self):
+        cases = ((1, b"", b"unrelated startup error"),
+                 (1, b"", b"knownhosts: key is unknown"),
+                 (1, b"", b"unable to authenticate"),
+                 (0, b"", b"knownhosts: key mismatch"),
+                 (1, b"fixture bytes", b"knownhosts: key mismatch"))
+        for result in cases:
+            with self.subTest(result=result), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                known = root / "known_hosts"
+                known.write_text("synthetic")
+                runtime = mock.Mock()
+                runtime.run.return_value = result
+                row = {"capabilities": {}}
+                with mock.patch.object(LAB, "mismatched_sftp_key", return_value=root / "wrong-key"):
+                    with self.assertRaises(LAB.LabError):
+                        LAB.sftp_host_key_check(runtime, root, {"port": "12345", "known_hosts_file": str(known)},
+                                                "Synthetic:", row)
+                self.assertNotIn("host_key_rejection", row["capabilities"])
+
+    def test_sftp_host_key_verdict_rejects_partial_destination(self):
+        options = self.sftp_options()
+        runtime = mock.Mock()
+
+        def result(args, config):
+            if args[0] == "copyto":
+                Path(args[-1]).write_bytes(b"partial")
+            return 1, b"", b"knownhosts: key mismatch"
+
+        runtime.run.side_effect = result
+        row = {"capabilities": {}}
+        with self.assertRaisesRegex(LAB.LabError, "host_key_mismatch_returned_data"):
+            LAB.sftp_host_key_check(runtime, self.root, options, "Synthetic:", row)
+        self.assertNotIn("host_key_rejection", row["capabilities"])
+
+    def test_wrong_auth_exit_without_server_rejection_cannot_pass(self):
+        runtime = mock.Mock()
+        runtime.run.return_value = (1, b"", b"unrelated startup error")
+        row = {"capabilities": {}}
+        with self.assertRaisesRegex(LAB.LabError, "bad_auth_not_observed"):
+            LAB.common_checks(runtime, self.root, None, "bad", "Synthetic:", row,
+                              auth_marker=(b"signaturedoesnotmatch",))
+        self.assertNotIn("authentication_rejection", row["capabilities"])
+
+    def test_wrong_auth_data_is_always_a_failure(self):
+        runtime = mock.Mock()
+        runtime.run.return_value = (1, b"leaked synthetic payload", b"accessdenied")
+        with self.assertRaisesRegex(LAB.LabError, "bad_auth_returned_data"):
+            LAB.common_checks(runtime, self.root, None, "bad", "Synthetic:", {"capabilities": {}},
+                              auth_marker=(b"accessdenied",))
+
+    def test_absent_object_stat_accepts_only_error_or_virtual_directory_not_file(self):
+        self.assertTrue(LAB.stat_has_no_file(3, b""))
+        self.assertTrue(LAB.stat_has_no_file(0, b'{"IsDir":true}'))
+        self.assertFalse(LAB.stat_has_no_file(0, b'{"IsDir":false,"Size":0}'))
+        self.assertFalse(LAB.stat_has_no_file(0, b'{"IsDir":"true"}'))
+        self.assertFalse(LAB.stat_has_no_file(0, b'{}'))
+        self.assertFalse(LAB.stat_has_no_file(0, b'not json'))
+
+    def archive_entries(self):
+        return [{"Path": name, "IsDir": False, "Size": len(body),
+                 "Hashes": {"crc32": f"{zlib.crc32(body):08x}"}} for name, body in FIXTURES.FILES.items()] + [
+                     {"Path": "nested", "IsDir": True, "Size": -1}]
+
+    def test_archive_zip_is_deterministic_and_matches_independent_payloads(self):
+        first = LAB.archive_zip(dict(FIXTURES.FILES))
+        second = LAB.archive_zip(dict(reversed(list(FIXTURES.FILES.items()))))
+        self.assertEqual(first, second)
+        with zipfile.ZipFile(io.BytesIO(first)) as archive:
+            self.assertEqual(archive.namelist(), sorted([*FIXTURES.FILES, "nested/"]))
+            for entry in archive.infolist():
+                self.assertEqual(entry.date_time, (2024, 1, 1, 0, 0, 0))
+                self.assertEqual(entry.compress_type, zipfile.ZIP_STORED)
+                self.assertEqual(entry.create_system, 3)
+                if not entry.is_dir():
+                    expected = FIXTURES.FILES[entry.filename]
+                    self.assertEqual(archive.read(entry), expected)
+                    self.assertEqual(entry.CRC, zlib.crc32(expected))
+
+    def test_archive_corruption_retains_metadata_but_fails_member_crc(self):
+        original = LAB.archive_zip(FIXTURES.FILES)
+        corrupt = LAB.corrupt_archive_member(original, "README-synthetic.txt")
+        self.assertEqual(sum(left != right for left, right in zip(original, corrupt)), 1)
+        with zipfile.ZipFile(io.BytesIO(original)) as good, zipfile.ZipFile(io.BytesIO(corrupt)) as bad:
+            self.assertEqual([(entry.filename, entry.CRC, entry.file_size) for entry in good.infolist()],
+                             [(entry.filename, entry.CRC, entry.file_size) for entry in bad.infolist()])
+            with self.assertRaisesRegex(zipfile.BadZipFile, "CRC"):
+                bad.read("README-synthetic.txt")
+            self.assertEqual(bad.read("nested/space name.txt"), FIXTURES.FILES["nested/space name.txt"])
+        with self.assertRaises(zipfile.BadZipFile):
+            zipfile.ZipFile(io.BytesIO(original[:-22]))
+
+    def test_archive_inventory_rejects_wrong_crc_size_type_duplicates_and_extra_files(self):
+        entries = self.archive_entries()
+        LAB.archive_inventory(json.dumps(entries).encode(), FIXTURES.FILES)
+        cases = [entries[:-1], entries + [entries[0]], entries[:-1] + [entries[0]]]
+        for field, value in (("Hashes", {"crc32": "00000000"}), ("Size", -1), ("Size", True),
+                             ("IsDir", True), ("Path", "unexpected.txt")):
+            changed = [dict(entry) for entry in entries]
+            changed[0][field] = value
+            cases.append(changed)
+        for value in cases:
+            with self.subTest(value=value), self.assertRaises(LAB.LabError):
+                LAB.archive_inventory(json.dumps(value).encode(), FIXTURES.FILES)
+
+    def synthetic_archive_runtime(self, corrupt_result=None):
+        runtime = mock.Mock()
+
+        def result(args, config):
+            if args[0] == "lsjson":
+                if config.name == "truncated.conf":
+                    return 1, b"", b"zip: not a valid zip file"
+                return 0, json.dumps(self.archive_entries()).encode(), b""
+            if args[:3] == ["rc", "--loopback", "operations/stat"]:
+                options = dict(argument.split("=", 1) for argument in args[3:])
+                name = options["remote"]
+                return 0, json.dumps({"item": {"Path": name, "IsDir": False, "Size": len(FIXTURES.FILES[name])}}).encode(), b""
+            self.assertEqual(args[:3], ["rc", "--loopback", "operations/copyfile"])
+            options = dict(argument.split("=", 1) for argument in args[3:])
+            if options["dstFs"] == "Synthetic:":
+                return 1, b"", b"read only file system"
+            destination = Path(options["dstFs"]) / options["dstRemote"]
+            if config.name == "corrupt.conf":
+                if corrupt_result is not None:
+                    return corrupt_result(destination)
+                return 1, b"", b"zip: checksum error"
+            name = options["srcRemote"]
+            if name not in FIXTURES.FILES:
+                return 1, b"", b"is not a regular file" if name == "nested" else b"object not found"
+            destination.write_bytes(FIXTURES.FILES[name])
+            return 0, b"{}", b""
+
+        runtime.run.side_effect = result
+        return runtime
+
+    def test_archive_fixture_attests_all_capabilities_using_file_only_copy(self):
+        runtime = self.synthetic_archive_runtime()
+        row = LAB.run_backend(runtime, "archive", self.root / "archive")
+        self.assertEqual(row["fixture_kind"], "local")
+        self.assertEqual(row["errors"], [])
+        self.assertEqual(row["capabilities"]["authentication_rejection"], "not_applicable")
+        self.assertTrue(all(value == "passed" for key, value in row["capabilities"].items()
+                            if key != "authentication_rejection"))
+        self.assertTrue(all(call.args[0][0] in ("lsjson", "rc") for call in runtime.run.call_args_list))
+        stats = [call.args[0] for call in runtime.run.call_args_list if call.args[0][:3] == ["rc", "--loopback", "operations/stat"]]
+        self.assertEqual(len(stats), len(FIXTURES.FILES))
+
+    def test_exact_stat_requires_expected_file_identity_and_size(self):
+        runtime = mock.Mock()
+        runtime.run.return_value = (0, b'{"item":{"Path":"nested/file.txt","Size":7,"IsDir":false}}', b"")
+        LAB.exact_file_stat(runtime, "synthetic.conf", "Synthetic:fixture-root/", "nested/file.txt", 7)
+        runtime.run.assert_called_once_with(["rc", "--loopback", "operations/stat", "fs=Synthetic:fixture-root/",
+                                            "remote=nested/file.txt", 'opt={"noModTime":true,"noMimeType":true,"filesOnly":true}'], "synthetic.conf")
+        for payload in (b'{"item":null}', b'{"item":{"Path":"nested/file.txt","Size":7,"IsDir":true}}',
+                        b'{"item":{"Path":"other.txt","Size":7,"IsDir":false}}',
+                        b'{"item":{"Path":"nested/file.txt","Size":true,"IsDir":false}}',
+                        b'{"item":{"Path":"nested/file.txt","Size":8,"IsDir":false}}',
+                        b'{"item":{"Path":"nested/file.txt","Size":-1,"IsDir":false}}', b'{}', b'[]', b'not json'):
+            with self.subTest(payload=payload):
+                runtime.run.return_value = (0, payload, b"")
+                with self.assertRaises(LAB.LabError):
+                    LAB.exact_file_stat(runtime, "synthetic.conf", "Synthetic:", "nested/file.txt", 7)
+        runtime.run.return_value = (1, b'{"item":{"Path":"nested/file.txt","Size":7,"IsDir":false}}', b"")
+        with self.assertRaisesRegex(LAB.LabError, "exact_stat_failed"):
+            LAB.exact_file_stat(runtime, "synthetic.conf", "Synthetic:", "nested/file.txt", 7)
+
+    def test_common_fixture_refuses_transfer_after_stat_returns_directory(self):
+        runtime = mock.Mock()
+        listing = [{"Path": name, "Size": len(body), "IsDir": False} for name, body in FIXTURES.FILES.items()]
+        runtime.run.side_effect = [(0, json.dumps(listing).encode(), b""),
+                                   (0, b'{"item":{"Path":"README-synthetic.txt","IsDir":true,"Size":-1}}', b"")]
+        row = {"capabilities": {}}
+        with self.assertRaisesRegex(LAB.LabError, "exact_stat_not_file"):
+            LAB.common_checks(runtime, self.root, "good", None, "Synthetic:", row)
+        self.assertTrue(all(call.args[0][0] != "copyto" for call in runtime.run.call_args_list))
+        self.assertNotIn("download_hash", row["capabilities"])
+
+    def test_common_stat_uses_exact_app_split_with_full_local_or_bucket_prefix(self):
+        for index, prefix in enumerate(("C:/owned/fixture/", "synthetic-bucket/", "local/source/files/")):
+            with self.subTest(prefix=prefix):
+                root = self.root / str(index)
+                root.mkdir()
+                runtime = mock.Mock()
+                runtime.run.side_effect = [(0, b'[{"Path":"file.txt","Size":2,"IsDir":false}]', b""),
+                                           (0, b'{"item":null}', b"")]
+                expected = [{"path": "file.txt", "size": 2, "sha256": "0" * 64}]
+                with self.assertRaisesRegex(LAB.LabError, "exact_stat_not_file"):
+                    LAB.common_checks(runtime, root, "good", None, "Synthetic:" + prefix, {"capabilities": {}}, expected=expected)
+                args = runtime.run.call_args_list[1].args[0]
+                self.assertIn("fs=Synthetic:", args)
+                self.assertIn("remote=" + prefix + "file.txt", args)
+                self.assertIn('opt={"noModTime":true,"noMimeType":true,"filesOnly":true}', args)
+
+    def test_local_fixture_uses_owned_relative_source_and_rejects_escape_or_root(self):
+        source = self.root / "local" / "source" / "files"
+        source.mkdir(parents=True)
+        runtime = mock.Mock(root=self.root)
+        self.assertEqual(LAB.local_fixture_target(runtime, source), "Synthetic:local/source/files/")
+        with self.assertRaisesRegex(LAB.LabError, "invalid_local_fixture_root"):
+            LAB.local_fixture_target(runtime, self.root)
+        with tempfile.TemporaryDirectory() as outside:
+            with self.assertRaisesRegex(LAB.LabError, "local_source_outside_owned_root"):
+                LAB.local_fixture_target(runtime, Path(outside))
+
+    def test_archive_corruption_requires_crc_error_and_absent_destination(self):
+        cases = ((1, b"", b"unrelated failure"), (0, b"", b"zip: checksum error"))
+        for index, value in enumerate(cases):
+            runtime = self.synthetic_archive_runtime(lambda destination: value)
+            row = LAB.run_backend(runtime, "archive", self.root / str(index))
+            self.assertNotEqual(row["capabilities"]["corrupt_member_rejection"], "passed")
+            self.assertTrue(row["errors"])
+
+        def leaves_partial(destination):
+            destination.write_bytes(b"unaccepted partial bytes")
+            return 1, b"", b"zip: checksum error"
+
+        row = LAB.run_backend(self.synthetic_archive_runtime(leaves_partial), "archive", self.root / "partial")
+        self.assertIn("corrupt_archive_member_accepted", row["errors"])
+
+    def test_archive_preservation_detects_container_or_config_change_even_after_error(self):
+        for filename, error in (("original.zip", "archive_container_changed"),
+                                ("original.conf", "archive_config_changed")):
+            root = self.root / filename
+            runtime = mock.Mock()
+
+            def mutate(args, config):
+                (root / filename).write_bytes(b"changed")
+                return 1, b"", b"unrelated listing failure"
+
+            runtime.run.side_effect = mutate
+            row = LAB.run_backend(runtime, "archive", root)
+            self.assertIn(error, row["errors"])
+            self.assertNotEqual(row["capabilities"]["source_preservation"], "passed")
+            self.assertNotEqual(row["capabilities"]["config_preservation"], "passed")
+
+    def completed_swift_state(self, denial=False):
+        state = FIXTURES.SwiftState("synthetic", "synthetic-key", "deny" if denial else "renew")
+        state.forced_401 = 1
+        state.events = [("grant", 1), ("head", 1), ("get_401", 1)]
+        state.revoked = {"synthetic-token-one"}
+        if denial:
+            state.generation = 1
+            state.tokens = {"synthetic-token-one"}
+            state.token = "synthetic-token-one"
+            state.events += [("renewal_denied", 1), ("renewal_denied", 1)]
+            state.renewal_denied = 2
+        else:
+            state.generation = 2
+            state.tokens = {"synthetic-token-one", "synthetic-token-two"}
+            state.token = "synthetic-token-two"
+            state.events += [("grant", 2), ("get", 2)]
+            state.payload_bytes = len(FIXTURES.FILES["README-synthetic.txt"])
+        state.requests = len(state.events)
+        return state
+
+    def test_swift_options_cannot_override_refreshed_token_or_enable_environment_auth(self):
+        state = FIXTURES.SwiftState("synthetic", "raw-synthetic-key")
+        options = LAB.swift_options(state, 12345)
+        self.assertEqual(options, {"type": "swift", "env_auth": "false", "user": "synthetic",
+            "key": "raw-synthetic-key", "auth": "http://127.0.0.1:12345/auth/v1.0", "auth_version": "1",
+            "endpoint_type": "public", "no_large_objects": "true"})
+
+    def test_swift_renewal_verdict_rejects_fresh_logins_wrong_order_same_token_and_rejected_bytes(self):
+        size = len(FIXTURES.FILES["README-synthetic.txt"])
+        self.assertTrue(LAB.swift_renewal_matches(self.completed_swift_state(), False, size))
+        mutations = {
+            "no_401": lambda state: setattr(state, "forced_401", 0),
+            "too_many_grants": lambda state: state.events.append(("grant", 3)),
+            "old_token_read": lambda state: state.events.append(("get", 1)),
+            "missing_metadata": lambda state: state.events.remove(("head", 1)),
+            "replacement_before_401": lambda state: setattr(state, "events", [("grant", 1), ("head", 1), ("grant", 2), ("get_401", 1), ("get", 2)]),
+            "same_token": lambda state: setattr(state, "tokens", {"synthetic-token-one"}),
+            "not_revoked": lambda state: state.revoked.clear(),
+            "rejected_payload": lambda state: setattr(state, "rejected_payload_bytes", 1),
+            "wrong_payload_length": lambda state: setattr(state, "payload_bytes", size + 1),
+            "unauthenticated_storage": lambda state: setattr(state, "storage_denied", 1),
+            "budget": lambda state: setattr(state, "budget_exceeded", True),
+            "unexpected_request": lambda state: setattr(state, "unexpected", 1),
+        }
+        for name, mutate in mutations.items():
+            with self.subTest(name=name):
+                state = self.completed_swift_state()
+                mutate(state)
+                self.assertFalse(LAB.swift_renewal_matches(state, False, size))
+
+    def test_swift_denial_allows_bounded_library_retries_but_no_grant_or_payload(self):
+        for denied in (1, 2, 8):
+            state = self.completed_swift_state(True)
+            state.renewal_denied = denied
+            self.assertTrue(LAB.swift_renewal_matches(state, True, 60))
+        for attribute, value in (("renewal_denied", 0), ("renewal_denied", 9), ("generation", 2),
+                                 ("payload_bytes", 1), ("rejected_payload_bytes", 1)):
+            state = self.completed_swift_state(True)
+            setattr(state, attribute, value)
+            self.assertFalse(LAB.swift_renewal_matches(state, True, 60))
+        state = self.completed_swift_state(True)
+        state.events.append(("get", 1))
+        self.assertFalse(LAB.swift_renewal_matches(state, True, 60))
+
+    def test_swift_renewal_case_requires_one_process_and_independent_hash(self):
+        payload = FIXTURES.FILES["README-synthetic.txt"]
+        for index, (commands, downloaded, expected_error) in enumerate(((1, payload, None),
+                (2, payload, "swift_renewal_not_single_process"), (1, b"wrong", "swift_renewed_download_mismatch"))):
+            root = self.root / str(index)
+            root.mkdir()
+            runtime = mock.Mock(sequence=4)
+
+            def run(args, config):
+                self.assertEqual(args[:3], ["rc", "--loopback", "operations/copyfile"])
+                self.assertIn("srcFs=Synthetic:", args)
+                self.assertIn("srcRemote=synthetic-bucket/README-synthetic.txt", args)
+                runtime.sequence += commands
+                (root / "renewed-verified").write_bytes(downloaded)
+                return 0, b"{}", b""
+
+            runtime.run.side_effect = run
+            row = {"capabilities": {}}
+            if expected_error:
+                with self.assertRaisesRegex(LAB.LabError, expected_error):
+                    LAB.swift_renewal_case(runtime, root, self.completed_swift_state(), "synthetic.conf", row)
+                self.assertNotIn("service_token_reacquisition", row["capabilities"])
+            else:
+                LAB.swift_renewal_case(runtime, root, self.completed_swift_state(), "synthetic.conf", row)
+                self.assertEqual(row["capabilities"], {"service_token_reacquisition": "passed"})
+            self.assertEqual(runtime.run.call_count, 1)
+
+    def test_swift_denial_case_rejects_partial_destination_even_with_denied_event_sequence(self):
+        runtime = mock.Mock(sequence=0)
+
+        def run(args, config):
+            runtime.sequence += 1
+            (self.root / "denied-must-not-exist").write_bytes(b"partial")
+            return 1, b'{"error":"authorization failed"}', b""
+
+        runtime.run.side_effect = run
+        row = {"capabilities": {}}
+        with self.assertRaisesRegex(LAB.LabError, "swift_denied_renewal_returned_data"):
+            LAB.swift_renewal_case(runtime, self.root, self.completed_swift_state(True), "synthetic.conf", row)
+        self.assertNotIn("renewal_denial", row["capabilities"])
+
+    def test_swift_failure_still_checks_preservation_and_listener_cleanup(self):
+        @contextmanager
+        def synthetic_serve(kind, state):
+            self.assertEqual(kind, "swift")
+            try:
+                yield 12345
+            finally:
+                if mutation == "teardown":
+                    raise RuntimeError("fixture_cleanup_failed")
+                state.cleanup_complete = True
+
+        for index, mutation in enumerate(("source", "config", "listener", "teardown")):
+            root = self.root / str(index)
+            state = FIXTURES.SwiftState("synthetic", "synthetic-key")
+            runtime = mock.Mock()
+
+            def run(args, config):
+                if mutation == "source":
+                    state.files["README-synthetic.txt"] = b"changed"
+                elif mutation == "config":
+                    config.write_bytes(b"changed")
+                return 1, b"", b"unrelated startup failure"
+
+            runtime.run.side_effect = run
+            with mock.patch.object(LAB, "SwiftState", return_value=state), mock.patch.object(LAB, "serve", synthetic_serve), \
+                    mock.patch.object(LAB, "listener_closed", return_value=mutation != "listener"):
+                row = LAB.run_backend(runtime, "swift", root)
+            self.assertTrue(row["errors"])
+            if mutation in ("listener", "teardown"):
+                self.assertEqual(row["capabilities"]["cleanup"], "failed")
+            else:
+                self.assertIn("swift_source_changed" if mutation == "source" else "swift_config_changed", row["errors"])
+            self.assertNotEqual(row["capabilities"]["service_token_reacquisition"], "passed")
+
+    def completed_b2_state(self, denial=False, groups=2):
+        state = FIXTURES.B2State("synthetic", "synthetic-key", "deny" if denial else "renew")
+        state.forced_401 = 1
+        state.expired_gets = groups if denial else 1
+        state.events = [("grant", 1), ("head", 1), ("get_401", 1)]
+        state.revoked = {"synthetic-token-one"}
+        if denial:
+            state.generation = 1
+            state.tokens = {"synthetic-token-one"}
+            state.token = "synthetic-token-one"
+            state.events += [("renewal_denied", 1)] * 2
+            for _ in range(groups - 1):
+                state.events += [("expired_retry", 1)] + [("renewal_denied", 1)] * 2
+            state.renewal_denied = groups * 2
+        else:
+            state.generation = 2
+            state.tokens = {"synthetic-token-one", "synthetic-token-two"}
+            state.token = "synthetic-token-two"
+            state.events += [("grant", 2), ("get", 2)]
+            state.payload_bytes = len(FIXTURES.FILES["README-synthetic.txt"])
+        state.requests = len(state.events)
+        return state
+
+    def test_b2_options_close_all_endpoints_and_do_not_override_tokens(self):
+        self.assertEqual(LAB.b2_options(FIXTURES.B2State("synthetic-id", "synthetic-key"), 12345),
+                         {"type": "b2", "account": "synthetic-id", "key": "synthetic-key",
+                          "endpoint": "http://127.0.0.1:12345"})
+
+    def test_b2_renewal_verdict_requires_exact_order_distinct_grant_and_payload(self):
+        size = len(FIXTURES.FILES["README-synthetic.txt"])
+        self.assertTrue(LAB.b2_renewal_matches(self.completed_b2_state(), False, size))
+        changes = {
+            "no_expiry": lambda state: setattr(state, "forced_401", 0),
+            "no_metadata": lambda state: state.events.remove(("head", 1)),
+            "wrong_order": lambda state: state.events.reverse(),
+            "old_read": lambda state: state.events.append(("get", 1)),
+            "extra_grant": lambda state: state.events.append(("grant", 3)),
+            "same_token": lambda state: setattr(state, "tokens", {"synthetic-token-one"}),
+            "not_revoked": lambda state: state.revoked.clear(),
+            "rejected_bytes": lambda state: setattr(state, "rejected_payload_bytes", 1),
+            "wrong_bytes": lambda state: setattr(state, "payload_bytes", size + 1),
+            "other_auth": lambda state: setattr(state, "storage_denied", 1),
+            "unrecognized_route": lambda state: setattr(state, "unexpected", 1),
+            "too_many_requests": lambda state: setattr(state, "requests", 15),
+            "silent_request": lambda state: setattr(state, "requests", len(state.events) + 1),
+            "budget": lambda state: setattr(state, "budget_exceeded", True),
+        }
+        for name, change in changes.items():
+            with self.subTest(name=name):
+                state = self.completed_b2_state()
+                change(state)
+                self.assertFalse(LAB.b2_renewal_matches(state, False, size))
+
+    def test_b2_denial_requires_bounded_retry_groups_and_matching_observations(self):
+        for groups in (1, 2, 4):
+            self.assertTrue(LAB.b2_renewal_matches(self.completed_b2_state(True, groups), True, 62))
+        self.assertFalse(LAB.b2_renewal_matches(self.completed_b2_state(True, 5), True, 62))
+        mutations = (
+            lambda state: setattr(state, "renewal_denied", 0),
+            lambda state: setattr(state, "expired_gets", 3),
+            lambda state: state.events.append(("renewal_denied", 1)),
+            lambda state: state.events.insert(3, ("expired_retry", 1)),
+            lambda state: state.events.append(("get", 1)),
+            lambda state: setattr(state, "payload_bytes", 1),
+            lambda state: setattr(state, "generation", 2),
+        )
+        for mutation in mutations:
+            state = self.completed_b2_state(True)
+            mutation(state)
+            self.assertFalse(LAB.b2_renewal_matches(state, True, 62))
+
+    def test_b2_renewal_case_uses_one_copy_with_two_attempts_and_independent_hash(self):
+        payload = FIXTURES.FILES["README-synthetic.txt"]
+        for index, (processes, data, expected_error) in enumerate(((1, payload, None),
+                (2, payload, "b2_renewal_not_single_process"), (1, b"wrong", "b2_renewed_download_mismatch"))):
+            root = self.root / str(index)
+            root.mkdir()
+            runtime = mock.Mock(sequence=3)
+
+            def run(args, config, **kwargs):
+                self.assertEqual(kwargs, {"low_level_attempts": 2})
+                self.assertEqual(args[:3], ["rc", "--loopback", "operations/copyfile"])
+                self.assertIn("srcFs=Synthetic:synthetic-bucket", args)
+                self.assertIn("srcRemote=README-synthetic.txt", args)
+                runtime.sequence += processes
+                (root / "renewed-verified").write_bytes(data)
+                return 0, b"{}", b""
+
+            runtime.run.side_effect = run
+            row = {"capabilities": {}}
+            if expected_error:
+                with self.assertRaisesRegex(LAB.LabError, expected_error):
+                    LAB.b2_renewal_case(runtime, root, self.completed_b2_state(), "synthetic.conf", row)
+            else:
+                LAB.b2_renewal_case(runtime, root, self.completed_b2_state(), "synthetic.conf", row)
+                self.assertEqual(row["capabilities"], {"account_token_reacquisition": "passed"})
+            runtime.run.assert_called_once()
+
+    def test_b2_denial_rejects_final_or_partial_destination(self):
+        for name in ("denied-must-not-exist", "denied-must-not-exist.partial"):
+            with self.subTest(name=name):
+                root = self.root / name
+                root.mkdir()
+                runtime = mock.Mock(sequence=0)
+
+                def run(*args, **kwargs):
+                    runtime.sequence += 1
+                    (root / name).write_bytes(b"unaccepted partial")
+                    return 1, b"synthetic protocol error JSON", b""
+
+                runtime.run.side_effect = run
+                with self.assertRaisesRegex(LAB.LabError, "b2_denied_renewal_returned_data"):
+                    LAB.b2_renewal_case(runtime, root, self.completed_b2_state(True), "synthetic.conf", {"capabilities": {}})
+
+    def test_runtime_default_attempt_budget_is_one_and_explicit_two_is_bounded(self):
+        runtime = object.__new__(LAB.Runtime)
+        runtime.root, runtime.binary, runtime.config = self.root, self.root / "synthetic", self.root / "empty"
+        runtime.cache, runtime.env, runtime.sequence, runtime.children = self.root / "cache", {}, 0, []
+        with mock.patch.object(LAB.subprocess, "Popen") as popen:
+            for budget in (1, 2):
+                runtime.start(["synthetic"], low_level_attempts=budget)
+                command = popen.call_args.args[0]
+                self.assertEqual(command[command.index("--low-level-retries") + 1], str(budget))
+                self.assertEqual(command[command.index("--retries") + 1], "1")
+            runtime.start(["synthetic"])
+            command = popen.call_args.args[0]
+            self.assertEqual(command[command.index("--low-level-retries") + 1], "1")
+            for budget in (0, 3, True, "2"):
+                with self.assertRaisesRegex(LAB.LabError, "invalid_attempt_budget"):
+                    runtime.start(["synthetic"], low_level_attempts=budget)
+            self.assertEqual(popen.call_count, 3)
+        mocked = mock.Mock()
+        LAB.exact_copy(mocked, "synthetic.conf", "source", "file", "dest", "file")
+        self.assertEqual(mocked.run.call_args.kwargs, {})
+
+    def test_b2_failure_still_checks_source_config_and_inner_cleanup(self):
+        for mutation in ("source", "config", "listener", "teardown"):
+            state = FIXTURES.B2State("synthetic", "synthetic")
+            root = self.root / mutation
+
+            @contextmanager
+            def fake_serve(kind, supplied):
+                self.assertEqual(kind, "b2")
+                try:
+                    yield 12345
+                finally:
+                    if mutation == "teardown":
+                        raise RuntimeError("fixture_cleanup_failed")
+                    supplied.cleanup_complete = True
+
+            def run(*args, **kwargs):
+                if mutation == "source":
+                    state.files["README-synthetic.txt"] = b"changed"
+                if mutation == "config":
+                    (root / "b2-baseline.conf").write_bytes(b"changed")
+                raise LAB.LabError("synthetic_early_failure")
+
+            runtime = mock.Mock()
+            runtime.run.side_effect = run
+            with mock.patch.object(LAB, "B2State", return_value=state), mock.patch.object(LAB, "serve", fake_serve), \
+                    mock.patch.object(LAB, "listener_closed", return_value=mutation != "listener"):
+                row = LAB.run_backend(runtime, "b2", root)
+            self.assertTrue(row["errors"])
+            if mutation in ("listener", "teardown"):
+                self.assertEqual(row["capabilities"]["cleanup"], "failed")
+            else:
+                self.assertIn("b2_source_changed" if mutation == "source" else "b2_config_changed", row["errors"])
+
+    def test_azureblob_config_uses_explicit_synthetic_shared_key_and_owned_endpoint_only(self):
+        key = base64.b64encode(bytes(range(32))).decode()
+        state = FIXTURES.AzureBlobState(key)
+        self.assertEqual(LAB.azureblob_options(state, 12345), {
+            "type": "azureblob", "env_auth": "false", "use_emulator": "true", "account": "syntheticaccount",
+            "key": key, "endpoint": "http://127.0.0.1:12345/syntheticaccount", "use_arrow_list": "false"})
+
+    def test_azureblob_bad_auth_requires_observed_denial_with_no_data(self):
+        for cause in ("no_request", "served_data", "authenticated"):
+            state = FIXTURES.AzureBlobState(base64.b64encode(bytes(range(32))).decode())
+            root = self.root / cause
+
+            @contextmanager
+            def fake_serve(kind, supplied):
+                self.assertEqual(kind, "azureblob")
+                try:
+                    yield 12345
+                finally:
+                    supplied.cleanup_complete = True
+
+            def run(args, config):
+                self.assertEqual(args, ["cat", "Synthetic:synthetic-container/README-synthetic.txt"])
+                content = Path(config).read_text()
+                wrong = next(line.split("=", 1)[1].strip() for line in content.splitlines() if line.startswith("key"))
+                self.assertEqual(len(base64.b64decode(wrong, validate=True)), 32)
+                self.assertNotEqual(wrong, state.password)
+                state.auth_denied = 0 if cause == "no_request" else 1
+                state.payload_bytes = 1 if cause == "served_data" else 0
+                state.authenticated = 1 if cause == "authenticated" else 0
+                return 1, b"", b"synthetic startup error is insufficient"
+
+            runtime = mock.Mock()
+            runtime.run.side_effect = run
+            with mock.patch.object(LAB, "AzureBlobState", return_value=state), mock.patch.object(LAB, "serve", fake_serve), \
+                    mock.patch.object(LAB, "listener_closed", return_value=True):
+                row = LAB.run_backend(runtime, "azureblob", root)
+            self.assertIn("azureblob_bad_auth_not_observed", row["errors"])
+            self.assertNotEqual(row["capabilities"]["authentication_rejection"], "passed")
+            self.assertEqual(set(row["capabilities"]), {"listing", "download_hash", "missing_object_rejection",
+                "authentication_rejection", "source_preservation", "config_preservation", "fixture_write_rejection", "cleanup"})
+            self.assertEqual(row["fixture_kind"], "independent_loopback")
+
+    def test_azureblob_early_failure_still_checks_source_config_and_cleanup(self):
+        for mutation in ("source", "config", "listener", "teardown"):
+            state = FIXTURES.AzureBlobState(base64.b64encode(bytes(range(32))).decode())
+            root = self.root / mutation
+
+            @contextmanager
+            def fake_serve(kind, supplied):
+                try:
+                    yield 12345
+                finally:
+                    if mutation == "teardown":
+                        raise RuntimeError("fixture_cleanup_failed")
+                    supplied.cleanup_complete = True
+
+            def run(*args, **kwargs):
+                if mutation == "source":
+                    state.files["README-synthetic.txt"] = b"changed"
+                if mutation == "config":
+                    (root / "azureblob-baseline.conf").write_bytes(b"changed")
+                raise LAB.LabError("synthetic_early_failure")
+
+            runtime = mock.Mock()
+            runtime.run.side_effect = run
+            with mock.patch.object(LAB, "AzureBlobState", return_value=state), mock.patch.object(LAB, "serve", fake_serve), \
+                    mock.patch.object(LAB, "listener_closed", return_value=mutation != "listener"):
+                row = LAB.run_backend(runtime, "azureblob", root)
+            self.assertTrue(row["errors"])
+            if mutation in ("listener", "teardown"):
+                self.assertEqual(row["capabilities"]["cleanup"], "failed")
+            else:
+                self.assertIn("azureblob_source_changed" if mutation == "source" else "azureblob_config_changed", row["errors"])
+
+    def test_azurefiles_config_fixes_share_and_static_key_without_emulator_or_identity(self):
+        key = base64.b64encode(bytes(range(32))).decode()
+        state = FIXTURES.AzureFilesState(key)
+        self.assertEqual(LAB.azurefiles_options(state, 12345), {
+            "type": "azurefiles", "env_auth": "false", "use_emulator": "false", "account": "syntheticaccount",
+            "key": key, "endpoint": "http://127.0.0.1:12345/syntheticaccount", "share_name": "synthetic-share"})
+
+    def test_azurefiles_listing_requires_exact_files_and_100ns_timestamp(self):
+        expected = LAB.fixture_manifest()
+        rows = [{"Path": item["path"], "Size": item["size"], "IsDir": False, "ModTime": "2024-01-01T00:00:00Z"}
+                for item in expected]
+        for timestamp in ("2024-01-01T00:00:00Z", "2024-01-01T00:00:00.0000000Z", "2024-01-01T00:00:00+00:00"):
+            rows[0]["ModTime"] = timestamp
+            self.assertTrue(LAB.azurefiles_listing_matches(json.dumps(rows), expected))
+        for timestamp in ("2024-01-01T00:00:00.0000001Z", "2024-01-02T00:00:00Z", "2024-01-01T00:00:00", "invalid"):
+            rows[0]["ModTime"] = timestamp
+            self.assertFalse(LAB.azurefiles_listing_matches(json.dumps(rows), expected))
+        rows[0]["ModTime"] = "2024-01-01T00:00:00Z"
+        for changed in (rows[:-1], rows + [rows[0]], [dict(rows[0], IsDir=True), *rows[1:]],
+                        [dict(rows[0], Size=True), *rows[1:]], [dict(rows[0], Path="wrong"), *rows[1:]]):
+            self.assertFalse(LAB.azurefiles_listing_matches(json.dumps(changed), expected))
+
+    def test_azurefiles_wrong_key_cannot_pass_from_ignored_root_probe_alone(self):
+        for cause in ("no_request", "root_probe_only", "served_data", "authenticated"):
+            state = FIXTURES.AzureFilesState(base64.b64encode(bytes(range(32))).decode())
+            root = self.root / cause
+
+            @contextmanager
+            def fake_serve(kind, supplied):
+                self.assertEqual(kind, "azurefiles")
+                try:
+                    yield 12345
+                finally:
+                    supplied.cleanup_complete = True
+
+            def run(args, config):
+                self.assertEqual(args, ["cat", "Synthetic:README-synthetic.txt"])
+                content = Path(config).read_text()
+                wrong = next(line.split("=", 1)[1].strip() for line in content.splitlines() if line.startswith("key"))
+                self.assertEqual(len(base64.b64decode(wrong, validate=True)), 32)
+                self.assertNotEqual(wrong, state.password)
+                state.auth_denied = 0 if cause == "no_request" else 1
+                state.root_probe_denied = 1 if cause == "root_probe_only" else 0
+                state.read_auth_denied = 1 if cause in ("served_data", "authenticated") else 0
+                state.payload_bytes = 1 if cause == "served_data" else 0
+                state.authenticated = 1 if cause == "authenticated" else 0
+                return 1, b"", b"synthetic later failure is not denied-member evidence"
+
+            runtime = mock.Mock()
+            runtime.run.side_effect = run
+            with mock.patch.object(LAB, "AzureFilesState", return_value=state), mock.patch.object(LAB, "serve", fake_serve), \
+                    mock.patch.object(LAB, "listener_closed", return_value=True):
+                row = LAB.run_backend(runtime, "azurefiles", root)
+            self.assertIn("azurefiles_bad_auth_not_observed", row["errors"])
+            self.assertNotEqual(row["capabilities"]["authentication_rejection"], "passed")
+            self.assertEqual(set(row["capabilities"]), {"listing", "download_hash", "missing_object_rejection",
+                "authentication_rejection", "source_preservation", "config_preservation", "fixture_write_rejection", "cleanup"})
+
+    def test_azurefiles_early_failure_keeps_source_config_and_cleanup_failures_visible(self):
+        for mutation in ("source", "config", "listener", "teardown"):
+            state = FIXTURES.AzureFilesState(base64.b64encode(bytes(range(32))).decode())
+            root = self.root / mutation
+
+            @contextmanager
+            def fake_serve(kind, supplied):
+                try:
+                    yield 12345
+                finally:
+                    if mutation == "teardown":
+                        raise RuntimeError("fixture_cleanup_failed")
+                    supplied.cleanup_complete = True
+
+            def run(*args, **kwargs):
+                if mutation == "source":
+                    state.files["README-synthetic.txt"] = b"changed"
+                if mutation == "config":
+                    (root / "azurefiles-baseline.conf").write_bytes(b"changed")
+                raise LAB.LabError("synthetic_early_failure")
+
+            runtime = mock.Mock()
+            runtime.run.side_effect = run
+            with mock.patch.object(LAB, "AzureFilesState", return_value=state), mock.patch.object(LAB, "serve", fake_serve), \
+                    mock.patch.object(LAB, "listener_closed", return_value=mutation != "listener"):
+                row = LAB.run_backend(runtime, "azurefiles", root)
+            self.assertTrue(row["errors"])
+            if mutation in ("listener", "teardown"):
+                self.assertEqual(row["capabilities"]["cleanup"], "failed")
+            else:
+                self.assertIn("azurefiles_source_changed" if mutation == "source" else "azurefiles_config_changed", row["errors"])
+
+    @staticmethod
+    def seafile_trace(tail, payload=0):
+        state = FIXTURES.SeafileState("synthetic", "synthetic-password")
+        state.events = [("server_info", ""), ("auth_granted", ""), ("libraries", "")] + tail
+        state.requests = len(state.events)
+        state.login_attempts = state.grants = 1
+        state.token = "synthetic-issued-token"
+        state.auth_uses = state.requests - 2
+        state.payload_bytes = payload
+        return state
+
+    def test_seafile_options_require_fresh_password_login_to_exact_library(self):
+        state = FIXTURES.SeafileState("synthetic", "synthetic-password")
+        self.assertEqual(LAB.seafile_options(state, 12345, "synthetic-obscured"), {
+            "type": "seafile", "url": "http://127.0.0.1:12345/", "user": "synthetic",
+            "pass": "synthetic-obscured", "2fa": "false", "library": "Synthetic Library",
+            "create_library": "false"})
+
+    def test_seafile_positive_verdict_requires_login_then_exact_member_link_and_payload(self):
+        name = "nested/space name.txt"
+        tail = [("file_detail", name), ("link_issued", name), ("payload", name)]
+        size = len(FIXTURES.FILES[name])
+        self.assertTrue(LAB.seafile_flow_matches(self.seafile_trace(tail, size), "download", name, size))
+        for mutation in ("no_login", "two_grants", "no_token", "wrong_member", "wrong_order", "wrong_bytes",
+                         "hidden_request", "unexpected", "budget", "rejected_payload", "mutation", "extra_event"):
+            with self.subTest(mutation=mutation):
+                state = self.seafile_trace(tail, size)
+                if mutation == "no_login": state.login_attempts = 0
+                elif mutation == "two_grants": state.grants = 2
+                elif mutation == "no_token": state.token = None
+                elif mutation == "wrong_member": state.events[3] = ("file_detail", "README-synthetic.txt")
+                elif mutation == "wrong_order": state.events[3:5] = list(reversed(state.events[3:5]))
+                elif mutation == "wrong_bytes": state.payload_bytes -= 1
+                elif mutation == "hidden_request": state.requests += 1
+                elif mutation == "unexpected": state.unexpected = 1
+                elif mutation == "budget": state.budget_exceeded = True
+                elif mutation == "rejected_payload": state.rejected_payload_bytes = 1
+                elif mutation == "mutation": state.rejected_mutations = 1
+                elif mutation == "extra_event":
+                    state.events.append(("file_detail", name))
+                    state.requests += 1
+                    state.auth_uses += 1
+                self.assertFalse(LAB.seafile_flow_matches(state, "download", name, size))
+
+    def test_seafile_listing_and_stat_require_observed_authenticated_metadata(self):
+        self.assertTrue(LAB.seafile_flow_matches(self.seafile_trace([("directory_list", "")]), "listing"))
+        self.assertFalse(LAB.seafile_flow_matches(self.seafile_trace([("directory_list", "nested")]), "listing"))
+        member = "README-synthetic.txt"
+        self.assertTrue(LAB.seafile_flow_matches(self.seafile_trace([("file_detail", member)]), "stat", member))
+        self.assertFalse(LAB.seafile_flow_matches(self.seafile_trace([("link_issued", member)]), "stat", member))
+        state = self.seafile_trace([("directory_list", "")], 1)
+        self.assertFalse(LAB.seafile_flow_matches(state, "listing"))
+
+    def test_seafile_missing_verdict_cannot_be_satisfied_by_link_or_directory_404(self):
+        member = "absent-synthetic.txt"
+        self.assertTrue(LAB.seafile_flow_matches(self.seafile_trace([("file_missing", member)]), "missing", member))
+        for event, name in (("link_missing", member), ("directory_missing", member),
+                            ("file_missing", "wrong-member"), ("token_denied", "")):
+            self.assertFalse(LAB.seafile_flow_matches(self.seafile_trace([(event, name)]), "missing", member))
+
+    def test_seafile_password_and_cached_token_denials_are_distinct_without_login_fallback(self):
+        for kind, event in (("wrong_password", "auth_denied"), ("cached_token", "cached_denied")):
+            state = FIXTURES.SeafileState("synthetic", "synthetic-password")
+            state.events = [("server_info", ""), (event, "")]
+            state.requests = 2
+            state.login_attempts = state.auth_denied = int(kind == "wrong_password")
+            state.cached_denied = int(kind == "cached_token")
+            self.assertTrue(LAB.seafile_flow_matches(state, kind))
+            self.assertFalse(LAB.seafile_flow_matches(state, "cached_token" if kind == "wrong_password" else "wrong_password"))
+            state.grants = 1
+            self.assertFalse(LAB.seafile_flow_matches(state, kind))
+        state.grants = 0
+        state.login_attempts = 1
+        self.assertFalse(LAB.seafile_flow_matches(state, "cached_token"))
+
+    def test_seafile_case_requires_exactly_one_child(self):
+        runtime = mock.Mock(sequence=4)
+        for count in (0, 1, 2):
+            def action():
+                runtime.sequence += count
+                return "synthetic-result"
+            if count == 1:
+                self.assertEqual(LAB.seafile_one_process(runtime, action), "synthetic-result")
+            else:
+                with self.assertRaisesRegex(LAB.LabError, "not_single_process"):
+                    LAB.seafile_one_process(runtime, action)
+
+    def test_seafile_exact_stat_requires_file_only_and_precise_detail_timestamp(self):
+        item = LAB.fixture_manifest()[0]
+        entry = {"Path": item["path"], "Size": item["size"], "IsDir": False, "ModTime": "2024-01-01T00:00:00Z"}
+        runtime = mock.Mock()
+        runtime.run.return_value = (0, json.dumps({"item": entry}).encode(), b"")
+        LAB.seafile_exact_stat(runtime, self.root / "synthetic.conf", item)
+        args = runtime.run.call_args.args[0]
+        self.assertEqual(args[:5], ["rc", "--loopback", "operations/stat", "fs=Synthetic:", "remote=" + item["path"]])
+        self.assertEqual(json.loads(args[5].removeprefix("opt=")), {"noModTime": False, "noMimeType": True, "filesOnly": True})
+        runtime.run.return_value = (0, json.dumps({"item": dict(entry, ModTime="2024-01-01T11:00:00+11:00")}).encode(), b"")
+        LAB.seafile_exact_stat(runtime, self.root / "synthetic.conf", item)
+        for key, value in (("Path", "wrong-member"), ("Size", True), ("Size", item["size"] + 1),
+                           ("IsDir", True), ("ModTime", "2024-01-01T00:00:00.0000001Z"),
+                           ("ModTime", "2024-01-02T00:00:00Z")):
+            changed = dict(entry, **{key: value})
+            runtime.run.return_value = (0, json.dumps({"item": changed}).encode(), b"")
+            with self.assertRaisesRegex(LAB.LabError, "metadata_mismatch"):
+                LAB.seafile_exact_stat(runtime, self.root / "synthetic.conf", item)
+
+    def test_seafile_timestamps_accept_equivalent_instants_without_relaxing_azurefiles(self):
+        expected = LAB.fixture_manifest()
+        for timestamp in ("2024-01-01T00:00:00Z", "2024-01-01T00:00:00.000000000+00:00",
+                          "2024-01-01T11:00:00+11:00", "2023-12-31T19:00:00.0000000-05:00",
+                          "2024-01-01T05:30:00+05:30"):
+            rows = [{"Path": item["path"], "Size": item["size"], "IsDir": False, "ModTime": timestamp}
+                    for item in expected]
+            with self.subTest(timestamp=timestamp):
+                self.assertTrue(LAB.seafile_listing_matches(json.dumps(rows), expected))
+        self.assertFalse(LAB.azurefiles_listing_matches(json.dumps(rows), expected))
+
+    def test_seafile_timestamps_reject_drift_naive_and_invalid_offset_normalization(self):
+        expected = LAB.fixture_manifest()
+        for timestamp in ("2024-01-01T00:00:01Z", "2024-01-01T00:00:00", "2024-01-01T00:00:00.0000001Z",
+                          "2024-01-01T11:00:00.000000001+11:00", "2024-01-01T11:00:00.0000000000+11:00",
+                          "2024-01-01T00:60:00+01:00", "2024-01-01T01:00:00+00:60", "2024-01-02T00:00:00+24:00",
+                          "2024-01-01T00:00:00-00:00", "2024-01-01T00:00:00+00", "2024-01-01T00:00:00+0000",
+                          "2024-01-01T00:00:00+00:00:00", "2024-01-01 00:00:00Z", "2024-02-30T00:00:00Z"):
+            rows = [{"Path": item["path"], "Size": item["size"], "IsDir": False, "ModTime": timestamp}
+                    for item in expected]
+            with self.subTest(timestamp=timestamp):
+                self.assertFalse(LAB.seafile_listing_matches(json.dumps(rows), expected))
+
+    def test_seafile_incidental_auth_failure_cannot_pass_negative_or_claim_extra_capabilities(self):
+        state = FIXTURES.SeafileState("synthetic", "synthetic-password")
+        @contextmanager
+        def fake_serve(kind, supplied):
+            self.assertEqual(kind, "seafile")
+            try:
+                yield 12345
+            finally:
+                supplied.cleanup_complete = True
+        runtime = mock.Mock(sequence=0)
+        def run(args, config=None):
+            runtime.sequence += 1
+            if args[0] == "obscure": return 0, b"synthetic-obscured", b""
+            return 1, b"", b"synthetic unrelated startup failure"
+        runtime.run.side_effect = run
+        with mock.patch.object(LAB, "SeafileState", return_value=state), mock.patch.object(LAB, "serve", fake_serve), \
+                mock.patch.object(LAB, "listener_closed", return_value=True):
+            row = LAB.run_backend(runtime, "seafile", self.root / "case")
+        self.assertIn("seafile_wrong_password_denial_not_observed", row["errors"])
+        self.assertNotEqual(row["capabilities"]["authentication_rejection"], "passed")
+        self.assertEqual(set(row["capabilities"]), {"listing", "download_hash", "missing_object_rejection",
+            "authentication_rejection", "source_preservation", "config_preservation", "fixture_write_rejection", "cleanup"})
+
+    def test_seafile_early_failure_preserves_source_config_and_cleanup_failure_evidence(self):
+        for mutation in ("source", "config", "listener", "teardown"):
+            state = FIXTURES.SeafileState("synthetic", "synthetic-password")
+            root = self.root / mutation
+            @contextmanager
+            def fake_serve(kind, supplied):
+                try:
+                    yield 12345
+                finally:
+                    if mutation == "teardown": raise RuntimeError("fixture_cleanup_failed")
+                    supplied.cleanup_complete = True
+            runtime = mock.Mock(sequence=0)
+            def run(args, config=None):
+                runtime.sequence += 1
+                if args[0] == "obscure": return 0, b"synthetic-obscured", b""
+                if mutation == "source": state.files["README-synthetic.txt"] = b"changed"
+                if mutation == "config": Path(config).write_bytes(b"changed")
+                raise LAB.LabError("synthetic_early_failure")
+            runtime.run.side_effect = run
+            with mock.patch.object(LAB, "SeafileState", return_value=state), mock.patch.object(LAB, "serve", fake_serve), \
+                    mock.patch.object(LAB, "listener_closed", return_value=mutation != "listener"):
+                row = LAB.run_backend(runtime, "seafile", root)
+            self.assertTrue(row["errors"])
+            if mutation in ("listener", "teardown"):
+                self.assertEqual(row["capabilities"]["cleanup"], "failed")
+            else:
+                self.assertIn("seafile_source_changed" if mutation == "source" else "seafile_config_changed", row["errors"])
+
+    def test_timeout_kills_and_reaps_exact_owned_process(self):
+        runtime = object.__new__(LAB.Runtime)
+        process = mock.Mock()
+        process.poll.return_value = None
+        stdout, stderr = self.root / "out", self.root / "err"
+        stdout.write_bytes(b"")
+        stderr.write_bytes(b"")
+        runtime.start = mock.Mock(return_value=(process, stdout, stderr))
+        with mock.patch.object(LAB.time, "monotonic", side_effect=[0, 21]):
+            with self.assertRaisesRegex(LAB.LabError, "child_timeout"):
+                runtime.run(["synthetic"])
+        process.terminate.assert_called_once()
+        process.wait.assert_called_once_with(3)
+
+    def test_output_limit_kills_and_reaps_exact_owned_process(self):
+        runtime = object.__new__(LAB.Runtime)
+        process = mock.Mock()
+        process.poll.return_value = None
+        stdout, stderr = self.root / "out", self.root / "err"
+        stdout.write_bytes(b"x" * 65)
+        stderr.write_bytes(b"")
+        runtime.start = mock.Mock(return_value=(process, stdout, stderr))
+        with mock.patch.object(LAB, "MAX_OUTPUT", 64):
+            with self.assertRaisesRegex(LAB.LabError, "child_output_limit"):
+                runtime.run(["synthetic"])
+        process.terminate.assert_called_once()
+        process.wait.assert_called_once_with(3)
+
+    def test_existing_report_is_refused_before_any_runtime_process(self):
+        report = self.root / "existing.json"
+        report.write_text("original")
+        with mock.patch.object(LAB, "verified_runtime") as verify:
+            with self.assertRaisesRegex(LAB.LabError, "new_absolute_report_required"):
+                LAB.run_lab(self.root / "not-a-runtime", report)
+        verify.assert_not_called()
+        self.assertEqual(report.read_text(), "original")
+
+
+if __name__ == "__main__":
+    unittest.main()

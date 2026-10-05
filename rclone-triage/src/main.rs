@@ -14,7 +14,8 @@ use rclone_triage::forensics::{
     start_forensic_access_point, stop_forensic_access_point, SystemStateSnapshot,
 };
 use rclone_triage::providers::auth::{
-    authenticate_with_device_code, authenticate_with_mobile, smart_authenticate,
+    authenticate_only, authenticate_with_device_code, authenticate_with_mobile, smart_authenticate,
+    AuthOnlyFlow,
 };
 use rclone_triage::providers::credentials::upsert_custom_oauth_credentials;
 use rclone_triage::providers::discovery::providers_from_rclone;
@@ -290,6 +291,29 @@ fn main() -> Result<()> {
                 "Remote '{}' already exists; using '{}'",
                 base_remote, remote_name
             );
+        }
+        if args.auth_only {
+            let provider = known.ok_or_else(|| {
+                anyhow::anyhow!("--auth-only currently supports Google Drive and OneDrive")
+            })?;
+            let flow = if args.device_code {
+                AuthOnlyFlow::DeviceCode
+            } else if args.no_browser {
+                AuthOnlyFlow::ManualBrowser
+            } else {
+                AuthOnlyFlow::SystemBrowser
+            };
+            authenticate_only(provider, flow, &config, &remote_name, &app_guard.shutdown)?;
+            println!(
+                "Authentication saved for remote '{}' in {:?}.",
+                remote_name,
+                config.path()
+            );
+            println!("No account discovery, connectivity probe, or file listing was performed.");
+            if provider == CloudProvider::OneDrive {
+                println!("Set the intended drive_id and drive_type in a working config before acquisition.");
+            }
+            return Ok(());
         }
         if let Some(provider) = known {
             if args.device_code {
@@ -966,6 +990,18 @@ struct Cli {
     #[arg(long)]
     provider: Option<String>,
 
+    /// Save Drive/OneDrive authentication without listing (requires your own OAuth client)
+    #[arg(long, requires = "provider", conflicts_with_all = [
+        "tui", "mobile_auth", "download", "ps_csv", "output_listing", "remote",
+        "rclone_config_path", "set_oauth_creds", "show_oauth_creds", "oauth_config_path", "web_gui",
+        "forensic_ap_start", "forensic_ap_stop", "forensic_ap_status", "onedrive_vault", "collect_logs"
+    ])]
+    auth_only: bool,
+
+    /// Print the authorization URL after binding loopback; do not launch a browser
+    #[arg(long, requires = "auth_only", conflicts_with = "device_code")]
+    no_browser: bool,
+
     /// Launch interactive TUI
     #[arg(long, default_value_t = false)]
     tui: bool,
@@ -1002,7 +1038,7 @@ struct Cli {
     #[arg(long)]
     set_oauth_creds: Option<String>,
 
-    /// Override custom OAuth config path
+    /// Destination for --set-oauth-creds; authentication reads RCLONE_TRIAGE_OAUTH_CONFIG
     #[arg(long)]
     oauth_config_path: Option<String>,
 
@@ -1108,11 +1144,53 @@ fn default_vault_destination() -> String {
 mod tests {
     use super::*;
 
+    #[test]
+    fn auth_only_cli_requires_provider_and_excludes_other_actions() {
+        assert!(Cli::try_parse_from(["triage", "--auth-only"]).is_err());
+        assert!(Cli::try_parse_from(["triage", "--provider", "drive", "--no-browser"]).is_err());
+        for conflicting in [
+            "--tui",
+            "--mobile-auth",
+            "--ps-csv",
+            "--collect-logs",
+            "--web-gui",
+        ] {
+            assert!(
+                Cli::try_parse_from(["triage", "--provider", "drive", "--auth-only", conflicting])
+                    .is_err(),
+                "accepted {conflicting}"
+            );
+        }
+        let manual = Cli::try_parse_from([
+            "triage",
+            "--provider",
+            "drive",
+            "--auth-only",
+            "--no-browser",
+        ])
+        .unwrap();
+        assert!(manual.auth_only && manual.no_browser);
+        assert!(!should_run_tui(&manual));
+        let device = Cli::try_parse_from([
+            "triage",
+            "--provider",
+            "onedrive",
+            "--auth-only",
+            "--device-code",
+        ])
+        .unwrap();
+        assert!(device.auth_only && device.device_code);
+        let original = Cli::try_parse_from(["triage", "--provider", "drive"]).unwrap();
+        assert!(!original.auth_only && !original.no_browser);
+    }
+
     fn default_cli() -> Cli {
         Cli {
             name: "".to_string(),
             output_dir: std::path::PathBuf::from("."),
             provider: None,
+            auth_only: false,
+            no_browser: false,
             tui: false,
             mobile_auth: false,
             mobile_auth_port: 53682,

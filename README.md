@@ -1,69 +1,41 @@
 # triage-with-rclone
 
-Windows cloud acquisition CLI and terminal UI, built in Rust with a verified rclone runtime embedded in the executable. The current development version is **0.2.0**, embedding **rclone 1.75.1**. Windows 10/11 are the deployment targets; Linux CI exercises the portable library and mocked integrations.
+**Cloud triage and acquisition CLI for Windows.**
 
-## Build and run
+View files in cloud storage, choose what to collect, and save copies with a record of each transfer. Use the menu mode or type commands.
 
-Install Rust with the MSVC toolchain and Visual Studio C++ build tools. CI uses Rust 1.95.0. From the repository root:
+## Get started
 
-```powershell
-./scripts/download-rclone.ps1
-cd rclone-triage
-cargo build --locked --release
-./target/release/rclone-triage.exe --name investigation-001 --output-dir C:/Cases
-```
-
-The bootstrap checks both the downloaded archive and extracted executable against [rclone-version.env](rclone-version.env). Linux contributors must also prepare the embedded Windows asset with `bash scripts/download-rclone.sh` before compiling. Runtime updates require replacing the reviewed version and hashes in that manifest.
-
-The UI supports authentication, existing-config selection, listing, CSV/XLSX queue import, and file acquisition. Case name and output directory apply to both CLI and UI. `/` searches the inventory and `n` advances between matches. Source config files are copied into private working snapshots inside the case; originals are preserved even when rclone refreshes tokens or creates a combined listing remote.
-
-## Acquire a queue
+1. Open [Downloads](https://github.com/Donovoi/triage-with-rclone/releases) and choose the newest **nightly**.
+2. Download the ZIP for your PC: **x64**, **x86** (32-bit), or **ARM64**. Check **Settings â†’ System â†’ About â†’ System type** if unsure. Older nightlies may offer only an x64 `.exe`; run that file directly.
+3. Extract the ZIP. Open PowerShell in that folder and run:
 
 ```powershell
-./rclone-triage.exe --name investigation-001 --output-dir C:/Cases `
-  --rclone-config-path C:/Configs/rclone.conf --download queue.csv
+.\rclone-triage.exe --tui --name case-001 --output-dir C:\Cases
 ```
 
-```csv
-Path,Remote,Size,Hash,HashType,IsDir
-Documents/report.pdf,DriveA,1024,,,false
-Documents/report.pdf,DriveB,2048,,,false
-```
+4. Follow the menus to connect an account, view its files and choose what to collect.
 
-`Remote` resolves each row to its actual configured source. Rows without it require `--remote NAME` unless there is only one configured remote. Remote names and object paths remain distinct; output paths are recorded in the manifest, including remapping for Windows names and collisions. Relative path traversal, absolute paths, symlinks/reparse-point destinations, and ambiguous separators are rejected. Directory rows are skipped; select or list their individual files to acquire their contents. Existing acquired files are preserved under newly allocated destination names on later runs.
+For command options, run `.\rclone-triage.exe --help`.
 
-Windows single-letter remote names are rejected because rclone interprets them as drive letters. Configured runners ignore inherited `RCLONE_*` overrides except `RCLONE_CONFIG_PASS`; the selected config and explicit per-call settings determine the source and transfer behavior.
+Keep the transfer records with the collected files. Protect the case folder: saved account settings can contain login credentials.
 
-Every run writes a plan before transfers and final outcomes afterward. A failed source, cancellation, size discrepancy, or supported source-hash mismatch produces an incomplete manifest and a nonzero CLI exit status. Every transferred file has a local SHA256; that local digest alone does **not** establish agreement with the cloud source. `integrity` distinguishes verified, unverified, unsupported-hash, mismatched, failed, cancelled, and dry-run outcomes. Keep the manifest and original queue with the acquired files.
+## Status
 
-## Evidence and privacy
+**Under development. Nightlies are test builds.** Provider testing is not complete. A provider appearing in the menu does not mean it has passed tests with a real account.
 
-Case directories contain listings, downloads, config snapshots with source SHA256 provenance, acquisition manifests, reports, and hash-chained logs. JSON-line log records safely encode newlines; checkpoints record the final hash and entry count. Keep checkpoints separately to detect truncation: a hash chain without a trusted external checkpoint cannot detect removal of its tail or wholesale replacement. These are integrity aids, not digital signatures or a claim of legal admissibility.
+A new nightly is published after each merged PR passes the required checks. Builds target Windows 10/11 on x64, x86 and ARM64. A full release will wait until every supported provider has completed the required tests.
 
-**Case configs contain credentials.** Restrict access to the case directory and storage; Windows files inherit its ACL. Keep original evidence separately. SQLite browser stores are opened read-only and snapshotted through SQLite's backup API into memory, including committed WAL contents; locked or inaccessible stores produce errors instead of a stale raw-file copy. OneDrive vault handling does not decrypt BitLocker volumes. System-state collection and browser access have not been validated against every endpoint protection product.
+See [test status and known gaps](rclone-triage/tests/provider_testing.md) for the detailed results.
 
-`--collect-logs` creates a local redacted diagnostic archive. It redacts environment values and structured secret settings before writing staging files, omits listing contents, and does not automatically transmit the bundle. Arbitrary log prose and paths may still contain case information: inspect the archive before sharing. Redacted logs are diagnostic copies, not the original hash-verifiable evidence.
+## What comes next
 
-## Provider and network limits
+- Finish tests for login, file lists, downloads, cancellation and cleanup across all providers.
+- Complete Windows testing and publish a full release.
+- Then work on an Android and iPhone sign-in collector to help authorise cloud access.
 
-Backend discovery comes from the pinned runtime. A discovered backend or successful mock test is not proof of account-level provider compatibility. Consult the current [rclone backend documentation](https://rclone.org/overview/) for permissions and provider-specific limits.
+## More information
 
-New Google Drive/Photos authorization requires your own OAuth client; see [rclone's Google Drive client instructions](https://rclone.org/drive/#making-your-own-client-id). New Drive/OneDrive authorization requests read-only file access. Existing remote credentials retain the permissions previously granted by their provider. Google Photos API access is limited by Google's app-created-data policy and is not an unrestricted photo-library export.
-
-OAuth state remains secret and direct authorization-code flows use PKCE. Mobile callbacks require the documented matching client redirect URI; ordinary HTTP LAN callbacks do not provide transport confidentiality. Prefer loopback/desktop or device-code authorization where practical. Real OAuth, browser decryption, mounted vaults, and AP hardware behavior require controlled acceptance testing with explicit test accounts/devices.
-
-The Windows forensic access-point controller owns its WLAN session and temporary firewall rule, refuses to take over an already active hosted network, restores saved settings on graceful stop, and does not change adapter DNS. Keep the controller process open until its timeout or Ctrl+C. Unsupported adapters fail explicitly. Forced termination or OS failure cannot guarantee graceful restoration; check host state after an abnormal stop. `--forensic-ap-stop` never force-stops another process's network.
-
-## Validation and releases
-
-```powershell
-./scripts/run-windows-tests.ps1
-```
-
-Equivalent crate commands are `cargo fmt --all -- --check`, `cargo clippy --locked --all-targets --all-features -- -D warnings`, and `cargo test --locked --release -- --test-threads=1`. Live cloud tests are ignored by default; see [provider testing](rclone-triage/tests/provider_testing.md) for explicit opt-in and acceptance limits.
-
-CI gates prereleases on both Windows and Linux checks. Release assets include executable SHA256 checksums, the runtime manifest, a Cargo dependency inventory, and GitHub build provenance. Verify downloaded binaries with `gh attestation verify rclone-triage.exe --repo Donovoi/triage-with-rclone` and compare `SHA256SUMS`. A dependency inventory is not a complete SBOM for the embedded Go runtime.
-
-See [the hardening record](HARDENING.md) for the reviewed failures, regression coverage, and remaining acceptance work. Inventory entries remain memory-resident; million-object cases require capacity measurements before use. The legacy PowerShell coverage document is historical, not a current parity guarantee.
-
-Licensed under [Apache-2.0](LICENSE).
+- [Build instructions and technical guide](docs/technical-guide.md)
+- [Changes and remaining work](HARDENING.md)
+- [Apache-2.0 licence](LICENSE)
