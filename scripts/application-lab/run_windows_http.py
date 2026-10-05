@@ -187,8 +187,52 @@ def environment(case):
     return result
 
 
+SETUP_STAGES = {
+    "Create": ("input", "parent", "identity", "acl", "compile", "create", "verify", "complete"),
+    "Verify": ("input", "parent", "identity", "verify", "complete"),
+}
+SETUP_OUTCOMES = frozenset({"timeout", "launch_failed", "exit_failed", "protocol_failed", "parent_changed"})
+
+
+def setup_progress(data, action):
+    """Accept only a complete, ordered finite prefix and an optional final record.
+
+    A timeout can retain a fully written prefix. Partial or foreign bytes make
+    the entire stream unusable; none of those bytes are returned or printed.
+    """
+    need(action in SETUP_STAGES and type(data) is bytes and 0 < len(data) <= 4096 and data.endswith(b"\n"), "case_setup_failed")
+    data = data.replace(b"\r\n", b"\n")
+    need(b"\r" not in data, "case_setup_failed")
+    lines = data[:-1].split(b"\n")
+    expected, stages, final = SETUP_STAGES[action], [], None
+    need(len(lines) <= len(expected) + 1, "case_setup_failed")
+    for index, line in enumerate(lines):
+        value = strict_json(line, 256)
+        need(type(value) is dict and type(value.get("schema_version")) is int and value["schema_version"] == 1, "case_setup_failed")
+        if set(value) == {"schema_version", "stage"}:
+            need(final is None and len(stages) < len(expected) and value["stage"] == expected[len(stages)], "case_setup_failed")
+            stages.append(value["stage"])
+        else:
+            need(set(value) == {"schema_version", "ok"} and type(value["ok"]) is bool and
+                 index == len(lines) - 1 and stages, "case_setup_failed")
+            final = value["ok"]
+    need(stages and (final is not True or tuple(stages) == expected), "case_setup_failed")
+    return stages[-1], final
+
+
+def setup_diagnostic(outcome, action, scope, exit_code, stage):
+    """The sole public setup diagnostic: finite labels, never child text."""
+    need(outcome in SETUP_OUTCOMES and action in SETUP_STAGES and scope in {"suite", *E.CASE_ORDER} and
+         (exit_code is None or type(exit_code) is int and -(2**31) <= exit_code < 2**32) and
+         (stage is None or stage in SETUP_STAGES[action]), "case_setup_failed")
+    value = dict(outcome=outcome, action=action, scope=scope, exit_code=exit_code, last_stage=stage)
+    print("application_setup_diagnostic=" + E.compact(value).decode("ascii"), flush=True)
+
+
 def prepare(parent, name, action="Create"):
     hosted_guard()
+    scope = "suite" if re.fullmatch(r"app-http-[a-f0-9]{32}", name) else name
+    need(action in SETUP_STAGES and scope in {"suite", *E.CASE_ORDER}, "case_setup_failed")
     parent = Path(parent).absolute()
     original = identity(parent)
     env = {key: os.environ[key] for key in ("SYSTEMROOT", "WINDIR", "TEMP", "TMP") if key in os.environ}
@@ -199,10 +243,31 @@ def prepare(parent, name, action="Create"):
                                  "-Parent", str(parent), "-Name", name],
                                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                                 timeout=20, check=False, env=env, **hidden())
-    except (OSError, subprocess.TimeoutExpired):
+    except subprocess.TimeoutExpired as error:
+        try:
+            stage, _ = setup_progress(error.stdout, action)
+        except (ProducerError, TypeError, ValueError):
+            stage = None
+        setup_diagnostic("timeout", action, scope, None, stage)
         raise ProducerError("case_setup_failed") from None
-    need(identity(parent) == original and result.returncode == 0 and
-         strict_json(result.stdout, 512) == {"schema_version": 1, "ok": True}, "case_setup_failed")
+    except OSError:
+        setup_diagnostic("launch_failed", action, scope, None, None)
+        raise ProducerError("case_setup_failed") from None
+    try:
+        stage, final = setup_progress(result.stdout, action)
+    except (ProducerError, TypeError, ValueError):
+        stage, final = None, None
+    code = result.returncode
+    code = code if type(code) is int and -(2**31) <= code < 2**32 else None
+    try:
+        parent_unchanged = identity(parent) == original
+    except (OSError, ProducerError):
+        parent_unchanged = False
+    outcome = ("parent_changed" if not parent_unchanged else "protocol_failed" if code is None else
+               "exit_failed" if code != 0 else "protocol_failed" if final is not True else None)
+    if outcome is not None:
+        setup_diagnostic(outcome, action, scope, code, stage)
+        raise ProducerError("case_setup_failed")
     return parent / name
 
 
@@ -753,13 +818,45 @@ def run(application, application_sha, build_commit):
     return result
 
 
+def setup_probe():
+    """Early hosted setup check only: no application, runtime or receipt."""
+    try:
+        hosted_guard()
+        loaded_sources_preserved()
+        helper_hash = sha(read(HERE / "prepare_case.ps1", 65536))
+        parent = Path(os.environ["RUNNER_TEMP"]).absolute()
+        parent_id = identity(parent)
+        suite = parent / ("app-http-" + uuid.uuid4().hex)
+        need(not suite.exists(), "case_setup_failed")
+        prepare(parent, suite.name)
+        owned = identity(suite)
+        need(identity(parent) == parent_id and not inventory(suite), "preservation_failed")
+        prepare(parent, suite.name, "Verify")
+        loaded_sources_preserved()
+        need(identity(parent) == parent_id and identity(suite) == owned and not inventory(suite) and
+             sha(read(HERE / "prepare_case.ps1", 65536)) == helper_hash, "preservation_failed")
+        # No failure recovery removes a directory whose setup or verification
+        # could still have an unproven child, replacement or ACL outcome.
+        remove_owned(suite, owned)
+        print("application_setup_probe_passed", flush=True)
+        return 0
+    except BaseException:
+        print("application_setup_probe_failed", flush=True)
+        return 1
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser()
-    parser.add_argument("--application", required=True)
-    parser.add_argument("--application-sha256", required=True)
-    parser.add_argument("--build-commit", required=True)
-    parser.add_argument("--report", required=True)
+    parser.add_argument("--setup-probe", action="store_true")
+    parser.add_argument("--application")
+    parser.add_argument("--application-sha256")
+    parser.add_argument("--build-commit")
+    parser.add_argument("--report")
     args = parser.parse_args(argv)
+    acceptance_args = (args.application, args.application_sha256, args.build_commit, args.report)
+    if (args.setup_probe and any(value is not None for value in acceptance_args)
+            or not args.setup_probe and any(value is None for value in acceptance_args)):
+        parser.error("use --setup-probe alone or all four application acceptance arguments")
     descriptor = None
     prior_signal = None
     try:
@@ -767,6 +864,8 @@ def main(argv=None):
         def interrupted(_signal, _frame):
             raise KeyboardInterrupt()
         prior_signal = signal.signal(signal.SIGTERM, interrupted)
+        if args.setup_probe:
+            return setup_probe()
         report = Path(args.report).absolute()
         plain(report.parent, True)
         descriptor = os.open(report, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
