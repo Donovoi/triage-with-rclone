@@ -538,7 +538,8 @@ class ProducerTests(unittest.TestCase):
 
     def prepare_result(self, result=None, error=None, identity_effect=None, action="Create"):
         output = io.StringIO()
-        with mock.patch.object(P, "hosted_guard"), mock.patch.object(P, "powershell", return_value="fixed-system-powershell"), \
+        with mock.patch.dict(os.environ, {"GITHUB_ACTIONS": "true", "RUNNER_OS": "Windows", "RUNNER_ENVIRONMENT": "github-hosted"}), \
+             mock.patch.object(P, "hosted_guard"), mock.patch.object(P, "powershell", return_value="fixed-system-powershell"), \
              mock.patch.object(P, "hidden", return_value={}), mock.patch.object(P.subprocess, "run", return_value=result, side_effect=error) as child:
             if identity_effect is not None:
                 with mock.patch.object(P, "identity", side_effect=identity_effect), redirect_stdout(output):
@@ -666,22 +667,47 @@ class ProducerTests(unittest.TestCase):
         self.assertNotIn("private-canary", output.getvalue())
         remove.assert_not_called()
 
-    def test_setup_environment_is_exact_os_profile_allowlist_and_never_inherits_secrets(self):
-        extras = {"PATH": "private-canary", "COMSPEC": "private-canary", "WINDIR": "private-canary",
-                  "SYSTEMDRIVE": "private-canary", "AWS_SECRET_ACCESS_KEY": "private-canary",
-                  "RCLONE_CONFIG": "private-canary", "HTTP_PROXY": "private-canary",
-                  "HTTPS_PROXY": "private-canary", "GITHUB_TOKEN": "private-canary"}
-        before = sorted(str(p.relative_to(self.root)) for p in self.root.rglob("*"))
-        with mock.patch.dict(os.environ, extras):
-            value = P.setup_environment()
-        self.assertEqual(value, {"SYSTEMROOT": str(self.root), "WINDIR": str(self.root),
-            "SYSTEMDRIVE": self.root.drive, "COMSPEC": str(self.root / "System32/cmd.exe"),
-            "PATH": str(self.root / "System32"), "USERPROFILE": str(self.profile),
+    def synthetic_setup_environment(self, **extras):
+        return {"SYSTEMROOT": str(self.root), "USERPROFILE": str(self.profile),
             "APPDATA": str(self.profile / "AppData/Roaming"), "LOCALAPPDATA": str(self.profile / "AppData/Local"),
             "TEMP": str(self.root), "TMP": str(self.root), "GITHUB_ACTIONS": "true",
-            "RUNNER_OS": "Windows", "RUNNER_ENVIRONMENT": "github-hosted"})
-        self.assertNotIn("private-canary", repr(value))
+            "RUNNER_OS": "Windows", "RUNNER_ENVIRONMENT": "github-hosted", **extras}
+
+    def test_only_trusted_setup_inherits_a_snapshot_of_the_hosted_environment(self):
+        extras = {"PATH": "private-canary", "AWS_SECRET_ACCESS_KEY": "private-canary",
+                  "RCLONE_CONFIG": "private-canary", "HTTP_PROXY": "private-canary",
+                  "HTTPS_PROXY": "private-canary", "GITHUB_TOKEN": "private-canary",
+                  "APPLICATION_LAB_SENTINEL": "private-canary"}
+        before = sorted(str(p.relative_to(self.root)) for p in self.root.rglob("*"))
+        with mock.patch.dict(os.environ, self.synthetic_setup_environment(**extras), clear=True):
+            value = P.setup_environment()
+            self.assertEqual(value, dict(os.environ))
+            os.environ["APPLICATION_LAB_SENTINEL"] = "changed-after-snapshot"
+            self.assertEqual(value["APPLICATION_LAB_SENTINEL"], "private-canary")
+            self.assertNotIn("private-canary", repr(P.environment(self.root)))
+            self.assertNotIn("changed-after-snapshot", repr(P.environment(self.root)))
         self.assertEqual(before, sorted(str(p.relative_to(self.root)) for p in self.root.rglob("*")))
+
+    def test_bridge_and_app_maps_stay_scrubbed_and_private_values_never_enter_evidence(self):
+        extras = {"APPLICATION_LAB_SENTINEL": "private-canary", "AWS_SECRET_ACCESS_KEY": "private-canary",
+                  "RCLONE_CONFIG": "private-canary", "HTTPS_PROXY": "private-canary", "PATH": "private-canary"}
+        with mock.patch.dict(os.environ, self.synthetic_setup_environment(**extras), clear=True):
+            with mock.patch.object(P, "powershell", return_value="fixed-system-powershell"), \
+                 mock.patch.object(P, "hidden", return_value={}), \
+                 mock.patch.object(P.subprocess, "Popen", return_value=mock.Mock()) as child, \
+                 mock.patch.object(P.threading, "Thread"):
+                P.Bridge(self.root)
+            application_env = P.environment(self.root)
+            self.assertEqual(set(application_env), {"SYSTEMROOT", "WINDIR", "SYSTEMDRIVE", "COMSPEC", "PATH",
+                "TEMP", "TMP", "HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA"})
+            self.assertEqual(child.call_args.kwargs["env"], dict(application_env,
+                GITHUB_ACTIONS="true", RUNNER_OS="Windows", RUNNER_ENVIRONMENT="github-hosted"))
+            self.assertNotIn("private-canary", repr(child.call_args))
+            result, _, _ = self.execute_case("listing")
+            self.assertNotIn("private-canary", json.dumps(result))
+            prefix = self.setup_stream(stages=["input", "parent", "identity", "acl", "compile"], final=None)
+            diagnostic = self.prepare_result(error=P.subprocess.TimeoutExpired("private-canary", 20, output=prefix))
+            self.assertNotIn("private-canary", json.dumps(diagnostic))
 
     def test_setup_environment_rejects_missing_relative_unc_nonexistent_and_wrong_profile_dirs(self):
         mutations = [("USERPROFILE", ""), ("APPDATA", "relative"), ("TMP", r"\\synthetic.invalid\share"),
@@ -721,13 +747,18 @@ class ProducerTests(unittest.TestCase):
                     P.setup_environment()
                 self.assertFalse(any(str(call.args[0]) == str(Path(value)) for call in inspect.call_args_list))
 
-    def test_setup_child_gets_complete_allowlist_with_existing_timeout(self):
+    def test_setup_child_gets_job_snapshot_with_existing_timeout_and_fixed_command(self):
         result = types.SimpleNamespace(returncode=0, stdout=self.setup_stream())
-        with mock.patch.object(P, "hosted_guard"), mock.patch.object(P, "powershell", return_value="fixed-system-powershell"), \
+        with mock.patch.dict(os.environ, self.synthetic_setup_environment(APPLICATION_LAB_SENTINEL="private-canary"), clear=True), \
+             mock.patch.object(P, "hosted_guard"), mock.patch.object(P, "powershell", return_value="fixed-system-powershell"), \
              mock.patch.object(P, "hidden", return_value={}), mock.patch.object(P.subprocess, "run", return_value=result) as child:
-            P.prepare(self.root, "listing")
-        self.assertEqual(child.call_args.kwargs["env"], P.setup_environment())
+            with redirect_stdout(io.StringIO()) as output:
+                P.prepare(self.root, "listing")
+            self.assertEqual(child.call_args.kwargs["env"], dict(os.environ))
+            self.assertEqual(child.call_args.kwargs["env"]["APPLICATION_LAB_SENTINEL"], "private-canary")
+            self.assertEqual(output.getvalue(), "")
         self.assertEqual(child.call_args.kwargs["timeout"], 20)
+        self.assertEqual(child.call_args.kwargs["stderr"], P.subprocess.DEVNULL)
         self.assertEqual(child.call_args.args[0][1:5], ["-NoProfile", "-NonInteractive", "-File", str(P.HERE / "prepare_case.ps1")])
 
 

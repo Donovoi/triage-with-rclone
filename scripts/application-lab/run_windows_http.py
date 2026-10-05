@@ -230,14 +230,15 @@ def setup_diagnostic(outcome, action, scope, exit_code, stage):
 
 
 def setup_environment():
-    """Explicit OS/profile directories for PowerShell's CodeDom compiler.
+    """Trusted setup alone shares the hosted job's compiler environment.
 
-    CodeDom passes its caller's environment to csc. This bounded allowlist tests
-    environment completeness; it does not identify one missing-variable cause.
-    Application children still use the separate private case environment.
+    The fixed setup script only compiles its literal helper and creates/verifies
+    the owned directory. It never launches the app or forwards this environment.
+    The bridge and application retain their separate private case allowlists.
     """
+    result = dict(os.environ)
     def existing(name):
-        value = os.environ.get(name)
+        value = result.get(name)
         need(type(value) is str and 0 < len(value) <= 32767 and not value.startswith(("\\\\", "//")),
              "case_setup_failed")
         # Windows normalizes mixed leading separators into UNC/device drives.
@@ -252,14 +253,10 @@ def setup_environment():
     appdata, localappdata = existing("APPDATA"), existing("LOCALAPPDATA")
     need(same_path(str(appdata), profile / "AppData/Roaming") and
          same_path(str(localappdata), profile / "AppData/Local"), "case_setup_failed")
-    temp, tmp = existing("TEMP"), existing("TMP")
-    system32 = system / "System32"
-    plain(system32, True)
-    return {"SYSTEMROOT": str(system), "WINDIR": str(system), "SYSTEMDRIVE": system.drive,
-            "COMSPEC": str(system32 / "cmd.exe"), "PATH": str(system32),
-            "USERPROFILE": str(profile), "APPDATA": str(appdata), "LOCALAPPDATA": str(localappdata),
-            "TEMP": str(temp), "TMP": str(tmp), "GITHUB_ACTIONS": "true", "RUNNER_OS": "Windows",
-            "RUNNER_ENVIRONMENT": "github-hosted"}
+    existing("TEMP")
+    existing("TMP")
+    plain(system / "System32", True)
+    return result
 
 
 def prepare(parent, name, action="Create"):
