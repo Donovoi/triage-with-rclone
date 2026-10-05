@@ -294,9 +294,9 @@ class InternetArchiveAuthCoverageTests(unittest.TestCase):
         self.assertIn("fixture_backend_absent_from_catalog", report["errors"])
         self.assertEqual(report["retired_policy_backends"], ["internetarchive"])
 
-    def test_current_five_file_harness_and_three_payload_manifest_are_independently_bound(self):
+    def test_current_six_file_harness_and_three_payload_manifest_are_independently_bound(self):
         lab = ROOT / "scripts/provider-lab"
-        names = ("fixture_servers.py", "run_lab.py", "fixture_tls.py", "fixture_pcloud.py", "requirements-fixture.txt")
+        names = ("fixture_servers.py", "run_lab.py", "fixture_tls.py", "fixture_pcloud.py", "fixture_gcs.py", "requirements-fixture.txt")
         self.assertEqual(set(C.HARNESSES), set(names))
         digest = hashlib.sha256()
         for name in sorted(names):

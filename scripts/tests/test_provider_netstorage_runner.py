@@ -199,7 +199,7 @@ class NetStorageRunnerTests(unittest.TestCase):
         self.assertEqual(len(scenario.states), 13)
         self.assertTrue(all(c.closed for c in scenario.connections))
         self.assertEqual(LAB.fixture_manifest(), EXPECTED)
-        self.assertEqual(len(LAB.BACKENDS), 19)
+        self.assertEqual(len(LAB.BACKENDS), 20)
         self.assertNotEqual(*scenario.keys)
         for index, (_, config, kwargs) in enumerate(scenario.calls[2:], 1):
             self.assertEqual(kwargs, {})

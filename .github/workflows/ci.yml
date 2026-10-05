@@ -223,7 +223,7 @@ jobs:
         run: bash ../scripts/download-rclone.sh --linux "$RUNNER_TEMP/rclone-native"
       - name: Runtime updater and provider evidence regressions
         run: python -B -m unittest discover -s ../scripts/tests -p "test_*.py"
-      - name: All 19 isolated backend protocol fixtures
+      - name: All 20 isolated backend protocol fixtures
         env:
           PROVIDER_BINARY: ${{ runner.os == 'Windows' && format('{0}/rclone-triage/assets/rclone.exe', github.workspace) || format('{0}/rclone-native', runner.temp) }}
         shell: bash
@@ -241,7 +241,7 @@ jobs:
         shell: bash
         run: python -B ../scripts/provider-lab/run_lab.py --rclone "$PROVIDER_BINARY" --internetarchive-low-auth --report "$RUNNER_TEMP/internetarchive-low-auth-fixture.json"
       # Internet Archive requires both anonymous reads and separate LOW evidence.
-      # pCloud remains partial; the matrix requires 18 complete protocol profiles.
+      # pCloud remains partial; the matrix requires 19 complete protocol profiles.
       - name: Require current provider plans and protocol evidence
         if: ${{ !cancelled() }}
         env:
@@ -253,7 +253,7 @@ jobs:
             --fixture-receipt "$RUNNER_TEMP/provider-fixtures.json" \
             --fixture-receipt "$RUNNER_TEMP/filefabric-renewal-fixture.json" \
             --fixture-receipt "$RUNNER_TEMP/internetarchive-low-auth-fixture.json" \
-            --require-plans --require-fixtures local,archive,http,webdav,ftp,sftp,s3,swift,b2,azureblob,azurefiles,seafile,memory,koofr,pixeldrain,filefabric,netstorage,internetarchive
+            --require-plans --require-fixtures local,archive,http,webdav,ftp,sftp,s3,swift,b2,azureblob,azurefiles,seafile,memory,koofr,pixeldrain,filefabric,netstorage,internetarchive,gcs
       - name: Retain sanitized protocol evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -342,7 +342,7 @@ jobs:
           path: ${{ runner.temp }}/provider-pcloud
       - name: Prepare verified Linux runtime
         run: bash scripts/download-rclone.sh --linux "$RUNNER_TEMP/rclone-ledger"
-      - name: Require all 20 reviewed Linux protocol profiles
+      - name: Require all 21 reviewed Linux protocol profiles
         run: |
           python -B scripts/provider_coverage.py --rclone "$RUNNER_TEMP/rclone-ledger" \
             --report "$RUNNER_TEMP/provider-evidence-linux-combined.json" \
@@ -351,7 +351,7 @@ jobs:
             --fixture-receipt "$RUNNER_TEMP/provider-baseline/internetarchive-low-auth-fixture.json" \
             --fixture-receipt "$RUNNER_TEMP/provider-smb/smb-protocol.json" \
             --fixture-receipt "$RUNNER_TEMP/provider-pcloud/pcloud-oauth-authentication.json" \
-            --require-plans --require-fixtures local,archive,http,webdav,ftp,sftp,s3,swift,b2,azureblob,azurefiles,seafile,memory,koofr,pixeldrain,filefabric,netstorage,internetarchive,smb,pcloud
+            --require-plans --require-fixtures local,archive,http,webdav,ftp,sftp,s3,swift,b2,azureblob,azurefiles,seafile,memory,koofr,pixeldrain,filefabric,netstorage,internetarchive,gcs,smb,pcloud
       - name: Retain sanitized combined ledger
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

@@ -1929,7 +1929,7 @@ class CoverageTests(unittest.TestCase):
             self.assertNotEqual(first, coverage.compute_harness_sha256(root))
 
     def test_pcloud_tls_and_dependency_lock_drift_invalidate_receipts(self):
-        expected_files = {"fixture_servers.py", "run_lab.py", "fixture_tls.py", "fixture_pcloud.py",
+        expected_files = {"fixture_servers.py", "run_lab.py", "fixture_tls.py", "fixture_pcloud.py", "fixture_gcs.py",
                           "requirements-fixture.txt"}
         self.assertEqual(set(coverage.HARNESSES), expected_files)
         catalog, policy = self.pcloud_partial_policy()

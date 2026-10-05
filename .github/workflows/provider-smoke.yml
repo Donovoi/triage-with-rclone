@@ -94,7 +94,7 @@ jobs:
           bash ../scripts/download-rclone.sh --linux "$RUNNER_TEMP/rclone-smoke"
       - name: Provider evidence regressions
         run: python -B -m unittest discover -s ../scripts/tests -p 'test_*.py'
-      - name: All 19 isolated backend protocol fixtures
+      - name: All 20 isolated backend protocol fixtures
         run: python -B ../scripts/provider-lab/run_lab.py --rclone "$RUNNER_TEMP/rclone-smoke" --report "$RUNNER_TEMP/provider-fixtures.json"
       - name: Isolated FileFabric later-call renewal fixture
         if: ${{ !cancelled() }}
@@ -121,7 +121,7 @@ jobs:
             --rclone "$RUNNER_TEMP/rclone-smoke" --authentication-evidence \
             --report "$RUNNER_TEMP/pcloud-oauth-authentication.json"
       # IA requires both read modes; pCloud requires saved-token plus fresh auth.
-      # Independent Linux SMB and pCloud evidence bring the local gate to 20.
+      # Independent Linux SMB and pCloud evidence bring the local gate to 21.
       - name: Require current provider plans and protocol evidence
         if: ${{ !cancelled() }}
         run: |
@@ -132,7 +132,7 @@ jobs:
             --fixture-receipt "$RUNNER_TEMP/internetarchive-low-auth-fixture.json" \
             --fixture-receipt "$RUNNER_TEMP/smb-protocol.json" \
             --fixture-receipt "$RUNNER_TEMP/pcloud-oauth-authentication.json" \
-            --require-plans --require-fixtures local,archive,http,webdav,ftp,sftp,s3,swift,b2,azureblob,azurefiles,seafile,memory,koofr,pixeldrain,filefabric,netstorage,internetarchive,smb,pcloud
+            --require-plans --require-fixtures local,archive,http,webdav,ftp,sftp,s3,swift,b2,azureblob,azurefiles,seafile,memory,koofr,pixeldrain,filefabric,netstorage,internetarchive,gcs,smb,pcloud
       - name: Offline provider contracts
         run: cargo test --locked --release --test provider_smoke --test provider_matrix -- --test-threads=1
       - name: Login and credential regressions without accounts
