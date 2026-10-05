@@ -84,7 +84,7 @@ CODES = frozenset("hosted_linux_required input_invalid input_changed unsafe_path
     "image_invalid container_invalid controller_invalid controller_failed listing_invalid sample_mismatch "
     "negative_failed cancellation_failed client_deadline shutdown_failed container_cleanup_failed image_cleanup_failed "
     "client_result_invalid client_failed client_diagnostic_unavailable client_error_eof client_error_unexpected_eof "
-    "client_sasl_cipher_unavailable client_sasl_qop_rejected client_sasl_rspauth_mismatch "
+    "client_sasl_cipher_unavailable client_sasl_qop_rejected client_sasl_rspauth_mismatch client_sasl_empty_rspauth "
     "client_datanode_invalid_response client_datanode_response_length client_datanode_hmac_failed "
     "failure_shutdown_failed failure_shutdown_clients_present failure_shutdown_wait_failed failure_shutdown_release_failed "
     "raw_cleanup_failed interrupted fixture_failed".split())
@@ -270,23 +270,30 @@ def verify_sample(data, expected):
         and digest(data) == expected, "sample_mismatch")
 
 
-def require_client_success(T, result, operation):
+def require_client_success(T, result, operation, *, report=None, sample_ordinal=None):
     # Raw stderr remains in the existing private command capture. Retain only
     # a finite observation of the pinned CLI's final error template, not a cause.
     need(operation in ("version", "lsjson", "cat") and type(result.code) is int
-        and -255 <= result.code <= 255, "client_result_invalid")
+        and -255 <= result.code <= 255 and (report is None or type(report) is dict)
+        and (sample_ordinal is None or operation == "cat" and type(sample_ordinal) is int
+             and 1 <= sample_ordinal <= len(samples())), "client_result_invalid")
     if result.code == 0: return
+    observation = dict(operation=operation, exit_code=result.code, sample_ordinal=sample_ordinal,
+        stderr_bytes=None, stderr_line_count=None, final_error_template=False)
+    if report is not None: report["client_failure"] = observation
     try:
         error = T.read(result.stderr, 65536)
     except Exception:
         raise FixtureError("client_diagnostic_unavailable") from None
     lines = error.splitlines()
+    observation.update(stderr_bytes=len(error), stderr_line_count=len(lines))
     if 0 < len(lines) <= 128 and all(len(line) <= 4096 for line in lines):
         final = lines[-1]
         pattern = (rb"(?:[0-9]{4}/[0-9]{2}/[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2} )?NOTICE: Failed to "
             + operation.encode("ascii") + rb"(?:: | with ([1-9][0-9]{0,3}) errors: last error was: )(.+)")
         match = re.fullmatch(pattern, final)
         if match and (match.group(1) is None or int(match.group(1)) >= 2):
+            observation["final_error_template"] = True
             payload = match.group(2)
             if payload in (b"EOF", b"unexpected EOF"):
                 raise FixtureError("client_error_eof" if payload == b"EOF" else "client_error_unexpected_eof")
@@ -295,6 +302,7 @@ def require_client_success(T, result, operation):
                 # Variable challenge values are never retained or interpreted.
                 fixed = {
                     b"rspauth did not match digest": "client_sasl_rspauth_mismatch",
+                    b"rspauth not in ''": "client_sasl_empty_rspauth",
                     b"invalid response from datanode": "client_datanode_invalid_response",
                     b"invalid response from datanode: bad response length": "client_datanode_response_length",
                     b"invalid response from datanode: HMAC check failed": "client_datanode_hmac_failed",
@@ -501,19 +509,19 @@ def probe(T, docker, container, version, report):
     client_until = time.monotonic()+90
     report["stage"] = "rclone_version"
     version_result = execute(["/usr/bin/env", "-i", "/opt/secure/rclone", "version"], limit=8192, allow_failure=True)
-    require_client_success(T, version_result, "version")
+    require_client_success(T, version_result, "version", report=report)
     actual = T.read(version_result.stdout, 8192)
     need(actual.splitlines()[0] == ("rclone v" + version).encode("ascii"), "runtime_invalid")
     report["stage"] = "listing"
     listing_result = execute(rclone_args("lsjson", remote(), "--recursive", "--files-only"),
         timeout=25, limit=32768, allow_failure=True)
-    require_client_success(T, listing_result, "lsjson")
+    require_client_success(T, listing_result, "lsjson", report=report)
     listing = T.parse(T.read(listing_result.stdout, 32768))
     validate_listing(listing)
     report["stage"] = "acquisition"; acquired = []
-    for path, value in sorted(samples().items()):
+    for ordinal, (path, value) in enumerate(sorted(samples().items()), 1):
         result = execute(rclone_args("cat", remote(path)), timeout=20, limit=max(1, len(value)+1), allow_failure=True)
-        require_client_success(T, result, "cat")
+        require_client_success(T, result, "cat", report=report, sample_ordinal=ordinal)
         data = T.read(result.stdout, len(value)+1)
         need(len(data) == len(value), "sample_mismatch"); verify_sample(data, digest(value))
         acquired.append(dict(path=path, size=len(data), sha256=digest(data)))
@@ -528,7 +536,7 @@ def probe(T, docker, container, version, report):
     simple_failed(T, denied)
     report["stage"] = "authenticated_recovery"
     recovery = execute(rclone_args("cat", remote("nested/alpha.txt")), timeout=20, limit=16, allow_failure=True)
-    require_client_success(T, recovery, "cat")
+    require_client_success(T, recovery, "cat", report=report)
     restored = T.read(recovery.stdout, 16)
     verify_sample(restored, digest(samples()["nested/alpha.txt"]))
     report["stage"] = "cancellation"
@@ -557,7 +565,7 @@ def run(rclone, *, support_loader=load_support, runner_factory=None, downloader=
     started = time.monotonic()
     report = dict(schema_version=1, scope="hdfs_kerberos_container_feasibility", success=False,
         started_utc=datetime.now(timezone.utc).isoformat(), finished_utc=None, duration_seconds=None,
-        stage="preflight", inputs=None, result=None, controller_ready=None, controller_final=None, errors=[],
+        stage="preflight", inputs=None, result=None, client_failure=None, controller_ready=None, controller_final=None, errors=[],
         cleanup=dict(container_removed=False, image_removed=False, context_removed=False, raw_evidence_removed=False),
         cleanup_excludes=["shared_base_image", "shared_build_cache"], rpc_privacy_verified=False, **FALSE_CLAIMS)
     T = D = docker = root = root_id = context = context_id = None

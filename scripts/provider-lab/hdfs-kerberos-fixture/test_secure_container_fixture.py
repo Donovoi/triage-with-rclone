@@ -194,7 +194,7 @@ class RecoveryDocker(RunDocker):
                     self.final_available = True; return result()
                 if script == F.failure_marker_script("exit"):
                     self.calls.append((args, kw)); return result()
-                if "/work/controller-exit" in script:
+                if "/work/controller-exit" in script and "/work/secure/ready.json" not in script:
                     self.calls.append((args, kw)); return result(exit_bytes)
         if args == ["wait", CONTAINER]:
             self.calls.append((args, kw)); self.running = False; self.ended = True
@@ -328,8 +328,8 @@ class ContractTests(unittest.TestCase):
 
 
 class FailurePathTests(unittest.TestCase):
-    def failure(self, code, call, *args):
-        with self.assertRaises(F.FixtureError) as caught: call(*args)
+    def failure(self, code, call, *args, **kwargs):
+        with self.assertRaises(F.FixtureError) as caught: call(*args, **kwargs)
         self.assertEqual(caught.exception.code, code)
         self.assertEqual(str(caught.exception), code)
 
@@ -367,6 +367,7 @@ class FailurePathTests(unittest.TestCase):
                 def fail(): raise SupportFailure(code)
                 value = F.run("unused", support_loader=fail)
             self.assertEqual(value["errors"], [code]); self.assertFalse(value["success"])
+            self.assertIsNone(value["client_failure"])
             self.assertNotIn("canary", F.canonical(value).decode())
         with patch.object(F, "hosted_guard"):
             def unknown(): raise SupportFailure("private diagnostic canary")
@@ -404,6 +405,7 @@ class FailurePathTests(unittest.TestCase):
         # Literal expected categories, independent of the producer's patterns.
         return (
             (b"rspauth did not match digest", "client_sasl_rspauth_mismatch"),
+            (b"rspauth not in ''", "client_sasl_empty_rspauth"),
             (b"invalid response from datanode", "client_datanode_invalid_response"),
             (b"invalid response from datanode: bad response length", "client_datanode_response_length"),
             (b"invalid response from datanode: HMAC check failed", "client_datanode_hmac_failed"),
@@ -454,6 +456,8 @@ class FailurePathTests(unittest.TestCase):
         for payload in (
             b"rspauth did not match digest: expected=private-canary actual=private-canary",
             b"rspauth did not match digest private-canary", b"invalid response from datanode: private-canary",
+            b"rspauth not in 'private-canary'", b"rspauth not in ' '", b"rspauth not in '\x00'",
+            b'rspauth not in ""', b"rspauth not in '' trailing",
             b"invalid response from datanode: HMAC check failed: private-canary",
             b"invalid response from datanode: bad response length 1234",
             b"negotiating data protection: invalid qop: 'auth'",
@@ -497,6 +501,142 @@ class FailurePathTests(unittest.TestCase):
                 for secret in (b"private-canary", b"private@example.invalid", b"/private/path", b"private stdout canary", payload):
                     self.assertNotIn(secret, public)
                 for claim in F.FALSE_CLAIMS: self.assertIs(value[claim], False)
+
+    def test_client_failure_metadata_has_closed_typed_fields_and_no_raw_values(self):
+        raw = b"private@example.invalid /private/path\nNOTICE: Failed to cat: rspauth not in ''\n"
+        report = {}
+        self.failure("client_sasl_empty_rspauth", F.require_client_success, Support,
+                     result(b"private stdout canary", raw, 1), "cat", report=report, sample_ordinal=8)
+        expected = dict(operation="cat", exit_code=1, sample_ordinal=8, stderr_bytes=len(raw),
+                        stderr_line_count=2, final_error_template=True)
+        self.assertEqual(report, {"client_failure": expected})
+        self.assertEqual({key: type(value) for key, value in report["client_failure"].items()},
+                         dict(operation=str, exit_code=int, sample_ordinal=int, stderr_bytes=int,
+                              stderr_line_count=int, final_error_template=bool))
+        public = F.canonical(report)
+        for private in (b"private@example.invalid", b"/private/path", b"private stdout canary", b"rspauth not in"):
+            self.assertNotIn(private, public)
+
+    def test_client_failure_metadata_rejects_invalid_report_and_ordinal_before_mutation(self):
+        class DictSubclass(dict): pass
+        for invalid in ([], "report", True, 1, DictSubclass()):
+            self.failure("client_result_invalid", F.require_client_success, Support,
+                         result(code=1), "cat", report=invalid)
+        for ordinal in (False, True, 0, -1, 9, 1.0, "1", [], {}):
+            report = {"client_failure": None}
+            self.failure("client_result_invalid", F.require_client_success, Support,
+                         result(code=1), "cat", report=report, sample_ordinal=ordinal)
+            self.assertEqual(report, {"client_failure": None})
+        for operation in ("version", "lsjson"):
+            report = {}
+            self.failure("client_result_invalid", F.require_client_success, Support,
+                         result(code=1), operation, report=report, sample_ordinal=1)
+            self.assertEqual(report, {})
+        for ordinal in (None, 1, 8):
+            report = {}
+            self.failure("client_error_eof", F.require_client_success, Support,
+                         result(stderr=b"NOTICE: Failed to cat: EOF\n", code=1), "cat",
+                         report=report, sample_ordinal=ordinal)
+            self.assertEqual(report["client_failure"]["sample_ordinal"], ordinal)
+
+    def test_successful_client_never_creates_or_overwrites_failure_metadata(self):
+        for report in ({}, {"client_failure": None}, {"client_failure": {"prior": "unchanged"}}):
+            before = F.canonical(report)
+            F.require_client_success(Support, result(stderr=b"not read" * 10000, code=0),
+                                     "cat", report=report, sample_ordinal=1)
+            self.assertEqual(F.canonical(report), before)
+
+    def test_unknown_payload_has_template_metadata_but_unrecognized_format_does_not(self):
+        for operation in ("version", "lsjson", "cat"):
+            for raw, template in (
+                (b"NOTICE: Failed to " + operation.encode() + b": private challenge data\n", True),
+                (b"NOTICE: Failed to " + operation.encode() + b" with 2 errors: last error was: private data\n", True),
+                (b"ERROR: Failed to " + operation.encode() + b": private data\n", False),
+                (b"NOTICE: Failed to " + operation.encode() + b" with 1 errors: last error was: private data\n", False),
+                (b"NOTICE: Failed to " + operation.encode() + b": \n", False),
+                (b"private data\n", False),
+            ):
+                with self.subTest(operation=operation, raw=raw):
+                    report = {}
+                    self.failure("client_failed", F.require_client_success, Support,
+                                 result(stderr=raw, code=1), operation, report=report)
+                    self.assertEqual(report, {"client_failure": dict(operation=operation, exit_code=1,
+                        sample_ordinal=None, stderr_bytes=len(raw), stderr_line_count=len(raw.splitlines()),
+                        final_error_template=template)})
+                    self.assertNotIn(b"private", F.canonical(report))
+
+    def test_unreadable_or_oversize_diagnostics_keep_null_measurements(self):
+        class Unreadable(Support):
+            @staticmethod
+            def read(*_): raise OSError("private path and error")
+        for support, raw in ((Unreadable, b"x"), (Support, b"x" * 65537)):
+            report = {}
+            self.failure("client_diagnostic_unavailable", F.require_client_success, support,
+                         result(stderr=raw, code=1), "cat", report=report, sample_ordinal=2)
+            self.assertEqual(report, {"client_failure": dict(operation="cat", exit_code=1,
+                sample_ordinal=2, stderr_bytes=None, stderr_line_count=None, final_error_template=False)})
+        for raw in (b"", b"x" * 4097, b"x\n" * 128 + b"NOTICE: Failed to cat: EOF\n"):
+            report = {}
+            self.failure("client_failed", F.require_client_success, Support,
+                         result(stderr=raw, code=1), "cat", report=report)
+            self.assertEqual(report["client_failure"]["stderr_bytes"], len(raw))
+            self.assertEqual(report["client_failure"]["stderr_line_count"], len(raw.splitlines()))
+            self.assertIs(report["client_failure"]["final_error_template"], False)
+
+    def test_real_probe_reports_literal_sorted_acquisition_ordinal(self):
+        ordered = ("README.txt", "empty.bin", "large/cancel.bin", "nested/alpha.txt",
+                   "nested/deeper/data.bin", "nested/space name.txt", "private/owner-only.txt", "unicode/utf8.txt")
+        raw = b"NOTICE: Failed to cat: rspauth not in ''\n"
+        for ordinal, path in enumerate(ordered, 1):
+            class FailedAcquisition(Docker):
+                def call(inner, args, **kw):
+                    if "cat" in args and "test:/synthetic/" + path in args:
+                        inner.calls.append((args, kw)); return result(stderr=raw, code=1)
+                    return super(FailedAcquisition, inner).call(args, **kw)
+            report = {}; docker = FailedAcquisition()
+            with self.subTest(ordinal=ordinal):
+                self.failure("client_sasl_empty_rspauth", F.probe, Support, docker, CONTAINER, "1.75.1", report)
+                self.assertEqual(report["stage"], "acquisition")
+                self.assertEqual(report["client_failure"], dict(operation="cat", exit_code=1,
+                    sample_ordinal=ordinal, stderr_bytes=len(raw), stderr_line_count=1, final_error_template=True))
+                cats = [args for args, _ in docker.calls if "cat" in args]
+                self.assertEqual(len(cats), ordinal)
+
+    def test_real_probe_metadata_survives_orderly_cleanup_and_remains_failed(self):
+        raw = b"private@example.invalid /private/path\nNOTICE: Failed to cat: rspauth not in ''\n"
+        class FailedAcquisition(RecoveryDocker):
+            def call(inner, args, **kw):
+                if "cat" in args and "test:/synthetic/empty.bin" in args:
+                    inner.calls.append((args, kw)); return result(b"", raw, 1)
+                return super(FailedAcquisition, inner).call(args, **kw)
+        value, _, retained = self.run_failed_probe(F.probe, FailedAcquisition())
+        self.assertEqual(value["errors"], ["client_sasl_empty_rspauth"])
+        self.assertFalse(value["success"]); self.assertIsNone(value["result"])
+        self.assertEqual(value["stage"], "acquisition")
+        self.assertEqual(value["client_failure"], dict(operation="cat", exit_code=1, sample_ordinal=2,
+            stderr_bytes=len(raw), stderr_line_count=2, final_error_template=True))
+        self.assertTrue(value["controller_final"]["success"])
+        self.assertTrue(all(value["cleanup"].values())); self.assertFalse(retained)
+        for private in (b"private@example.invalid", b"/private/path", b"private stdout canary", b"rspauth not in"):
+            self.assertNotIn(private, F.canonical(value))
+        for claim in F.FALSE_CLAIMS: self.assertIs(value[claim], False)
+
+    def test_authenticated_recovery_failure_does_not_reuse_acquisition_ordinal(self):
+        raw = b"NOTICE: Failed to cat: rspauth not in ''\n"
+        class FailedRecovery(Docker):
+            alpha_reads = 0
+            def call(inner, args, **kw):
+                if ("cat" in args and "test:/synthetic/nested/alpha.txt" in args
+                        and "/work/secure/auth/simple.conf" not in args):
+                    inner.alpha_reads += 1
+                    if inner.alpha_reads == 2:
+                        inner.calls.append((args, kw)); return result(stderr=raw, code=1)
+                return super(FailedRecovery, inner).call(args, **kw)
+        report = {"client_failure": None}
+        self.failure("client_sasl_empty_rspauth", F.probe, Support, FailedRecovery(), CONTAINER, "1.75.1", report)
+        self.assertEqual(report["stage"], "authenticated_recovery")
+        self.assertEqual(report["client_failure"], dict(operation="cat", exit_code=1, sample_ordinal=None,
+            stderr_bytes=len(raw), stderr_line_count=1, final_error_template=True))
 
     def test_positive_nonzero_listing_is_not_accepted_despite_valid_stdout(self):
         class FailedListing(Docker):
