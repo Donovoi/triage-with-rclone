@@ -228,7 +228,7 @@ class GcsFixtureTests(unittest.TestCase):
         for limit in ("connection_limit", "active_connection_limit"):
             fixture = self.start()
             setattr(fixture.state, limit, 0)
-            with self.assertRaises((ConnectionResetError, http.client.RemoteDisconnected)):
+            with self.assertRaises((ConnectionResetError, ConnectionAbortedError, http.client.RemoteDisconnected)):
                 self.request(fixture)
             fixture.close()
             self.assertEqual(fixture.state.admission_denied, 1)

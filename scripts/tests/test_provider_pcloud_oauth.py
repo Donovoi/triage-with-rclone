@@ -485,8 +485,52 @@ class OAuthFixtureTests(unittest.TestCase):
                 self.assertEqual(self.exchange(fixture, state, body=b"", headers={"Content-Length": length})[0], 400)
                 self.assertFalse(state.token_issued)
         with self.fixture() as (fixture, state):
-            self.assertEqual(self.request(fixture, self.authorize_path(state), body=b"x")[0], 400)
+            before = state.source_snapshot()
+            # Reject the declared GET body without waiting for it. Sending an
+            # unread TLS body here makes response-body delivery race socket close.
+            status, body, headers = self.request(fixture, self.authorize_path(state), headers={"Content-Length": "1"})
+            self.assertEqual((status, json.loads(body)), (400, {"status": "fixture_invalid_request"}))
+            self.assertNotIn("Location", headers)
             self.assertEqual(state.rejected_payload_bytes, 1)
+            self.assertTrue(state.failed)
+            self.assertFalse(state.token_issued)
+            self.assertEqual(state.events, [])
+            self.assertEqual((state.phase, state.token_requests, state.payload_bytes), ("bound", 0, 0))
+            self.assertEqual(state.source_snapshot(), before)
+            self.assertTrue(state.source_preserved())
+        snapshot = fixture.snapshot()
+        self.assertTrue(snapshot["cleanup_complete"])
+        self.assertTrue(snapshot["certificate_cleanup"])
+        self.assertEqual([snapshot["transport"][key] for key in
+                          ("active_connections", "active_workers", "active_timers")], [0, 0, 0])
+
+    def test_forbidden_authorize_get_body_is_unread_and_cannot_advance_state(self):
+        state = self.state()
+        state._started = True  # Direct handler setup; no listener is created.
+        state.deadline = time.monotonic() + 3
+        state.bind_state(BOUND_STATE)
+        before = state.source_snapshot()
+        handler = object.__new__(oauth._OAuthHandler)
+        handler.server = SimpleNamespace(state=state, server_address=("127.0.0.1", 12345))
+        handler.command, handler.path, handler._counted = "GET", self.authorize_path(state), False
+        handler.raw_requestline = ("GET " + handler.path + " HTTP/1.1\r\n").encode("ascii")
+        handler.headers = Message()
+        handler.headers["Host"] = "127.0.0.1:12345"
+        handler.headers["Content-Length"] = "1"
+        handler.rfile = io.BytesIO(b"x")
+        handler._json = Mock()
+        handler.dispatch()
+        handler._json.assert_called_once_with(400, {"status": "fixture_invalid_request"})
+        self.assertEqual(handler.rfile.tell(), 0)
+        self.assertEqual(handler.rfile.getvalue(), b"x")
+        self.assertTrue(state.failed)
+        self.assertFalse(state.token_issued)
+        self.assertEqual(state.events, [])
+        self.assertEqual((state.requests, state.oauth_requests, state.authorize_requests, state.token_requests), (1, 1, 1, 0))
+        self.assertEqual((state.phase, state.rejected_payload_bytes, state.payload_bytes), ("bound", 1, 0))
+        self.assertFalse(state.budget_exceeded)
+        self.assertEqual(state.source_snapshot(), before)
+        self.assertTrue(state.source_preserved())
 
     def test_truncated_token_body_deadline_cannot_issue_token(self):
         with self.fixture() as (fixture, state):
