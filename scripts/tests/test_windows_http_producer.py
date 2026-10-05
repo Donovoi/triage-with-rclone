@@ -143,6 +143,9 @@ class Flow:
                                  if flow.ready_result is None else flow.ready_result)
                 elif action == "start":
                     assert flow.events == ["ready", "start"]
+                    for key, folder in (("TEMP", "temp"), ("TMP", "temp"), ("HOME", "home"),
+                            ("USERPROFILE", "profile"), ("APPDATA", "appdata"), ("LOCALAPPDATA", "localappdata")):
+                        assert fields["environment"][key] == str(case / folder)
                     assert Path(fields["app_path"]) == case / "application.exe"
                     assert Path(fields["app_path"]).read_bytes() == b"inert application bytes"
                     assert "--rclone-config-path" in fields["args"] and "--rclone-config" not in fields["args"]
@@ -231,9 +234,9 @@ class ProducerTests(unittest.TestCase):
                 self.assertLess(flow.events.index("helper_closed"), flow.events.index("fixture_closed"))
                 self.assertEqual(list(suite.iterdir()), [])
 
-    def test_helper_profile_baseline_predates_start_and_full_owned_case_is_removed(self):
+    def test_helper_baseline_predates_start_and_full_owned_case_is_removed(self):
         def before_app(case):
-            (case / "profile/pre-existing-canary/child").mkdir(parents=True)
+            (case / "helper-env/profile/pre-existing-canary/child").mkdir(parents=True)
         with redirect_stdout(io.StringIO()) as output:
             result, flow, suite = self.execute_case("listing", before_app=before_app)
         self.assertEqual(flow.events[:2], ["ready", "start"])
@@ -263,22 +266,23 @@ class ProducerTests(unittest.TestCase):
         self.assertNotIn("canary", output.getvalue())
         return value
 
-    def test_prestart_profile_failures_report_precise_counts_without_start_or_delete(self):
+    def test_prestart_helper_failures_report_precise_counts_without_start_or_delete(self):
         def replace(case):
-            (case / "profile").rename(case / "private-canary-old")
-            (case / "profile").mkdir()
+            (case / "helper-env/profile").rename(case / "private-canary-old")
+            (case / "helper-env/profile").mkdir()
         def large(case):
-            for index in range(33):
-                (case / "profile" / ("private-canary-" + str(index))).mkdir()
-        mutations = [(lambda c: (c / "profile/private-canary").write_bytes(b"xyz"),
-                      "profile_directories", (1, 0, 1, 3)),
-                     (large, "profile_limit", (33, 33, 0, 0)),
-                     (replace, "profile_identity", (None, None, None, None))]
+            for index in range(28):
+                (case / "helper-env/profile" / ("private-canary-" + str(index))).mkdir()
+        mutations = [(lambda c: (c / "helper-env/profile/private-canary").write_bytes(b"xyz"),
+                      "helper_directories", (6, 5, 1, 3)),
+                     (large, "helper_limit", (33, 33, 0, 0)),
+                     (replace, "helper_identity", (None, None, None, None)),
+                     (lambda c: (c / "helper-env/private-canary").mkdir(), "helper_layout", (6, 6, 0, 0))]
         for index, (mutate, stage, counts) in enumerate(mutations):
             with self.subTest(stage=stage), mock.patch.object(P, "remove_owned") as remove:
                 output = io.StringIO()
                 result, flow, suite = self.execute_profile_flow(index, before_app=mutate, output=output)
-                self.assertEqual(self.prestart_observation(output), dict(scope="listing", stage=stage, location="profile",
+                self.assertEqual(self.prestart_observation(output), dict(scope="listing", stage=stage, location="helper_env",
                     **dict(zip(("entries", "directories", "files", "total_bytes"), counts))))
                 self.assertEqual(result["failure_code"], "cleanup_failed")
                 self.assertEqual(result["status"], "failed")
@@ -288,8 +292,8 @@ class ProducerTests(unittest.TestCase):
                 self.assertTrue((suite / "listing").is_dir())
                 remove.assert_not_called()
 
-    def test_prestart_other_roots_still_require_empty_and_report_fixed_location(self):
-        for location in ("temp", "home", "appdata", "localappdata"):
+    def test_prestart_all_application_roots_require_empty_and_report_fixed_location(self):
+        for location in ("temp", "home", "profile", "appdata", "localappdata"):
             def residue(case):
                 (case / location / "private-canary-dir").mkdir()
                 (case / location / "private-canary-content").write_bytes(b"xyz")
@@ -306,7 +310,7 @@ class ProducerTests(unittest.TestCase):
 
     def test_prestart_unreadable_or_link_inventory_reports_unknown_counts(self):
         original = P.inventory
-        for location in ("profile", "home"):
+        for location in ("helper-env", "home"):
             for error in (OSError("private-canary-path"), P.ProducerError("preservation_failed")):
                 def failed(path):
                     if Path(path).name == location:
@@ -316,8 +320,9 @@ class ProducerTests(unittest.TestCase):
                      mock.patch.object(P, "inventory", side_effect=failed), mock.patch.object(P, "remove_owned") as remove:
                     output = io.StringIO()
                     result, flow, suite = self.execute_profile_flow(location + type(error).__name__, output=output)
-                    stage = "profile_inventory" if location == "profile" else "private_inventory"
-                    self.assertEqual(self.prestart_observation(output), dict(scope="listing", stage=stage, location=location,
+                    stage = "helper_inventory" if location == "helper-env" else "private_inventory"
+                    self.assertEqual(self.prestart_observation(output), dict(scope="listing", stage=stage,
+                        location="helper_env" if location == "helper-env" else location,
                         entries=None, directories=None, files=None, total_bytes=None))
                     self.assertEqual(result["failure_code"], "unexpected_failure" if isinstance(error, OSError) else "preservation_failed")
                     self.assertNotIn("start", flow.events)
@@ -328,27 +333,27 @@ class ProducerTests(unittest.TestCase):
     def test_prestart_original_exception_survives_even_failed_diagnostic(self):
         case = self.root / "prestart-direct"
         case.mkdir()
-        (case / "profile").mkdir()
+        leases = P.create_private_roots(case)
         error = OSError("private-canary")
         with mock.patch.object(P, "inventory", side_effect=error), \
              mock.patch.object(P, "prestart_diagnostic", side_effect=RuntimeError("private-canary-output")):
             with self.assertRaises(OSError) as caught:
-                P.prestart_baseline("listing", case, P.identity(case / "profile"))
+                P.prestart_baseline("listing", case, leases)
         self.assertIs(caught.exception, error)
 
     def test_prestart_diagnostic_rejects_unbounded_untyped_or_foreign_fields(self):
         counts = dict(entries=1, directories=0, files=1, total_bytes=3)
-        for fields in (("private-canary", "profile_directories", "profile", counts),
-                       ("listing", "private-canary", "profile", counts),
+        for fields in (("private-canary", "helper_directories", "helper_env", counts),
+                       ("listing", "private-canary", "helper_env", counts),
                        ("listing", "private_empty", "private-canary", counts),
-                       ("listing", "profile_limit", "temp", counts),
-                       ("listing", "private_empty", "profile", counts),
-                       ("listing", "profile_inventory", "profile", counts),
-                       ("listing", "profile_directories", "profile", dict(counts, entries=True)),
-                       ("listing", "profile_directories", "profile", dict(counts, entries=1025)),
-                       ("listing", "profile_directories", "profile", dict(counts, files=0)),
-                       ("listing", "profile_directories", "profile", dict(counts, total_bytes=512 * 1024 * 1024 + 1)),
-                       ("listing", "profile_directories", "profile", dict(counts, extra="private-canary"))):
+                       ("listing", "helper_limit", "temp", counts),
+                       ("listing", "private_empty", "helper_env", counts),
+                       ("listing", "helper_inventory", "helper_env", counts),
+                       ("listing", "helper_directories", "helper_env", dict(counts, entries=True)),
+                       ("listing", "helper_directories", "helper_env", dict(counts, entries=1025)),
+                       ("listing", "helper_directories", "helper_env", dict(counts, files=0)),
+                       ("listing", "helper_directories", "helper_env", dict(counts, total_bytes=512 * 1024 * 1024 + 1)),
+                       ("listing", "helper_directories", "helper_env", dict(counts, extra="private-canary"))):
             with self.subTest(stage=fields[1]), redirect_stdout(io.StringIO()) as output:
                 with self.assertRaisesRegex(P.ProducerError, "^cleanup_failed$"):
                     P.prestart_diagnostic(*fields)
@@ -383,7 +388,7 @@ class ProducerTests(unittest.TestCase):
                     self.assertTrue((suite / "listing").exists())
             remove.assert_not_called()
 
-    def test_profile_baseline_rejects_link_before_start(self):
+    def test_application_profile_link_guard_prevents_start(self):
         original_plain = P.plain
         def guarded(path, directory=False, **kwargs):
             if Path(path).name == "private-canary":
@@ -395,18 +400,22 @@ class ProducerTests(unittest.TestCase):
         self.assertFalse(result["checks"]["temp_cleanup"])
         remove.assert_not_called()
 
-    def test_profile_baseline_add_remove_replace_and_late_file_are_sticky_failures(self):
+    def test_helper_baseline_add_replace_files_and_fixed_root_changes_are_sticky_failures(self):
         def baseline(case):
-            (case / "profile/owned-child").mkdir()
+            (case / "helper-env/profile/owned-child").mkdir()
         def replace_child(case):
-            (case / "profile/owned-child").rename(case / "old-child")
-            (case / "profile/owned-child").mkdir()
-        def replace_root(case):
-            (case / "profile").rename(case / "old-profile")
-            (case / "profile/owned-child").mkdir(parents=True)
-        mutations = [lambda c: (c / "profile/new-child").mkdir(),
-            lambda c: (c / "profile/owned-child").rmdir(), replace_child, replace_root,
-            lambda c: (c / "profile/private-canary").write_bytes(b"x")]
+            (case / "helper-env/profile/owned-child").rename(case / "old-child")
+            (case / "helper-env/profile/owned-child").mkdir()
+        def replace_root(case, name):
+            root = case / "helper-env" / name if name else case / "helper-env"
+            root.rename(case / "old-root")
+            root.mkdir()
+        mutations = [lambda c: (c / "helper-env/profile/new-child").mkdir(), replace_child,
+            lambda c: replace_root(c, "profile"), lambda c: replace_root(c, ""),
+            lambda c: (c / "helper-env/home").rmdir(),
+            lambda c: (c / "helper-env/profile/private-canary").write_bytes(b"x"),
+            lambda c: (c / "helper-env/private-canary").mkdir(),
+            lambda c: (c / "profile/private-canary").mkdir()]
         with mock.patch.object(P, "remove_owned") as remove:
             for index, mutate in enumerate(mutations):
                 with self.subTest(mutation=index):
@@ -418,6 +427,62 @@ class ProducerTests(unittest.TestCase):
                     self.assertTrue(result["checks"]["process_cleanup"])
                     self.assertFalse(result["checks"]["temp_cleanup"])
                     self.assertTrue((suite / "listing").exists())
+            remove.assert_not_called()
+
+    def test_only_baseline_helper_descendants_may_disappear_at_cleanup(self):
+        def baseline(case):
+            (case / "helper-env/temp/owned-child/nested").mkdir(parents=True)
+        def remove_descendants(case):
+            (case / "helper-env/temp/owned-child/nested").rmdir()
+            (case / "helper-env/temp/owned-child").rmdir()
+        result, flow, suite = self.execute_profile_flow("remove-helper", before_app=baseline, after_app=remove_descendants)
+        self.assertEqual(result["status"], "passed")
+        self.assertTrue(result["checks"]["temp_cleanup"])
+        self.assertEqual(list(suite.iterdir()), [])
+        self.assertIn("start", flow.events)
+
+    def test_helper_baseline_total_bound_and_link_guard_remain_strict(self):
+        case = self.root / "helper-bound"
+        case.mkdir()
+        leases = P.create_private_roots(case)
+        for index in range(27):
+            (case / "helper-env/temp" / str(index)).mkdir()
+        baseline = P.prestart_baseline("listing", case, leases)
+        self.assertEqual(len(baseline), 32)
+        (case / "helper-env/temp/extra").mkdir()
+        with redirect_stdout(io.StringIO()), self.assertRaisesRegex(P.ProducerError, "^cleanup_failed$"):
+            P.prestart_baseline("listing", case, leases)
+        original_plain = P.plain
+        def guarded(path, directory=False, **kwargs):
+            if Path(path).name == "private-canary":
+                raise P.ProducerError("preservation_failed")
+            return original_plain(path, directory, **kwargs)
+        with mock.patch.object(P, "plain", side_effect=guarded), mock.patch.object(P, "remove_owned") as remove:
+            result, flow, _ = self.execute_profile_flow("helper-link", before_app=lambda c: (c / "helper-env/temp/private-canary").mkdir())
+        self.assertNotIn("start", flow.events)
+        self.assertFalse(result["checks"]["temp_cleanup"])
+        remove.assert_not_called()
+
+    def test_app_root_replacement_inside_inventory_never_establishes_a_new_lease(self):
+        original_inventory = P.inventory
+        for when in ("prestart", "cleanup"):
+            changed = []
+            def inventory(path):
+                path = Path(path)
+                listing_exists = (path.parent / "output/synthetic-case/listings/inventory.csv").exists()
+                if not changed and path.name == "profile" and path.parent.name == "listing" and listing_exists == (when == "cleanup"):
+                    path.rename(path.parent / "old-profile")
+                    path.mkdir()
+                    changed.append(True)
+                return original_inventory(path)
+            with self.subTest(when=when), mock.patch.object(P, "inventory", side_effect=inventory), \
+                 mock.patch.object(P, "remove_owned") as remove:
+                result, flow, suite = self.execute_profile_flow(when)
+            self.assertEqual(changed, [True])
+            self.assertEqual(result["failure_code"], "cleanup_failed")
+            self.assertFalse(result["checks"]["temp_cleanup"])
+            self.assertEqual("start" in flow.events, when == "cleanup")
+            self.assertTrue((suite / "listing").is_dir())
             remove.assert_not_called()
 
     def test_late_fixture_failure_cannot_promote(self):
@@ -1022,9 +1087,11 @@ class ProducerTests(unittest.TestCase):
     def test_bridge_probe_cli_has_no_application_or_receipt_and_removes_owned_tree(self):
         events = []
         def baseline(case):
-            (case / "profile/private-canary-dir/child").mkdir(parents=True)
+            (case / "helper-env/temp/private-canary-dir/child").mkdir(parents=True)
+        def remove_descendant(case):
+            (case / "helper-env/temp/private-canary-dir/child").rmdir()
         with self.probe_patches(), mock.patch.object(P, "prepare", side_effect=fake_prepare) as prep, \
-             mock.patch.object(P, "Bridge", side_effect=self.probe_bridge_factory(before_ready=baseline, events=events)), \
+             mock.patch.object(P, "Bridge", side_effect=self.probe_bridge_factory(before_ready=baseline, after_close=remove_descendant, events=events)), \
              redirect_stdout(io.StringIO()) as output:
             self.assertEqual(P.main(["--bridge-probe"]), 0)
         self.assertEqual(output.getvalue(), "application_bridge_probe_passed\n")
@@ -1049,8 +1116,11 @@ class ProducerTests(unittest.TestCase):
         variants = [dict(ready={}), dict(ready=P.ProducerError("session_failed")), dict(close_ok=False),
                     dict(before_ready=lambda c: (c / "temp/private-canary").write_bytes(b"x")),
                     dict(before_ready=replace), dict(after_close=replace),
-                    dict(after_close=lambda c: (c / "profile/private-canary").mkdir())]
-        phases = ("ready", "ready", "helper_cleanup", "prestart", "prestart", "identity", "private_inventory")
+                    dict(after_close=lambda c: (c / "profile/private-canary").mkdir()),
+                    dict(after_close=lambda c: (c / "helper-env/temp/private-canary").write_bytes(b"x")),
+                    dict(after_close=lambda c: (c / "helper-env/home").rmdir())]
+        phases = ("ready", "ready", "helper_cleanup", "prestart", "prestart", "private_inventory", "private_inventory",
+                  "private_inventory", "private_inventory")
         for index, options in enumerate(variants):
             events = []
             with self.subTest(variant=index), self.probe_patches(), mock.patch.object(P, "prepare", side_effect=fake_prepare), \
@@ -1185,8 +1255,14 @@ class ProducerTests(unittest.TestCase):
             application_env = P.environment(self.root)
             self.assertEqual(set(application_env), {"SYSTEMROOT", "WINDIR", "SYSTEMDRIVE", "COMSPEC", "PATH",
                 "TEMP", "TMP", "HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA"})
-            self.assertEqual(child.call_args.kwargs["env"], dict(application_env,
+            helper_env = P.environment(self.root / "helper-env")
+            self.assertEqual(child.call_args.kwargs["env"], dict(helper_env,
                 GITHUB_ACTIONS="true", RUNNER_OS="Windows", RUNNER_ENVIRONMENT="github-hosted"))
+            for key, folder in (("TEMP", "temp"), ("TMP", "temp"), ("HOME", "home"), ("USERPROFILE", "profile"),
+                                ("APPDATA", "appdata"), ("LOCALAPPDATA", "localappdata")):
+                self.assertEqual(application_env[key], str(self.root / folder))
+                self.assertEqual(helper_env[key], str(self.root / "helper-env" / folder))
+                self.assertNotEqual(application_env[key], helper_env[key])
             self.assertNotIn("private-canary", repr(child.call_args))
             result, _, _ = self.execute_case("listing")
             self.assertNotIn("private-canary", json.dumps(result))
