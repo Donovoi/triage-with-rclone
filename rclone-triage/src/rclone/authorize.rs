@@ -61,6 +61,12 @@ fn read_only_scope_args(backend: &str) -> Vec<&'static str> {
             "Files.Read Files.Read.All Sites.Read.All offline_access",
         ],
         "google photos" | "gphotos" => vec!["--gphotos-read-only"],
+        "hidrive" => vec![
+            "--hidrive-scope-access",
+            "ro",
+            "--hidrive-scope-role",
+            "user",
+        ],
         _ => Vec::new(),
     }
 }
@@ -460,6 +466,19 @@ pub fn spawn_authorize(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hidrive_authorize_uses_read_only_user_scope() {
+        assert_eq!(
+            read_only_scope_args("hidrive"),
+            [
+                "--hidrive-scope-access",
+                "ro",
+                "--hidrive-scope-role",
+                "user"
+            ]
+        );
+    }
 
     #[test]
     fn test_extract_auth_url_notice() {

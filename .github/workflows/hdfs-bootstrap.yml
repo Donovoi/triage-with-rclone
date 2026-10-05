@@ -1,0 +1,47 @@
+name: HDFS build-tool verification
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/hdfs-bootstrap.yml
+      - scripts/provider-lab/hdfs-bootstrap/**
+      - scripts/tests/test_hdfs_bootstrap.py
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hdfs-bootstrap-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify-download:
+    name: Verify the Maven download and signature
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - name: Check the verifier without downloads or native tools
+        run: python -B -m unittest discover -s scripts/tests -p test_hdfs_bootstrap.py
+      # This only checks public release bytes. It does not run Maven, Java,
+      # Docker, Hadoop, rclone or the application, and earns no provider pass.
+      - name: Verify the fixed public Maven release
+        run: >-
+          python -B scripts/provider-lab/hdfs-bootstrap/verify_bootstrap.py
+          --report "${{ runner.temp }}/hdfs-bootstrap.json"
+      # No archives, keys, raw GPG output or private download logs are uploaded.
+      - name: Keep the sanitized result
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: hdfs-build-tool-verification
+          path: ${{ runner.temp }}/hdfs-bootstrap.json
+          if-no-files-found: warn
+          retention-days: 14

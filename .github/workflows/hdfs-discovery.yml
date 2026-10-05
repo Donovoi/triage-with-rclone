@@ -1,0 +1,64 @@
+name: HDFS dependency preparation
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Inspect archive data or discover dependencies in a disposable container
+        type: choice
+        options:
+          - inspect
+          - discover
+        default: inspect
+  pull_request:
+    paths:
+      - .github/workflows/hdfs-discovery.yml
+      - scripts/provider-lab/hdfs-discovery/**
+      - scripts/provider-lab/hdfs-bootstrap/verify_bootstrap.py
+      - scripts/tests/test_hdfs_dependency_discovery.py
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hdfs-discovery-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  prepare:
+    name: Inspect the archive and capture dependency evidence
+    runs-on: ubuntu-latest
+    # Two bounded resolution stages plus verified bootstrap and cleanup reserve.
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - name: Check contracts without downloads or native tools
+        run: python -B -m unittest discover -s scripts/provider-lab/hdfs-discovery -p 'test_*.py'
+      # The container retrieves public build dependencies. Its network is not
+      # restricted to Maven repositories. It receives no host mounts or secrets.
+      # No Hadoop daemon, rclone or production application runs in this job.
+      - name: Verify inputs and prepare reviewable dependency evidence
+        env:
+          HDFS_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.mode || 'discover' }}
+        run: >-
+          python -B scripts/provider-lab/hdfs-discovery/hosted_discovery.py
+          --candidate scripts/provider-lab/hdfs-discovery/candidate
+          --verifier scripts/provider-lab/hdfs-bootstrap/verify_bootstrap.py
+          --mode "$HDFS_MODE"
+          --report "${{ runner.temp }}/hdfs-dependency-preparation.json"
+      # Only allowlisted observations survive. Raw POMs, publisher metadata,
+      # tokens, signed URLs, archives and command transcripts are not uploaded.
+      - name: Keep the sanitized result for review
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: hdfs-dependency-preparation
+          path: ${{ runner.temp }}/hdfs-dependency-preparation.json
+          if-no-files-found: warn
+          retention-days: 14

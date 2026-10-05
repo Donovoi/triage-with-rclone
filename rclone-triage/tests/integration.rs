@@ -80,8 +80,10 @@ if [ $# -gt 0 ]; then
   shift
 fi
 
-if [ "$cmd" = "lsjson" ]; then
-  echo '{"IsDir":false}'
+if [ "$cmd" = "rc" ] && [ "${1-}" = "--loopback" ] && [ "${2-}" = "operations/stat" ]; then
+  [ "$#" -eq 5 ]
+  [ "$5" = 'opt={"noModTime":true,"noMimeType":true,"filesOnly":true}' ]
+  echo '{"item":{"IsDir":false}}'
   exit 0
 fi
 
@@ -135,6 +137,137 @@ exit 1
     assert!(dst_file.exists());
     let copied = fs::read(&dst_file).expect("read dest");
     assert_eq!(copied, content);
+}
+
+#[test]
+fn test_download_stat_and_transfer_preserve_configured_root_and_exact_member() {
+    let script = r#"#!/bin/sh
+set -eu
+if [ "${1-}" = "--config" ]; then
+  shift 2
+fi
+[ "${1-}" = "rc" ]
+[ "${2-}" = "--loopback" ]
+case "${3-}" in
+  operations/stat)
+    [ "$#" -eq 6 ]
+    [ "$4" = 'fs=Archive:' ]
+    [ "$5" = 'remote=nested/part: Aé.txt' ]
+    [ "$6" = 'opt={"noModTime":true,"noMimeType":true,"filesOnly":true}' ]
+    printf '%s\n' "$4" "$5" > "$0.stat-seen"
+    echo '{"item":{"IsDir":false}}'
+    ;;
+  operations/copyfile)
+    [ -f "$0.stat-seen" ]
+    [ "$4" = 'srcFs=Archive:' ]
+    [ "$5" = 'srcRemote=nested/part: Aé.txt' ]
+    destination="${6#dstFs=}/${7#dstRemote=}"
+    printf '%s' 'synthetic archive member' > "$destination"
+    : > "$0.copy-seen"
+    echo '{}'
+    ;;
+  *) exit 79 ;;
+esac
+"#;
+    let (mock_dir, mock_path) = write_mock_rclone(script);
+    let runner = RcloneRunner::new(&mock_path);
+    let destination_dir = tempfile::tempdir().expect("destination");
+    let destination = destination_dir.path().join("result.txt");
+    let content = b"synthetic archive member";
+    let expected_hash = format!("{:x}", Sha256::digest(content));
+    let request =
+        DownloadRequest::new_copyto("Archive:nested/part: Aé.txt", destination.to_string_lossy())
+            .with_hash(Some(expected_hash), Some("sha256".to_string()))
+            .with_size(Some(content.len() as u64));
+    let result = DownloadQueue::new().download_one_verified(&runner, &request);
+    assert!(
+        result.success,
+        "exact member acquisition: {:?}",
+        result.error
+    );
+    assert_eq!(result.hash_verified, Some(true));
+    assert_eq!(fs::read(&destination).unwrap(), content);
+    assert!(mock_dir.path().join("rclone-mock.copy-seen").is_file());
+    assert_eq!(
+        fs::read_to_string(mock_dir.path().join("rclone-mock.stat-seen")).unwrap(),
+        "fs=Archive:\nremote=nested/part: Aé.txt\n"
+    );
+}
+
+#[test]
+fn test_download_rejects_invalid_stat_items_before_transfer() {
+    let cases = [
+        ("{}", Some("Invalid source stat response")),
+        (
+            r#"{"item":null}"#,
+            Some("Source was not found or is not an individual file"),
+        ),
+        (
+            r#"{"item":{"IsDir":true}}"#,
+            Some("Source is not an individual file"),
+        ),
+        (
+            r#"{"item":{"IsDir":"false"}}"#,
+            Some("Source is not an individual file"),
+        ),
+        (r#"{"item":{}}"#, Some("Source is not an individual file")),
+        (
+            r#"{"item":false}"#,
+            Some("Source is not an individual file"),
+        ),
+        (r#"{"item":[]}"#, Some("Source is not an individual file")),
+        (r#"{"IsDir":false}"#, Some("Invalid source stat response")),
+        ("not JSON", None),
+    ];
+    for (response, expected_error) in cases {
+        // Every response is a fixed synthetic literal with no shell quotes.
+        let script = format!(
+            r#"#!/bin/sh
+set -eu
+if [ "${{1-}}" = "--config" ]; then
+  shift 2
+fi
+[ "${{1-}}" = "rc" ]
+[ "${{2-}}" = "--loopback" ]
+case "${{3-}}" in
+  operations/stat)
+    [ "$#" -eq 6 ]
+    [ "$4" = 'fs=Archive:' ]
+    [ "$5" = 'remote=planned-member.txt' ]
+    [ "$6" = 'opt={{"noModTime":true,"noMimeType":true,"filesOnly":true}}' ]
+    : > "$0.stat-seen"
+    printf '%s\n' '{response}'
+    ;;
+  operations/copyfile)
+    : > "$0.copy-attempted"
+    exit 79
+    ;;
+  *) exit 78 ;;
+esac
+"#
+        );
+        let (mock_dir, mock_path) = write_mock_rclone(&script);
+        let runner = RcloneRunner::new(&mock_path);
+        let destination_dir = tempfile::tempdir().expect("destination");
+        let destination = destination_dir.path().join("must-not-exist.txt");
+        let request = DownloadRequest::new_copyto(
+            "Archive:planned-member.txt",
+            destination.to_string_lossy(),
+        );
+        let result = DownloadQueue::new().download_one_verified(&runner, &request);
+        assert!(!result.success, "accepted invalid stat response {response}");
+        let error = result.error.as_deref().expect("stat error");
+        if let Some(expected) = expected_error {
+            assert!(
+                error.contains(expected),
+                "wrong error for {response}: {error}"
+            );
+        }
+        assert!(mock_dir.path().join("rclone-mock.stat-seen").is_file());
+        assert!(!mock_dir.path().join("rclone-mock.copy-attempted").exists());
+        assert!(!destination.exists());
+        assert_eq!(fs::read_dir(destination_dir.path()).unwrap().count(), 0);
+    }
 }
 
 #[test]
@@ -291,10 +424,6 @@ fi
 
 case "$cmd" in
   lsjson)
-    if [ "${{1-}}" = "--stat" ]; then
-      echo '{{"IsDir":false}}'
-      exit 0
-    fi
     cat <<'JSON'
 [
   {{"Path":"file.txt","Size":{size},"ModTime":"2024-01-01T00:00:00Z","IsDir":false,"Hashes":{{"SHA256":"{hash}"}}}}
@@ -302,6 +431,12 @@ case "$cmd" in
 JSON
     ;;
   rc)
+    if [ "${{1-}}" = "--loopback" ] && [ "${{2-}}" = "operations/stat" ]; then
+      [ "$#" -eq 5 ]
+      [ "$5" = 'opt={{"noModTime":true,"noMimeType":true,"filesOnly":true}}' ]
+      echo '{{"item":{{"IsDir":false}}}}'
+      exit 0
+    fi
     shift 2
     srcfs="${{1#srcFs=}}"
     srcname="${{2#srcRemote=}}"
@@ -431,8 +566,10 @@ if [ $# -gt 0 ]; then
   shift
 fi
 
-if [ "$cmd" = "lsjson" ]; then
-  echo '{"IsDir":false}'
+if [ "$cmd" = "rc" ] && [ "${1-}" = "--loopback" ] && [ "${2-}" = "operations/stat" ]; then
+  [ "$#" -eq 5 ]
+  [ "$5" = 'opt={"noModTime":true,"noMimeType":true,"filesOnly":true}' ]
+  echo '{"item":{"IsDir":false}}'
   exit 0
 fi
 
@@ -478,8 +615,10 @@ if [ $# -gt 0 ]; then
   shift
 fi
 
-if [ "$cmd" = "lsjson" ]; then
-  echo '{"IsDir":false}'
+if [ "$cmd" = "rc" ] && [ "${1-}" = "--loopback" ] && [ "${2-}" = "operations/stat" ]; then
+  [ "$#" -eq 5 ]
+  [ "$5" = 'opt={"noModTime":true,"noMimeType":true,"filesOnly":true}' ]
+  echo '{"item":{"IsDir":false}}'
   exit 0
 fi
 
