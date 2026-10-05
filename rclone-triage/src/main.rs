@@ -583,7 +583,7 @@ fn cli_list_remote(
     app_guard: &AppGuard,
 ) -> Result<()> {
     use rclone_triage::case::directory::{create_case_directories, snapshot_config};
-    use rclone_triage::files::export::export_listing;
+    use rclone_triage::files::listing::list_remote_to_csv;
     use rclone_triage::utils::path::ensure_no_link_components;
 
     let source_config = std::path::Path::new(source_config);
@@ -616,25 +616,19 @@ fn cli_list_remote(
     let runner = RcloneRunner::new(binary.path())
         .with_config(config.path())
         .with_cancel_flag(app_guard.shutdown.clone());
-    // Full recursive inventory, without provider-specific hash or fast-list
-    // fallbacks. The exported rows retain their exact selected remote identity.
-    let mut entries = list_path(
-        &runner,
-        &format!("{remote}:"),
-        ListPathOptions::without_hashes().without_fast_list(),
-    )?;
-    if runner.is_cancelled() {
-        bail!("Listing cancelled");
-    }
-    for entry in &mut entries {
-        entry.remote_name = Some(remote.to_owned());
-    }
+    // Canonicalize the existing parent before tempfile creates its path. On
+    // Windows this supplies the extended-length prefix required by tempfile's
+    // direct Win32 no-replace publication, for BOTH source and destination.
+    ensure_no_link_components(&dirs.listings)?;
+    let listings = std::fs::canonicalize(&dirs.listings)?;
     let staged = tempfile::Builder::new()
         .prefix(".inventory-")
         .suffix(".tmp")
-        .tempfile_in(&dirs.listings)?;
-    export_listing(&entries, staged.path())?;
-    if entries.is_empty() {
+        .tempfile_in(&listings)?;
+    // Full recursive CSV with exact remote provenance and no retained entries,
+    // hash/fast-list fallback, or partial-success publication.
+    let total_entries = list_remote_to_csv(&runner, remote, staged.path())?;
+    if total_entries == 0 {
         // The shared exporter emits its header with the first row. An empty
         // successful inventory still needs the same explicit column schema.
         let mut writer = csv::Writer::from_writer(
@@ -658,7 +652,7 @@ fn cli_list_remote(
     if runner.is_cancelled() {
         bail!("Listing cancelled");
     }
-    let destination = dirs.listings.join("inventory.csv");
+    let destination = listings.join("inventory.csv");
     ensure_no_link_components(&destination)?;
     staged
         .persist_noclobber(&destination)
@@ -666,8 +660,7 @@ fn cli_list_remote(
         .context("Cannot publish the completed listing")?;
     println!(
         "Listed {} entries from {remote} -> {:?}",
-        entries.len(),
-        destination
+        total_entries, destination
     );
     Ok(())
 }

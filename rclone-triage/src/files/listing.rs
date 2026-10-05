@@ -471,6 +471,53 @@ where
     }
 }
 
+/// Stream an exact imported remote to CSV without retaining inventory entries.
+/// The caller owns the staging path and must publish it only after this succeeds.
+/// Unlike interactive listing, a missing JSON payload is not an empty inventory.
+pub fn list_remote_to_csv(
+    rclone: &RcloneRunner,
+    remote: &str,
+    csv_path: impl AsRef<Path>,
+) -> Result<usize> {
+    write_remote_listing_csv(rclone, remote, csv_path.as_ref(), |on_entry| {
+        run_lsjson_streaming(
+            rclone,
+            &format!("{remote}:"),
+            false,
+            false,
+            on_entry,
+            None,
+            true,
+        )
+    })
+}
+
+fn write_remote_listing_csv<F>(
+    rclone: &RcloneRunner,
+    remote: &str,
+    csv_path: &Path,
+    enumerate: F,
+) -> Result<usize>
+where
+    F: FnOnce(&mut dyn FnMut(RcloneLsJsonEntry) -> Result<()>) -> Result<usize>,
+{
+    let mut csv = crate::files::export::ListingCsvWriter::create(csv_path)?;
+    let mut on_entry = |raw: RcloneLsJsonEntry| -> Result<()> {
+        if rclone.is_cancelled() {
+            bail!("Listing cancelled");
+        }
+        let mut entry = FileEntry::from(raw);
+        entry.remote_name = Some(remote.to_owned());
+        csv.write_entry(&entry)
+    };
+    let count = enumerate(&mut on_entry)?;
+    if rclone.is_cancelled() {
+        bail!("Listing cancelled");
+    }
+    csv.flush()?;
+    Ok(count)
+}
+
 /// List files using `rclone lsf` and write the raw delimited output to `out_path`.
 ///
 /// This mirrors the PowerShell module approach:
@@ -615,6 +662,7 @@ fn list_path_inner(
         fast_list,
         &mut on_entry,
         None,
+        false,
     )?;
     Ok(entries)
 }
@@ -642,6 +690,7 @@ where
         fast_list,
         &mut on_entry,
         Some(on_progress),
+        false,
     )?;
 
     Ok(entries)
@@ -678,6 +727,7 @@ fn list_path_large_to_csv_inner(
         fast_list,
         &mut on_entry,
         Some(on_progress),
+        false,
     )?;
 
     csv.flush()?;
@@ -696,6 +746,7 @@ fn run_lsjson_streaming<'a>(
     fast_list: bool,
     on_entry: &'a mut dyn FnMut(RcloneLsJsonEntry) -> Result<()>,
     on_progress: Option<&'a mut dyn FnMut(usize)>,
+    require_json: bool,
 ) -> Result<usize> {
     let args = build_lsjson_args(target, include_hashes, fast_list);
     tracing::info!(
@@ -750,7 +801,7 @@ fn run_lsjson_streaming<'a>(
         // Special case: rclone exited successfully but produced no JSON at all.
         // This happens when the remote is empty or contains only inaccessible
         // entries (e.g. Google Drive dangling shortcuts). Treat as 0 results.
-        if exit_code == 0 && !stream_result.found_json {
+        if exit_code == 0 && !stream_result.found_json && !require_json {
             tracing::info!(
                 target = target,
                 stderr = %stderr_msg,
@@ -1120,6 +1171,129 @@ fn parse_lsf_modtime(value: &str) -> Option<DateTime<Utc>> {
 mod tests {
     use super::*;
     use std::io::Cursor;
+
+    #[test]
+    fn imported_csv_streams_many_rows_with_remote_provenance() {
+        use std::io::{Read, Write};
+        const FILES: usize = 12_000;
+        let root = tempfile::tempdir().unwrap();
+        let input = root.path().join("large.json");
+        let output = root.path().join("staged.csv");
+        let mut source = std::io::BufWriter::new(std::fs::File::create(&input).unwrap());
+        write!(
+            source,
+            r#"[{{"Path":"dir","Size":-1,"ModTime":null,"IsDir":true}}"#
+        )
+        .unwrap();
+        for index in 0..FILES {
+            write!(
+                source,
+                r#",{{"Path":"dir/item-{index:05}","Size":{},"ModTime":null,"IsDir":false}}"#,
+                index % 17
+            )
+            .unwrap();
+        }
+        source.write_all(b"]").unwrap();
+        source.flush().unwrap();
+        let runner = RcloneRunner::new("not-executed");
+        let count = write_remote_listing_csv(&runner, "Synthetic", &output, |on_entry| {
+            stream_lsjson_entries_from_reader(std::fs::File::open(&input).unwrap(), on_entry, None)
+                .count
+        })
+        .unwrap();
+        assert_eq!(count, FILES + 1);
+        let mut file = std::fs::File::open(output).unwrap();
+        let mut bom = [0; 3];
+        file.read_exact(&mut bom).unwrap();
+        assert_eq!(bom, [0xef, 0xbb, 0xbf]);
+        let mut csv = csv::Reader::from_reader(file);
+        assert_eq!(
+            csv.headers().unwrap(),
+            &csv::StringRecord::from(vec![
+                "path_encoding",
+                "remote",
+                "path",
+                "size",
+                "modified",
+                "is_dir",
+                "hash",
+                "hash_type",
+            ])
+        );
+        let mut observed = 0;
+        for row in csv.records() {
+            let row = row.unwrap();
+            assert_eq!(
+                (&row[0], &row[1], &row[4], &row[6], &row[7]),
+                ("excel-safe-v1", "Synthetic", "", "", "")
+            );
+            if observed == 0 {
+                assert_eq!((&row[2], &row[3], &row[5]), ("dir", "", "true"));
+            } else {
+                let index = observed - 1;
+                assert_eq!(&row[2], format!("dir/item-{index:05}"));
+                assert_eq!(&row[3], (index % 17).to_string());
+                assert_eq!(&row[5], "false");
+            }
+            observed += 1;
+        }
+        assert_eq!(observed, FILES + 1);
+    }
+
+    #[test]
+    fn imported_csv_rejects_incomplete_stream_after_emitting_a_row() {
+        let root = tempfile::tempdir().unwrap();
+        let runner = RcloneRunner::new("not-executed");
+        let mut emitted = 0;
+        let input = br#"[{"Path":"first","Size":1,"ModTime":null,"IsDir":false}"#;
+        let staged_path;
+        {
+            let staged = tempfile::NamedTempFile::new_in(root.path()).unwrap();
+            staged_path = staged.path().to_owned();
+            let result =
+                write_remote_listing_csv(&runner, "Synthetic", staged.path(), |on_entry| {
+                    let mut observe = |entry| {
+                        emitted += 1;
+                        on_entry(entry)
+                    };
+                    stream_lsjson_entries_from_reader(
+                        std::io::Cursor::new(input),
+                        &mut observe,
+                        None,
+                    )
+                    .count
+                });
+            assert!(result.is_err());
+            assert_eq!(emitted, 1);
+        }
+        assert!(!staged_path.exists());
+        assert!(!root.path().join("inventory.csv").exists());
+    }
+
+    #[test]
+    fn imported_csv_cancellation_after_an_entry_is_not_success() {
+        let root = tempfile::tempdir().unwrap();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let runner = RcloneRunner::new("not-executed").with_cancel_flag(cancel.clone());
+        let result = write_remote_listing_csv(
+            &runner,
+            "Synthetic",
+            &root.path().join("staged.csv"),
+            |on_entry| {
+                on_entry(
+                    serde_json::from_str(
+                        r#"{"Path":"first","Size":1,"ModTime":null,"IsDir":false}"#,
+                    )
+                    .unwrap(),
+                )?;
+                // Even an otherwise complete one-entry stream cannot report success
+                // after cancellation arrives between its final entry and flush.
+                cancel.store(true, Ordering::Relaxed);
+                Ok(1)
+            },
+        );
+        assert!(result.unwrap_err().to_string().contains("cancelled"));
+    }
 
     #[test]
     fn test_parse_lsjson() {

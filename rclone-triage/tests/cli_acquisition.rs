@@ -238,13 +238,106 @@ fn cli_imported_listing_is_complete_recursive_and_preserves_exact_provenance() {
         hex::encode(Sha256::digest(fixture.original.as_bytes()))
     );
     assert_eq!(
-        provenance["working_path"],
-        snapshots[0].to_string_lossy().as_ref()
+        fs::canonicalize(provenance["working_path"].as_str().unwrap()).unwrap(),
+        fs::canonicalize(snapshots[0]).unwrap()
     );
     assert!(files(&fixture.temp.path().join("output/review-case/downloads")).is_empty());
     assert_eq!(
         files(&fixture.temp.path().join("output/review-case/listings")),
         vec![listing_path(&fixture)]
+    );
+}
+
+#[test]
+fn cli_imported_listing_streams_complete_bounded_large_inventory() {
+    const FILES: usize = 512;
+    let fixture = Fixture::new();
+    let source = fixture.temp.path().join("a");
+    fs::remove_file(source.join("same.txt")).unwrap();
+    fs::create_dir(source.join("many")).unwrap();
+    for index in 0..FILES {
+        fs::write(
+            source.join(format!("many/file-{index:04}.txt")),
+            b"SYNTHETIC",
+        )
+        .unwrap();
+    }
+    let output = listing_command(&fixture, "RemoteA").output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let rows = read_listing(&listing_path(&fixture));
+    assert_eq!(rows.len(), FILES + 1);
+    let mut expected: std::collections::BTreeSet<_> = (0..FILES)
+        .map(|i| format!("many/file-{i:04}.txt"))
+        .collect();
+    let mut directories = 0;
+    for row in rows {
+        assert_eq!(&row[1], "RemoteA");
+        if &row[5] == "true" {
+            assert_eq!(&row[2], "many");
+            directories += 1;
+        } else {
+            assert!(expected.remove(&row[2]), "unexpected or repeated path");
+            assert_eq!(&row[3], "9");
+        }
+    }
+    assert_eq!(directories, 1);
+    assert!(expected.is_empty());
+    assert_eq!(
+        fs::read_to_string(&fixture.config).unwrap(),
+        fixture.original
+    );
+}
+
+#[test]
+fn cli_imported_listing_publishes_at_long_windows_path_without_clobber() {
+    let fixture = Fixture::new();
+    let mut parent = fixture.temp.path().join("long-output");
+    while parent.as_os_str().to_string_lossy().len() < 280 {
+        parent = parent.join("synthetic-parent-component-0123456789");
+    }
+    // Use the public, unprefixed path. The application must canonicalize the
+    // existing listings parent for tempfile's direct Win32 no-replace rename.
+    let mut command = Command::new(env!("CARGO_BIN_EXE_rclone-triage"));
+    command
+        .current_dir(fixture.temp.path())
+        .env("TEMP", fixture.temp.path())
+        .env("TMP", fixture.temp.path())
+        .args([
+            "--name",
+            "long-case",
+            "--list-remote",
+            "RemoteA",
+            "--rclone-config-path",
+        ])
+        .arg(&fixture.config)
+        .arg("--output-dir")
+        .arg(&parent);
+    let output = command.output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let listing = parent.join("long-case/listings/inventory.csv");
+    let rows = read_listing(&listing);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        (&rows[0][1], &rows[0][2], &rows[0][3]),
+        ("RemoteA", "same.txt", "8")
+    );
+    let before = fs::read(&listing).unwrap();
+    let second = command.output().unwrap();
+    assert!(!second.status.success());
+    assert!(String::from_utf8_lossy(&second.stderr).contains("requires a new case directory"));
+    assert_eq!(fs::read(&listing).unwrap(), before);
+    assert_eq!(files(listing.parent().unwrap()), vec![listing]);
+    assert_eq!(
+        fs::read_to_string(&fixture.config).unwrap(),
+        fixture.original
     );
 }
 
