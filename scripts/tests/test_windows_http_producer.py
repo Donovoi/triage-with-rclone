@@ -68,7 +68,7 @@ def materialize(case, name):
         for path, body in sorted(BODIES.items()):
             writer.writerow(["excel-safe-v1", "Synthetic", path, len(body), "2025-01-02T03:04:05+00:00", "false", "", ""])
         for path in ("large", "nested"):
-            writer.writerow(["excel-safe-v1", "Synthetic", path, "", "0001-01-01T00:00:00+00:00", "true", "", ""])
+            writer.writerow(["excel-safe-v1", "Synthetic", path, "", "2000-01-01T00:00:00+00:00", "true", "", ""])
         (base / "listings/inventory.csv").write_bytes(b"\xef\xbb\xbf" + out.getvalue().encode())
         return config
     names = sorted(BODIES) if name == "acquisition" else ["missing-synthetic.txt" if name == "missing" else
@@ -286,6 +286,112 @@ class ProducerTests(unittest.TestCase):
                 (base / "downloads/Synthetic/README-synthetic.txt").write_bytes(BODIES["README-synthetic.txt"])
                 (base / "extra.private").unlink(missing_ok=True)
                 manifest.write_bytes(original)
+
+    def test_listing_uses_exact_default_directory_time_and_keeps_full_row_oracle(self):
+        case, _ = self.prepared_oracle("listing")
+        path = case / "output/synthetic-case/listings/inventory.csv"
+        original = list(csv.reader(io.StringIO(path.read_bytes().decode("utf-8-sig"), newline="")))
+        self.assertEqual(P.check_listing(case), {"inventory_exact": True, "listing_complete": True})
+        self.assertEqual(len(original), 7)
+        self.assertEqual([row[4] for row in original[1:] if row[5] == "true"],
+                         ["2000-01-01T00:00:00+00:00"] * 2)
+        mutations = []
+        for index in (5, 6):
+            for timestamp in ("0001-01-01T00:00:00+00:00", "2001-01-01T00:00:00+00:00", "2000-01-01T00:00:00Z", ""):
+                rows = copy.deepcopy(original)
+                rows[index][4] = timestamp
+                mutations.append(rows)
+        for column in range(8):
+            rows = copy.deepcopy(original)
+            rows[1][column] = "invalid-synthetic-cell"
+            mutations.append(rows)
+        mutations.extend([original[:-1], original + [original[1]], [original[0]] + original[2:]])
+        for index, rows in enumerate(mutations):
+            with self.subTest(mutation=index):
+                text = io.StringIO(newline="")
+                csv.writer(text).writerows(rows)
+                path.write_bytes(b"\xef\xbb\xbf" + text.getvalue().encode("utf-8"))
+                with self.assertRaisesRegex(P.ProducerError, "^listing_invalid$"):
+                    P.check_listing(case)
+
+    def cleanup_observation(self, output):
+        lines = output.getvalue().splitlines()
+        self.assertEqual(len(lines), 1)
+        self.assertTrue(lines[0].startswith("application_cleanup_diagnostic="))
+        value = json.loads(lines[0].split("=", 1)[1])
+        self.assertEqual(set(value), {"scope", "stage", "location", "entries", "directories", "files", "total_bytes"})
+        return value
+
+    def test_cleanup_residue_reports_only_counts_and_preserves_primary_listing_failure(self):
+        original_materialize = materialize
+        def with_residue(case, name):
+            config = original_materialize(case, name)
+            path = case / "output/synthetic-case/listings/inventory.csv"
+            path.write_bytes(path.read_bytes().replace(b"2000-01-01", b"0001-01-01"))
+            private = case / "profile/private-name-canary"
+            private.mkdir()
+            (private / "private-content-canary").write_bytes(b"xyz")
+            return config
+        output = io.StringIO()
+        with mock.patch(__name__ + ".materialize", side_effect=with_residue), \
+             mock.patch.object(P, "remove_owned") as remove, redirect_stdout(output):
+            result, _, suite = self.execute_case("listing")
+        self.assertEqual(result["failure_code"], "listing_invalid")
+        self.assertEqual(result["status"], "failed")
+        self.assertTrue(result["checks"]["process_cleanup"])
+        self.assertFalse(result["checks"]["temp_cleanup"])
+        remove.assert_not_called()
+        self.assertEqual((suite / "listing/profile/private-name-canary/private-content-canary").read_bytes(), b"xyz")
+        self.assertEqual(self.cleanup_observation(output), dict(scope="listing", stage="private_inventory", location="profile",
+            entries=2, directories=1, files=1, total_bytes=3))
+        self.assertNotIn("canary", output.getvalue())
+        self.assertNotIn(str(self.root), output.getvalue())
+
+    def test_cleanup_unreadable_inventory_has_unknown_counts_and_no_delete(self):
+        original_inventory = P.inventory
+        def failed(path):
+            if Path(path).name == "appdata":
+                raise OSError("private-path-canary")
+            return original_inventory(path)
+        output = io.StringIO()
+        with mock.patch.object(P, "inventory", side_effect=failed), mock.patch.object(P, "remove_owned") as remove, redirect_stdout(output):
+            result, _, suite = self.execute_case("listing")
+        self.assertEqual(result["failure_code"], "cleanup_failed")
+        self.assertTrue(result["checks"]["inventory_exact"])
+        self.assertFalse(result["checks"]["temp_cleanup"])
+        self.assertTrue((suite / "listing").is_dir())
+        remove.assert_not_called()
+        self.assertEqual(self.cleanup_observation(output), dict(scope="listing", stage="private_inventory", location="appdata",
+            entries=None, directories=None, files=None, total_bytes=None))
+        self.assertNotIn("canary", output.getvalue())
+
+    def test_cleanup_removal_failure_is_distinct_from_successful_acl_verification(self):
+        output = io.StringIO()
+        with mock.patch.object(P, "remove_owned", side_effect=OSError("private-removal-canary")), redirect_stdout(output):
+            result, _, suite = self.execute_case("listing")
+        self.assertEqual(result["failure_code"], "cleanup_failed")
+        self.assertTrue(result["checks"]["process_cleanup"])
+        self.assertFalse(result["checks"]["temp_cleanup"])
+        self.assertTrue((suite / "listing").is_dir())
+        self.assertEqual(self.cleanup_observation(output), dict(scope="listing", stage="owned_removal", location=None,
+            entries=None, directories=None, files=None, total_bytes=None))
+        self.assertNotIn("canary", output.getvalue())
+
+    def test_cleanup_diagnostic_rejects_unbounded_or_nonfinite_fields(self):
+        counts = dict(entries=2, directories=1, files=1, total_bytes=3)
+        for fields in (("private-case", "private_inventory", "profile", counts),
+                       ("listing", "private-stage", "profile", counts),
+                       ("listing", "private_inventory", "private-path", counts),
+                       ("listing", "private_inventory", "profile", dict(counts, entries=True)),
+                       ("listing", "private_inventory", "profile", dict(counts, entries=1025)),
+                       ("listing", "private_inventory", "profile", dict(counts, files=0)),
+                       ("listing", "private_inventory", "profile", dict(counts, total_bytes=512 * 1024 * 1024 + 1)),
+                       ("listing", "private_inventory", "profile", dict(counts, extra="private-canary")),
+                       ("listing", "owned_removal", None, counts)):
+            with self.subTest(fields=fields[:3]), redirect_stdout(io.StringIO()) as output:
+                with self.assertRaisesRegex(P.ProducerError, "^cleanup_failed$"):
+                    P.cleanup_diagnostic(*fields)
+                self.assertEqual(output.getvalue(), "")
 
     def test_wrong_hash_must_retain_exact_original_bytes(self):
         case, config = self.prepared_oracle("mismatch")
