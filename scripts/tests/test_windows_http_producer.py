@@ -185,11 +185,17 @@ class ProducerTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.app = self.root / "built.exe"
         self.app.write_bytes(b"inert application bytes")
+        (self.root / "System32").mkdir()
+        self.profile = self.root / "ci-profile"
+        (self.profile / "AppData/Roaming").mkdir(parents=True)
+        (self.profile / "AppData/Local").mkdir()
         self.digest = hashlib.sha256(self.app.read_bytes()).hexdigest()
         self.no_native = mock.patch.object(P.subprocess, "Popen", side_effect=AssertionError("native forbidden"))
         self.no_native.start()
         self.env = mock.patch.dict(os.environ, {"SYSTEMROOT": str(self.root), "GITHUB_SHA": "b" * 40,
-            "RUNNER_TEMP": str(self.root)})
+            "RUNNER_TEMP": str(self.root), "USERPROFILE": str(self.profile),
+            "APPDATA": str(self.profile / "AppData/Roaming"), "LOCALAPPDATA": str(self.profile / "AppData/Local"),
+            "TEMP": str(self.root), "TMP": str(self.root)})
         self.env.start()
     def tearDown(self):
         self.env.stop()
@@ -553,6 +559,70 @@ class ProducerTests(unittest.TestCase):
             self.assertEqual(P.setup_probe(), 1)
         self.assertNotIn("private-canary", output.getvalue())
         remove.assert_not_called()
+
+    def test_setup_environment_is_exact_os_profile_allowlist_and_never_inherits_secrets(self):
+        extras = {"PATH": "private-canary", "COMSPEC": "private-canary", "WINDIR": "private-canary",
+                  "SYSTEMDRIVE": "private-canary", "AWS_SECRET_ACCESS_KEY": "private-canary",
+                  "RCLONE_CONFIG": "private-canary", "HTTP_PROXY": "private-canary",
+                  "HTTPS_PROXY": "private-canary", "GITHUB_TOKEN": "private-canary"}
+        before = sorted(str(p.relative_to(self.root)) for p in self.root.rglob("*"))
+        with mock.patch.dict(os.environ, extras):
+            value = P.setup_environment()
+        self.assertEqual(value, {"SYSTEMROOT": str(self.root), "WINDIR": str(self.root),
+            "SYSTEMDRIVE": self.root.drive, "COMSPEC": str(self.root / "System32/cmd.exe"),
+            "PATH": str(self.root / "System32"), "USERPROFILE": str(self.profile),
+            "APPDATA": str(self.profile / "AppData/Roaming"), "LOCALAPPDATA": str(self.profile / "AppData/Local"),
+            "TEMP": str(self.root), "TMP": str(self.root), "GITHUB_ACTIONS": "true",
+            "RUNNER_OS": "Windows", "RUNNER_ENVIRONMENT": "github-hosted"})
+        self.assertNotIn("private-canary", repr(value))
+        self.assertEqual(before, sorted(str(p.relative_to(self.root)) for p in self.root.rglob("*")))
+
+    def test_setup_environment_rejects_missing_relative_unc_nonexistent_and_wrong_profile_dirs(self):
+        mutations = [("USERPROFILE", ""), ("APPDATA", "relative"), ("TMP", r"\\synthetic.invalid\share"),
+            ("TEMP", str(self.root / "absent")), ("LOCALAPPDATA", str(self.root)),
+            ("APPDATA", str(self.profile / "AppData/Local")), ("SYSTEMROOT", str(self.app))]
+        for name, value in mutations:
+            with self.subTest(name=name, value_kind=mutations.index((name, value))), mock.patch.dict(os.environ, {name: value}):
+                with self.assertRaises(P.ProducerError):
+                    P.setup_environment()
+        saved = os.environ.pop("APPDATA")
+        try:
+            with self.assertRaises(P.ProducerError):
+                P.setup_environment()
+        finally:
+            os.environ["APPDATA"] = saved
+
+    def test_setup_environment_reparse_guard_failure_blocks_launch_with_static_diagnostic(self):
+        actual_plain = P.plain
+        def linked(path, directory=False, **kwargs):
+            if Path(path) == self.profile:
+                raise P.ProducerError("preservation_failed")
+            return actual_plain(path, directory, **kwargs)
+        with mock.patch.object(P, "hosted_guard"), mock.patch.object(P, "plain", side_effect=linked), \
+             mock.patch.object(P.subprocess, "run") as child, redirect_stdout(io.StringIO()) as output:
+            with self.assertRaisesRegex(P.ProducerError, "^case_setup_failed$"):
+                P.prepare(self.root, "listing")
+        child.assert_not_called()
+        self.assertEqual(output.getvalue(), 'application_setup_diagnostic={"action":"Create","exit_code":null,"last_stage":null,"outcome":"environment_invalid","scope":"listing"}\n')
+
+    def test_setup_mixed_separator_unc_is_rejected_before_filesystem_lookup(self):
+        for value in (r"\/synthetic.invalid/share/path", r"/\synthetic.invalid/share/path", r"\\?\C:\synthetic"):
+            with self.subTest(grammar=value[:4]), mock.patch.dict(os.environ, {"TEMP": value}), \
+                 mock.patch.object(P, "plain", wraps=P.plain) as inspect:
+                # Pure Windows grammar is checked even in the Linux test job.
+                self.assertTrue(P.PureWindowsPath(value).drive.startswith("\\\\"))
+                with self.assertRaises(P.ProducerError):
+                    P.setup_environment()
+                self.assertFalse(any(str(call.args[0]) == str(Path(value)) for call in inspect.call_args_list))
+
+    def test_setup_child_gets_complete_allowlist_with_existing_timeout(self):
+        result = types.SimpleNamespace(returncode=0, stdout=self.setup_stream())
+        with mock.patch.object(P, "hosted_guard"), mock.patch.object(P, "powershell", return_value="fixed-system-powershell"), \
+             mock.patch.object(P, "hidden", return_value={}), mock.patch.object(P.subprocess, "run", return_value=result) as child:
+            P.prepare(self.root, "listing")
+        self.assertEqual(child.call_args.kwargs["env"], P.setup_environment())
+        self.assertEqual(child.call_args.kwargs["timeout"], 20)
+        self.assertEqual(child.call_args.args[0][1:5], ["-NoProfile", "-NonInteractive", "-File", str(P.HERE / "prepare_case.ps1")])
 
 
 if __name__ == "__main__":

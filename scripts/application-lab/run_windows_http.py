@@ -12,7 +12,7 @@ import hashlib
 import io
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import queue
 import re
 import shutil
@@ -191,7 +191,7 @@ SETUP_STAGES = {
     "Create": ("input", "parent", "identity", "acl", "compile", "create", "verify", "complete"),
     "Verify": ("input", "parent", "identity", "verify", "complete"),
 }
-SETUP_OUTCOMES = frozenset({"timeout", "launch_failed", "exit_failed", "protocol_failed", "parent_changed"})
+SETUP_OUTCOMES = frozenset({"timeout", "launch_failed", "environment_invalid", "exit_failed", "protocol_failed", "parent_changed"})
 
 
 def setup_progress(data, action):
@@ -229,14 +229,50 @@ def setup_diagnostic(outcome, action, scope, exit_code, stage):
     print("application_setup_diagnostic=" + E.compact(value).decode("ascii"), flush=True)
 
 
+def setup_environment():
+    """Explicit OS/profile directories for PowerShell's CodeDom compiler.
+
+    CodeDom passes its caller's environment to csc. This bounded allowlist tests
+    environment completeness; it does not identify one missing-variable cause.
+    Application children still use the separate private case environment.
+    """
+    def existing(name):
+        value = os.environ.get(name)
+        need(type(value) is str and 0 < len(value) <= 32767 and not value.startswith(("\\\\", "//")),
+             "case_setup_failed")
+        # Windows normalizes mixed leading separators into UNC/device drives.
+        # Reject that grammar before any filesystem metadata lookup.
+        need(not PureWindowsPath(value).drive.startswith("\\\\"), "case_setup_failed")
+        path = Path(value)
+        need(path.is_absolute(), "case_setup_failed")
+        plain(path, True)
+        return path
+    system = existing("SYSTEMROOT")
+    profile = existing("USERPROFILE")
+    appdata, localappdata = existing("APPDATA"), existing("LOCALAPPDATA")
+    need(same_path(str(appdata), profile / "AppData/Roaming") and
+         same_path(str(localappdata), profile / "AppData/Local"), "case_setup_failed")
+    temp, tmp = existing("TEMP"), existing("TMP")
+    system32 = system / "System32"
+    plain(system32, True)
+    return {"SYSTEMROOT": str(system), "WINDIR": str(system), "SYSTEMDRIVE": system.drive,
+            "COMSPEC": str(system32 / "cmd.exe"), "PATH": str(system32),
+            "USERPROFILE": str(profile), "APPDATA": str(appdata), "LOCALAPPDATA": str(localappdata),
+            "TEMP": str(temp), "TMP": str(tmp), "GITHUB_ACTIONS": "true", "RUNNER_OS": "Windows",
+            "RUNNER_ENVIRONMENT": "github-hosted"}
+
+
 def prepare(parent, name, action="Create"):
     hosted_guard()
     scope = "suite" if re.fullmatch(r"app-http-[a-f0-9]{32}", name) else name
     need(action in SETUP_STAGES and scope in {"suite", *E.CASE_ORDER}, "case_setup_failed")
     parent = Path(parent).absolute()
     original = identity(parent)
-    env = {key: os.environ[key] for key in ("SYSTEMROOT", "WINDIR", "TEMP", "TMP") if key in os.environ}
-    env.update(GITHUB_ACTIONS="true", RUNNER_OS="Windows", RUNNER_ENVIRONMENT="github-hosted")
+    try:
+        env = setup_environment()
+    except (OSError, ProducerError):
+        setup_diagnostic("environment_invalid", action, scope, None, None)
+        raise ProducerError("case_setup_failed") from None
     try:
         result = subprocess.run([powershell(), "-NoProfile", "-NonInteractive", "-File",
                                  str(HERE / "prepare_case.ps1"), "-Action", action,
