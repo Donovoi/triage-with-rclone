@@ -597,6 +597,127 @@ class FailurePathTests(unittest.TestCase):
                     self.assertNotIn(secret, public)
                 for claim in F.FALSE_CLAIMS: self.assertIs(value[claim], False)
 
+    @staticmethod
+    def hdfs_read_failures():
+        # Independent literals from pinned HDFS/protobuf sources, not producer patterns.
+        return (
+            (b"invalid offset", "client_hdfs_invalid_offset"),
+            (b"no available datanodes", "client_hdfs_no_datanodes"),
+            (b"invalid checksum", "client_hdfs_checksum_invalid"),
+            (b"proto: cannot parse invalid wire-format data", "client_hdfs_protobuf_invalid_wire"),
+            (b"proto:\xc2\xa0cannot parse invalid wire-format data", "client_hdfs_protobuf_invalid_wire"),
+            (b"read failed: ERROR_ACCESS_TOKEN (private-canary)", "client_hdfs_read_status_rejected"),
+        )
+
+    @staticmethod
+    def read_stderr(payload, label=b"README.txt", stage=b"send to output"):
+        return (b"ERROR : " + label + b": Failed to " + stage + b": " + payload
+                + b"\nNOTICE: Failed to cat: " + payload + b"\n")
+
+    def test_read_families_require_exact_send_output_for_each_acquisition_ordinal(self):
+        labels = (b"README.txt", b"empty.bin", b"cancel.bin", b"alpha.txt",
+                  b"data.bin", b"space name.txt", b"owner-only.txt", b"utf8.txt")
+        for payload, code in self.hdfs_read_failures():
+            for ordinal, label in enumerate(labels, 1):
+                raw = self.read_stderr(payload, label)
+                report = {}
+                with self.subTest(code=code, ordinal=ordinal):
+                    self.failure(code, F.require_client_success, Support, result(stderr=raw, code=1),
+                                 "cat", report=report, sample_ordinal=ordinal)
+                    self.assertEqual(report["client_failure"], dict(operation="cat", exit_code=1,
+                        sample_ordinal=ordinal, stderr_bytes=len(raw), stderr_line_count=2,
+                        final_error_template=True, object_error_stage="send_output"))
+                    for private in (payload, label, b"private-canary"):
+                        self.assertNotIn(private, F.canonical(report))
+            raw = self.read_stderr(payload).replace(b"ERROR :", b"2026/10/05 01:02:03 ERROR :").replace(
+                b"NOTICE: Failed to cat: ", b"2026/10/05 01:02:04 NOTICE: Failed to cat with 2 errors: last error was: ")
+            self.failure(code, F.require_client_success, Support, result(stderr=raw, code=1), "cat", sample_ordinal=1)
+            untouched = {"client_failure": None}
+            F.require_client_success(Support, result(stderr=raw, code=0), "cat", report=untouched, sample_ordinal=1)
+            self.assertEqual(untouched, {"client_failure": None})
+
+    def test_new_read_families_do_not_relabel_unobserved_open_or_other_operations(self):
+        for payload, _ in self.hdfs_read_failures():
+            final = b"NOTICE: Failed to cat: " + payload + b"\n"
+            record = b"ERROR : README.txt: Failed to send to output: " + payload + b"\n"
+            for raw, ordinal, expected_stage in (
+                (record + final, None, None),
+                (self.read_stderr(payload, stage=b"open"), 1, "open"),
+                (final, 1, "unrecognized"),
+                (record + final, 2, "unrecognized"),
+                (self.read_stderr(payload, label=b"/synthetic/README.txt"), 1, "unrecognized"),
+                (record + record + final, 1, "unrecognized"),
+                (record + b"ERROR : README.txt: Failed to open: " + payload + b"\n" + final, 1, "unrecognized"),
+                (record + b"NOTICE: Failed to cat: different-private-canary\n", 1, "unrecognized"),
+            ):
+                report = {}
+                with self.subTest(payload=payload, ordinal=ordinal, stage=expected_stage):
+                    self.failure("client_failed", F.require_client_success, Support, result(stderr=raw, code=1),
+                                 "cat", report=report, sample_ordinal=ordinal)
+                    self.assertEqual(report["client_failure"]["object_error_stage"], expected_stage)
+            for operation in ("version", "lsjson"):
+                raw = b"NOTICE: Failed to " + operation.encode() + b": " + payload + b"\n"
+                self.failure("client_failed", F.require_client_success, Support, result(stderr=raw, code=1), operation)
+
+    def test_read_status_names_are_closed_and_opaque_bytes_are_bounded(self):
+        statuses = (b"ERROR", b"ERROR_CHECKSUM", b"ERROR_INVALID", b"ERROR_EXISTS", b"ERROR_ACCESS_TOKEN",
+                    b"CHECKSUM_OK", b"ERROR_UNSUPPORTED", b"OOB_RESTART", b"OOB_RESERVED1", b"OOB_RESERVED2",
+                    b"OOB_RESERVED3", b"IN_PROGRESS", b"ERROR_BLOCK_PINNED")
+        for status in statuses:
+            for opaque in (b"", b"private-canary", b"'quoted' (opaque) [value] \\", b"x" * 1024):
+                payload = b"read failed: " + status + b" (" + opaque + b")"
+                with self.subTest(status=status, size=len(opaque)):
+                    self.failure("client_hdfs_read_status_rejected", F.require_client_success, Support,
+                                 result(stderr=self.read_stderr(payload), code=1), "cat", sample_ordinal=1)
+        for status in (b"SUCCESS", b"0", b"5", b"14", b"-1", b"ERROR_UNKNOWN", b"error", b"ERROR ", b"ERROR\t"):
+            payload = b"read failed: " + status + b" (private-canary)"
+            self.failure("client_failed", F.require_client_success, Support,
+                         result(stderr=self.read_stderr(payload), code=1), "cat", sample_ordinal=1)
+        for opaque in (b"x" * 1025, b"\x00", b"\t", b"\r", b"\n", b"\x1b", b"\x7f", b"\x80", b"caf\xc3\xa9", b"\xc2\xa0"):
+            payload = b"read failed: ERROR (" + opaque + b")"
+            self.failure("client_failed", F.require_client_success, Support,
+                         result(stderr=self.read_stderr(payload), code=1), "cat", sample_ordinal=1)
+
+    def test_read_literal_templates_do_not_strip_or_normalize_error_payloads(self):
+        bad = (
+            b" invalid checksum", b"invalid checksum ", b"invalid checksum\r", b"invalid checksum\x00",
+            b"Invalid checksum", b"invalid checksum: private-canary", b"wrapped: invalid offset",
+            b"proto:  cannot parse invalid wire-format data", b"proto:\tcannot parse invalid wire-format data",
+            b"proto: \xc2\xa0cannot parse invalid wire-format data", b"proto:\xa0cannot parse invalid wire-format data",
+            b"proto:\xe2\x80\x83cannot parse invalid wire-format data", b"proto: cannot parse invalid wire-format data suffix",
+            b"read failed: ERROR(private-canary)", b"read failed: ERROR (private-canary",
+            b"Read failed: ERROR (private-canary)", b"read failed: ERROR (private-canary) suffix",
+        )
+        for payload in bad:
+            with self.subTest(payload=payload):
+                self.failure("client_failed", F.require_client_success, Support,
+                             result(stderr=self.read_stderr(payload), code=1), "cat", sample_ordinal=1)
+        # Existing more-specific categories still win even with the observed read stage.
+        for payload, code in ((b"unexpected EOF", "client_error_unexpected_eof"),
+                              (b"rspauth not in ''", "client_sasl_empty_rspauth"),
+                              (b"invalid response from datanode: HMAC check failed", "client_datanode_hmac_failed")):
+            self.failure(code, F.require_client_success, Support,
+                         result(stderr=self.read_stderr(payload), code=1), "cat", sample_ordinal=1)
+
+    def test_observed_read_failure_survives_orderly_cleanup_without_promotion(self):
+        for payload, code in self.hdfs_read_failures():
+            raw = self.read_stderr(payload)
+            class FailedRead(RecoveryDocker):
+                def call(inner, args, **kw):
+                    if "cat" in args and "test:/synthetic/README.txt" in args:
+                        inner.calls.append((args, kw)); return result(b"", raw, 1)
+                    return super(FailedRead, inner).call(args, **kw)
+            with self.subTest(code=code):
+                value, _, retained = self.run_failed_probe(F.probe, FailedRead())
+                self.assertEqual(value["errors"], [code]); self.assertFalse(value["success"])
+                self.assertEqual(value["stage"], "acquisition"); self.assertIsNone(value["result"])
+                self.assertEqual(value["client_failure"]["object_error_stage"], "send_output")
+                self.assertTrue(value["controller_final"]["success"])
+                self.assertTrue(all(value["cleanup"].values())); self.assertFalse(retained)
+                for private in (payload, b"private-canary", b"README.txt"):
+                    self.assertNotIn(private, F.canonical(value))
+                for claim in F.FALSE_CLAIMS: self.assertIs(value[claim], False)
+
     def test_client_failure_metadata_has_closed_typed_fields_and_no_raw_values(self):
         raw = b"private@example.invalid /private/path\nNOTICE: Failed to cat: rspauth not in ''\n"
         report = {}
