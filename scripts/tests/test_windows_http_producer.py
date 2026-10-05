@@ -715,6 +715,8 @@ class ProducerTests(unittest.TestCase):
         bridge.case = self.root / name
         bridge.case.mkdir()
         bridge.last, bridge.forced, bridge.ready = None, False, False
+        bridge.closed_ready = False
+        bridge.stage_bytes, bridge.stage_invalid = bytearray(), False
         bridge.failed, bridge.done = threading.Event(), threading.Event()
         bridge.response_lock = threading.Lock()
         bridge.responses = bridge.calls = 0
@@ -790,6 +792,89 @@ class ProducerTests(unittest.TestCase):
         late._reader(io.BytesIO(line), "stdout")
         self.assertTrue(late.failed.is_set())
         self.assertFalse(late.close())
+
+    def test_close_ready_is_exact_terminal_and_never_native_completion(self):
+        bridge = self.bare_bridge("close-ready")
+        self.reply_on_write(bridge)
+        bridge.command("ready")
+        raw = b'{"schema_version":1,"action":"close_ready","ok":true,"state":"closed"}'
+        self.reply_on_write(bridge, raw)
+        self.assertEqual(bridge.command("close_ready"), json.loads(raw))
+        self.assertTrue(bridge.closed_ready)
+        self.assertNotIn("app_exit_code", bridge.last)
+        for action in ("start", "ready", "close_ready", "poll"):
+            with self.subTest(action=action), redirect_stdout(io.StringIO()):
+                with self.assertRaisesRegex(P.ProducerError, "^session_failed$"):
+                    bridge.command(action)
+        self.assertEqual(bridge.process.stdin.write.call_count, 2)
+        self.assertTrue(bridge.failed.is_set())
+        for value in ({}, dict(json.loads(raw), schema_version=True), dict(json.loads(raw), extra="private-canary"),
+                      dict(json.loads(raw), ok=False), dict(json.loads(raw), state="finished")):
+            with self.assertRaises(P.ProducerError):
+                P.validate_close_ready(value)
+
+    def test_close_ready_before_ready_after_start_and_extra_reply_are_rejected(self):
+        for scenario in ("before", "after", "extra"):
+            with self.subTest(scenario=scenario), redirect_stdout(io.StringIO()):
+                bridge = self.bare_bridge("close-order-" + scenario)
+                if scenario != "before":
+                    self.reply_on_write(bridge)
+                    bridge.command("ready")
+                if scenario == "after":
+                    self.reply_on_write(bridge, json.dumps(session("start")).encode())
+                    bridge.command("start")
+                if scenario == "extra":
+                    raw = b'{"schema_version":1,"action":"close_ready","ok":true,"state":"closed"}\n'
+                    bridge.process.stdin.write.side_effect = lambda _: bridge._reader(io.BytesIO(raw + raw), "stdout")
+                before = bridge.process.stdin.write.call_count
+                with self.assertRaisesRegex(P.ProducerError, "^session_failed$"):
+                    bridge.command("close_ready")
+                self.assertTrue(bridge.failed.is_set())
+                self.assertEqual(bridge.process.stdin.write.call_count, before + (scenario == "extra"))
+
+    def test_bridge_compile_markers_require_exact_complete_ordered_prefix(self):
+        first = b"application_bridge_stage=compile\n"
+        second = b"application_bridge_stage=compiled\n"
+        self.assertEqual(P.bridge_stage(first), "compile")
+        self.assertEqual(P.bridge_stage((first + second).replace(b"\n", b"\r\n")), "compiled")
+        for raw in (b"", first[:-1], first + second[:-1], second, first + first, first + b"\n",
+                    first + second + b"private-canary\n", b"private-canary\n" + first,
+                    first.replace(b"=", b"=\r"), first + b"x" * 4097):
+            with self.subTest(length=len(raw)):
+                self.assertIsNone(P.bridge_stage(raw))
+        bridge = self.bare_bridge("marker-reader")
+        bridge._reader(io.BytesIO(first + second + b"private-canary\n"), "stderr")
+        with redirect_stdout(io.StringIO()) as output:
+            bridge._diagnostic("ready", "wait", "timeout")
+        self.assertEqual(json.loads(output.getvalue().split("=", 1)[1]),
+            dict(action="ready", phase="wait", outcome="timeout", last_stage=None))
+        self.assertNotIn("canary", output.getvalue())
+
+    def test_session_timeout_protocol_and_io_diagnostics_preserve_failure(self):
+        for failure in ("timeout", "protocol", "write"):
+            bridge = self.bare_bridge("session-diagnostic-" + failure)
+            bridge.stage_bytes.extend(b"application_bridge_stage=compile\n")
+            if failure == "timeout":
+                bridge.messages.get = mock.Mock(side_effect=P.queue.Empty)
+            elif failure == "protocol":
+                self.reply_on_write(bridge, b'{"private-canary":"private-path"}')
+            else:
+                bridge.process.stdin.write.side_effect = OSError("private-canary")
+            with self.subTest(failure=failure), redirect_stdout(io.StringIO()) as output:
+                with self.assertRaisesRegex(P.ProducerError, "^session_failed$"):
+                    bridge.command("ready")
+            value = json.loads(output.getvalue().split("=", 1)[1])
+            expected = {"timeout": ("wait", "timeout"), "protocol": ("reply", "protocol_failed"), "write": ("write", "io_failed")}[failure]
+            self.assertEqual(value, dict(action="ready", phase=expected[0], outcome=expected[1], last_stage="compile"))
+            self.assertTrue(bridge.failed.is_set())
+            self.assertNotIn("canary", output.getvalue())
+            if failure == "timeout":
+                self.assertLessEqual(bridge.messages.get.call_args.kwargs["timeout"], 35)
+        for fields in (("private-canary", "wait", "timeout", None), ("ready", "private-canary", "timeout", None),
+                       ("ready", "wait", "private-canary", None), ("ready", "wait", "timeout", "private-canary")):
+            with redirect_stdout(io.StringIO()) as output, self.assertRaises(P.ProducerError):
+                P.session_diagnostic(*fields)
+            self.assertEqual(output.getvalue(), "")
 
     def test_hosted_guard_rejects_self_hosted_before_setup(self):
         with mock.patch.object(P.os, "name", "nt"), mock.patch.dict(os.environ, {
@@ -908,6 +993,125 @@ class ProducerTests(unittest.TestCase):
         self.assertEqual(prep.call_args_list[1].args[2], "Verify")
         self.assertEqual(list(self.root.glob("app-http-*")), [])
         self.assertEqual(list(self.root.glob("*.json")), [])
+
+    def probe_bridge_factory(self, *, ready=None, close_ok=True, before_ready=None, after_close=None, events=None):
+        events = [] if events is None else events
+        def factory(case):
+            (case / "bridge-stdout.private").write_bytes(b"private-canary")
+            (case / "bridge-stderr.private").write_bytes(b"private-canary")
+            class Session:
+                def command(self, action):
+                    events.append(action)
+                    if action == "ready":
+                        if before_ready:
+                            before_ready(case)
+                        if isinstance(ready, BaseException):
+                            raise ready
+                        return ready if ready is not None else {"schema_version": 1, "action": "ready", "ok": True, "state": "ready"}
+                    if action != "close_ready":
+                        raise AssertionError("app action forbidden")
+                    return {"schema_version": 1, "action": "close_ready", "ok": True, "state": "closed"}
+                def close(self):
+                    events.append("close")
+                    if after_close:
+                        after_close(case)
+                    return close_ok
+            return Session()
+        return factory
+
+    def test_bridge_probe_cli_has_no_application_or_receipt_and_removes_owned_tree(self):
+        events = []
+        def baseline(case):
+            (case / "profile/private-canary-dir/child").mkdir(parents=True)
+        with self.probe_patches(), mock.patch.object(P, "prepare", side_effect=fake_prepare) as prep, \
+             mock.patch.object(P, "Bridge", side_effect=self.probe_bridge_factory(before_ready=baseline, events=events)), \
+             redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(P.main(["--bridge-probe"]), 0)
+        self.assertEqual(output.getvalue(), "application_bridge_probe_passed\n")
+        self.assertEqual(events, ["ready", "close_ready", "close"])
+        self.assertEqual([c.args[2] if len(c.args) == 3 else "Create" for c in prep.call_args_list], ["Create", "Create", "Verify", "Verify"])
+        self.assertEqual(list(self.root.glob("app-http-*")), [])
+        self.assertEqual(list(self.root.glob("*.json")), [])
+
+    def test_bridge_probe_cli_rejects_mixed_preflight_and_application_flags(self):
+        for extra in (["--setup-probe"], *[[flag, "synthetic"] for flag in
+                ("--application", "--application-sha256", "--build-commit", "--report")]):
+            with self.subTest(flags=extra), mock.patch.object(P, "bridge_probe") as probe, \
+                 redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as error:
+                P.main(["--bridge-probe", *extra])
+            self.assertEqual(error.exception.code, 2)
+            probe.assert_not_called()
+
+    def test_bridge_probe_ready_cleanup_and_directory_uncertainty_retain_root(self):
+        def replace(case):
+            (case / "home").rename(case / "old-home")
+            (case / "home").mkdir()
+        variants = [dict(ready={}), dict(ready=P.ProducerError("session_failed")), dict(close_ok=False),
+                    dict(before_ready=lambda c: (c / "temp/private-canary").write_bytes(b"x")),
+                    dict(before_ready=replace), dict(after_close=replace),
+                    dict(after_close=lambda c: (c / "profile/private-canary").mkdir())]
+        phases = ("ready", "ready", "helper_cleanup", "prestart", "prestart", "identity", "private_inventory")
+        for index, options in enumerate(variants):
+            events = []
+            with self.subTest(variant=index), self.probe_patches(), mock.patch.object(P, "prepare", side_effect=fake_prepare), \
+                 mock.patch.object(P, "remove_owned") as remove, redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(P.bridge_probe(self.probe_bridge_factory(events=events, **options)), 1)
+            self.assertNotIn("start", events)
+            self.assertEqual(events.count("close"), 1)
+            self.assertTrue(output.getvalue().endswith("application_bridge_probe_failed\n"))
+            self.assertNotIn("canary", output.getvalue())
+            self.assertNotIn(str(self.root), output.getvalue())
+            line = next(line for line in output.getvalue().splitlines() if line.startswith("application_bridge_probe_diagnostic="))
+            value = json.loads(line.split("=", 1)[1])
+            self.assertEqual(set(value), {"stage", "failure_code"})
+            self.assertEqual(value["stage"], phases[index])
+            self.assertIn(value["failure_code"], P.E.FAILURE_CODES)
+            remove.assert_not_called()
+        self.assertEqual(len(list(self.root.glob("app-http-*"))), len(variants))
+
+    def test_bridge_probe_setup_acl_and_removal_failure_never_promote(self):
+        for phase in ("Create", "Verify", "remove"):
+            events = []
+            def prepare(parent, name, action="Create"):
+                result = fake_prepare(parent, name, action)
+                if action == phase:
+                    raise P.ProducerError("case_setup_failed")
+                return result
+            with self.subTest(phase=phase), self.probe_patches(), mock.patch.object(P, "prepare", side_effect=prepare), \
+                 mock.patch.object(P, "remove_owned", side_effect=P.ProducerError("cleanup_failed")) as remove, \
+                 redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(P.bridge_probe(self.probe_bridge_factory(events=events)), 1)
+            self.assertNotIn("start", events)
+            self.assertNotIn("passed", output.getvalue())
+            if phase != "remove":
+                remove.assert_not_called()
+        self.assertEqual(len(list(self.root.glob("app-http-*"))), 3)
+
+    def test_bridge_probe_source_unknown_and_reparse_failure_diagnostics_are_finite(self):
+        for variant in ("source", "unknown", "reparse"):
+            original_plain = P.plain
+            def plain(path, directory=False, **kwargs):
+                if variant == "reparse" and Path(path).name == "profile" and (Path(path).parent / "bridge-stdout.private").exists():
+                    raise P.ProducerError("preservation_failed")
+                return original_plain(path, directory, **kwargs)
+            factory = self.probe_bridge_factory(ready=ValueError("private-canary") if variant == "unknown" else None)
+            source_checks = [None, P.ProducerError("binding_failed")] if variant == "source" else [None, None, None]
+            with self.subTest(variant=variant), self.probe_patches(), mock.patch.object(P, "prepare", side_effect=fake_prepare), \
+                 mock.patch.object(P, "plain", side_effect=plain), mock.patch.object(P, "loaded_sources_preserved", side_effect=source_checks), \
+                 mock.patch.object(P, "remove_owned") as remove, redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(P.bridge_probe(factory), 1)
+            value = json.loads(next(line.split("=", 1)[1] for line in output.getvalue().splitlines()
+                if line.startswith("application_bridge_probe_diagnostic=")))
+            stage, code = {"source": ("source", "binding_failed"), "unknown": ("ready", "unexpected_failure"),
+                           "reparse": ("prestart", "preservation_failed")}[variant]
+            self.assertEqual(value, dict(stage=stage, failure_code=code))
+            self.assertNotIn("canary", output.getvalue())
+            self.assertNotIn(str(self.root), output.getvalue())
+            remove.assert_not_called()
+        for stage, code in (("private-canary", "cleanup_failed"), ("source", "private-canary")):
+            with redirect_stdout(io.StringIO()) as output, self.assertRaises(P.ProducerError):
+                P.bridge_probe_diagnostic(stage, code)
+            self.assertEqual(output.getvalue(), "")
 
     def test_setup_probe_rejects_all_application_receipt_arguments(self):
         for flag in ("--application", "--application-sha256", "--build-commit", "--report"):
