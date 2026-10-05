@@ -242,15 +242,117 @@ class ProducerTests(unittest.TestCase):
         self.assertEqual(list(suite.iterdir()), [])
         self.assertNotIn("pre-existing-canary", output.getvalue() + json.dumps(result))
 
-    def execute_profile_flow(self, index, *, before_app=None, after_app=None, ready_result=None):
+    def execute_profile_flow(self, index, *, before_app=None, after_app=None, ready_result=None, output=None):
         suite = self.root / ("profile-case-" + str(index))
         suite.mkdir()
         flow = Flow("listing", before_app=before_app, after_app=after_app, ready_result=ready_result)
+        output = io.StringIO() if output is None else output
         with mock.patch.object(P, "prepare", side_effect=fake_prepare), mock.patch.object(P.F, "serve_http", side_effect=flow.serve), \
-             mock.patch.object(P.time, "sleep"), redirect_stdout(io.StringIO()) as output:
+             mock.patch.object(P.time, "sleep"), redirect_stdout(output):
             result = P.run_case("listing", suite, self.app, self.digest, RUNTIME, session_factory=flow.factory)
         self.assertNotIn("private-canary", output.getvalue() + json.dumps(result))
         return result, flow, suite
+
+    def prestart_observation(self, output):
+        lines = output.getvalue().splitlines()
+        self.assertEqual(len(lines), 1)
+        self.assertTrue(lines[0].startswith("application_prestart_diagnostic="))
+        value = json.loads(lines[0].split("=", 1)[1])
+        self.assertEqual(set(value), {"scope", "stage", "location", "entries", "directories", "files", "total_bytes"})
+        self.assertNotIn(str(self.root), output.getvalue())
+        self.assertNotIn("canary", output.getvalue())
+        return value
+
+    def test_prestart_profile_failures_report_precise_counts_without_start_or_delete(self):
+        def replace(case):
+            (case / "profile").rename(case / "private-canary-old")
+            (case / "profile").mkdir()
+        def large(case):
+            for index in range(33):
+                (case / "profile" / ("private-canary-" + str(index))).mkdir()
+        mutations = [(lambda c: (c / "profile/private-canary").write_bytes(b"xyz"),
+                      "profile_directories", (1, 0, 1, 3)),
+                     (large, "profile_limit", (33, 33, 0, 0)),
+                     (replace, "profile_identity", (None, None, None, None))]
+        for index, (mutate, stage, counts) in enumerate(mutations):
+            with self.subTest(stage=stage), mock.patch.object(P, "remove_owned") as remove:
+                output = io.StringIO()
+                result, flow, suite = self.execute_profile_flow(index, before_app=mutate, output=output)
+                self.assertEqual(self.prestart_observation(output), dict(scope="listing", stage=stage, location="profile",
+                    **dict(zip(("entries", "directories", "files", "total_bytes"), counts))))
+                self.assertEqual(result["failure_code"], "cleanup_failed")
+                self.assertEqual(result["status"], "failed")
+                self.assertNotIn("start", flow.events)
+                self.assertFalse(result["checks"]["temp_cleanup"])
+                self.assertFalse(result["checks"]["runtime_observed"])
+                self.assertTrue((suite / "listing").is_dir())
+                remove.assert_not_called()
+
+    def test_prestart_other_roots_still_require_empty_and_report_fixed_location(self):
+        for location in ("temp", "home", "appdata", "localappdata"):
+            def residue(case):
+                (case / location / "private-canary-dir").mkdir()
+                (case / location / "private-canary-content").write_bytes(b"xyz")
+            with self.subTest(location=location), mock.patch.object(P, "remove_owned") as remove:
+                output = io.StringIO()
+                result, flow, suite = self.execute_profile_flow(location, before_app=residue, output=output)
+                self.assertEqual(self.prestart_observation(output), dict(scope="listing", stage="private_empty", location=location,
+                    entries=2, directories=1, files=1, total_bytes=3))
+                self.assertEqual(result["failure_code"], "cleanup_failed")
+                self.assertNotIn("start", flow.events)
+                self.assertFalse(result["checks"]["temp_cleanup"])
+                self.assertTrue((suite / "listing").is_dir())
+                remove.assert_not_called()
+
+    def test_prestart_unreadable_or_link_inventory_reports_unknown_counts(self):
+        original = P.inventory
+        for location in ("profile", "home"):
+            for error in (OSError("private-canary-path"), P.ProducerError("preservation_failed")):
+                def failed(path):
+                    if Path(path).name == location:
+                        raise error
+                    return original(path)
+                with self.subTest(location=location, failure=type(error).__name__), \
+                     mock.patch.object(P, "inventory", side_effect=failed), mock.patch.object(P, "remove_owned") as remove:
+                    output = io.StringIO()
+                    result, flow, suite = self.execute_profile_flow(location + type(error).__name__, output=output)
+                    stage = "profile_inventory" if location == "profile" else "private_inventory"
+                    self.assertEqual(self.prestart_observation(output), dict(scope="listing", stage=stage, location=location,
+                        entries=None, directories=None, files=None, total_bytes=None))
+                    self.assertEqual(result["failure_code"], "unexpected_failure" if isinstance(error, OSError) else "preservation_failed")
+                    self.assertNotIn("start", flow.events)
+                    self.assertFalse(result["checks"]["temp_cleanup"])
+                    self.assertTrue((suite / "listing").is_dir())
+                    remove.assert_not_called()
+
+    def test_prestart_original_exception_survives_even_failed_diagnostic(self):
+        case = self.root / "prestart-direct"
+        case.mkdir()
+        (case / "profile").mkdir()
+        error = OSError("private-canary")
+        with mock.patch.object(P, "inventory", side_effect=error), \
+             mock.patch.object(P, "prestart_diagnostic", side_effect=RuntimeError("private-canary-output")):
+            with self.assertRaises(OSError) as caught:
+                P.prestart_baseline("listing", case, P.identity(case / "profile"))
+        self.assertIs(caught.exception, error)
+
+    def test_prestart_diagnostic_rejects_unbounded_untyped_or_foreign_fields(self):
+        counts = dict(entries=1, directories=0, files=1, total_bytes=3)
+        for fields in (("private-canary", "profile_directories", "profile", counts),
+                       ("listing", "private-canary", "profile", counts),
+                       ("listing", "private_empty", "private-canary", counts),
+                       ("listing", "profile_limit", "temp", counts),
+                       ("listing", "private_empty", "profile", counts),
+                       ("listing", "profile_inventory", "profile", counts),
+                       ("listing", "profile_directories", "profile", dict(counts, entries=True)),
+                       ("listing", "profile_directories", "profile", dict(counts, entries=1025)),
+                       ("listing", "profile_directories", "profile", dict(counts, files=0)),
+                       ("listing", "profile_directories", "profile", dict(counts, total_bytes=512 * 1024 * 1024 + 1)),
+                       ("listing", "profile_directories", "profile", dict(counts, extra="private-canary"))):
+            with self.subTest(stage=fields[1]), redirect_stdout(io.StringIO()) as output:
+                with self.assertRaisesRegex(P.ProducerError, "^cleanup_failed$"):
+                    P.prestart_diagnostic(*fields)
+                self.assertEqual(output.getvalue(), "")
 
     def test_bad_ready_or_prestart_profile_never_starts_or_deletes(self):
         def replace_root(case):

@@ -298,12 +298,6 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Clippy
         run: cargo clippy --locked --all-targets --all-features -- -D warnings
-      - name: Offline tests and local transfer regressions
-        run: cargo test --locked --release -- --test-threads=1
-      - name: Every provider against the pinned runtime catalog
-        env:
-          RCLONE_PROVIDER_SCHEMA_BINARY: ${{ runner.os == 'Windows' && format('{0}/rclone-triage/assets/rclone.exe', github.workspace) || format('{0}/rclone-native', runner.temp) }}
-        run: cargo test --locked --release --test provider_matrix pinned_rclone_catalog_matches_provider_contracts -- --ignored --exact --test-threads=1
       - name: Build release
         run: cargo build --locked --release
       - name: Verify real Windows application against synthetic HTTP data
@@ -320,6 +314,12 @@ jobs:
             --application $application --application-sha256 $applicationHash `
             --build-commit $buildCommit --report "$env:RUNNER_TEMP/http-application.json"
           if ($LASTEXITCODE -ne 0) { throw 'Windows application acceptance failed.' }
+      - name: Offline tests and local transfer regressions
+        run: cargo test --locked --release -- --test-threads=1
+      - name: Every provider against the pinned runtime catalog
+        env:
+          RCLONE_PROVIDER_SCHEMA_BINARY: ${{ runner.os == 'Windows' && format('{0}/rclone-triage/assets/rclone.exe', github.workspace) || format('{0}/rclone-native', runner.temp) }}
+        run: cargo test --locked --release --test provider_matrix pinned_rclone_catalog_matches_provider_contracts -- --ignored --exact --test-threads=1
       - name: Require the same-build HTTP application evidence
         if: ${{ !cancelled() && runner.os == 'Windows' && (steps.application_acceptance.outcome == 'success' || steps.application_acceptance.outcome == 'failure') }}
         env:

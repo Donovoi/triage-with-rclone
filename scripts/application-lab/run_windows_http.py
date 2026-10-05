@@ -558,16 +558,77 @@ def check_listing(case):
 CLEANUP_STAGES = frozenset({"case_identity", "configuration", "application_bytes", "queue_bytes",
                             "private_inventory", "acl_verify", "owned_removal"})
 PRIVATE_LOCATIONS = ("temp", "home", "profile", "appdata", "localappdata")
+PRESTART_STAGES = frozenset({"profile_identity", "profile_inventory", "profile_limit", "profile_directories",
+                             "private_inventory", "private_empty"})
 
 
-def profile_baseline(case, expected_identity):
+def inventory_summary(entries):
+    directories = sum(value[0] for value in entries.values())
+    return dict(entries=len(entries), directories=directories, files=len(entries) - directories,
+                total_bytes=sum(value[1] for value in entries.values() if not value[0]))
+
+
+def diagnostic_counts(summary):
+    counts = dict(entries=None, directories=None, files=None, total_bytes=None)
+    if summary is not None:
+        need(type(summary) is dict and set(summary) == set(counts), "cleanup_failed")
+        need(all(type(summary[key]) is int and 0 <= summary[key] <= 1024 for key in ("entries", "directories", "files")) and
+             summary["entries"] == summary["directories"] + summary["files"] and
+             type(summary["total_bytes"]) is int and 0 <= summary["total_bytes"] <= 512 * 1024 * 1024,
+             "cleanup_failed")
+        counts = summary
+    return counts
+
+
+def profile_baseline(case, expected_identity, *, observation=None):
     """Private directory identities captured before the app is allowed to start."""
+    def observe(stage, summary=None):
+        if observation is not None:
+            observation.update(stage=stage, location="profile", summary=summary)
+    observe("profile_identity")
     root = case / "profile"
     original = identity(root)
     need(original == expected_identity, "cleanup_failed")
+    observe("profile_inventory")
     entries = inventory(root)
-    need(identity(root) == original and len(entries) <= 32 and all(value[0] for value in entries.values()), "cleanup_failed")
+    observe("profile_identity")
+    need(identity(root) == original, "cleanup_failed")
+    summary = inventory_summary(entries)
+    observe("profile_limit", summary)
+    need(len(entries) <= 32, "cleanup_failed")
+    observe("profile_directories", summary)
+    need(all(value[0] for value in entries.values()), "cleanup_failed")
     return original, tuple(sorted((path, value[2], value[3]) for path, value in entries.items()))
+
+
+def prestart_diagnostic(name, stage, location, summary=None):
+    """Only fixed stages and validated counts; names and identities remain private."""
+    need(name in E.CASE_ORDER and stage in PRESTART_STAGES and
+         (location == "profile" if stage.startswith("profile_") else
+          location in PRIVATE_LOCATIONS and location != "profile"), "cleanup_failed")
+    need(summary is None or stage in {"profile_limit", "profile_directories", "private_empty"}, "cleanup_failed")
+    print("application_prestart_diagnostic=" + E.compact(dict(scope=name, stage=stage, location=location,
+          **diagnostic_counts(summary))).decode("ascii"), flush=True)
+
+
+def prestart_baseline(name, case, expected_identity):
+    observation = dict(stage="profile_identity", location="profile", summary=None)
+    try:
+        baseline = profile_baseline(case, expected_identity, observation=observation)
+        for child in PRIVATE_LOCATIONS:
+            if child != "profile":
+                observation.update(stage="private_inventory", location=child, summary=None)
+                entries = inventory(case / child)
+                observation.update(stage="private_empty", summary=inventory_summary(entries))
+                need(not entries, "cleanup_failed")
+        return baseline
+    except BaseException:
+        # Diagnostic output must never replace the original failure.
+        try:
+            prestart_diagnostic(name, **observation)
+        except BaseException:
+            pass
+        raise
 
 
 def cleanup_diagnostic(name, stage, location=None, summary=None):
@@ -575,14 +636,8 @@ def cleanup_diagnostic(name, stage, location=None, summary=None):
     need(name in E.CASE_ORDER and stage in CLEANUP_STAGES and
          (location in PRIVATE_LOCATIONS if stage == "private_inventory" else location is None),
          "cleanup_failed")
-    counts = dict(entries=None, directories=None, files=None, total_bytes=None)
-    if summary is not None:
-        need(stage == "private_inventory" and type(summary) is dict and set(summary) == set(counts), "cleanup_failed")
-        need(all(type(summary[key]) is int and 0 <= summary[key] <= 1024 for key in ("entries", "directories", "files")) and
-             summary["entries"] == summary["directories"] + summary["files"] and
-             type(summary["total_bytes"]) is int and 0 <= summary["total_bytes"] <= 512 * 1024 * 1024,
-             "cleanup_failed")
-        counts = summary
+    need(summary is None or stage == "private_inventory", "cleanup_failed")
+    counts = diagnostic_counts(summary)
     print("application_cleanup_diagnostic=" + E.compact(dict(scope=name, stage=stage, location=location, **counts)).decode("ascii"), flush=True)
 
 
@@ -748,10 +803,7 @@ def run_case(name, suite, application, application_sha, runtime, session_factory
         session_attempted = True
         bridge = session_factory(case)
         validate_ready(bridge.command("ready"))
-        profile_before = profile_baseline(case, profile_lease)
-        for child in PRIVATE_LOCATIONS:
-            if child != "profile":
-                need(not inventory(case / child), "cleanup_failed")
+        profile_before = prestart_baseline(name, case, profile_lease)
         response = bridge.command("start", app_path=str(owned_application), app_sha256=application_sha,
             args=app_args(name, case), case_root=str(case), environment=environment(case),
             transcript_path=str(case / "transcript.private"), max_output_bytes=8 * 1024 * 1024, deadline_ms=150000)
@@ -845,9 +897,7 @@ def run_case(name, suite, application, application_sha, runtime, session_factory
                 for child in PRIVATE_LOCATIONS:
                     cleanup_stage, cleanup_location, cleanup_summary = "private_inventory", child, None
                     entries = inventory(case / child)
-                    directories = sum(value[0] for value in entries.values())
-                    cleanup_summary = dict(entries=len(entries), directories=directories,
-                        files=len(entries) - directories, total_bytes=sum(value[1] for value in entries.values() if not value[0]))
+                    cleanup_summary = inventory_summary(entries)
                     if child == "profile":
                         need(profile_before is not None and profile_baseline(case, profile_lease) == profile_before, "cleanup_failed")
                     else:
