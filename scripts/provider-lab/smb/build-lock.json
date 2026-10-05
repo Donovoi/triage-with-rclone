@@ -1,0 +1,3482 @@
+{
+  "schema_version": 1,
+  "base_image": "docker.io/library/debian@sha256:7792b1f7702a86946cd518db72b6a407302c3e9bc1635634368b878189e8221c",
+  "platform": "linux/amd64",
+  "purpose": "Disposable, isolated Samba feasibility probe only. No application, hosted SMB, Kerberos, renewal or provider-coverage qualification.",
+  "base_provenance": {
+    "official_image": "https://hub.docker.com/_/debian",
+    "queried_tag": "trixie-slim",
+    "index_sha256": "a99cfc517144bc59b1978475ec53b46ecabec7e43635402ee5b77cc54cd1b20a",
+    "manifest_sha256": "7792b1f7702a86946cd518db72b6a407302c3e9bc1635634368b878189e8221c",
+    "config_sha256": "ec92d6b34c6a7e6372d87dc9ef2fd6e8ca8125353fe7d033c676f51cf923a13b",
+    "source": "https://github.com/debuerreotype/docker-debian-artifacts/tree/8f962b15d7884a90e17876a9303cbac909d119aa"
+  },
+  "repositories": [
+    {
+      "archive": "debian",
+      "suite": "trixie",
+      "component": "main",
+      "timestamp": "20261003T000000Z",
+      "url": "http://snapshot.debian.org/archive/debian/20261003T000000Z/",
+      "metadata_https_url": "https://snapshot.debian.org/archive/debian/20261003T000000Z/",
+      "inrelease_sha256": "0584fba32e13e0ab8285fb16c27adea1ec03a73669c18702821094fd6ca86675",
+      "packages_xz_sha256": "7778d3e3f303b7ddb8ce0fe7c8d57473a076c6bf2e8f241f75421d2396352498",
+      "packages_xz_size": 9678380,
+      "valid_signing_fingerprints": [
+        "4CB50190207B4758A3F73A796ED0E7B82643E131",
+        "B8E5F13176D2A7A75220028078DBA3BC47EF2265",
+        "41587F7DB8C774BCCF131416762F67A0B2C39DE4"
+      ]
+    },
+    {
+      "archive": "debian",
+      "suite": "trixie-updates",
+      "component": "main",
+      "timestamp": "20261003T000000Z",
+      "url": "http://snapshot.debian.org/archive/debian/20261003T000000Z/",
+      "metadata_https_url": "https://snapshot.debian.org/archive/debian/20261003T000000Z/",
+      "inrelease_sha256": "203dfe8d2fe5f0cb136a07c755b5111848d4e044008562da9e6274591e32d125",
+      "packages_xz_sha256": "10012cb384dc2613586d7b3d391d92a5637c9faa36017239739f2a6109a0d45f",
+      "packages_xz_size": 4412,
+      "valid_signing_fingerprints": [
+        "4CB50190207B4758A3F73A796ED0E7B82643E131",
+        "B8E5F13176D2A7A75220028078DBA3BC47EF2265"
+      ]
+    },
+    {
+      "archive": "debian-security",
+      "suite": "trixie-security",
+      "component": "main",
+      "timestamp": "20261003T000000Z",
+      "url": "http://snapshot.debian.org/archive/debian-security/20261003T000000Z/",
+      "metadata_https_url": "https://snapshot.debian.org/archive/debian-security/20261003T000000Z/",
+      "inrelease_sha256": "9f9c5cc05760f1db55fc5e44fede3cb864f995ea98a71ad853ce334e24112430",
+      "packages_xz_sha256": "f90ac42ac57137087348d3011e70aebb255492bd087b39e57c5a7eceabff3e8a",
+      "packages_xz_size": 263996,
+      "valid_signing_fingerprints": [
+        "B0CAB9266E8C3929798B3EEEBDE6D2B9216EC7A8",
+        "89C87ACEA5DD6B8E6A7068808E9F831205B4BA95"
+      ]
+    }
+  ],
+  "package_roots": [
+    "samba",
+    "samba-common-bin",
+    "python3",
+    "passwd"
+  ],
+  "dependency_policy": {
+    "architectures": [
+      "amd64",
+      "all"
+    ],
+    "includes": [
+      "Depends",
+      "Pre-Depends"
+    ],
+    "install_recommends": false,
+    "install_suggests": false,
+    "version_selection": "Highest Debian version satisfying dependencies across these three signed snapshots; prefer concrete dependency over virtual alternative; selected virtual providers are explicit below. Base packages outside this closure remain pinned by the immutable image digest.",
+    "network_integrity": "Historical snapshot HTTP transport is authenticated by Debian InRelease signatures and pinned SHA256 checks; no trusted=yes, unauthenticated install, mutable mirror or TLS-verification bypass. Expired historical Valid-Until is disabled only on these fixed snapshot entries. Every deb is hashed before installation.",
+    "unlocked_package_changes": "Forbidden: after install each changed or newly installed package must belong to this locked closure at its exact version."
+  },
+  "packages": [
+    {
+      "name": "base-passwd",
+      "version": "3.6.7",
+      "architecture": "amd64",
+      "source_package": "base-passwd",
+      "suite": "trixie",
+      "filename": "pool/main/b/base-passwd/base-passwd_3.6.7_amd64.deb",
+      "size": 53712,
+      "sha256": "cf31c6956ab5f65815d9d9ea1615c4f78ecd2893c31119658248a4756cee83e7",
+      "pre_depends": "",
+      "depends": "libc6 (>= 2.34), libdebconfclient0 (>= 0.145), libselinux1 (>= 3.1~)",
+      "provides": ""
+    },
+    {
+      "name": "debconf",
+      "version": "1.5.91",
+      "architecture": "all",
+      "source_package": "debconf",
+      "suite": "trixie",
+      "filename": "pool/main/d/debconf/debconf_1.5.91_all.deb",
+      "size": 121088,
+      "sha256": "1ddc7e6c5925f748eefb7ca811d98e049f18c158bb21fbc7e122262ce6011e49",
+      "pre_depends": "",
+      "depends": "",
+      "provides": "debconf-2.0"
+    },
+    {
+      "name": "dpkg",
+      "version": "1.22.22",
+      "architecture": "amd64",
+      "source_package": "dpkg",
+      "suite": "trixie",
+      "filename": "pool/main/d/dpkg/dpkg_1.22.22_amd64.deb",
+      "size": 1537216,
+      "sha256": "3e800c6d75e8e709007ed1c356e5fa8509a75c1694fb0a1183709abc9cfdc1f3",
+      "pre_depends": "libbz2-1.0, libc6 (>= 2.38), liblzma5 (>= 5.4.0), libmd0 (>= 0.0.0), libselinux1 (>= 3.1~), libzstd1 (>= 1.5.5), zlib1g (>= 1:1.1.4)",
+      "depends": "tar (>= 1.28-1)",
+      "provides": ""
+    },
+    {
+      "name": "gcc-14-base",
+      "version": "14.2.0-19",
+      "architecture": "amd64",
+      "source_package": "gcc-14",
+      "suite": "trixie",
+      "filename": "pool/main/g/gcc-14/gcc-14-base_14.2.0-19_amd64.deb",
+      "size": 49432,
+      "sha256": "5b6825de4263824b78c4c51f6476414f3b4e89c2ab63e81dc8b9b5501e867cf6",
+      "pre_depends": "",
+      "depends": "",
+      "provides": ""
+    },
+    {
+      "name": "init-system-helpers",
+      "version": "1.69~deb13u1",
+      "architecture": "all",
+      "source_package": "init-system-helpers",
+      "suite": "trixie",
+      "filename": "pool/main/i/init-system-helpers/init-system-helpers_1.69~deb13u1_all.deb",
+      "size": 39360,
+      "sha256": "addf78073e1cbc5a5508937e11d2571055e29835e00ee8fab52a66775649378f",
+      "pre_depends": "",
+      "depends": "",
+      "provides": ""
+    },
+    {
+      "name": "libacl1",
+      "version": "2.3.2-2+b1",
+      "architecture": "amd64",
+      "source_package": "acl",
+      "suite": "trixie",
+      "filename": "pool/main/a/acl/libacl1_2.3.2-2+b1_amd64.deb",
+      "size": 32860,
+      "sha256": "08074f01e384bc07c0c2d79a58cf4a6523f71cf75d1808101c79617656c9a39d",
+      "pre_depends": "",
+      "depends": "libc6 (>= 2.38)",
+      "provides": ""
+    },
+    {
+      "name": "libattr1",
+      "version": "1:2.5.2-3",
+      "architecture": "amd64",
+      "source_package": "attr",
+      "suite": "trixie",
+      "filename": "pool/main/a/attr/libattr1_2.5.2-3_amd64.deb",
+      "size": 22876,
+      "sha256": "606b5ee12ea2786be607a17f40c1fb5e65c76ceaff66665bdf8f8c6c1b71d1fb",
+      "pre_depends": "",
+      "depends": "libc6 (>= 2.4)",
+      "provides": ""
+    },
+    {
+      "name": "libaudit-common",
+      "version": "1:4.0.2-2+deb13u1",
+      "architecture": "all",
+      "source_package": "audit",
+      "suite": "trixie",
+      "filename": "pool/main/a/audit/libaudit-common_4.0.2-2+deb13u1_all.deb",
+      "size": 12812,
+      "sha256": "b9d32e5ff04fd747aacb7d6b3ebbbbf734ddefb2f1695f0b1b2a4b5e51b1052e",
+      "pre_depends": "",
+      "depends": "",
+      "provides": ""
+    },
+    {
+      "name": "libaudit1",
+      "version": "1:4.0.2-2+deb13u1",
+      "architecture": "amd64",
+      "source_package": "audit",
+      "suite": "trixie",
+      "filename": "pool/main/a/audit/libaudit1_4.0.2-2+deb13u1_amd64.deb",
+      "size": 57680,
+      "sha256": "3d1dd3f031a56f01b747e2acc0e14575212580e6fa63d800c44cb0a31f1edfd7",
+      "pre_depends": "",
+      "depends": "libaudit-common (>= 1:4.0.2-2+deb13u1), libc6 (>= 2.38), libcap-ng0 (>= 0.7.9)",
+      "provides": ""
+    },
+    {
+      "name": "libavahi-client3",
+      "version": "0.8-16",
+      "architecture": "amd64",
+      "source_package": "avahi",
+      "suite": "trixie",
+      "filename": "pool/main/a/avahi/libavahi-client3_0.8-16_amd64.deb",
+      "size": 48384,
+      "sha256": "27df3f1c0190d13ec6d014c5515c2ec8e9a49d0983f48fc9e5756ee4e62d7e37",
+      "pre_depends": "",
+      "depends": "libavahi-common3 (= 0.8-16), libc6 (>= 2.34), libdbus-1-3 (>= 1.10)",
+      "provides": ""
+    },
+    {
+      "name": "libavahi-common-data",
+      "version": "0.8-16",
+      "architecture": "amd64",
+      "source_package": "avahi",
+      "suite": "trixie",
+      "filename": "pool/main/a/avahi/libavahi-common-data_0.8-16_amd64.deb",
+      "size": 112284,
+      "sha256": "a3c0cb1326ed60cbbef133c31af28759f7a922d886d001a138d52bbf0af908d6",
+      "pre_depends": "",
+      "depends": "",
+      "provides": ""
+    },
+    {
+      "name": "libavahi-common3",
+      "version": "0.8-16",
+      "architecture": "amd64",
+      "source_package": "avahi",
+      "suite": "trixie",
+      "filename": "pool/main/a/avahi/libavahi-common3_0.8-16_amd64.deb",
+      "size": 44224,
+      "sha256": "fb092fc55f1c7f3db0ac64467f30ebae8145543570b8e99f17ce84cf1dd28bb6",
+      "pre_depends": "",
+      "depends": "libc6 (>= 2.38), libavahi-common-data (= 0.8-16)",
+      "provides": ""
+    },
+    {
+      "name": "libbsd0",
+      "version": "0.12.2-2",
+      "architecture": "amd64",
+      "source_package": "libbsd",
+      "suite": "trixie",
+      "filename": "pool/main/libb/libbsd/libbsd0_0.12.2-2_amd64.deb",
+      "size": 130968,
+      "sha256": "e5a85986fa6bec3307ab1bc860736b478b331882bc45e17675a7bdf88eecb43a",
+      "pre_depends": "",
+      "depends": "libc6 (>= 2.38), libmd0 (>= 1.0.3-2)",
+      "provides": ""
+    },
+    {
+      "name": "libbz2-1.0",
+      "version": "1.0.8-6",
+      "architecture": "amd64",
+      "source_package": "bzip2",
+      "suite": "trixie",
+      "filename": "pool/main/b/bzip2/libbz2-1.0_1.0.8-6_amd64.deb",
+      "size": 37912,
+      "sha256": "cba4cda04244b5e481bb15524bc3c983a7d1b6f330013b9b381706a2fcb65310",
+      "pre_depends": "",
+      "depends": "libc6 (>= 2.4)",
+      "provides": ""
+    },
+    {
+      "name": "libc6",
+      "version": "2.41-12+deb13u4",
+      "architecture": "amd64",
+      "source_package": "glibc",
+      "suite": "trixie",
+      "filename": "pool/main/g/glibc/libc6_2.41-12+deb13u4_amd64.deb",
+      "size": 2846580,
+      "sha256": "967aa62605721081c3eb2a17650611a792aa802d76a6511d1840242623d204c9",
+      "pre_depends": "",
+      "depends": "libgcc-s1",
+      "provides": ""
+    },
+    {
+      "name": "libcap-ng0",
+      "version": "0.8.5-4+b1",
+      "architecture": "amd64",
+      "source_package": "libcap-ng",
+      "suite": "trixie",
+      "filename": "pool/main/libc/libcap-ng/libcap-ng0_0.8.5-4+b1_amd64.deb",
+      "size": 17584,
+      "sha256": "20a9e4b0619a3eb2566338223bed135dde5a601eaa2f8fdd5f20b94506addcac",
+      "pre_depends": "",
+      "depends": "libc6 (>= 2.38)",
+      "provides": ""
+    },
+    {
+      "name": "libcap2",
+      "version": "1:2.75-10+deb13u1+b3",
+      "architecture": "amd64",
+      "source_package": "libcap2",
+      "suite": "trixie",
+      "filename": "pool/main/libc/libcap2/libcap2_2.75-10+deb13u1+b3_amd64.deb",
+      "size": 28988,
+      "sha256": "89fc4d34fc7a28ad6f0fcd0c561ab253b9dedf6f77f5a000b47c276c8295bf67",
+      "pre_depends": "",
+      "depends": "libc6 (>= 2.38)",
+      "provides": ""
+    },
+    {
+      "name": "libcom-err2",
+      "version": "1.47.2-3+b12",
+      "architecture": "amd64",
+      "source_package": "e2fsprogs",
+      "suite": "trixie",
+      "filename": "pool/main/e/e2fsprogs/libcom-err2_1.47.2-3+b12_amd64.deb",
+      "size": 25036,
+      "sha256": "bd43e020b8fed399db3eebf098111f10fba4c436fff99ccad72cc7e27c9764ec",
+      "pre_depends": "",
+      "depends": "libc6 (>= 2.38)",
+      "provides": "libcom-err2t64 (= 1.47.2-3+b12), libcomerr2 (= 1.47.2-3+b12)"
+    },
+    {
+      "name": "libcrypt1",
+      "version": "1:4.4.38-1",
+      "architecture": "amd64",
+      "source_package": "libxcrypt",
+      "suite": "trixie",
+      "filename": "pool/main/libx/libxcrypt/libcrypt1_4.4.38-1_amd64.deb",
+      "size": 90072,
+      "sha256": "0ebc144d662e3197982d1bf3a7b8b35ca845e54c68811de0328b1f0d7c67585c",
+      "pre_depends": "",
+      "depends": "libc6 (>= 2.38)",
+      "provides": ""
+    },
+    {
+      "name": "libcups2t64",
+      "version": "2.4.10-3+deb13u2",
+      "architecture": "amd64",
+      "source_package": "cups",
+      "suite": "trixie",
+      "filename": "pool/main/c/cups/libcups2t64_2.4.10-3+deb13u2_amd64.deb",
+      "size": 251548,
+      "sha256": "278c57da32afceec1f406869e790b29f40c75b02bb8e512dd903d5a5264df9d2",
+      "pre_depends": "",
+      "depends": "libavahi-client3 (>= 0.6.16), libavahi-common3 (>= 0.6.16), libc6 (>= 2.38), libgnutls30t64 (>= 3.8.1), libgssapi-krb5-2 (>= 1.17), zlib1g (>= 1:1.2.0)",
+      "provides": "libcups2 (= 2.4.10-3+deb13u2)"
+    },
+    {
+      "name": "libdb5.3t64",
+      "version": "5.3.28+dfsg2-9",
+      "architecture": "amd64",
+      "source_package": "db5.3",
+      "suite": "trixie",
+      "filename": "pool/main/d/db5.3/libdb5.3t64_5.3.28+dfsg2-9_amd64.deb",
+      "size": 703676,
+      "sha256": "18d02510ee78b67e4504ba050176797a200ff24214a7cd318082ab60ad7bf3fc",
+      "pre_depends": "",
+      "depends": "libc6 (>= 2.38)",
+      "provides": "libdb5.3 (= 5.3.28+dfsg2-9)"
+    },
+    {
+      "name": "libdbus-1-3",
+      "version": "1.16.2-2",
+      "architecture": "amd64",
+      "source_package": "dbus",
+      "suite": "trixie",
+      "filename": "pool/main/d/dbus/libdbus-1-3_1.16.2-2_amd64.deb",
+      "size": 177904,
+      "sha256": "bbcb711daff7e104b5f80f9b05475b6142674bfe65518a36a56e96a91068a3f5",
+      "pre_depends": "",
+      "depends": "libc6 (>= 2.38), libsystemd0",
+      "provides": ""
+    },
+    {
+      "name": "libdebconfclient0",
+      "version": "0.280",
+      "architecture": "amd64",
+      "source_package": "cdebconf",
+      "suite": "trixie",
+      "filename": "pool/main/c/cdebconf/libdebconfclient0_0.280_amd64.deb",
+      "size": 10632,
+      "sha256": "25acadc8b394bc86d05df16e70975e523f8f839a7d8d6d5e22c1cafdcef741aa",
+      "pre_depends": "",
+      "depends": "libc6 (>= 2.38)",
+      "provides": ""
+    },
+    {
+      "name": "libexpat1",
+      "version": "2.8.3-1~deb13u1",
+      "architecture": "amd64",
+      "source_package": "expat",
+      "suite": "trixie",
+      "filename": "pool/main/e/expat/libexpat1_2.8.3-1~deb13u1_amd64.deb",
+      "size": 122672,
+      "sha256": "38abe0e710a07688e9c149d74536e67cfee0364bdb64dd6d644c32a1cfad389f",
+      "pre_depends": "libc6 (>= 2.36)",
+      "depends": "",
+      "provides": ""
+    },
+    {
+      "name": "libffi8",
+      "version": "3.4.8-2",
+      "architecture": "amd64",
+      "source_package": "libffi",
+      "suite": "trixie",
+      "filename": "pool/main/libf/libffi/libffi8_3.4.8-2_amd64.deb",
+      "size": 24144,
+      "sha256": "0ebdc340de33333639c3c63874cd4b15ac2e83dfa1ef3053b7eefaf4919f4f68",
+      "pre_depends": "",
+      "depends": "libc6 (>= 2.34)",
+      "provides": "libffi8ubuntu1 (= 3.4.8-2)"
+    },
+    {
+      "name": "libgcc-s1",
+      "version": "14.2.0-19",
+      "architecture": "amd64",
+      "source_package": "gcc-14",
+      "suite": "trixie",
+      "filename": "pool/main/g/gcc-14/libgcc-s1_14.2.0-19_amd64.deb",
+      "size": 72772,
+      "sha256": "3c71917b490d1a17aed43196a2787a256ecf060526cdb20216a74bedc061b150",
+      "pre_depends": "",
+      "depends": "gcc-14-base (= 14.2.0-19), libc6 (>= 2.35)",
+      "provides": "libgcc1 (= 1:14.2.0-19)"
+    },
+    {
+      "name": "libgmp10",
+      "version": "2:6.3.0+dfsg-3",
+      "architecture": "amd64",
+      "source_package": "gmp",
+      "suite": "trixie",
+      "filename": "pool/main/g/gmp/libgmp10_6.3.0+dfsg-3_amd64.deb",
+      "size": 560220,
+      "sha256": "d0d0265eb01770f17afd0f7c8c0622f80479dcfbbe13653a0debeec61464e622",
+      "pre_depends": "",
+      "depends": "libc6 (>= 2.38)",
+      "provides": ""
+    },
+    {
+      "name": "libgnutls30t64",
+      "version": "3.8.9-3+deb13u4",
+      "architecture": "amd64",
+      "source_package": "gnutls28",
+      "suite": "trixie",
+      "filename": "pool/main/g/gnutls28/libgnutls30t64_3.8.9-3+deb13u4_amd64.deb",
+      "size": 1469024,
+      "sha256": "18a8bdfd91c7e3bcb01719d55a2b56849c7160b34f1f52b1c4fdfdd41bf1352b",
+      "pre_depends": "",
+      "depends": "libc6 (>= 2.38), libgmp10 (>= 2:6.3.0+dfsg), libhogweed6t64 (>= 3.10), libidn2-0 (>= 2.0.0), libnettle8t64 (>= 3.10), libp11-kit0 (>= 0.25.1), libtasn1-6 (>= 4.14), libunistring5 (>= 1.1)",
+      "provides": "libgnutls30 (= 3.8.9-3+deb13u4)"
+    },
+    {
+      "name": "libgssapi-krb5-2",
+      "version": "1.21.3-5+deb13u1",
+      "architecture": "amd64",
+      "source_package": "krb5",
+      "suite": "trixie",
+      "filename": "pool/main/k/krb5/libgssapi-krb5-2_1.21.3-5+deb13u1_amd64.deb",
+      "size": 138356,
+      "sha256": "30847c1fde4240567d7ed3aeab4f655dd591203758b857e85e824045aae70299",
+      "pre_depends": "",
+      "depends": "libkrb5-3 (= 1.21.3-5+deb13u1), libc6 (>= 2.38), libcom-err2 (>= 1.43.9), libk5crypto3 (>= 1.20), libkrb5support0 (= 1.21.3-5+deb13u1)",
+      "provides": ""
+    },
+    {
+      "name": "libhogweed6t64",
+      "version": "3.10.1-1",
+      "architecture": "amd64",
+      "source_package": "nettle",
+      "suite": "trixie",
+      "filename": "pool/main/n/nettle/libhogweed6t64_3.10.1-1_amd64.deb",
+      "size": 335240,
+      "sha256": "b059ed155115ac09da295322de48ee1ed58ef5fa45edcc9e12ff0e94636ef25f",
+      "pre_depends": "",
+      "depends": "libc6 (>= 2.14), libgmp10 (>= 2:6.3.0+dfsg), libnettle8t64",
+      "provides": "libhogweed6 (= 3.10.1-1)"
+    },
+    {
+      "name": "libicu76",
+      "version": "76.1-4",
+      "architecture": "amd64",
+      "source_package": "icu",
+      "suite": "trixie",
+      "filename": "pool/main/i/icu/libicu76_76.1-4_amd64.deb",
+      "size": 9722072,
+      "sha256": "c1bf762996de9ecba9b9d871e4928a8090f023a3e9e7fa3240b3d90f892a01dc",
+      "pre_depends": "",
+      "depends": "libc6 (>= 2.38), libgcc-s1 (>= 3.0), libstdc++6 (>= 14)",
+      "provides": ""
+    },
+    {
+      "name": "libidn2-0",
+      "version": "2.3.8-2",
+      "architecture": "amd64",
+      "source_package": "libidn2",
+      "suite": "trixie",
+      "filename": "pool/main/libi/libidn2/libidn2-0_2.3.8-2_amd64.deb",
+      "size": 109096,
+      "sha256": "90b039bcdc4578f8e1c4935adf8dbb525e36a164deefdbbb8c45bac347d48278",
+      "pre_depends": "",
+      "depends": "libc6 (>= 2.14), libunistring5 (>= 1.1)",
+      "provides": ""
+    },
+    {
+      "name": "libjansson4",
+      "version": "2.14-2+b3",
+      "architecture": "amd64",
+      "source_package": "jansson",
+      "suite": "trixie",
+      "filename": "pool/main/j/jansson/libjansson4_2.14-2+b3_amd64.deb",
+      "size": 39792,
+      "sha256": "60707a62fe6c1228c3389b12a13ca4efd76defc5532473e547a29e99cf7d2a6e",
+      "pre_depends": "",
+      "depends": "libc6 (>= 2.38)",
+      "provides": ""
+    },
+    {
+      "name": "libk5crypto3",
+      "version": "1.21.3-5+deb13u1",
+      "architecture": "amd64",
+      "source_package": "krb5",
+      "suite": "trixie",
+      "filename": "pool/main/k/krb5/libk5crypto3_1.21.3-5+deb13u1_amd64.deb",
+      "size": 81152,
+      "sha256": "7da07ee674b47f1f0be7cc89317c25310086a1f1761217d0f72e6ae2c5a69b84",
+      "pre_depends": "",
+      "depends": "libc6 (>= 2.38), libkrb5support0 (= 1.21.3-5+deb13u1)",
+      "provides": ""
+    },
+    {
+      "name": "libkeyutils1",
+      "version": "1.6.3-6",
+      "architecture": "amd64",
+      "source_package": "keyutils",
+      "suite": "trixie",
+      "filename": "pool/main/k/keyutils/libkeyutils1_1.6.3-6_amd64.deb",
+      "size": 9456,
+      "sha256": "0b11ad17be0300b63ad4eeb4c6450fed24d34b7b740f23e5363dcb29ee6d5eba",
+      "pre_depends": "",
+      "depends": "libc6 (>= 2.14)",
+      "provides": ""
+    },
+    {
+      "name": "libkrb5-3",
+      "version": "1.21.3-5+deb13u1",
+      "architecture": "amd64",
+      "source_package": "krb5",
+      "suite": "trixie",
+      "filename": "pool/main/k/krb5/libkrb5-3_1.21.3-5+deb13u1_amd64.deb",
+      "size": 326056,
+      "sha256": "47d71d6a7f2e59b9bae5f89602397594805113b95889ad18fa703cd53abafc97",
+      "pre_depends": "",
+      "depends": "libkrb5support0 (= 1.21.3-5+deb13u1), libc6 (>= 2.38), libcom-err2 (>= 1.43.9), libk5crypto3 (>= 1.20), libkeyutils1 (>= 1.5.9), libssl3t64 (>= 3.0.0)",
+      "provides": ""
+    },
+    {
+      "name": "libkrb5support0",
+      "version": "1.21.3-5+deb13u1",
+      "architecture": "amd64",
+      "source_package": "krb5",
+      "suite": "trixie",
+      "filename": "pool/main/k/krb5/libkrb5support0_1.21.3-5+deb13u1_amd64.deb",
+      "size": 33124,
+      "sha256": "3a0acd8b37955c0e102c756b52c97df2a31f67b96453c35dab70df218d309117",
+      "pre_depends": "",
+      "depends": "libc6 (>= 2.38)",
+      "provides": ""
+    },
+    {
+      "name": "libldap2",
+      "version": "2.6.10+dfsg-1",
+      "architecture": "amd64",
+      "source_package": "openldap",
+      "suite": "trixie",
+      "filename": "pool/main/o/openldap/libldap2_2.6.10+dfsg-1_amd64.deb",
+      "size": 193576,
+      "sha256": "60069e4a550ca890113fa89d3001417781b18e146ec5d637d31e368dec9909bd",
+      "pre_depends": "",
+      "depends": "libc6 (>= 2.38), libsasl2-2 (>= 2.1.28+dfsg1), libssl3t64 (>= 3.0.0)",
+      "provides": ""
+    },
+    {
+      "name": "libldb2",
+      "version": "2:2.11.0+samba4.22.11+dfsg-0+deb13u1",
+      "architecture": "amd64",
+      "source_package": "samba",
+      "suite": "trixie",
+      "filename": "pool/main/s/samba/libldb2_2.11.0+samba4.22.11+dfsg-0+deb13u1_amd64.deb",
+      "size": 179964,
+      "sha256": "8c61310699c84116540e4bff05085e8a4bcf302b4ed58cee1cb4c0c40eaa9670",
+      "pre_depends": "",
+      "depends": "libc6 (>= 2.38), libldap2 (>= 2.6.2), liblmdb0 (>= 0.9.9), libtalloc2 (>= 2.4.0), libtdb1 (>= 1.3.14), libtevent0t64 (>= 0.15.0)",
+      "provides": ""
+    },
+    {
+      "name": "liblmdb0",
+      "version": "0.9.31-1+b2",
+      "architecture": "amd64",
+      "source_package": "lmdb",
+      "suite": "trixie",
+      "filename": "pool/main/l/lmdb/liblmdb0_0.9.31-1+b2_amd64.deb",
+      "size": 45240,
+      "sha256": "97636442b412a6dff51d23ba74f0cdc12ac1edece661a16c43cba294a98cf543",
+      "pre_depends": "",
+      "depends": "libc6 (>= 2.38)",
+      "provides": ""
+    },
+    {
+      "name": "liblzma5",
+      "version": "5.8.1-1+deb13u1",
+      "architecture": "amd64",
+      "source_package": "xz-utils",
+      "suite": "trixie",
+      "filename": "pool/main/x/xz-utils/liblzma5_5.8.1-1+deb13u1_amd64.deb",
+      "size": 309492,
+      "sha256": "1cfcc6e0dc36f438a79b6e2189facdb9d150b08f57d190a60e01c98075c7f896",
+      "pre_depends": "",
+      "depends": "libc6 (>= 2.34)",
+      "provides": ""
+    },
+    {
+      "name": "libmd0",
+      "version": "1.1.0-2+b1",
+      "architecture": "amd64",
+      "source_package": "libmd",
+      "suite": "trixie",
+      "filename": "pool/main/libm/libmd/libmd0_1.1.0-2+b1_amd64.deb",
+      "size": 36272,
+      "sha256": "7244ec3839b61fac0c1884fe08aaa040f26e8f1f35f1f5d3482eacefd30d1b44",
+      "pre_depends": "",
+      "depends": "libc6 (>= 2.33)",
+      "provides": ""
+    },
+    {
+      "name": "libncurses6",
+      "version": "6.5+20250216-2",
+      "architecture": "amd64",
+      "source_package": "ncurses",
+      "suite": "trixie",
+      "filename": "pool/main/n/ncurses/libncurses6_6.5+20250216-2_amd64.deb",
+      "size": 105036,
+      "sha256": "e00cbcc8c0826993f881f492c05f33ba8d79b5375dc5a2ab59c82e0c7b9179a9",
+      "pre_depends": "",
+      "depends": "libtinfo6 (= 6.5+20250216-2), libc6 (>= 2.34)",
+      "provides": ""
+    },
+    {
+      "name": "libncursesw6",
+      "version": "6.5+20250216-2",
+      "architecture": "amd64",
+      "source_package": "ncurses",
+      "suite": "trixie",
+      "filename": "pool/main/n/ncurses/libncursesw6_6.5+20250216-2_amd64.deb",
+      "size": 135484,
+      "sha256": "47baa2e11579583654583a066b69bd5a5d2f22423081f707ed6c0c3ba6d538b7",
+      "pre_depends": "",
+      "depends": "libtinfo6 (= 6.5+20250216-2), libc6 (>= 2.34)",
+      "provides": ""
+    },
+    {
+      "name": "libnettle8t64",
+      "version": "3.10.1-1",
+      "architecture": "amd64",
+      "source_package": "nettle",
+      "suite": "trixie",
+      "filename": "pool/main/n/nettle/libnettle8t64_3.10.1-1_amd64.deb",
+      "size": 305436,
+      "sha256": "1b03d4a9cd9c8143ba50fe6396f36937e901a317d492d179f4596862c1731cfe",
+      "pre_depends": "",
+      "depends": "libc6 (>= 2.17)",
+      "provides": "libnettle8 (= 3.10.1-1)"
+    },
+    {
+      "name": "libp11-kit0",
+      "version": "0.25.5-3",
+      "architecture": "amd64",
+      "source_package": "p11-kit",
+      "suite": "trixie",
+      "filename": "pool/main/p/p11-kit/libp11-kit0_0.25.5-3_amd64.deb",
+      "size": 425240,
+      "sha256": "784bf2063e166c8bc851a32623b74ebd85c499043a9d57c5bbd64fa63447f45a",
+      "pre_depends": "",
+      "depends": "libc6 (>= 2.38), libffi8 (>= 3.4)",
+      "provides": ""
+    },
+    {
+      "name": "libpam-modules",
+      "version": "1.7.0-5",
+      "architecture": "amd64",
+      "source_package": "pam",
+      "suite": "trixie",
+      "filename": "pool/main/p/pam/libpam-modules_1.7.0-5_amd64.deb",
+      "size": 178696,
+      "sha256": "9679ade117f8775ac0471f48a92652ab8e8dcda4e2ff06de75158cded9cfd83c",
+      "pre_depends": "libaudit1 (>= 1:2.2.1), libc6 (>= 2.38), libcrypt1 (>= 1:4.3.0), libdb5.3t64, libpam0g (>= 1.4.1), libselinux1 (>= 3.1~), libsystemd0 (>= 254), debconf (>= 0.5) | debconf-2.0, libpam-modules-bin (= 1.7.0-5)",
+      "depends": "",
+      "provides": "libpam-mkhomedir, libpam-motd, libpam-umask"
+    },
+    {
+      "name": "libpam-modules-bin",
+      "version": "1.7.0-5",
+      "architecture": "amd64",
+      "source_package": "pam",
+      "suite": "trixie",
+      "filename": "pool/main/p/pam/libpam-modules-bin_1.7.0-5_amd64.deb",
+      "size": 49116,
+      "sha256": "cc72066d008444317738e8e931d6131b301466b4e2dd5ef5baa75fb1a45d61a7",
+      "pre_depends": "",
+      "depends": "libaudit1 (>= 1:2.2.1), libc6 (>= 2.38), libcrypt1 (>= 1:4.3.0), libpam0g (>= 0.99.7.1), libselinux1 (>= 3.1~), libsystemd0 (>= 254)",
+      "provides": ""
+    },
+    {
+      "name": "libpam0g",
+      "version": "1.7.0-5",
+      "architecture": "amd64",
+      "source_package": "pam",
+      "suite": "trixie",
+      "filename": "pool/main/p/pam/libpam0g_1.7.0-5_amd64.deb",
+      "size": 69880,
+      "sha256": "4f5bde27d8df2de6ea8990319b42d9974f56a3ba9907ce7296fd0f8964fc9fb1",
+      "pre_depends": "",
+      "depends": "libaudit1 (>= 1:2.2.1), libc6 (>= 2.34), debconf (>= 0.5) | debconf-2.0",
+      "provides": ""
+    },
+    {
+      "name": "libpcre2-8-0",
+      "version": "10.46-1~deb13u3",
+      "architecture": "amd64",
+      "source_package": "pcre2",
+      "suite": "trixie-security",
+      "filename": "pool/updates/main/p/pcre2/libpcre2-8-0_10.46-1~deb13u3_amd64.deb",
+      "size": 299148,
+      "sha256": "e226f661d918f04daf38cdbc4806b7ed7d6ef95c7eb0ade692fc350e31970040",
+      "pre_depends": "",
+      "depends": "libc6 (>= 2.34)",
+      "provides": ""
+    },
+    {
+      "name": "libpopt0",
+      "version": "1.19+dfsg-2",
+      "architecture": "amd64",
+      "source_package": "popt",
+      "suite": "trixie",
+      "filename": "pool/main/p/popt/libpopt0_1.19+dfsg-2_amd64.deb",
+      "size": 43844,
+      "sha256": "07f649b706852af937654295697dcfc7858f3295718ec18681dce1704663e4f2",
+      "pre_depends": "",
+      "depends": "libc6 (>= 2.38)",
+      "provides": ""
+    },
+    {
+      "name": "libproc2-0",
+      "version": "2:4.0.4-9",
+      "architecture": "amd64",
+      "source_package": "procps",
+      "suite": "trixie",
+      "filename": "pool/main/p/procps/libproc2-0_4.0.4-9_amd64.deb",
+      "size": 65596,
+      "sha256": "c9d61caab1b2ddfc3f17edb95be31b9809fcb2daf27d853dff615bc4ebd08b4b",
+      "pre_depends": "",
+      "depends": "libc6 (>= 2.38), libsystemd0",
+      "provides": ""
+    },
+    {
+      "name": "libpython3-stdlib",
+      "version": "3.13.5-1",
+      "architecture": "amd64",
+      "source_package": "python3-defaults",
+      "suite": "trixie",
+      "filename": "pool/main/p/python3-defaults/libpython3-stdlib_3.13.5-1_amd64.deb",
+      "size": 10180,
+      "sha256": "7e142ed64a81ccdd39714f213467bd365736ef341adb2be11be981f638b9175f",
+      "pre_depends": "",
+      "depends": "libpython3.13-stdlib (>= 3.13.5-1~)",
+      "provides": ""
+    },
+    {
+      "name": "libpython3.13-minimal",
+      "version": "3.13.5-2+deb13u5",
+      "architecture": "amd64",
+      "source_package": "python3.13",
+      "suite": "trixie",
+      "filename": "pool/main/p/python3.13/libpython3.13-minimal_3.13.5-2+deb13u5_amd64.deb",
+      "size": 863168,
+      "sha256": "a4aa6a9a8c77f87bfe545e1d14ec42c001d189ace90e3aa75deec882b39dee49",
+      "pre_depends": "",
+      "depends": "libc6 (>= 2.14), libssl3t64 (>= 3.4.0)",
+      "provides": ""
+    },
+    {
+      "name": "libpython3.13-stdlib",
+      "version": "3.13.5-2+deb13u5",
+      "architecture": "amd64",
+      "source_package": "python3.13",
+      "suite": "trixie",
+      "filename": "pool/main/p/python3.13/libpython3.13-stdlib_3.13.5-2+deb13u5_amd64.deb",
+      "size": 1958624,
+      "sha256": "db161322a3481d2c0c3b9a3b9a03c3ab0e2b1718f54b88755fb4a3f939165b84",
+      "pre_depends": "",
+      "depends": "libpython3.13-minimal (= 3.13.5-2+deb13u5), media-types | mime-support, netbase, tzdata, libbz2-1.0, libc6 (>= 2.38), libdb5.3t64, libffi8 (>= 3.4), liblzma5 (>= 5.1.1alpha+20120614), libncursesw6 (>= 6.1), libreadline8t64 (>= 7.0~beta), libsqlite3-0 (>= 3.36.0), libtinfo6 (>= 6), libuuid1 (>= 2.20.1)",
+      "provides": ""
+    },
+    {
+      "name": "libreadline8t64",
+      "version": "8.2-6",
+      "architecture": "amd64",
+      "source_package": "readline",
+      "suite": "trixie",
+      "filename": "pool/main/r/readline/libreadline8t64_8.2-6_amd64.deb",
+      "size": 168832,
+      "sha256": "eeadf2b5e755c9f183883feea2d9b5b28560284275d5f54d3e55d0923b1d0967",
+      "pre_depends": "",
+      "depends": "readline-common, libc6 (>= 2.38), libtinfo6 (>= 6)",
+      "provides": "libreadline8 (= 8.2-6)"
+    },
+    {
+      "name": "libsasl2-2",
+      "version": "2.1.28+dfsg1-9",
+      "architecture": "amd64",
+      "source_package": "cyrus-sasl2",
+      "suite": "trixie",
+      "filename": "pool/main/c/cyrus-sasl2/libsasl2-2_2.1.28+dfsg1-9_amd64.deb",
+      "size": 57512,
+      "sha256": "66e49d7ae026811b49a0050f18b0325960a2625ffd1ff60d91b7844a815fa9d2",
+      "pre_depends": "",
+      "depends": "libsasl2-modules-db (>= 2.1.28+dfsg1-9), libc6 (>= 2.38), libssl3t64 (>= 3.0.0)",
+      "provides": ""
+    },
+    {
+      "name": "libsasl2-modules-db",
+      "version": "2.1.28+dfsg1-9",
+      "architecture": "amd64",
+      "source_package": "cyrus-sasl2",
+      "suite": "trixie",
+      "filename": "pool/main/c/cyrus-sasl2/libsasl2-modules-db_2.1.28+dfsg1-9_amd64.deb",
+      "size": 19768,
+      "sha256": "a5c38659fbd62c33c6d9bfa2be43e75a572d1818531aad32dd74d0a58cc4bd19",
+      "pre_depends": "",
+      "depends": "libc6 (>= 2.14), libdb5.3t64",
+      "provides": ""
+    },
+    {
+      "name": "libselinux1",
+      "version": "3.8.1-1",
+      "architecture": "amd64",
+      "source_package": "libselinux",
+      "suite": "trixie",
+      "filename": "pool/main/libs/libselinux/libselinux1_3.8.1-1_amd64.deb",
+      "size": 84680,
+      "sha256": "68bb8d32bd8d6d7d2f5952a169db03d1484b46ae1e52abccdec42a19dccea5d5",
+      "pre_depends": "",
+      "depends": "libc6 (>= 2.38), libpcre2-8-0 (>= 10.22)",
+      "provides": ""
+    },
+    {
+      "name": "libsemanage-common",
+      "version": "3.8.1-1",
+      "architecture": "all",
+      "source_package": "libsemanage",
+      "suite": "trixie",
+      "filename": "pool/main/libs/libsemanage/libsemanage-common_3.8.1-1_all.deb",
+      "size": 7812,
+      "sha256": "65375d886749c236bd1da4d9990b7c2469d2fe66019a28e5614f6814376d3dcb",
+      "pre_depends": "",
+      "depends": "",
+      "provides": ""
+    },
+    {
+      "name": "libsemanage2",
+      "version": "3.8.1-1",
+      "architecture": "amd64",
+      "source_package": "libsemanage",
+      "suite": "trixie",
+      "filename": "pool/main/libs/libsemanage/libsemanage2_3.8.1-1_amd64.deb",
+      "size": 95284,
+      "sha256": "f97da7505d17ad3bdd8fc56302256df7e158e5e0d8b02cb766654199cbc406a9",
+      "pre_depends": "",
+      "depends": "libsemanage-common (>= 3.8.1-1), libaudit1 (>= 1:2.2.1), libbz2-1.0, libc6 (>= 2.38), libselinux1 (>= 3.8.1), libsepol2 (>= 3.8.1)",
+      "provides": ""
+    },
+    {
+      "name": "libsepol2",
+      "version": "3.8.1-1",
+      "architecture": "amd64",
+      "source_package": "libsepol",
+      "suite": "trixie",
+      "filename": "pool/main/libs/libsepol/libsepol2_3.8.1-1_amd64.deb",
+      "size": 295588,
+      "sha256": "3595d2d3a6d24695e7953f4f00cdfe6974c9242d9a8dfee8998e77fbf7b2ba09",
+      "pre_depends": "",
+      "depends": "libc6 (>= 2.38)",
+      "provides": ""
+    },
+    {
+      "name": "libsqlite3-0",
+      "version": "3.46.1-7+deb13u2",
+      "architecture": "amd64",
+      "source_package": "sqlite3",
+      "suite": "trixie",
+      "filename": "pool/main/s/sqlite3/libsqlite3-0_3.46.1-7+deb13u2_amd64.deb",
+      "size": 914584,
+      "sha256": "0a459adaffd901109f7811ab65f58e7a957b4907d05539cf3d1184efdcde0468",
+      "pre_depends": "",
+      "depends": "libc6 (>= 2.38)",
+      "provides": ""
+    },
+    {
+      "name": "libssl3t64",
+      "version": "3.5.7-1~deb13u3",
+      "architecture": "amd64",
+      "source_package": "openssl",
+      "suite": "trixie-security",
+      "filename": "pool/updates/main/o/openssl/libssl3t64_3.5.7-1~deb13u3_amd64.deb",
+      "size": 2458176,
+      "sha256": "ff16bc048bcd7d1b256094450b79c77947d8e76fe2a24bd99b91021d591fa074",
+      "pre_depends": "",
+      "depends": "libc6 (>= 2.38), libzstd1 (>= 1.5.5), zlib1g (>= 1:1.1.4), openssl-provider-legacy",
+      "provides": "libssl3 (= 3.5.7-1~deb13u3)"
+    },
+    {
+      "name": "libstdc++6",
+      "version": "14.2.0-19",
+      "architecture": "amd64",
+      "source_package": "gcc-14",
+      "suite": "trixie",
+      "filename": "pool/main/g/gcc-14/libstdc++6_14.2.0-19_amd64.deb",
+      "size": 713628,
+      "sha256": "ab1fa05837aa7a92aae748fd07a18a35f7d18bb4a71c4724fe2bbf0e32089de0",
+      "pre_depends": "",
+      "depends": "gcc-14-base (= 14.2.0-19), libc6 (>= 2.38), libgcc-s1 (>= 4.3)",
+      "provides": ""
+    },
+    {
+      "name": "libsystemd0",
+      "version": "257.13-1~deb13u1",
+      "architecture": "amd64",
+      "source_package": "systemd",
+      "suite": "trixie",
+      "filename": "pool/main/s/systemd/libsystemd0_257.13-1~deb13u1_amd64.deb",
+      "size": 454648,
+      "sha256": "ab0d4127b5e46e6f8c015a1db15a62ba9ae274cdefa150083adf90ada0600ea1",
+      "pre_depends": "",
+      "depends": "libc6 (>= 2.39), libcap2 (>= 1:2.10)",
+      "provides": ""
+    },
+    {
+      "name": "libtalloc2",
+      "version": "2:2.4.3+samba4.22.11+dfsg-0+deb13u1",
+      "architecture": "amd64",
+      "source_package": "samba",
+      "suite": "trixie",
+      "filename": "pool/main/s/samba/libtalloc2_2.4.3+samba4.22.11+dfsg-0+deb13u1_amd64.deb",
+      "size": 63644,
+      "sha256": "b4cc8aa74c8b7c05a64efb6577acc955f522a8e39d8f37fe60b1b3fe6634ce96",
+      "pre_depends": "",
+      "depends": "libc6 (>= 2.38)",
+      "provides": ""
+    },
+    {
+      "name": "libtasn1-6",
+      "version": "4.20.0-2+deb13u1",
+      "architecture": "amd64",
+      "source_package": "libtasn1-6",
+      "suite": "trixie",
+      "filename": "pool/main/libt/libtasn1-6/libtasn1-6_4.20.0-2+deb13u1_amd64.deb",
+      "size": 50112,
+      "sha256": "23fec6e06583ce2bad9b2c04c9b485e90440e259b1abf8677cd80d3ce60831ad",
+      "pre_depends": "",
+      "depends": "libc6 (>= 2.38)",
+      "provides": ""
+    },
+    {
+      "name": "libtdb1",
+      "version": "2:1.4.13+samba4.22.11+dfsg-0+deb13u1",
+      "architecture": "amd64",
+      "source_package": "samba",
+      "suite": "trixie",
+      "filename": "pool/main/s/samba/libtdb1_1.4.13+samba4.22.11+dfsg-0+deb13u1_amd64.deb",
+      "size": 83444,
+      "sha256": "49f805c2c7e6e29a9f026689241b493bbd2bbf56037f296a66991448954333d7",
+      "pre_depends": "",
+      "depends": "libc6 (>= 2.34)",
+      "provides": ""
+    },
+    {
+      "name": "libtevent0t64",
+      "version": "2:0.16.2+samba4.22.11+dfsg-0+deb13u1",
+      "architecture": "amd64",
+      "source_package": "samba",
+      "suite": "trixie",
+      "filename": "pool/main/s/samba/libtevent0t64_0.16.2+samba4.22.11+dfsg-0+deb13u1_amd64.deb",
+      "size": 78548,
+      "sha256": "f558a1c251768eeb8898e8ec8064f665653a10e2584785868ca36d412511d996",
+      "pre_depends": "",
+      "depends": "libc6 (>= 2.34), libtalloc2 (>= 2.1.0)",
+      "provides": "libtevent0 (= 2:0.16.2+samba4.22.11+dfsg-0+deb13u1)"
+    },
+    {
+      "name": "libtext-charwidth-perl",
+      "version": "0.04-11+b4",
+      "architecture": "amd64",
+      "source_package": "libtext-charwidth-perl",
+      "suite": "trixie",
+      "filename": "pool/main/libt/libtext-charwidth-perl/libtext-charwidth-perl_0.04-11+b4_amd64.deb",
+      "size": 9476,
+      "sha256": "3a1d44df306e0252e8a16df07eba457bc9f2ef736ee890a1c35ffdfd548eafa0",
+      "pre_depends": "",
+      "depends": "libc6 (>= 2.4), perl-base (>= 5.40.0-6), perlapi-5.40.0",
+      "provides": ""
+    },
+    {
+      "name": "libtext-wrapi18n-perl",
+      "version": "0.06-10",
+      "architecture": "all",
+      "source_package": "libtext-wrapi18n-perl",
+      "suite": "trixie",
+      "filename": "pool/main/libt/libtext-wrapi18n-perl/libtext-wrapi18n-perl_0.06-10_all.deb",
+      "size": 8808,
+      "sha256": "17f98c7c09af8ac3bdbfd5a5dad32f3f51c71b02cdfc411366f49092a395de85",
+      "pre_depends": "",
+      "depends": "libtext-charwidth-perl",
+      "provides": ""
+    },
+    {
+      "name": "libtinfo6",
+      "version": "6.5+20250216-2",
+      "architecture": "amd64",
+      "source_package": "ncurses",
+      "suite": "trixie",
+      "filename": "pool/main/n/ncurses/libtinfo6_6.5+20250216-2_amd64.deb",
+      "size": 348380,
+      "sha256": "8b9f6a7983e9418564e48a627518de4c03917b56efe68d7f3e93bd8fffa1cc10",
+      "pre_depends": "",
+      "depends": "libc6 (>= 2.34)",
+      "provides": ""
+    },
+    {
+      "name": "libtirpc-common",
+      "version": "1.3.6+ds-1",
+      "architecture": "all",
+      "source_package": "libtirpc",
+      "suite": "trixie",
+      "filename": "pool/main/libt/libtirpc/libtirpc-common_1.3.6+ds-1_all.deb",
+      "size": 11004,
+      "sha256": "300f582e2c9151a8d329568c705cadc76252c417147312fe331c4560d2c7a6c3",
+      "pre_depends": "",
+      "depends": "",
+      "provides": ""
+    },
+    {
+      "name": "libtirpc3t64",
+      "version": "1.3.6+ds-1",
+      "architecture": "amd64",
+      "source_package": "libtirpc",
+      "suite": "trixie",
+      "filename": "pool/main/libt/libtirpc/libtirpc3t64_1.3.6+ds-1_amd64.deb",
+      "size": 83300,
+      "sha256": "ef4536c09bf5063554310e22d586ae90990100ba66d2fe7c35660e9e658913b6",
+      "pre_depends": "",
+      "depends": "libc6 (>= 2.38), libgssapi-krb5-2 (>= 1.17), libtirpc-common (>= 1.3.6+ds-1)",
+      "provides": "libtirpc3 (= 1.3.6+ds-1)"
+    },
+    {
+      "name": "libunistring5",
+      "version": "1.3-2",
+      "architecture": "amd64",
+      "source_package": "libunistring",
+      "suite": "trixie",
+      "filename": "pool/main/libu/libunistring/libunistring5_1.3-2_amd64.deb",
+      "size": 476768,
+      "sha256": "6dd3490bef06ea1096f32d10766b7e016cf579bfae8451d1b7df15ce05b8aa46",
+      "pre_depends": "",
+      "depends": "libc6 (>= 2.34)",
+      "provides": ""
+    },
+    {
+      "name": "liburing2",
+      "version": "2.9-1",
+      "architecture": "amd64",
+      "source_package": "liburing",
+      "suite": "trixie",
+      "filename": "pool/main/libu/liburing/liburing2_2.9-1_amd64.deb",
+      "size": 26448,
+      "sha256": "4b589c00c7a51172aace2cb2fb3d3ff32daf86c644023126dcfcaa840cc941ea",
+      "pre_depends": "",
+      "depends": "libc6 (>= 2.4)",
+      "provides": ""
+    },
+    {
+      "name": "libuuid1",
+      "version": "2.41.5-0+deb13u1",
+      "architecture": "amd64",
+      "source_package": "util-linux",
+      "suite": "trixie",
+      "filename": "pool/main/u/util-linux/libuuid1_2.41.5-0+deb13u1_amd64.deb",
+      "size": 37848,
+      "sha256": "c1bf4c4c3ff48c57fabf93307dfb56996b60cfa33927afc4158b5db36fb2721e",
+      "pre_depends": "",
+      "depends": "libc6 (>= 2.38)",
+      "provides": "libuuid1t64 (= 2.41.5-0+deb13u1)"
+    },
+    {
+      "name": "libwbclient0",
+      "version": "2:4.22.11+dfsg-0+deb13u1",
+      "architecture": "amd64",
+      "source_package": "samba",
+      "suite": "trixie",
+      "filename": "pool/main/s/samba/libwbclient0_4.22.11+dfsg-0+deb13u1_amd64.deb",
+      "size": 72220,
+      "sha256": "a133ae6f275d737d26f642f9e7d22b0cbef16c8f3ea58f63ec9da8fbbb6bd2f8",
+      "pre_depends": "",
+      "depends": "libbsd0 (>= 0.0), libc6 (>= 2.38)",
+      "provides": ""
+    },
+    {
+      "name": "libzstd1",
+      "version": "1.5.7+dfsg-1",
+      "architecture": "amd64",
+      "source_package": "libzstd",
+      "suite": "trixie",
+      "filename": "pool/main/libz/libzstd/libzstd1_1.5.7+dfsg-1_amd64.deb",
+      "size": 303836,
+      "sha256": "2f6a2aeacfc925eba8b00ac9139bc4bfccf8cacb09eb93de067074b26948eef9",
+      "pre_depends": "",
+      "depends": "libc6 (>= 2.34)",
+      "provides": ""
+    },
+    {
+      "name": "login.defs",
+      "version": "1:4.17.4-2",
+      "architecture": "all",
+      "source_package": "shadow",
+      "suite": "trixie",
+      "filename": "pool/main/s/shadow/login.defs_4.17.4-2_all.deb",
+      "size": 186124,
+      "sha256": "b4bbb8242cbf5588de7aafeb9d578a3dee1db2891f444ab454fd30bd80ccf2b4",
+      "pre_depends": "",
+      "depends": "",
+      "provides": ""
+    },
+    {
+      "name": "media-types",
+      "version": "13.0.0",
+      "architecture": "all",
+      "source_package": "media-types",
+      "suite": "trixie",
+      "filename": "pool/main/m/media-types/media-types_13.0.0_all.deb",
+      "size": 29336,
+      "sha256": "0788e4b0b72db1bcf74a19cb24c3511e7770ad0b341f0f30e361701c3072f53e",
+      "pre_depends": "",
+      "depends": "",
+      "provides": ""
+    },
+    {
+      "name": "netbase",
+      "version": "6.5",
+      "architecture": "all",
+      "source_package": "netbase",
+      "suite": "trixie",
+      "filename": "pool/main/n/netbase/netbase_6.5_all.deb",
+      "size": 12436,
+      "sha256": "76bafa92947ebd37b0a6f9ec6570412041f56edebc1c66d323731216d318471e",
+      "pre_depends": "",
+      "depends": "",
+      "provides": ""
+    },
+    {
+      "name": "openssl-provider-legacy",
+      "version": "3.5.7-1~deb13u3",
+      "architecture": "amd64",
+      "source_package": "openssl",
+      "suite": "trixie-security",
+      "filename": "pool/updates/main/o/openssl/openssl-provider-legacy_3.5.7-1~deb13u3_amd64.deb",
+      "size": 316452,
+      "sha256": "c12e0266c4780749a4702b8959ac979689f4182e18eed85a8a5eb90ed0e16eab",
+      "pre_depends": "",
+      "depends": "libc6 (>= 2.14), libssl3t64 (>= 3.0.3)",
+      "provides": ""
+    },
+    {
+      "name": "passwd",
+      "version": "1:4.17.4-2",
+      "architecture": "amd64",
+      "source_package": "shadow",
+      "suite": "trixie",
+      "filename": "pool/main/s/shadow/passwd_4.17.4-2_amd64.deb",
+      "size": 1228860,
+      "sha256": "c5eaef41c6947d2888fa3462f787a7e02158b997bd0119154283f425ba57b8b8",
+      "pre_depends": "",
+      "depends": "base-passwd (>= 3.6.4), libpam-modules, login.defs, libacl1 (>= 2.2.23), libattr1 (>= 1:2.4.44), libaudit1 (>= 1:2.2.1), libbsd0 (>= 0.11.0), libc6 (>= 2.38), libcrypt1 (>= 1:4.1.0), libpam0g (>= 0.99.7.1), libselinux1 (>= 3.1~), libsemanage2 (>= 2.0.32)",
+      "provides": ""
+    },
+    {
+      "name": "perl-base",
+      "version": "5.40.1-6+deb13u1",
+      "architecture": "amd64",
+      "source_package": "perl",
+      "suite": "trixie",
+      "filename": "pool/main/p/perl/perl-base_5.40.1-6+deb13u1_amd64.deb",
+      "size": 1666320,
+      "sha256": "b795464137a0f4d443fc9284f4b93e883fb83883cb533adf300ac660807a352a",
+      "pre_depends": "libc6 (>= 2.38), libcrypt1 (>= 1:4.1.0)",
+      "depends": "",
+      "provides": "libfile-path-perl (= 2.18), libfile-temp-perl (= 0.2311), libio-socket-ip-perl (= 0.42), libscalar-list-utils-perl (= 1:1.63), libsocket-perl (= 2.038), libxsloader-perl (= 0.32), perlapi-5.40.0, perlapi-5.40.1"
+    },
+    {
+      "name": "procps",
+      "version": "2:4.0.4-9",
+      "architecture": "amd64",
+      "source_package": "procps",
+      "suite": "trixie",
+      "filename": "pool/main/p/procps/procps_4.0.4-9_amd64.deb",
+      "size": 882088,
+      "sha256": "4db90bb6776772fc52585d6b1fbfc52ec2a85480e1b4363b743fbb2ffa2a5375",
+      "pre_depends": "",
+      "depends": "libc6 (>= 2.38), libncursesw6 (>= 6), libproc2-0 (>= 2:4.0.4), libsystemd0 (>= 254), libtinfo6 (>= 6), init-system-helpers (>= 1.29~)",
+      "provides": "watch"
+    },
+    {
+      "name": "python3",
+      "version": "3.13.5-1",
+      "architecture": "amd64",
+      "source_package": "python3-defaults",
+      "suite": "trixie",
+      "filename": "pool/main/p/python3-defaults/python3_3.13.5-1_amd64.deb",
+      "size": 28244,
+      "sha256": "c1388174dc7140e6c19a6dd39f8a0dcb38a835cd66c65644e0dded43d5223cb0",
+      "pre_depends": "python3-minimal (= 3.13.5-1)",
+      "depends": "python3.13 (>= 3.13.5-1~), libpython3-stdlib (= 3.13.5-1)",
+      "provides": "python3-profiler, python3-supported-max (= 3.13), python3-supported-min (= 3.13)"
+    },
+    {
+      "name": "python3-minimal",
+      "version": "3.13.5-1",
+      "architecture": "amd64",
+      "source_package": "python3-defaults",
+      "suite": "trixie",
+      "filename": "pool/main/p/python3-defaults/python3-minimal_3.13.5-1_amd64.deb",
+      "size": 27248,
+      "sha256": "a5d2371bebf3689f676e3f3bae800371bcc4392a8a51269e23d528249b399615",
+      "pre_depends": "python3.13-minimal (>= 3.13.5-1~)",
+      "depends": "dpkg (>= 1.13.20)",
+      "provides": ""
+    },
+    {
+      "name": "python3.13",
+      "version": "3.13.5-2+deb13u5",
+      "architecture": "amd64",
+      "source_package": "python3.13",
+      "suite": "trixie",
+      "filename": "pool/main/p/python3.13/python3.13_3.13.5-2+deb13u5_amd64.deb",
+      "size": 757492,
+      "sha256": "460c1fd72845516ac3ce9d1686916f3ab2e4c86f8a9746e14d26243a47e2b98d",
+      "pre_depends": "",
+      "depends": "python3.13-minimal (= 3.13.5-2+deb13u5), libpython3.13-stdlib (= 3.13.5-2+deb13u5), media-types | mime-support, tzdata",
+      "provides": ""
+    },
+    {
+      "name": "python3.13-minimal",
+      "version": "3.13.5-2+deb13u5",
+      "architecture": "amd64",
+      "source_package": "python3.13",
+      "suite": "trixie",
+      "filename": "pool/main/p/python3.13/python3.13-minimal_3.13.5-2+deb13u5_amd64.deb",
+      "size": 2224552,
+      "sha256": "c1fda9e7b1bf15b2fa75a238d8a8710e142fe14c722fc650c5fc614f078c9073",
+      "pre_depends": "libc6 (>= 2.38)",
+      "depends": "libpython3.13-minimal (= 3.13.5-2+deb13u5), libexpat1 (>= 2.6.0), zlib1g (>= 1:1.2.0)",
+      "provides": ""
+    },
+    {
+      "name": "readline-common",
+      "version": "8.2-6",
+      "architecture": "all",
+      "source_package": "readline",
+      "suite": "trixie",
+      "filename": "pool/main/r/readline/readline-common_8.2-6_all.deb",
+      "size": 69360,
+      "sha256": "f77e8aa0bf0de618f11cb0b21658a4ed60f177d63b3cf26d7fc3706b6d0eaaa9",
+      "pre_depends": "",
+      "depends": "",
+      "provides": ""
+    },
+    {
+      "name": "samba",
+      "version": "2:4.22.11+dfsg-0+deb13u1",
+      "architecture": "amd64",
+      "source_package": "samba",
+      "suite": "trixie",
+      "filename": "pool/main/s/samba/samba_4.22.11+dfsg-0+deb13u1_amd64.deb",
+      "size": 1338156,
+      "sha256": "97a45a98de720a3e1a2d20627a26d3294f3756b188e711eef42c1afdd3461565",
+      "pre_depends": "init-system-helpers (>= 1.54~)",
+      "depends": "passwd, procps, samba-common, samba-common-bin (= 2:4.22.11+dfsg-0+deb13u1), libbsd0 (>= 0.6.0), libc6 (>= 2.38), libcups2t64 (>= 1.7.0), libdbus-1-3 (>= 1.10), libgnutls30t64 (>= 3.7.0), libldap2 (>= 2.6.2), libldb2 (>= 2:2.10.0), libndr6 (>= 2:4.20.0~rc1), libpopt0 (>= 1.14), libtalloc2 (>= 2.4.0), libtasn1-6 (>= 4.14), libtdb1 (>= 1.2.7+git20101215), libtevent0t64 (>= 0.15.0), libtirpc3t64 (>= 1.0.2), liburing2 (>= 2.3), samba-libs (= 2:4.22.11+dfsg-0+deb13u1)",
+      "provides": ""
+    },
+    {
+      "name": "samba-common",
+      "version": "2:4.22.11+dfsg-0+deb13u1",
+      "architecture": "all",
+      "source_package": "samba",
+      "suite": "trixie",
+      "filename": "pool/main/s/samba/samba-common_4.22.11+dfsg-0+deb13u1_all.deb",
+      "size": 66256,
+      "sha256": "d23f8db2eaa4b5d2f23b16299231b9496f2082f738d7e3555f2f77456688c84d",
+      "pre_depends": "",
+      "depends": "ucf",
+      "provides": ""
+    },
+    {
+      "name": "samba-common-bin",
+      "version": "2:4.22.11+dfsg-0+deb13u1",
+      "architecture": "amd64",
+      "source_package": "samba",
+      "suite": "trixie",
+      "filename": "pool/main/s/samba/samba-common-bin_4.22.11+dfsg-0+deb13u1_amd64.deb",
+      "size": 1334668,
+      "sha256": "e8605cfa274680d27ab425ab907df6024e1903ccbaa1f22fb4cc9408fad57b16",
+      "pre_depends": "",
+      "depends": "samba-common, libbsd0 (>= 0.4.0), libc6 (>= 2.38), libcups2t64 (>= 1.7.0), libgnutls30t64 (>= 3.7.0), libjansson4 (>= 2.14), libldap2 (>= 2.6.2), libncurses6 (>= 6), libndr6 (>= 2:4.20.0~rc1), libpopt0 (>= 1.14), libreadline8t64 (>= 6.0), libsmbldap2 (>= 2:4.16.6), libtalloc2 (>= 2.4.0), libtdb1 (>= 1.2.7+git20101215), libtevent0t64 (>= 0.15.0), libtinfo6 (>= 6), libwbclient0 (>= 2:4.0.3+dfsg1), samba-libs (= 2:4.22.11+dfsg-0+deb13u1)",
+      "provides": "winexe (= 2:4.22.11+dfsg-0+deb13u1)"
+    },
+    {
+      "name": "samba-libs",
+      "version": "2:4.22.11+dfsg-0+deb13u1",
+      "architecture": "amd64",
+      "source_package": "samba",
+      "suite": "trixie",
+      "filename": "pool/main/s/samba/samba-libs_4.22.11+dfsg-0+deb13u1_amd64.deb",
+      "size": 6048068,
+      "sha256": "1b35a51399d31a4cf56ab3340320d790ed28397f17bafad038c535a430de7f03",
+      "pre_depends": "",
+      "depends": "libacl1 (>= 2.2.23), libavahi-client3 (>= 0.6.16), libavahi-common3 (>= 0.6.16), libbsd0 (>= 0.5.0), libc6 (>= 2.38), libcap2 (>= 1:2.10), libcrypt1 (>= 1:4.1.0), libgnutls30t64 (>= 3.8.2), libicu76 (>= 76.1-1~), libjansson4 (>= 2.14), libkeyutils1 (>= 1.5.9), libldap2 (>= 2.6.2), libldb2 (= 2:2.11.0+samba4.22.11+dfsg-0+deb13u1), libpam0g (>= 0.99.7.1), libpopt0 (>= 1.14), libsystemd0, libtalloc2 (>= 2.4.0), libtdb1 (>= 1.3.17), libtevent0t64 (>= 0.15.0), libtirpc3t64 (>= 1.0.2), libwbclient0 (>= 2:4.5.0+dfsg), zlib1g (>= 1:1.1.4)",
+      "provides": "libndr5 (= 2:4.22.11+dfsg-0+deb13u1), libndr6 (= 2:4.22.11+dfsg-0+deb13u1), libsmbldap2 (= 2:4.22.11+dfsg-0+deb13u1)"
+    },
+    {
+      "name": "sensible-utils",
+      "version": "0.0.25",
+      "architecture": "all",
+      "source_package": "sensible-utils",
+      "suite": "trixie",
+      "filename": "pool/main/s/sensible-utils/sensible-utils_0.0.25_all.deb",
+      "size": 24992,
+      "sha256": "873a9b73c3478cc3148cdbf5cc2084949a0a8e4fa16131d1cbc895d2f1f3470e",
+      "pre_depends": "",
+      "depends": "",
+      "provides": ""
+    },
+    {
+      "name": "tar",
+      "version": "1.35+dfsg-3.1",
+      "architecture": "amd64",
+      "source_package": "tar",
+      "suite": "trixie",
+      "filename": "pool/main/t/tar/tar_1.35+dfsg-3.1_amd64.deb",
+      "size": 814968,
+      "sha256": "214c02e1aa291076a3147b8a4c4cae02fadf4c67df629186e3e313726faef1de",
+      "pre_depends": "libacl1 (>= 2.2.23), libc6 (>= 2.38), libselinux1 (>= 3.1~)",
+      "depends": "",
+      "provides": ""
+    },
+    {
+      "name": "tzdata",
+      "version": "2026c-0+deb13u1",
+      "architecture": "all",
+      "source_package": "tzdata",
+      "suite": "trixie",
+      "filename": "pool/main/t/tzdata/tzdata_2026c-0+deb13u1_all.deb",
+      "size": 264156,
+      "sha256": "813b9bbbe14ccda2b24617b8bade0ade4d745957e75921766c153d249886bd4c",
+      "pre_depends": "",
+      "depends": "debconf (>= 0.5) | debconf-2.0",
+      "provides": "tzdata-trixie"
+    },
+    {
+      "name": "ucf",
+      "version": "3.0052",
+      "architecture": "all",
+      "source_package": "ucf",
+      "suite": "trixie",
+      "filename": "pool/main/u/ucf/ucf_3.0052_all.deb",
+      "size": 43296,
+      "sha256": "ab5a6d5a621ad07034ce29d0c2587e6e267ecd2975458b2c8a7d0ada77dcb95b",
+      "pre_depends": "",
+      "depends": "debconf (>= 0.5) | debconf-2.0, libtext-wrapi18n-perl, procps, sensible-utils",
+      "provides": ""
+    },
+    {
+      "name": "zlib1g",
+      "version": "1:1.3.dfsg+really1.3.1-1+b1",
+      "architecture": "amd64",
+      "source_package": "zlib",
+      "suite": "trixie",
+      "filename": "pool/main/z/zlib/zlib1g_1.3.dfsg+really1.3.1-1+b1_amd64.deb",
+      "size": 88892,
+      "sha256": "015be740d6236ad114582dea500c1d907f29e16d6db00566ca32fb68d71ac90d",
+      "pre_depends": "",
+      "depends": "libc6 (>= 2.14)",
+      "provides": "libz1"
+    }
+  ],
+  "resolved_dependencies": [
+    {
+      "from": "samba",
+      "field": "Pre-Depends",
+      "expression": "init-system-helpers (>= 1.54~)",
+      "selected": "init-system-helpers",
+      "version": "1.69~deb13u1"
+    },
+    {
+      "from": "samba",
+      "field": "Depends",
+      "expression": "passwd",
+      "selected": "passwd",
+      "version": "1:4.17.4-2"
+    },
+    {
+      "from": "samba",
+      "field": "Depends",
+      "expression": "procps",
+      "selected": "procps",
+      "version": "2:4.0.4-9"
+    },
+    {
+      "from": "samba",
+      "field": "Depends",
+      "expression": "samba-common",
+      "selected": "samba-common",
+      "version": "2:4.22.11+dfsg-0+deb13u1"
+    },
+    {
+      "from": "samba",
+      "field": "Depends",
+      "expression": "samba-common-bin (= 2:4.22.11+dfsg-0+deb13u1)",
+      "selected": "samba-common-bin",
+      "version": "2:4.22.11+dfsg-0+deb13u1"
+    },
+    {
+      "from": "samba",
+      "field": "Depends",
+      "expression": "libbsd0 (>= 0.6.0)",
+      "selected": "libbsd0",
+      "version": "0.12.2-2"
+    },
+    {
+      "from": "samba",
+      "field": "Depends",
+      "expression": "libc6 (>= 2.38)",
+      "selected": "libc6",
+      "version": "2.41-12+deb13u4"
+    },
+    {
+      "from": "samba",
+      "field": "Depends",
+      "expression": "libcups2t64 (>= 1.7.0)",
+      "selected": "libcups2t64",
+      "version": "2.4.10-3+deb13u2"
+    },
+    {
+      "from": "samba",
+      "field": "Depends",
+      "expression": "libdbus-1-3 (>= 1.10)",
+      "selected": "libdbus-1-3",
+      "version": "1.16.2-2"
+    },
+    {
+      "from": "samba",
+      "field": "Depends",
+      "expression": "libgnutls30t64 (>= 3.7.0)",
+      "selected": "libgnutls30t64",
+      "version": "3.8.9-3+deb13u4"
+    },
+    {
+      "from": "samba",
+      "field": "Depends",
+      "expression": "libldap2 (>= 2.6.2)",
+      "selected": "libldap2",
+      "version": "2.6.10+dfsg-1"
+    },
+    {
+      "from": "samba",
+      "field": "Depends",
+      "expression": "libldb2 (>= 2:2.10.0)",
+      "selected": "libldb2",
+      "version": "2:2.11.0+samba4.22.11+dfsg-0+deb13u1"
+    },
+    {
+      "from": "samba",
+      "field": "Depends",
+      "expression": "libndr6 (>= 2:4.20.0~rc1)",
+      "selected": "samba-libs",
+      "version": "2:4.22.11+dfsg-0+deb13u1"
+    },
+    {
+      "from": "samba",
+      "field": "Depends",
+      "expression": "libpopt0 (>= 1.14)",
+      "selected": "libpopt0",
+      "version": "1.19+dfsg-2"
+    },
+    {
+      "from": "samba",
+      "field": "Depends",
+      "expression": "libtalloc2 (>= 2.4.0)",
+      "selected": "libtalloc2",
+      "version": "2:2.4.3+samba4.22.11+dfsg-0+deb13u1"
+    },
+    {
+      "from": "samba",
+      "field": "Depends",
+      "expression": "libtasn1-6 (>= 4.14)",
+      "selected": "libtasn1-6",
+      "version": "4.20.0-2+deb13u1"
+    },
+    {
+      "from": "samba",
+      "field": "Depends",
+      "expression": "libtdb1 (>= 1.2.7+git20101215)",
+      "selected": "libtdb1",
+      "version": "2:1.4.13+samba4.22.11+dfsg-0+deb13u1"
+    },
+    {
+      "from": "samba",
+      "field": "Depends",
+      "expression": "libtevent0t64 (>= 0.15.0)",
+      "selected": "libtevent0t64",
+      "version": "2:0.16.2+samba4.22.11+dfsg-0+deb13u1"
+    },
+    {
+      "from": "samba",
+      "field": "Depends",
+      "expression": "libtirpc3t64 (>= 1.0.2)",
+      "selected": "libtirpc3t64",
+      "version": "1.3.6+ds-1"
+    },
+    {
+      "from": "samba",
+      "field": "Depends",
+      "expression": "liburing2 (>= 2.3)",
+      "selected": "liburing2",
+      "version": "2.9-1"
+    },
+    {
+      "from": "samba",
+      "field": "Depends",
+      "expression": "samba-libs (= 2:4.22.11+dfsg-0+deb13u1)",
+      "selected": "samba-libs",
+      "version": "2:4.22.11+dfsg-0+deb13u1"
+    },
+    {
+      "from": "samba-common-bin",
+      "field": "Depends",
+      "expression": "samba-common",
+      "selected": "samba-common",
+      "version": "2:4.22.11+dfsg-0+deb13u1"
+    },
+    {
+      "from": "samba-common-bin",
+      "field": "Depends",
+      "expression": "libbsd0 (>= 0.4.0)",
+      "selected": "libbsd0",
+      "version": "0.12.2-2"
+    },
+    {
+      "from": "samba-common-bin",
+      "field": "Depends",
+      "expression": "libc6 (>= 2.38)",
+      "selected": "libc6",
+      "version": "2.41-12+deb13u4"
+    },
+    {
+      "from": "samba-common-bin",
+      "field": "Depends",
+      "expression": "libcups2t64 (>= 1.7.0)",
+      "selected": "libcups2t64",
+      "version": "2.4.10-3+deb13u2"
+    },
+    {
+      "from": "samba-common-bin",
+      "field": "Depends",
+      "expression": "libgnutls30t64 (>= 3.7.0)",
+      "selected": "libgnutls30t64",
+      "version": "3.8.9-3+deb13u4"
+    },
+    {
+      "from": "samba-common-bin",
+      "field": "Depends",
+      "expression": "libjansson4 (>= 2.14)",
+      "selected": "libjansson4",
+      "version": "2.14-2+b3"
+    },
+    {
+      "from": "samba-common-bin",
+      "field": "Depends",
+      "expression": "libldap2 (>= 2.6.2)",
+      "selected": "libldap2",
+      "version": "2.6.10+dfsg-1"
+    },
+    {
+      "from": "samba-common-bin",
+      "field": "Depends",
+      "expression": "libncurses6 (>= 6)",
+      "selected": "libncurses6",
+      "version": "6.5+20250216-2"
+    },
+    {
+      "from": "samba-common-bin",
+      "field": "Depends",
+      "expression": "libndr6 (>= 2:4.20.0~rc1)",
+      "selected": "samba-libs",
+      "version": "2:4.22.11+dfsg-0+deb13u1"
+    },
+    {
+      "from": "samba-common-bin",
+      "field": "Depends",
+      "expression": "libpopt0 (>= 1.14)",
+      "selected": "libpopt0",
+      "version": "1.19+dfsg-2"
+    },
+    {
+      "from": "samba-common-bin",
+      "field": "Depends",
+      "expression": "libreadline8t64 (>= 6.0)",
+      "selected": "libreadline8t64",
+      "version": "8.2-6"
+    },
+    {
+      "from": "samba-common-bin",
+      "field": "Depends",
+      "expression": "libsmbldap2 (>= 2:4.16.6)",
+      "selected": "samba-libs",
+      "version": "2:4.22.11+dfsg-0+deb13u1"
+    },
+    {
+      "from": "samba-common-bin",
+      "field": "Depends",
+      "expression": "libtalloc2 (>= 2.4.0)",
+      "selected": "libtalloc2",
+      "version": "2:2.4.3+samba4.22.11+dfsg-0+deb13u1"
+    },
+    {
+      "from": "samba-common-bin",
+      "field": "Depends",
+      "expression": "libtdb1 (>= 1.2.7+git20101215)",
+      "selected": "libtdb1",
+      "version": "2:1.4.13+samba4.22.11+dfsg-0+deb13u1"
+    },
+    {
+      "from": "samba-common-bin",
+      "field": "Depends",
+      "expression": "libtevent0t64 (>= 0.15.0)",
+      "selected": "libtevent0t64",
+      "version": "2:0.16.2+samba4.22.11+dfsg-0+deb13u1"
+    },
+    {
+      "from": "samba-common-bin",
+      "field": "Depends",
+      "expression": "libtinfo6 (>= 6)",
+      "selected": "libtinfo6",
+      "version": "6.5+20250216-2"
+    },
+    {
+      "from": "samba-common-bin",
+      "field": "Depends",
+      "expression": "libwbclient0 (>= 2:4.0.3+dfsg1)",
+      "selected": "libwbclient0",
+      "version": "2:4.22.11+dfsg-0+deb13u1"
+    },
+    {
+      "from": "samba-common-bin",
+      "field": "Depends",
+      "expression": "samba-libs (= 2:4.22.11+dfsg-0+deb13u1)",
+      "selected": "samba-libs",
+      "version": "2:4.22.11+dfsg-0+deb13u1"
+    },
+    {
+      "from": "python3",
+      "field": "Pre-Depends",
+      "expression": "python3-minimal (= 3.13.5-1)",
+      "selected": "python3-minimal",
+      "version": "3.13.5-1"
+    },
+    {
+      "from": "python3",
+      "field": "Depends",
+      "expression": "python3.13 (>= 3.13.5-1~)",
+      "selected": "python3.13",
+      "version": "3.13.5-2+deb13u5"
+    },
+    {
+      "from": "python3",
+      "field": "Depends",
+      "expression": "libpython3-stdlib (= 3.13.5-1)",
+      "selected": "libpython3-stdlib",
+      "version": "3.13.5-1"
+    },
+    {
+      "from": "passwd",
+      "field": "Depends",
+      "expression": "base-passwd (>= 3.6.4)",
+      "selected": "base-passwd",
+      "version": "3.6.7"
+    },
+    {
+      "from": "passwd",
+      "field": "Depends",
+      "expression": "libpam-modules",
+      "selected": "libpam-modules",
+      "version": "1.7.0-5"
+    },
+    {
+      "from": "passwd",
+      "field": "Depends",
+      "expression": "login.defs",
+      "selected": "login.defs",
+      "version": "1:4.17.4-2"
+    },
+    {
+      "from": "passwd",
+      "field": "Depends",
+      "expression": "libacl1 (>= 2.2.23)",
+      "selected": "libacl1",
+      "version": "2.3.2-2+b1"
+    },
+    {
+      "from": "passwd",
+      "field": "Depends",
+      "expression": "libattr1 (>= 1:2.4.44)",
+      "selected": "libattr1",
+      "version": "1:2.5.2-3"
+    },
+    {
+      "from": "passwd",
+      "field": "Depends",
+      "expression": "libaudit1 (>= 1:2.2.1)",
+      "selected": "libaudit1",
+      "version": "1:4.0.2-2+deb13u1"
+    },
+    {
+      "from": "passwd",
+      "field": "Depends",
+      "expression": "libbsd0 (>= 0.11.0)",
+      "selected": "libbsd0",
+      "version": "0.12.2-2"
+    },
+    {
+      "from": "passwd",
+      "field": "Depends",
+      "expression": "libc6 (>= 2.38)",
+      "selected": "libc6",
+      "version": "2.41-12+deb13u4"
+    },
+    {
+      "from": "passwd",
+      "field": "Depends",
+      "expression": "libcrypt1 (>= 1:4.1.0)",
+      "selected": "libcrypt1",
+      "version": "1:4.4.38-1"
+    },
+    {
+      "from": "passwd",
+      "field": "Depends",
+      "expression": "libpam0g (>= 0.99.7.1)",
+      "selected": "libpam0g",
+      "version": "1.7.0-5"
+    },
+    {
+      "from": "passwd",
+      "field": "Depends",
+      "expression": "libselinux1 (>= 3.1~)",
+      "selected": "libselinux1",
+      "version": "3.8.1-1"
+    },
+    {
+      "from": "passwd",
+      "field": "Depends",
+      "expression": "libsemanage2 (>= 2.0.32)",
+      "selected": "libsemanage2",
+      "version": "3.8.1-1"
+    },
+    {
+      "from": "procps",
+      "field": "Depends",
+      "expression": "libc6 (>= 2.38)",
+      "selected": "libc6",
+      "version": "2.41-12+deb13u4"
+    },
+    {
+      "from": "procps",
+      "field": "Depends",
+      "expression": "libncursesw6 (>= 6)",
+      "selected": "libncursesw6",
+      "version": "6.5+20250216-2"
+    },
+    {
+      "from": "procps",
+      "field": "Depends",
+      "expression": "libproc2-0 (>= 2:4.0.4)",
+      "selected": "libproc2-0",
+      "version": "2:4.0.4-9"
+    },
+    {
+      "from": "procps",
+      "field": "Depends",
+      "expression": "libsystemd0 (>= 254)",
+      "selected": "libsystemd0",
+      "version": "257.13-1~deb13u1"
+    },
+    {
+      "from": "procps",
+      "field": "Depends",
+      "expression": "libtinfo6 (>= 6)",
+      "selected": "libtinfo6",
+      "version": "6.5+20250216-2"
+    },
+    {
+      "from": "procps",
+      "field": "Depends",
+      "expression": "init-system-helpers (>= 1.29~)",
+      "selected": "init-system-helpers",
+      "version": "1.69~deb13u1"
+    },
+    {
+      "from": "samba-common",
+      "field": "Depends",
+      "expression": "ucf",
+      "selected": "ucf",
+      "version": "3.0052"
+    },
+    {
+      "from": "libbsd0",
+      "field": "Depends",
+      "expression": "libc6 (>= 2.38)",
+      "selected": "libc6",
+      "version": "2.41-12+deb13u4"
+    },
+    {
+      "from": "libbsd0",
+      "field": "Depends",
+      "expression": "libmd0 (>= 1.0.3-2)",
+      "selected": "libmd0",
+      "version": "1.1.0-2+b1"
+    },
+    {
+      "from": "libc6",
+      "field": "Depends",
+      "expression": "libgcc-s1",
+      "selected": "libgcc-s1",
+      "version": "14.2.0-19"
+    },
+    {
+      "from": "libcups2t64",
+      "field": "Depends",
+      "expression": "libavahi-client3 (>= 0.6.16)",
+      "selected": "libavahi-client3",
+      "version": "0.8-16"
+    },
+    {
+      "from": "libcups2t64",
+      "field": "Depends",
+      "expression": "libavahi-common3 (>= 0.6.16)",
+      "selected": "libavahi-common3",
+      "version": "0.8-16"
+    },
+    {
+      "from": "libcups2t64",
+      "field": "Depends",
+      "expression": "libc6 (>= 2.38)",
+      "selected": "libc6",
+      "version": "2.41-12+deb13u4"
+    },
+    {
+      "from": "libcups2t64",
+      "field": "Depends",
+      "expression": "libgnutls30t64 (>= 3.8.1)",
+      "selected": "libgnutls30t64",
+      "version": "3.8.9-3+deb13u4"
+    },
+    {
+      "from": "libcups2t64",
+      "field": "Depends",
+      "expression": "libgssapi-krb5-2 (>= 1.17)",
+      "selected": "libgssapi-krb5-2",
+      "version": "1.21.3-5+deb13u1"
+    },
+    {
+      "from": "libcups2t64",
+      "field": "Depends",
+      "expression": "zlib1g (>= 1:1.2.0)",
+      "selected": "zlib1g",
+      "version": "1:1.3.dfsg+really1.3.1-1+b1"
+    },
+    {
+      "from": "libdbus-1-3",
+      "field": "Depends",
+      "expression": "libc6 (>= 2.38)",
+      "selected": "libc6",
+      "version": "2.41-12+deb13u4"
+    },
+    {
+      "from": "libdbus-1-3",
+      "field": "Depends",
+      "expression": "libsystemd0",
+      "selected": "libsystemd0",
+      "version": "257.13-1~deb13u1"
+    },
+    {
+      "from": "libgnutls30t64",
+      "field": "Depends",
+      "expression": "libc6 (>= 2.38)",
+      "selected": "libc6",
+      "version": "2.41-12+deb13u4"
+    },
+    {
+      "from": "libgnutls30t64",
+      "field": "Depends",
+      "expression": "libgmp10 (>= 2:6.3.0+dfsg)",
+      "selected": "libgmp10",
+      "version": "2:6.3.0+dfsg-3"
+    },
+    {
+      "from": "libgnutls30t64",
+      "field": "Depends",
+      "expression": "libhogweed6t64 (>= 3.10)",
+      "selected": "libhogweed6t64",
+      "version": "3.10.1-1"
+    },
+    {
+      "from": "libgnutls30t64",
+      "field": "Depends",
+      "expression": "libidn2-0 (>= 2.0.0)",
+      "selected": "libidn2-0",
+      "version": "2.3.8-2"
+    },
+    {
+      "from": "libgnutls30t64",
+      "field": "Depends",
+      "expression": "libnettle8t64 (>= 3.10)",
+      "selected": "libnettle8t64",
+      "version": "3.10.1-1"
+    },
+    {
+      "from": "libgnutls30t64",
+      "field": "Depends",
+      "expression": "libp11-kit0 (>= 0.25.1)",
+      "selected": "libp11-kit0",
+      "version": "0.25.5-3"
+    },
+    {
+      "from": "libgnutls30t64",
+      "field": "Depends",
+      "expression": "libtasn1-6 (>= 4.14)",
+      "selected": "libtasn1-6",
+      "version": "4.20.0-2+deb13u1"
+    },
+    {
+      "from": "libgnutls30t64",
+      "field": "Depends",
+      "expression": "libunistring5 (>= 1.1)",
+      "selected": "libunistring5",
+      "version": "1.3-2"
+    },
+    {
+      "from": "libldap2",
+      "field": "Depends",
+      "expression": "libc6 (>= 2.38)",
+      "selected": "libc6",
+      "version": "2.41-12+deb13u4"
+    },
+    {
+      "from": "libldap2",
+      "field": "Depends",
+      "expression": "libsasl2-2 (>= 2.1.28+dfsg1)",
+      "selected": "libsasl2-2",
+      "version": "2.1.28+dfsg1-9"
+    },
+    {
+      "from": "libldap2",
+      "field": "Depends",
+      "expression": "libssl3t64 (>= 3.0.0)",
+      "selected": "libssl3t64",
+      "version": "3.5.7-1~deb13u3"
+    },
+    {
+      "from": "libldb2",
+      "field": "Depends",
+      "expression": "libc6 (>= 2.38)",
+      "selected": "libc6",
+      "version": "2.41-12+deb13u4"
+    },
+    {
+      "from": "libldb2",
+      "field": "Depends",
+      "expression": "libldap2 (>= 2.6.2)",
+      "selected": "libldap2",
+      "version": "2.6.10+dfsg-1"
+    },
+    {
+      "from": "libldb2",
+      "field": "Depends",
+      "expression": "liblmdb0 (>= 0.9.9)",
+      "selected": "liblmdb0",
+      "version": "0.9.31-1+b2"
+    },
+    {
+      "from": "libldb2",
+      "field": "Depends",
+      "expression": "libtalloc2 (>= 2.4.0)",
+      "selected": "libtalloc2",
+      "version": "2:2.4.3+samba4.22.11+dfsg-0+deb13u1"
+    },
+    {
+      "from": "libldb2",
+      "field": "Depends",
+      "expression": "libtdb1 (>= 1.3.14)",
+      "selected": "libtdb1",
+      "version": "2:1.4.13+samba4.22.11+dfsg-0+deb13u1"
+    },
+    {
+      "from": "libldb2",
+      "field": "Depends",
+      "expression": "libtevent0t64 (>= 0.15.0)",
+      "selected": "libtevent0t64",
+      "version": "2:0.16.2+samba4.22.11+dfsg-0+deb13u1"
+    },
+    {
+      "from": "samba-libs",
+      "field": "Depends",
+      "expression": "libacl1 (>= 2.2.23)",
+      "selected": "libacl1",
+      "version": "2.3.2-2+b1"
+    },
+    {
+      "from": "samba-libs",
+      "field": "Depends",
+      "expression": "libavahi-client3 (>= 0.6.16)",
+      "selected": "libavahi-client3",
+      "version": "0.8-16"
+    },
+    {
+      "from": "samba-libs",
+      "field": "Depends",
+      "expression": "libavahi-common3 (>= 0.6.16)",
+      "selected": "libavahi-common3",
+      "version": "0.8-16"
+    },
+    {
+      "from": "samba-libs",
+      "field": "Depends",
+      "expression": "libbsd0 (>= 0.5.0)",
+      "selected": "libbsd0",
+      "version": "0.12.2-2"
+    },
+    {
+      "from": "samba-libs",
+      "field": "Depends",
+      "expression": "libc6 (>= 2.38)",
+      "selected": "libc6",
+      "version": "2.41-12+deb13u4"
+    },
+    {
+      "from": "samba-libs",
+      "field": "Depends",
+      "expression": "libcap2 (>= 1:2.10)",
+      "selected": "libcap2",
+      "version": "1:2.75-10+deb13u1+b3"
+    },
+    {
+      "from": "samba-libs",
+      "field": "Depends",
+      "expression": "libcrypt1 (>= 1:4.1.0)",
+      "selected": "libcrypt1",
+      "version": "1:4.4.38-1"
+    },
+    {
+      "from": "samba-libs",
+      "field": "Depends",
+      "expression": "libgnutls30t64 (>= 3.8.2)",
+      "selected": "libgnutls30t64",
+      "version": "3.8.9-3+deb13u4"
+    },
+    {
+      "from": "samba-libs",
+      "field": "Depends",
+      "expression": "libicu76 (>= 76.1-1~)",
+      "selected": "libicu76",
+      "version": "76.1-4"
+    },
+    {
+      "from": "samba-libs",
+      "field": "Depends",
+      "expression": "libjansson4 (>= 2.14)",
+      "selected": "libjansson4",
+      "version": "2.14-2+b3"
+    },
+    {
+      "from": "samba-libs",
+      "field": "Depends",
+      "expression": "libkeyutils1 (>= 1.5.9)",
+      "selected": "libkeyutils1",
+      "version": "1.6.3-6"
+    },
+    {
+      "from": "samba-libs",
+      "field": "Depends",
+      "expression": "libldap2 (>= 2.6.2)",
+      "selected": "libldap2",
+      "version": "2.6.10+dfsg-1"
+    },
+    {
+      "from": "samba-libs",
+      "field": "Depends",
+      "expression": "libldb2 (= 2:2.11.0+samba4.22.11+dfsg-0+deb13u1)",
+      "selected": "libldb2",
+      "version": "2:2.11.0+samba4.22.11+dfsg-0+deb13u1"
+    },
+    {
+      "from": "samba-libs",
+      "field": "Depends",
+      "expression": "libpam0g (>= 0.99.7.1)",
+      "selected": "libpam0g",
+      "version": "1.7.0-5"
+    },
+    {
+      "from": "samba-libs",
+      "field": "Depends",
+      "expression": "libpopt0 (>= 1.14)",
+      "selected": "libpopt0",
+      "version": "1.19+dfsg-2"
+    },
+    {
+      "from": "samba-libs",
+      "field": "Depends",
+      "expression": "libsystemd0",
+      "selected": "libsystemd0",
+      "version": "257.13-1~deb13u1"
+    },
+    {
+      "from": "samba-libs",
+      "field": "Depends",
+      "expression": "libtalloc2 (>= 2.4.0)",
+      "selected": "libtalloc2",
+      "version": "2:2.4.3+samba4.22.11+dfsg-0+deb13u1"
+    },
+    {
+      "from": "samba-libs",
+      "field": "Depends",
+      "expression": "libtdb1 (>= 1.3.17)",
+      "selected": "libtdb1",
+      "version": "2:1.4.13+samba4.22.11+dfsg-0+deb13u1"
+    },
+    {
+      "from": "samba-libs",
+      "field": "Depends",
+      "expression": "libtevent0t64 (>= 0.15.0)",
+      "selected": "libtevent0t64",
+      "version": "2:0.16.2+samba4.22.11+dfsg-0+deb13u1"
+    },
+    {
+      "from": "samba-libs",
+      "field": "Depends",
+      "expression": "libtirpc3t64 (>= 1.0.2)",
+      "selected": "libtirpc3t64",
+      "version": "1.3.6+ds-1"
+    },
+    {
+      "from": "samba-libs",
+      "field": "Depends",
+      "expression": "libwbclient0 (>= 2:4.5.0+dfsg)",
+      "selected": "libwbclient0",
+      "version": "2:4.22.11+dfsg-0+deb13u1"
+    },
+    {
+      "from": "samba-libs",
+      "field": "Depends",
+      "expression": "zlib1g (>= 1:1.1.4)",
+      "selected": "zlib1g",
+      "version": "1:1.3.dfsg+really1.3.1-1+b1"
+    },
+    {
+      "from": "libpopt0",
+      "field": "Depends",
+      "expression": "libc6 (>= 2.38)",
+      "selected": "libc6",
+      "version": "2.41-12+deb13u4"
+    },
+    {
+      "from": "libtalloc2",
+      "field": "Depends",
+      "expression": "libc6 (>= 2.38)",
+      "selected": "libc6",
+      "version": "2.41-12+deb13u4"
+    },
+    {
+      "from": "libtasn1-6",
+      "field": "Depends",
+      "expression": "libc6 (>= 2.38)",
+      "selected": "libc6",
+      "version": "2.41-12+deb13u4"
+    },
+    {
+      "from": "libtdb1",
+      "field": "Depends",
+      "expression": "libc6 (>= 2.34)",
+      "selected": "libc6",
+      "version": "2.41-12+deb13u4"
+    },
+    {
+      "from": "libtevent0t64",
+      "field": "Depends",
+      "expression": "libc6 (>= 2.34)",
+      "selected": "libc6",
+      "version": "2.41-12+deb13u4"
+    },
+    {
+      "from": "libtevent0t64",
+      "field": "Depends",
+      "expression": "libtalloc2 (>= 2.1.0)",
+      "selected": "libtalloc2",
+      "version": "2:2.4.3+samba4.22.11+dfsg-0+deb13u1"
+    },
+    {
+      "from": "libtirpc3t64",
+      "field": "Depends",
+      "expression": "libc6 (>= 2.38)",
+      "selected": "libc6",
+      "version": "2.41-12+deb13u4"
+    },
+    {
+      "from": "libtirpc3t64",
+      "field": "Depends",
+      "expression": "libgssapi-krb5-2 (>= 1.17)",
+      "selected": "libgssapi-krb5-2",
+      "version": "1.21.3-5+deb13u1"
+    },
+    {
+      "from": "libtirpc3t64",
+      "field": "Depends",
+      "expression": "libtirpc-common (>= 1.3.6+ds-1)",
+      "selected": "libtirpc-common",
+      "version": "1.3.6+ds-1"
+    },
+    {
+      "from": "liburing2",
+      "field": "Depends",
+      "expression": "libc6 (>= 2.4)",
+      "selected": "libc6",
+      "version": "2.41-12+deb13u4"
+    },
+    {
+      "from": "libjansson4",
+      "field": "Depends",
+      "expression": "libc6 (>= 2.38)",
+      "selected": "libc6",
+      "version": "2.41-12+deb13u4"
+    },
+    {
+      "from": "libncurses6",
+      "field": "Depends",
+      "expression": "libtinfo6 (= 6.5+20250216-2)",
+      "selected": "libtinfo6",
+      "version": "6.5+20250216-2"
+    },
+    {
+      "from": "libncurses6",
+      "field": "Depends",
+      "expression": "libc6 (>= 2.34)",
+      "selected": "libc6",
+      "version": "2.41-12+deb13u4"
+    },
+    {
+      "from": "libreadline8t64",
+      "field": "Depends",
+      "expression": "readline-common",
+      "selected": "readline-common",
+      "version": "8.2-6"
+    },
+    {
+      "from": "libreadline8t64",
+      "field": "Depends",
+      "expression": "libc6 (>= 2.38)",
+      "selected": "libc6",
+      "version": "2.41-12+deb13u4"
+    },
+    {
+      "from": "libreadline8t64",
+      "field": "Depends",
+      "expression": "libtinfo6 (>= 6)",
+      "selected": "libtinfo6",
+      "version": "6.5+20250216-2"
+    },
+    {
+      "from": "libtinfo6",
+      "field": "Depends",
+      "expression": "libc6 (>= 2.34)",
+      "selected": "libc6",
+      "version": "2.41-12+deb13u4"
+    },
+    {
+      "from": "libwbclient0",
+      "field": "Depends",
+      "expression": "libbsd0 (>= 0.0)",
+      "selected": "libbsd0",
+      "version": "0.12.2-2"
+    },
+    {
+      "from": "libwbclient0",
+      "field": "Depends",
+      "expression": "libc6 (>= 2.38)",
+      "selected": "libc6",
+      "version": "2.41-12+deb13u4"
+    },
+    {
+      "from": "python3-minimal",
+      "field": "Pre-Depends",
+      "expression": "python3.13-minimal (>= 3.13.5-1~)",
+      "selected": "python3.13-minimal",
+      "version": "3.13.5-2+deb13u5"
+    },
+    {
+      "from": "python3-minimal",
+      "field": "Depends",
+      "expression": "dpkg (>= 1.13.20)",
+      "selected": "dpkg",
+      "version": "1.22.22"
+    },
+    {
+      "from": "python3.13",
+      "field": "Depends",
+      "expression": "python3.13-minimal (= 3.13.5-2+deb13u5)",
+      "selected": "python3.13-minimal",
+      "version": "3.13.5-2+deb13u5"
+    },
+    {
+      "from": "python3.13",
+      "field": "Depends",
+      "expression": "libpython3.13-stdlib (= 3.13.5-2+deb13u5)",
+      "selected": "libpython3.13-stdlib",
+      "version": "3.13.5-2+deb13u5"
+    },
+    {
+      "from": "python3.13",
+      "field": "Depends",
+      "expression": "media-types | mime-support",
+      "selected": "media-types",
+      "version": "13.0.0"
+    },
+    {
+      "from": "python3.13",
+      "field": "Depends",
+      "expression": "tzdata",
+      "selected": "tzdata",
+      "version": "2026c-0+deb13u1"
+    },
+    {
+      "from": "libpython3-stdlib",
+      "field": "Depends",
+      "expression": "libpython3.13-stdlib (>= 3.13.5-1~)",
+      "selected": "libpython3.13-stdlib",
+      "version": "3.13.5-2+deb13u5"
+    },
+    {
+      "from": "base-passwd",
+      "field": "Depends",
+      "expression": "libc6 (>= 2.34)",
+      "selected": "libc6",
+      "version": "2.41-12+deb13u4"
+    },
+    {
+      "from": "base-passwd",
+      "field": "Depends",
+      "expression": "libdebconfclient0 (>= 0.145)",
+      "selected": "libdebconfclient0",
+      "version": "0.280"
+    },
+    {
+      "from": "base-passwd",
+      "field": "Depends",
+      "expression": "libselinux1 (>= 3.1~)",
+      "selected": "libselinux1",
+      "version": "3.8.1-1"
+    },
+    {
+      "from": "libpam-modules",
+      "field": "Pre-Depends",
+      "expression": "libaudit1 (>= 1:2.2.1)",
+      "selected": "libaudit1",
+      "version": "1:4.0.2-2+deb13u1"
+    },
+    {
+      "from": "libpam-modules",
+      "field": "Pre-Depends",
+      "expression": "libc6 (>= 2.38)",
+      "selected": "libc6",
+      "version": "2.41-12+deb13u4"
+    },
+    {
+      "from": "libpam-modules",
+      "field": "Pre-Depends",
+      "expression": "libcrypt1 (>= 1:4.3.0)",
+      "selected": "libcrypt1",
+      "version": "1:4.4.38-1"
+    },
+    {
+      "from": "libpam-modules",
+      "field": "Pre-Depends",
+      "expression": "libdb5.3t64",
+      "selected": "libdb5.3t64",
+      "version": "5.3.28+dfsg2-9"
+    },
+    {
+      "from": "libpam-modules",
+      "field": "Pre-Depends",
+      "expression": "libpam0g (>= 1.4.1)",
+      "selected": "libpam0g",
+      "version": "1.7.0-5"
+    },
+    {
+      "from": "libpam-modules",
+      "field": "Pre-Depends",
+      "expression": "libselinux1 (>= 3.1~)",
+      "selected": "libselinux1",
+      "version": "3.8.1-1"
+    },
+    {
+      "from": "libpam-modules",
+      "field": "Pre-Depends",
+      "expression": "libsystemd0 (>= 254)",
+      "selected": "libsystemd0",
+      "version": "257.13-1~deb13u1"
+    },
+    {
+      "from": "libpam-modules",
+      "field": "Pre-Depends",
+      "expression": "debconf (>= 0.5) | debconf-2.0",
+      "selected": "debconf",
+      "version": "1.5.91"
+    },
+    {
+      "from": "libpam-modules",
+      "field": "Pre-Depends",
+      "expression": "libpam-modules-bin (= 1.7.0-5)",
+      "selected": "libpam-modules-bin",
+      "version": "1.7.0-5"
+    },
+    {
+      "from": "libacl1",
+      "field": "Depends",
+      "expression": "libc6 (>= 2.38)",
+      "selected": "libc6",
+      "version": "2.41-12+deb13u4"
+    },
+    {
+      "from": "libattr1",
+      "field": "Depends",
+      "expression": "libc6 (>= 2.4)",
+      "selected": "libc6",
+      "version": "2.41-12+deb13u4"
+    },
+    {
+      "from": "libaudit1",
+      "field": "Depends",
+      "expression": "libaudit-common (>= 1:4.0.2-2+deb13u1)",
+      "selected": "libaudit-common",
+      "version": "1:4.0.2-2+deb13u1"
+    },
+    {
+      "from": "libaudit1",
+      "field": "Depends",
+      "expression": "libc6 (>= 2.38)",
+      "selected": "libc6",
+      "version": "2.41-12+deb13u4"
+    },
+    {
+      "from": "libaudit1",
+      "field": "Depends",
+      "expression": "libcap-ng0 (>= 0.7.9)",
+      "selected": "libcap-ng0",
+      "version": "0.8.5-4+b1"
+    },
+    {
+      "from": "libcrypt1",
+      "field": "Depends",
+      "expression": "libc6 (>= 2.38)",
+      "selected": "libc6",
+      "version": "2.41-12+deb13u4"
+    },
+    {
+      "from": "libpam0g",
+      "field": "Depends",
+      "expression": "libaudit1 (>= 1:2.2.1)",
+      "selected": "libaudit1",
+      "version": "1:4.0.2-2+deb13u1"
+    },
+    {
+      "from": "libpam0g",
+      "field": "Depends",
+      "expression": "libc6 (>= 2.34)",
+      "selected": "libc6",
+      "version": "2.41-12+deb13u4"
+    },
+    {
+      "from": "libpam0g",
+      "field": "Depends",
+      "expression": "debconf (>= 0.5) | debconf-2.0",
+      "selected": "debconf",
+      "version": "1.5.91"
+    },
+    {
+      "from": "libselinux1",
+      "field": "Depends",
+      "expression": "libc6 (>= 2.38)",
+      "selected": "libc6",
+      "version": "2.41-12+deb13u4"
+    },
+    {
+      "from": "libselinux1",
+      "field": "Depends",
+      "expression": "libpcre2-8-0 (>= 10.22)",
+      "selected": "libpcre2-8-0",
+      "version": "10.46-1~deb13u3"
+    },
+    {
+      "from": "libsemanage2",
+      "field": "Depends",
+      "expression": "libsemanage-common (>= 3.8.1-1)",
+      "selected": "libsemanage-common",
+      "version": "3.8.1-1"
+    },
+    {
+      "from": "libsemanage2",
+      "field": "Depends",
+      "expression": "libaudit1 (>= 1:2.2.1)",
+      "selected": "libaudit1",
+      "version": "1:4.0.2-2+deb13u1"
+    },
+    {
+      "from": "libsemanage2",
+      "field": "Depends",
+      "expression": "libbz2-1.0",
+      "selected": "libbz2-1.0",
+      "version": "1.0.8-6"
+    },
+    {
+      "from": "libsemanage2",
+      "field": "Depends",
+      "expression": "libc6 (>= 2.38)",
+      "selected": "libc6",
+      "version": "2.41-12+deb13u4"
+    },
+    {
+      "from": "libsemanage2",
+      "field": "Depends",
+      "expression": "libselinux1 (>= 3.8.1)",
+      "selected": "libselinux1",
+      "version": "3.8.1-1"
+    },
+    {
+      "from": "libsemanage2",
+      "field": "Depends",
+      "expression": "libsepol2 (>= 3.8.1)",
+      "selected": "libsepol2",
+      "version": "3.8.1-1"
+    },
+    {
+      "from": "libncursesw6",
+      "field": "Depends",
+      "expression": "libtinfo6 (= 6.5+20250216-2)",
+      "selected": "libtinfo6",
+      "version": "6.5+20250216-2"
+    },
+    {
+      "from": "libncursesw6",
+      "field": "Depends",
+      "expression": "libc6 (>= 2.34)",
+      "selected": "libc6",
+      "version": "2.41-12+deb13u4"
+    },
+    {
+      "from": "libproc2-0",
+      "field": "Depends",
+      "expression": "libc6 (>= 2.38)",
+      "selected": "libc6",
+      "version": "2.41-12+deb13u4"
+    },
+    {
+      "from": "libproc2-0",
+      "field": "Depends",
+      "expression": "libsystemd0",
+      "selected": "libsystemd0",
+      "version": "257.13-1~deb13u1"
+    },
+    {
+      "from": "libsystemd0",
+      "field": "Depends",
+      "expression": "libc6 (>= 2.39)",
+      "selected": "libc6",
+      "version": "2.41-12+deb13u4"
+    },
+    {
+      "from": "libsystemd0",
+      "field": "Depends",
+      "expression": "libcap2 (>= 1:2.10)",
+      "selected": "libcap2",
+      "version": "1:2.75-10+deb13u1+b3"
+    },
+    {
+      "from": "ucf",
+      "field": "Depends",
+      "expression": "debconf (>= 0.5) | debconf-2.0",
+      "selected": "debconf",
+      "version": "1.5.91"
+    },
+    {
+      "from": "ucf",
+      "field": "Depends",
+      "expression": "libtext-wrapi18n-perl",
+      "selected": "libtext-wrapi18n-perl",
+      "version": "0.06-10"
+    },
+    {
+      "from": "ucf",
+      "field": "Depends",
+      "expression": "procps",
+      "selected": "procps",
+      "version": "2:4.0.4-9"
+    },
+    {
+      "from": "ucf",
+      "field": "Depends",
+      "expression": "sensible-utils",
+      "selected": "sensible-utils",
+      "version": "0.0.25"
+    },
+    {
+      "from": "libmd0",
+      "field": "Depends",
+      "expression": "libc6 (>= 2.33)",
+      "selected": "libc6",
+      "version": "2.41-12+deb13u4"
+    },
+    {
+      "from": "libgcc-s1",
+      "field": "Depends",
+      "expression": "gcc-14-base (= 14.2.0-19)",
+      "selected": "gcc-14-base",
+      "version": "14.2.0-19"
+    },
+    {
+      "from": "libgcc-s1",
+      "field": "Depends",
+      "expression": "libc6 (>= 2.35)",
+      "selected": "libc6",
+      "version": "2.41-12+deb13u4"
+    },
+    {
+      "from": "libavahi-client3",
+      "field": "Depends",
+      "expression": "libavahi-common3 (= 0.8-16)",
+      "selected": "libavahi-common3",
+      "version": "0.8-16"
+    },
+    {
+      "from": "libavahi-client3",
+      "field": "Depends",
+      "expression": "libc6 (>= 2.34)",
+      "selected": "libc6",
+      "version": "2.41-12+deb13u4"
+    },
+    {
+      "from": "libavahi-client3",
+      "field": "Depends",
+      "expression": "libdbus-1-3 (>= 1.10)",
+      "selected": "libdbus-1-3",
+      "version": "1.16.2-2"
+    },
+    {
+      "from": "libavahi-common3",
+      "field": "Depends",
+      "expression": "libc6 (>= 2.38)",
+      "selected": "libc6",
+      "version": "2.41-12+deb13u4"
+    },
+    {
+      "from": "libavahi-common3",
+      "field": "Depends",
+      "expression": "libavahi-common-data (= 0.8-16)",
+      "selected": "libavahi-common-data",
+      "version": "0.8-16"
+    },
+    {
+      "from": "libgssapi-krb5-2",
+      "field": "Depends",
+      "expression": "libkrb5-3 (= 1.21.3-5+deb13u1)",
+      "selected": "libkrb5-3",
+      "version": "1.21.3-5+deb13u1"
+    },
+    {
+      "from": "libgssapi-krb5-2",
+      "field": "Depends",
+      "expression": "libc6 (>= 2.38)",
+      "selected": "libc6",
+      "version": "2.41-12+deb13u4"
+    },
+    {
+      "from": "libgssapi-krb5-2",
+      "field": "Depends",
+      "expression": "libcom-err2 (>= 1.43.9)",
+      "selected": "libcom-err2",
+      "version": "1.47.2-3+b12"
+    },
+    {
+      "from": "libgssapi-krb5-2",
+      "field": "Depends",
+      "expression": "libk5crypto3 (>= 1.20)",
+      "selected": "libk5crypto3",
+      "version": "1.21.3-5+deb13u1"
+    },
+    {
+      "from": "libgssapi-krb5-2",
+      "field": "Depends",
+      "expression": "libkrb5support0 (= 1.21.3-5+deb13u1)",
+      "selected": "libkrb5support0",
+      "version": "1.21.3-5+deb13u1"
+    },
+    {
+      "from": "zlib1g",
+      "field": "Depends",
+      "expression": "libc6 (>= 2.14)",
+      "selected": "libc6",
+      "version": "2.41-12+deb13u4"
+    },
+    {
+      "from": "libgmp10",
+      "field": "Depends",
+      "expression": "libc6 (>= 2.38)",
+      "selected": "libc6",
+      "version": "2.41-12+deb13u4"
+    },
+    {
+      "from": "libhogweed6t64",
+      "field": "Depends",
+      "expression": "libc6 (>= 2.14)",
+      "selected": "libc6",
+      "version": "2.41-12+deb13u4"
+    },
+    {
+      "from": "libhogweed6t64",
+      "field": "Depends",
+      "expression": "libgmp10 (>= 2:6.3.0+dfsg)",
+      "selected": "libgmp10",
+      "version": "2:6.3.0+dfsg-3"
+    },
+    {
+      "from": "libhogweed6t64",
+      "field": "Depends",
+      "expression": "libnettle8t64",
+      "selected": "libnettle8t64",
+      "version": "3.10.1-1"
+    },
+    {
+      "from": "libidn2-0",
+      "field": "Depends",
+      "expression": "libc6 (>= 2.14)",
+      "selected": "libc6",
+      "version": "2.41-12+deb13u4"
+    },
+    {
+      "from": "libidn2-0",
+      "field": "Depends",
+      "expression": "libunistring5 (>= 1.1)",
+      "selected": "libunistring5",
+      "version": "1.3-2"
+    },
+    {
+      "from": "libnettle8t64",
+      "field": "Depends",
+      "expression": "libc6 (>= 2.17)",
+      "selected": "libc6",
+      "version": "2.41-12+deb13u4"
+    },
+    {
+      "from": "libp11-kit0",
+      "field": "Depends",
+      "expression": "libc6 (>= 2.38)",
+      "selected": "libc6",
+      "version": "2.41-12+deb13u4"
+    },
+    {
+      "from": "libp11-kit0",
+      "field": "Depends",
+      "expression": "libffi8 (>= 3.4)",
+      "selected": "libffi8",
+      "version": "3.4.8-2"
+    },
+    {
+      "from": "libunistring5",
+      "field": "Depends",
+      "expression": "libc6 (>= 2.34)",
+      "selected": "libc6",
+      "version": "2.41-12+deb13u4"
+    },
+    {
+      "from": "libsasl2-2",
+      "field": "Depends",
+      "expression": "libsasl2-modules-db (>= 2.1.28+dfsg1-9)",
+      "selected": "libsasl2-modules-db",
+      "version": "2.1.28+dfsg1-9"
+    },
+    {
+      "from": "libsasl2-2",
+      "field": "Depends",
+      "expression": "libc6 (>= 2.38)",
+      "selected": "libc6",
+      "version": "2.41-12+deb13u4"
+    },
+    {
+      "from": "libsasl2-2",
+      "field": "Depends",
+      "expression": "libssl3t64 (>= 3.0.0)",
+      "selected": "libssl3t64",
+      "version": "3.5.7-1~deb13u3"
+    },
+    {
+      "from": "libssl3t64",
+      "field": "Depends",
+      "expression": "libc6 (>= 2.38)",
+      "selected": "libc6",
+      "version": "2.41-12+deb13u4"
+    },
+    {
+      "from": "libssl3t64",
+      "field": "Depends",
+      "expression": "libzstd1 (>= 1.5.5)",
+      "selected": "libzstd1",
+      "version": "1.5.7+dfsg-1"
+    },
+    {
+      "from": "libssl3t64",
+      "field": "Depends",
+      "expression": "zlib1g (>= 1:1.1.4)",
+      "selected": "zlib1g",
+      "version": "1:1.3.dfsg+really1.3.1-1+b1"
+    },
+    {
+      "from": "libssl3t64",
+      "field": "Depends",
+      "expression": "openssl-provider-legacy",
+      "selected": "openssl-provider-legacy",
+      "version": "3.5.7-1~deb13u3"
+    },
+    {
+      "from": "liblmdb0",
+      "field": "Depends",
+      "expression": "libc6 (>= 2.38)",
+      "selected": "libc6",
+      "version": "2.41-12+deb13u4"
+    },
+    {
+      "from": "libcap2",
+      "field": "Depends",
+      "expression": "libc6 (>= 2.38)",
+      "selected": "libc6",
+      "version": "2.41-12+deb13u4"
+    },
+    {
+      "from": "libicu76",
+      "field": "Depends",
+      "expression": "libc6 (>= 2.38)",
+      "selected": "libc6",
+      "version": "2.41-12+deb13u4"
+    },
+    {
+      "from": "libicu76",
+      "field": "Depends",
+      "expression": "libgcc-s1 (>= 3.0)",
+      "selected": "libgcc-s1",
+      "version": "14.2.0-19"
+    },
+    {
+      "from": "libicu76",
+      "field": "Depends",
+      "expression": "libstdc++6 (>= 14)",
+      "selected": "libstdc++6",
+      "version": "14.2.0-19"
+    },
+    {
+      "from": "libkeyutils1",
+      "field": "Depends",
+      "expression": "libc6 (>= 2.14)",
+      "selected": "libc6",
+      "version": "2.41-12+deb13u4"
+    },
+    {
+      "from": "python3.13-minimal",
+      "field": "Pre-Depends",
+      "expression": "libc6 (>= 2.38)",
+      "selected": "libc6",
+      "version": "2.41-12+deb13u4"
+    },
+    {
+      "from": "python3.13-minimal",
+      "field": "Depends",
+      "expression": "libpython3.13-minimal (= 3.13.5-2+deb13u5)",
+      "selected": "libpython3.13-minimal",
+      "version": "3.13.5-2+deb13u5"
+    },
+    {
+      "from": "python3.13-minimal",
+      "field": "Depends",
+      "expression": "libexpat1 (>= 2.6.0)",
+      "selected": "libexpat1",
+      "version": "2.8.3-1~deb13u1"
+    },
+    {
+      "from": "python3.13-minimal",
+      "field": "Depends",
+      "expression": "zlib1g (>= 1:1.2.0)",
+      "selected": "zlib1g",
+      "version": "1:1.3.dfsg+really1.3.1-1+b1"
+    },
+    {
+      "from": "dpkg",
+      "field": "Pre-Depends",
+      "expression": "libbz2-1.0",
+      "selected": "libbz2-1.0",
+      "version": "1.0.8-6"
+    },
+    {
+      "from": "dpkg",
+      "field": "Pre-Depends",
+      "expression": "libc6 (>= 2.38)",
+      "selected": "libc6",
+      "version": "2.41-12+deb13u4"
+    },
+    {
+      "from": "dpkg",
+      "field": "Pre-Depends",
+      "expression": "liblzma5 (>= 5.4.0)",
+      "selected": "liblzma5",
+      "version": "5.8.1-1+deb13u1"
+    },
+    {
+      "from": "dpkg",
+      "field": "Pre-Depends",
+      "expression": "libmd0 (>= 0.0.0)",
+      "selected": "libmd0",
+      "version": "1.1.0-2+b1"
+    },
+    {
+      "from": "dpkg",
+      "field": "Pre-Depends",
+      "expression": "libselinux1 (>= 3.1~)",
+      "selected": "libselinux1",
+      "version": "3.8.1-1"
+    },
+    {
+      "from": "dpkg",
+      "field": "Pre-Depends",
+      "expression": "libzstd1 (>= 1.5.5)",
+      "selected": "libzstd1",
+      "version": "1.5.7+dfsg-1"
+    },
+    {
+      "from": "dpkg",
+      "field": "Pre-Depends",
+      "expression": "zlib1g (>= 1:1.1.4)",
+      "selected": "zlib1g",
+      "version": "1:1.3.dfsg+really1.3.1-1+b1"
+    },
+    {
+      "from": "dpkg",
+      "field": "Depends",
+      "expression": "tar (>= 1.28-1)",
+      "selected": "tar",
+      "version": "1.35+dfsg-3.1"
+    },
+    {
+      "from": "libpython3.13-stdlib",
+      "field": "Depends",
+      "expression": "libpython3.13-minimal (= 3.13.5-2+deb13u5)",
+      "selected": "libpython3.13-minimal",
+      "version": "3.13.5-2+deb13u5"
+    },
+    {
+      "from": "libpython3.13-stdlib",
+      "field": "Depends",
+      "expression": "media-types | mime-support",
+      "selected": "media-types",
+      "version": "13.0.0"
+    },
+    {
+      "from": "libpython3.13-stdlib",
+      "field": "Depends",
+      "expression": "netbase",
+      "selected": "netbase",
+      "version": "6.5"
+    },
+    {
+      "from": "libpython3.13-stdlib",
+      "field": "Depends",
+      "expression": "tzdata",
+      "selected": "tzdata",
+      "version": "2026c-0+deb13u1"
+    },
+    {
+      "from": "libpython3.13-stdlib",
+      "field": "Depends",
+      "expression": "libbz2-1.0",
+      "selected": "libbz2-1.0",
+      "version": "1.0.8-6"
+    },
+    {
+      "from": "libpython3.13-stdlib",
+      "field": "Depends",
+      "expression": "libc6 (>= 2.38)",
+      "selected": "libc6",
+      "version": "2.41-12+deb13u4"
+    },
+    {
+      "from": "libpython3.13-stdlib",
+      "field": "Depends",
+      "expression": "libdb5.3t64",
+      "selected": "libdb5.3t64",
+      "version": "5.3.28+dfsg2-9"
+    },
+    {
+      "from": "libpython3.13-stdlib",
+      "field": "Depends",
+      "expression": "libffi8 (>= 3.4)",
+      "selected": "libffi8",
+      "version": "3.4.8-2"
+    },
+    {
+      "from": "libpython3.13-stdlib",
+      "field": "Depends",
+      "expression": "liblzma5 (>= 5.1.1alpha+20120614)",
+      "selected": "liblzma5",
+      "version": "5.8.1-1+deb13u1"
+    },
+    {
+      "from": "libpython3.13-stdlib",
+      "field": "Depends",
+      "expression": "libncursesw6 (>= 6.1)",
+      "selected": "libncursesw6",
+      "version": "6.5+20250216-2"
+    },
+    {
+      "from": "libpython3.13-stdlib",
+      "field": "Depends",
+      "expression": "libreadline8t64 (>= 7.0~beta)",
+      "selected": "libreadline8t64",
+      "version": "8.2-6"
+    },
+    {
+      "from": "libpython3.13-stdlib",
+      "field": "Depends",
+      "expression": "libsqlite3-0 (>= 3.36.0)",
+      "selected": "libsqlite3-0",
+      "version": "3.46.1-7+deb13u2"
+    },
+    {
+      "from": "libpython3.13-stdlib",
+      "field": "Depends",
+      "expression": "libtinfo6 (>= 6)",
+      "selected": "libtinfo6",
+      "version": "6.5+20250216-2"
+    },
+    {
+      "from": "libpython3.13-stdlib",
+      "field": "Depends",
+      "expression": "libuuid1 (>= 2.20.1)",
+      "selected": "libuuid1",
+      "version": "2.41.5-0+deb13u1"
+    },
+    {
+      "from": "tzdata",
+      "field": "Depends",
+      "expression": "debconf (>= 0.5) | debconf-2.0",
+      "selected": "debconf",
+      "version": "1.5.91"
+    },
+    {
+      "from": "libdebconfclient0",
+      "field": "Depends",
+      "expression": "libc6 (>= 2.38)",
+      "selected": "libc6",
+      "version": "2.41-12+deb13u4"
+    },
+    {
+      "from": "libdb5.3t64",
+      "field": "Depends",
+      "expression": "libc6 (>= 2.38)",
+      "selected": "libc6",
+      "version": "2.41-12+deb13u4"
+    },
+    {
+      "from": "libpam-modules-bin",
+      "field": "Depends",
+      "expression": "libaudit1 (>= 1:2.2.1)",
+      "selected": "libaudit1",
+      "version": "1:4.0.2-2+deb13u1"
+    },
+    {
+      "from": "libpam-modules-bin",
+      "field": "Depends",
+      "expression": "libc6 (>= 2.38)",
+      "selected": "libc6",
+      "version": "2.41-12+deb13u4"
+    },
+    {
+      "from": "libpam-modules-bin",
+      "field": "Depends",
+      "expression": "libcrypt1 (>= 1:4.3.0)",
+      "selected": "libcrypt1",
+      "version": "1:4.4.38-1"
+    },
+    {
+      "from": "libpam-modules-bin",
+      "field": "Depends",
+      "expression": "libpam0g (>= 0.99.7.1)",
+      "selected": "libpam0g",
+      "version": "1.7.0-5"
+    },
+    {
+      "from": "libpam-modules-bin",
+      "field": "Depends",
+      "expression": "libselinux1 (>= 3.1~)",
+      "selected": "libselinux1",
+      "version": "3.8.1-1"
+    },
+    {
+      "from": "libpam-modules-bin",
+      "field": "Depends",
+      "expression": "libsystemd0 (>= 254)",
+      "selected": "libsystemd0",
+      "version": "257.13-1~deb13u1"
+    },
+    {
+      "from": "libcap-ng0",
+      "field": "Depends",
+      "expression": "libc6 (>= 2.38)",
+      "selected": "libc6",
+      "version": "2.41-12+deb13u4"
+    },
+    {
+      "from": "libpcre2-8-0",
+      "field": "Depends",
+      "expression": "libc6 (>= 2.34)",
+      "selected": "libc6",
+      "version": "2.41-12+deb13u4"
+    },
+    {
+      "from": "libbz2-1.0",
+      "field": "Depends",
+      "expression": "libc6 (>= 2.4)",
+      "selected": "libc6",
+      "version": "2.41-12+deb13u4"
+    },
+    {
+      "from": "libsepol2",
+      "field": "Depends",
+      "expression": "libc6 (>= 2.38)",
+      "selected": "libc6",
+      "version": "2.41-12+deb13u4"
+    },
+    {
+      "from": "libtext-wrapi18n-perl",
+      "field": "Depends",
+      "expression": "libtext-charwidth-perl",
+      "selected": "libtext-charwidth-perl",
+      "version": "0.04-11+b4"
+    },
+    {
+      "from": "libkrb5-3",
+      "field": "Depends",
+      "expression": "libkrb5support0 (= 1.21.3-5+deb13u1)",
+      "selected": "libkrb5support0",
+      "version": "1.21.3-5+deb13u1"
+    },
+    {
+      "from": "libkrb5-3",
+      "field": "Depends",
+      "expression": "libc6 (>= 2.38)",
+      "selected": "libc6",
+      "version": "2.41-12+deb13u4"
+    },
+    {
+      "from": "libkrb5-3",
+      "field": "Depends",
+      "expression": "libcom-err2 (>= 1.43.9)",
+      "selected": "libcom-err2",
+      "version": "1.47.2-3+b12"
+    },
+    {
+      "from": "libkrb5-3",
+      "field": "Depends",
+      "expression": "libk5crypto3 (>= 1.20)",
+      "selected": "libk5crypto3",
+      "version": "1.21.3-5+deb13u1"
+    },
+    {
+      "from": "libkrb5-3",
+      "field": "Depends",
+      "expression": "libkeyutils1 (>= 1.5.9)",
+      "selected": "libkeyutils1",
+      "version": "1.6.3-6"
+    },
+    {
+      "from": "libkrb5-3",
+      "field": "Depends",
+      "expression": "libssl3t64 (>= 3.0.0)",
+      "selected": "libssl3t64",
+      "version": "3.5.7-1~deb13u3"
+    },
+    {
+      "from": "libcom-err2",
+      "field": "Depends",
+      "expression": "libc6 (>= 2.38)",
+      "selected": "libc6",
+      "version": "2.41-12+deb13u4"
+    },
+    {
+      "from": "libk5crypto3",
+      "field": "Depends",
+      "expression": "libc6 (>= 2.38)",
+      "selected": "libc6",
+      "version": "2.41-12+deb13u4"
+    },
+    {
+      "from": "libk5crypto3",
+      "field": "Depends",
+      "expression": "libkrb5support0 (= 1.21.3-5+deb13u1)",
+      "selected": "libkrb5support0",
+      "version": "1.21.3-5+deb13u1"
+    },
+    {
+      "from": "libkrb5support0",
+      "field": "Depends",
+      "expression": "libc6 (>= 2.38)",
+      "selected": "libc6",
+      "version": "2.41-12+deb13u4"
+    },
+    {
+      "from": "libffi8",
+      "field": "Depends",
+      "expression": "libc6 (>= 2.34)",
+      "selected": "libc6",
+      "version": "2.41-12+deb13u4"
+    },
+    {
+      "from": "libsasl2-modules-db",
+      "field": "Depends",
+      "expression": "libc6 (>= 2.14)",
+      "selected": "libc6",
+      "version": "2.41-12+deb13u4"
+    },
+    {
+      "from": "libsasl2-modules-db",
+      "field": "Depends",
+      "expression": "libdb5.3t64",
+      "selected": "libdb5.3t64",
+      "version": "5.3.28+dfsg2-9"
+    },
+    {
+      "from": "libzstd1",
+      "field": "Depends",
+      "expression": "libc6 (>= 2.34)",
+      "selected": "libc6",
+      "version": "2.41-12+deb13u4"
+    },
+    {
+      "from": "openssl-provider-legacy",
+      "field": "Depends",
+      "expression": "libc6 (>= 2.14)",
+      "selected": "libc6",
+      "version": "2.41-12+deb13u4"
+    },
+    {
+      "from": "openssl-provider-legacy",
+      "field": "Depends",
+      "expression": "libssl3t64 (>= 3.0.3)",
+      "selected": "libssl3t64",
+      "version": "3.5.7-1~deb13u3"
+    },
+    {
+      "from": "libstdc++6",
+      "field": "Depends",
+      "expression": "gcc-14-base (= 14.2.0-19)",
+      "selected": "gcc-14-base",
+      "version": "14.2.0-19"
+    },
+    {
+      "from": "libstdc++6",
+      "field": "Depends",
+      "expression": "libc6 (>= 2.38)",
+      "selected": "libc6",
+      "version": "2.41-12+deb13u4"
+    },
+    {
+      "from": "libstdc++6",
+      "field": "Depends",
+      "expression": "libgcc-s1 (>= 4.3)",
+      "selected": "libgcc-s1",
+      "version": "14.2.0-19"
+    },
+    {
+      "from": "libpython3.13-minimal",
+      "field": "Depends",
+      "expression": "libc6 (>= 2.14)",
+      "selected": "libc6",
+      "version": "2.41-12+deb13u4"
+    },
+    {
+      "from": "libpython3.13-minimal",
+      "field": "Depends",
+      "expression": "libssl3t64 (>= 3.4.0)",
+      "selected": "libssl3t64",
+      "version": "3.5.7-1~deb13u3"
+    },
+    {
+      "from": "libexpat1",
+      "field": "Pre-Depends",
+      "expression": "libc6 (>= 2.36)",
+      "selected": "libc6",
+      "version": "2.41-12+deb13u4"
+    },
+    {
+      "from": "liblzma5",
+      "field": "Depends",
+      "expression": "libc6 (>= 2.34)",
+      "selected": "libc6",
+      "version": "2.41-12+deb13u4"
+    },
+    {
+      "from": "tar",
+      "field": "Pre-Depends",
+      "expression": "libacl1 (>= 2.2.23)",
+      "selected": "libacl1",
+      "version": "2.3.2-2+b1"
+    },
+    {
+      "from": "tar",
+      "field": "Pre-Depends",
+      "expression": "libc6 (>= 2.38)",
+      "selected": "libc6",
+      "version": "2.41-12+deb13u4"
+    },
+    {
+      "from": "tar",
+      "field": "Pre-Depends",
+      "expression": "libselinux1 (>= 3.1~)",
+      "selected": "libselinux1",
+      "version": "3.8.1-1"
+    },
+    {
+      "from": "libsqlite3-0",
+      "field": "Depends",
+      "expression": "libc6 (>= 2.38)",
+      "selected": "libc6",
+      "version": "2.41-12+deb13u4"
+    },
+    {
+      "from": "libuuid1",
+      "field": "Depends",
+      "expression": "libc6 (>= 2.38)",
+      "selected": "libc6",
+      "version": "2.41-12+deb13u4"
+    },
+    {
+      "from": "libtext-charwidth-perl",
+      "field": "Depends",
+      "expression": "libc6 (>= 2.4)",
+      "selected": "libc6",
+      "version": "2.41-12+deb13u4"
+    },
+    {
+      "from": "libtext-charwidth-perl",
+      "field": "Depends",
+      "expression": "perl-base (>= 5.40.0-6)",
+      "selected": "perl-base",
+      "version": "5.40.1-6+deb13u1"
+    },
+    {
+      "from": "libtext-charwidth-perl",
+      "field": "Depends",
+      "expression": "perlapi-5.40.0",
+      "selected": "perl-base",
+      "version": "5.40.1-6+deb13u1"
+    },
+    {
+      "from": "perl-base",
+      "field": "Pre-Depends",
+      "expression": "libc6 (>= 2.38)",
+      "selected": "libc6",
+      "version": "2.41-12+deb13u4"
+    },
+    {
+      "from": "perl-base",
+      "field": "Pre-Depends",
+      "expression": "libcrypt1 (>= 1:4.1.0)",
+      "selected": "libcrypt1",
+      "version": "1:4.4.38-1"
+    }
+  ],
+  "runtime_expected": {
+    "samba_version": "4.22.11-Debian-4.22.11+dfsg-0+deb13u1",
+    "python_version": "3.13.5",
+    "uid": 10001,
+    "gid": 10001,
+    "username": "synthetic-smb",
+    "entrypoint": [
+      "python3",
+      "/opt/synthetic-smb/probe_samba.py"
+    ],
+    "cmd": [
+      "--lock",
+      "/opt/synthetic-smb/build-lock.json"
+    ],
+    "user": "10001:10001"
+  },
+  "security_support": {
+    "review_date": "2026-10-04",
+    "distribution": "Debian 13 trixie stable",
+    "regular_support_until": "2028-08-09",
+    "lts_until": "2030-06-30",
+    "sources": [
+      "https://www.debian.org/releases/trixie/",
+      "https://security-tracker.debian.org/tracker/source-package/samba",
+      "https://security-tracker.debian.org/tracker/CVE-2026-15779"
+    ],
+    "known_source_issue": {
+      "id": "CVE-2026-15779",
+      "affected_component": "pam_winbind mkhomedir path",
+      "debian_trixie_status": "open/no-dsa at review",
+      "scope": "The locked package set excludes winbind and libpam-winbind. This probe uses standalone local passdb with no PAM account provisioning or domain authentication. This is a component-exclusion observation, not a vulnerability-free image claim."
+    },
+    "limitations": [
+      "The immutable snapshot does not receive future security fixes; refresh and re-review before a later batch.",
+      "No complete vulnerability attestation of all base image or dependency binaries is claimed.",
+      "Container runtime behavior, non-root Samba startup and NTLM flow remain unverified until the isolated remote probe.",
+      "Build image includes generated disposable credentials and must not be published or exported to a shared cache."
+    ]
+  },
+  "packaging_sources": [
+    {
+      "url": "https://sources.debian.org/data/main/s/samba/2%3A4.22.11%2Bdfsg-0%2Bdeb13u1/debian/rules",
+      "sha256": "bdb52281c4958ad689b4b4b668d314efca44c72c3aa639cc212a2bf5290dad3e",
+      "purpose": "Debian vendor suffix, selected package build configuration"
+    },
+    {
+      "url": "https://sources.debian.org/data/main/s/samba/2%3A4.22.11%2Bdfsg-0%2Bdeb13u1/buildtools/wafsamba/samba_version.py",
+      "sha256": "9bd93df09053a5ba89d34622d52bf1eee408b264fa0af4ef069e5dd7c192a2ce",
+      "purpose": "Samba version string vendor suffix concatenation"
+    },
+    {
+      "url": "https://www.samba.org/samba/docs/current/man-html/smbpasswd.8.html",
+      "purpose": "Root-only local passdb creation with -a, selected config -c and password stdin -s"
+    }
+  ],
+  "signature_verification": {
+    "method": "gpgv against public signing keys downloaded from ftp-master.debian.org/keys; all listed InRelease signatures verified before package selection",
+    "public_keys": [
+      {
+        "url": "https://ftp-master.debian.org/keys/archive-key-12.asc",
+        "sha256": "c2a9a16fde95e037bafd0fa6b7e31f41b4ff1e85851de5558f19a2a2f0e955e2"
+      },
+      {
+        "url": "https://ftp-master.debian.org/keys/archive-key-12-security.asc",
+        "sha256": "74f81645b4e3156d1e9a88c8dd9259271b89c7099d64af89a2a6996b592faa1f"
+      },
+      {
+        "url": "https://ftp-master.debian.org/keys/archive-key-13.asc",
+        "sha256": "6f1d277429dd7ffedcc6f8688a7ad9a458859b1139ffa026d1eeaadcbffb0da7"
+      },
+      {
+        "url": "https://ftp-master.debian.org/keys/archive-key-13-security.asc",
+        "sha256": "844c07d242db37f283afab9d5531270a0550841e90f9f1a9c3bd599722b808b7"
+      },
+      {
+        "url": "https://ftp-master.debian.org/keys/release-13.asc",
+        "sha256": "4d097bb93f83d731f475c5b92a0c2fcf108cfce1d4932792fca72d00b48d198b"
+      }
+    ]
+  }
+}

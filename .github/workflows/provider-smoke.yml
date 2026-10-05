@@ -6,19 +6,81 @@ on:
         description: Optional comma-separated backend or Test remote filter
         required: false
         default: ''
+        type: string
+      require_all:
+        description: Fail unless every discovered provider has a selected test account
+        required: false
+        default: false
+        type: boolean
   schedule:
     - cron: '35 7 * * *'
 permissions:
   contents: read
+concurrency:
+  group: provider-smoke
+  cancel-in-progress: false
 jobs:
-  provider-smoke-linux:
+  python-audit:
+    name: Python test dependency security audit
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - name: Install the pinned auditor in a fresh environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          AUDIT_ENV="$RUNNER_TEMP/provider-audit-venv"
+          test ! -e "$AUDIT_ENV"
+          python -m venv "$AUDIT_ENV"
+          "$AUDIT_ENV/bin/python" -m pip --isolated --disable-pip-version-check install \
+            --index-url https://pypi.org/simple --require-hashes --only-binary=:all: \
+            --no-input --timeout 30 --retries 2 -r scripts/provider-lab/requirements-audit.txt
+      - name: Audit both complete dependency locks
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/provider-audit-venv/bin/python" -m pip_audit \
+            --disable-pip --require-hashes --strict --progress-spinner off --timeout 15 \
+            -r scripts/provider-lab/requirements-fixture.txt \
+            -r scripts/provider-lab/requirements-audit.txt \
+            --format json --desc off --output "$RUNNER_TEMP/python-dependency-audit.json"
+      - name: Retain dependency audit evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: python-dependency-audit
+          path: ${{ runner.temp }}/python-dependency-audit.json
+          if-no-files-found: warn
+          retention-days: 14
+  provider-smoke-linux:
+    needs: python-audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
     defaults:
       run:
         working-directory: rclone-triage
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - name: Install pinned fixture dependencies in a fresh environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          TEST_ENV="$RUNNER_TEMP/provider-test-venv"
+          test ! -e "$TEST_ENV"
+          python -m venv "$TEST_ENV"
+          "$TEST_ENV/bin/python" -m pip --isolated --disable-pip-version-check install \
+            --index-url https://pypi.org/simple --require-hashes --only-binary=:all: \
+            --no-input --timeout 30 --retries 2 -r ../scripts/provider-lab/requirements-fixture.txt
+          printf '%s\n' "$TEST_ENV/bin" >> "$GITHUB_PATH"
       - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067
         with:
           toolchain: 1.95.0
@@ -30,8 +92,55 @@ jobs:
         run: |
           bash ../scripts/download-rclone.sh
           bash ../scripts/download-rclone.sh --linux "$RUNNER_TEMP/rclone-smoke"
+      - name: Provider evidence regressions
+        run: python -B -m unittest discover -s ../scripts/tests -p 'test_*.py'
+      - name: All 20 isolated backend protocol fixtures
+        run: python -B ../scripts/provider-lab/run_lab.py --rclone "$RUNNER_TEMP/rclone-smoke" --report "$RUNNER_TEMP/provider-fixtures.json"
+      - name: Isolated FileFabric later-call renewal fixture
+        if: ${{ !cancelled() }}
+        run: python -B ../scripts/provider-lab/run_lab.py --rclone "$RUNNER_TEMP/rclone-smoke" --filefabric-renewal --report "$RUNNER_TEMP/filefabric-renewal-fixture.json"
+      - name: Isolated Internet Archive LOW credential rejection fixture
+        if: ${{ !cancelled() }}
+        run: python -B ../scripts/provider-lab/run_lab.py --rclone "$RUNNER_TEMP/rclone-smoke" --internetarchive-low-auth --report "$RUNNER_TEMP/internetarchive-low-auth-fixture.json"
+      - name: Isolated Samba NTLM protocol
+        if: ${{ !cancelled() }}
+        run: |
+          python -B ../scripts/provider-lab/smb/run_container.py \
+            --rclone "$RUNNER_TEMP/rclone-smoke" \
+            --protocol-evidence --report "$RUNNER_TEMP/smb-protocol.json"
+      - name: Isolated pCloud OAuth positive feasibility
+        if: ${{ !cancelled() }}
+        run: |
+          python -B ../scripts/provider-lab/pcloud-oauth/run_container.py \
+            --rclone "$RUNNER_TEMP/rclone-smoke" \
+            --report "$RUNNER_TEMP/pcloud-oauth-feasibility.json"
+      - name: Isolated pCloud OAuth authentication evidence
+        if: ${{ !cancelled() }}
+        run: |
+          python -B ../scripts/provider-lab/pcloud-oauth/run_container.py \
+            --rclone "$RUNNER_TEMP/rclone-smoke" --authentication-evidence \
+            --report "$RUNNER_TEMP/pcloud-oauth-authentication.json"
+      # IA requires both read modes; pCloud requires saved-token plus fresh auth.
+      # Independent Linux SMB and pCloud evidence bring the local gate to 21.
+      - name: Require current provider plans and protocol evidence
+        if: ${{ !cancelled() }}
+        run: |
+          python -B ../scripts/provider_coverage.py --rclone "$RUNNER_TEMP/rclone-smoke" \
+            --report "$RUNNER_TEMP/provider-evidence.json" \
+            --fixture-receipt "$RUNNER_TEMP/provider-fixtures.json" \
+            --fixture-receipt "$RUNNER_TEMP/filefabric-renewal-fixture.json" \
+            --fixture-receipt "$RUNNER_TEMP/internetarchive-low-auth-fixture.json" \
+            --fixture-receipt "$RUNNER_TEMP/smb-protocol.json" \
+            --fixture-receipt "$RUNNER_TEMP/pcloud-oauth-authentication.json" \
+            --require-plans --require-fixtures local,archive,http,webdav,ftp,sftp,s3,swift,b2,azureblob,azurefiles,seafile,memory,koofr,pixeldrain,filefabric,netstorage,internetarchive,gcs,smb,pcloud
       - name: Offline provider contracts
         run: cargo test --locked --release --test provider_smoke --test provider_matrix -- --test-threads=1
+      - name: Login and credential regressions without accounts
+        run: 'cargo test --locked --release --lib providers:: -- --test-threads=1'
+      - name: Validate every provider against the pinned runtime
+        env:
+          RCLONE_PROVIDER_SCHEMA_BINARY: ${{ runner.temp }}/rclone-smoke
+        run: cargo test --locked --release --test provider_matrix pinned_rclone_catalog_matches_provider_contracts -- --ignored --exact --test-threads=1
       - name: Prepare explicit smoke config
         id: config
         env:
@@ -39,19 +148,95 @@ jobs:
         run: |
           if [[ -z "$SMOKE_CONFIG" ]]; then
             echo 'configured=false' >> "$GITHUB_OUTPUT"
-            echo 'Live provider acceptance NOT RUN: no smoke credentials configured. Offline contracts only.' >> "$GITHUB_STEP_SUMMARY"
+            echo 'Live access NOT RUN: no smoke credentials configured. The coverage artifact will identify every unconfigured provider.' >> "$GITHUB_STEP_SUMMARY"
           else
             umask 077
             printf '%s\n' "$SMOKE_CONFIG" > "$RUNNER_TEMP/triage-smoke.conf"
             echo 'configured=true' >> "$GITHUB_OUTPUT"
           fi
-      - name: Live provider acceptance
+      - name: Inventory missing live coverage without reading credentials
+        if: steps.config.outputs.configured == 'false'
+        env:
+          RCLONE_PROVIDER_SMOKE_RCLONE: ${{ runner.temp }}/rclone-smoke
+          RCLONE_PROVIDER_SMOKE_REPORT: ${{ runner.temp }}/provider-coverage.json
+          RCLONE_PROVIDER_SMOKE_REPORT_ONLY: 'true'
+        run: cargo test --locked --release --test provider_smoke test_configured_provider_remotes_smoke -- --ignored --exact --nocapture --test-threads=1
+      - name: Configured provider read access
         if: steps.config.outputs.configured == 'true'
         env:
           RCLONE_PROVIDER_SMOKE_CONFIG: ${{ runner.temp }}/triage-smoke.conf
           RCLONE_PROVIDER_SMOKE_RCLONE: ${{ runner.temp }}/rclone-smoke
-          RCLONE_PROVIDER_SMOKE_BACKENDS: ${{ inputs.backends || vars.RCLONE_PROVIDER_SMOKE_BACKENDS }}
-        run: cargo test --locked --release --test provider_smoke test_configured_provider_remotes_smoke -- --ignored --exact --nocapture --test-threads=1
+          EVENT_NAME: ${{ github.event_name }}
+          MANUAL_BACKENDS: ${{ inputs.backends }}
+          MANUAL_REQUIRE_ALL: ${{ inputs.require_all }}
+          RCLONE_PROVIDER_SMOKE_BACKENDS: ${{ vars.RCLONE_PROVIDER_SMOKE_BACKENDS }}
+          RCLONE_PROVIDER_SMOKE_REQUIRE_ALL: ${{ vars.RCLONE_PROVIDER_SMOKE_REQUIRE_ALL }}
+          RCLONE_PROVIDER_SMOKE_REPORT: ${{ runner.temp }}/provider-coverage.json
+        run: |
+          if [[ "$EVENT_NAME" == 'workflow_dispatch' ]]; then
+            export RCLONE_PROVIDER_SMOKE_BACKENDS="$MANUAL_BACKENDS"
+            export RCLONE_PROVIDER_SMOKE_REQUIRE_ALL="$MANUAL_REQUIRE_ALL"
+          fi
+          cargo test --locked --release --test provider_smoke test_configured_provider_remotes_smoke -- --ignored --exact --nocapture --test-threads=1
+      - name: Require credentials when full live coverage was requested
+        if: steps.config.outputs.configured == 'false'
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          MANUAL_REQUIRE_ALL: ${{ inputs.require_all }}
+          REQUIRE_ALL: ${{ vars.RCLONE_PROVIDER_SMOKE_REQUIRE_ALL }}
+        run: |
+          if [[ "$EVENT_NAME" == 'workflow_dispatch' ]]; then
+            REQUIRE_ALL="$MANUAL_REQUIRE_ALL"
+          fi
+          case "$REQUIRE_ALL" in
+            true|1) echo 'Full live coverage requested but no account configuration exists.' >&2; exit 1 ;;
+            false|0|'') ;;
+            *) echo 'Invalid full-coverage option.' >&2; exit 1 ;;
+          esac
+      - name: Summarize sanitized provider coverage
+        if: always()
+        env:
+          COVERAGE_PATH: ${{ runner.temp }}/provider-coverage.json
+        run: |
+          python - <<'PY'
+          import json, os, pathlib, re
+          path = pathlib.Path(os.environ['COVERAGE_PATH'])
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as out:
+              out.write('\nFresh login and refresh grants are not established by saved-credential access tests.\n\n')
+              if not path.exists():
+                  out.write('Coverage report unavailable: a prerequisite did not complete.\n')
+              else:
+                  report = json.loads(path.read_text())
+                  out.write('| Backend | Live read access | Accounts checked |\n|---|---|---:|\n')
+                  for row in report['providers']:
+                      assert re.fullmatch(r'[a-z0-9_]+', row['backend'])
+                      assert row['status'] in ('not_configured', 'not_requested', 'not_run', 'passed', 'failed')
+                      assert isinstance(row['checked_remotes'], int) and row['checked_remotes'] >= 0
+                      out.write(f"| {row['backend']} | {row['status']} | {row['checked_remotes']} |\n")
+          PY
+      - name: Retain sanitized coverage only
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: provider-coverage
+          path: |
+            ${{ runner.temp }}/provider-coverage.json
+            ${{ runner.temp }}/provider-fixtures.json
+            ${{ runner.temp }}/filefabric-renewal-fixture.json
+            ${{ runner.temp }}/internetarchive-low-auth-fixture.json
+            ${{ runner.temp }}/smb-protocol.json
+            ${{ runner.temp }}/pcloud-oauth-authentication.json
+            ${{ runner.temp }}/provider-evidence.json
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Retain separate pCloud feasibility result
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: pcloud-oauth-feasibility
+          path: ${{ runner.temp }}/pcloud-oauth-feasibility.json
+          if-no-files-found: warn
+          retention-days: 14
       - name: Remove temporary credentials
         if: always()
         run: rm -f -- "$RUNNER_TEMP/triage-smoke.conf"
