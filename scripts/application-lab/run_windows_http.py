@@ -360,6 +360,13 @@ def validate_session(value, action):
     return value
 
 
+def validate_ready(value):
+    need(type(value) is dict and set(value) == {"schema_version", "action", "ok", "state"} and
+         type(value["schema_version"]) is int and value["schema_version"] == 1 and
+         value["action"] == "ready" and value["ok"] is True and value["state"] == "ready", "session_failed")
+    return value
+
+
 class Bridge:
     """One owned hidden PS5 process; fixed JSON protocol and bounded pipe readers."""
     def __init__(self, case):
@@ -367,6 +374,7 @@ class Bridge:
         self.messages = queue.Queue(maxsize=4)
         self.failed, self.done = threading.Event(), threading.Event()
         self.threads, self.calls, self.forced = [], 0, False
+        self.response_lock, self.responses, self.ready = threading.Lock(), 0, False
         self.deadline = time.monotonic() + 165
         env = environment(case)
         env.update(GITHUB_ACTIONS="true", RUNNER_OS="Windows", RUNNER_ENVIRONMENT="github-hosted")
@@ -403,6 +411,11 @@ class Bridge:
                         while b"\n" in buffer:
                             line, _, tail = buffer.partition(b"\n")
                             buffer = bytearray(tail)
+                            with self.response_lock:
+                                if self.responses >= self.calls:
+                                    self.failed.set()
+                                    return
+                                self.responses += 1
                             self.messages.put_nowait(bytes(line).rstrip(b"\r"))
                 if name == "stdout" and buffer:
                     self.failed.set()
@@ -418,17 +431,25 @@ class Bridge:
                 return
 
     def command(self, action, **fields):
-        need(not self.failed.is_set() and not self.forced and self.calls < 1024, "session_failed")
-        self.calls += 1
-        payload = E.compact(dict(action=action, **fields)) + b"\n"
-        need(len(payload) <= 16384 and self.process.poll() is None, "session_failed")
         try:
+            need(not self.failed.is_set() and not self.forced and self.calls < 1024, "session_failed")
+            with self.response_lock:
+                need(self.messages.empty() and self.responses == self.calls and
+                     (not self.ready and self.calls == 0 and not fields if action == "ready" else self.ready), "session_failed")
+                self.calls += 1
+            payload = E.compact(dict(action=action, **fields)) + b"\n"
+            need(len(payload) <= 16384 and self.process.poll() is None, "session_failed")
             self.process.stdin.write(payload)
             self.process.stdin.flush()
             data = self.messages.get(timeout=max(0.01, min(35, self.deadline - time.monotonic())))
-            self.last = validate_session(strict_json(data, 65536), action)
+            need(not self.failed.is_set(), "session_failed")
+            value = strict_json(data, 65536)
+            self.last = validate_ready(value) if action == "ready" else validate_session(value, action)
+            if action == "ready":
+                self.ready = True
             return self.last
-        except (OSError, queue.Empty):
+        except (OSError, queue.Empty, ProducerError):
+            self.failed.set()
             raise ProducerError("session_failed") from None
 
     def close(self):
@@ -456,7 +477,7 @@ class Bridge:
                 if not thread.is_alive():
                     stream.close()
         return (self.process.returncode == 0 and not self.forced and not self.failed.is_set() and
-                not self.watchdog.is_alive() and all(not t.is_alive() for t in self.threads))
+                self.messages.empty() and not self.watchdog.is_alive() and all(not t.is_alive() for t in self.threads))
 
 
 def queue_rows(name):
@@ -537,6 +558,16 @@ def check_listing(case):
 CLEANUP_STAGES = frozenset({"case_identity", "configuration", "application_bytes", "queue_bytes",
                             "private_inventory", "acl_verify", "owned_removal"})
 PRIVATE_LOCATIONS = ("temp", "home", "profile", "appdata", "localappdata")
+
+
+def profile_baseline(case, expected_identity):
+    """Private directory identities captured before the app is allowed to start."""
+    root = case / "profile"
+    original = identity(root)
+    need(original == expected_identity, "cleanup_failed")
+    entries = inventory(root)
+    need(identity(root) == original and len(entries) <= 32 and all(value[0] for value in entries.values()), "cleanup_failed")
+    return original, tuple(sorted((path, value[2], value[3]) for path, value in entries.items()))
 
 
 def cleanup_diagnostic(name, stage, location=None, summary=None):
@@ -680,6 +711,8 @@ def run_case(name, suite, application, application_sha, runtime, session_factory
     session_attempted = fixture_attempted = entered = prepared = False
     helper_closed = False
     config_bytes = None
+    profile_before = None
+    profile_lease = None
     def fail(code):
         if record["failure_code"] is None:
             record["failure_code"] = code
@@ -689,6 +722,8 @@ def run_case(name, suite, application, application_sha, runtime, session_factory
         lease = identity(case)
         for child in ("temp", "home", "profile", "appdata", "localappdata", "output"):
             (case / child).mkdir()
+            if child == "profile":
+                profile_lease = identity(case / child)
         # Cargo may hardlink the release output. Only this read permits links;
         # the helper locks and executes a fresh, single-link owned copy.
         application_bytes = read(application, 512 * 1024 * 1024, allow_hardlinks=True)
@@ -712,6 +747,11 @@ def run_case(name, suite, application, application_sha, runtime, session_factory
         deadline = time.monotonic() + CASE_SECONDS
         session_attempted = True
         bridge = session_factory(case)
+        validate_ready(bridge.command("ready"))
+        profile_before = profile_baseline(case, profile_lease)
+        for child in PRIVATE_LOCATIONS:
+            if child != "profile":
+                need(not inventory(case / child), "cleanup_failed")
         response = bridge.command("start", app_path=str(owned_application), app_sha256=application_sha,
             args=app_args(name, case), case_root=str(case), environment=environment(case),
             transcript_path=str(case / "transcript.private"), max_output_bytes=8 * 1024 * 1024, deadline_ms=150000)
@@ -808,7 +848,10 @@ def run_case(name, suite, application, application_sha, runtime, session_factory
                     directories = sum(value[0] for value in entries.values())
                     cleanup_summary = dict(entries=len(entries), directories=directories,
                         files=len(entries) - directories, total_bytes=sum(value[1] for value in entries.values() if not value[0]))
-                    need(not entries, "cleanup_failed")
+                    if child == "profile":
+                        need(profile_before is not None and profile_baseline(case, profile_lease) == profile_before, "cleanup_failed")
+                    else:
+                        need(not entries, "cleanup_failed")
                 cleanup_stage, cleanup_location, cleanup_summary = "acl_verify", None, None
                 checks["process_cleanup"] = False
                 prepare(suite, name, "Verify")

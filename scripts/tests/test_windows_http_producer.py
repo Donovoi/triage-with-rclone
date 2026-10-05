@@ -106,9 +106,11 @@ def materialize(case, name):
 
 
 class Flow:
-    def __init__(self, name, *, late_error=None, enter_error=False, close_ok=True, grow=True, forced=False):
+    def __init__(self, name, *, late_error=None, enter_error=False, close_ok=True, grow=True, forced=False,
+                 before_app=None, after_app=None, ready_result=None):
         self.name, self.late_error, self.enter_error, self.close_ok, self.grow = name, late_error, enter_error, close_ok, grow
         self.forced = forced
+        self.before_app, self.after_app, self.ready_result = before_app, after_app, ready_result
         self.events, self.server = [], None
 
     def serve(self, state):
@@ -134,7 +136,13 @@ class Flow:
             last = None
             def command(self, action, **fields):
                 flow.events.append(action)
-                if action == "start":
+                if action == "ready":
+                    if flow.before_app:
+                        flow.before_app(case)
+                    self.last = ({"schema_version": 1, "action": "ready", "ok": True, "state": "ready"}
+                                 if flow.ready_result is None else flow.ready_result)
+                elif action == "start":
+                    assert flow.events == ["ready", "start"]
                     assert Path(fields["app_path"]) == case / "application.exe"
                     assert Path(fields["app_path"]).read_bytes() == b"inert application bytes"
                     assert "--rclone-config-path" in fields["args"] and "--rclone-config" not in fields["args"]
@@ -162,6 +170,8 @@ class Flow:
                         flow.state._event("cancel_prefix", "large/cancel.bin")
                         flow.state._event("cancel_disconnected", "large/cancel.bin")
                     materialize(case, flow.name)
+                    if flow.after_app:
+                        flow.after_app(case)
                     contents = sorted(BODIES) if flow.name == "acquisition" else ["README-synthetic.txt"] if flow.name == "mismatch" else ["large/cancel.bin"] if flow.name == "cancellation" else []
                     for path in contents:
                         flow.state._event("content", path)
@@ -220,6 +230,93 @@ class ProducerTests(unittest.TestCase):
                 self.assertLess(flow.events.index("observe_runtime"), flow.events.index("poll" if name != "cancellation" else "ctrl_c"))
                 self.assertLess(flow.events.index("helper_closed"), flow.events.index("fixture_closed"))
                 self.assertEqual(list(suite.iterdir()), [])
+
+    def test_helper_profile_baseline_predates_start_and_full_owned_case_is_removed(self):
+        def before_app(case):
+            (case / "profile/pre-existing-canary/child").mkdir(parents=True)
+        with redirect_stdout(io.StringIO()) as output:
+            result, flow, suite = self.execute_case("listing", before_app=before_app)
+        self.assertEqual(flow.events[:2], ["ready", "start"])
+        self.assertEqual(result["status"], "passed")
+        self.assertTrue(result["checks"]["temp_cleanup"])
+        self.assertEqual(list(suite.iterdir()), [])
+        self.assertNotIn("pre-existing-canary", output.getvalue() + json.dumps(result))
+
+    def execute_profile_flow(self, index, *, before_app=None, after_app=None, ready_result=None):
+        suite = self.root / ("profile-case-" + str(index))
+        suite.mkdir()
+        flow = Flow("listing", before_app=before_app, after_app=after_app, ready_result=ready_result)
+        with mock.patch.object(P, "prepare", side_effect=fake_prepare), mock.patch.object(P.F, "serve_http", side_effect=flow.serve), \
+             mock.patch.object(P.time, "sleep"), redirect_stdout(io.StringIO()) as output:
+            result = P.run_case("listing", suite, self.app, self.digest, RUNTIME, session_factory=flow.factory)
+        self.assertNotIn("private-canary", output.getvalue() + json.dumps(result))
+        return result, flow, suite
+
+    def test_bad_ready_or_prestart_profile_never_starts_or_deletes(self):
+        def replace_root(case):
+            (case / "profile").rename(case / "old-profile")
+            (case / "profile").mkdir()
+        def too_many(case):
+            for index in range(33):
+                (case / "profile" / str(index)).mkdir()
+        def missing_ready(case):
+            raise P.ProducerError("session_failed")
+        mutations = [lambda c: (c / "profile/private-canary").write_bytes(b"x"), replace_root, too_many,
+            lambda c: (c / "temp/private-canary").mkdir(), missing_ready]
+        with mock.patch.object(P, "remove_owned") as remove:
+            for index, mutate in enumerate(mutations):
+                with self.subTest(mutation=index):
+                    result, flow, suite = self.execute_profile_flow(index, before_app=mutate)
+                    self.assertEqual(result["status"], "failed")
+                    self.assertNotIn("start", flow.events)
+                    self.assertFalse(result["checks"]["temp_cleanup"])
+                    self.assertTrue((suite / "listing").exists())
+            for index, response in enumerate(({}, {"schema_version": True, "action": "ready", "ok": True, "state": "ready"},
+                    {"schema_version": 1, "action": "ready", "ok": True, "state": "ready", "extra": "private-canary"}), 10):
+                with self.subTest(response=index):
+                    result, flow, suite = self.execute_profile_flow(index, ready_result=response)
+                    self.assertEqual(result["failure_code"], "session_failed")
+                    self.assertNotIn("start", flow.events)
+                    self.assertFalse(result["checks"]["temp_cleanup"])
+                    self.assertTrue((suite / "listing").exists())
+            remove.assert_not_called()
+
+    def test_profile_baseline_rejects_link_before_start(self):
+        original_plain = P.plain
+        def guarded(path, directory=False, **kwargs):
+            if Path(path).name == "private-canary":
+                raise P.ProducerError("preservation_failed")
+            return original_plain(path, directory, **kwargs)
+        with mock.patch.object(P, "plain", side_effect=guarded), mock.patch.object(P, "remove_owned") as remove:
+            result, flow, _ = self.execute_profile_flow("link", before_app=lambda c: (c / "profile/private-canary").mkdir())
+        self.assertNotIn("start", flow.events)
+        self.assertFalse(result["checks"]["temp_cleanup"])
+        remove.assert_not_called()
+
+    def test_profile_baseline_add_remove_replace_and_late_file_are_sticky_failures(self):
+        def baseline(case):
+            (case / "profile/owned-child").mkdir()
+        def replace_child(case):
+            (case / "profile/owned-child").rename(case / "old-child")
+            (case / "profile/owned-child").mkdir()
+        def replace_root(case):
+            (case / "profile").rename(case / "old-profile")
+            (case / "profile/owned-child").mkdir(parents=True)
+        mutations = [lambda c: (c / "profile/new-child").mkdir(),
+            lambda c: (c / "profile/owned-child").rmdir(), replace_child, replace_root,
+            lambda c: (c / "profile/private-canary").write_bytes(b"x")]
+        with mock.patch.object(P, "remove_owned") as remove:
+            for index, mutate in enumerate(mutations):
+                with self.subTest(mutation=index):
+                    result, flow, suite = self.execute_profile_flow(index, before_app=baseline, after_app=mutate)
+                    self.assertEqual(result["status"], "failed")
+                    self.assertEqual(result["failure_code"], "cleanup_failed")
+                    self.assertIn("start", flow.events)
+                    self.assertTrue(result["checks"]["inventory_exact"])
+                    self.assertTrue(result["checks"]["process_cleanup"])
+                    self.assertFalse(result["checks"]["temp_cleanup"])
+                    self.assertTrue((suite / "listing").exists())
+            remove.assert_not_called()
 
     def test_late_fixture_failure_cannot_promote(self):
         result, _, suite = self.execute_case("acquisition", late_error="worker_failed")
@@ -350,7 +447,7 @@ class ProducerTests(unittest.TestCase):
     def test_cleanup_unreadable_inventory_has_unknown_counts_and_no_delete(self):
         original_inventory = P.inventory
         def failed(path):
-            if Path(path).name == "appdata":
+            if Path(path).name == "appdata" and (Path(path).parent / "output/synthetic-case/listings/inventory.csv").exists():
                 raise OSError("private-path-canary")
             return original_inventory(path)
         output = io.StringIO()
@@ -499,6 +596,7 @@ class ProducerTests(unittest.TestCase):
         bridge.last = session("finish", final=True)
         bridge.forced = False
         bridge.done, bridge.failed = threading.Event(), threading.Event()
+        bridge.messages = P.queue.Queue()
         bridge.watchdog = mock.Mock()
         bridge.watchdog.is_alive.return_value = False
         alive, dead = mock.Mock(), mock.Mock()
@@ -509,6 +607,87 @@ class ProducerTests(unittest.TestCase):
         self.assertFalse(bridge.close())
         bridge.process.stdout.close.assert_not_called()
         bridge.process.stderr.close.assert_called_once()
+
+    def bare_bridge(self, name):
+        bridge = P.Bridge.__new__(P.Bridge)
+        bridge.case = self.root / name
+        bridge.case.mkdir()
+        bridge.last, bridge.forced, bridge.ready = None, False, False
+        bridge.failed, bridge.done = threading.Event(), threading.Event()
+        bridge.response_lock = threading.Lock()
+        bridge.responses = bridge.calls = 0
+        bridge.messages = P.queue.Queue()
+        bridge.deadline = P.time.monotonic() + 60
+        bridge.process = mock.Mock(returncode=0)
+        bridge.process.poll.return_value = None
+        bridge.threads = []
+        bridge.watchdog = mock.Mock()
+        bridge.watchdog.is_alive.return_value = False
+        return bridge
+
+    def reply_on_write(self, bridge, raw=b'{"schema_version":1,"action":"ready","ok":true,"state":"ready"}'):
+        def write(_):
+            bridge.responses += 1
+            bridge.messages.put(raw)
+        bridge.process.stdin.write.side_effect = write
+
+    def test_bridge_ready_preflight_errors_are_sticky_and_prevent_start(self):
+        for scenario in ("missing", "repeat", "queued_duplicate"):
+            with self.subTest(scenario=scenario):
+                bridge = self.bare_bridge(scenario)
+                self.reply_on_write(bridge)
+                if scenario != "missing":
+                    self.assertEqual(bridge.command("ready"), {"schema_version": 1, "action": "ready", "ok": True, "state": "ready"})
+                if scenario == "queued_duplicate":
+                    bridge.messages.put(b'{"schema_version":1,"action":"ready","ok":true,"state":"ready"}')
+                before = bridge.process.stdin.write.call_count
+                with self.assertRaisesRegex(P.ProducerError, "^session_failed$"):
+                    bridge.command("ready" if scenario == "repeat" else "start")
+                self.assertTrue(bridge.failed.is_set())
+                with self.assertRaisesRegex(P.ProducerError, "^session_failed$"):
+                    bridge.command("start")
+                self.assertEqual(bridge.process.stdin.write.call_count, before)
+
+    def test_bridge_bad_or_missing_ready_response_poisons_session(self):
+        for index, raw in enumerate((b'{}', b'{"schema_version":true,"action":"ready","ok":true,"state":"ready"}',
+                b'{"schema_version":1,"action":"ready","ok":true,"state":"ready","private-canary":1}',
+                b'{"schema_version":1,"action":"ready","ok":false,"state":"ready"}', None)):
+            with self.subTest(response=index):
+                bridge = self.bare_bridge("bad-ready-" + str(index))
+                if raw is None:
+                    bridge.messages.get = mock.Mock(side_effect=P.queue.Empty)
+                else:
+                    self.reply_on_write(bridge, raw)
+                with self.assertRaisesRegex(P.ProducerError, "^session_failed$"):
+                    bridge.command("ready")
+                self.assertTrue(bridge.failed.is_set())
+                self.assertFalse(bridge.ready)
+                self.assertEqual(bridge.process.stdin.write.call_count, 1)
+                with self.assertRaisesRegex(P.ProducerError, "^session_failed$"):
+                    bridge.command("start")
+                self.assertEqual(bridge.process.stdin.write.call_count, 1)
+
+    def test_reader_duplicate_ready_and_late_unsolicited_reply_are_sticky(self):
+        line = b'{"schema_version":1,"action":"ready","ok":true,"state":"ready"}\n'
+        bridge = self.bare_bridge("duplicate-wire")
+        bridge.process.stdin.write.side_effect = lambda _: bridge._reader(io.BytesIO(line + line), "stdout")
+        with self.assertRaisesRegex(P.ProducerError, "^session_failed$"):
+            bridge.command("ready")
+        self.assertTrue(bridge.failed.is_set())
+        with self.assertRaisesRegex(P.ProducerError, "^session_failed$"):
+            bridge.command("start")
+        self.assertEqual(bridge.process.stdin.write.call_count, 1)
+
+        # A duplicate arriving after Start cannot be excluded in advance. It
+        # must still poison final cleanup, even with an orderly final response.
+        late = self.bare_bridge("late-wire")
+        late.ready = True
+        late.calls = late.responses = 2
+        late.last = session("finish", final=True)
+        late.process.poll.return_value = 0
+        late._reader(io.BytesIO(line), "stdout")
+        self.assertTrue(late.failed.is_set())
+        self.assertFalse(late.close())
 
     def test_hosted_guard_rejects_self_hosted_before_setup(self):
         with mock.patch.object(P.os, "name", "nt"), mock.patch.dict(os.environ, {

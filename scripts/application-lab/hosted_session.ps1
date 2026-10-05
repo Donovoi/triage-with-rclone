@@ -5,6 +5,7 @@ param()
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $session = $null
+$ready = $false
 $action = 'invalid'
 try {
     if ($env:GITHUB_ACTIONS -cne 'true' -or $env:RUNNER_OS -cne 'Windows' -or
@@ -22,8 +23,14 @@ try {
         }
         $action = [TriageApplicationLab.HostedProtocol]::Text($request, 'action')
         switch -CaseSensitive ($action) {
+            'ready' {
+                [TriageApplicationLab.HostedProtocol]::Keys($request, 'action')
+                if ($ready -or $null -ne $session) { throw 'protocol_invalid' }
+                $ready = $true
+                $result = @{ schema_version=1; ok=$true; state='ready' }
+            }
             'start' {
-                if ($null -ne $session) { throw 'protocol_invalid' }
+                if (-not $ready -or $null -ne $session) { throw 'protocol_invalid' }
                 [TriageApplicationLab.HostedProtocol]::Keys($request, 'action,app_path,app_sha256,args,case_root,environment,transcript_path,max_output_bytes,deadline_ms')
                 $session = [TriageApplicationLab.HostedConPtySession]::Start(
                     [TriageApplicationLab.HostedProtocol]::Text($request, 'app_path'),
