@@ -14,15 +14,20 @@ pub fn snapshot_config(source: &Path, config_dir: &Path) -> Result<PathBuf> {
     crate::utils::path::ensure_no_link_components(config_dir)?;
     let bytes = fs::read(source).with_context(|| format!("Read source config {:?}", source))?;
     fs::create_dir_all(config_dir)?;
+    crate::utils::path::ensure_no_link_components(config_dir)?;
+    // tempfile's Windows keep() uses SetFileAttributesW directly. Canonicalize
+    // the existing parent before creation so the snapshot and its provenance
+    // share an extended-length path, including cases beyond MAX_PATH.
+    let config_dir = fs::canonicalize(config_dir)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(config_dir, fs::Permissions::from_mode(0o700))?;
+        fs::set_permissions(&config_dir, fs::Permissions::from_mode(0o700))?;
     }
     let mut snapshot = tempfile::Builder::new()
         .prefix("working-")
         .suffix(".conf")
-        .tempfile_in(config_dir)?;
+        .tempfile_in(&config_dir)?;
     snapshot.write_all(&bytes)?;
     snapshot.as_file().sync_all()?;
     let provenance = serde_json::json!({
@@ -111,6 +116,57 @@ mod tests {
             serde_json::from_slice(&fs::read(one.with_extension("provenance.json")).unwrap())
                 .unwrap();
         assert_eq!(metadata["source_sha256"].as_str().unwrap().len(), 64);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn snapshot_at_long_path_preserves_source_and_exact_provenance() {
+        use sha2::{Digest, Sha256};
+        let dir = tempdir().unwrap();
+        let source = dir.path().join("source.conf");
+        let original = b"[Synthetic]\ntype = local\n";
+        fs::write(&source, original).unwrap();
+        let mut config_dir = dir.path().join("long-case");
+        while config_dir.as_os_str().to_string_lossy().len() < 280 {
+            config_dir = config_dir.join("synthetic-parent-component-0123456789");
+        }
+        config_dir = config_dir.join("config");
+
+        let first = snapshot_config(&source, &config_dir).unwrap();
+        assert_eq!(
+            first.parent().unwrap(),
+            fs::canonicalize(&config_dir).unwrap()
+        );
+        assert_eq!(fs::read(&first).unwrap(), original);
+        fs::write(&first, b"changed only in the working copy").unwrap();
+        let second = snapshot_config(&source, &config_dir).unwrap();
+        assert_ne!(first, second);
+        assert_eq!(
+            fs::read(&first).unwrap(),
+            b"changed only in the working copy"
+        );
+        assert_eq!(fs::read(&second).unwrap(), original);
+        assert_eq!(fs::read(&source).unwrap(), original);
+        for snapshot in [&first, &second] {
+            let metadata: serde_json::Value = serde_json::from_slice(
+                &fs::read(snapshot.with_extension("provenance.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(metadata["schema_version"], 1);
+            assert_eq!(
+                metadata["source_sha256"],
+                hex::encode(Sha256::digest(original))
+            );
+            assert_eq!(
+                fs::canonicalize(metadata["source_path"].as_str().unwrap()).unwrap(),
+                fs::canonicalize(&source).unwrap()
+            );
+            assert_eq!(
+                fs::canonicalize(metadata["working_path"].as_str().unwrap()).unwrap(),
+                fs::canonicalize(snapshot).unwrap()
+            );
+        }
+        assert_eq!(fs::read_dir(&config_dir).unwrap().count(), 4);
     }
 
     #[test]
