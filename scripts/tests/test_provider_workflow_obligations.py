@@ -9,6 +9,22 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class WorkflowObligationTests(unittest.TestCase):
+    def test_windows_target_inventory_uses_absolute_paths(self):
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        job = workflow.split("  windows-architectures:\n", 1)[1].split("  linux-provider-evidence:\n", 1)[0]
+        step = job.split("      - name: Record dependency inventory\n", 1)[1].split("      - name:", 1)[0]
+        # The sanitizer deliberately rejects relative input/output paths. Both
+        # flags must resolve from the same absolute checkout as the tested EXE.
+        for flag, variable, binding in (
+            ("--lockfile", "INVENTORY_LOCKFILE", "format('{0}/rclone-triage/Cargo.lock', github.workspace)"),
+            ("--output", "INVENTORY_OUTPUT", "format('{0}/rclone-triage/target/{1}/release/dependencies.json', github.workspace, matrix.target)"),
+        ):
+            with self.subTest(flag=flag):
+                argument = re.search(re.escape(flag) + r'\s+("[^"\n]+"|\S+)', step)
+                self.assertIsNotNone(argument)
+                self.assertEqual(argument.group(1), '"$env:' + variable + '"')
+                self.assertIn(variable + ": ${{ " + binding + " }}", step)
+
     def test_every_local_obligation_is_gated_or_explicitly_unresolved(self):
         policy = json.loads((ROOT / "provider-coverage-policy.json").read_text(encoding="utf-8"))
         required = {
