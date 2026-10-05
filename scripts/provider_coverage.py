@@ -374,6 +374,31 @@ def compute_harness_sha256(root):
     return digest.hexdigest()
 
 
+def application_module(producer=False):
+    """Import fixed repository definitions, never a path supplied by a receipt."""
+    relative = "application-lab/run_windows_http.py" if producer else "application_evidence.py"
+    path = plain_path(ROOT / "scripts" / relative)
+    try:
+        source = path.read_bytes()
+        if len(source) > MAX_RECEIPT:
+            fail("application_helper_size_limit")
+        spec = importlib.util.spec_from_file_location("coverage_application_" + str(producer), path)
+        module = importlib.util.module_from_spec(spec)
+        exec(compile(source, str(path), "exec"), module.__dict__)
+        return module
+    except (ImportError, OSError, SyntaxError, AttributeError, TypeError):
+        fail("application_helper_unavailable")
+
+
+def compute_application_bindings(application, build_commit):
+    """The current build and sources supply expectations; receipt claims do not."""
+    try:
+        return application_module().compute_bindings(
+            ROOT, application, build_commit, application_module(producer=True).fixture_manifest())
+    except (OSError, ValueError, TypeError, KeyError):
+        fail("application_bindings_invalid")
+
+
 def smb_evidence_module():
     """Load only the repository-owned, pure SMB receipt helper on demand."""
     path = plain_path(ROOT / "scripts" / "provider-lab" / "smb" / "protocol_evidence.py")
@@ -776,7 +801,8 @@ def merge_fixture_observation(observed, capabilities, failed, run):
 
 
 def evaluate(catalog, policy, runtime, receipts, harness_sha256, now=None, max_age_hours=MAX_AGE_HOURS,
-             fixture_manifest_sha256=None, smb_bindings=None, pcloud_bindings=None):
+             fixture_manifest_sha256=None, smb_bindings=None, pcloud_bindings=None,
+             application_receipts=(), application_bindings=None):
     """Receipts are explicit batch inputs. Failed current evidence stays failed."""
     now = now or datetime.now(timezone.utc)
     validate_policy(policy)
@@ -870,6 +896,31 @@ def evaluate(catalog, policy, runtime, receipts, harness_sha256, now=None, max_a
                 merge_fixture_observation(observed, contributed, failed, run)
         except CoverageError as error:
             report["errors"].append(str(error))
+    application_observations = {}
+    if application_receipts:
+        helper = application_module()
+        for receipt in application_receipts:
+            try:
+                helper.validate_receipt(receipt, runtime, application_bindings, now=now,
+                                        max_age_hours=max_age_hours)
+                backend = receipt["backend"]
+                if backend not in {entry["backend"] for entry in catalog}:
+                    fail("application_backend_absent_from_catalog")
+                observed = application_observations.setdefault(
+                    backend, {"capabilities": {}, "failed": False, "runs": []})
+                run = {
+                    "receipt_sha256": sha256_bytes(compact_json(receipt)),
+                    "finished_utc": receipt["created_at"],
+                    "expires_utc": utc_text(parse_utc(receipt["created_at"]) + timedelta(hours=max_age_hours)),
+                    "scope": receipt["scope"], "fixture_mode": receipt["fixture_mode"],
+                    "platform": receipt["platform"], "bindings": dict(receipt["bindings"]),
+                }
+                # A late supervisor/cleanup error invalidates this application
+                # run even when the individual case observations had passed.
+                failed = receipt["result"] != "passed" or not receipt["cleanup_complete"] or bool(receipt["errors"])
+                merge_fixture_observation(observed, receipt["capabilities"], failed, run)
+            except (CoverageError, helper.ApplicationEvidenceError) as error:
+                report["errors"].append(str(error))
     for entry in catalog:
         backend = entry["backend"]
         planned = policy["providers"].get(backend)
@@ -933,6 +984,24 @@ def evaluate(catalog, policy, runtime, receipts, harness_sha256, now=None, max_a
                     evidence["status"] = "failed"
                 elif all(value == "passed" for value in capabilities.values()):
                     evidence["status"] = "passed"
+            if tier == "application" and backend in application_observations:
+                app = application_observations[backend]
+                for capability in needed:
+                    value = app["capabilities"].get(capability)
+                    if value in ("passed", "failed"):
+                        capabilities[capability] = value
+                # The complete six-case contract is mandatory independently of
+                # policy edits that might remove an inconvenient capability.
+                contract = {key: app["capabilities"].get(key, "not_verified") for key in sorted(helper.CAPABILITIES)}
+                mode_status = ("failed" if app["failed"] or "failed" in contract.values()
+                               else "passed" if all(value == "passed" for value in contract.values())
+                               else "not_verified")
+                evidence["runs"] = app["runs"]
+                evidence["modes"] = {helper.MODE: {"status": mode_status, "capabilities": contract, "runs": app["runs"]}}
+                if mode_status == "failed":
+                    evidence["status"] = "failed"
+                elif mode_status == "passed" and all(value == "passed" for value in capabilities.values()):
+                    evidence["status"] = "passed"
             row["evidence"][tier] = evidence
         row["complete"] = policy_status == "current" and not unresolved and all(
             evidence["status"] in ("passed", "not_applicable") for evidence in row["evidence"].values()
@@ -944,7 +1013,7 @@ def evaluate(catalog, policy, runtime, receipts, harness_sha256, now=None, max_a
     return report
 
 
-def gate_errors(report, require_plans=False, require_fixtures=(), require_complete=False):
+def gate_errors(report, require_plans=False, require_fixtures=(), require_complete=False, require_application=()):
     errors = list(report["errors"])
     if require_plans and not report["all_plans_current"]:
         errors.append("provider_plans_incomplete")
@@ -952,6 +1021,9 @@ def gate_errors(report, require_plans=False, require_fixtures=(), require_comple
     for backend in require_fixtures:
         if backend not in rows or rows[backend]["evidence"]["local_protocol"]["status"] != "passed":
             errors.append("required_fixture_not_verified")
+    for backend in require_application:
+        if backend not in rows or rows[backend]["evidence"]["application"]["status"] != "passed":
+            errors.append("required_application_not_verified")
     if require_complete and not report["all_complete"]:
         errors.append("provider_coverage_incomplete")
     return sorted(set(errors))
@@ -1134,15 +1206,20 @@ def main(argv=None):
     parser.add_argument("--policy", type=Path, default=ROOT / "provider-coverage-policy.json")
     parser.add_argument("--report", required=True, type=Path)
     parser.add_argument("--fixture-receipt", action="append", type=Path, default=[])
+    parser.add_argument("--application-receipt", action="append", type=Path, default=[])
+    parser.add_argument("--application", type=Path)
+    parser.add_argument("--application-build-commit")
     parser.add_argument("--max-age-hours", type=int, default=MAX_AGE_HOURS)
     parser.add_argument("--require-plans", action="store_true")
     parser.add_argument("--require-fixtures", default="")
+    parser.add_argument("--require-application", default="")
     parser.add_argument("--require-complete", action="store_true")
     args = parser.parse_args(argv)
     report = {"schema_version": 1, "all_plans_current": False, "all_complete": False,
               "providers": [], "errors": []}
     try:
         required = parse_required(args.require_fixtures)
+        required_application = parse_required(args.require_application)
         runtime, catalog = query_runtime(args.rclone, args.manifest)
         # Even a malformed/missing policy must leave every discovered backend in
         # the failure receipt; a policy failure cannot erase the coverage gap.
@@ -1165,6 +1242,19 @@ def main(argv=None):
                 receipts.append(read_json(path, MAX_RECEIPT))
             except CoverageError as error:
                 receipt_errors.append(str(error))
+        application_receipts = []
+        for path in args.application_receipt:
+            try:
+                application_receipts.append(read_json(path, MAX_RECEIPT))
+            except CoverageError as error:
+                receipt_errors.append(str(error))
+        application_bindings = None
+        if args.application_receipt:
+            if not args.application or not args.application_build_commit:
+                fail("application_build_binding_required")
+            application_bindings = compute_application_bindings(args.application, args.application_build_commit)
+        elif args.application or args.application_build_commit:
+            fail("application_receipt_required")
         smb_bindings = (compute_smb_bindings(ROOT / "scripts" / "provider-lab" / "smb")
                         if any(isinstance(receipt, dict) and type(receipt.get("schema_version")) is int
                                and receipt["schema_version"] == 3 for receipt in receipts) else None)
@@ -1172,10 +1262,12 @@ def main(argv=None):
                            if any(isinstance(receipt, dict) and type(receipt.get("schema_version")) is int
                                   and receipt["schema_version"] == 5 for receipt in receipts) else None)
         report = evaluate(catalog, policy, runtime, receipts, harness_sha, max_age_hours=args.max_age_hours,
-                          fixture_manifest_sha256=fixture_sha, smb_bindings=smb_bindings, pcloud_bindings=pcloud_bindings)
+                          fixture_manifest_sha256=fixture_sha, smb_bindings=smb_bindings, pcloud_bindings=pcloud_bindings,
+                          application_receipts=application_receipts, application_bindings=application_bindings)
         report["errors"] = sorted(set(report["errors"] + receipt_errors))
         report["all_complete"] = report["all_complete"] and not report["errors"]
-        report["gate_errors"] = gate_errors(report, args.require_plans, required, args.require_complete)
+        report["gate_errors"] = gate_errors(report, args.require_plans, required, args.require_complete,
+                                            require_application=required_application)
     except MetadataDiagnosticError as error:
         report["errors"].extend(error.codes)
         report["gate_errors"] = list(report["errors"])

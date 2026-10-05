@@ -3,7 +3,7 @@
 //! A single-file Windows executable that embeds rclone and provides
 //! a TUI interface for cloud data acquisition.
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use clap::Parser;
 use rclone_triage::case::Case;
 use rclone_triage::cleanup::Cleanup;
@@ -255,6 +255,18 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    if let Some(remote) = args.list_remote.as_deref() {
+        return cli_list_remote(
+            &binary,
+            &case,
+            remote,
+            args.rclone_config_path
+                .as_deref()
+                .expect("required by clap"),
+            &app_guard,
+        );
+    }
+
     // Minimal auth + listing wiring (CLI-driven)
     // CLI download from CSV/XLSX queue
     if let Some(ref queue_path_str) = args.download {
@@ -483,6 +495,7 @@ fn should_run_tui(args: &Cli) -> bool {
         || args.show_oauth_creds.is_some()
         || args.provider.is_some()
         || args.download.is_some()
+        || args.list_remote.is_some()
         || args.collect_logs;
 
     !has_cli_action
@@ -541,6 +554,121 @@ fn finish_authorize(
     if !config.has_remote(remote_name)? {
         bail!("Remote {} was not created", remote_name);
     }
+    Ok(())
+}
+
+fn parse_list_remote(value: &str) -> std::result::Result<String, String> {
+    // rclone v1.75.1 fs/fspath/path.go configNameRe. Go's \w is ASCII;
+    // Rust's Unicode \w would also admit combining marks and join controls.
+    static CONFIG_NAME: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let allowed = CONFIG_NAME.get_or_init(|| {
+        regex::Regex::new(r"\A[A-Za-z0-9_\p{L}\p{N}.+@]+(?:[ -]+[A-Za-z0-9_\p{L}\p{N}.+@-]+)*\z")
+            .expect("fixed config section grammar")
+    });
+    if !allowed.is_match(value)
+        || matches!(value, "." | "..")
+        || (cfg!(windows) && value.len() == 1 && value.as_bytes()[0].is_ascii_alphabetic())
+    {
+        return Err("Use an exact config section name, without a path or inline options".into());
+    }
+    Ok(value.to_owned())
+}
+
+/// List only the explicitly selected imported remote; never perform authentication.
+fn cli_list_remote(
+    binary: &embedded::ExtractedBinary,
+    case: &Case,
+    remote: &str,
+    source_config: &str,
+    app_guard: &AppGuard,
+) -> Result<()> {
+    use rclone_triage::case::directory::{create_case_directories, snapshot_config};
+    use rclone_triage::files::export::export_listing;
+    use rclone_triage::utils::path::ensure_no_link_components;
+
+    let source_config = std::path::Path::new(source_config);
+    ensure_no_link_components(source_config)?;
+    if !source_config.is_file() {
+        bail!("Listing requires an existing regular config file");
+    }
+    // Reserve a fresh case atomically, so an earlier listing can never survive
+    // a failed run or be mistaken for this invocation's result.
+    let base = case.output_dir.join(case.session_id());
+    ensure_no_link_components(&base)?;
+    std::fs::create_dir_all(&case.output_dir)?;
+    std::fs::create_dir(&base).context("Listing requires a new case directory")?;
+    let dirs = create_case_directories(case)?;
+    let working = snapshot_config(source_config, &dirs.config)?;
+    let config = RcloneConfig::open_existing(&working)?;
+    app_guard.track_env_value("RCLONE_CONFIG", config.original_env());
+    let parsed = config.parse()?;
+    let matching: Vec<_> = parsed
+        .remotes
+        .iter()
+        .filter(|entry| entry.name.eq_ignore_ascii_case(remote))
+        .collect();
+    if matching.len() != 1 || matching[0].name != remote {
+        bail!("Listing remote is unknown or ambiguous in the imported config");
+    }
+    if matching[0].remote_type.is_empty() {
+        bail!("Listing remote has no backend type");
+    }
+    let runner = RcloneRunner::new(binary.path())
+        .with_config(config.path())
+        .with_cancel_flag(app_guard.shutdown.clone());
+    // Full recursive inventory, without provider-specific hash or fast-list
+    // fallbacks. The exported rows retain their exact selected remote identity.
+    let mut entries = list_path(
+        &runner,
+        &format!("{remote}:"),
+        ListPathOptions::without_hashes().without_fast_list(),
+    )?;
+    if runner.is_cancelled() {
+        bail!("Listing cancelled");
+    }
+    for entry in &mut entries {
+        entry.remote_name = Some(remote.to_owned());
+    }
+    let staged = tempfile::Builder::new()
+        .prefix(".inventory-")
+        .suffix(".tmp")
+        .tempfile_in(&dirs.listings)?;
+    export_listing(&entries, staged.path())?;
+    if entries.is_empty() {
+        // The shared exporter emits its header with the first row. An empty
+        // successful inventory still needs the same explicit column schema.
+        let mut writer = csv::Writer::from_writer(
+            std::fs::OpenOptions::new()
+                .append(true)
+                .open(staged.path())?,
+        );
+        writer.write_record([
+            "path_encoding",
+            "remote",
+            "path",
+            "size",
+            "modified",
+            "is_dir",
+            "hash",
+            "hash_type",
+        ])?;
+        writer.flush()?;
+    }
+    staged.as_file().sync_all()?;
+    if runner.is_cancelled() {
+        bail!("Listing cancelled");
+    }
+    let destination = dirs.listings.join("inventory.csv");
+    ensure_no_link_components(&destination)?;
+    staged
+        .persist_noclobber(&destination)
+        .map_err(|error| error.error)
+        .context("Cannot publish the completed listing")?;
+    println!(
+        "Listed {} entries from {remote} -> {:?}",
+        entries.len(),
+        destination
+    );
     Ok(())
 }
 
@@ -1022,6 +1150,19 @@ struct Cli {
     #[arg(long)]
     download: Option<String>,
 
+    /// Recursively list one exact section from an imported config into a fresh case CSV
+    #[arg(long, requires = "rclone_config_path", value_parser = parse_list_remote,
+        conflicts_with_all = [
+            "provider", "auth_only", "no_browser", "tui", "mobile_auth", "mobile_auth_port",
+            "device_code", "download", "remote", "ps_csv", "output_listing",
+            "set_oauth_creds", "show_oauth_creds", "oauth_config_path", "web_gui",
+            "web_gui_port", "web_gui_user", "web_gui_pass", "forensic_ap_start",
+            "forensic_ap_stop", "forensic_ap_status", "forensic_ap_ssid", "forensic_ap_password",
+            "forensic_ap_timeout_minutes", "onedrive_vault", "onedrive_vault_mount",
+            "onedrive_vault_dest", "onedrive_vault_no_wait", "collect_logs"
+        ])]
+    list_remote: Option<String>,
+
     /// Remote name to use for download (if multiple remotes exist)
     #[arg(long)]
     remote: Option<String>,
@@ -1046,7 +1187,7 @@ struct Cli {
     #[arg(long)]
     show_oauth_creds: Option<String>,
 
-    /// Config input for queue downloads or credential inspection (source is preserved)
+    /// Config input for listing, queue downloads or credential inspection (source is preserved)
     #[arg(long)]
     rclone_config_path: Option<String>,
 
@@ -1184,6 +1325,97 @@ mod tests {
         assert!(!original.auth_only && !original.no_browser);
     }
 
+    #[test]
+    fn list_remote_requires_explicit_config_and_excludes_other_actions() {
+        assert!(Cli::try_parse_from(["triage", "--list-remote", "Synthetic"]).is_err());
+        let base = [
+            "triage",
+            "--list-remote",
+            "Synthetic",
+            "--rclone-config-path",
+            "input.conf",
+        ];
+        let parsed = Cli::try_parse_from(base).unwrap();
+        assert_eq!(parsed.list_remote.as_deref(), Some("Synthetic"));
+        assert!(!should_run_tui(&parsed));
+        let conflicts: &[&[&str]] = &[
+            &["--provider", "http"],
+            &["--auth-only"],
+            &["--no-browser"],
+            &["--tui"],
+            &["--mobile-auth"],
+            &["--mobile-auth-port", "53682"],
+            &["--device-code"],
+            &["--download", "queue.csv"],
+            &["--remote", "Synthetic"],
+            &["--ps-csv"],
+            &["--output-listing", "out.csv"],
+            &["--set-oauth-creds", "http"],
+            &["--show-oauth-creds", "Synthetic"],
+            &["--oauth-config-path", "other.conf"],
+            &["--web-gui"],
+            &["--web-gui-port", "5572"],
+            &["--web-gui-user", "synthetic"],
+            &["--web-gui-pass", "synthetic"],
+            &["--forensic-ap-start"],
+            &["--forensic-ap-stop"],
+            &["--forensic-ap-status"],
+            &["--forensic-ap-ssid", "synthetic"],
+            &["--forensic-ap-password", "synthetic"],
+            &["--forensic-ap-timeout-minutes", "1"],
+            &["--onedrive-vault"],
+            &["--onedrive-vault-mount", "synthetic"],
+            &["--onedrive-vault-dest", "synthetic"],
+            &["--onedrive-vault-no-wait"],
+            &["--collect-logs"],
+        ];
+        for conflict in conflicts {
+            let mut args = base.to_vec();
+            args.extend_from_slice(conflict);
+            assert!(Cli::try_parse_from(args).is_err(), "accepted {conflict:?}");
+        }
+    }
+
+    #[test]
+    fn list_remote_name_is_an_exact_section_not_a_path() {
+        for invalid in [
+            "",
+            " Synthetic",
+            "Synthetic ",
+            "Synthetic:",
+            "Synthetic:path",
+            ":http:",
+            "../Synthetic",
+            "a/b",
+            "a\\b",
+            "[Synthetic]",
+            ".",
+            "..",
+            "-Synthetic",
+            "line\nname",
+            "RemoteA,remote=other",
+            "RemoteA=other",
+            "RemoteA;other",
+            "A\u{0301}", // Combining mark, admitted by Rust Unicode \w but not Go's grammar.
+            "A\u{200c}", // Join control.
+            "A\u{203f}", // Non-ASCII connector punctuation.
+            "A😀",
+        ] {
+            assert!(parse_list_remote(invalid).is_err(), "accepted {invalid:?}");
+        }
+        #[cfg(windows)]
+        assert!(parse_list_remote("C").is_err());
+        for valid in [
+            "Synthetic Folder",
+            "Remote-name-",
+            "_remote.+@",
+            "É漢字",
+            "R١Ⅱ²",
+        ] {
+            assert_eq!(parse_list_remote(valid).unwrap(), valid);
+        }
+    }
+
     fn default_cli() -> Cli {
         Cli {
             name: "".to_string(),
@@ -1196,6 +1428,7 @@ mod tests {
             mobile_auth_port: 53682,
             device_code: false,
             download: None,
+            list_remote: None,
             remote: None,
             ps_csv: false,
             output_listing: None,

@@ -21,6 +21,7 @@ class WorkflowObligationTests(unittest.TestCase):
         unresolved = {
             "ci.yml": [
                 {"hdfs", "smb", "pcloud"},  # Cross-platform matrix; latter two run in separate Linux jobs.
+                {"hdfs", "smb", "pcloud"},  # Windows application ledger reuses that protocol evidence.
                 {"hdfs"},                  # Combined Linux evidence; secure HDFS is still unverified.
             ],
             "provider-smoke.yml": [{"hdfs"}],
