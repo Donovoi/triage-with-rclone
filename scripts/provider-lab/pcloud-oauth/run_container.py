@@ -107,18 +107,20 @@ def runtime_identity(binary):
     path = REPOSITORY / "rclone-version.env"
     regular(path, 4096)
     keys = {"RCLONE_VERSION", "RCLONE_EXE_SHA256", "RCLONE_WINDOWS_ZIP_SHA256", "RCLONE_LINUX_ZIP_SHA256", "RCLONE_LINUX_EXE_SHA256"}
+    extended = keys | {"RCLONE_WINDOWS_X86_EXE_SHA256", "RCLONE_WINDOWS_X86_ZIP_SHA256",
+                       "RCLONE_WINDOWS_ARM64_EXE_SHA256", "RCLONE_WINDOWS_ARM64_ZIP_SHA256"}
     pins = {}
     try:
         for line in path.read_bytes().decode("ascii").splitlines():
             if not line or line.startswith("#"):
                 continue
             key, sep, value = line.partition("=")
-            check(sep and key in keys and key not in pins, "invalid_runtime_manifest")
+            check(sep and key in extended and key not in pins, "invalid_runtime_manifest")
             check(re.fullmatch(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)" if key == "RCLONE_VERSION" else r"[a-f0-9]{64}", value), "invalid_runtime_manifest")
             pins[key] = value
     except UnicodeError:
         raise SupervisorError("invalid_runtime_manifest") from None
-    check(set(pins) == keys, "invalid_runtime_manifest")
+    check(set(pins) in (keys, extended), "invalid_runtime_manifest")
     check(digest(binary) == pins["RCLONE_LINUX_EXE_SHA256"], "runtime_hash_mismatch")
     return {"version": pins["RCLONE_VERSION"], "sha256": pins["RCLONE_LINUX_EXE_SHA256"]}
 

@@ -261,7 +261,12 @@ fn verify_runtime(path: &Path) -> Result<PathBuf> {
     }
     let path = path.canonicalize()?;
     let key = if cfg!(windows) {
-        "RCLONE_EXE_SHA256="
+        match std::env::consts::ARCH {
+            "x86_64" => "RCLONE_EXE_SHA256=",
+            "x86" => "RCLONE_WINDOWS_X86_EXE_SHA256=",
+            "aarch64" => "RCLONE_WINDOWS_ARM64_EXE_SHA256=",
+            _ => bail!("No native executable pin defined for this Windows architecture"),
+        }
     } else {
         "RCLONE_LINUX_EXE_SHA256="
     };

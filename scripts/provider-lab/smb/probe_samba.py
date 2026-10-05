@@ -107,18 +107,20 @@ def read_runtime_pins(path):
         raise ProbeError("rclone_manifest_invalid") from None
     keys = {"RCLONE_VERSION", "RCLONE_EXE_SHA256", "RCLONE_WINDOWS_ZIP_SHA256",
             "RCLONE_LINUX_ZIP_SHA256", "RCLONE_LINUX_EXE_SHA256"}
+    extended = keys | {"RCLONE_WINDOWS_X86_EXE_SHA256", "RCLONE_WINDOWS_X86_ZIP_SHA256",
+                       "RCLONE_WINDOWS_ARM64_EXE_SHA256", "RCLONE_WINDOWS_ARM64_ZIP_SHA256"}
     values = {}
     for line in text.splitlines():
         line = line.strip()
         if not line or line.startswith("#"):
             continue
         key, separator, value = line.partition("=")
-        require(separator and key in keys and key not in values, "rclone_manifest_invalid")
+        require(separator and key in extended and key not in values, "rclone_manifest_invalid")
         values[key] = value
-    require(set(values) == keys
+    require(set(values) in (keys, extended)
             and re.fullmatch(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)", values["RCLONE_VERSION"]),
             "rclone_manifest_invalid")
-    require(all(re.fullmatch(r"[a-f0-9]{64}", values[key]) for key in keys - {"RCLONE_VERSION"}),
+    require(all(re.fullmatch(r"[a-f0-9]{64}", values[key]) for key in set(values) - {"RCLONE_VERSION"}),
             "rclone_manifest_invalid")
     return {"version": values["RCLONE_VERSION"], "sha256": values["RCLONE_LINUX_EXE_SHA256"]}
 
