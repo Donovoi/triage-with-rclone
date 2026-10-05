@@ -367,6 +367,37 @@ def validate_ready(value):
     return value
 
 
+def validate_close_ready(value):
+    need(type(value) is dict and set(value) == {"schema_version", "action", "ok", "state"} and
+         type(value["schema_version"]) is int and value["schema_version"] == 1 and
+         value["action"] == "close_ready" and value["ok"] is True and value["state"] == "closed", "session_failed")
+    return value
+
+
+BRIDGE_ACTIONS = frozenset({"invalid", "ready", "close_ready", "start", "poll", "observe_runtime", "ctrl_c", "finish", "close"})
+BRIDGE_PHASES = frozenset({"launch", "reader_start", "preflight", "write", "wait", "reply", "cleanup"})
+BRIDGE_OUTCOMES = frozenset({"launch_failed", "thread_failed", "rejected", "io_failed", "timeout", "protocol_failed", "cleanup_failed"})
+
+
+def bridge_stage(data):
+    """Only complete, exact ordered stderr prefixes carry diagnostic meaning."""
+    if type(data) is not bytes or not data or len(data) > 4096 or not data.endswith(b"\n"):
+        return None
+    lines = data.replace(b"\r\n", b"\n").splitlines()
+    if b"\r" in data.replace(b"\r\n", b"\n"):
+        return None
+    expected = [b"application_bridge_stage=compile", b"application_bridge_stage=compiled"]
+    return ("compile", "compiled")[len(lines) - 1] if 1 <= len(lines) <= 2 and lines == expected[:len(lines)] else None
+
+
+def session_diagnostic(action, phase, outcome, last_stage=None):
+    need(type(action) is str and action in BRIDGE_ACTIONS and type(phase) is str and phase in BRIDGE_PHASES and
+         type(outcome) is str and outcome in BRIDGE_OUTCOMES and
+         last_stage in {None, "compile", "compiled"}, "session_failed")
+    print("application_session_diagnostic=" + E.compact(dict(action=action, phase=phase, outcome=outcome,
+          last_stage=last_stage)).decode("ascii"), flush=True)
+
+
 class Bridge:
     """One owned hidden PS5 process; fixed JSON protocol and bounded pipe readers."""
     def __init__(self, case):
@@ -375,11 +406,21 @@ class Bridge:
         self.failed, self.done = threading.Event(), threading.Event()
         self.threads, self.calls, self.forced = [], 0, False
         self.response_lock, self.responses, self.ready = threading.Lock(), 0, False
+        self.closed_ready = False
+        self.stage_bytes = bytearray()
+        self.stage_invalid = False
         self.deadline = time.monotonic() + 165
         env = environment(case)
         env.update(GITHUB_ACTIONS="true", RUNNER_OS="Windows", RUNNER_ENVIRONMENT="github-hosted")
-        self.process = subprocess.Popen([powershell(), "-NoProfile", "-NonInteractive", "-File", str(HERE / "hosted_session.ps1")],
-            cwd=case, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **hidden())
+        try:
+            self.process = subprocess.Popen([powershell(), "-NoProfile", "-NonInteractive", "-File", str(HERE / "hosted_session.ps1")],
+                cwd=case, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **hidden())
+        except BaseException:
+            try:
+                session_diagnostic("invalid", "launch", "launch_failed")
+            except BaseException:
+                pass
+            raise
         try:
             for stream, name in ((self.process.stdout, "stdout"), (self.process.stderr, "stderr")):
                 thread = threading.Thread(target=self._reader, args=(stream, name), daemon=True)
@@ -388,6 +429,7 @@ class Bridge:
             self.watchdog = threading.Thread(target=self._watch, daemon=True)
             self.watchdog.start()
         except BaseException:
+            self._diagnostic("invalid", "reader_start", "thread_failed")
             self.forced = True
             self.process.kill()
             self.process.wait(timeout=5)
@@ -403,6 +445,13 @@ class Bridge:
                         self.failed.set()
                         return
                     log.write(data)
+                    if name == "stderr":
+                        with self.response_lock:
+                            if len(self.stage_bytes) + len(data) > 4096:
+                                self.stage_invalid = True
+                                self.stage_bytes.clear()
+                            elif not self.stage_invalid:
+                                self.stage_bytes.extend(data)
                     if name == "stdout":
                         buffer.extend(data)
                         if len(buffer) > 65536:
@@ -422,6 +471,14 @@ class Bridge:
         except Exception:
             self.failed.set()
 
+    def _diagnostic(self, action, phase, outcome):
+        try:
+            with self.response_lock:
+                stage = None if self.stage_invalid else bridge_stage(bytes(self.stage_bytes))
+            session_diagnostic(action if type(action) is str and action in BRIDGE_ACTIONS else "invalid", phase, outcome, stage)
+        except BaseException:
+            pass  # A diagnostic cannot replace the original failure.
+
     def _watch(self):
         while not self.done.wait(0.05):
             if self.failed.is_set() or time.monotonic() >= self.deadline:
@@ -431,30 +488,42 @@ class Bridge:
                 return
 
     def command(self, action, **fields):
+        phase = "preflight"
         try:
-            need(not self.failed.is_set() and not self.forced and self.calls < 1024, "session_failed")
+            need(type(action) is str and action in BRIDGE_ACTIONS - {"invalid", "close"} and not self.closed_ready and
+                 not self.failed.is_set() and not self.forced and self.calls < 1024, "session_failed")
             with self.response_lock:
                 need(self.messages.empty() and self.responses == self.calls and
-                     (not self.ready and self.calls == 0 and not fields if action == "ready" else self.ready), "session_failed")
+                     (not self.ready and self.calls == 0 and not fields if action == "ready" else
+                      self.ready and self.calls == 1 and not fields if action == "close_ready" else self.ready), "session_failed")
                 self.calls += 1
             payload = E.compact(dict(action=action, **fields)) + b"\n"
             need(len(payload) <= 16384 and self.process.poll() is None, "session_failed")
+            phase = "write"
             self.process.stdin.write(payload)
             self.process.stdin.flush()
+            phase = "wait"
             data = self.messages.get(timeout=max(0.01, min(35, self.deadline - time.monotonic())))
+            phase = "reply"
             need(not self.failed.is_set(), "session_failed")
             value = strict_json(data, 65536)
-            self.last = validate_ready(value) if action == "ready" else validate_session(value, action)
+            self.last = (validate_ready(value) if action == "ready" else validate_close_ready(value)
+                         if action == "close_ready" else validate_session(value, action))
             if action == "ready":
                 self.ready = True
+            if action == "close_ready":
+                self.closed_ready = True
             return self.last
-        except (OSError, queue.Empty, ProducerError):
+        except (OSError, queue.Empty, ProducerError) as error:
             self.failed.set()
+            outcome = ("timeout" if isinstance(error, queue.Empty) else "io_failed" if isinstance(error, OSError)
+                       else "protocol_failed" if phase == "reply" else "rejected")
+            self._diagnostic(action, phase, outcome)
             raise ProducerError("session_failed") from None
 
     def close(self):
         try:
-            if self.process.poll() is None and (self.last is None or self.last["state"] != "finished"):
+            if self.process.poll() is None and (self.last is None or self.last["state"] not in {"finished", "closed"}):
                 try:
                     self.command("finish", grace_ms=0)
                 except Exception:
@@ -466,6 +535,9 @@ class Bridge:
                 self.forced = True
                 self.process.kill()
                 self.process.wait(timeout=5)
+        except BaseException:
+            self._diagnostic("close", "cleanup", "cleanup_failed")
+            raise
         finally:
             self.done.set()
             self.watchdog.join(1)
@@ -476,8 +548,11 @@ class Bridge:
             for thread, stream in zip(self.threads, (self.process.stdout, self.process.stderr)):
                 if not thread.is_alive():
                     stream.close()
-        return (self.process.returncode == 0 and not self.forced and not self.failed.is_set() and
-                self.messages.empty() and not self.watchdog.is_alive() and all(not t.is_alive() for t in self.threads))
+        clean = (self.process.returncode == 0 and not self.forced and not self.failed.is_set() and
+                 self.messages.empty() and not self.watchdog.is_alive() and all(not t.is_alive() for t in self.threads))
+        if not clean:
+            self._diagnostic("close", "cleanup", "cleanup_failed")
+        return clean
 
 
 def queue_rows(name):
@@ -1006,18 +1081,115 @@ def setup_probe():
         return 1
 
 
+BRIDGE_PROBE_STAGES = frozenset({"initial", "suite_setup", "case_setup", "helper_launch", "ready", "prestart",
+    "close_ready", "helper_cleanup", "identity", "private_inventory", "case_acl", "source", "case_removal", "suite_acl", "suite_removal"})
+
+
+def bridge_probe_diagnostic(stage, failure_code):
+    need(type(stage) is str and stage in BRIDGE_PROBE_STAGES and type(failure_code) is str and
+         failure_code in E.FAILURE_CODES, "session_failed")
+    print("application_bridge_probe_diagnostic=" + E.compact(dict(stage=stage, failure_code=failure_code)).decode("ascii"), flush=True)
+
+
+def bridge_probe(session_factory=None):
+    """Hosted helper preflight only; never starts an application or fixture."""
+    bridge = None
+    close_attempted = False
+    stage = "initial"
+    try:
+        hosted_guard()
+        loaded_sources_preserved()
+        source_paths = ("prepare_case.ps1", "hosted_session.ps1", "HostedConPtySession.cs")
+        source_hashes = {name: sha(read(HERE / name, 65536)) for name in source_paths}
+        parent = Path(os.environ["RUNNER_TEMP"]).absolute()
+        parent_id = identity(parent)
+        suite = parent / ("app-http-" + uuid.uuid4().hex)
+        need(not suite.exists(), "case_setup_failed")
+        stage = "suite_setup"
+        prepare(parent, suite.name)
+        suite_id = identity(suite)
+        need(identity(parent) == parent_id and not inventory(suite), "preservation_failed")
+        stage = "case_setup"
+        prepare(suite, "listing")
+        case = suite / "listing"
+        case_id = identity(case)
+        private_ids = {}
+        for name in PRIVATE_LOCATIONS:
+            (case / name).mkdir()
+            private_ids[name] = identity(case / name)
+        stage = "helper_launch"
+        bridge = (Bridge if session_factory is None else session_factory)(case)
+        stage = "ready"
+        validate_ready(bridge.command("ready"))
+        stage = "prestart"
+        need(all(identity(case / name) == value for name, value in private_ids.items()), "preservation_failed")
+        baseline = prestart_baseline("listing", case, private_ids["profile"])
+        stage = "close_ready"
+        validate_close_ready(bridge.command("close_ready"))
+        stage = "helper_cleanup"
+        close_attempted = True
+        need(bridge.close(), "cleanup_failed")
+        stage = "identity"
+        need(identity(parent) == parent_id and identity(suite) == suite_id and identity(case) == case_id,
+             "preservation_failed")
+        need(all(identity(case / name) == value for name, value in private_ids.items()), "preservation_failed")
+        stage = "private_inventory"
+        need(profile_baseline(case, private_ids["profile"]) == baseline, "cleanup_failed")
+        for name in PRIVATE_LOCATIONS:
+            if name != "profile":
+                need(not inventory(case / name), "cleanup_failed")
+        entries = inventory(case)
+        expected_dirs = set(PRIVATE_LOCATIONS) | {"profile/" + path for path, _dev, _ino in baseline[1]}
+        need({p for p, v in entries.items() if v[0]} == expected_dirs and
+             {p for p, v in entries.items() if not v[0]} == {"bridge-stdout.private", "bridge-stderr.private"} and
+             all(v[1] <= 1024 * 1024 for v in entries.values() if not v[0]), "cleanup_failed")
+        stage = "case_acl"
+        prepare(suite, "listing", "Verify")
+        stage = "source"
+        loaded_sources_preserved()
+        need({name: sha(read(HERE / name, 65536)) for name in source_paths} == source_hashes, "preservation_failed")
+        stage = "identity"
+        need(identity(parent) == parent_id and identity(suite) == suite_id and
+             identity(case) == case_id and inventory(case) == entries, "preservation_failed")
+        stage = "case_removal"
+        remove_owned(case, case_id)
+        stage = "suite_acl"
+        prepare(parent, suite.name, "Verify")
+        stage = "source"
+        loaded_sources_preserved()
+        need({name: sha(read(HERE / name, 65536)) for name in source_paths} == source_hashes, "preservation_failed")
+        stage = "identity"
+        need(identity(parent) == parent_id and identity(suite) == suite_id and not inventory(suite), "preservation_failed")
+        stage = "suite_removal"
+        remove_owned(suite, suite_id)
+        print("application_bridge_probe_passed", flush=True)
+        return 0
+    except BaseException as error:
+        code = str(error) if isinstance(error, ProducerError) and str(error) in E.FAILURE_CODES else "unexpected_failure"
+        if bridge is not None and not close_attempted:
+            try:
+                bridge.close()
+            except BaseException:
+                pass
+        bridge_probe_diagnostic(stage, code)
+        print("application_bridge_probe_failed", flush=True)
+        return 1
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--setup-probe", action="store_true")
+    parser.add_argument("--bridge-probe", action="store_true")
     parser.add_argument("--application")
     parser.add_argument("--application-sha256")
     parser.add_argument("--build-commit")
     parser.add_argument("--report")
     args = parser.parse_args(argv)
     acceptance_args = (args.application, args.application_sha256, args.build_commit, args.report)
-    if (args.setup_probe and any(value is not None for value in acceptance_args)
-            or not args.setup_probe and any(value is None for value in acceptance_args)):
-        parser.error("use --setup-probe alone or all four application acceptance arguments")
+    preflight = args.setup_probe or args.bridge_probe
+    if (args.setup_probe and args.bridge_probe or preflight and any(value is not None for value in acceptance_args)
+            or not preflight and any(value is None for value in acceptance_args)):
+        parser.error("use one preflight flag alone or all four application acceptance arguments")
     descriptor = None
     prior_signal = None
     try:
@@ -1027,6 +1199,8 @@ def main(argv=None):
         prior_signal = signal.signal(signal.SIGTERM, interrupted)
         if args.setup_probe:
             return setup_probe()
+        if args.bridge_probe:
+            return bridge_probe()
         report = Path(args.report).absolute()
         plain(report.parent, True)
         descriptor = os.open(report, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)

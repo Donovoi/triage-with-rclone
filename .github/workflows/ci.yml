@@ -238,6 +238,9 @@ jobs:
       - name: Check hosted Windows test folder setup
         if: runner.os == 'Windows'
         run: python -B ../scripts/application-lab/run_windows_http.py --setup-probe
+      - name: Check hosted Windows helper readiness and cleanup
+        if: runner.os == 'Windows'
+        run: python -B ../scripts/application-lab/run_windows_http.py --bridge-probe
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: rclone-triage -> target

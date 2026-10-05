@@ -10,7 +10,11 @@ $action = 'invalid'
 try {
     if ($env:GITHUB_ACTIONS -cne 'true' -or $env:RUNNER_OS -cne 'Windows' -or
         $env:RUNNER_ENVIRONMENT -cne 'github-hosted' -or $PSVersionTable.PSEdition -cne 'Desktop') { throw 'hosted_only' }
+    [Console]::Error.WriteLine('application_bridge_stage=compile')
+    [Console]::Error.Flush()
     Add-Type -Path (Join-Path $PSScriptRoot 'HostedConPtySession.cs') -ErrorAction Stop
+    [Console]::Error.WriteLine('application_bridge_stage=compiled')
+    [Console]::Error.Flush()
     while ($true) {
         $request = [TriageApplicationLab.HostedProtocol]::Read([Console]::In)
         if ($null -eq $request) {
@@ -43,6 +47,12 @@ try {
                     [TriageApplicationLab.HostedProtocol]::Integer($request, 'deadline_ms'))
                 $result = $session.Poll()
             }
+            'close_ready' {
+                [TriageApplicationLab.HostedProtocol]::Keys($request, 'action')
+                if (-not $ready -or $null -ne $session) { throw 'protocol_invalid' }
+                $ready = $false
+                $result = @{ schema_version=1; ok=$true; state='closed' }
+            }
             'poll' {
                 [TriageApplicationLab.HostedProtocol]::Keys($request, 'action')
                 if ($null -eq $session) { throw 'protocol_invalid' }
@@ -70,7 +80,7 @@ try {
         $result['action'] = $action
         [Console]::Out.WriteLine(($result | ConvertTo-Json -Depth 4 -Compress))
         [Console]::Out.Flush()
-        if ($result['state'] -eq 'finished') { break }
+        if ($result['state'] -eq 'finished' -or $result['state'] -eq 'closed') { break }
     }
 } catch {
     if ($null -ne $session) { $result = $session.Abort() }
