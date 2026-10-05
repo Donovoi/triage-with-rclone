@@ -84,6 +84,8 @@ CODES = frozenset("hosted_linux_required input_invalid input_changed unsafe_path
     "image_invalid container_invalid controller_invalid controller_failed listing_invalid sample_mismatch "
     "negative_failed cancellation_failed client_deadline shutdown_failed container_cleanup_failed image_cleanup_failed "
     "client_result_invalid client_failed client_diagnostic_unavailable client_error_eof client_error_unexpected_eof "
+    "client_sasl_cipher_unavailable client_sasl_qop_rejected client_sasl_rspauth_mismatch "
+    "client_datanode_invalid_response client_datanode_response_length client_datanode_hmac_failed "
     "failure_shutdown_failed failure_shutdown_clients_present failure_shutdown_wait_failed failure_shutdown_release_failed "
     "raw_cleanup_failed interrupted fixture_failed".split())
 
@@ -282,10 +284,30 @@ def require_client_success(T, result, operation):
     if 0 < len(lines) <= 128 and all(len(line) <= 4096 for line in lines):
         final = lines[-1]
         pattern = (rb"(?:[0-9]{4}/[0-9]{2}/[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2} )?NOTICE: Failed to "
-            + operation.encode("ascii") + rb"(?:: | with ([1-9][0-9]{0,3}) errors: last error was: )(EOF|unexpected EOF)")
+            + operation.encode("ascii") + rb"(?:: | with ([1-9][0-9]{0,3}) errors: last error was: )(.+)")
         match = re.fullmatch(pattern, final)
         if match and (match.group(1) is None or int(match.group(1)) >= 2):
-            raise FixtureError("client_error_eof" if match.group(2) == b"EOF" else "client_error_unexpected_eof")
+            payload = match.group(2)
+            if payload in (b"EOF", b"unexpected EOF"):
+                raise FixtureError("client_error_eof" if payload == b"EOF" else "client_error_unexpected_eof")
+            if operation == "cat":
+                # Fixed errors in hdfs v2.4.0's transfer SASL and framing code.
+                # Variable challenge values are never retained or interpreted.
+                fixed = {
+                    b"rspauth did not match digest": "client_sasl_rspauth_mismatch",
+                    b"invalid response from datanode": "client_datanode_invalid_response",
+                    b"invalid response from datanode: bad response length": "client_datanode_response_length",
+                    b"invalid response from datanode: HMAC check failed": "client_datanode_hmac_failed",
+                    b"negotiating data protection: invalid qop: 'integrity'": "client_sasl_qop_rejected",
+                }
+                if payload in fixed: raise FixtureError(fixed[payload])
+                token_list = rb"\[(?:[a-z0-9][a-z0-9-]{0,31}(?: [a-z0-9][a-z0-9-]{0,31}){0,7})?\]"
+                for prefix, code in (
+                    (b"no available cipher among choices: ", "client_sasl_cipher_unavailable"),
+                    (b"negotiating data protection: invalid qop: ", "client_sasl_qop_rejected"),
+                ):
+                    if payload.startswith(prefix) and re.fullmatch(token_list, payload[len(prefix):]):
+                        raise FixtureError(code)
     raise FixtureError("client_failed")
 
 
