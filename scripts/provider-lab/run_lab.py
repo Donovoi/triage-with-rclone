@@ -36,8 +36,8 @@ from fixture_servers import FILES, State, SwiftState, B2State, AzureBlobState, A
 from email.utils import format_datetime
 
 
-BACKENDS = ("local", "http", "webdav", "ftp", "sftp", "s3", "archive", "swift", "b2", "azureblob", "azurefiles", "seafile", "memory", "koofr", "pixeldrain", "filefabric", "internetarchive", "netstorage", "pcloud")
-HARNESS_FILES = ("fixture_servers.py", "run_lab.py", "fixture_tls.py", "fixture_pcloud.py", "requirements-fixture.txt")
+BACKENDS = ("local", "http", "webdav", "ftp", "sftp", "s3", "archive", "swift", "b2", "azureblob", "azurefiles", "seafile", "memory", "koofr", "pixeldrain", "filefabric", "internetarchive", "netstorage", "pcloud", "gcs")
+HARNESS_FILES = ("fixture_servers.py", "run_lab.py", "fixture_tls.py", "fixture_pcloud.py", "fixture_gcs.py", "requirements-fixture.txt")
 MAX_OUTPUT = 2 * 1024 * 1024
 COMMAND_TIMEOUT = 20
 
@@ -1995,6 +1995,167 @@ def pcloud_metadata_args(kind, member=""):
             json.dumps({"fs": "Synthetic:", "remote": member, "opt": options}, separators=(",", ":"))]
 
 
+GCS_MEMBER = "README-synthetic.txt"
+GCS_MISSING = "missing-synthetic-object.bin"
+GCS_FS = "Synthetic:synthetic-bucket"
+GCS_CAPABILITIES = ("listing", "download_hash", "missing_object_rejection", "authentication_rejection",
+                    "read_denial", "source_preservation", "config_preservation", "cleanup")
+
+
+def gcs_options(state, port, *, wrong_token=False):
+    check(type(port) is int and 0 < port < 65536 and type(wrong_token) is bool
+          and all(type(token) is str and re.fullmatch(r"[A-Za-z0-9_-]{24,96}", token)
+                  for token in (state.token, state.wrong_token)) and state.token != state.wrong_token,
+          "gcs_invalid_fixture")
+    # A nonempty access_token selects StaticTokenSource. An empty token could
+    # enter a different authentication path, so denial uses another fake token.
+    return {"type": "google cloud storage", "access_token": state.wrong_token if wrong_token else state.token,
+            "endpoint": f"http://127.0.0.1:{port}/storage/v1/", "anonymous": "false", "env_auth": "false",
+            "service_account_file": "", "service_account_credentials": "", "project_number": ""}
+
+
+def gcs_metadata_args():
+    return ["rc", "--loopback", "operations/list", "--json", json.dumps({"fs": GCS_FS, "remote": "",
+            "opt": {"filesOnly": True, "showHash": True, "noModTime": False, "noMimeType": True, "recurse": True}},
+            separators=(",", ":"))]
+
+
+def gcs_metadata_matches(output, expected):
+    try:
+        data = memory_json(output)
+        if not isinstance(data, dict) or set(data) != {"list"} or not isinstance(data["list"], list):
+            return False
+        actual = []
+        for item in data["list"]:
+            if (not isinstance(item, dict) or set(item) != {"Path", "Name", "Size", "ModTime", "IsDir", "Hashes"}
+                    or item["Path"] not in FILES or item["Name"] != item["Path"].rsplit("/", 1)[-1]
+                    or type(item["Size"]) is not int or item["IsDir"] is not False
+                    or item["Hashes"] != {"md5": hashlib.md5(FILES[item["Path"]]).hexdigest()}
+                    or type(item["ModTime"]) is not str
+                    or not re.fullmatch(r"2024-01-01T00:00:00(?:\.0{1,9})?Z", item["ModTime"])):
+                return False
+            actual.append((item["Path"], item["Size"]))
+        return sorted(actual) == [(item["path"], item["size"]) for item in expected]
+    except (LabError, TypeError, KeyError, ValueError):
+        return False
+
+
+def gcs_error_matches(output, kind):
+    causes = {"missing": "object not found",
+              "wrong_token": "googleapi: Error 401: Synthetic fixture authError, authError",
+              "member_denied": "failed to open source object: googleapi: Error 403: Synthetic fixture forbidden, forbidden"}
+    try:
+        data = memory_json(output)
+        return (kind in causes and isinstance(data, dict) and set(data) == {"error", "path", "status"}
+                and type(data["status"]) is int and data["status"] == 500 and data["path"] == "operations/copyfile"
+                and data["error"] == "loopback: call failed: " + causes[kind])
+    except LabError:
+        return False
+
+
+def gcs_flow_matches(state, kind, member="", size=0):
+    counts = ("requests", "authenticated", "auth_denied", "missing", "member_denied", "rejected_mutations",
+              "payload_bytes", "unexpected", "rejected_payload_bytes")
+    if (any(type(getattr(state, key)) is not int or getattr(state, key) < 0 for key in counts)
+            or type(state.budget_exceeded) is not bool or state.budget_exceeded
+            or state.unexpected or state.rejected_payload_bytes or type(size) is not int or size < 0):
+        return False
+    denied = missing = auth_denied = payload = 0
+    if kind == "listing" and member == "" and size == 0:
+        events = [("list", "")]
+    elif kind == "download" and member in FILES and size == len(FILES[member]):
+        events, payload = [("metadata", member), ("content", member)], size
+    elif kind == "missing" and member == GCS_MISSING and size == 0:
+        events, missing = [("missing", member)], 1
+    elif kind == "wrong_token" and member == GCS_MEMBER and size == 0:
+        events, auth_denied = [("auth_denied", member)], 1
+    elif kind == "member_denied" and member == GCS_MEMBER and size == 0:
+        events, denied = [("metadata", member), ("content_denied", member)], 1
+    else:
+        return False
+    return (state.events == events and state.requests == len(events) and state.authenticated == len(events) - auth_denied
+            and state.auth_denied == auth_denied and state.missing == missing and state.member_denied == denied
+            and state.rejected_mutations == 0 and state.payload_bytes == payload)
+
+
+def gcs_checks(runtime, root, row, expected):
+    from fixture_gcs import GcsState, serve_gcs
+    caps, states, fixtures, preserved, empty_directories = row["capabilities"], [], [], {}, []
+    before, completed = len(runtime.children), False
+    token, wrong_token = "synthetic-" + uuid.uuid4().hex, "wrong-synthetic-" + uuid.uuid4().hex
+
+    @contextmanager
+    def case(label, mode="normal"):
+        state = GcsState(FILES, token, wrong_token, GCS_MEMBER if mode == "member_denied" else None)
+        states.append(state)
+        with serve_gcs(state) as fixture:
+            fixtures.append(fixture)
+            options = gcs_options(state, fixture.port)
+            if mode == "wrong_token":
+                valid = config_file(root, "gcs-" + label + "-valid.conf", options)
+                data = valid.read_bytes()
+                preserved[valid] = (data, hashlib.sha256(data).hexdigest())
+                options = gcs_options(state, fixture.port, wrong_token=True)
+            config = config_file(root, "gcs-" + label + ".conf", options)
+            data = config.read_bytes()
+            preserved[config] = (data, hashlib.sha256(data).hexdigest())
+            yield state, config, fixture
+
+    def run(config, args):
+        start = len(runtime.children)
+        result = runtime.run(args, config)
+        check(len(runtime.children) == start + 1 and type(result[0]) is int and result[0] >= 0
+              and runtime.children[-1][0].poll() == result[0], "gcs_process_count_or_exit")
+        return result
+
+    def copy(config, member, destination):
+        return run(config, ["rc", "--loopback", "operations/copyfile", "srcFs=" + GCS_FS,
+                   "srcRemote=" + member, "dstFs=" + str(destination), "dstRemote=" + member])
+
+    try:
+        check(memory_plain_path(root) and set(caps) == set(GCS_CAPABILITIES), "gcs_invalid_contract")
+        downloads = root / "downloads"
+        downloads.mkdir(mode=0o700)
+        with case("listing") as (state, config, _):
+            code, output, _ = run(config, gcs_metadata_args())
+            check(code == 0 and gcs_metadata_matches(output, expected) and gcs_flow_matches(state, "listing"),
+                  "gcs_listing_mismatch")
+        for index, item in enumerate(expected):
+            with case("download-" + str(index)) as (state, config, _):
+                code, _, _ = copy(config, item["path"], downloads)
+                check(code == 0 and memory_tree_matches(downloads, expected[:index + 1])
+                      and gcs_flow_matches(state, "download", item["path"], item["size"]), "gcs_download_mismatch")
+        for label, member in (("missing", GCS_MISSING), ("wrong_token", GCS_MEMBER), ("member_denied", GCS_MEMBER)):
+            with case(label, label) as (state, config, _):
+                destination = root / ("negative-" + label)
+                destination.mkdir(mode=0o700)
+                empty_directories.append(destination)
+                code, output, _ = copy(config, member, destination)
+                check(code > 0 and gcs_error_matches(output, label) and memory_tree_matches(destination, [])
+                      and gcs_flow_matches(state, label, member), "gcs_" + label + "_not_observed")
+        check(len(runtime.children) == before + 7 and len(states) == 7 and sum(state.requests for state in states) == 11,
+              "gcs_total_process_or_request_mismatch")
+        check(memory_tree_matches(downloads, expected) and all(memory_tree_matches(path, []) for path in empty_directories),
+              "gcs_final_inventory_changed")
+        completed = True
+    finally:
+        closed = (all(state.cleanup_complete is True for state in states) and all(fixture.cleanup_complete is True for fixture in fixtures)
+                  and all(listener_closed(fixture.port) for fixture in fixtures)
+                  and all(record[0].poll() is not None for record in runtime.children[before:]))
+        caps["cleanup"] = "passed" if closed else "failed"
+        check(closed, "gcs_cleanup_failed")
+        check(all(not fixture.snapshot()["transport"]["failure_codes"] for fixture in fixtures), "gcs_transport_failure")
+        check(all(not state.unexpected and not state.budget_exceeded and not state.rejected_payload_bytes
+                  for state in states), "gcs_unexpected_request_or_budget")
+        check(all(state.source_preserved() and served_source_unchanged(state, expected) for state in states), "gcs_source_changed")
+        check(all(memory_plain_path(path) and path.is_file() and path.stat().st_nlink == 1
+                  and path.read_bytes() == data and digest(path) == sha256 for path, (data, sha256) in preserved.items()),
+              "gcs_config_changed")
+        if completed:
+            for name in GCS_CAPABILITIES:
+                caps[name] = "passed"
+
+
 def pcloud_checks(runtime, root, row, expected):
     from fixture_pcloud import PCloudState, serve_pcloud
     caps, states, fixtures, preserved, empty_directories = row["capabilities"], [], [], {}, []
@@ -3112,7 +3273,7 @@ def filefabric_session_checks(runtime, root, row, expected):
 
 def run_backend(runtime, backend, root):
     root.mkdir(mode=0o700)
-    independent = backend in ("http", "webdav", "ftp", "swift", "b2", "azureblob", "azurefiles", "seafile", "koofr", "pixeldrain", "filefabric", "internetarchive", "netstorage", "pcloud")
+    independent = backend in ("http", "webdav", "ftp", "swift", "b2", "azureblob", "azurefiles", "seafile", "koofr", "pixeldrain", "filefabric", "internetarchive", "netstorage", "pcloud", "gcs")
     row = {"backend": backend,
            "fixture_kind": "local" if backend in ("local", "archive", "memory") else "independent_loopback" if independent else "rclone_loopback",
            "capabilities": {key: "not_run" for key in (
@@ -3124,6 +3285,8 @@ def run_backend(runtime, backend, root):
         row["capabilities"] = {key: "not_run" for key in NETSTORAGE_CAPABILITIES}
     if backend == "pcloud":
         row["capabilities"] = {key: "not_run" for key in PCLOUD_CAPABILITIES}
+    if backend == "gcs":
+        row["capabilities"] = {key: "not_run" for key in GCS_CAPABILITIES}
     if backend == "internetarchive":
         row["capabilities"] = {key: "not_run" for key in INTERNETARCHIVE_CAPABILITIES}
     if backend == "archive":
@@ -3131,7 +3294,7 @@ def run_backend(runtime, backend, root):
             "corrupt_member_rejection", "truncated_archive_rejection", "fixture_write_rejection", "config_preservation")})
     if backend == "sftp":
         row["capabilities"]["host_key_rejection"] = "not_run"
-    if independent:
+    if independent and backend != "gcs":
         row["capabilities"]["fixture_write_rejection"] = "not_run"
     if backend == "swift":
         row["capabilities"].update(config_preservation="not_run", service_token_reacquisition="not_run", renewal_denial="not_run")
@@ -3153,6 +3316,9 @@ def run_backend(runtime, backend, root):
         prepare_files(files_root)
     port = None
     try:
+        if backend == "gcs":
+            gcs_checks(runtime, root, row, expected)
+            return row
         if backend == "pcloud":
             pcloud_checks(runtime, root, row, expected)
             return row

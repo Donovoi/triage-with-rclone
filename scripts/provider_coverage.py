@@ -98,6 +98,13 @@ PCLOUD_REQUIRED_CAPABILITIES = PCLOUD_ONLY_CAPABILITIES | {
 }
 PCLOUD_SAVED_TOKEN_MODE = "pcloud_saved_token_read_v1"
 PCLOUD_AUTHENTICATION_MODE = "pcloud_oauth_authentication_v1"
+# Configured synthetic bearer reads/rejection do not establish OAuth setup,
+# service-account identity, credential renewal or hosted IAM acceptance.
+GCS_STATIC_TOKEN_MODE = "gcs_static_token_read_v1"
+GCS_REQUIRED_CAPABILITIES = frozenset({
+    "listing", "download_hash", "missing_object_rejection", "authentication_rejection",
+    "read_denial", "source_preservation", "config_preservation", "cleanup",
+})
 NETSTORAGE_REQUIRED_CAPABILITIES = frozenset({
     "listing", "download_hash", "missing_object_rejection", "authentication_rejection",
     "source_preservation", "config_preservation", "fixture_write_rejection", "cleanup",
@@ -135,6 +142,7 @@ READ_FIXTURE_CONTRACTS = {
     "internetarchive": INTERNETARCHIVE_REQUIRED_CAPABILITIES,
     "netstorage": NETSTORAGE_REQUIRED_CAPABILITIES,
     "pcloud": PCLOUD_REQUIRED_CAPABILITIES,
+    "gcs": GCS_REQUIRED_CAPABILITIES,
 }
 CAPABILITIES = {
     "authentication", "listing", "download_hash", "manifest_integrity",
@@ -152,13 +160,14 @@ FIXTURE_KINDS = {
     "internetarchive": "independent_loopback",
     "netstorage": "independent_loopback",
     "pcloud": "independent_loopback",
+    "gcs": "independent_loopback",
 }
 FIXTURE_CAPABILITIES = {
     "listing", "download_hash", "missing_object_rejection", "source_preservation",
     "authentication_rejection", "cleanup", "truncated_download_rejection", "read_denial",
     "cancellation_cleanup", "fixture_write_rejection", "host_key_rejection", "renewal_denial",
 } | ARCHIVE_CAPABILITIES | SWIFT_ONLY_CAPABILITIES | B2_ONLY_CAPABILITIES | FILEFABRIC_ONLY_CAPABILITIES | INTERNETARCHIVE_ONLY_CAPABILITIES | PCLOUD_ONLY_CAPABILITIES
-HARNESSES = ("fixture_servers.py", "run_lab.py", "fixture_tls.py", "fixture_pcloud.py", "requirements-fixture.txt")
+HARNESSES = ("fixture_servers.py", "run_lab.py", "fixture_tls.py", "fixture_pcloud.py", "fixture_gcs.py", "requirements-fixture.txt")
 HASH_PATTERN = re.compile(r"[a-f0-9]{64}")
 ID_PATTERN = re.compile(r"[a-z0-9_]{1,80}")
 MAX_JSON = 32 * 1024 * 1024
@@ -687,7 +696,7 @@ def validate_receipt(receipt, runtime, harness_sha256, now, max_age_hours=MAX_AG
                 fail("invalid_fixture_mode")
         elif set(row) & {"fixture_mode", "modes", "subscenarios"}:
             fail("invalid_fixture_mode")
-        if not low_receipt and backend in ("internetarchive", "netstorage", "pcloud") and (
+        if not low_receipt and backend in ("internetarchive", "netstorage", "pcloud", "gcs") and (
                 set(row) != {"backend", "fixture_kind", "capabilities", "errors"}
                 or set(receipt) != {"schema_version", "scope", "runtime", "platform", "harness_sha256",
                                     "fixture_manifest_sha256", "started_utc", "finished_utc", "success",
@@ -695,6 +704,8 @@ def validate_receipt(receipt, runtime, harness_sha256, now, max_age_hours=MAX_AG
             # Unknown scope/auth fields cannot redefine these fixed schema-1
             # contracts; another profile needs independent source review.
             fail("invalid_fixture_mode")
+        if backend == "gcs" and set(receipt["runtime"]) != {"version", "sha256"}:
+            fail("receipt_runtime_mismatch")
         seen.add(backend)
         capabilities = row.get("capabilities")
         if not isinstance(capabilities, dict) or not capabilities or set(capabilities) - FIXTURE_CAPABILITIES:
@@ -703,11 +714,11 @@ def validate_receipt(receipt, runtime, harness_sha256, now, max_age_hours=MAX_AG
                 or backend not in ("http", "webdav", "ftp", "archive", "swift", "b2", "azureblob", "azurefiles", "seafile", "koofr", "pixeldrain", "filefabric", "internetarchive", "netstorage", "pcloud") and "fixture_write_rejection" in capabilities
                 or backend != "sftp" and "host_key_rejection" in capabilities
                 or backend != "archive" and set(capabilities) & ARCHIVE_ONLY_CAPABILITIES
-                or backend not in ("archive", "memory", "swift", "b2", "azureblob", "azurefiles", "seafile", "koofr", "pixeldrain", "filefabric", "internetarchive", "netstorage", "pcloud") and "config_preservation" in capabilities
+                or backend not in ("archive", "memory", "swift", "b2", "azureblob", "azurefiles", "seafile", "koofr", "pixeldrain", "filefabric", "internetarchive", "netstorage", "pcloud", "gcs") and "config_preservation" in capabilities
                 or backend != "swift" and set(capabilities) & SWIFT_ONLY_CAPABILITIES
                 or backend != "b2" and set(capabilities) & B2_ONLY_CAPABILITIES
                 or backend != "internetarchive" and set(capabilities) & INTERNETARCHIVE_ONLY_CAPABILITIES
-                or backend not in ("internetarchive", "pcloud") and "read_denial" in capabilities
+                or backend not in ("internetarchive", "pcloud", "gcs") and "read_denial" in capabilities
                 or backend != "pcloud" and set(capabilities) & PCLOUD_ONLY_CAPABILITIES
                 or not renewal_receipt and set(capabilities) & FILEFABRIC_ONLY_CAPABILITIES
                 or backend not in ("swift", "b2") and not renewal_receipt and "renewal_denial" in capabilities):
@@ -806,6 +817,11 @@ def evaluate(catalog, policy, runtime, receipts, harness_sha256, now=None, max_a
                     "fixture_manifest_sha256": receipt["fixture_manifest_sha256"],
                 }
                 contributed = row["capabilities"]
+                if row["backend"] == "gcs":
+                    run["fixture_mode"] = GCS_STATIC_TOKEN_MODE
+                    mode_observed = observed.setdefault("modes", {}).setdefault(
+                        GCS_STATIC_TOKEN_MODE, {"capabilities": {}, "failed": False, "runs": []})
+                    merge_fixture_observation(mode_observed, contributed, failed, run)
                 if row["backend"] == "smb":
                     native = receipt["native_evidence"]
                     probe_runtime = (native.get("probe") or {}).get("runtime", {})
@@ -896,9 +912,10 @@ def evaluate(catalog, policy, runtime, receipts, harness_sha256, now=None, max_a
                     if value in ("passed", "failed"):
                         capabilities[capability] = value
                 evidence["runs"] = observed["runs"]
-                if backend in ("filefabric", "smb", "internetarchive", "pcloud"):
+                if backend in ("filefabric", "smb", "internetarchive", "pcloud", "gcs"):
                     evidence["modes"] = {}
                     contracts = ({SMB_MODE: SMB_REQUIRED_CAPABILITIES} if backend == "smb"
+                                 else {GCS_STATIC_TOKEN_MODE: GCS_REQUIRED_CAPABILITIES} if backend == "gcs"
                                  else {PCLOUD_SAVED_TOKEN_MODE: PCLOUD_REQUIRED_CAPABILITIES,
                                        PCLOUD_AUTHENTICATION_MODE: {"authentication"}} if backend == "pcloud"
                                  else INTERNETARCHIVE_MODE_CONTRACTS if backend == "internetarchive"

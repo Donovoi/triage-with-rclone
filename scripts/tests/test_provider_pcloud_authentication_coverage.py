@@ -154,7 +154,7 @@ class PCloudAuthenticationCoverage(unittest.TestCase):
         self.assertEqual(bindings["source_sha256"], independent)
         self.assertEqual(bindings["harness_sha256"], hashlib.sha256(json.dumps(independent, sort_keys=True, separators=(",", ":")).encode()).hexdigest())
         self.assertEqual(bindings["fixture_manifest_sha256"], C.compute_fixture_manifest_sha256(ROOT / "scripts/provider-lab"))
-        self.assertEqual(len(C.HARNESSES), 5)
+        self.assertEqual(len(C.HARNESSES), 6)
 
     def test_cli_requires_both_receipts_and_computes_only_needed_current_bindings(self):
         with tempfile.TemporaryDirectory() as temporary:

@@ -1053,6 +1053,47 @@
         "refresh",
         "reauthentication"
       ]
+    },
+    "gcs-static-token-read-fixture": {
+      "required": {
+        "application": [
+          "listing",
+          "download_hash",
+          "manifest_integrity",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation",
+          "refresh"
+        ],
+        "vendor": [
+          "listing",
+          "download_hash",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation",
+          "refresh"
+        ],
+        "local_protocol": [
+          "listing",
+          "download_hash",
+          "missing_object_rejection",
+          "authentication_rejection",
+          "read_denial",
+          "source_preservation",
+          "config_preservation",
+          "cleanup"
+        ]
+      },
+      "review_required": false,
+      "unresolved_applicability": [
+        "reauthentication"
+      ]
     }
   },
   "providers": {
@@ -1777,11 +1818,12 @@
     "gcs": {
       "canonical_name": "google cloud storage",
       "schema_sha256": "35f3d13d23fd498bb3ea4fbd72acf1b7c2f0717fc18e5e77669821675606b236",
-      "profile": "hosted-renewal-session-review",
+      "profile": "gcs-static-token-read-fixture",
       "notes": [
         "Google Cloud project/bucket, authorized OAuth client or service-account/identity profile and IAM. No official storage emulator is established by this research.",
         "Free account/API eligibility: review_required",
-        "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension."
+        "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension.",
+        "The gcs_static_token_read_v1 local fixture uses only configured synthetic static bearer tokens and an independent loopback server. Its 401 proves rejection of the wrong configured token; its separate 403 proves read denial with the valid token. It does not verify fresh OAuth setup, service-account or workload identity, ADC, credential renewal, revocation, connection reauthentication, real TLS/IAM, application or hosted-provider acceptance."
       ],
       "source_links": [
         "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/googlecloudstorage.md"
