@@ -12,7 +12,9 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  # Each main run needs its own group: even with cancellation disabled,
+  # a shared group replaces older pending runs and loses merged-PR nightlies.
+  group: ci-${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_id || github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 jobs:
   revision:
