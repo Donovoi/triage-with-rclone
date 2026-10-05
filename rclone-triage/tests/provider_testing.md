@@ -1,227 +1,226 @@
-# Provider Testing Strategy
+# Provider testing
 
-## Overview
+## Coverage enforced in CI
 
-`rclone-triage` should follow the same broad pattern as upstream rclone:
+The pinned runtime supplies the complete backend catalog. The curated provider enum and `CloudProvider::all()` are generated together; adding a variant also requires an exhaustive, independently asserted schema contract in `tests/provider_matrix.rs`.
 
-- keep **always-on contract tests** for every provider known to the program
-- run **mock and emulator-backed integration tests** in normal CI
-- run **credentialed smoke tests** only for explicitly configured test remotes
-- reserve **manual/release validation** for the providers with the hardest auth flows
+Every Windows and Linux CI run checks:
 
-The source of truth for supported providers is `src/providers/mod.rs` via
-`CloudProvider::all()`, not this document.
+- Contracts for all 58 curated providers: backend identity, required options, authentication classification, OAuth parameters, configuration and hashes.
+- The verified native rclone executable's actual `config providers` output: currently 69 schemas and 61 selectable backends. Eight wrapper backends are intentionally excluded. Newly discovered backends use manual configuration until their authentication route is explicitly supported.
+- Local synthetic login protocols, credential parsing, callback state validation, PKCE and token exchange. All nine generic OAuth routes use the actual callback and exchange code against local fixtures. Drive/OneDrive auth-only tests also verify persistence and failure rollback. These tests do not establish vendor acceptance of a login or refresh grant.
+- Existing integration tests for inventory parsing, queues, downloads, reporting, config isolation and integrity checks, plus updater regression tests.
+- Nineteen baseline real-backend protocol fixtures, a separate Linux/amd64 Samba NTLM fixture and a current-runtime coverage plan for every selectable backend. New backends, removed backends and changed option contracts require an explicit policy review.
 
-## Testing Layers
-
-### 1. Provider contract tests (always on)
-
-These tests run without credentials or network access and should cover **every**
-provider in `CloudProvider::all()`.
-
-Current coverage lives in:
-
-- `tests/provider_matrix.rs`
-- `src/providers/mod.rs` unit tests
-- `src/providers/config.rs` unit tests
-
-These checks validate things like:
-
-- unique `rclone_type`, `short_name`, and display names
-- default auth classification (`OAuth`, `KeyBased`, `UserPass`)
-- OAuth config completeness for OAuth-capable backends
-- hash type normalization and uniqueness
-- `ProviderEntry::from_known(...)` consistency
-
-This layer is the minimum safety net for every pull request.
-
-### 2. Mock integration tests (always on)
-
-These tests exercise the app’s rclone wrapper logic with a fake rclone binary.
-
-Current coverage lives in:
-
-- `tests/integration.rs`
-- `tests/provider_integration.rs`
-
-These validate:
-
-- `lsjson` parsing
-- download queue behavior
-- report generation
-- connectivity checks
-- config handling
-- hash verification workflows
-
-This layer ensures the wrapper logic works even when a real cloud account is not available.
-
-### 3. Live provider smoke tests (opt-in)
-
-These are lightweight, read-only tests against **explicitly named test remotes**.
-
-Current coverage lives in:
-
-- `tests/provider_smoke.rs`
-
-The live smoke test intentionally only uses remotes that:
-
-- exist in the chosen rclone config
-- have names starting with `Test`
-- use a backend type that maps to a known `CloudProvider`
-
-This mirrors rclone’s upstream convention of `TestDrive`, `TestOneDrive`, etc.
-
-The smoke test performs:
-
-- `rclone listremotes`
-- shallow connectivity (`lsjson --max-depth 1`)
-- shallow top-level `lsjson`
-- `--hash` on providers that advertise hash support
-
-It does **not** create, modify, or delete remote data.
-
-### 4. Release validation (manual)
-
-Some providers still need manual or semi-manual verification before release,
-especially when they depend on:
-
-- MFA or interactive browser flows
-- cookies or session reuse
-- enterprise-only account variants
-- brittle/rate-limited vendor APIs
-
-Examples include iCloud, Google Photos, OneDrive Business variants, and any provider
-whose upstream rclone backend needs provider-specific ignores or workarounds.
-
-## How the live smoke test is configured
-
-The live test is ignored by default and requires an explicit
-`RCLONE_PROVIDER_SMOKE_CONFIG` path. It refuses fallback credential stores.
-An unreadable config, missing runtime, or empty matching Test-remote set fails
-the explicitly requested test rather than returning a passing skip.
+Run the normal suite with `cargo test --locked --release -- --test-threads=1` from the crate directory. For the metadata-only runtime check, bootstrap the native runtime and set `RCLONE_PROVIDER_SCHEMA_BINARY` to its absolute path, then run:
 
 ```powershell
-$env:RCLONE_PROVIDER_SMOKE_CONFIG = 'C:/TestAccounts/rclone.conf'
+$env:RCLONE_PROVIDER_SCHEMA_BINARY = (Resolve-Path ./assets/rclone.exe).Path
+cargo test --locked --release --test provider_matrix pinned_rclone_catalog_matches_provider_contracts -- --ignored --exact --test-threads=1
+```
+
+The runtime's SHA256 is checked before execution, its version must match the build, and discovery uses an empty isolated config. Linux CI prepares its native binary using `scripts/download-rclone.sh --linux <absolute-output-path>`.
+
+## Layered provider evidence
+
+`provider-coverage-policy.json` records the reviewed baseline plan and option-contract hash for each selectable backend. It is a plan, not a table of successful logins. The default baseline does not cover every enterprise account type, deployment, authentication mode, region or backend option. Add distinct acceptance cases before broadening those claims. Eight non-selectable wrapper backends remain outside this catalog.
+
+The contract hash covers canonical name/prefix and option names, generated types, provider selectors, required/password/advanced/exclusive flags. A type-only change (such as string to Boolean or duration) therefore requires review. Help text, examples and defaults are excluded because they can include platform-specific paths. Explicit platform hashes cover reviewed structural differences: the pinned local backend marks `nounc` advanced on Linux but ordinary on Windows. An unreviewed platform cannot inherit another platform's hash. A runtime change still invalidates fixture receipts through the executable hash; a matching plan hash does not establish unchanged service behavior or permissions.
+
+Each plan must include its authentication category, renewal applicability, structured authentication/renewal modes with lifecycle scenarios, primary-source links, and an application evidence tier. The validator checks these fields against the profile's required capabilities and unresolved reviews. Deleting the supporting metadata, assigning inconsistent renewal decisions, or dropping the application tier cannot make a plan pass.
+
+`scripts/provider_coverage.py` queries the verified native runtime with an empty private config and produces these separate layers:
+
+| Layer | Evidence needed |
+|---|---|
+| `local_protocol` | Real rclone against a synthetic local filesystem or loopback service, including independent download hashes and applicable negative cases. |
+| `application` | The actual application build, its setup/login path, inventory, acquisition and manifest, source preservation, cancellation and cleanup. |
+| `vendor` | An approved synthetic dataset on the actual hosted service, fresh authentication where applicable, downloads, source before/after checks, denial/revocation and applicable renewal. |
+
+Local-protocol and vendor layers may be N/A only through the reviewed policy; application acceptance is always required. Providers without a login (for example local storage and public DOI sources) do not need invented account credentials. Unknown renewal applicability appears as `capability_applicability_review_required` and prevents complete qualification. A reviewed plan may retain this explicit research task while its application/vendor evidence remains unverified.
+
+Policy version 2 separates `refresh` (replacement credentials or service authorization, including OAuth grants, library authorization and SDK credential reacquisition) from `reauthentication` (authentication of a newly established connection/session). For example, B2 exchanges a static application key for a temporary authorization token; FTP authenticates each new connection using configured credentials. The source-backed `renewal_modes` record both requirements separately. Unknown applicability in either dimension prevents complete qualification. These records are research findings, not executed results. Credentials without automatic renewal still need expiry/revocation denial and explicit recovery checks. Never infer N/A solely from an API-key or password field.
+
+HDFS and SMB Kerberos modes require service-ticket renewal/reacquisition tests as well as connection authentication tests. Their external ticket-granting-ticket limitations do not waive the pinned client's service-ticket renewal path; valid-TGT recovery and expired-TGT failure/recovery are separate cases.
+
+The current importer accepts **protocol fixture receipts only**. Application and vendor layers stay `not_verified`; saved-config smoke output and historical acceptance notes cannot promote them. Adding an importer for those layers requires build/runtime identity, account-variant scope, fixture identity, actual auth/renewal/cancellation evidence and privacy review. The current protocol receipts are harness reports, not signed third-party attestations. Consume only receipts from a trusted local run or the checked CI job.
+
+Fixture receipts bind to runtime version and executable SHA256, operating system, harness SHA256, fixture manifest and UTC execution time. The default maximum age is 24 hours (explicitly configurable from 1 to 168). Future, expired, mismatched or malformed receipts are rejected; an observed failure cannot be hidden by another successful receipt in the same batch. Reports are create-new and contain no account names, remote names, endpoints, file paths, credentials or raw provider diagnostics.
+
+Runtime catalog failures report finite operation and error categories, including private-copy setup, metadata queries and cleanup. Existing specific validation errors remain intact. If cleanup also fails, the report retains both errors and the gate fails; it does not retry or ignore cleanup. These diagnostics identify the observed failure stage without publishing exception text or establishing its underlying cause.
+
+Run the account-free lab and ledger with Python 3.11 or newer, from the repository root:
+
+```powershell
+$runtime = (Resolve-Path ./rclone-triage/assets/rclone.exe).Path
+$fixtures = Join-Path $env:TEMP ('provider-fixtures-' + [guid]::NewGuid() + '.json')
+$renewal = Join-Path $env:TEMP ('filefabric-renewal-' + [guid]::NewGuid() + '.json')
+$iaLow = Join-Path $env:TEMP ('internetarchive-low-' + [guid]::NewGuid() + '.json')
+$evidence = Join-Path $env:TEMP ('provider-evidence-' + [guid]::NewGuid() + '.json')
+python -B scripts/provider-lab/run_lab.py --rclone $runtime --report $fixtures
+if ($LASTEXITCODE -ne 0) { throw 'Protocol fixtures failed; inspect the sanitized receipt' }
+python -B scripts/provider-lab/run_lab.py --rclone $runtime --filefabric-renewal --report $renewal
+if ($LASTEXITCODE -ne 0) { throw 'FileFabric renewal fixture failed; inspect the sanitized receipt' }
+python -B scripts/provider-lab/run_lab.py --rclone $runtime --internetarchive-low-auth --report $iaLow
+if ($LASTEXITCODE -ne 0) { throw 'Internet Archive LOW fixture failed; inspect the sanitized receipt' }
+python -B scripts/provider_coverage.py --rclone $runtime --report $evidence `
+  --fixture-receipt $fixtures --fixture-receipt $renewal --fixture-receipt $iaLow `
+  --require-plans --require-fixtures local,archive,http,webdav,ftp,sftp,s3,swift,b2,azureblob,azurefiles,seafile,memory,koofr,pixeldrain,filefabric,internetarchive,netstorage
+```
+
+`--require-plans` fails for missing, unreviewed, changed or retired backend plans. `--require-fixtures` requires current passing local-protocol evidence for each supplied backend ID. `--require-complete` requires every applicable layer and all applicability reviews; it is expected to fail while acceptance work remains. The report is written before a gate failure is returned. Do not replace this strict gate with a count of discovered providers or selected accounts.
+
+The lab runs only the pinned native rclone, never the triage application. It uses fresh temporary config, home, cache and synthetic credentials; inherited cloud/proxy/SSH settings are excluded. All network listeners bind to `127.0.0.1` and ephemeral ports. It stops only its owned children and removes its temporary fixtures. HTTP, WebDAV, FTP, Swift, B2, Azure Blob, Azure Files, Seafile, Koofr, Pixeldrain, FileFabric, Internet Archive, NetStorage and pCloud use independent Python fixture servers; FTP active connections are disabled and passive listeners also bind loopback. SFTP and S3 use rclone's own read-only servers, so these are interoperability regressions between two rclone instances, not independent server conformance tests. SFTP uses the fixture's pinned host keys and no external hash commands.
+
+All nineteen baseline cases require recursive listing, independent SHA256 after downloads, missing-object rejection, source preservation and cleanup. Credentialed network cases also reject incorrect credentials; pCloud specifically rejects a wrong saved token, which does not prove fresh OAuth authentication. Internet Archive's baseline uses anonymous public reads and a known-member read denial; the separate LOW mode supplies credential-rejection evidence. SFTP separately tests correct credentials with a mismatched known host key and requires an explicit host-key rejection with no returned bytes or accepted file. The independent HTTP/WebDAV/FTP services reject authenticated write probes and compare the bytes actually served with a snapshot captured before requests. HTTP and WebDAV additionally reject truncated transfers and terminate a stalled download before checking cleanup. That process-termination test does not prove the application's interactive cancellation behavior. Run socket-free and fixture-server unit regressions with the [isolated Python test environment](#python-test-environment).
+
+Swift fixtures exercise v1 authentication against an independent loopback service. In a single rclone copy process, the service rejects the first token with a body-free 401, issues a different token and accepts the retried download only with that replacement. The harness requires the ordered authentication/rejection/replacement/download sequence and an independent SHA256. A separate renewal-denial case must fail without accepting an output. Wrong credentials, missing objects and authenticated writes are rejected; served bytes and the private config must remain unchanged. These tests cover small Swift v1 objects and forced authorization rejection only. They do not establish wall-clock expiry, OAuth refresh, Keystone v2/v3, application credentials, large objects, TLS, general session reauthentication or real vendor acceptance.
+
+B2 fixtures exercise the native API with a synthetic application key restricted to one bucket. Authorization, listing, object metadata and downloads all use the same independent loopback server. A single copy process must replace an account token after a forced download 401, then acquire the expected bytes with the replacement token. Denied reauthorization must fail without a final or partial output. These two scenarios alone allow two low-level attempts; other fixtures retain their existing retry limits. Baseline checks reject wrong keys and missing objects, and a direct authenticated write probe checks the server's read-only guard. Every accepted download is checked against an independent SHA256, with served bytes, config and cleanup verified. The ledger requires the complete B2 capability set and never treats it as application or vendor refresh evidence. This small-object fixture does not establish real key revocation, wall-clock expiry, OAuth, S3-compatible access, multipart uploads, encryption, version history, TLS or real Backblaze acceptance.
+
+Archive fixtures use an exact synthetic local ZIP with deterministic entries. Inventory CRC32 values are checked independently, and explicit file-only acquisition is checked against independent SHA256 and size expectations. Missing entries, directory-as-file requests, corrupted members, truncated ZIP metadata and writes must be rejected while the original container and config remain unchanged. This covers a local ZIP upstream only; other archive formats and cloud-hosted upstreams need separate evidence. The Windows `cli_acquisition` tests also run the actual application against a separate fixed ZIP, checking CRC32 verification, SHA256, manifests and negative acquisition outcomes. Those narrow CLI regressions do not establish the complete application lifecycle or promote the ledger's application layer.
+
+For a local ZIP upstream on Windows, use a slash-separated rclone archive setting such as `remote = C:/Synthetic/source.zip`. The pinned backend rejects backslash spelling. Acquisition preserves the configured filesystem root when checking an individual member: `operations/stat` and `operations/copyfile` both receive the root and object separately through in-process loopback RC. A missing/null item, directory, malformed stat response or failed stat cannot begin a transfer. The protocol fixtures exercise the same stat interface on all nineteen backends.
+
+Azure Blob fixtures use explicit emulator mode with a fresh synthetic SharedKey and an owned loopback endpoint. The server independently recomputes HMAC-SHA256 signatures, checks UTC request freshness and rejects the wrong validly encoded key. Independent HTTP tests cover correctly signed stale requests, escaped resource paths, XML listings and bounded ranges. The selected fixture returns one complete page or rejects unsupported pagination; an empty continuation marker must never conceal omitted rows. Native checks require exact listing/stat/download results, independent SHA256, missing-object and authenticated write rejection, source/config preservation and cleanup. This static-key mode has no automatic token-renewal grant. The eight-capability receipt does not establish SAS or Entra credential renewal, managed/workload identity, general session recovery, real account-key rotation, TLS, Azure Files, uploads or application/vendor acceptance.
+
+Azure Files uses a separate FileREST fixture with an explicit share, generated SharedKey and owned loopback endpoint; emulator and environment authentication are disabled. Its directory-properties GET, directory-list XML, file-properties HEAD and file-download routes are checked independently of Blob. Incorrect-key tests must observe denial for a known member because backend initialization can ignore a failed root-file probe. Native listings check Files LastWriteTime using a deliberately different Last-Modified value; a unit regression verifies that the listing validator rejects a 100-nanosecond mismatch. Reads require exact listing/stat results and independent download SHA256, followed by missing-object rejection, a direct authenticated write guard, source/config preservation and cleanup. The eight-capability receipt covers this bounded static-key protocol only. It does not establish hosted Azure, SMB/NFS clients, SAS or identity renewal, general session recovery, TLS, uploads or application/vendor acceptance.
+
+Seafile fixtures model the pinned client's modern API for one synthetic unencrypted library. Positive native listing and acquisition require fresh username/password authentication followed by observed use of the issued account token. Separate negative cases reject a wrong password, an invalid configured token and a missing member without accepting file bytes or an output. Relative download links stay on the owned listener; listing and file-detail metadata, including exact timestamps, and acquired bytes are checked against independent expectations. A direct authenticated write probe, source/config preservation and cleanup complete the eight-capability receipt. HTTP unit tests additionally check strict request parsing, bounded byte ranges and empty payloads; the native acquisition manifest contains three nonempty files. Configuring a library still causes account-wide library inventory in rclone, so the fixture exposes only synthetic inventory. These checks do not establish real server acceptance, 2FA, encrypted-library authorization renewal, account-token refresh, session recovery, TLS or the application lifecycle.
+
+Memory fixtures use one synchronous in-process `rc --loopback job/batch` call with `discard=false`. Fixed operations seed a fresh bucket from synthetic local files, list and stat its members, acquire them, reject an absent member and repeat listing/readback to check preservation. PID sentinels bind the sequence to the owned child. Every indexed batch result is checked because an outer success can contain a failed operation. Listing metadata and MD5 are checked independently, and both download trees must contain exactly the expected files with independent SHA256 values. The private config and local seeds remain unchanged; cleanup reaps the child and removes its scratch data. Authentication is not applicable to this local mode. The seven-capability receipt proves preservation during that process only: memory storage disappears on exit. It does not prove durability, write rejection, cancellation, credential renewal or application acceptance.
+
+Raw HTTP regressions also check the exact request target received by both Azure fixture servers. Leading double/triple slash aliases are rejected before signature validation, even when Python's HTTP parser would normalize them to a signed path. Correct escaped paths still return the expected bytes. These are synthetic server parsing checks, not findings about Azure's hosted services.
+
+Koofr fixtures select a non-primary synthetic mount through `provider=other` and an owned loopback endpoint. Basic credentials must succeed at mount inventory and root metadata before exact member listing, stat and acquisition. Separate cases reject a wrong password, a missing selected mount, an absent member and an injected member denial after successful setup. The backend ignores its initial root-info error, so that error cannot qualify any negative verdict. Independent MD5, exact nonzero-millisecond timestamps and downloaded SHA256 values are checked against the complete fixture inventory. A direct write rejection, unchanged source/config and owned cleanup complete the eight-capability receipt. These checks do not establish hosted Koofr or Digi service acceptance, fresh account login, OAuth/token refresh, MFA, TLS, timestamp writes, native ranges or the application lifecycle.
+
+Pixeldrain fixtures exercise the configured-key filesystem protocol through an owned loopback API. Empty-username Basic authentication must succeed at user information and root metadata before exact listing, stat and reads. Separate cases require a wrong-key rejection, a valid-key denial for a known member and a genuine missing-member response; a tolerated missing root cannot satisfy those checks. Complete inventories, SHA256 metadata, millisecond timestamps and independent downloaded hashes are checked, with source/config preservation, authenticated fixture write rejection and cleanup. The eight-capability receipt does not establish account provisioning, hosted filesystem plan eligibility, free file-sharing APIs, anonymous roots, key rotation, renewal, TLS or application acceptance.
+
+The FileFabric cached-session baseline seeds a generated session token, a future expiry, explicit version and fixed root folder ID against an owned loopback RPC endpoint. Each bounded native operation gets fresh fixture state; token acquisition, renewal and appliance discovery are rejected. Complete three-file listings/stat metadata require second-precision local-time precedence, and every download uses independent size and SHA256 because this backend supplies no remote hash. Wrong-session metadata, a separate known-member semantic denial and explicit missing metadata require exact events and typed RC failures with no output. A direct authenticated delete is denied by the fixture; source/config bytes and child/listener cleanup must remain unchanged. HTTP200 JSON in getFile is content, not authentication evidence.
+
+`--filefabric-renewal` runs a separate FileFabric experiment and cannot be combined with `--backends`. One synchronous batch first reads cached metadata, receives a deliberately injected expired-token error, then verifies that a later call obtains and uses a distinct session token. The failed middle call must remain failed; outer batch success alone is insufficient. A separate denial sequence must reject token reacquisition without producing content. The successful config may change only token, token_expiry and version: source endpoint, permanent-token input and root scope remain exact, the saved token must match the issued token, and expiry must match the bounded grant interval plus the pinned 55-minute lifetime. A fresh child must read the same member with that saved token and no new grant or appliance discovery, preserving its config bytes. These checks establish clean-exit reuse, not an atomic multi-setting transaction or power-loss durability.
+
+The baseline keeps its original schema-1 eight-capability receipt. The renewal invocation emits a closed schema-2 receipt with only `filefabric_later_call_renewal_v1` and six capabilities: `session_token_reacquisition`, `renewal_denial`, `config_scope_preservation`, `saved_token_reuse`, `source_preservation` and `cleanup`. It reads only one member while preserving the full three-file source map, so it cannot supply baseline listing, download or byte-identical config evidence. The current FileFabric policy requires both receipts, bound to the same runtime, harness and full fixture manifest. The ledger labels baseline runs `filefabric_cached_session_v1`, records each mode separately, and retains any failure across modes. No receipt promotes application or hosted-service acceptance. Permanent-token provisioning, fresh account login, real wall-clock expiry/revocation, general session reauthentication, pagination, native empty/range objects, hosted appliances and TLS remain unverified.
+
+Internet Archive uses the predefined schema-1 `internetarchive_anonymous_read_v1` scope, distinct from the local ZIP `archive` backend. Both access keys are empty. Front-end metadata/download and IAS3 endpoints use separate paths on one owned loopback listener; every observed request must omit authorization and cookies. Complete three-file metadata and downloads require independent hashes and timestamp precedence, with `wait_archive=1ns` enabling the backend's precise read metadata without invoking write waits. A separate summation case verifies that aggregate metadata does not supply normal object checksums. Successful complete metadata must precede a known-member content denial; an absent member must be missing from that complete inventory. An ignored initialization error, empty account-root listing or malformed successful metadata cannot satisfy those cases. A direct fixture delete guard, unchanged source/config and owned cleanup complete the nine observed capabilities.
+
+The anonymous receipt has `anonymous_read` and `read_denial`, and must not include `authentication_rejection`, even as N/A. Run `--internetarchive-low-auth` separately to produce a closed schema-4 `internetarchive_low_read_auth_v1` receipt with exactly `authentication_rejection`, `source_preservation`, `config_preservation` and `cleanup`. Seven fresh `operations/copyfile` children make seventeen HTTP requests: a valid LOW read, wrong-secret rejection, another valid read, rejection with both keys empty or either key absent, and a separate known-member content denial. Every case uses generated synthetic keys, exact loopback routes and a fresh private config/destination. The two positive acquisitions require independent SHA256; all cases preserve the complete three-file source and metadata. Wrong or absent credentials must produce two metadata denials, including explicit member lookup after the ignored initialization error, with no content request or output. Content denial instead requires two successful metadata reads followed by a denied download. Malformed headers, unexpected credential values or startup failure cannot count as expected authentication rejection.
+
+Both current receipts are required to meet the unchanged ten local obligations and pass `--require-fixtures internetarchive`; either mode alone remains partial. Runtime, platform, harness, full fixture manifest and freshness must match. The importer records each mode separately and keeps any failure across modes or later successful receipts. Owned children/listeners/temporary data must be cleaned and config bytes, generated credentials and source snapshots preserved. The baseline plus FileFabric renewal and IA LOW receipts support an eighteen-profile gate on Windows and Linux; the separate SMB receipt raises the combined Linux gate to nineteen. A profile qualifies only when its current receipts pass.
+
+No receipt promotes application or vendor evidence. Live IA credential validation, account login, uploads/derive queues, real redirects/CDNs, hosted services, TLS and lifecycle behavior remain unverified. The controlled server never emits redirects; this does not prove that rclone confines arbitrary redirect responses to loopback. The [pinned LOW header setup](https://github.com/rclone/rclone/blob/v1.75.1/backend/internetarchive/internetarchive.go#L366-L386) applies credentials to both clients; [metadata reads](https://github.com/rclone/rclone/blob/v1.75.1/backend/internetarchive/internetarchive.go#L1025-L1040) and [downloads](https://github.com/rclone/rclone/blob/v1.75.1/backend/internetarchive/internetarchive.go#L766-L791) use the frontend client. See the [Internet Archive metadata API](https://archive.org/developers/md-read.html).
+
+NetStorage uses explicit HTTP debug transport on an owned loopback endpoint with a fixed synthetic directory, configured account and generated secret. The server independently verifies HMAC-SHA256 over the exact authentication data, raw request URI and action header; it checks method and Host separately. Literal signing vectors keep the verifier independent of the native signer. Complete single-page XML listing/stat metadata requires canonical `md5` values, exact whole-second timestamps and independent downloaded SHA256 for all three files. Initialization can mask a failed root stat, so wrong-secret rejection must also be observed at the subsequent leaf stat. Missing evidence requires a genuine member 404 after successful directory setup; a list 404 that becomes empty success cannot qualify. A separate content 403 follows successful directory and member metadata. Direct signed fixture write rejection, unchanged source/config and owned cleanup complete the eight-capability receipt.
+
+This NetStorage scope covers static-key request signing, not account provisioning, fresh hosted login, token renewal or external secret rotation. Single-page regular-file reads do not establish pagination/resume safety, implicit directories, symlink handling, uploads, native ranges/empty files, hosted Akamai behavior, TLS or application acceptance. The fixture never sends redirects; clock/replay checks are local safeguards, not independently established vendor policy. The [pinned backend](https://github.com/rclone/rclone/blob/v1.75.1/backend/netstorage/netstorage.go#L831-L977) defines the selected request actions and the [signer](https://github.com/rclone/rclone/blob/v1.75.1/backend/netstorage/netstorage.go#L1244-L1274) defines the exact HMAC message.
+
+
+
+
+pCloud's `pcloud_saved_token_read_v1` fixture runs the pinned backend against an independent HTTPS service. A fresh private CA trusts only that run's loopback endpoint and never changes the host trust store. Config uses a generated Bearer token with zero client expiry, an explicit synthetic root and loopback API/auth/token URLs. The fixture permits no OAuth requests, redirects or config writes. Listing and stat compare the complete three-file inventory, IDs, whole-second times, MD5 and SHA1; acquisition independently verifies size and SHA256. A wrong saved token, a known-member content denial and a missing member must produce distinct typed errors and no output. A direct authenticated POST checks only the fixture's write guard. All children, listeners, TLS workers, timers and temporary certificate material must be cleaned, and source/config bytes must remain unchanged.
+
+The ten-capability saved-token receipt is deliberately partial. `--require-fixtures pcloud` additionally needs a current Linux/amd64 authentication receipt from the separate six-case suite below; saved-token scenarios alone cannot pass. Existing application/vendor requirements and unresolved refresh/reauthentication reviews remain unchanged. Zero expiry describes this client mode, not a guarantee of vendor token lifetime. This scope does not establish consent, renewal, revocation, cancellation, regional service behavior, pagination, uploads or real pCloud acceptance. The [pinned backend](https://github.com/rclone/rclone/blob/v1.75.1/backend/pcloud/pcloud.go) and [OAuth client construction](https://github.com/rclone/rclone/blob/v1.75.1/lib/oauthutil/oauthutil.go#L416-L542) define the selected read path. CI requires all nineteen baseline native experiments plus both separate FileFabric renewal and IA LOW modes to pass; their ledger gate requires eighteen complete local profiles. The separate Linux SMB and pCloud authentication contracts raise the combined Linux gate to twenty. Windows retains eighteen and leaves pCloud authentication and SMB unverified.
+
+## pCloud fresh OAuth feasibility
+
+CI and nightly smoke runs exercise an additional [positive callback experiment](../../scripts/provider-lab/pcloud-oauth/README.md) in a disposable Linux/amd64 container with no external network. It drives rclone's actual local callback, independent authorization-code exchange, exact saved config and a fresh-child synthetic read with independent SHA256. The supervisor binds its sanitized result to the runtime, source closure and image and requires owned resource cleanup. Offline mocked orchestration tests and independent HTTPS server tests remain separate from that native observation.
+
+This experiment has no ledger importer and explicitly reports `ledger_eligible: false`. Its success alone does not complete pCloud authentication. Only the separate six-case authentication contract below supplies that missing local capability; lifecycle behavior still requires separate evidence. The feasibility artifact is retained separately for 14 days; no credentials, raw child output, image or cache is uploaded.
+
+## Linux pCloud authentication evidence
+
+The explicit `--authentication-evidence` mode runs six fresh cases in the network-none Linux container: successful callback/exchange/persistence and a new-child read, wrong nonempty callback state, denied consent, invalid authorization code, wrong client secret, and cancellation while waiting for a callback. Invalid-code and wrong-secret cases require the exact Basic request followed by form authentication, independent typed denials, failed native continuation and no saved token or read. Callback failures require the expected native reason and no token exchange. Cancellation verifies ownership before signaling and requires bounded termination. Each negative case preserves its exact pre-auth config and all synthetic source bytes; remote creation itself legitimately writes options.
+
+Schema 5 contributes only `authentication`, through the `pcloud_oauth_authentication_v1` mode. The existing saved-token receipt must supply all other ten local capabilities. The importer checks all six ordered cases, their precise command/request counts, nested timing, current runtime/source/image bindings and inner/outer cleanup before accepting a pass. Failed partial execution remains failed; a later passing receipt cannot hide it. Default positive feasibility and historical receipts remain ineligible, and Windows cannot consume Linux evidence.
+
+The successful suite uses nineteen native commands and twenty-four HTTP transactions. It checks process cancellation only; application cancellation, vendor consent, renewal, revocation and regional service acceptance remain separate. Upstream accepts blank callback state and derives the token host from callback input. These cases use a nonempty wrong state and an exact owned hostname inside network-none containment; they do not establish comprehensive CSRF or hostname validation. Refresh and reauthentication applicability reviews remain unresolved.
+
+## Linux SMB evidence
+
+The separate `smb_samba_ntlm_read_v1` contract runs sixteen bounded native commands against independent Samba in an isolated Linux/amd64 container. It verifies the complete shared three-file inventory and hashes, wrong-password rejection, a second successful listing/acquisition, missing-object rejection, unchanged source/config/credential seed, and inner/outer cleanup. It supplies exactly seven local capabilities and satisfies the current bounded SMB protocol plan. This does not establish Windows SMB, Kerberos, connection recovery, credential renewal, cancellation, write denial or application/vendor acceptance.
+
+`run_container.py --protocol-evidence` produces a schema-3 receipt only through a new native run. Default feasibility output and historical receipts remain ineligible; no offline receipt conversion is exposed. The importer rejects unrecognized fields, mixed backends, extra capabilities, wrong platform/architecture, stale/future timing, changed runtime/source/manifest bindings and inconsistent outcomes. Cleanup failure prevents a pass. A valid failed observation remains failed even if another receipt passes in the same batch.
+
+The receipt binds the root rclone runtime pins, independent fixture manifest, five-file SMB harness, four container source hashes, Debian lock/base image, actual image and Samba identities, isolation observations and both cleanup layers. See the [Samba fixture instructions](../../scripts/provider-lab/smb/README.md) for resource limits, package provenance and retained cache scope. The reports are trusted harness evidence, not cryptographic attestations.
+
+CI's `provider-evidence-Linux-combined` artifact combines only that workflow run's Linux baseline, FileFabric renewal, IA LOW, SMB and pCloud authentication receipts; its gate requires twenty complete local protocol profiles. `provider-evidence-Windows` requires eighteen and leaves SMB and pCloud authentication unverified. The separate baseline Linux artifact is intentionally a partial input to the combined report. The scheduled Linux provider workflow also requires SMB and both IA modes. All application and real-vendor evidence remains separate.
+
+## Python test environment
+
+The full Python regression suite includes the HTTPS fixture foundation and requires `cryptography`. These are test dependencies only; the pCloud native fixture uses them, while the application and other eighteen native fixtures do not require certificate generation. The wheel locks support CPython 3.12 on Windows x64 and glibc Linux x86_64 (the CI targets), plus CPython 3.14 on Windows x64 for local validation. Other operating systems, architectures and Python versions need a separately reviewed lock.
+
+Create a fresh environment outside the checkout, install only the locked binary distributions, and use its interpreter explicitly. For example, from the repository root on Windows with a supported Python:
+
+```powershell
+$testEnv = Join-Path $env:TEMP ('triage-tests-' + [guid]::NewGuid())
+python -m venv $testEnv
+if ($LASTEXITCODE -ne 0) { throw 'Test environment creation failed' }
+$testPython = Join-Path $testEnv 'Scripts/python.exe'
+& $testPython -m pip --isolated --disable-pip-version-check install `
+  --index-url https://pypi.org/simple --require-hashes --only-binary=:all: `
+  -r scripts/provider-lab/requirements-fixture.txt
+if ($LASTEXITCODE -ne 0) { throw 'Locked dependency installation failed' }
+& $testPython -B -m unittest discover -s scripts/tests -p 'test_*.py'
+if ($LASTEXITCODE -ne 0) { throw 'Python regressions failed' }
+```
+
+On Linux, use `bin/python` inside the environment. No global package or pip upgrade is needed. Retain the environment for subsequent tests, or remove that exact owned directory after its processes have exited.
+
+`requirements-fixture.txt` and the separate `requirements-audit.txt` pin every dependency and accepted wheel hash. CI audits both locks, including the auditor's own dependencies, and fails on vulnerabilities or incomplete audit results. The scheduled provider checks repeat this audit; Dependabot proposes weekly Python dependency updates. A clean audit reflects the advisories available at execution time, not a guarantee that packages have no vulnerabilities. Updating a lock requires reviewing its full dependency closure, checking compatible Windows/Linux wheels, and repeating both platform tests and audits; never remove hashes or ignore findings to make an update pass.
+
+The HTTPS foundation generates a short-lived CA and a leaf certificate with the loopback IP in its SAN for each run. It supplies trust only through a child-specific CA argument; it does not alter the system trust store. Handshakes and HTTP share an absolute connection deadline, with bounded admission and explicit owned-socket cleanup. The supplied protocol handler remains responsible for method, path, header, body and request-count limits. Certificate and key files stay inside the owned temporary directory. Transport tests alone do not establish provider behavior. The pCloud integration constrains API, OAuth and returned download authorities to its exact owned loopback port. Both producer and importer hash the TLS and pCloud modules and the fixture dependency lock into the harness identity. Before native pCloud calls, the producer verifies distribution metadata and loaded module versions against that lock (pycparser distribution 3.0 exposes module version 3.00). These checks are not a cryptographic attestation of installed wheel contents.
+
+## Authentication boundaries
+
+Generic OAuth coverage applies to Drive, OneDrive, Dropbox, Box, Google Photos, HiDrive, Premiumize, Putio and Yandex. Mailru, PikPak, SugarSync, Jottacloud and ShareFile require provider-specific protocols. pCloud additionally needs its regional hostname, while Zoho requires region, token-type and root configuration. These seven providers use manual setup or import of a complete rclone config, instead of the application's generic OAuth exchange. Unknown discovered providers also use manual setup.
+
+Device-code authorization is exposed for OneDrive only. Google's limited-input device flow does not support the read-only Drive/Photos scopes this application needs; use browser authorization with an appropriate client registration. See the [Google scope restrictions](https://developers.google.com/identity/protocols/oauth2/limited-input-device#allowedscopes).
+
+Malformed or ambiguous custom OAuth JSON fails closed. Custom secrets are passed to child rclone processes through their environment, not command arguments. Test configurations, tokens, account identities and raw service responses must stay outside the repository and public CI artifacts.
+
+## Explicit live access checks
+
+`tests/provider_smoke.rs` is ignored by default. It requires an explicit config and an absolute, hash-verified native rclone path. It reads only remotes whose names begin with the exact prefix `Test`; every selected backend must exist in the discovered catalog. Duplicate or case-aliased Test names fail. No default credential store is used.
+
+The test performs `listremotes` and one shallow `lsjson --max-depth 1 --hash` per selected remote. It issues no remote write commands. Use dedicated synthetic folders and a disposable private copy of the config, because rclone may refresh tokens in that copy. Scope the remote before running: an unrestricted remote would list the account root. A successful listing verifies existing-credential read access only; it does not prove a new login, a refresh grant, downloads or remote-source preservation.
+
+```powershell
+$env:RCLONE_PROVIDER_SMOKE_CONFIG = 'C:/PrivateTests/working-rclone.conf'
 $env:RCLONE_PROVIDER_SMOKE_RCLONE = (Resolve-Path ./assets/rclone.exe).Path
+$env:RCLONE_PROVIDER_SMOKE_BACKENDS = 'drive,onedrive'
+$env:RCLONE_PROVIDER_SMOKE_REPORT = 'C:/PrivateTests/provider-coverage-new.json'
 cargo test --locked --release --test provider_smoke test_configured_provider_remotes_smoke -- --ignored --exact --nocapture --test-threads=1
 ```
 
-Use a disposable working copy of the config: rclone can refresh tokens in it.
-These commands run from the crate directory after the runtime bootstrap.
-The GitHub workflow creates a private temporary config, prepares both pinned
-runtime assets, and removes the config after the run. Without credentials its
-summary explicitly states that live acceptance was not run.
+Optional controls:
 
-Optional environment variables:
+| Variable | Behavior |
+|---|---|
+| `RCLONE_PROVIDER_SMOKE_BACKENDS` | Comma-separated backend IDs, curated short names or Test remote names. Blank selects all Test remotes. Every requested item must match; typos, partially met filters and comma-only filters fail. |
+| `RCLONE_PROVIDER_SMOKE_REQUIRE_ALL` | `true` or `1` requires a selected account for every discovered backend. `false`, `0` or unset permits partial coverage. Other values fail. |
+| `RCLONE_PROVIDER_SMOKE_REPORT` | A new JSON output path; existing files are never overwritten. |
+| `RCLONE_PROVIDER_SMOKE_REPORT_ONLY` | `true` or `1` produces the complete missing-coverage inventory without reading any account config. It makes no live-access claim. Combined with `REQUIRE_ALL`, it writes the inventory and then fails because full live coverage was not run. |
 
-- `RCLONE_PROVIDER_SMOKE_RCLONE` — path to the rclone binary to use
-- `RCLONE_PROVIDER_SMOKE_BACKENDS` — comma-separated backend filter such as `drive,s3,onedrive`
+Every discovered backend gets a row: `not_configured`, `not_requested`, `not_run`, `passed` or `failed`. One successful account cannot hide another account's failure. The report contains backend IDs, authentication categories, counts and statuses; it omits remote names, account identities, filenames, credentials and raw provider errors. `fresh_login_verified` and `refresh_grant_verified` remain false in this harness. `all_discovered_providers_passed` becomes true only when every row passed and there were no errors.
 
-For GitHub Actions, the easiest setup is to store the full contents of an
-`rclone.conf` file in a repository secret named `RCLONE_PROVIDER_SMOKE_CONFIG`.
-That single secret can contain many `Test*` remotes, so you do **not** need one
-workflow input per account.
+## Scheduled checks
 
-Recommended naming convention for live test remotes:
+`.github/workflows/provider-smoke.yml` runs nightly and on manual dispatch. It always checks offline contracts, login regressions, actual runtime catalog, the nineteen baseline backend protocol fixtures, separate FileFabric renewal and IA LOW modes, the isolated Linux Samba NTLM and pCloud OAuth authentication contracts and current coverage plans. Without test credentials it publishes the full `not_configured` inventory and explicitly states that live access did not run. The sanitized smoke inventory, all five fixture receipts and combined Linux evidence ledger are retained for 14 days. Missing prerequisites are reported as unavailable coverage, never as a live pass. Runs are serialized to avoid overlapping use of rotating credentials.
 
-- `TestDrive`
-- `TestOneDrive`
-- `TestDropbox`
-- `TestS3`
-- `TestAzureBlob`
+To opt in to cloud access on GitHub-hosted runners, provision a dedicated synthetic-test config through the repository secret `RCLONE_PROVIDER_SMOKE_CONFIG`. Keep the source credentials in the operator's vault; do not commit them. The workflow creates a private temporary config and removes it after the run. Refreshed tokens in that temporary copy are not exported or written back to the secret; providers that rotate refresh tokens may require deliberate credential renewal.
 
-Keep these remotes small and disposable. The smoke tests are read-only, but small remotes keep
-nightly runs fast and predictable.
+Scheduled runs use repository variables `RCLONE_PROVIDER_SMOKE_BACKENDS` and `RCLONE_PROVIDER_SMOKE_REQUIRE_ALL`. Manual inputs override those defaults, including explicit false or an empty filter. `require_all` fails when credentials are absent or any backend lacks selected coverage. Pull-request CI never requires cloud secrets.
 
-## Recommended CI split
+## Restrict a OneDrive personal acceptance case to its synthetic folder
 
-### Pull requests
+For the pinned rclone 1.75.1 runtime, retain the verified drive ID and raw folder item ID separately in private test approvals, then set the working configuration's `root_folder_id` to `<drive-id>#<folder-item-id>`. A raw item ID alone can make top-level file metadata lookup fall back to the drive root, even when nested files work. This follows the pinned backend's [path resolution](https://github.com/rclone/rclone/blob/v1.75.1/backend/onedrive/onedrive.go#L2951-L3027) and [item ID normalization](https://github.com/rclone/rclone/blob/v1.75.1/backend/onedrive/api/types.go#L436-L442). Verify the exact approved drive/folder pair; reject aliases, mismatched prefixes and extra separators. Preserve the original authenticated configuration.
 
-Run:
+Set `delta = false`: [OneDrive delta listing](https://rclone.org/onedrive/#onedrive-delta) traverses from the drive root even for a subfolder request. Start with one known synthetic file directly under the configured folder, then verify both root and nested file acquisitions against independent expected hashes. Do not treat a successful nested-file download as proof that the root is configured correctly. Folder selection controls these test requests; the OAuth grant remains account-wide.
 
-- provider contract tests
-- all existing mock/unit/integration tests
+## New providers and release acceptance
 
-Do **not** require real provider credentials for PR validation.
+For a curated provider, update metadata, its independent schema contract, configuration and authentication tests. A new backend appearing in rclone automatically enters discovery and both coverage reports; it does not automatically acquire a tested login implementation or credentials. The current-plan gate fails until its canonical identity, option contract, auth applicability, evidence layers, renewal behavior and primary source links have a reviewed policy entry. Do not bulk-rehash policy entries just to make a runtime-update PR pass. Removed backends also require deliberate policy retirement.
 
-### Nightly / scheduled
+Continue acceptance by the highest-impact feasible case, preserving a private checkpoint of blockers and the next action. Reuse approved accounts, store all credentials in a private vault, and keep only sanitized evidence in shared artifacts. Check current API entitlements before creating an account: free storage does not necessarily grant free API access. The pinned documentation for [1Fichier](https://rclone.org/fichier/), [Gofile](https://rclone.org/gofile/) and [Pixeldrain filesystem](https://rclone.org/pixeldrain/) describes paid prerequisites; missing paid access stays a blocker, not a pass or permission to purchase. [Memory](https://rclone.org/memory/) is process-local, so the application's separate child processes need a supported source lifecycle before this backend can qualify. A local archive baseline does not qualify a remotely hosted archive's upstream provider.
 
-Run:
-
-- the full Rust test suite
-- the live smoke test against configured `Test*` remotes
-
-The repository workflow for this is:
-
-- `.github/workflows/provider-smoke.yml`
-
-It runs on a nightly schedule and via manual dispatch.
-
-Optional repository variable:
-
-- `RCLONE_PROVIDER_SMOKE_BACKENDS` — default backend filter for the workflow
-
-Suggested nightly provider set:
-
-- Google Drive
-- OneDrive
-- Dropbox
-- Box
-- Google Photos
-- pCloud
-- S3
-- Backblaze B2
-- Azure Blob
-- Google Cloud Storage
-- WebDAV
-- SFTP
-
-Expand gradually; do not try to light up every provider on day one.
-
-### Release gate
-
-Before release, manually validate:
-
-- OAuth/browser auth flows still complete
-- config-browser import works for representative providers
-- list/download/hash verification works end-to-end
-- error messages remain informative on failed auth/list operations
-
-## Why not test every provider on every PR?
-
-Because upstream rclone doesn’t do that either.
-
-Real provider testing has unavoidable constraints:
-
-- credentials and secret rotation
-- rate limits
-- provider-specific feature gaps
-- eventual consistency
-- unstable or region-specific APIs
-- business/personal account differences
-
-Upstream rclone handles this with a dedicated backend test harness, configured `Test*`
-remotes, per-provider ignores, and daily integration runs. `rclone-triage` should keep
-the same philosophy while focusing on the parts this application owns.
-
-## Adding or updating a provider
-
-When a provider is added or changed:
-
-1. Update `CloudProvider` metadata in `src/providers/mod.rs`
-2. Update `ProviderConfig` in `src/providers/config.rs`
-3. Add or update contract assertions in `tests/provider_matrix.rs`
-4. Add mock/integration coverage if the wrapper behavior changed
-5. Add a `Test*` remote and nightly smoke coverage if the provider matters for production use
-6. Update this document if the workflow changed
-
-## Practical goal
-
-The realistic goal is **broad automated confidence plus targeted live validation**.
-
-That means:
-
-- every declared provider is checked structurally
-- major provider families are tested behaviorally
-- live remotes are validated safely and repeatedly
-- the app stays reliable without pretending we can fully emulate the entire cloud industry in CI
+For each real account type, separately verify browser/MFA login, listing, sample acquisition and independent hashes, refresh, denial/cancellation and cleanup. Enterprise variants, Shared Drives and Google Photos restrictions need their own cases. Record the exact tested binary, scope and outcome without account information. See [HARDENING.md](../../HARDENING.md) for completed live acceptance and outstanding gaps. Synthetic tests and schema checks do not replace those account-level results.

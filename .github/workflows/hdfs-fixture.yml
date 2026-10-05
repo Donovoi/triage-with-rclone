@@ -1,0 +1,57 @@
+name: Isolated HDFS SIMPLE experiment
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/hdfs-fixture.yml
+      - scripts/provider-lab/hdfs-fixture/**
+      - scripts/provider-lab/hdfs-discovery/resolver_discovery.py
+      - scripts/provider-lab/hdfs-discovery/offline_cache.py
+      - scripts/provider-lab/hdfs-discovery/artifact-lock.json
+      - scripts/provider-lab/hdfs-discovery/run_discovery.py
+      - scripts/tests/test_hdfs_simple_fixture.py
+      - rclone-version.env
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hdfs-simple-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fixture:
+    name: Test synthetic HDFS transfers in a network-none container
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - name: Test contracts without native tools
+        run: python -B -m unittest discover -s scripts/provider-lab/hdfs-fixture -p 'test_*.py'
+      - name: Prepare the verified rclone binary
+        run: bash scripts/download-rclone.sh --linux "$RUNNER_TEMP/rclone-hdfs"
+      # Preparation downloads public hash-locked JARs and the pinned base.
+      # The daemon/client container has no network, mounts or published ports.
+      # SIMPLE asserts a username; it does not verify a password or Kerberos.
+      # Cleanup checks owned resources; shared base/build caches last until
+      # this disposable hosted runner is removed, and are not counted as cleaned.
+      - name: Check sample bytes, denial, cancellation and cleanup
+        run: >-
+          python -B scripts/provider-lab/hdfs-fixture/container_fixture.py
+          --rclone "${{ runner.temp }}/rclone-hdfs"
+          --report "${{ runner.temp }}/hdfs-simple-fixture.json"
+      - name: Retain only the sanitized result
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: hdfs-simple-fixture
+          path: ${{ runner.temp }}/hdfs-simple-fixture.json
+          if-no-files-found: warn
+          retention-days: 14
