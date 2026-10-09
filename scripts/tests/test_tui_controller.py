@@ -186,6 +186,62 @@ class ProtocolTests(unittest.TestCase):
                 self.assertEqual(output.getvalue(), "")
 
 
+class WaitDiagnosticTests(unittest.TestCase):
+    def capture(self, error, screen=None, stage="poll", invoked=False):
+        with redirect_stdout(io.StringIO()) as output:
+            T.wait_failure_diagnostic(error, stage, T.S.Screen() if screen is None else screen, invoked)
+        rendered = output.getvalue()
+        self.assertLessEqual(len(rendered.encode("ascii")), 1024)
+        self.assertNotIn("private-canary", rendered)
+        self.assertTrue(rendered.startswith("application_tui_wait_failure="))
+        result = json.loads(rendered.split("=", 1)[1])
+        self.assertEqual(set(result), {"stage", "reason_type", "reason_code", "screen_ready",
+                                      "screen_pending", "screen_bytes", "predicate_invoked"})
+        return result
+
+    def test_closed_screen_codes_without_private_text(self):
+        screen = T.S.Screen()
+        screen.feed(b"private-canary")
+        for code in T.S.CODES:
+            with self.subTest(code=code):
+                result = self.capture(T.S.ScreenError(code), screen)
+                self.assertEqual((result["reason_type"], result["reason_code"]), ("screen", code))
+                self.assertEqual(result["screen_bytes"], 14)
+
+    def test_controller_codes_and_unknown_errors_are_never_formatted(self):
+        class PrivateError(Exception):
+            def __str__(self):
+                raise AssertionError("private-canary")
+        for code in T.WAIT_ERRORS:
+            self.assertEqual(self.capture(T.H.ProducerError(code))["reason_code"], code)
+        for error in (PrivateError("private-canary"), T.H.ProducerError("private-canary"),
+                      T.H.ProducerError([]), T.H.ProducerError("session_failed", "private-canary")):
+            result = self.capture(error)
+            self.assertEqual((result["reason_type"], result["reason_code"]),
+                             ("unexpected", "unexpected_failure"))
+        error = T.S.ScreenError("sequence_unsupported")
+        error.code = {"private-canary": 1}
+        self.assertEqual(self.capture(error)["reason_code"], "unexpected_failure")
+
+    def test_untrusted_screen_properties_are_not_read(self):
+        class PrivateScreen:
+            @property
+            def ready(self):
+                raise AssertionError("private-canary")
+        result = self.capture(ValueError(), PrivateScreen())
+        self.assertIsNone(result["screen_ready"])
+        self.assertIsNone(result["screen_pending"])
+        self.assertIsNone(result["screen_bytes"])
+
+    def test_invalid_fields_and_broken_output_cannot_replace_error(self):
+        for stage, invoked in (("private-canary", False), ([], False), ("poll", 1)):
+            with redirect_stdout(io.StringIO()) as output:
+                T.wait_failure_diagnostic(ValueError(), stage, T.S.Screen(), invoked)
+            self.assertEqual(output.getvalue(), "")
+        with patch("builtins.print", side_effect=OSError("private-canary")):
+            T.wait_failure_diagnostic(ValueError(), "poll", T.S.Screen(), False)
+
+
 class ObservationTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -251,6 +307,40 @@ class ObservationTests(unittest.TestCase):
                 with self.assertRaises(T.H.ProducerError):
                     controller.wait(bump if where == "predicate" else lambda _: True, seconds=1,
                                     observe=bump if where == "observe" else None)
+
+    def test_wait_reports_actual_failure_stage_and_rethrows_original_exception(self):
+        for where in ("poll", "observe", "predicate"):
+            with self.subTest(where=where):
+                controller = T.Controller(self.root, Mock())
+                self.addCleanup(controller.close)
+                error = (T.S.ScreenError("sequence_unsupported") if where == "poll" else
+                         T.H.ProducerError("preservation_failed") if where == "observe" else
+                         ValueError("private-canary"))
+                def fail(*_):
+                    raise error
+                with patch.object(controller, "poll", side_effect=fail if where == "poll" else lambda: {}), redirect_stdout(io.StringIO()) as output:
+                    with self.assertRaises(type(error)) as caught:
+                        controller.wait(fail if where == "predicate" else lambda _: True,
+                                        observe=fail if where == "observe" else None)
+                self.assertIs(caught.exception, error)
+                rendered = output.getvalue()
+                self.assertNotIn("private-canary", rendered)
+                result = json.loads(rendered.split("=", 1)[1])
+                self.assertEqual(result["stage"], where)
+                self.assertEqual(result["predicate_invoked"], where == "predicate")
+                self.assertEqual(result["reason_code"], error.args[0] if where != "predicate" else "unexpected_failure")
+
+    def test_wait_output_failure_preserves_error_and_success_is_quiet(self):
+        controller = T.Controller(self.root, Mock())
+        self.addCleanup(controller.close)
+        error = T.H.ProducerError("session_failed")
+        with patch.object(controller, "poll", side_effect=error), patch("builtins.print", side_effect=OSError("private-canary")):
+            with self.assertRaises(T.H.ProducerError) as caught:
+                controller.wait(lambda _: True)
+        self.assertIs(caught.exception, error)
+        with patch.object(controller, "poll", return_value={}), redirect_stdout(io.StringIO()) as output:
+            controller.wait(lambda _: True)
+        self.assertEqual(output.getvalue(), "")
 
     def test_expired_controller_cannot_send_key_or_text(self):
         bridge = Mock()
