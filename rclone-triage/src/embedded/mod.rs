@@ -21,6 +21,18 @@ pub const RCLONE_EXE_SHA256: &str = env!("TRIAGE_RCLONE_EXE_SHA256");
 /// Rclone version embedded
 pub const RCLONE_VERSION: &str = env!("TRIAGE_RCLONE_VERSION");
 
+/// Return only finite cleanup metadata, never formatted error messages or paths.
+pub fn runtime_cleanup_diagnostic(error: &anyhow::Error) -> private_fs::CleanupDiagnostic {
+    error
+        .chain()
+        .find_map(|cause| {
+            cause
+                .downcast_ref::<std::io::Error>()
+                .and_then(private_fs::cleanup_diagnostic)
+        })
+        .unwrap_or_else(private_fs::CleanupDiagnostic::ownership_unavailable)
+}
+
 /// Manages the extracted rclone binary
 pub struct ExtractedBinary {
     /// Path to the extracted executable
@@ -204,6 +216,23 @@ mod tests {
     #[test]
     fn test_embedded_binary_exists() {
         assert!(Assets::get("rclone.exe").is_some());
+    }
+
+    #[test]
+    fn wrapped_cleanup_io_error_keeps_stage_without_exposing_context_or_path() {
+        let root = tempfile::tempdir().unwrap();
+        let owned = private_fs::tempdir_in(root.path(), "private-canary-").unwrap();
+        std::fs::remove_dir(owned.path()).unwrap();
+        let io_error = owned.close().unwrap_err();
+        let expected = private_fs::cleanup_diagnostic(&io_error)
+            .unwrap()
+            .to_string();
+        let error = anyhow::Error::new(io_error).context("private-canary/context");
+        let diagnostic = runtime_cleanup_diagnostic(&error).to_string();
+        assert_eq!(diagnostic, expected);
+        assert!(diagnostic.starts_with("{\"stage\":\"open_root\",\"kind\":\"not_found\","));
+        assert!(!diagnostic.contains("canary"));
+        assert!(!diagnostic.contains(root.path().to_string_lossy().as_ref()));
     }
 
     #[test]

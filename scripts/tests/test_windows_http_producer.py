@@ -1373,6 +1373,130 @@ class ProducerTests(unittest.TestCase):
             with self.assertRaisesRegex(P.ProducerError, "^session_failed$"):
                 P.validate_session(value, "finish")
 
+    def test_runtime_cleanup_parser_accepts_only_complete_closed_native_records(self):
+        stages = ("target", "open_root", "identity", "security", "remove_tree")
+        kinds = ("not_found", "permission_denied", "already_exists", "invalid_input", "unsupported", "interrupted", "other")
+        for stage in stages:
+            for kind in kinds:
+                for code in (None, 0, 32, 65535):
+                    value = dict(stage=stage, kind=kind, os_code=code)
+                    line = b"runtime_cleanup_diagnostic=" + json.dumps(value, separators=(",", ":")).encode("ascii")
+                    self.assertLessEqual(len(line), 112)
+                    for ending in (b"\n", b"\r\n"):
+                        with self.subTest(stage=stage, kind=kind, code=code, ending=ending):
+                            self.assertEqual(P.parse_runtime_cleanup_diagnostic(b"private-canary\n" + line + ending + b"other private text"), value)
+
+    def test_runtime_cleanup_parser_refuses_duplicates_canaries_types_and_terminal_normalization(self):
+        good = b'runtime_cleanup_diagnostic={"stage":"remove_tree","kind":"permission_denied","os_code":32}\n'
+        bad = [None, "private-canary", bytearray(good), b"", b"x" * (8 * 1024 * 1024 + 1),
+               good[:-1], good + good, good + b"runtime_cleanup_diagnostic=private-canary\n",
+               good.replace(b"remove_tree", b"remove_\ntree"), good.replace(b"remove_tree", b"remove_\x1b[0mtree"),
+               good.replace(b"=", b":", 1), good.replace(b"=", b"= ", 1),
+               good.replace(b"remove_tree", b"private-canary"), good.replace(b"permission_denied", b"private-canary"),
+               good.replace(b'"stage":"remove_tree"', b'"stage":true'), good.replace(b'"kind":"permission_denied"', b'"kind":null'),
+               good.replace(b'"stage":"remove_tree"', b'"stage":"remove_tree","stage":"target"'),
+               good.replace(b'"stage":"remove_tree","kind":"permission_denied"', b'"kind":"permission_denied","stage":"remove_tree"'),
+               good.replace(b"32}", b'32,"path":"private-canary"}'), good.replace(b"32}", b'32,"x":null}'),
+               good.replace(b'"os_code":32', b'"os_code":null,"os_code":32'),
+               good.replace(b"remove_tree", b"remove\\u005ftree"), good.replace(b"remove_tree", b"remove\x00tree"),
+               good.replace(b"remove_tree", "remove_\u00a0tree".encode()), b"x" * 4096 + good]
+        for token in (b"true", b"false", b"-1", b"65536", b"32.0", b'"32"', b"[]", b"{}", b"NaN", b"Infinity"):
+            bad.append(good.replace(b"32}", token + b"}"))
+        with redirect_stdout(io.StringIO()) as output:
+            for index, data in enumerate(bad):
+                with self.subTest(index=index):
+                    self.assertIsNone(P.parse_runtime_cleanup_diagnostic(data))
+        self.assertEqual(output.getvalue(), "")
+
+    def test_runtime_cleanup_intact_record_discards_bounded_terminal_decoration(self):
+        record = b'runtime_cleanup_diagnostic={"stage":"remove_tree","kind":"permission_denied","os_code":32}'
+        expected = dict(stage="remove_tree", kind="permission_denied", os_code=32)
+        for prefix, suffix in ((b" ", b" "), (b"\x1b[0m", b"\x1b[0m"),
+                               (b"private-canary-prefix\x1b[20;1H", b"private-canary-suffix\r"),
+                               (b"x" * (4096 - len(record)), b"")):
+            with self.subTest(prefix_bytes=len(prefix), suffix_bytes=len(suffix)), redirect_stdout(io.StringIO()) as output:
+                parsed = P.parse_runtime_cleanup_diagnostic(prefix + record + suffix + b"\r\n")
+                self.assertEqual(parsed, expected)
+                P.runtime_cleanup_diagnostic("listing", parsed)
+                self.assertEqual(json.loads(output.getvalue().split("=", 1)[1]), dict(scope="listing", **expected))
+                self.assertNotIn("private-canary", output.getvalue())
+                self.assertNotIn("\x1b", output.getvalue())
+        self.assertIsNone(P.parse_runtime_cleanup_diagnostic(b"x" * (4097 - len(record)) + record + b"\n"))
+        self.assertIsNone(P.parse_runtime_cleanup_diagnostic(b"runtime_cleanup_diagnostic=bad\x1b[0m" + record + b"\n"))
+
+    def test_runtime_cleanup_read_requires_unchanged_case_and_bounded_private_file(self):
+        case = self.root / "runtime-diagnostic-read"
+        case.mkdir()
+        data = b'runtime_cleanup_diagnostic={"stage":"identity","kind":"other","os_code":null}\n'
+        (case / "transcript.private").write_bytes(data)
+        lease = P.identity(case)
+        self.assertEqual(P.read_runtime_cleanup_diagnostic(case, lease), dict(stage="identity", kind="other", os_code=None))
+        with mock.patch.object(P, "identity", return_value=(lease[0], lease[1] + 1)), mock.patch.object(P, "read") as read:
+            self.assertIsNone(P.read_runtime_cleanup_diagnostic(case, lease))
+            read.assert_not_called()
+        with mock.patch.object(P, "identity", side_effect=[lease, (lease[0], lease[1] + 1)]):
+            self.assertIsNone(P.read_runtime_cleanup_diagnostic(case, lease))
+        for error in (OSError("private-canary"), P.ProducerError("preservation_failed")):
+            with mock.patch.object(P, "read", side_effect=error), redirect_stdout(io.StringIO()) as output:
+                self.assertIsNone(P.read_runtime_cleanup_diagnostic(case, lease))
+                self.assertEqual(output.getvalue(), "")
+        (case / "transcript.private").write_bytes(b"x" * (8 * 1024 * 1024 + 1))
+        self.assertIsNone(P.read_runtime_cleanup_diagnostic(case, lease))
+
+    def test_runtime_cleanup_diagnostic_preserves_late_cleanup_failure_and_private_tree(self):
+        def residue(case):
+            (case / "transcript.private").write_bytes(b'private-canary\nruntime_cleanup_diagnostic={"stage":"remove_tree","kind":"permission_denied","os_code":32}\n')
+            directory = case / "temp/private-canary-runtime"
+            directory.mkdir()
+            (directory / "private-canary.exe").write_bytes(b"inert")
+        with redirect_stdout(io.StringIO()) as output:
+            record, _, suite = self.execute_case("listing", after_app=residue)
+        self.assertEqual((record["status"], record["failure_code"], record["exit_code"]), ("failed", "cleanup_failed", 0))
+        self.assertFalse(record["checks"]["temp_cleanup"])
+        self.assertTrue(all(value for key, value in record["checks"].items() if key != "temp_cleanup"))
+        self.assertTrue((suite / "listing/temp/private-canary-runtime/private-canary.exe").is_file())
+        lines = [line for line in output.getvalue().splitlines() if line.startswith("application_runtime_cleanup_diagnostic=")]
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(json.loads(lines[0].split("=", 1)[1]), dict(scope="listing", stage="remove_tree", kind="permission_denied", os_code=32))
+        self.assertNotIn("private-canary", output.getvalue())
+
+    def test_runtime_cleanup_diagnostic_captures_early_failure_before_existing_removal(self):
+        def failed_listing(case):
+            (case / "transcript.private").write_bytes(b'runtime_cleanup_diagnostic={"stage":"security","kind":"other","os_code":null}\n')
+            (case / "output/synthetic-case/listings/inventory.csv").write_bytes(b"private-canary-invalid-inventory")
+        with redirect_stdout(io.StringIO()) as output:
+            record, _, suite = self.execute_case("listing", after_app=failed_listing)
+        self.assertEqual((record["status"], record["failure_code"]), ("failed", "listing_invalid"))
+        self.assertTrue(record["checks"]["temp_cleanup"])
+        self.assertFalse((suite / "listing").exists())
+        self.assertEqual(output.getvalue().count("application_runtime_cleanup_diagnostic="), 1)
+        self.assertNotIn("private-canary", output.getvalue())
+
+    def test_runtime_cleanup_transcript_never_read_for_success_or_uncertain_helper_close(self):
+        def transcript(case):
+            (case / "transcript.private").write_bytes(b'runtime_cleanup_diagnostic={"stage":"target","kind":"other","os_code":null}\n')
+        with mock.patch.object(P, "read_runtime_cleanup_diagnostic", side_effect=AssertionError("must not read")) as read, redirect_stdout(io.StringIO()) as output:
+            passed, _, _ = self.execute_case("listing", after_app=transcript)
+            failed, _, suite = self.execute_case("listing", suite_name="uncertain-reader", after_app=transcript, close_ok=False)
+        read.assert_not_called()
+        self.assertEqual(passed["status"], "passed")
+        self.assertEqual(failed["status"], "failed")
+        self.assertFalse(failed["checks"]["process_cleanup"])
+        self.assertTrue((suite / "listing").exists())
+        self.assertNotIn("application_runtime_cleanup_diagnostic=", output.getvalue())
+
+    def test_runtime_cleanup_diagnostic_failures_cannot_replace_original_failure(self):
+        def residue(case):
+            (case / "transcript.private").write_bytes(b'runtime_cleanup_diagnostic={"stage":"remove_tree","kind":"other","os_code":null}\n')
+            (case / "temp/private-canary").mkdir()
+        for function in ("read_runtime_cleanup_diagnostic", "runtime_cleanup_diagnostic"):
+            with mock.patch.object(P, function, side_effect=RuntimeError("private-canary-error")), redirect_stdout(io.StringIO()) as output:
+                record, _, suite = self.execute_case("listing", suite_name=function, after_app=residue)
+            self.assertEqual((record["status"], record["failure_code"]), ("failed", "cleanup_failed"))
+            self.assertFalse(record["checks"]["temp_cleanup"])
+            self.assertTrue((suite / "listing/temp/private-canary").exists())
+            self.assertNotIn("private-canary", output.getvalue())
+
     def test_runtime_limits_and_observed_counts_are_strict_and_per_case(self):
         for name in ("listing", "acquisition", "mismatch", "missing", "denial", "cancellation"):
             self.assertEqual(P.runtime_process_limit(name), 4 if name == "acquisition" else 1)

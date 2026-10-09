@@ -77,8 +77,25 @@ fn main() -> Result<()> {
     // ExtractedBinary owns identity-checked runtime cleanup. Do not also register
     // its paths with AppGuard: a path-only fallback could delete a replacement
     // after the runtime owner's cleanup correctly refuses it.
-    let binary = embedded::ExtractedBinary::extract()?;
+    let mut binary = embedded::ExtractedBinary::extract()?;
+    let operation = run_cli(args, &app_guard, initial_state, &binary);
+    let cleanup = binary.cleanup();
+    finalize_cli_runtime(operation, cleanup, |diagnostic| {
+        use std::io::Write as _;
+        // A diagnostic write failure must not replace the operation/cleanup error.
+        let _ = writeln!(
+            std::io::stderr().lock(),
+            "runtime_cleanup_diagnostic={diagnostic}"
+        );
+    })
+}
 
+fn run_cli(
+    args: Cli,
+    app_guard: &AppGuard,
+    initial_state: Option<SystemStateSnapshot>,
+    binary: &embedded::ExtractedBinary,
+) -> Result<()> {
     // Initialize session
     let case = Case::new(&args.name, args.output_dir.clone())?;
     println!("Case initialized: {}", case.session_id());
@@ -255,13 +272,13 @@ fn main() -> Result<()> {
 
     if let Some(remote) = args.list_remote.as_deref() {
         return cli_list_remote(
-            &binary,
+            binary,
             &case,
             remote,
             args.rclone_config_path
                 .as_deref()
                 .expect("required by clap"),
-            &app_guard,
+            app_guard,
         );
     }
 
@@ -269,12 +286,12 @@ fn main() -> Result<()> {
     // CLI download from CSV/XLSX queue
     if let Some(ref queue_path_str) = args.download {
         return cli_download_from_queue(
-            &binary,
+            binary,
             &case,
             queue_path_str,
             args.remote.as_deref(),
             args.rclone_config_path.as_deref(),
-            &app_guard,
+            app_guard,
         );
     }
 
@@ -366,7 +383,7 @@ fn main() -> Result<()> {
                         "Backend '{}' uses {:?} authentication. Entering manual configuration.",
                         provider_name, auth_kind
                     );
-                    cli_manual_config(&runner, &config, &provider_name, &remote_name, &binary)?;
+                    cli_manual_config(&runner, &config, &provider_name, &remote_name, binary)?;
                 }
                 ProviderAuthKind::Unknown => {
                     eprintln!(
@@ -477,6 +494,43 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[derive(Debug)]
+struct CliAndCleanupFailure {
+    operation: anyhow::Error,
+    cleanup: anyhow::Error,
+}
+
+impl std::fmt::Display for CliAndCleanupFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "CLI operation and runtime cleanup both failed ({})",
+            embedded::runtime_cleanup_diagnostic(&self.cleanup)
+        )
+    }
+}
+
+impl std::error::Error for CliAndCleanupFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.operation.as_ref())
+    }
+}
+
+fn finalize_cli_runtime(
+    operation: Result<()>,
+    cleanup: Result<()>,
+    mut emit: impl FnMut(rclone_triage::utils::private_fs::CleanupDiagnostic),
+) -> Result<()> {
+    if let Err(error) = &cleanup {
+        emit(embedded::runtime_cleanup_diagnostic(error));
+    }
+    match (operation, cleanup) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+        (Err(operation), Err(cleanup)) => Err(CliAndCleanupFailure { operation, cleanup }.into()),
+    }
 }
 
 fn should_run_tui(args: &Cli) -> bool {
@@ -1262,6 +1316,61 @@ fn default_vault_destination() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cli_finalization_never_promotes_cleanup_failure_or_loses_operation_error() {
+        for operation_failed in [false, true] {
+            for cleanup_failed in [false, true] {
+                let operation = if operation_failed {
+                    Err(anyhow::Error::new(std::io::Error::other(
+                        "original-operation-canary",
+                    )))
+                } else {
+                    Ok(())
+                };
+                let cleanup = if cleanup_failed {
+                    Err(anyhow::Error::new(std::io::Error::other(
+                        "cleanup-canary/path",
+                    )))
+                } else {
+                    Ok(())
+                };
+                let mut observations = Vec::new();
+                let result = finalize_cli_runtime(operation, cleanup, |diagnostic| {
+                    observations.push(diagnostic.to_string());
+                });
+                assert_eq!(result.is_err(), operation_failed || cleanup_failed);
+                assert_eq!(observations.len(), usize::from(cleanup_failed));
+                for diagnostic in observations {
+                    assert_eq!(
+                        diagnostic,
+                        "{\"stage\":\"identity\",\"kind\":\"other\",\"os_code\":null}"
+                    );
+                    assert!(!diagnostic.contains("canary"));
+                }
+                if operation_failed && cleanup_failed {
+                    let error = result.unwrap_err();
+                    let both = error.downcast_ref::<CliAndCleanupFailure>().unwrap();
+                    assert_eq!(
+                        both.operation.root_cause().to_string(),
+                        "original-operation-canary"
+                    );
+                    assert_eq!(both.cleanup.root_cause().to_string(), "cleanup-canary/path");
+                    assert_eq!(error.root_cause().to_string(), "original-operation-canary");
+                    assert!(!error.to_string().contains("canary"));
+                } else if operation_failed || cleanup_failed {
+                    assert_eq!(
+                        result.unwrap_err().root_cause().to_string(),
+                        if operation_failed {
+                            "original-operation-canary"
+                        } else {
+                            "cleanup-canary/path"
+                        }
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn auth_only_cli_requires_provider_and_excludes_other_actions() {

@@ -1191,6 +1191,61 @@ def cleanup_diagnostic(name, stage, location=None, summary=None):
     print("application_cleanup_diagnostic=" + E.compact(dict(scope=name, stage=stage, location=location, **counts)).decode("ascii"), flush=True)
 
 
+RUNTIME_CLEANUP_PREFIX = b"runtime_cleanup_diagnostic="
+RUNTIME_CLEANUP_STAGES = frozenset({"target", "open_root", "identity", "security", "remove_tree"})
+RUNTIME_CLEANUP_KINDS = frozenset({"not_found", "permission_denied", "already_exists", "invalid_input",
+                                  "unsupported", "interrupted", "other"})
+
+
+def runtime_cleanup_value(value):
+    need(type(value) is dict and list(value) == ["stage", "kind", "os_code"], "cleanup_failed")
+    need(type(value["stage"]) is str and value["stage"] in RUNTIME_CLEANUP_STAGES and
+         type(value["kind"]) is str and value["kind"] in RUNTIME_CLEANUP_KINDS, "cleanup_failed")
+    need(value["os_code"] is None or type(value["os_code"]) is int and 0 <= value["os_code"] <= 65535,
+         "cleanup_failed")
+    return value
+
+
+def parse_runtime_cleanup_diagnostic(data):
+    """Extract one intact finite record; terminal decoration is discarded, never normalized."""
+    try:
+        need(type(data) is bytes and len(data) <= 8 * 1024 * 1024, "cleanup_failed")
+        marker = b"runtime_cleanup_diagnostic"
+        need(data.count(marker) == 1, "cleanup_failed")
+        lines = data.split(b"\n")
+        index = next(i for i, line in enumerate(lines) if marker in line)
+        need(index < len(lines) - 1, "cleanup_failed")
+        line = lines[index]
+        if line.endswith(b"\r"):
+            line = line[:-1]  # Only the exact LF/CRLF record ending is supported.
+        need(len(line) <= 4096, "cleanup_failed")
+        start = line.index(RUNTIME_CLEANUP_PREFIX)
+        record = line[start:line.index(b"}", start) + 1]
+        need(len(record) <= 112 and all(32 <= item <= 126 for item in record), "cleanup_failed")
+        value = runtime_cleanup_value(strict_json(record[len(RUNTIME_CLEANUP_PREFIX):], 112))
+        encoded = json.dumps(value, separators=(",", ":"), ensure_ascii=True).encode("ascii")
+        need(record == RUNTIME_CLEANUP_PREFIX + encoded, "cleanup_failed")
+        return value
+    except (ProducerError, TypeError, ValueError, StopIteration):
+        return None
+
+
+def read_runtime_cleanup_diagnostic(case, lease):
+    try:
+        need(lease is not None and identity(case) == lease, "cleanup_failed")
+        data = read(case / "transcript.private", 8 * 1024 * 1024)
+        need(identity(case) == lease, "cleanup_failed")
+        return parse_runtime_cleanup_diagnostic(data)
+    except BaseException:
+        return None  # Diagnostics cannot replace the original failure or permit removal.
+
+
+def runtime_cleanup_diagnostic(name, value):
+    need(type(name) is str and name in E.CASE_CHECKS, "cleanup_failed")
+    value = runtime_cleanup_value(value)
+    print("application_runtime_cleanup_diagnostic=" + E.compact(dict(scope=name, **value)).decode("ascii"), flush=True)
+
+
 def output_files(root):
     entries = inventory(root)
     need(not any(any(part.startswith(".triage-transfer-") for part in path.split("/")) for path in entries), "outputs_invalid")
@@ -1315,11 +1370,21 @@ def run_case(name, suite, application, application_sha, runtime, session_factory
     lease = bridge = server = context = state = None
     session_attempted = fixture_attempted = entered = prepared = False
     helper_closed = False
+    runtime_diagnostic = None
+    runtime_diagnostic_attempted = False
     config_bytes = None
     helper_before = private_leases = None
     def fail(code):
         if record["failure_code"] is None:
             record["failure_code"] = code
+    def collect_runtime_diagnostic():
+        nonlocal runtime_diagnostic, runtime_diagnostic_attempted
+        if not runtime_diagnostic_attempted and helper_closed and lease is not None:
+            runtime_diagnostic_attempted = True
+            try:
+                runtime_diagnostic = read_runtime_cleanup_diagnostic(case, lease)
+            except BaseException:
+                pass
     try:
         prepare(suite, name)
         prepared = True
@@ -1429,6 +1494,8 @@ def run_case(name, suite, application, application_sha, runtime, session_factory
                 fail(str(error))
         else:
             checks["fixture_cleanup"] = not fixture_attempted
+        if record["failure_code"] is not None or not all(value for key, value in checks.items() if key != "temp_cleanup"):
+            collect_runtime_diagnostic()
         if lease is not None and checks["process_cleanup"] and checks["fixture_cleanup"]:
             cleanup_stage, cleanup_location, cleanup_summary = "case_identity", None, None
             try:
@@ -1462,6 +1529,13 @@ def run_case(name, suite, application, application_sha, runtime, session_factory
         fail("session_failed")
     if record["failure_code"] is None and all(checks.values()):
         record["status"] = "passed"
+    if record["status"] == "failed":
+        collect_runtime_diagnostic()
+        if runtime_diagnostic is not None:
+            try:
+                runtime_cleanup_diagnostic(name, runtime_diagnostic)
+            except BaseException:
+                pass  # Printing a finite diagnostic never changes acceptance or cleanup.
     return record
 
 
