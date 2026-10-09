@@ -838,6 +838,43 @@ class ProducerTests(unittest.TestCase):
             with self.assertRaises(P.ProducerError):
                 P.runtime_pins(path)
 
+    def test_runtime_pin_architectures_require_legacy_or_complete_schema(self):
+        path = self.root / "pins"
+        content = ("RCLONE_VERSION=9.8.7\n" + "".join(key + "=" + "a" * 64 + "\n" for key in (
+            "RCLONE_EXE_SHA256", "RCLONE_WINDOWS_ZIP_SHA256", "RCLONE_LINUX_ZIP_SHA256", "RCLONE_LINUX_EXE_SHA256")))
+        extra = [f"{key}={digest * 64}\n" for key, digest in (
+            ("RCLONE_WINDOWS_X86_EXE_SHA256", "b"), ("RCLONE_WINDOWS_X86_ZIP_SHA256", "c"),
+            ("RCLONE_WINDOWS_ARM64_EXE_SHA256", "d"), ("RCLONE_WINDOWS_ARM64_ZIP_SHA256", "e"))]
+        for mask in range(16):
+            with self.subTest(mask=mask):
+                path.write_text(content + "".join(line for index, line in enumerate(extra) if mask & (1 << index)), encoding="ascii")
+                if mask in (0, 15):
+                    self.assertEqual(P.runtime_pins(path), {"version": "9.8.7", "sha256": "a" * 64, "platform": "windows"})
+                else:
+                    with self.assertRaisesRegex(P.ProducerError, "^binding_failed$"):
+                        P.runtime_pins(path)
+
+    def test_runtime_pin_extra_hashes_cannot_escape_validation(self):
+        path = self.root / "pins"
+        extra_keys = ("RCLONE_WINDOWS_X86_EXE_SHA256", "RCLONE_WINDOWS_X86_ZIP_SHA256",
+                      "RCLONE_WINDOWS_ARM64_EXE_SHA256", "RCLONE_WINDOWS_ARM64_ZIP_SHA256")
+        pins = {key: "a" * 64 for key in ("RCLONE_EXE_SHA256", "RCLONE_WINDOWS_ZIP_SHA256",
+                "RCLONE_LINUX_ZIP_SHA256", "RCLONE_LINUX_EXE_SHA256", *extra_keys)}
+        pins["RCLONE_VERSION"] = "9.8.7"
+        content = "".join(f"{key}={value}\n" for key, value in pins.items())
+        for key in extra_keys:
+            for bad in ("", "A" * 64, "a" * 63, "a" * 65, "sha256:" + "a" * 64):
+                with self.subTest(key=key, bad=bad):
+                    path.write_text(content.replace(f"{key}={'a' * 64}\n", f"{key}={bad}\n"), encoding="ascii")
+                    with self.assertRaisesRegex(P.ProducerError, "^binding_failed$"):
+                        P.runtime_pins(path)
+            path.write_text(content + f"{key}={'a' * 64}\n", encoding="ascii")
+            with self.assertRaisesRegex(P.ProducerError, "^binding_failed$"):
+                P.runtime_pins(path)
+        path.write_text(content + "UNKNOWN=value\n", encoding="ascii")
+        with self.assertRaisesRegex(P.ProducerError, "^binding_failed$"):
+            P.runtime_pins(path)
+
     def test_private_file_reader_rejects_links_but_release_source_can_be_copied(self):
         alias = self.root / "alias.exe"
         os.link(self.app, alias)
