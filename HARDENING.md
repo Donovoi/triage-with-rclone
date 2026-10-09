@@ -90,6 +90,8 @@ Mount and Web GUI owners keep their runtime until shutdown. Menu actions stop wo
 
 Regression tests cover ownership, reader limits, cancellation and configuration retention, including panic paths. Full mount, Web GUI and menu acceptance still requires the isolated Windows lab; these changes do not add real-provider coverage.
 
+On Linux and macOS, failed mount startup can retain the runtime if the unmount helper cannot confirm cleanup, even when the path was never mounted. This conservative limitation needs a separate OS mount-state check. Child exit alone is not proof that a mount is gone. Windows remains the deployment target.
+
 ## Acceptance still required
 
 The provider results above cover only the named account types and scenarios. For remaining providers, run configured Test remotes using the explicit smoke workflow, then verify auth, listing, sample download, token refresh, and cleanup. Live cloud TUI acquisition, Shared Drives, actual grant revocation and mid-download cloud cancellation remain unverified. AP hardware, real browser encryption, and vault accessibility need dedicated Windows lab acceptance. Abrupt process/OS termination is not equivalent to graceful cleanup; retain manifests and inspect partial files after interruption.

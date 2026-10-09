@@ -492,9 +492,7 @@ fn perform_web_gui_flow<
             }
             Err(e) => {
                 app.menu_status = format!("Web GUI failed: {}", e);
-                app.log_error(format!("Web GUI failed: {}", e));
-                app.resource_shutdown_failed = true;
-                return Err(e);
+                app.handle_service_start_error("Web GUI failed", e)?;
             }
         }
 
@@ -1560,9 +1558,7 @@ fn perform_selection_mount(app: &mut App) -> Result<()> {
                 }
             }
             Err(e) => {
-                app.log_error(format!("Mount failed: {}", e));
-                app.resource_shutdown_failed = true;
-                return Err(e);
+                app.handle_service_start_error("Mount failed", e)?;
             }
         }
         Ok(())
@@ -1843,7 +1839,8 @@ fn perform_post_auth_mount<
                 app.auth_status = format!("Mount failed: {}", e);
                 app.log_error(format!("Mount failed: {}", e));
                 app.state = crate::ui::AppState::Mounted;
-                return Err(e);
+                // No child has started; with_runtime still verifies finalization.
+                return Ok(());
             }
         };
 
@@ -1896,10 +1893,8 @@ fn perform_post_auth_mount<
                 app.auth_status = format!("Mounted at {:?}", mount_path);
             }
             Err(e) => {
-                app.log_error(format!("Mount failed: {}", e));
                 app.auth_status = format!("Mount failed: {}", e);
-                app.resource_shutdown_failed = true;
-                return Err(e);
+                app.handle_service_start_error("Mount failed", e)?;
             }
         }
 

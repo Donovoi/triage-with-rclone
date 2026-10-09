@@ -10,6 +10,7 @@ pub mod authorize;
 pub mod combine;
 pub mod config;
 pub mod connectivity;
+pub(crate) mod lifecycle;
 pub mod mount;
 pub mod oauth;
 pub mod process;

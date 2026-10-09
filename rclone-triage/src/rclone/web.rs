@@ -1,8 +1,9 @@
 //! Owned rclone Web GUI process and runtime lifetime.
 
 use crate::embedded::ExtractedBinary;
+use crate::rclone::lifecycle::{cleanup_runtime, complete, uncertain};
 use crate::rclone::process::{ManagedChild, RcloneRunner, STOP_TIMEOUT};
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use std::path::Path;
 use std::process::{Command, ExitStatus, Stdio};
 use std::sync::{
@@ -26,7 +27,9 @@ impl WebGuiProcess {
     }
     fn finalize(&mut self) -> Result<ExitStatus> {
         if self.failed {
-            bail!("Earlier Web GUI shutdown failed; runtime retained");
+            return Err(uncertain(anyhow::anyhow!(
+                "Earlier Web GUI shutdown failed; runtime retained"
+            )));
         }
         if let Some(status) = self.finished {
             return Ok(status);
@@ -37,7 +40,7 @@ impl WebGuiProcess {
                 .finish()
                 .context("Web GUI child finalization failed")?;
             if let Some(runtime) = self.runtime.as_mut() {
-                runtime.cleanup()?;
+                cleanup_runtime(runtime)?;
             }
             Ok(status)
         })();
@@ -48,33 +51,41 @@ impl WebGuiProcess {
             }
             Err(error) => {
                 self.retain();
-                Err(error)
+                Err(uncertain(error))
             }
         }
     }
     pub fn stop(&mut self) -> Result<()> {
         if self.failed {
-            bail!("Earlier Web GUI shutdown failed; runtime retained");
+            return Err(uncertain(anyhow::anyhow!(
+                "Earlier Web GUI shutdown failed; runtime retained"
+            )));
         }
         if self.finished.is_some() {
             return Ok(());
         }
         if let Err(error) = self.child.stop_and_reap(STOP_TIMEOUT) {
             self.retain();
-            return Err(error).context("Web GUI child shutdown failed");
+            return Err(uncertain(
+                anyhow::Error::new(error).context("Web GUI child shutdown failed"),
+            ));
         }
         self.finalize().map(|_| ())
     }
     pub fn wait(&mut self) -> Result<ExitStatus> {
         if self.failed {
-            bail!("Earlier Web GUI shutdown failed; runtime retained");
+            return Err(uncertain(anyhow::anyhow!(
+                "Earlier Web GUI shutdown failed; runtime retained"
+            )));
         }
         if let Some(status) = self.finished {
             return Ok(status);
         }
         if let Err(error) = self.child.wait() {
             self.retain();
-            return Err(error).context("Web GUI wait failed");
+            return Err(uncertain(
+                anyhow::Error::new(error).context("Web GUI wait failed"),
+            ));
         }
         self.finalize()
     }
@@ -89,7 +100,9 @@ impl WebGuiProcess {
                 Ok(None) => std::thread::sleep(std::time::Duration::from_millis(50)),
                 Err(error) => {
                     self.retain();
-                    return Err(error).context("Web GUI wait failed");
+                    return Err(uncertain(
+                        anyhow::Error::new(error).context("Web GUI wait failed"),
+                    ));
                 }
             }
         }
@@ -160,11 +173,6 @@ pub fn start_web_gui_owned(
             finished: None,
             failed: false,
         }),
-        Err(error) => match binary.cleanup() {
-            Ok(()) => Err(error),
-            Err(cleanup) => Err(error.context(format!(
-                "Web GUI startup runtime cleanup also failed: {cleanup}"
-            ))),
-        },
+        Err(error) => complete(Err(error), cleanup_runtime(&mut binary)),
     }
 }

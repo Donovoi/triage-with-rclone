@@ -166,9 +166,7 @@ pub(crate) fn perform_mount_flow<
             }
             Err(e) => {
                 app.provider.status = format!("Mount failed: {}", e);
-                app.log_error(format!("Mount failed: {}", e));
-                app.resource_shutdown_failed = true;
-                return Err(e);
+                app.handle_service_start_error("Mount failed", e)?;
             }
         }
 

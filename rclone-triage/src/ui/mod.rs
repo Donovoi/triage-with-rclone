@@ -725,6 +725,8 @@ impl App {
         if let Some(task) = self.listing_task.take() {
             task.cancel
                 .store(true, std::sync::atomic::Ordering::Relaxed);
+            // The worker reports ordinary listing failures through progress and
+            // returns Ok after cleanup; Err here means cleanup, panic or timeout.
             if let Err(error) = runtime::join_worker(task.handle).and_then(|result| result) {
                 self.resource_shutdown_failed = true;
                 return Err(error);
@@ -1776,6 +1778,28 @@ impl App {
         Ok(self.files.to_download.len())
     }
 
+    /// Report an ordinary startup failure without leaving the retry/menu flow.
+    /// Only failed finalization prevents future configuration or owner replacement.
+    pub(crate) fn handle_service_start_error(
+        &mut self,
+        operation: &str,
+        error: anyhow::Error,
+    ) -> Result<()> {
+        self.log_error(format!("{operation}: {error:#}"));
+        self.note_cleanup_uncertainty(&error);
+        if runtime::cleanup_uncertain(&error) {
+            Err(error)
+        } else {
+            Ok(())
+        }
+    }
+
+    pub(crate) fn note_cleanup_uncertainty(&mut self, error: &anyhow::Error) {
+        if runtime::cleanup_uncertain(error) {
+            self.resource_shutdown_failed = true;
+        }
+    }
+
     /// Owners stay installed on failure, preventing replacement or config mutation.
     pub fn unmount_remote(&mut self) -> Result<()> {
         if let Some(mounted) = self.mounted_remote.as_mut() {
@@ -1950,6 +1974,72 @@ mod tests {
         assert!(app.listing_task.is_none());
         assert!(app.files.entries.is_empty());
         assert!(!app.resource_shutdown_failed);
+    }
+
+    #[test]
+    fn clean_service_failure_preserves_menu_and_allows_retry_and_reset() {
+        for (operation, state) in [
+            ("Web GUI failed", AppState::MainMenu),
+            ("Mount failed", AppState::FileList),
+            ("Mount failed", AppState::Mounted),
+        ] {
+            let mut app = App::new();
+            app.state = state;
+            app.files.entries.push("preserved-inventory".into());
+            app.handle_service_start_error(operation, anyhow::anyhow!("startup rejected"))
+                .unwrap();
+            assert!(!app.resource_shutdown_failed);
+            assert_eq!(app.state, state);
+            assert_eq!(app.files.entries, ["preserved-inventory"]);
+            app.quiesce_resources().unwrap();
+            app.reset_flow_state().unwrap();
+        }
+    }
+
+    #[test]
+    fn uncertain_service_cleanup_keeps_failure_and_blocks_reset() {
+        let mut app = App::new();
+        app.state = AppState::FileList;
+        app.files.entries.push("preserved-inventory".into());
+        let failure = runtime::complete::<()>(
+            Err(anyhow::anyhow!("startup rejected")),
+            Err(crate::rclone::lifecycle::uncertain(anyhow::anyhow!(
+                "child shutdown failed"
+            ))),
+        )
+        .unwrap_err();
+        let error = app
+            .handle_service_start_error("Mount failed", failure)
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("startup rejected"));
+        assert!(format!("{error:#}").contains("child shutdown failed"));
+        assert!(app.resource_shutdown_failed);
+        assert!(app.reset_flow_state().is_err());
+        assert_eq!(app.files.entries, ["preserved-inventory"]);
+    }
+
+    #[test]
+    fn manifest_failure_is_reported_without_poisoning_confirmed_worker_cleanup() {
+        for cleanup_failed in [false, true] {
+            let mut app = App::new();
+            app.files.entries.push("completed-acquisition".into());
+            let cleanup = if cleanup_failed {
+                Err(crate::rclone::lifecycle::uncertain(anyhow::anyhow!(
+                    "runtime cleanup failed"
+                )))
+            } else {
+                Ok(())
+            };
+            let finalization =
+                runtime::complete::<()>(Err(anyhow::anyhow!("manifest write failed")), cleanup);
+            let error = finalization.as_ref().unwrap_err();
+            app.note_cleanup_uncertainty(error);
+            assert_eq!(app.resource_shutdown_failed, cleanup_failed);
+            assert_eq!(app.files.entries, ["completed-acquisition"]);
+            let reported = runtime::complete(Ok(()), finalization).unwrap_err();
+            assert!(format!("{reported:#}").contains("manifest write failed"));
+            assert_eq!(app.quiesce_resources().is_err(), cleanup_failed);
+        }
     }
 
     fn sample_detected_candidate(

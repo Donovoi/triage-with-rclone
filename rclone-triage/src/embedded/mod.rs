@@ -207,6 +207,72 @@ pub fn verify_embedded_binary() -> Result<()> {
 mod tests {
     use super::*;
 
+    // No executable is created: backend startup fails before any child can run.
+    fn absent_test_runtime(root: &Path) -> ExtractedBinary {
+        let owned = private_fs::tempdir_in(root, "absent-runtime-").unwrap();
+        ExtractedBinary {
+            path: owned.path().join("absent-executable"),
+            temp_dir: Some(owned),
+            owns_file: true,
+            cleanup_failed: false,
+            tracker: RuntimeTracker::new(),
+        }
+    }
+
+    #[test]
+    fn owned_web_startup_failure_distinguishes_clean_and_uncertain_runtime_cleanup() {
+        for retained in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let binary = absent_test_runtime(root.path());
+            let directory = binary.path.parent().unwrap().to_path_buf();
+            if retained {
+                binary.tracker.retain();
+            }
+            let error = crate::rclone::web::start_web_gui_owned(binary, None, 5592, None, None)
+                .err()
+                .expect("absent runtime cannot start");
+            assert_eq!(
+                crate::rclone::lifecycle::cleanup_uncertain(&error),
+                retained
+            );
+            assert_eq!(directory.exists(), retained);
+            if !retained {
+                assert!(format!("{error:#}").contains("Failed to spawn rclone"));
+            }
+            // No child was created: this independent test root may remove its fixture.
+            root.close().unwrap();
+        }
+    }
+
+    #[test]
+    fn mount_preflight_failure_preserves_typed_cleanup_without_running_a_helper() {
+        for retained in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let binary = absent_test_runtime(root.path());
+            let directory = binary.path.parent().unwrap().to_path_buf();
+            if retained {
+                binary.tracker.retain();
+            }
+            // The first preflight predicate rejects this different path, before
+            // FUSE checks, installation, directory creation or any process spawn.
+            let manager = crate::rclone::MountManager::new(root.path().join("wrong-executable"))
+                .unwrap()
+                .with_mount_base(root.path().join("unused-mount"));
+            let error = manager
+                .mount(binary, "Synthetic", None)
+                .err()
+                .expect("owner mismatch");
+            assert!(format!("{error:#}").contains("Mount runtime does not match its owner"));
+            assert_eq!(
+                crate::rclone::lifecycle::cleanup_uncertain(&error),
+                retained
+            );
+            assert_eq!(directory.exists(), retained);
+            assert!(!root.path().join("unused-mount").exists());
+            root.close().unwrap();
+        }
+    }
+
     // The production runtime remains extraction-only. These Unix tests construct
     // an owned synthetic script here, where its private fields are accessible.
     #[cfg(unix)]
@@ -268,7 +334,7 @@ while :; do :; done
         let mut process = match started {
             Ok(process) => process,
             Err(_) => {
-                root.keep();
+                let _ = root.keep();
                 panic!("Synthetic Web GUI child startup failed");
             }
         };
@@ -276,7 +342,7 @@ while :; do :; done
         let active_cleanup = binary.cleanup();
         if process.stop().is_err() {
             // Test fixture cleanup must not bypass uncertain child ownership.
-            root.keep();
+            let _ = root.keep();
             panic!("Synthetic Web GUI child shutdown was not confirmed");
         }
         assert!(
@@ -325,14 +391,14 @@ while :; do :; done
             match crate::rclone::web::start_web_gui_owned(binary, None, 5591, None, None) {
                 Ok(process) => process,
                 Err(_) => {
-                    root.keep();
+                    let _ = root.keep();
                     panic!("Synthetic Web GUI child startup failed");
                 }
             };
         let args = captured_web_gui_args(&path);
         let existed_while_owned = path.is_file();
         if process.stop().is_err() {
-            root.keep();
+            let _ = root.keep();
             panic!("Synthetic Web GUI child shutdown was not confirmed");
         }
         assert!(existed_while_owned);
