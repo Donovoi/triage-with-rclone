@@ -428,6 +428,7 @@ fn finalize_listing_inner(
         None => return Ok(()),
     };
     let ctx = task.context;
+    // Done is emitted only after cleanup; worker Err is finalization uncertainty.
     if let Err(error) = crate::ui::runtime::join_worker(task.handle).and_then(|result| result) {
         app.resource_shutdown_failed = true;
         return Err(error);

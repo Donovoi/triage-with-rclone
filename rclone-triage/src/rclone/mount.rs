@@ -4,6 +4,7 @@
 //! Supports Windows (via WinFsp), Linux (via FUSE), and macOS (via macFUSE).
 
 use crate::embedded::ExtractedBinary;
+use crate::rclone::lifecycle::{cleanup_runtime, complete, uncertain};
 use crate::rclone::process::{DrainHandle, ManagedChild, RcloneRunner, JOIN_TIMEOUT, STOP_TIMEOUT};
 use anyhow::{bail, Context, Result};
 use std::path::{Path, PathBuf};
@@ -45,7 +46,9 @@ impl MountedRemote {
     /// A failed shutdown retains this owner; callers must not replace it.
     pub fn unmount(&mut self) -> Result<()> {
         if self.failed {
-            bail!("Earlier mount shutdown failed; runtime retained");
+            return Err(uncertain(anyhow::anyhow!(
+                "Earlier mount shutdown failed; runtime retained"
+            )));
         }
         if self.stopped {
             return Ok(());
@@ -62,6 +65,10 @@ impl MountedRemote {
             self.process
                 .finish()
                 .context("Mount child finalization failed")?;
+            // Child exit does not prove that the OS mount is gone. On Unix we
+            // conservatively require the helper to confirm unmount, even after
+            // startup failed. A never-mounted path can therefore remain uncertain;
+            // skipping this requires a separate positive OS mount-state check.
             #[cfg(target_os = "linux")]
             {
                 let output = RcloneRunner::new("fusermount")
@@ -83,7 +90,7 @@ impl MountedRemote {
                     bail!("Mount helper did not confirm unmount");
                 }
             }
-            self.runtime.cleanup()?;
+            cleanup_runtime(&mut self.runtime)?;
             Ok(())
         })();
         match result {
@@ -94,7 +101,7 @@ impl MountedRemote {
             }
             Err(error) => {
                 self.retain();
-                Err(error)
+                Err(uncertain(error))
             }
         }
     }
@@ -393,12 +400,7 @@ impl MountManager {
         let (process, mount_point) = match started {
             Ok(started) => started,
             Err(error) => {
-                return match binary.cleanup() {
-                    Ok(()) => Err(error),
-                    Err(cleanup) => {
-                        Err(error.context(format!("Mount startup cleanup also failed: {cleanup}")))
-                    }
-                }
+                return complete(Err(error), cleanup_runtime(&mut binary));
             }
         };
         let mut mounted = MountedRemote {
@@ -432,12 +434,7 @@ impl MountManager {
             Ok(())
         })();
         if let Err(error) = startup {
-            return match mounted.unmount() {
-                Ok(()) => Err(error),
-                Err(cleanup) => {
-                    Err(error.context(format!("Mount startup shutdown also failed: {cleanup}")))
-                }
-            };
+            return complete(Err(error), mounted.unmount());
         }
         Ok(mounted)
     }
@@ -592,12 +589,7 @@ impl MountManager {
     ) -> Result<MountedRemote> {
         let mut mounted = self.mount(binary, remote, subfolder)?;
         if let Err(error) = open_file_explorer(mounted.mount_point()) {
-            return match mounted.unmount() {
-                Ok(()) => Err(error),
-                Err(cleanup) => {
-                    Err(error.context(format!("Explorer failure shutdown also failed: {cleanup}")))
-                }
-            };
+            return complete(Err(error), mounted.unmount());
         }
         Ok(mounted)
     }

@@ -5,43 +5,7 @@ use anyhow::{Context, Result};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-#[derive(Debug)]
-struct CleanupContext(anyhow::Error);
-impl std::fmt::Display for CleanupContext {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Resource cleanup also failed: {:#}", self.0)
-    }
-}
-#[derive(Debug)]
-struct RuntimeCleanupFailure(anyhow::Error);
-impl std::fmt::Display for RuntimeCleanupFailure {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Runtime finalization failed: {:#}", self.0)
-    }
-}
-impl std::error::Error for RuntimeCleanupFailure {}
-
-pub(crate) fn cleanup_runtime(binary: &mut ExtractedBinary) -> Result<()> {
-    binary
-        .cleanup()
-        .map_err(|error| RuntimeCleanupFailure(error).into())
-}
-
-pub(crate) fn cleanup_uncertain(error: &anyhow::Error) -> bool {
-    error.downcast_ref::<RuntimeCleanupFailure>().is_some()
-        || error
-            .downcast_ref::<CleanupContext>()
-            .is_some_and(|context| cleanup_uncertain(&context.0))
-}
-
-/// Preserve both errors without replacing the operation's error chain.
-pub(crate) fn complete<T>(operation: Result<T>, cleanup: Result<()>) -> Result<T> {
-    match (operation, cleanup) {
-        (Ok(value), Ok(())) => Ok(value),
-        (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
-        (Err(operation), Err(cleanup)) => Err(operation.context(CleanupContext(cleanup))),
-    }
-}
+pub(crate) use crate::rclone::lifecycle::{cleanup_runtime, cleanup_uncertain, complete};
 
 /// A synchronous flow either transfers ownership or explicitly finalizes it.
 pub(crate) struct RuntimeSlot(Option<ExtractedBinary>);
@@ -107,7 +71,7 @@ mod tests {
     #[test]
     fn typed_cleanup_uncertainty_survives_an_operation_error_context() {
         let failure: anyhow::Error =
-            RuntimeCleanupFailure(anyhow::anyhow!("cleanup sentinel")).into();
+            crate::rclone::lifecycle::uncertain(anyhow::anyhow!("cleanup sentinel"));
         let error =
             complete::<()>(Err(anyhow::anyhow!("original operation")), Err(failure)).unwrap_err();
         assert!(cleanup_uncertain(&error));
@@ -121,7 +85,9 @@ mod tests {
     fn terminal_report_and_worker_failures_are_all_retained() {
         let postprocessing = Err(anyhow::anyhow!("report write sentinel"));
         let operation = complete::<()>(Err(anyhow::anyhow!("terminal sentinel")), postprocessing);
-        let worker = Err(RuntimeCleanupFailure(anyhow::anyhow!("worker cleanup sentinel")).into());
+        let worker = Err(crate::rclone::lifecycle::uncertain(anyhow::anyhow!(
+            "worker cleanup sentinel"
+        )));
         let error = complete(operation, worker).unwrap_err();
         let rendered = format!("{error:#}");
         for cause in [

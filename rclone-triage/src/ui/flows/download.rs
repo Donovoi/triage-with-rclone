@@ -299,8 +299,9 @@ fn execute_plan_inner<
             return crate::ui::runtime::complete(interaction_result, Err(error));
         }
     };
-    if worker_finalization.is_err() {
-        app.resource_shutdown_failed = true;
+    if let Err(error) = &worker_finalization {
+        // Manifest persistence is an operation failure, not a cleanup certificate.
+        app.note_cleanup_uncertainty(error);
     }
     let postprocessing = (|| -> Result<()> {
         // Retry manifest persistence on the UI path only if worker persistence failed;
