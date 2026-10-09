@@ -1,4 +1,5 @@
 """GCS OAuth state/driver tests. No socket, rclone, container or account runs."""
+import base64
 import copy
 from datetime import datetime, timezone
 from email.message import Message
@@ -68,16 +69,15 @@ def request(value, method, target, body=b"", auth=None, extra=()):
 def authorize(value):
     # Literal request oracle, independent of the service URL builder.
     return request(value, "GET", "/oauth/authorize?access_type=offline&client_id=" + "a" * 32 +
-        "&redirect_uri=http%3A%2F%2Flocalhost%3A53682%2F&response_type=code&scope=" +
+        "&redirect_uri=http%3A%2F%2F127.0.0.1%3A53682%2F&response_type=code&scope=" +
         "https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fdevstorage.read_write&state=" + STATE)
 
 
 def exchange(value, *, refresh=False, basic=False):
-    import base64
     code = "h" * 32 if value.mode == "invalid_code" else "c" * 32
     secret = "i" * 32 if value.mode == "wrong_client_secret" else "b" * 32
     values = ("grant_type=refresh_token&refresh_token=" + "e" * 32 if refresh else
-              "code=" + code + "&grant_type=authorization_code&redirect_uri=http%3A%2F%2Flocalhost%3A53682%2F")
+              "code=" + code + "&grant_type=authorization_code&redirect_uri=http%3A%2F%2F127.0.0.1%3A53682%2F")
     if not basic:
         values = "client_id=" + "a" * 32 + "&client_secret=" + secret + "&" + values
     auth = "Basic " + base64.b64encode(("a" * 32 + ":" + secret).encode()).decode() if basic else None
@@ -109,6 +109,51 @@ class ProtocolTests(unittest.TestCase):
         content = request(value, "GET", "/media/README-synthetic.txt", auth="Bearer " + "d" * 32)
         self.assertEqual(content.wfile.getvalue(), FILES["README-synthetic.txt"])
         self.assertTrue(P.flow_matches(value, "positive"))
+
+    def test_gcs_numeric_callback_is_exact_for_authorize_and_redirect(self):
+        # Independent pinned GCS/original oauthutil.RedirectURL oracle. A hostname
+        # alias is not interchangeable with the callback configured by the client.
+        target = ("/oauth/authorize?access_type=offline&client_id=" + "a" * 32 +
+                  "&redirect_uri=http%3A%2F%2F127.0.0.1%3A53682%2F&response_type=code&scope=" +
+                  "https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fdevstorage.read_write&state=" + STATE)
+        value = state()
+        reply = request(value, "GET", target)
+        self.assertEqual(reply.status, 302)
+        self.assertEqual(dict(reply.response_headers)["Location"],
+                         "http://127.0.0.1:53682/?code=" + "c" * 32 + "&state=" + STATE)
+        for index, changed in enumerate((target.replace("127.0.0.1", "localhost"),
+                        target.replace("127.0.0.1", "localhost.rclone.org"),
+                        target.replace("127.0.0.1", "outside.invalid"),
+                        target.replace("53682", "53683"),
+                        target.replace("access_type=offline&", ""),
+                        target + "&state=" + STATE, target + "&extra=1")):
+            with self.subTest(target_index=index):
+                value = state()
+                reply = request(value, "GET", changed)
+                self.assertEqual(reply.status, 400)
+                self.assertEqual(value.events, [])
+                self.assertEqual(value.token_requests, 0)
+                self.assertTrue(value.failed)
+
+    def test_code_exchange_refuses_callback_hostname_alias_in_both_auth_styles(self):
+        for basic in (True, False):
+            with self.subTest(basic=basic):
+                value = state()
+                self.assertEqual(authorize(value).status, 302)
+                if not basic:
+                    self.assertEqual(exchange(value, basic=True).status, 400)
+                prior_events, prior_requests = list(value.events), value.token_requests
+                body = ("code=" + "c" * 32 +
+                        "&grant_type=authorization_code&redirect_uri=http%3A%2F%2Flocalhost%3A53682%2F")
+                auth = "Basic " + base64.b64encode(("a" * 32 + ":" + "b" * 32).encode()).decode() if basic else None
+                if not basic:
+                    body = "client_id=" + "a" * 32 + "&client_secret=" + "b" * 32 + "&" + body
+                reply = request(value, "POST", "/oauth/token", body.encode(), auth)
+                self.assertEqual(reply.status, 400)
+                self.assertTrue(value.failed)
+                self.assertEqual(value.events, prior_events)
+                self.assertEqual(value.token_requests, prior_requests)
+                self.assertFalse(value.token_issued)
 
     def test_replacement_is_required_and_old_token_rejected(self):
         value, grant = granted("refresh")
