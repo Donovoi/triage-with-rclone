@@ -1246,6 +1246,72 @@ def runtime_cleanup_diagnostic(name, value):
     print("application_runtime_cleanup_diagnostic=" + E.compact(dict(scope=name, **value)).decode("ascii"), flush=True)
 
 
+RUNTIME_RESIDUE_PREFIX = b"runtime_cleanup_residue="
+RUNTIME_RESIDUE_COUNTS = ("other_files", "other_directories", "other_reparse_points", "other_entries")
+
+
+def runtime_residue_value(value):
+    """Closed observation only; never identifies a holder or authorizes removal."""
+    need(type(value) is dict and list(value) == ["root", "executable", *RUNTIME_RESIDUE_COUNTS, "complete"],
+         "cleanup_failed")
+    need(type(value["complete"]) is bool, "cleanup_failed")
+    if not value["complete"]:
+        need(value["root"] == "unavailable" and value["executable"] == "unavailable" and
+             all(value[key] is None for key in RUNTIME_RESIDUE_COUNTS), "cleanup_failed")
+    else:
+        need(value["root"] == "same_private_directory" and type(value["executable"]) is str and
+             value["executable"] in {"absent", "regular_file", "directory", "reparse_point", "other"},
+             "cleanup_failed")
+        need(all(type(value[key]) is int and 0 <= value[key] <= 8 for key in RUNTIME_RESIDUE_COUNTS) and
+             sum(value[key] for key in RUNTIME_RESIDUE_COUNTS) + int(value["executable"] != "absent") <= 8,
+             "cleanup_failed")
+    return value
+
+
+def parse_runtime_cleanup_residue(data):
+    """Accept only the intact adjacent pair emitted by the failed cleanup path."""
+    try:
+        diagnostic = parse_runtime_cleanup_diagnostic(data)
+        need(diagnostic is not None and diagnostic["stage"] == "remove_tree", "cleanup_failed")
+        marker = b"runtime_cleanup_residue"
+        need(data.count(marker) == 1, "cleanup_failed")
+        lines = data.split(b"\n")
+        index = next(i for i, line in enumerate(lines) if marker in line)
+        need(0 < index < len(lines) - 1 and RUNTIME_CLEANUP_PREFIX in lines[index - 1], "cleanup_failed")
+        line = lines[index]
+        if line.endswith(b"\r"):
+            line = line[:-1]
+        need(len(line) <= 4096, "cleanup_failed")
+        start = line.index(RUNTIME_RESIDUE_PREFIX)
+        record = line[start:line.index(b"}", start) + 1]
+        need(len(record) <= 320 and all(32 <= item <= 126 for item in record), "cleanup_failed")
+        value = runtime_residue_value(strict_json(record[len(RUNTIME_RESIDUE_PREFIX):], 320))
+        encoded = json.dumps(value, separators=(",", ":"), ensure_ascii=True).encode("ascii")
+        need(record == RUNTIME_RESIDUE_PREFIX + encoded, "cleanup_failed")
+        return value
+    except (ProducerError, TypeError, ValueError, StopIteration):
+        return None
+
+
+def read_runtime_cleanup_residue(case, lease, diagnostic):
+    try:
+        diagnostic = runtime_cleanup_value(diagnostic)
+        need(lease is not None and identity(case) == lease, "cleanup_failed")
+        data = read(case / "transcript.private", 8 * 1024 * 1024)
+        need(identity(case) == lease, "cleanup_failed")
+        # Both forwarded values must occur together in this same snapshot.
+        need(parse_runtime_cleanup_diagnostic(data) == diagnostic, "cleanup_failed")
+        return parse_runtime_cleanup_residue(data)
+    except BaseException:
+        return None
+
+
+def runtime_cleanup_residue(name, value):
+    need(type(name) is str and name in E.CASE_CHECKS, "cleanup_failed")
+    value = runtime_residue_value(value)
+    print("application_runtime_cleanup_residue=" + E.compact(dict(scope=name, **value)).decode("ascii"), flush=True)
+
+
 def output_files(root):
     entries = inventory(root)
     need(not any(any(part.startswith(".triage-transfer-") for part in path.split("/")) for path in entries), "outputs_invalid")
@@ -1391,6 +1457,7 @@ def run_case(name, suite, application, application_sha, runtime, session_factory
     session_attempted = fixture_attempted = entered = prepared = False
     helper_closed = False
     runtime_diagnostic = None
+    runtime_residue = None
     runtime_diagnostic_attempted = False
     config_bytes = None
     helper_before = private_leases = None
@@ -1398,11 +1465,13 @@ def run_case(name, suite, application, application_sha, runtime, session_factory
         if record["failure_code"] is None:
             record["failure_code"] = code
     def collect_runtime_diagnostic():
-        nonlocal runtime_diagnostic, runtime_diagnostic_attempted
+        nonlocal runtime_diagnostic, runtime_residue, runtime_diagnostic_attempted
         if not runtime_diagnostic_attempted and helper_closed and lease is not None:
             runtime_diagnostic_attempted = True
             try:
                 runtime_diagnostic = read_runtime_cleanup_diagnostic(case, lease)
+                if runtime_diagnostic is not None and runtime_diagnostic["stage"] == "remove_tree":
+                    runtime_residue = read_runtime_cleanup_residue(case, lease, runtime_diagnostic)
             except BaseException:
                 pass
     try:
@@ -1554,6 +1623,8 @@ def run_case(name, suite, application, application_sha, runtime, session_factory
         if runtime_diagnostic is not None:
             try:
                 runtime_cleanup_diagnostic(name, runtime_diagnostic)
+                if runtime_residue is not None:
+                    runtime_cleanup_residue(name, runtime_residue)
             except BaseException:
                 pass  # Printing a finite diagnostic never changes acceptance or cleanup.
     return record
