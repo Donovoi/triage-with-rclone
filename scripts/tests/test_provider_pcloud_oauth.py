@@ -36,6 +36,14 @@ class OAuthFixtureTests(unittest.TestCase):
         self.root = Path(self.temp.name).resolve()
         self.credentials = tuple("synthetic-" + secrets.token_hex(16) for _ in range(5))
         self.fixtures = []
+        # These existing HTTP component tests use the unchanged IP/ephemeral
+        # TLS profile explicitly. The native probe separately requires the real
+        # DNS/443 profile; this test injection is not a production fallback.
+        original_create = oauth.FixtureCertificates.create
+        self.profile = patch.object(oauth.FixtureCertificates, "create",
+            side_effect=lambda root, **kwargs: original_create(root))
+        self.profile.start()
+        self.addCleanup(self.profile.stop)
 
     def tearDown(self):
         failures = []
@@ -326,7 +334,7 @@ class OAuthFixtureTests(unittest.TestCase):
                 if failure == "duplicate": body += b"&code=" + state.code.encode()
                 if failure == "unknown_field": body += b"&extra=1"
                 handler = object.__new__(oauth._OAuthHandler)
-                handler.server = SimpleNamespace(state=state, server_address=("127.0.0.1", 12345))
+                handler.server = SimpleNamespace(state=state, server_address=("127.0.0.1", 12345), authority="127.0.0.1:12345")
                 handler.command, handler.path, handler._counted = "POST", "/oauth2_token", False
                 handler.raw_requestline = b"POST /oauth2_token HTTP/1.1\r\n"
                 handler.headers = Message()
@@ -382,7 +390,7 @@ class OAuthFixtureTests(unittest.TestCase):
                 state = self.state()
                 state.phase, state.deadline = "authorized", time.monotonic() + 3
                 handler = object.__new__(oauth._OAuthHandler)
-                handler.server = SimpleNamespace(state=state, server_address=("127.0.0.1", 12345))
+                handler.server = SimpleNamespace(state=state, server_address=("127.0.0.1", 12345), authority="127.0.0.1:12345")
                 handler.command, handler.path, handler._counted = "POST", "/oauth2_token", False
                 handler.raw_requestline = b"POST /oauth2_token HTTP/1.1\r\n"
                 handler.headers = Message()
@@ -511,7 +519,7 @@ class OAuthFixtureTests(unittest.TestCase):
         state.bind_state(BOUND_STATE)
         before = state.source_snapshot()
         handler = object.__new__(oauth._OAuthHandler)
-        handler.server = SimpleNamespace(state=state, server_address=("127.0.0.1", 12345))
+        handler.server = SimpleNamespace(state=state, server_address=("127.0.0.1", 12345), authority="127.0.0.1:12345")
         handler.command, handler.path, handler._counted = "GET", self.authorize_path(state), False
         handler.raw_requestline = ("GET " + handler.path + " HTTP/1.1\r\n").encode("ascii")
         handler.headers = Message()

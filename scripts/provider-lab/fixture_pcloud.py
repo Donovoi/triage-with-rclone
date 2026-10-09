@@ -191,7 +191,7 @@ class _PCloudHandler(BaseHTTPRequestHandler):
             state.rejected_payload_bytes += min(int(length), 4097) if re.fullmatch(r"[0-9]{1,19}", length or "") else 1
             raise PCloudError("pcloud_body_refused")
         if (len(parts) != 3 or parts[0] != self.command.encode("ascii") or parts[1] != self.path.encode("ascii")
-                or parts[2] != b"HTTP/1.1" or self.headers.get_all("Host") != [f"127.0.0.1:{self.server.server_address[1]}"]
+                or parts[2] != b"HTTP/1.1" or self.headers.get_all("Host") != [self.server.authority]
                 or len(names) != len(set(names)) or not set(names) <= allowed
                 or any(any(ord(char) < 32 or ord(char) > 126 for char in value) for _, value in headers)
                 or self.headers.get("Accept-Encoding") not in (None, "gzip", "identity")
@@ -266,7 +266,7 @@ class _PCloudHandler(BaseHTTPRequestHandler):
             elif kind == "link":
                 state.events.append((kind, member))
                 state.links.add(member)
-                self._json(200, {"result": 0, "hosts": [f"127.0.0.1:{self.server.server_address[1]}"],
+                self._json(200, {"result": 0, "hosts": [self.server.authority],
                                  "path": "/download/" + FILE_IDS[member], "expires": state.link_expires})
             elif kind == "write_denied":
                 state.events.append((kind, member))

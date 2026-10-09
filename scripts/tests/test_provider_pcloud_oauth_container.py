@@ -33,7 +33,7 @@ def probe():
                         "python_version": "3.12.15", "cryptography_version": "50.0.2",
                         "rclone_version": "1.76.2", "rclone_sha256": "c" * 64, "probe_sha256": "d" * 64,
                         "fixture_manifest_sha256": "c990bbd4909b227aae4c70d26f9da5534740a2eb10337ced47977f915fa617be"},
-            "checks": {"environment": True, "version_binding": True, "initial_config_question": True,
+            "checks": {"environment": True, "tls_authority_bound": True, "authority_preserved": True, "version_binding": True, "initial_config_question": True,
                        "callback_ownership": True, "authorize": True, "token_exchange": True,
                        "config_persisted": True, "fresh_child_read": True, "source_preserved": True,
                        "post_auth_config_preserved": True, "request_sequence": True},
@@ -52,7 +52,7 @@ def image():
 
 def container(status="created"):
     return {"Id": CONTAINER, "Image": IMAGE, "Config": copy.deepcopy(image()["Config"]),
-            "HostConfig": {"NetworkMode": "none", "ReadonlyRootfs": True, "Privileged": False,
+            "HostConfig": {"ExtraHosts": ["fixture.pcloud.com:127.0.0.1"], "NetworkMode": "none", "ReadonlyRootfs": True, "Privileged": False,
                            "CapDrop": ["ALL"], "CapAdd": None, "SecurityOpt": ["no-new-privileges"],
                            "CgroupnsMode": "private", "IpcMode": "private", "Init": True,
                            "Memory": 536870912, "NanoCpus": 1000000000, "PidsLimit": 64,

@@ -15,6 +15,7 @@ import secrets
 import socket
 import ssl
 import stat
+import sys
 import tempfile
 import threading
 import time
@@ -22,6 +23,20 @@ import time
 
 CRYPTOGRAPHY_VERSION = "50.0.2"
 MAX_MATERIAL_BYTES = 65536
+PCLOUD_OAUTH_NAME = "fixture.pcloud.com"
+
+
+def _server_name(value):
+    if value is not None and (type(value) is not str or value != PCLOUD_OAUTH_NAME):
+        raise TlsError("tls_unreviewed_authority")
+    return value
+
+
+def _pcloud_sni(_socket, name, _context):
+    # Never render an untrusted SNI value; failure remains a TLS failure.
+    if name != PCLOUD_OAUTH_NAME:
+        return ssl.ALERT_DESCRIPTION_UNRECOGNIZED_NAME
+    return None
 
 
 class TlsError(RuntimeError):
@@ -125,7 +140,8 @@ class FixtureCertificates(AbstractContextManager):
         raise TypeError("use_FixtureCertificates_create")
 
     @classmethod
-    def create(cls, owned_root):
+    def create(cls, owned_root, *, server_name=None):
+        server_name = _server_name(server_name)
         root = _plain_path(owned_root)
         if not root.is_dir():
             raise TlsError("tls_root_directory_required")
@@ -138,6 +154,7 @@ class FixtureCertificates(AbstractContextManager):
         instance._bindings = []
         instance._context = None
         instance._leases = 0
+        instance._server_name = server_name
         instance.directory = Path(tempfile.mkdtemp(prefix="fixture-tls-", dir=root))
         instance._directory_owner = _Owner(instance.directory, _identity(instance.directory.lstat()))
         try:
@@ -164,7 +181,8 @@ class FixtureCertificates(AbstractContextManager):
                                                  data_encipherment=False, key_agreement=False, key_cert_sign=False,
                                                  crl_sign=False, encipher_only=None, decipher_only=None), critical=True)
                     .add_extension(x509.ExtendedKeyUsage([eku.SERVER_AUTH]), critical=False)
-                    .add_extension(x509.SubjectAlternativeName([x509.IPAddress(ipaddress.ip_address("127.0.0.1"))]), critical=False)
+                    .add_extension(x509.SubjectAlternativeName([x509.DNSName(server_name) if server_name is not None
+                        else x509.IPAddress(ipaddress.ip_address("127.0.0.1"))]), critical=False)
                     .add_extension(x509.SubjectKeyIdentifier.from_public_key(leaf_key.public_key()), critical=False)
                     .add_extension(x509.AuthorityKeyIdentifier.from_issuer_public_key(ca_key.public_key()), critical=False)
                     .sign(ca_key, hashes.SHA256()))
@@ -177,6 +195,8 @@ class FixtureCertificates(AbstractContextManager):
             context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
             context.minimum_version = ssl.TLSVersion.TLSv1_2
             context.set_alpn_protocols(["http/1.1"])
+            if server_name is not None:
+                context.set_servername_callback(_pcloud_sni)
             if hasattr(context, "num_tickets"):
                 context.num_tickets = 0
             _validated(leaf_binding)
@@ -236,6 +256,10 @@ class FixtureCertificates(AbstractContextManager):
         if self._closed or self._context is None:
             raise TlsError("tls_material_closed")
         self._owned_directory()
+
+    @property
+    def server_name(self):
+        return _server_name(self._server_name)
 
     @property
     def ca_path(self):
@@ -331,10 +355,18 @@ class TlsLimits:
 
 class _HttpServer(HTTPServer):
     allow_reuse_address = False
+    allow_reuse_port = False
 
     def __init__(self, transport, handler, state):
         self.transport, self.state = transport, state
-        super().__init__(("127.0.0.1", 0), handler)
+        if transport._server_name is not None:
+            if sys.platform != "linux":
+                raise TlsError("tls_dns_profile_requires_linux")
+            # Linux REUSEADDR permits sequential TIME_WAIT reuse, not a second
+            # live listener. REUSEPORT stays off; prior cleanup is still required.
+            self.allow_reuse_address = True
+        super().__init__(("127.0.0.1", 443 if transport._server_name is not None else 0), handler)
+        self.authority = transport._server_name or f"127.0.0.1:{self.server_address[1]}"
 
     def get_request(self):
         raw, address = super().get_request()
@@ -406,6 +438,7 @@ class BoundedHttpsServer(AbstractContextManager):
             raise TlsError("tls_invalid_limits")
         self.limits.validate()
         self._certificates = certificates
+        self._server_name = certificates.server_name
         self._context = certificates._acquire_server()
         self._lock, self._close_lock = threading.RLock(), threading.Lock()
         self._stopping = self._closed = self._started = False
@@ -468,6 +501,7 @@ class BoundedHttpsServer(AbstractContextManager):
             self._server = _HttpServer(self, QuietHandler, state)
             self._server.timeout = 0.02
             self.port = self._server.server_address[1]
+            self.authority = self._server.authority
             self._thread = threading.Thread(target=self._serve, name="synthetic-tls-listener")
         except BaseException:
             if hasattr(self, "_server"):

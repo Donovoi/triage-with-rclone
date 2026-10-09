@@ -155,7 +155,13 @@ impl ExtractedBinary {
             // close consumes the guard even on failure. Never let Drop retry
             // against a pathname whose identity may have caused that failure.
             self.owns_file = false;
-            if let Err(error) = temp_dir.close() {
+            let closed = match self.path.file_name() {
+                Some(leaf) if self.path.parent() == Some(dir_path.as_path()) => {
+                    temp_dir.close_with_residue(leaf)
+                }
+                _ => temp_dir.close(),
+            };
+            if let Err(error) = closed {
                 self.cleanup_failed = true;
                 return Err(error)
                     .with_context(|| format!("Failed to remove temp directory {:?}", dir_path));
@@ -490,6 +496,36 @@ while :; do :; done
         assert!(diagnostic.starts_with("{\"stage\":\"open_root\",\"kind\":\"not_found\","));
         assert!(!diagnostic.contains("canary"));
         assert!(!diagnostic.contains(root.path().to_string_lossy().as_ref()));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn runtime_sharing_failure_observation_never_retries_after_handle_closes() {
+        let root = tempfile::tempdir().unwrap();
+        let owned = private_fs::tempdir_in(root.path(), "runtime-canary-").unwrap();
+        let path = owned.path().join("rclone.exe");
+        private_fs::write(&path, b"synthetic file; never executed").unwrap();
+        let blocking = private_fs::open_stable_read(&path).unwrap();
+        let mut binary = ExtractedBinary {
+            path: path.clone(),
+            temp_dir: Some(owned),
+            owns_file: true,
+            cleanup_failed: false,
+            tracker: RuntimeTracker::new(),
+        };
+        let error = binary.cleanup().unwrap_err();
+        let diagnostic = runtime_cleanup_diagnostic(&error);
+        assert!(diagnostic.to_string().contains("\"os_code\":32"));
+        let residue = diagnostic.residue().unwrap().to_string();
+        assert!(residue.contains("\"executable\":\"regular_file\""));
+        assert!(!residue.contains("canary"));
+        drop(blocking);
+        assert!(binary.cleanup().is_err());
+        drop(binary);
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            b"synthetic file; never executed"
+        );
     }
 
     #[test]

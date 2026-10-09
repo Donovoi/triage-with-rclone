@@ -14,7 +14,7 @@ import time
 from urllib.parse import urlencode
 
 from fixture_pcloud import MEMBERS, PCloudError, PCloudState, _PCloudHandler
-from fixture_tls import BoundedHttpsServer, FixtureCertificates, TlsLimits
+from fixture_tls import BoundedHttpsServer, FixtureCertificates, TlsLimits, PCLOUD_OAUTH_NAME
 
 
 CALLBACK = "http://localhost:53682/"
@@ -24,7 +24,7 @@ MAX_RESPONSE_BYTES = 32768
 LIFETIME_SECONDS = 60
 READ_STEPS = (("root_list", ""), ("checksum", MEMBERS[0]),
               ("link", MEMBERS[0]), ("content", MEMBERS[0]))
-MODE_REQUESTS = {"positive": 6, "wrong_state": 1, "consent_denied": 1,
+MODE_REQUESTS = {"positive": 6, "wrong_state": 1, "blank_state": 1, "invalid_hostname": 1, "consent_denied": 1,
                  "invalid_code": 3, "wrong_client_secret": 3, "cancelled": 0}
 DENIALS = {"invalid_code": ("invalid_grant", "synthetic authorization code rejected"),
            "wrong_client_secret": ("invalid_client", "synthetic client secret rejected")}
@@ -161,7 +161,7 @@ class _OAuthHandler(_PCloudHandler):
         length = self.headers.get("Content-Length")
         if (len(parts) != 3 or parts[0] != self.command.encode("ascii") or parts[1] != self.path.encode("ascii")
                 or parts[2] != b"HTTP/1.1" or len(names) != len(set(names)) or not set(names) <= allowed
-                or self.headers.get_all("Host") != [f"127.0.0.1:{self.server.server_address[1]}"]
+                or self.headers.get_all("Host") != [self.server.authority]
                 or any(any(ord(char) < 32 or ord(char) > 126 for char in value) for _, value in headers)
                 or self.headers.get("Accept-Encoding") not in (None, "gzip", "identity")
                 or self.headers.get("Connection") not in (None, "close")):
@@ -183,8 +183,9 @@ class _OAuthHandler(_PCloudHandler):
                     "redirect_uri": CALLBACK, "response_type": "code", "state": state._bound_state}.items()))
         if state.phase != "bound" or not hmac.compare_digest(self.path, expected):
             raise OAuthError("oauth_authorize_refused")
-        values = {"hostname": f"127.0.0.1:{self.server.server_address[1]}", "locationid": "1",
-                  "state": state.alternate_state if state.mode == "wrong_state" else state._bound_state}
+        values = {"hostname": "fixture.invalid" if state.mode == "invalid_hostname" else self.server.authority,
+                  "locationid": "1", "state": state.alternate_state if state.mode == "wrong_state"
+                  else "" if state.mode == "blank_state" else state._bound_state}
         if state.mode == "consent_denied":
             values.update(error="access_denied", error_description="synthetic consent denied")
             body = b'{"status":"synthetic_consent_denied"}'
@@ -341,12 +342,12 @@ class OAuthFixture:
         self.state, self._certificates, self._transport = state, None, None
         self.cleanup_complete = self._closed = False
         try:
-            self._certificates = FixtureCertificates.create(Path(root))
+            self._certificates = FixtureCertificates.create(Path(root), server_name=PCLOUD_OAUTH_NAME)
             self._transport = BoundedHttpsServer(self._certificates, _OAuthHandler, state=state,
                                                 limits=TlsLimits(connection_limit=8, active_limit=2,
                                                                  request_seconds=3, lifetime_seconds=LIFETIME_SECONDS))
             self.port = self._transport.port
-            self.host = f"127.0.0.1:{self.port}"
+            self.host = self._transport.authority
             self._transport.start()
         except BaseException:
             if not self.close():

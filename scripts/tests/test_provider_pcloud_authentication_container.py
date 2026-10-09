@@ -11,7 +11,7 @@ from unittest import mock
 import test_provider_pcloud_oauth_container as baseline
 
 S = baseline.S
-NAMES = ("positive", "wrong_state", "consent_denied", "invalid_code", "wrong_client_secret", "cancelled")
+NAMES = ("positive", "wrong_state", "blank_state", "invalid_hostname", "consent_denied", "invalid_code", "wrong_client_secret", "cancelled")
 IDENTITY = baseline.IDENTITY
 SOURCES = baseline.SOURCES
 LOCK = baseline.LOCK
@@ -29,12 +29,12 @@ def suite():
         report["finished_utc"] = "2026-10-04T12:00:%02dZ" % (4 + index * 5)
         if index:
             report["scope"] = "pcloud_oauth_authentication_case"
-            report["checks"] = dict.fromkeys(("environment", "version_binding", "initial_config_question", "callback_ownership",
+            report["checks"] = dict.fromkeys(("environment", "tls_authority_bound", "authority_preserved", "version_binding", "initial_config_question", "callback_ownership",
                 "no_token_persisted", "config_preserved", "no_read", "source_preserved", "request_sequence"), True)
-            extra = (("authorize", "callback_denial") if index < 3 else ("authorize", "token_denial") if index < 5 else ("owned_process_cancel",))
+            extra = (("owned_process_cancel",) if name == "cancelled" else ("authorize", "hostname_denial") if name == "invalid_hostname" else ("authorize", "token_denial") if name in ("invalid_code", "wrong_client_secret") else ("authorize", "callback_denial"))
             report["checks"].update(dict.fromkeys(extra, True))
-            https = 1 if index < 3 else 3 if index < 5 else 0
-            callbacks = 2 if index < 5 else 0
+            https = 0 if name == "cancelled" else 3 if name in ("invalid_code", "wrong_client_secret") else 1
+            callbacks = 0 if name == "cancelled" else 2
             report["observations"] = {"native_commands": 3, "http_transactions": https + callbacks,
                                       "callback_requests": callbacks, "https_requests": https}
         cases.append({"name": name, "report": report})
@@ -90,10 +90,10 @@ class AuthenticationContract(unittest.TestCase):
         item = evidence(); self.assertIs(self.validate(item), item)
         self.assertEqual(S.authentication_evidence(native(), BINDINGS), item)
         totals = {k: sum(row["report"]["observations"][k] for row in suite()["cases"]) for k in ("native_commands", "http_transactions", "callback_requests", "https_requests")}
-        self.assertEqual(totals, {"native_commands": 19, "http_transactions": 24, "callback_requests": 10, "https_requests": 14})
+        self.assertEqual(totals, {"native_commands": 25, "http_transactions": 30, "callback_requests": 14, "https_requests": 16})
 
     def test_each_failed_prefix_is_preserved_without_fabricating_unrun_cases(self):
-        for length in range(1, 7):
+        for length in range(1, 9):
             for cleaned in (True, False):
                 with self.subTest(length=length, cleaned=cleaned):
                     self.validate(failed_prefix(length, cleaned))
