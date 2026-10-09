@@ -288,17 +288,19 @@ def _native_private_create(case, path, directory):
             resources.callback(free_memory, sd)
             need(sd.value and 0 < sd_length.value <= 65536, "case_setup_failed")
             attributes = Attributes(c.sizeof(Attributes), sd, False)
+            # LIST_DIRECTORY participates in Windows sharing checks; metadata-only
+            # access does not (MS-FSA 2.1.5.1.2.2). Keep no DELETE sharing.
             # Pin the case and immediate parent against rename/deletion while creating.
             stage = "parent"
             for parent in dict.fromkeys((case, path.parent)):
-                handle = valid_handle(create(str(parent), 0x80, 3, None, 3, 0x02200000, None))
+                handle = valid_handle(create(str(parent), 0x81, 3, None, 3, 0x02200000, None))
                 resources.callback(close_handle, handle)
                 check_handle(handle, parent, True)
             if directory:
                 stage = "create"
                 need(mkdir(str(path), c.byref(attributes)), "case_setup_failed")
                 stage = "handle"
-                handle = valid_handle(create(str(path), 0x80, 3, None, 3, 0x02200000, None))
+                handle = valid_handle(create(str(path), 0x81, 3, None, 3, 0x02200000, None))
                 resources.callback(close_handle, handle)
                 check_handle(handle, path, True)
             else:

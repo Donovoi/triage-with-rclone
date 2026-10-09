@@ -611,9 +611,10 @@ namespace TriageApplicationLab {
             try {
                 foreach(string path in chain) {
                     bool owned=String.Equals(path,root,StringComparison.OrdinalIgnoreCase) || String.Equals(path,source,StringComparison.OrdinalIgnoreCase);
-                    // READ_ATTRIBUTES, plus READ_CONTROL for owned ACLs. Open the
-                    // reparse point itself; never follow it. No DELETE sharing.
-                    IntPtr handle=CreateFileW(path,owned?0x20080u:0x80u,3,IntPtr.Zero,3,0x02200000,IntPtr.Zero);
+                    // LIST_DIRECTORY participates in sharing checks; metadata-only
+                    // access does not. Add READ_ATTRIBUTES and owned READ_CONTROL.
+                    // MS-FSA 2.1.5.1.2.2: omit DELETE sharing to hold each name.
+                    IntPtr handle=CreateFileW(path,owned?0x20081u:0x81u,3,IntPtr.Zero,3,0x02200000,IntPtr.Zero);
                     Need(handle!=IntPtr.Zero && handle!=new IntPtr(-1));
                     var pin=new Pin {handle=handle,path=path,owned=owned}; lease.pins.Add(pin);
                     pin.info=Check(pin);
