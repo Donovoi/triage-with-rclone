@@ -54,6 +54,21 @@ try {
                 $ready = $false
                 $result = @{ schema_version=1; ok=$true; state='closed' }
             }
+            'start_source' {
+                if (-not $ready -or $null -ne $session) { throw 'protocol_invalid' }
+                [TriageApplicationLab.HostedProtocol]::Keys($request, 'action,app_path,app_sha256,args,case_root,environment,transcript_path,max_output_bytes,deadline_ms,max_runtime_processes')
+                $session = [TriageApplicationLab.HostedConPtySession]::StartSource(
+                    [TriageApplicationLab.HostedProtocol]::Text($request, 'app_path'),
+                    [TriageApplicationLab.HostedProtocol]::Text($request, 'app_sha256'),
+                    [TriageApplicationLab.HostedProtocol]::Arguments($request),
+                    [TriageApplicationLab.HostedProtocol]::Text($request, 'case_root'),
+                    [TriageApplicationLab.HostedProtocol]::EnvironmentMap($request),
+                    [TriageApplicationLab.HostedProtocol]::Text($request, 'transcript_path'),
+                    [TriageApplicationLab.HostedProtocol]::Integer($request, 'max_output_bytes'),
+                    [TriageApplicationLab.HostedProtocol]::Integer($request, 'deadline_ms'),
+                    [TriageApplicationLab.HostedProtocol]::RuntimeProcessLimit($request))
+                $result = $session.Poll()
+            }
             'poll' {
                 [TriageApplicationLab.HostedProtocol]::Keys($request, 'action')
                 if ($null -eq $session) { throw 'protocol_invalid' }
