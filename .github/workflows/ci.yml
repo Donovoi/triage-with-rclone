@@ -9,6 +9,11 @@ on:
         description: Optional exact commit required by the runtime updater
         required: false
         type: string
+      gcs_oauth_experiment:
+        description: Run one unqualified GCS OAuth experiment after tests pass
+        required: false
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:
@@ -25,7 +30,12 @@ jobs:
         env:
           EXPECTED_SHA: ${{ inputs.expected_sha }}
           ACTUAL_SHA: ${{ github.sha }}
+          GCS_OAUTH_EXPERIMENT: ${{ inputs.gcs_oauth_experiment }}
         run: |
+          if [[ "$GCS_OAUTH_EXPERIMENT" == 'true' && -z "$EXPECTED_SHA" ]]; then
+            echo 'An exact expected_sha is required for the GCS experiment.' >&2
+            exit 1
+          fi
           if [[ -n "$EXPECTED_SHA" ]] && { [[ ! "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]] || [[ "$EXPECTED_SHA" != "$ACTUAL_SHA" ]]; }; then
             echo 'The requested commit does not match this workflow run.' >&2
             exit 1
@@ -172,6 +182,37 @@ jobs:
           name: pcloud-oauth-authentication
           path: ${{ runner.temp }}/pcloud-oauth-authentication.json
           if-no-files-found: warn
+          retention-days: 14
+  gcs-oauth-experiment:
+    name: Isolated GCS OAuth experiment (unqualified)
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.gcs_oauth_experiment }}
+    needs: [revision, test, python-audit]
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - name: Prepare verified Linux runtime
+        shell: bash
+        run: bash scripts/download-rclone.sh --linux "$RUNNER_TEMP/rclone-gcs-oauth"
+      - name: Exercise the GCS lifecycle once in a network-none container
+        shell: bash
+        run: |
+          python -B scripts/provider-lab/gcs-oauth/run_container.py \
+            --rclone "$RUNNER_TEMP/rclone-gcs-oauth" \
+            --report "$RUNNER_TEMP/gcs-oauth-experiment.json"
+      # Source experiment only: no ledger import, images, credentials or raw logs.
+      - name: Retain sanitized GCS experiment result
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: gcs-oauth-experiment
+          path: ${{ runner.temp }}/gcs-oauth-experiment.json
+          if-no-files-found: error
           retention-days: 14
   test:
     name: Test (${{ matrix.os }})
