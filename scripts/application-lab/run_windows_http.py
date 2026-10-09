@@ -663,7 +663,17 @@ def session_diagnostic(action, phase, outcome, last_stage=None):
 
 class Bridge:
     """One owned hidden PS5 process; fixed JSON protocol and bounded pipe readers."""
+    script_name = "hosted_session.ps1"
+    actions = BRIDGE_ACTIONS
+
+    def validate_session(self, value, action):
+        return validate_session(value, action)
+
+    def failure_diagnostic(self, value, action):
+        return session_failure_diagnostic(value, action)
+
     def __init__(self, case):
+        need(self.script_name in {"hosted_session.ps1", "hosted_tui_session.ps1"}, "session_failed")
         self.case, self.last = case, None
         self.messages = queue.Queue(maxsize=4)
         self.failed, self.done = threading.Event(), threading.Event()
@@ -684,7 +694,7 @@ class Bridge:
             output = {name: logs.enter_context(private_file(case, "bridge-" + name + ".private"))
                       for name in ("stdout", "stderr")}
             try:
-                self.process = subprocess.Popen([powershell(), "-NoProfile", "-NonInteractive", "-File", str(HERE / "hosted_session.ps1")],
+                self.process = subprocess.Popen([powershell(), "-NoProfile", "-NonInteractive", "-File", str(HERE / self.script_name)],
                     cwd=case, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **hidden())
             except BaseException:
                 self._diagnostic("invalid", "launch", "launch_failed")
@@ -771,7 +781,7 @@ class Bridge:
     def command(self, action, **fields):
         phase = "preflight"
         try:
-            need(type(action) is str and action in BRIDGE_ACTIONS - {"invalid", "close"} and not self.closed_ready and
+            need(type(action) is str and action in self.actions - {"invalid", "close"} and not self.closed_ready and
                  not self.failed.is_set() and not self.forced and self.calls < 1024, "session_failed")
             with self.response_lock:
                 need(self.messages.empty() and self.responses == self.calls and
@@ -792,10 +802,10 @@ class Bridge:
             need(not self.failed.is_set(), "session_failed")
             value = strict_json(data, 65536)
             self.last = (validate_ready(value) if action == "ready" else validate_close_ready(value)
-                         if action == "close_ready" else validate_session(value, action))
+                         if action == "close_ready" else self.validate_session(value, action))
             if not self.last["ok"]:
                 try:
-                    session_failure_diagnostic(self.last, action)
+                    self.failure_diagnostic(self.last, action)
                 except BaseException:
                     pass  # Diagnostics cannot mask the helper's original failure.
             if action == "ready":
