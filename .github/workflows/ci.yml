@@ -214,6 +214,37 @@ jobs:
           path: ${{ runner.temp }}/gcs-oauth-experiment.json
           if-no-files-found: error
           retention-days: 14
+  gcs-oauth-lifecycle:
+    name: Isolated GCS OAuth lifecycle
+    needs: [revision, test, python-audit]
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - name: Prepare verified Linux runtime
+        shell: bash
+        run: bash scripts/download-rclone.sh --linux "$RUNNER_TEMP/rclone-gcs-lifecycle"
+      - name: Qualify all ten GCS lifecycle cases in a network-none container
+        shell: bash
+        run: |
+          python -B scripts/provider-lab/gcs-oauth/run_container.py \
+            --rclone "$RUNNER_TEMP/rclone-gcs-lifecycle" --lifecycle-evidence \
+            --report "$RUNNER_TEMP/gcs-oauth-lifecycle.json"
+      # Schema 6 contributes only the reviewed Linux OAuth lifecycle mode.
+      # Never upload images, credentials, raw logs or private configuration.
+      - name: Retain sanitized GCS lifecycle evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: gcs-oauth-lifecycle
+          path: ${{ runner.temp }}/gcs-oauth-lifecycle.json
+          if-no-files-found: error
+          retention-days: 14
   test:
     name: Test (${{ matrix.os }})
     needs: revision
@@ -318,7 +349,9 @@ jobs:
         shell: bash
         run: python -B ../scripts/provider-lab/run_lab.py --rclone "$PROVIDER_BINARY" --internetarchive-low-auth --report "$RUNNER_TEMP/internetarchive-low-auth-fixture.json"
       # Internet Archive requires both anonymous reads and separate LOW evidence.
-      # pCloud remains partial; the matrix requires 19 complete protocol profiles.
+      # Preserve all 19 baseline obligations: 18 complete profiles plus the
+      # exact eight-capability GCS static-token mode. GCS lifecycle and pCloud
+      # remain unverified here; their separate Linux evidence is combined below.
       - name: Require current provider plans and protocol evidence
         if: ${{ !cancelled() }}
         env:
@@ -330,7 +363,7 @@ jobs:
             --fixture-receipt "$RUNNER_TEMP/provider-fixtures.json" \
             --fixture-receipt "$RUNNER_TEMP/filefabric-renewal-fixture.json" \
             --fixture-receipt "$RUNNER_TEMP/internetarchive-low-auth-fixture.json" \
-            --require-plans --require-fixtures local,archive,http,webdav,ftp,sftp,s3,swift,b2,azureblob,azurefiles,seafile,memory,koofr,pixeldrain,filefabric,netstorage,internetarchive,gcs
+            --require-plans --require-fixtures local,archive,http,webdav,ftp,sftp,s3,swift,b2,azureblob,azurefiles,seafile,memory,koofr,pixeldrain,filefabric,netstorage,internetarchive --require-gcs-static-token
       - name: Retain sanitized protocol evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -386,7 +419,7 @@ jobs:
             --application-receipt "$RUNNER_TEMP/http-application.json" \
             --application "$APPLICATION_BINARY" --application-build-commit "$BUILD_COMMIT" \
             --require-plans --require-application http \
-            --require-fixtures local,archive,http,webdav,ftp,sftp,s3,swift,b2,azureblob,azurefiles,seafile,memory,koofr,pixeldrain,filefabric,netstorage,internetarchive,gcs
+            --require-fixtures local,archive,http,webdav,ftp,sftp,s3,swift,b2,azureblob,azurefiles,seafile,memory,koofr,pixeldrain,filefabric,netstorage,internetarchive --require-gcs-static-token
       - name: Retain sanitized Windows application evidence
         if: always() && runner.os == 'Windows'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -490,7 +523,7 @@ jobs:
           retention-days: 14
   linux-provider-evidence:
     name: Combined Linux provider evidence
-    needs: [test, smb-protocol, pcloud-oauth-authentication]
+    needs: [test, smb-protocol, pcloud-oauth-authentication, gcs-oauth-lifecycle]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -515,6 +548,10 @@ jobs:
         with:
           name: pcloud-oauth-authentication
           path: ${{ runner.temp }}/provider-pcloud
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: gcs-oauth-lifecycle
+          path: ${{ runner.temp }}/provider-gcs
       - name: Prepare verified Linux runtime
         run: bash scripts/download-rclone.sh --linux "$RUNNER_TEMP/rclone-ledger"
       - name: Require all 21 reviewed Linux protocol profiles
@@ -526,6 +563,7 @@ jobs:
             --fixture-receipt "$RUNNER_TEMP/provider-baseline/internetarchive-low-auth-fixture.json" \
             --fixture-receipt "$RUNNER_TEMP/provider-smb/smb-protocol.json" \
             --fixture-receipt "$RUNNER_TEMP/provider-pcloud/pcloud-oauth-authentication.json" \
+            --fixture-receipt "$RUNNER_TEMP/provider-gcs/gcs-oauth-lifecycle.json" \
             --require-plans --require-fixtures local,archive,http,webdav,ftp,sftp,s3,swift,b2,azureblob,azurefiles,seafile,memory,koofr,pixeldrain,filefabric,netstorage,internetarchive,gcs,smb,pcloud
       - name: Retain sanitized combined ledger
         if: always()
@@ -537,7 +575,7 @@ jobs:
           retention-days: 14
   release:
     name: Publish Windows nightly
-    needs: [test, windows-architectures, audit, python-audit, smb-protocol, linux-provider-evidence, pcloud-oauth-feasibility, pcloud-oauth-authentication]
+    needs: [test, windows-architectures, audit, python-audit, smb-protocol, linux-provider-evidence, pcloud-oauth-feasibility, pcloud-oauth-authentication, gcs-oauth-lifecycle]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:

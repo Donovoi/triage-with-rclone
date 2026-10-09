@@ -101,6 +101,8 @@ PCLOUD_AUTHENTICATION_MODE = "pcloud_oauth_authentication_v1"
 # Configured synthetic bearer reads/rejection do not establish OAuth setup,
 # service-account identity, credential renewal or hosted IAM acceptance.
 GCS_STATIC_TOKEN_MODE = "gcs_static_token_read_v1"
+GCS_LIFECYCLE_MODE = "gcs_oauth_lifecycle_v1"
+GCS_LIFECYCLE_CAPABILITIES = frozenset({"authentication", "refresh", "renewal_denial", "cancellation_cleanup"})
 GCS_REQUIRED_CAPABILITIES = frozenset({
     "listing", "download_hash", "missing_object_rejection", "authentication_rejection",
     "read_denial", "source_preservation", "config_preservation", "cleanup",
@@ -460,6 +462,44 @@ def validate_pcloud_receipt(receipt, runtime, bindings, now, max_age_hours, fixt
     return receipt
 
 
+def gcs_evidence_module():
+    """Import definitions only from the current owned stdlib supervisor."""
+    path = plain_path(ROOT / "scripts" / "provider-lab" / "gcs-oauth" / "run_container.py")
+    try:
+        source = path.read_bytes()
+        if len(source) > MAX_RECEIPT:
+            fail("gcs_evidence_helper_size_limit")
+        spec = importlib.util.spec_from_file_location("coverage_gcs_evidence", path)
+        module = importlib.util.module_from_spec(spec)
+        exec(compile(source, str(path), "exec"), module.__dict__)
+        return module
+    except (ImportError, OSError, SyntaxError, AttributeError, TypeError):
+        fail("gcs_evidence_helper_unavailable")
+
+
+def compute_gcs_bindings(root):
+    try:
+        return gcs_evidence_module().compute_bindings(plain_path(Path(root).absolute()))
+    except (OSError, ValueError, TypeError, KeyError, RuntimeError):
+        fail("gcs_evidence_bindings_invalid")
+
+
+def validate_gcs_receipt(receipt, runtime, bindings, now, max_age_hours, fixture_manifest_sha256):
+    if bindings is None:
+        fail("unknown_receipt_schema")
+    if (not isinstance(bindings, dict) or not valid_hash(fixture_manifest_sha256)
+            or bindings.get("fixture_manifest_sha256") != fixture_manifest_sha256):
+        fail("gcs_evidence_bindings_invalid")
+    try:
+        gcs_evidence_module().validate_lifecycle_evidence(receipt, runtime, bindings, now, max_age_hours)
+    except (ValueError, RuntimeError) as error:
+        code = str(error)
+        fail(code if re.fullmatch(r"[a-z][a-z0-9_]{0,80}", code) else "invalid_gcs_evidence")
+    except (TypeError, KeyError, AttributeError, OverflowError):
+        fail("invalid_gcs_evidence")
+    return receipt
+
+
 def validate_smb_receipt(receipt, runtime, bindings, now, max_age_hours, fixture_manifest_sha256):
     if bindings is None:
         # Existing callers have not opted into the separately bound format.
@@ -654,11 +694,13 @@ def parse_utc(value):
 
 
 def validate_receipt(receipt, runtime, harness_sha256, now, max_age_hours=MAX_AGE_HOURS,
-                     fixture_manifest_sha256=None, smb_bindings=None, pcloud_bindings=None):
+                     fixture_manifest_sha256=None, smb_bindings=None, pcloud_bindings=None, gcs_bindings=None):
     if isinstance(receipt, dict) and type(receipt.get("schema_version")) is int and receipt["schema_version"] == 3:
         return validate_smb_receipt(receipt, runtime, smb_bindings, now, max_age_hours, fixture_manifest_sha256)
     if isinstance(receipt, dict) and type(receipt.get("schema_version")) is int and receipt["schema_version"] == 5:
         return validate_pcloud_receipt(receipt, runtime, pcloud_bindings, now, max_age_hours, fixture_manifest_sha256)
+    if isinstance(receipt, dict) and type(receipt.get("schema_version")) is int and receipt["schema_version"] == 6:
+        return validate_gcs_receipt(receipt, runtime, gcs_bindings, now, max_age_hours, fixture_manifest_sha256)
     if (not isinstance(receipt, dict) or type(receipt.get("schema_version")) is not int
             or receipt["schema_version"] not in (1, 2, 4) or receipt.get("scope") != "rclone_backend_protocol_fixture"):
         fail("unknown_receipt_schema")
@@ -801,7 +843,7 @@ def merge_fixture_observation(observed, capabilities, failed, run):
 
 
 def evaluate(catalog, policy, runtime, receipts, harness_sha256, now=None, max_age_hours=MAX_AGE_HOURS,
-             fixture_manifest_sha256=None, smb_bindings=None, pcloud_bindings=None,
+             fixture_manifest_sha256=None, smb_bindings=None, pcloud_bindings=None, gcs_bindings=None,
              application_receipts=(), application_bindings=None):
     """Receipts are explicit batch inputs. Failed current evidence stays failed."""
     now = now or datetime.now(timezone.utc)
@@ -828,7 +870,7 @@ def evaluate(catalog, policy, runtime, receipts, harness_sha256, now=None, max_a
     for receipt in receipts:
         try:
             validate_receipt(receipt, runtime, harness_sha256, now, max_age_hours, fixture_manifest_sha256,
-                             smb_bindings=smb_bindings, pcloud_bindings=pcloud_bindings)
+                             smb_bindings=smb_bindings, pcloud_bindings=pcloud_bindings, gcs_bindings=gcs_bindings)
             for row in receipt["backends"]:
                 if row["backend"] not in {entry["backend"] for entry in catalog}:
                     fail("fixture_backend_absent_from_catalog")
@@ -844,9 +886,17 @@ def evaluate(catalog, policy, runtime, receipts, harness_sha256, now=None, max_a
                 }
                 contributed = row["capabilities"]
                 if row["backend"] == "gcs":
-                    run["fixture_mode"] = GCS_STATIC_TOKEN_MODE
+                    mode = row.get("fixture_mode", GCS_STATIC_TOKEN_MODE)
+                    run["fixture_mode"] = mode
+                    if mode == GCS_LIFECYCLE_MODE:
+                        native = receipt["native_evidence"]
+                        run.update(platform="linux", architecture="amd64", base_image=native["base_image"],
+                                   image_id=native["image_id"], python_version=native["python_version"],
+                                   dependency_lock_sha256=native["dependency_lock_sha256"],
+                                   source_sha256=dict(native["source_sha256"]), harness_sha256=receipt["harness_sha256"])
+                        contributed = {key: contributed[key] for key in GCS_LIFECYCLE_CAPABILITIES}
                     mode_observed = observed.setdefault("modes", {}).setdefault(
-                        GCS_STATIC_TOKEN_MODE, {"capabilities": {}, "failed": False, "runs": []})
+                        mode, {"capabilities": {}, "failed": False, "runs": []})
                     merge_fixture_observation(mode_observed, contributed, failed, run)
                 if row["backend"] == "smb":
                     native = receipt["native_evidence"]
@@ -966,7 +1016,8 @@ def evaluate(catalog, policy, runtime, receipts, harness_sha256, now=None, max_a
                 if backend in ("filefabric", "smb", "internetarchive", "pcloud", "gcs"):
                     evidence["modes"] = {}
                     contracts = ({SMB_MODE: SMB_REQUIRED_CAPABILITIES} if backend == "smb"
-                                 else {GCS_STATIC_TOKEN_MODE: GCS_REQUIRED_CAPABILITIES} if backend == "gcs"
+                                 else {GCS_STATIC_TOKEN_MODE: GCS_REQUIRED_CAPABILITIES,
+                                       GCS_LIFECYCLE_MODE: GCS_LIFECYCLE_CAPABILITIES} if backend == "gcs"
                                  else {PCLOUD_SAVED_TOKEN_MODE: PCLOUD_REQUIRED_CAPABILITIES,
                                        PCLOUD_AUTHENTICATION_MODE: {"authentication"}} if backend == "pcloud"
                                  else INTERNETARCHIVE_MODE_CONTRACTS if backend == "internetarchive"
@@ -983,7 +1034,11 @@ def evaluate(catalog, policy, runtime, receipts, harness_sha256, now=None, max_a
                 if observed["failed"] or "failed" in capabilities.values():
                     evidence["status"] = "failed"
                 elif all(value == "passed" for value in capabilities.values()):
-                    evidence["status"] = "passed"
+                    # GCS needs both complete modes even if a policy edit omits
+                    # a required capability. One-member OAuth reads cannot
+                    # replace the full static-token inventory/config oracle.
+                    if backend != "gcs" or all(mode["status"] == "passed" for mode in evidence["modes"].values()):
+                        evidence["status"] = "passed"
             if tier == "application" and backend in application_observations:
                 app = application_observations[backend]
                 for capability in needed:
@@ -1013,7 +1068,7 @@ def evaluate(catalog, policy, runtime, receipts, harness_sha256, now=None, max_a
     return report
 
 
-def gate_errors(report, require_plans=False, require_fixtures=(), require_complete=False, require_application=()):
+def gate_errors(report, require_plans=False, require_fixtures=(), require_complete=False, require_application=(), require_gcs_static_token=False):
     errors = list(report["errors"])
     if require_plans and not report["all_plans_current"]:
         errors.append("provider_plans_incomplete")
@@ -1021,6 +1076,14 @@ def gate_errors(report, require_plans=False, require_fixtures=(), require_comple
     for backend in require_fixtures:
         if backend not in rows or rows[backend]["evidence"]["local_protocol"]["status"] != "passed":
             errors.append("required_fixture_not_verified")
+    if require_gcs_static_token:
+        row = rows.get("gcs", {})
+        local = row.get("evidence", {}).get("local_protocol", {})
+        mode = local.get("modes", {}).get(GCS_STATIC_TOKEN_MODE, {})
+        if (row.get("policy_status") != "current" or mode.get("status") != "passed"
+                or mode.get("capabilities") != dict.fromkeys(GCS_REQUIRED_CAPABILITIES, "passed")
+                or local.get("status") == "failed"):
+            errors.append("required_gcs_static_token_not_verified")
     for backend in require_application:
         if backend not in rows or rows[backend]["evidence"]["application"]["status"] != "passed":
             errors.append("required_application_not_verified")
@@ -1212,6 +1275,8 @@ def main(argv=None):
     parser.add_argument("--max-age-hours", type=int, default=MAX_AGE_HOURS)
     parser.add_argument("--require-plans", action="store_true")
     parser.add_argument("--require-fixtures", default="")
+    parser.add_argument("--require-gcs-static-token", action="store_true",
+                        help="Require all eight GCS baseline checks without claiming lifecycle coverage")
     parser.add_argument("--require-application", default="")
     parser.add_argument("--require-complete", action="store_true")
     args = parser.parse_args(argv)
@@ -1261,13 +1326,16 @@ def main(argv=None):
         pcloud_bindings = (compute_pcloud_bindings(ROOT / "scripts" / "provider-lab" / "pcloud-oauth")
                            if any(isinstance(receipt, dict) and type(receipt.get("schema_version")) is int
                                   and receipt["schema_version"] == 5 for receipt in receipts) else None)
+        gcs_bindings = (compute_gcs_bindings(ROOT / "scripts" / "provider-lab" / "gcs-oauth")
+                        if any(isinstance(receipt, dict) and type(receipt.get("schema_version")) is int
+                               and receipt["schema_version"] == 6 for receipt in receipts) else None)
         report = evaluate(catalog, policy, runtime, receipts, harness_sha, max_age_hours=args.max_age_hours,
-                          fixture_manifest_sha256=fixture_sha, smb_bindings=smb_bindings, pcloud_bindings=pcloud_bindings,
+                          fixture_manifest_sha256=fixture_sha, smb_bindings=smb_bindings, pcloud_bindings=pcloud_bindings, gcs_bindings=gcs_bindings,
                           application_receipts=application_receipts, application_bindings=application_bindings)
         report["errors"] = sorted(set(report["errors"] + receipt_errors))
         report["all_complete"] = report["all_complete"] and not report["errors"]
         report["gate_errors"] = gate_errors(report, args.require_plans, required, args.require_complete,
-                                            require_application=required_application)
+                                            require_application=required_application, require_gcs_static_token=args.require_gcs_static_token)
     except MetadataDiagnosticError as error:
         report["errors"].extend(error.codes)
         report["gate_errors"] = list(report["errors"])

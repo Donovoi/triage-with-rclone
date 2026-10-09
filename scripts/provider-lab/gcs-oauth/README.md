@@ -1,119 +1,46 @@
-# GCS OAuth lifecycle experiment
+# GCS OAuth lifecycle
 
-This is an **unqualified experiment** for pinned rclone 1.75.1. All ten hosted
-native cases passed at `d55b124`. It has not earned ledger coverage.
-Every receipt remains `ledger_eligible: false`; existing
-GCS coverage policy and static-token evidence are unchanged.
+The default command runs an unqualified synthetic experiment and emits schema 1
+with `ledger_eligible: false`. Historical experiment receipts remain ineligible.
+The [complete experiment](https://github.com/Donovoi/triage-with-rclone/actions/runs/37904440577)
+at `d55b124` passed ten cases, 115 checks and all cleanup checks; it is not a
+qualified lifecycle receipt. Qualification requires its own fresh hosted run;
+the historical experiment cannot supply that evidence.
 
-The ten fresh-config cases are: positive callback/code exchange and README read;
-wrong state; blank state; consent denial; invalid code; wrong client secret;
-callback-wait cancellation; actual expiry followed by refresh, replacement-token
-read and persistence; denied refresh; and cancellation of an observed held refresh.
+Use `--lifecycle-evidence` for a fresh schema-6 `gcs_oauth_lifecycle_v1` receipt.
+The hosted Linux supervisor checks the pinned runtime, nine source files, image
+and dependency locks, network-none isolation, bounded processes and owned cleanup.
+The importer requires all ten ordered cases and their exact observations: 34
+native commands, 18 callback requests and 31 HTTPS requests. A failed run remains
+failed even if another receipt passes. Only an ordered prefix ending in a failed
+case may omit later cases.
 
-The fixture generates every credential. Authorization, token and storage URLs
-use one owned loopback HTTPS authority with a generated CA explicitly trusted by
-the child. Certificate verification is never disabled. The callback listener is
-owned by the exact child on `127.0.0.1:53682`; the driver validates redirects and
-delivers the synthetic callback without opening a browser or following redirects.
-Only metadata and content for `synthetic-bucket/README-synthetic.txt` are served.
-The independent existing SHA256 oracle and all three source payloads are retained.
+The cases cover fresh callback/exchange/persistence and an independently hashed
+read; wrong or blank callback state; denied consent; invalid code/client secret;
+callback cancellation; actual token expiry followed by refresh and replacement
+read; denied refresh; and cancellation during a held refresh. Expiry must pass
+on the wall clock without editing the saved token. The loopback RC denial has
+exactly `error`, `path` and `status`, and its launched request is bound separately.
 
-GCS uses rclone's `devstorage.read_write` scope. This fixture permits no write
-operation; it does not represent read-only consent. `access_token` is omitted to
-avoid the static-token bypass. Service-account fields are empty, anonymous and
-environment authentication are disabled, and the child receives no ambient
-credentials. Pinned GCS can fall back to ADC after OAuth-client construction
-failure, so the network-none container is a required boundary, not optional.
+Lifecycle evidence contributes only authentication, refresh, renewal denial and
+owned-process cancellation cleanup. Full GCS local qualification also requires
+the separate eight-check static-token inventory/config-preservation mode.
+Windows retains that complete baseline gate and reports lifecycle as unverified;
+combined Linux and nightly ledgers require both modes from the same workflow run.
 
-Renewal cases receive a genuine synthetic grant with `expires_in: 1`; the driver
-waits until the saved wall-clock expiry passes without editing the credential.
-The subsequent acquisition child must refresh and use the returned replacement
-token. A successful refresh must persist precisely the issued token pair/expiry,
-with all non-token options unchanged. Negative cases preserve their pre-attempt
-config bytes and have no accepted destination or storage payload. This does not
-test expiry inside an already-running long-lived storage connection.
+No real Google consent/IAM, revocation, session reauthentication, service-account
+JWT, ADC, workload identity, application or vendor acceptance is claimed. The
+runtime uses only synthetic credentials, explicit CA trust and owned loopback
+services inside a nonroot container with no network, host mounts or published
+ports. Raw configuration, credentials, transcripts and images are never artifacts.
 
-Cancellation is an owned-process SIGTERM/reap observation, not an application
-Ctrl+C claim. Held refresh returns no token; its handler is released only after
-the child is reaped. Cleanup failure is sticky. Raw child output, callback state,
-codes, tokens and private paths never enter the sanitized report.
+Pure/mock qualification tests can run locally; hosted wire tests and native
+experiments must remain on the reviewed hosted runners. Do not launch the probe,
+rclone or Docker on a production host.
 
-The container supervisor is adapted from the reviewed pCloud supervisor: exact
-source closure/runtime hash, immutable base, locked certificate dependencies,
-UID/GID 10001, network none, no capabilities, no host mounts or published ports,
-read-only root, private bounded tmpfs, finite process/output/time limits and owned
-container/image cleanup. Run it only after source review in the dedicated hosted
-Linux workflow; do not launch the inner probe or a container on a production host.
+Pinned source references:
 
-The CI workflow has a manual `gcs_oauth_experiment` option, off by default.
-It requires the exact `expected_sha` and waits for both platform test jobs and
-the Python dependency audit. The hosted job runs this supervisor command once:
-
-```bash
-python -B scripts/provider-lab/gcs-oauth/run_container.py \
-  --rclone "$RUNNER_TEMP/rclone-gcs-oauth" \
-  --report "$RUNNER_TEMP/gcs-oauth-experiment.json"
-```
-
-The runtime must first be prepared by the repository's verified Linux downloader.
-Mocked checks can run without sockets or native processes:
-
-```bash
-python -B -m unittest discover -s scripts/tests -p 'test_provider_gcs_oauth*.py'
-```
-
-Local validation: 36 component/pure checks and ten full mocked orchestration
-checks pass. The orchestration suite traverses all ten driver cases and the
-supervisor's staging, validation, reporting and cleanup using scripted external
-boundaries. It checks independent transcripts/config states and injected missing
-stages, wrong tokens/options, denial request mismatches, failed cancellation,
-uncertain cleanup and malformed receipts. The denied-refresh oracle binds the
-actual launched copy arguments and rejects extra or mismatched RC error fields.
-
-Twelve hosted-only adversarial HTTP/TLS test methods passed on both Linux and
-Windows at commit `b00c959`. The initial Windows failure led to separate cleanup
-diagnostics and a five-second refusal check; the precise cause of that earlier
-failure was not established. Only an explicit refused connection passes.
-The tests skip outside a GitHub-hosted runner and do not establish native rclone
-compatibility.
-
-The first [native experiment](https://github.com/Donovoi/triage-with-rclone/actions/runs/37896906086)
-failed the positive case before authorization with `url_query_mismatch`. All
-reported cleanup checks passed. The fixture expected `localhost`, while pinned
-GCS uses the distinct numeric `127.0.0.1` callback. This revision corrects that
-contract and tests rejection of the old hostname, wrong port and missing,
-additional or duplicate query fields.
-
-The [corrected run](https://github.com/Donovoi/triage-with-rclone/actions/runs/37900450046)
-passed its first eight cases, including expiry followed by refresh and a
-replacement-token read. It failed the ninth case at `refresh_denial_result`;
-all reported cleanup checks passed, and refresh cancellation did not run.
-Pinned loopback RC errors contain exactly `error`, `path` and `status`; this
-probe had incorrectly required the HTTP RC server's `input` field. This revision
-corrects that envelope and independently binds the actual child arguments to the
-exact owned copy request.
-
-The [complete run](https://github.com/Donovoi/triage-with-rclone/actions/runs/37904440577)
-at `d55b124b0a1ea1867729140c91a094f2a6f68dc5` passed all ten cases, including
-denied refresh and cancellation during refresh. Independent report validation
-confirmed 115 case checks, 30 inner cleanup checks and four outer cleanup checks,
-bound to the tested source and runtime. The run made 34 native commands,
-18 callback requests and 31 HTTPS requests. This is a synthetic protocol test;
-it does not establish real Google consent or application acceptance.
-
-Before ledger integration, define a separate strict lifecycle
-receipt mode and importer tests. Do not convert historical static-token receipts
-into OAuth evidence.
-
-Service-account JWT, ADC, workload identity, IAM, real Google consent/MFA,
-application/vendor acceptance and connection/session reauthentication remain
-separate unverified requirements.
-
-Pinned references:
-
-- [GCS authentication branches and custom storage endpoint](https://github.com/rclone/rclone/blob/v1.75.1/backend/googlecloudstorage/googlecloudstorage.go#L510-L580)
-- [GCS OAuth configuration and scope](https://github.com/rclone/rclone/blob/v1.75.1/backend/googlecloudstorage/googlecloudstorage.go#L58-L85)
-- [Callback checks](https://github.com/rclone/rclone/blob/v1.75.1/lib/oauthutil/oauthutil.go#L983-L1041)
-- [Refresh and token persistence](https://github.com/rclone/rclone/blob/v1.75.1/lib/oauthutil/oauthutil.go#L289-L357)
-- [Loopback RC error envelope](https://github.com/rclone/rclone/blob/v1.75.1/cmd/rc/rc.go#L189-L218)
-- [Basic/form probing and refresh-token handling](https://github.com/golang/oauth2/blob/v0.36.0/internal/token.go#L199-L239)
+- [GCS OAuth configuration](https://github.com/rclone/rclone/blob/v1.75.1/backend/googlecloudstorage/googlecloudstorage.go)
+- [Callback, refresh and persistence](https://github.com/rclone/rclone/blob/v1.75.1/lib/oauthutil/oauthutil.go)
+- [Loopback RC error envelope](https://github.com/rclone/rclone/blob/v1.75.1/cmd/rc/rc.go)
+- [Token exchange and refresh](https://github.com/golang/oauth2/blob/v0.36.0/internal/token.go)
