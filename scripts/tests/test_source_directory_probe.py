@@ -19,7 +19,7 @@ class SourceDirectoryProbeTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         # Parse the whole file, then define only four named PURE functions.
-        # No dot-sourcing, Add-Type, native method, hosted guard spoof or probe main.
+        # The probe body and native methods are never invoked; literal C# compilation is explicit below.
         script = r"""
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
@@ -47,6 +47,7 @@ function Checks([bool]$Value) {
         'source_cwd','descendant_cwd','source_preserved','session_cleanup')) { $result[$name]=$Value }
     return $result
 }
+function Renames([string]$Value) { return [ordered]@{ source=$Value; case=$Value; sandbox=$Value } }
 $guard=@()
 $guard+=Test-ProbeHosted 'true' 'Windows' 'github-hosted' 'Desktop' $true $true
 foreach ($row in @(
@@ -61,17 +62,28 @@ foreach ($row in @(
     $guard+=Test-ProbeHosted @row
 }
 $reports=@()
-$reports+=New-ProbeReport (Checks $true) '' $true $false
-$reports+=New-ProbeReport (Checks $false) 'hosted_only' $true $false
-$reports+=New-ProbeReport (Checks $false) 'cleanup_failed' $false $true
+$reports+=New-ProbeReport (Checks $true) '' $true $false (Renames 'denied')
+$reports+=New-ProbeReport (Checks $false) 'hosted_only' $true $false (Renames 'not_attempted')
+$reports+=New-ProbeReport (Checks $false) 'cleanup_failed' $false $true (Renames 'not_attempted')
+$reports+=New-ProbeReport (Checks $false) 'rename_failed' $false $true ([ordered]@{ source='moved'; case='not_attempted'; sandbox='not_attempted' })
+$reports+=New-ProbeReport (Checks $false) 'rename_failed' $true $false ([ordered]@{ source='denied'; case='unexpected_error'; sandbox='not_attempted' })
 $invalid=@()
-$invalid+=Reject { $c=Checks $true; $c.Remove('source_cwd'); New-ProbeReport $c '' $true $false }
-$invalid+=Reject { $c=Checks $true; $c['private-canary-path']='x'; New-ProbeReport $c '' $true $false }
-$invalid+=Reject { $c=Checks $true; $c.source_cwd='true'; New-ProbeReport $c '' $true $false }
-$invalid+=Reject { New-ProbeReport (Checks $true) 'private-canary-path' $false $true }
-$invalid+=Reject { New-ProbeReport (Checks $true) '' $true $true }
-$invalid+=Reject { New-ProbeReport (Checks $false) '' $true $false }
-$invalid+=Reject { New-ProbeReport (Checks $true) '' $false $true }
+$invalid+=Reject { $c=Checks $true; $c.Remove('source_cwd'); New-ProbeReport $c '' $true $false (Renames 'denied') }
+$invalid+=Reject { $c=Checks $true; $c['private-canary-path']='x'; New-ProbeReport $c '' $true $false (Renames 'denied') }
+$invalid+=Reject { $c=Checks $true; $c.source_cwd='true'; New-ProbeReport $c '' $true $false (Renames 'denied') }
+$invalid+=Reject { New-ProbeReport (Checks $true) 'private-canary-path' $false $true (Renames 'denied') }
+$invalid+=Reject { New-ProbeReport (Checks $true) '' $true $true (Renames 'denied') }
+$invalid+=Reject { New-ProbeReport (Checks $false) '' $true $false (Renames 'denied') }
+$invalid+=Reject { New-ProbeReport (Checks $true) '' $false $true (Renames 'denied') }
+$badRenames=@()
+$badRenames+=Reject { New-ProbeReport (Checks $true) '' $true $false (Renames 'not_attempted') }
+$badRenames+=Reject { New-ProbeReport (Checks $true) '' $true $false (Renames 'moved') }
+$badRenames+=Reject { New-ProbeReport (Checks $true) '' $true $false (Renames 'unexpected_error') }
+$badRenames+=Reject { New-ProbeReport (Checks $true) '' $true $false (Renames 'DENIED') }
+$badRenames+=Reject { $r=Renames 'denied'; $r.source=$true; New-ProbeReport (Checks $true) '' $true $false $r }
+$badRenames+=Reject { $r=Renames 'denied'; $r.Remove('source'); New-ProbeReport (Checks $true) '' $true $false $r }
+$badRenames+=Reject { $r=Renames 'denied'; $r['private-canary-path']='denied'; New-ProbeReport (Checks $true) '' $true $false $r }
+$badRenames+=Reject { New-ProbeReport (Checks $true) '' $true $false (Renames 'private-canary-path') }
 $codes=@()
 $codes+=Test-ProbeRejectionCodes @('source_directory_invalid')
 foreach ($row in @(
@@ -119,7 +131,7 @@ foreach ($code in @(2,3,5,32,0)) {
 }
 $absence+=$absenceMethod.Invoke($null,[object[]]@([uint32]16,[int]2))
 $last=[ordered]@{ guard=$guard; reports=$reports; invalid_reports=$invalid; rejection_codes=$codes;
-    creator=$creator; guard_before_compile=$gateFirst; launch_finalized_before_transcript=$launchClosed;
+    invalid_renames=$badRenames; creator=$creator; guard_before_compile=$gateFirst; launch_finalized_before_transcript=$launchClosed;
     compiled_literal_classes=$compiled; disposition_size=$dispositionSize; disposition_byte=$dispositionByte; absence=$absence;
     parsed=$true; native_calls=0; native_entrypoint_invoked=$false }
 [Console]::Out.WriteLine(($last | ConvertTo-Json -Depth 8 -Compress))
@@ -140,11 +152,13 @@ $last=[ordered]@{ guard=$guard; reports=$reports; invalid_reports=$invalid; reje
         self.assertIs(self.value["guard_before_compile"], True)
 
     def test_final_report_is_closed_and_does_not_claim_production_acceptance(self):
-        passed, unavailable, failed = self.value["reports"]
+        passed, unavailable, failed = self.value["reports"][:3]
         fields = {"schema_version", "scope", "result", "checks", "cleanup_complete", "tree_retained", "errors",
-                  "production_application_executed"}
+                  "production_application_executed", "rename_outcomes"}
         for row in (passed, unavailable, failed):
             self.assertEqual(set(row), fields)
+            self.assertEqual(row["schema_version"], 2)
+            self.assertEqual(set(row["rename_outcomes"]), {"source", "case", "sandbox"})
             self.assertEqual(set(row["checks"]), CHECKS)
             self.assertTrue(all(type(value) is bool for value in row["checks"].values()))
             self.assertIs(row["production_application_executed"], False)
@@ -157,6 +171,26 @@ $last=[ordered]@{ guard=$guard; reports=$reports; invalid_reports=$invalid; reje
     def test_malformed_inflated_or_private_report_values_refused(self):
         self.assertEqual(self.value["invalid_reports"], [True] * 7)
         self.assertNotIn("private-canary", json.dumps(self.value))
+
+    def test_primary_rename_failure_is_preserved_alongside_cleanup_failure(self):
+        combined, primary_only = self.value["reports"][3:]
+        self.assertEqual(combined["errors"], ["rename_failed", "cleanup_failed"])
+        self.assertEqual(combined["rename_outcomes"],
+                         {"source": "moved", "case": "not_attempted", "sandbox": "not_attempted"})
+        self.assertEqual(primary_only["errors"], ["rename_failed"])
+        self.assertEqual(primary_only["rename_outcomes"],
+                         {"source": "denied", "case": "unexpected_error", "sandbox": "not_attempted"})
+        self.assertEqual(combined["result"], "failed")
+        self.assertEqual(primary_only["result"], "failed")
+        self.assertIs(combined["cleanup_complete"], False)
+        self.assertIs(combined["tree_retained"], True)
+        self.assertIs(primary_only["cleanup_complete"], True)
+
+    def test_rename_outcomes_are_closed_and_cannot_inflate_pass(self):
+        self.assertEqual(self.value["invalid_renames"], [True] * 8)
+        passed, unavailable = self.value["reports"][:2]
+        self.assertEqual(set(passed["rename_outcomes"].values()), {"denied"})
+        self.assertEqual(set(unavailable["rename_outcomes"].values()), {"not_attempted"})
 
     def test_cleanup_error_cannot_hide_behind_expected_primary_rejection(self):
         self.assertEqual(self.value["rejection_codes"], [True] + [False] * 6)

@@ -817,11 +817,14 @@ fn pin_publication_parent(path: &Path) -> Result<(std::path::PathBuf, Vec<File>)
         .context("Publication path has no parent")?;
     let mut pins = Vec::new();
     for directory in parent.ancestors().collect::<Vec<_>>().into_iter().rev() {
-        // FILE_READ_ATTRIBUTES; SHARE_READ|SHARE_WRITE, deliberately no DELETE.
+        // FILE_LIST_DIRECTORY|FILE_READ_ATTRIBUTES; SHARE_READ|SHARE_WRITE,
+        // deliberately no DELETE. MS-FSA 2.1.5.1.2.2 requires data-read access
+        // for this directory open to participate in sharing checks.
+        // https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fsa/8c0e3f4f-0729-49f4-a14d-7f7add593819
         // BACKUP_SEMANTICS|OPEN_REPARSE_POINT opens the directory itself.
         let handle = std::fs::OpenOptions::new()
             .read(true)
-            .access_mode(0x80)
+            .access_mode(0x81)
             .share_mode(0x3)
             .custom_flags(0x0220_0000)
             .open(directory)?;
@@ -1350,6 +1353,41 @@ mod tests {
             copy_and_verify_staged(&mut source, &mut Cursor::new(Vec::new()), 23, &mut || false,)
                 .is_err()
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn publication_parent_pins_deny_rename_and_delete_until_released() {
+        let root = tempdir().unwrap();
+        let parent = root.path().join("parent");
+        let leaf = parent.join("leaf");
+        let moved_leaf = parent.join("moved-leaf");
+        let moved_parent = root.path().join("moved-parent");
+        crate::utils::private_fs::create_dir_all(&leaf).unwrap();
+        let destination = leaf.join("future-output");
+        let (canonical, pins) = pin_publication_parent(&destination).unwrap();
+        assert_eq!(
+            canonical,
+            fs::canonicalize(&leaf).unwrap().join("future-output")
+        );
+
+        for error in [
+            fs::rename(&leaf, &moved_leaf).unwrap_err(),
+            fs::remove_dir(&leaf).unwrap_err(),
+            fs::rename(&parent, &moved_parent).unwrap_err(),
+        ] {
+            assert!(matches!(error.raw_os_error(), Some(5 | 32)));
+        }
+        assert!(leaf.is_dir());
+        assert!(!destination.exists());
+        assert!(!moved_leaf.exists());
+        assert!(!moved_parent.exists());
+
+        drop(pins);
+        fs::rename(&leaf, &moved_leaf).unwrap();
+        fs::remove_dir(&moved_leaf).unwrap();
+        fs::rename(&parent, &moved_parent).unwrap();
+        fs::remove_dir(&moved_parent).unwrap();
     }
 
     #[cfg(windows)]

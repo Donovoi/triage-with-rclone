@@ -10,7 +10,8 @@ function Test-ProbeHosted($Actions, $Runner, $Environment, $Edition, $Windows, $
         $Environment -is [string] -and $Environment -ceq 'github-hosted' -and $Edition -is [string] -and $Edition -ceq 'Desktop' -and
         $Windows -is [bool] -and $Windows -and $Bits64 -is [bool] -and $Bits64)
 }
-function New-ProbeReport([System.Collections.IDictionary]$Checks, [string]$ErrorCode, [bool]$Cleanup, [bool]$Retained) {
+function New-ProbeReport([System.Collections.IDictionary]$Checks, [string]$ErrorCode, [bool]$Cleanup, [bool]$Retained,
+    [System.Collections.IDictionary]$RenameOutcomes) {
     $names = @('missing_rejected','file_rejected','junction_rejected','acl_rejected','rejected_leases_released',
         'lease_verified','source_rename_denied','case_rename_denied','sandbox_rename_denied','release_observed',
         'source_cwd','descendant_cwd','source_preserved','session_cleanup')
@@ -22,13 +23,22 @@ function New-ProbeReport([System.Collections.IDictionary]$Checks, [string]$Error
         if (-not $Checks.Contains($name) -or $Checks[$name] -isnot [bool]) { throw 'report_invalid' }
         $closed[$name] = $Checks[$name]
     }
+    $renames=[ordered]@{}
+    if ($null -eq $RenameOutcomes -or $RenameOutcomes.Count -ne 3) { throw 'report_invalid' }
+    foreach ($name in @('source','case','sandbox')) {
+        if (-not $RenameOutcomes.Contains($name) -or $RenameOutcomes[$name] -isnot [string] -or
+            $RenameOutcomes[$name] -cnotin @('not_attempted','denied','moved','unexpected_error')) { throw 'report_invalid' }
+        $renames[$name]=$RenameOutcomes[$name]
+    }
     if ($Cleanup -and $Retained) { throw 'report_invalid' }
-    $passed = $ErrorCode -ceq '' -and $Cleanup -and -not $Retained -and @($closed.Values | Where-Object { -not $_ }).Count -eq 0
+    $passed = $ErrorCode -ceq '' -and $Cleanup -and -not $Retained -and @($closed.Values | Where-Object { -not $_ }).Count -eq 0 -and
+        @($renames.Values | Where-Object { $_ -cne 'denied' }).Count -eq 0
     if (-not $passed -and $ErrorCode -ceq '') { throw 'report_invalid' }
     $errors=@(); if ($ErrorCode -cne '') { $errors=@($ErrorCode) }
-    return [ordered]@{ schema_version=1; scope='hosted_fixed_source_directory_probe';
+    if (-not $Cleanup -and $ErrorCode -cne 'cleanup_failed') { $errors+=@('cleanup_failed') }
+    return [ordered]@{ schema_version=2; scope='hosted_fixed_source_directory_probe';
         result=$(if ($passed) { 'passed' } elseif ($ErrorCode -ceq 'hosted_only') { 'unavailable' } else { 'failed' });
-        checks=$closed; cleanup_complete=$Cleanup; tree_retained=$Retained;
+        checks=$closed; rename_outcomes=$renames; cleanup_complete=$Cleanup; tree_retained=$Retained;
         errors=$errors; production_application_executed=$false }
 }
 function Get-ProbeCreator([string]$Source) {
@@ -111,11 +121,14 @@ function Assert-RejectedSource([string]$Root) {
     }
     Assert-Probe $rejected 'rejection_failed'
 }
-function Assert-RenameDenied([string]$Path) {
+function Assert-RenameDenied([string]$Path, [string]$Name) {
+    Assert-Probe ($Name -cin @('source','case','sandbox')) 'rename_failed'
+    $script:renameOutcomes[$Name]='unexpected_error'
     $target=$Path+'-probe-moved'; $denied=$false
     Assert-Probe (-not [IO.Directory]::Exists($target) -and -not [IO.File]::Exists($target)) 'rename_failed'
     try {
         [IO.Directory]::Move($Path,$target)
+        $script:renameOutcomes[$Name]='moved'
         $script:treeCertain=$false
     } catch {
         $cause=$_.Exception
@@ -123,6 +136,7 @@ function Assert-RenameDenied([string]$Path) {
         $denied=$cause -is [IO.IOException] -and (($cause.HResult -band 65535) -in @(5,32))
     }
     Assert-Probe ($denied -and [IO.Directory]::Exists($Path) -and -not [IO.Directory]::Exists($target)) 'rename_failed'
+    $script:renameOutcomes[$Name]='denied'
 }
 function Assert-RenameReleased([string]$Path) {
     $target=$Path+'-probe-moved'
@@ -133,12 +147,13 @@ function Assert-RenameReleased([string]$Path) {
 }
 
 $checks=[ordered]@{}
+$script:renameOutcomes=[ordered]@{ source='not_attempted'; case='not_attempted'; sandbox='not_attempted' }
 foreach ($name in @('missing_rejected','file_rejected','junction_rejected','acl_rejected','rejected_leases_released',
     'lease_verified','source_rename_denied','case_rename_denied','sandbox_rename_denied','release_observed',
     'source_cwd','descendant_cwd','source_preserved','session_cleanup')) { $checks[$name]=$false }
 # This real guard precedes source reads, compilation, identity queries and dirs.
 if (-not (Test-ProbeHosted $env:GITHUB_ACTIONS $env:RUNNER_OS $env:RUNNER_ENVIRONMENT $PSVersionTable.PSEdition ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT) ([Environment]::Is64BitProcess))) {
-    [Console]::Out.WriteLine((New-ProbeReport $checks 'hosted_only' $true $false | ConvertTo-Json -Depth 4 -Compress))
+    [Console]::Out.WriteLine((New-ProbeReport $checks 'hosted_only' $true $false $script:renameOutcomes | ConvertTo-Json -Depth 4 -Compress))
     exit 2
 }
 $script:clock=[Diagnostics.Stopwatch]::StartNew()
@@ -195,7 +210,10 @@ public static class SourceProbeOwnedTree {
   }
   static Pin Open(string path,bool deleting,int depth,bool hold=false) {
     string full=Canonical(path);
-    IntPtr handle=CreateFileW(full,deleting?0x10080u:0x80u,(deleting||hold)?3u:7u,IntPtr.Zero,3,0x02200000,IntPtr.Zero);
+    // MS-FSA 2.1.5.1.2.2 excludes metadata-only handles from sharing checks.
+    // FILE_LIST_DIRECTORY participates; the pin still withholds FILE_SHARE_DELETE.
+    // https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fsa/8c0e3f4f-0729-49f4-a14d-7f7add593819
+    IntPtr handle=CreateFileW(full,deleting?0x10080u:hold?0x81u:0x80u,(deleting||hold)?3u:7u,IntPtr.Zero,3,0x02200000,IntPtr.Zero);
     Need(handle!=IntPtr.Zero && handle!=new IntPtr(-1));
     try {
       Info info=new Info(); Need(GetFileType(handle)==1 && GetFileInformationByHandle(handle,out info));
@@ -297,9 +315,9 @@ public static class SourceProbeOwnedTree {
     $lease=[TriageApplicationLab.HostedSourceDirectory]::Acquire($case)
     Assert-Probe ($lease.Path -ceq $source) 'lease_failed'; $lease.Verify(); $checks.lease_verified=$true
     $phase='rename_failed'
-    Assert-RenameDenied $source; $checks.source_rename_denied=$true
-    Assert-RenameDenied $case; $checks.case_rename_denied=$true
-    Assert-RenameDenied $sandbox; $checks.sandbox_rename_denied=$true
+    Assert-RenameDenied $source 'source'; $checks.source_rename_denied=$true
+    Assert-RenameDenied $case 'case'; $checks.case_rename_denied=$true
+    Assert-RenameDenied $sandbox 'sandbox'; $checks.sandbox_rename_denied=$true
     $lease.Verify(); $lease.Dispose(); $lease=$null; $leaseClosed=$true
     foreach ($path in @($source,$case,$sandbox)) { Assert-RenameReleased $path }
     $checks.release_observed=$true
@@ -353,7 +371,9 @@ public static class SourceCwdProbe {
         # Source pins survive natural exit and remain owned until Finish.
         # Non-TUI transcript bytes need not flush until that finalization.
         $phase='rename_failed'
-        foreach ($path in @($source,$case,$sandbox)) { Assert-RenameDenied $path }
+        Assert-RenameDenied $source 'source'
+        Assert-RenameDenied $case 'case'
+        Assert-RenameDenied $sandbox 'sandbox'
     } finally {
         if ($null -ne $session) {
             $final=$session.Finish(10000)
@@ -387,7 +407,9 @@ public static class SourceCwdProbe {
 } finally {
     $env:TEMP=$oldTemp; $env:TMP=$oldTmp
     if ($null -ne $lease) {
-        try { $lease.Dispose(); $leaseClosed=$true } catch { $leaseClosed=$false; $failure='cleanup_failed' }
+        try { $lease.Dispose(); $leaseClosed=$true } catch {
+            $leaseClosed=$false; if ($failure -ceq '') { $failure='cleanup_failed' }
+        }
     }
     # No recursive deletion after uncertain construction, compilation, rename or session cleanup.
     if ($null -eq $sandbox) { $cleanup=$true }
@@ -397,10 +419,10 @@ public static class SourceCwdProbe {
             $cleanup=$true
         } catch { $cleanup=$false }
     }
-    if (-not $cleanup) { $failure='cleanup_failed' }
+    if (-not $cleanup -and $failure -ceq '') { $failure='cleanup_failed' }
 }
 # Unproved absence is retained uncertainty, never an Exists(false) success.
 $retained=$null -ne $sandbox -and -not $cleanup
-$report=New-ProbeReport $checks $failure $cleanup $retained
+$report=New-ProbeReport $checks $failure $cleanup $retained $script:renameOutcomes
 [Console]::Out.WriteLine(($report | ConvertTo-Json -Depth 4 -Compress))
 exit $(if ($report.result -ceq 'passed') { 0 } else { 1 })

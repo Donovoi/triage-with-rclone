@@ -311,7 +311,7 @@ class PrivateApi:
                 return ctypes.c_void_p(-1).value
             handle = 0x100000100
         else:
-            assert (access, share, attributes, disposition, flags, template) == (0x80, 3, None, 3, 0x02200000, None)
+            assert (access, share, attributes, disposition, flags, template) == (0x81, 3, None, 3, 0x02200000, None)
             if self.failure == "parent":
                 return ctypes.c_void_p(-1).value
             handle = 0x100000010 + len(self.live)
@@ -450,14 +450,14 @@ class ProducerTests(unittest.TestCase):
         self.assertEqual(second.live, {})
         self.assertFalse(second.transferred)
 
-    def test_private_native_directory_is_atomic_explicit_and_metadata_reopen_only(self):
+    def test_private_native_directory_is_atomic_with_sharing_participation(self):
         api = PrivateApi(self.root, "temp", True)
         self.assertIsNone(api.invoke(self.real_native_create))
         self.assertTrue(api.path.is_dir())
         self.assertEqual(api.live, {})
         self.assertEqual(len(api.attributes), 1)
         self.assertIn("(A;OICI;FA;;;", api.sddl)
-        self.assertTrue(all(call[1] == 0x80 and call[3] == 3 for call in api.flags))
+        self.assertTrue(all(call[1] == 0x81 and call[3] == 3 for call in api.flags))
         self.assertFalse(api.transferred)
         with self.assertRaisesRegex(P.ProducerError, "^case_setup_failed$"):
             api.invoke(self.real_native_create)

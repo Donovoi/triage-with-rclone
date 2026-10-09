@@ -965,9 +965,13 @@ mod platform {
         }
     }
     pub fn open_directory(path: &Path) -> io::Result<File> {
+        // MS-FSA 2.1.5.1.2.2 excludes metadata-only opens from sharing checks.
+        // FILE_LIST_DIRECTORY supplies directory data-read access so omitting
+        // FILE_SHARE_DELETE protects this directory from rename/deletion.
+        // https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fsa/8c0e3f4f-0729-49f4-a14d-7f7add593819
         let file = open(
             path,
-            FILE_READ_ATTRIBUTES.0 | READ_CONTROL.0,
+            FILE_LIST_DIRECTORY.0 | FILE_READ_ATTRIBUTES.0 | READ_CONTROL.0,
             FILE_SHARE_READ | FILE_SHARE_WRITE,
             OPEN_EXISTING,
             None,
@@ -1562,6 +1566,61 @@ mod tests {
             .file_type()
             .is_symlink());
         assert_eq!(fs::read_dir(&real).unwrap().count(), 0);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn directory_pin_denies_rename_and_delete_until_released() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("pinned");
+        let moved = root.path().join("moved");
+        create_dir(&path).unwrap();
+        let pin = platform::open_directory(&path).unwrap();
+        let identity = platform::identity(&pin).unwrap();
+
+        for error in [
+            fs::rename(&path, &moved).unwrap_err(),
+            fs::remove_dir(&path).unwrap_err(),
+        ] {
+            assert!(matches!(error.raw_os_error(), Some(5 | 32)));
+        }
+        assert!(path.is_dir());
+        assert!(!moved.exists());
+        assert_eq!(platform::identity(&pin).unwrap(), identity);
+
+        drop(pin);
+        fs::rename(&path, &moved).unwrap();
+        fs::remove_dir(&moved).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn temporary_cleanup_releases_own_pin_and_retains_parent_until_return() {
+        let root = tempfile::tempdir().unwrap();
+        let parent = root.path().join("parent");
+        let moved_parent = root.path().join("moved-parent");
+        create_dir(&parent).unwrap();
+        let mut owned = tempdir_in(&parent, "owned-").unwrap();
+        let path = owned.path.take().unwrap();
+        let mut removal_attempts = 0;
+
+        owned
+            .remove_with(&path, None, |validated| {
+                removal_attempts += 1;
+                let error = fs::rename(&parent, &moved_parent).unwrap_err();
+                assert!(matches!(error.raw_os_error(), Some(5 | 32)));
+                assert!(!moved_parent.exists());
+                // Only the exact validated root pin must be released: retaining
+                // it here would make this single intended removal fail.
+                fs::remove_dir(validated)
+            })
+            .unwrap();
+        assert_eq!(removal_attempts, 1);
+        assert!(!path.exists());
+        assert!(parent.is_dir());
+        drop(owned);
+        fs::rename(&parent, &moved_parent).unwrap();
+        fs::remove_dir(&moved_parent).unwrap();
     }
 
     #[cfg(windows)]
