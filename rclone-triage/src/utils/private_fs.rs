@@ -69,7 +69,14 @@ pub fn create_dir(path: impl AsRef<Path>) -> io::Result<()> {
 
 /// Create missing components privately, validating but never altering ancestors.
 pub fn create_dir_all(path: impl AsRef<Path>) -> io::Result<()> {
-    let path = absolute(path.as_ref())?;
+    create_dir_all_inner(path.as_ref(), |_| Ok(()))
+}
+
+fn create_dir_all_inner(
+    path: &Path,
+    mut before_create: impl FnMut(&Path) -> io::Result<()>,
+) -> io::Result<()> {
+    let path = absolute(path)?;
     let mut current = PathBuf::new();
     let mut pins = Vec::new();
     for component in path.components() {
@@ -84,8 +91,19 @@ pub fn create_dir_all(path: impl AsRef<Path>) -> io::Result<()> {
                     .file_name()
                     .ok_or_else(|| refused("Missing filesystem root"))?;
                 platform::validate_name(name)?;
-                platform::create_dir(&current)?;
-                pins.push(platform::open_directory(&current)?);
+                before_create(&current)?;
+                match platform::create_dir(&current) {
+                    Ok(()) => pins.push(platform::open_directory(&current)?),
+                    Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                        // Another acquisition worker may have created this missing
+                        // component. Only a verified private directory can win;
+                        // never accept or repair a file, reparse point or broad ACL.
+                        let pin = platform::open_directory(&current)?;
+                        platform::verify_private(&pin, true)?;
+                        pins.push(pin);
+                    }
+                    Err(error) => return Err(error),
+                }
             }
             Err(error) => return Err(error),
         }
@@ -844,6 +862,99 @@ mod tests {
         assert_eq!(fs::read(source).unwrap(), b"unchanged");
         assert!(create_dir_all(root.path().join("one/../escape")).is_err());
         assert!(tempfile_in(root.path(), "../escape", "").is_err());
+    }
+
+    #[test]
+    fn raced_private_directory_creation_is_accepted_without_weakening_exclusive_creation() {
+        let root = tempfile::tempdir().unwrap();
+        let shared = root.path().join("Archive");
+        let descendant = shared.join("nested");
+        let mut collisions = 0;
+        create_dir_all_inner(&descendant, |path| {
+            if path == shared {
+                collisions += 1;
+                create_dir(path)?;
+                write(path.join("competing-worker"), b"preserved")?;
+            }
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(collisions, 1);
+        verify_directory(&shared).unwrap();
+        verify_directory(&descendant).unwrap();
+        assert_eq!(
+            fs::read(shared.join("competing-worker")).unwrap(),
+            b"preserved"
+        );
+        assert_eq!(
+            create_dir(&shared).unwrap_err().kind(),
+            io::ErrorKind::AlreadyExists
+        );
+    }
+
+    #[test]
+    fn raced_file_creation_is_rejected_without_changing_its_bytes() {
+        let root = tempfile::tempdir().unwrap();
+        let shared = root.path().join("Archive");
+        let mut attempts = 0;
+        let outcome = create_dir_all_inner(&shared.join("nested"), |path| {
+            assert_eq!(path, shared);
+            attempts += 1;
+            write(path, b"competing file")
+        });
+        assert!(outcome.is_err());
+        assert_eq!(attempts, 1);
+        assert_eq!(fs::read(&shared).unwrap(), b"competing file");
+        assert!(!shared.join("nested").exists());
+    }
+
+    #[test]
+    fn raced_nonprivate_directory_is_rejected_without_repair_or_descent() {
+        let root = tempfile::tempdir().unwrap();
+        let private = tempdir_in(root.path(), "private-").unwrap();
+        let shared = private.path().join("Archive");
+        let mut attempts = 0;
+        let outcome = create_dir_all_inner(&shared.join("nested"), |path| {
+            assert_eq!(path, shared);
+            attempts += 1;
+            // Windows inherits an unprotected DACL instead of our explicit
+            // descriptor. On Unix, make the fixture nonprivate regardless of umask.
+            fs::create_dir(path)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(path, fs::Permissions::from_mode(0o755))?;
+            }
+            Ok(())
+        });
+        assert_eq!(outcome.unwrap_err().kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(attempts, 1);
+        assert!(verify_directory(&shared).is_err());
+        assert_eq!(fs::read_dir(&shared).unwrap().count(), 0);
+        private.close().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn raced_directory_symlink_is_rejected_without_touching_its_target() {
+        use std::os::unix::fs::symlink;
+        let root = tempfile::tempdir().unwrap();
+        let real = root.path().join("real");
+        create_dir(&real).unwrap();
+        let shared = root.path().join("Archive");
+        let mut attempts = 0;
+        let outcome = create_dir_all_inner(&shared.join("nested"), |path| {
+            assert_eq!(path, shared);
+            attempts += 1;
+            symlink(&real, path)
+        });
+        assert!(outcome.is_err());
+        assert_eq!(attempts, 1);
+        assert!(fs::symlink_metadata(&shared)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(fs::read_dir(&real).unwrap().count(), 0);
     }
 
     #[cfg(windows)]

@@ -583,7 +583,7 @@ def remove_owned(root, expected_identity):
 
 
 SESSION_KEYS = frozenset({"schema_version", "action", "ok", "state", "app_exit_code", "runtime_image_observed",
-    "runtime_sha256", "ctrl_c_sent", "output_bytes", "output_limit_exceeded", "forced_termination",
+    "runtime_sha256", "runtime_process_count", "ctrl_c_sent", "output_bytes", "output_limit_exceeded", "forced_termination",
     "app_exited", "observed_children_exited", "job_zero_confirmed", "reader_joined", "conpty_closed", "errors"})
 SESSION_ERRORS = frozenset("protocol_invalid job_assignment_failed termination_failed deadline_exceeded start_failed "
     "output_limit_exceeded reader_failed job_query_failed process_observation_failed runtime_observation_failed "
@@ -601,12 +601,26 @@ def validate_session(value, action):
     need(type(value["output_bytes"]) is int and 0 <= value["output_bytes"] <= 8 * 1024 * 1024 + 65536, "session_failed")
     need(value["app_exit_code"] is None or type(value["app_exit_code"]) is int and 0 <= value["app_exit_code"] < 2**32, "session_failed")
     need(value["runtime_sha256"] is None or type(value["runtime_sha256"]) is str and re.fullmatch(r"[a-f0-9]{64}", value["runtime_sha256"]), "session_failed")
+    need(value["runtime_process_count"] is None or type(value["runtime_process_count"]) is int and
+         0 <= value["runtime_process_count"] <= 64, "session_failed")
     need(not value["runtime_image_observed"] or value["runtime_sha256"] is not None, "session_failed")
     need(not value["app_exited"] or value["app_exit_code"] is not None, "session_failed")
     errors = value["errors"]
     need(type(errors) is list and len(errors) <= 24 and all(type(e) is str and e in SESSION_ERRORS for e in errors)
          and len(set(errors)) == len(errors) and value["ok"] == (not errors), "session_failed")
     return value
+
+
+def session_failure_diagnostic(value, action):
+    """Finite observations only, from a closed helper response; never credit."""
+    value = validate_session(value, action)
+    need(action in {"start", "poll", "observe_runtime", "ctrl_c", "finish"} and not value["ok"], "session_failed")
+    count = value["runtime_process_count"]
+    classification = "unavailable" if count is None else "none" if count == 0 else "single" if count == 1 else "multiple"
+    payload = E.compact(dict(action=action, errors=value["errors"], forced_termination=value["forced_termination"],
+        app_exited=value["app_exited"], runtime_process_count=count, count_classification=classification))
+    need(len(payload) <= 4096, "session_failed")
+    print("application_session_failure=" + payload.decode("ascii"), flush=True)
 
 
 def validate_ready(value):
@@ -779,6 +793,11 @@ class Bridge:
             value = strict_json(data, 65536)
             self.last = (validate_ready(value) if action == "ready" else validate_close_ready(value)
                          if action == "close_ready" else validate_session(value, action))
+            if not self.last["ok"]:
+                try:
+                    session_failure_diagnostic(self.last, action)
+                except BaseException:
+                    pass  # Diagnostics cannot mask the helper's original failure.
             if action == "ready":
                 self.ready = True
             if action == "close_ready":
@@ -850,6 +869,11 @@ def app_args(name, case):
             "--rclone-config-path", str(case / "source.conf")]
     return args + (["--list-remote", REMOTE] if name == "listing" else
                    ["--download", str(case / "queue.csv"), "--remote", REMOTE])
+
+
+def runtime_process_limit(name):
+    need(name in E.CASE_CHECKS, "session_failed")
+    return 1 if name == "listing" else min(4, len(queue_rows(name)))
 
 
 def same_path(value, expected):
@@ -1326,13 +1350,16 @@ def run_case(name, suite, application, application_sha, runtime, session_factory
         helper_before = prestart_baseline(name, case, private_leases)
         response = bridge.command("start", app_path=str(owned_application), app_sha256=application_sha,
             args=app_args(name, case), case_root=str(case), environment=environment(case),
-            transcript_path=str(case / "transcript.private"), max_output_bytes=8 * 1024 * 1024, deadline_ms=150000)
+            transcript_path=str(case / "transcript.private"), max_output_bytes=8 * 1024 * 1024, deadline_ms=150000,
+            max_runtime_processes=runtime_process_limit(name))
         while not state.observation_started.wait(0.05):
             need(time.monotonic() < deadline, "deadline_exceeded")
             response = bridge.command("poll")
             need(response["ok"] and not response["app_exited"] and response["state"] == "running", "runtime_unobserved")
         response = bridge.command("observe_runtime", extraction_root=str(case / "temp"), expected_sha256=runtime["sha256"])
-        checks["runtime_observed"] = response["ok"] and response["runtime_image_observed"] and response["runtime_sha256"] == runtime["sha256"]
+        checks["runtime_observed"] = (response["ok"] and response["runtime_image_observed"] and
+            response["runtime_sha256"] == runtime["sha256"] and type(response["runtime_process_count"]) is int and
+            1 <= response["runtime_process_count"] <= runtime_process_limit(name))
         need(checks["runtime_observed"], "runtime_unobserved")
         record["runtime_sha256"] = response["runtime_sha256"]
         state.release_observation()

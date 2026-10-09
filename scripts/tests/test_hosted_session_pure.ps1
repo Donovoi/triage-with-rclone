@@ -111,6 +111,27 @@ Reject { [TriageApplicationLab.HostedProtocol]::Text([TriageApplicationLab.Hoste
 Reject { [TriageApplicationLab.HostedProtocol]::Integer([TriageApplicationLab.HostedProtocol]::Parse('{"grace_ms":"1"}'), 'grace_ms') }
 Reject { [TriageApplicationLab.HostedProtocol]::Integer([TriageApplicationLab.HostedProtocol]::Parse('{"grace_ms":-1}'), 'grace_ms') }
 Check ([TriageApplicationLab.HostedProtocol]::Integer([TriageApplicationLab.HostedProtocol]::Parse('{"grace_ms":15000}'), 'grace_ms') -eq 15000)
+foreach ($limit in @(1, 2, 3, 4)) {
+    Check ([TriageApplicationLab.HostedProtocol]::RuntimeProcessLimit([TriageApplicationLab.HostedProtocol]::Parse(('{"max_runtime_processes":' + $limit + '}'))) -eq $limit)
+    foreach ($count in @(-1, 0, 1, 2, 4, 5, 64)) {
+        Check ([TriageApplicationLab.HostedConPtySession]::RuntimeCountAllowed($limit, $count) -eq ($count -ge 1 -and $count -le $limit))
+    }
+}
+foreach ($invalid in @('{}', '{"max_runtime_processes":0}', '{"max_runtime_processes":5}',
+        '{"max_runtime_processes":-1}', '{"max_runtime_processes":"1"}', '{"max_runtime_processes":true}',
+        '{"max_runtime_processes":1.0}', '{"max_runtime_processes":1,"max_runtime_processes":4}')) {
+    $text = $invalid
+    Reject { [TriageApplicationLab.HostedProtocol]::RuntimeProcessLimit([TriageApplicationLab.HostedProtocol]::Parse($text)) }
+}
+Check (-not [TriageApplicationLab.HostedConPtySession]::RuntimeCountAllowed(0, 1))
+Check (-not [TriageApplicationLab.HostedConPtySession]::RuntimeCountAllowed(5, 1))
+# PowerShell coerces a direct string $null argument to empty; reflection here
+# invokes only this public pure predicate and preserves the C# null sentinel.
+Check ([TriageApplicationLab.HostedConPtySession].GetMethod('SameRuntimeImage').Invoke($null, [object[]]@($null, 'C:\owned\one\rclone.exe')))
+Check ([TriageApplicationLab.HostedConPtySession]::SameRuntimeImage('C:\owned\one\rclone.exe', 'c:\OWNED\one\rclone.exe'))
+Check (-not [TriageApplicationLab.HostedConPtySession]::SameRuntimeImage('C:\owned\one\rclone.exe', 'C:\owned\two\rclone.exe'))
+Check (-not [TriageApplicationLab.HostedConPtySession]::SameRuntimeImage('C:\owned\one\rclone.exe', 'C:\owned\one\rclone.exe.extra'))
+Check (-not [TriageApplicationLab.HostedConPtySession]::SameRuntimeImage($null, $null))
 $argsValue = [TriageApplicationLab.HostedProtocol]::Arguments([TriageApplicationLab.HostedProtocol]::Parse('{"args":["a","b c"]}'))
 Check ($argsValue.Count -eq 2 -and $argsValue[1] -ceq 'b c')
 Reject { [TriageApplicationLab.HostedProtocol]::Arguments([TriageApplicationLab.HostedProtocol]::Parse('{"args":[1]}')) }
@@ -122,7 +143,7 @@ Check ($null -eq [TriageApplicationLab.HostedProtocol]::Read($reader))
 $reader.Dispose()
 Reject { [TriageApplicationLab.HostedProtocol]::Read((New-Object System.IO.StringReader('{"action":"poll"}'))) }
 $failure = [TriageApplicationLab.HostedProtocol]::Failure()
-Check ($failure.Count -eq 16 -and $failure['ok'] -eq $false -and $failure['errors'][0] -ceq 'protocol_invalid')
+Check ($failure.Count -eq 17 -and $failure['ok'] -eq $false -and $failure['errors'][0] -ceq 'protocol_invalid' -and $null -eq $failure['runtime_process_count'])
 Check ($null -eq $failure['runtime_sha256'] -and $null -eq $failure['app_exit_code'])
 
 $tokens = $null

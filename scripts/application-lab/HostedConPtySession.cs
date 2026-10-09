@@ -74,7 +74,8 @@ namespace TriageApplicationLab {
         Thread reader,writer,closer;
         Timer watchdog;
         string caseRoot;
-        int deadlineMs,maxOutput;
+        int deadlineMs,maxOutput,maxRuntimeProcesses;
+        int? runtimeProcessCount;
         long outputBytes;
         volatile bool closing,finished,limitExceeded,forced,ctrlSent,readerJoined,consoleClosed;
         bool appExited,childrenExited,jobZero,runtimeObserved;
@@ -206,15 +207,17 @@ namespace TriageApplicationLab {
                 return BitConverter.ToString(hash.Hash).Replace("-","").ToLowerInvariant();
             }
         }
-        public static HostedConPtySession Start(string appPath,string appSha256,string[] arguments,string root,IDictionary<string,string> environment,string transcriptPath,int maxOutputBytes,int deadlineMilliseconds) {
-            Require(Sha(appSha256) && arguments!=null && arguments.Length<=64 && maxOutputBytes>=1024 && maxOutputBytes<=8388608 && deadlineMilliseconds>=1000 && deadlineMilliseconds<=180000);
+        public static bool RuntimeCountAllowed(int maximum,int count) { return maximum>=1 && maximum<=4 && count>=1 && count<=maximum; }
+        public static bool SameRuntimeImage(string first,string next) { return !String.IsNullOrEmpty(next) && (first==null || String.Equals(first,next,StringComparison.OrdinalIgnoreCase)); }
+        public static HostedConPtySession Start(string appPath,string appSha256,string[] arguments,string root,IDictionary<string,string> environment,string transcriptPath,int maxOutputBytes,int deadlineMilliseconds,int maxRuntimeProcesses) {
+            Require(Sha(appSha256) && arguments!=null && arguments.Length<=64 && maxOutputBytes>=1024 && maxOutputBytes<=8388608 && deadlineMilliseconds>=1000 && deadlineMilliseconds<=180000 && RuntimeCountAllowed(maxRuntimeProcesses,1));
             root=FullPath(root); PrivateRoot(root); appPath=FullPath(appPath); PlainExisting(appPath,false);
             transcriptPath=FullPath(transcriptPath); Require(Inside(root,transcriptPath) && !File.Exists(transcriptPath) && !Directory.Exists(transcriptPath));
             PlainExisting(Path.GetDirectoryName(transcriptPath),true);
             string block=BuildEnvironment(root,environment);
             var command=new StringBuilder(Quote(appPath)); foreach(string argument in arguments) command.Append(' ').Append(Quote(argument));
             Require(command.Length<=16384);
-            var s=new HostedConPtySession {caseRoot=root,maxOutput=maxOutputBytes,deadlineMs=deadlineMilliseconds};
+            var s=new HostedConPtySession {caseRoot=root,maxOutput=maxOutputBytes,deadlineMs=deadlineMilliseconds,maxRuntimeProcesses=maxRuntimeProcesses};
             IntPtr inRead=IntPtr.Zero,inWrite=IntPtr.Zero,outRead=IntPtr.Zero,outWrite=IntPtr.Zero,attrs=IntPtr.Zero,env=IntPtr.Zero;
             ProcessInfo pi=new ProcessInfo(); bool initialized=false;
             FileStream appLock=null;
@@ -323,22 +326,27 @@ namespace TriageApplicationLab {
         }
         public Dictionary<string,object> ObserveOwnedRuntime(string extractionRoot,string expectedSha256) {
             lock(api) {
+                runtimeProcessCount=null;
                 try {
                     Require(!closing && !finished && !Deadline && Sha(expectedSha256));
                     string root=FullPath(extractionRoot); Require(Inside(caseRoot,root)); PlainExisting(root,true);
                     Require(process!=IntPtr.Zero && !Exited(process)); ObserveChildren();
-                    int matches=0;
+                    int matches=0; string runtimePath=null;
                     foreach(Child child in children) {
                         if(Exited(child.handle)) continue;
                         string path=Image(child.handle);
                         if(!Inside(root,path)) continue;
                         Require(Path.GetFileName(path).Equals("rclone.exe",StringComparison.OrdinalIgnoreCase));
+                        Require(SameRuntimeImage(runtimePath,path)); runtimePath=path;
                         bool belongs; Require(IsProcessInJob(child.handle,job,out belongs) && belongs && Created(child.handle)==child.created);
                         string sha=HashFile(path,delegate { return Deadline; });
                         Require(sha==expectedSha256 && !Exited(child.handle) && Created(child.handle)==child.created);
                         matches++;
                     }
-                    Require(matches==1); runtimeObserved=true; runtimeSha=expectedSha256;
+                    // The first HTTP request is held, but other acquisition workers
+                    // may already be live. Every observed instance must be verified.
+                    runtimeProcessCount=matches;
+                    Require(RuntimeCountAllowed(maxRuntimeProcesses,matches)); runtimeObserved=true; runtimeSha=expectedSha256;
                 } catch { Error("runtime_observation_failed"); return Finish(0); }
                 return Snapshot();
             }
@@ -402,7 +410,7 @@ namespace TriageApplicationLab {
             string[] current; lock(errorLock) current=errors.ToArray();
             return new Dictionary<string,object> {
                 {"schema_version",1},{"ok",current.Length==0},{"state",finished?"finished":"running"},
-                {"app_exit_code",appExit},{"runtime_image_observed",runtimeObserved},{"runtime_sha256",runtimeSha},
+                {"app_exit_code",appExit},{"runtime_image_observed",runtimeObserved},{"runtime_sha256",runtimeSha},{"runtime_process_count",runtimeProcessCount},
                 {"ctrl_c_sent",ctrlSent},{"output_bytes",Interlocked.Read(ref outputBytes)}, {"output_limit_exceeded",limitExceeded},
                 {"forced_termination",forced},{"app_exited",appExited},{"observed_children_exited",childrenExited},
                 {"job_zero_confirmed",jobZero},{"reader_joined",readerJoined},{"conpty_closed",consoleClosed},{"errors",current}
@@ -468,11 +476,12 @@ namespace TriageApplicationLab {
         }
         public static string Text(Dictionary<string,object> value,string key) { if(!(value[key] is string)) throw new FormatException("protocol_invalid"); return (string)value[key]; }
         public static int Integer(Dictionary<string,object> value,string key) { if(!(value[key] is long) || (long)value[key]<0 || (long)value[key]>Int32.MaxValue) throw new FormatException("protocol_invalid"); return (int)(long)value[key]; }
+        public static int RuntimeProcessLimit(Dictionary<string,object> value) { int limit=Integer(value,"max_runtime_processes"); if(limit<1 || limit>4) throw new FormatException("protocol_invalid"); return limit; }
         public static string[] Arguments(Dictionary<string,object> value) { var array=value["args"] as object[]; if(array==null) throw new FormatException("protocol_invalid"); var result=new string[array.Length]; for(int i=0;i<array.Length;i++) { if(!(array[i] is string)) throw new FormatException("protocol_invalid"); result[i]=(string)array[i]; } return result; }
         public static Dictionary<string,string> EnvironmentMap(Dictionary<string,object> value) { var map=value["environment"] as Dictionary<string,object>; if(map==null) throw new FormatException("protocol_invalid"); var result=new Dictionary<string,string>(StringComparer.OrdinalIgnoreCase); foreach(var item in map) { if(!(item.Value is string)) throw new FormatException("protocol_invalid"); result.Add(item.Key,(string)item.Value); } return result; }
         public static Dictionary<string,object> Failure() {
             return new Dictionary<string,object> {{"schema_version",1},{"ok",false},{"state","finished"},{"app_exit_code",null},
-                {"runtime_image_observed",false},{"runtime_sha256",null},{"ctrl_c_sent",false},{"output_bytes",0L},
+                {"runtime_image_observed",false},{"runtime_sha256",null},{"runtime_process_count",null},{"ctrl_c_sent",false},{"output_bytes",0L},
                 {"output_limit_exceeded",false},{"forced_termination",false},{"app_exited",false},{"observed_children_exited",false},
                 {"job_zero_confirmed",false},{"reader_joined",false},{"conpty_closed",false},{"errors",new string[]{"protocol_invalid"}}};
         }

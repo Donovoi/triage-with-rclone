@@ -37,6 +37,7 @@ def session(action, *, final=False, observed=True, cancelled=False, exit_code=0)
     return {"schema_version": 1, "action": action, "ok": True,
         "state": "finished" if final else "running", "app_exit_code": exit_code if final else None,
         "runtime_image_observed": observed, "runtime_sha256": RUNTIME["sha256"] if observed else None,
+        "runtime_process_count": 1 if observed else None,
         "ctrl_c_sent": cancelled, "output_bytes": 500, "output_limit_exceeded": False,
         "forced_termination": False, "app_exited": final, "observed_children_exited": final,
         "job_zero_confirmed": final, "reader_joined": final, "conpty_closed": final, "errors": []}
@@ -109,10 +110,11 @@ def materialize(case, name):
 
 class Flow:
     def __init__(self, name, *, late_error=None, enter_error=False, close_ok=True, grow=True, forced=False,
-                 before_app=None, after_app=None, ready_result=None):
+                 before_app=None, after_app=None, ready_result=None, runtime_count=1, close_final=False):
         self.name, self.late_error, self.enter_error, self.close_ok, self.grow = name, late_error, enter_error, close_ok, grow
         self.forced = forced
         self.before_app, self.after_app, self.ready_result = before_app, after_app, ready_result
+        self.runtime_count, self.close_final = runtime_count, close_final
         self.events, self.server = [], None
 
     def serve(self, state):
@@ -151,12 +153,15 @@ class Flow:
                     assert Path(fields["app_path"]) == case / "application.exe"
                     assert Path(fields["app_path"]).read_bytes() == b"inert application bytes"
                     assert "--rclone-config-path" in fields["args"] and "--rclone-config" not in fields["args"]
+                    assert type(fields["max_runtime_processes"]) is int
+                    assert fields["max_runtime_processes"] == (4 if flow.name == "acquisition" else 1)
                     flow.state._event("observation", "")
                     flow.state.observation_started.set()
                     self.last = session(action, observed=False)
                 elif action == "observe_runtime":
                     assert not flow.state._observation_release.is_set()
                     self.last = session(action)
+                    self.last["runtime_process_count"] = flow.runtime_count
                     if flow.name == "cancellation":
                         flow.state.cancel_started.set()
                         if flow.grow:
@@ -190,6 +195,9 @@ class Flow:
                 return self.last
             def close(self):
                 flow.events.append("helper_closed")
+                if flow.close_final:
+                    self.last = session("finish", final=True, observed=False, exit_code=99)
+                    self.last.update(ok=False, forced_termination=True, errors=["runtime_observation_failed", "forced_termination"])
                 return flow.close_ok
         return Session()
 
@@ -602,9 +610,9 @@ class ProducerTests(unittest.TestCase):
                     self.assertTrue(all(stream.closed for stream in self.created_streams))
                     self.assertNotIn("canary", output.getvalue())
 
-    def execute_case(self, name, **kwargs):
+    def execute_case(self, name, *, suite_name=None, **kwargs):
         flow = Flow(name, **kwargs)
-        suite = self.root / name
+        suite = self.root / (suite_name or name)
         suite.mkdir()
         with mock.patch.object(P, "prepare", side_effect=fake_prepare), mock.patch.object(P.F, "serve_http", side_effect=flow.serve), mock.patch.object(P.time, "sleep"):
             result = P.run_case(name, suite, self.app, self.digest, RUNTIME, session_factory=flow.factory)
@@ -1364,6 +1372,82 @@ class ProducerTests(unittest.TestCase):
         for value in mutations:
             with self.assertRaisesRegex(P.ProducerError, "^session_failed$"):
                 P.validate_session(value, "finish")
+
+    def test_runtime_limits_and_observed_counts_are_strict_and_per_case(self):
+        for name in ("listing", "acquisition", "mismatch", "missing", "denial", "cancellation"):
+            self.assertEqual(P.runtime_process_limit(name), 4 if name == "acquisition" else 1)
+        with mock.patch.object(P, "queue_rows", return_value=list(range(9))):
+            self.assertEqual(P.runtime_process_limit("acquisition"), 4)
+        with self.assertRaises(P.ProducerError):
+            P.runtime_process_limit("private-canary")
+        good = session("observe_runtime")
+        for count in (None, 0, 1, 4, 5, 64):
+            self.assertEqual(P.validate_session(dict(good, runtime_process_count=count), "observe_runtime")["runtime_process_count"], count)
+        for count in (True, False, -1, 65, 1.0, "1", [], {}):
+            with self.subTest(count=count), self.assertRaises(P.ProducerError):
+                P.validate_session(dict(good, runtime_process_count=count), "observe_runtime")
+        incomplete = dict(good)
+        del incomplete["runtime_process_count"]
+        with self.assertRaises(P.ProducerError):
+            P.validate_session(incomplete, "observe_runtime")
+
+    def test_runtime_failure_diagnostic_is_closed_bounded_and_never_contains_raw_values(self):
+        for count, classification in ((None, "unavailable"), (0, "none"), (1, "single"), (4, "multiple"), (64, "multiple")):
+            value = session("observe_runtime", final=True, observed=False, exit_code=99)
+            value.update(ok=False, runtime_process_count=count, forced_termination=True,
+                         errors=["runtime_observation_failed", "forced_termination"])
+            with redirect_stdout(io.StringIO()) as output:
+                P.session_failure_diagnostic(value, "observe_runtime")
+            rendered = output.getvalue()
+            self.assertLessEqual(len(rendered.encode()), 4096)
+            self.assertEqual(json.loads(rendered.split("=", 1)[1]), dict(action="observe_runtime",
+                errors=value["errors"], forced_termination=True, app_exited=True,
+                runtime_process_count=count, count_classification=classification))
+        for bad in (dict(value, errors=["private-canary"]), dict(value, secret="private-canary"),
+                    dict(value, runtime_process_count=True), dict(value, forced_termination=1),
+                    dict(value, app_exited="private-canary"), session("observe_runtime")):
+            with redirect_stdout(io.StringIO()) as output, self.assertRaises(P.ProducerError):
+                P.session_failure_diagnostic(bad, "observe_runtime")
+            self.assertEqual(output.getvalue(), "")
+
+    def test_parallel_runtime_bound_is_required_even_when_later_cleanup_completes(self):
+        for index, (name, count) in enumerate((("acquisition", 0), ("acquisition", 5), ("acquisition", True),
+                            ("listing", 2), ("mismatch", None))):
+            with self.subTest(name=name, count=count), redirect_stdout(io.StringIO()):
+                record, flow, _ = self.execute_case(name, suite_name="runtime-negative-" + str(index), runtime_count=count, close_final=True)
+            self.assertEqual(record["status"], "failed")
+            self.assertEqual(record["failure_code"], "runtime_unobserved")
+            self.assertFalse(record["checks"]["runtime_observed"])
+            self.assertTrue(record["checks"]["process_cleanup"])
+            self.assertTrue(record["checks"]["fixture_cleanup"])
+            self.assertEqual(record["exit_code"], 99)
+            self.assertNotIn("poll", flow.events)
+        for count in (1, 2, 4):
+            with self.subTest(count=count):
+                record, _, _ = self.execute_case("acquisition", suite_name="runtime-positive-" + str(count), runtime_count=count)
+            self.assertEqual(record["status"], "passed")
+
+    def test_bridge_failure_diagnostic_does_not_replace_or_promote_failed_response(self):
+        failure = session("observe_runtime", final=True, observed=False, exit_code=99)
+        failure.update(ok=False, runtime_process_count=5, forced_termination=True,
+                       errors=["runtime_observation_failed", "forced_termination"])
+        for printing_failure in (False, True):
+            bridge = self.bare_bridge("runtime-diagnostic-" + str(printing_failure))
+            self.reply_on_write(bridge)
+            bridge.command("ready")
+            self.reply_on_write(bridge, json.dumps(failure).encode())
+            with redirect_stdout(io.StringIO()) as output:
+                if printing_failure:
+                    with mock.patch.object(P, "session_failure_diagnostic", side_effect=OSError("private-canary")):
+                        result = bridge.command("observe_runtime")
+                else:
+                    result = bridge.command("observe_runtime")
+            self.assertEqual(result, failure)
+            self.assertEqual(bridge.last, failure)
+            self.assertFalse(result["ok"])
+            self.assertNotIn("canary", output.getvalue())
+            if not printing_failure:
+                self.assertEqual(json.loads(output.getvalue().split("=", 1)[1])["count_classification"], "multiple")
 
     def test_fixed_pins_are_closed(self):
         path = self.root / "pins"
