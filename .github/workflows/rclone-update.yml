@@ -23,7 +23,7 @@ jobs:
       GH_REPO: ${{ github.repository }}
       UPDATE_BRANCH: automation/rclone-stable
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: main
           fetch-depth: 0
@@ -103,7 +103,7 @@ jobs:
           cat > "$RUNNER_TEMP/rclone-pr-body.md" <<EOF
           Update the embedded Windows runtime and Linux test runtime to rclone $RCLONE_VERSION.
 
-          The updater verified both official archive SHA256 values and hashed each extracted executable without running it. The manifest is the only change from main. Source: https://downloads.rclone.org/v$RCLONE_VERSION/SHA256SUMS
+          The updater verified all four official archive SHA256 values and hashed each extracted executable without running it. The manifest is the only change from main. Source: https://downloads.rclone.org/v$RCLONE_VERSION/SHA256SUMS
 
           Full Windows/Linux CI is explicitly dispatched for commit $head; bot-created PR events alone are insufficient for unattended validation. Merge only after that commit passes CI and review. This workflow does not enable automatic merging.
 

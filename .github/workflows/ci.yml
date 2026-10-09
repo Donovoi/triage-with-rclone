@@ -12,7 +12,9 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  # Each main run needs its own group: even with cancellation disabled,
+  # a shared group replaces older pending runs and loses merged-PR nightlies.
+  group: ci-${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_id || github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 jobs:
   revision:
@@ -34,7 +36,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067
         with:
           toolchain: 1.95.0
@@ -50,8 +52,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12'
       - name: Install the pinned auditor in a fresh environment
@@ -75,7 +77,7 @@ jobs:
             --format json --desc off --output "$RUNNER_TEMP/python-dependency-audit.json"
       - name: Retain dependency audit evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: python-dependency-audit
           path: ${{ runner.temp }}/python-dependency-audit.json
@@ -87,10 +89,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 18
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12'
       - name: Prepare verified Linux runtime
@@ -106,7 +108,7 @@ jobs:
       # Never upload the image, Docker cache, synthetic credentials or raw logs.
       - name: Retain sanitized SMB protocol result
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: smb-protocol
           path: ${{ runner.temp }}/smb-protocol.json
@@ -118,10 +120,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 12
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12'
       - name: Prepare verified Linux runtime
@@ -136,7 +138,7 @@ jobs:
       # Positive feasibility only: never import this receipt into the coverage ledger.
       - name: Retain sanitized pCloud feasibility result
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: pcloud-oauth-feasibility
           path: ${{ runner.temp }}/pcloud-oauth-feasibility.json
@@ -148,10 +150,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12'
       - name: Prepare verified Linux runtime
@@ -165,7 +167,7 @@ jobs:
             --report "$RUNNER_TEMP/pcloud-oauth-authentication.json"
       - name: Retain sanitized pCloud authentication evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: pcloud-oauth-authentication
           path: ${{ runner.temp }}/pcloud-oauth-authentication.json
@@ -184,12 +186,12 @@ jobs:
       run:
         working-directory: rclone-triage
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067
         with:
           toolchain: 1.95.0
           components: rustfmt, clippy
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12'
       - name: Install pinned fixture dependencies in a fresh environment
@@ -287,7 +289,7 @@ jobs:
             --require-plans --require-fixtures local,archive,http,webdav,ftp,sftp,s3,swift,b2,azureblob,azurefiles,seafile,memory,koofr,pixeldrain,filefabric,netstorage,internetarchive,gcs
       - name: Retain sanitized protocol evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: provider-evidence-${{ runner.os }}
           path: |
@@ -366,12 +368,79 @@ jobs:
           fi
       - name: Upload checked Windows build
         if: runner.os == 'Windows'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: rclone-triage-windows
           path: |
             rclone-triage/target/release/rclone-triage.exe
             rclone-triage/target/release/dependencies.json
+            rclone-version.env
+          if-no-files-found: error
+          retention-days: 14
+  windows-architectures:
+    name: Windows (${{ matrix.arch }})
+    needs: revision
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86
+            target: i686-pc-windows-msvc
+            os: windows-2022
+          - arch: arm64
+            target: aarch64-pc-windows-msvc
+            os: windows-11-arm
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    defaults:
+      run:
+        shell: pwsh
+        working-directory: rclone-triage
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067
+        with:
+          toolchain: 1.95.0
+          targets: ${{ matrix.target }}
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          key: windows-${{ matrix.arch }}
+          workspaces: rclone-triage -> target
+          cache-on-failure: true
+      - name: Prepare matching verified runtime
+        run: ../scripts/download-rclone.ps1 -Architecture '${{ matrix.arch }}'
+      - name: Offline tests and local transfer regressions on the target
+        run: cargo test --locked --release --target '${{ matrix.target }}' -- --test-threads=1
+      - name: Target runtime provider catalog
+        env:
+          RCLONE_PROVIDER_SCHEMA_BINARY: ${{ format('{0}/rclone-triage/assets/rclone.exe', github.workspace) }}
+        run: cargo test --locked --release --target '${{ matrix.target }}' --test provider_matrix pinned_rclone_catalog_matches_provider_contracts -- --ignored --exact --test-threads=1
+      - name: Build release for the target
+        run: cargo build --locked --release --target '${{ matrix.target }}'
+      - name: Record dependency inventory
+        # Keep raw metadata private; only the closed sanitizer output is uploaded.
+        env:
+          INVENTORY_LOCKFILE: ${{ format('{0}/rclone-triage/Cargo.lock', github.workspace) }}
+          INVENTORY_OUTPUT: ${{ format('{0}/rclone-triage/target/{1}/release/dependencies.json', github.workspace, matrix.target) }}
+        run: |
+          $metadata = cargo metadata --locked --format-version 1 2>$null
+          if ($LASTEXITCODE -ne 0) { throw 'Dependency metadata failed' }
+          $metadata | python -B ../scripts/sanitize_dependency_inventory.py `
+            --metadata - --lockfile "$env:INVENTORY_LOCKFILE" `
+            --output "$env:INVENTORY_OUTPUT"
+          if ($LASTEXITCODE -ne 0) { throw 'Dependency inventory failed' }
+      - name: Upload checked Windows target
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rclone-triage-windows-${{ matrix.arch }}
+          path: |
+            rclone-triage/target/${{ matrix.target }}/release/rclone-triage.exe
+            rclone-triage/target/${{ matrix.target }}/release/dependencies.json
             rclone-version.env
           if-no-files-found: error
           retention-days: 14
@@ -382,23 +451,23 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12'
       # Only same-run, named Linux artifacts are accepted. Do not merge Windows
       # receipts or retrieve evidence from an earlier workflow/runtime.
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: provider-evidence-Linux
           path: ${{ runner.temp }}/provider-baseline
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: smb-protocol
           path: ${{ runner.temp }}/provider-smb
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: pcloud-oauth-authentication
           path: ${{ runner.temp }}/provider-pcloud
@@ -416,39 +485,79 @@ jobs:
             --require-plans --require-fixtures local,archive,http,webdav,ftp,sftp,s3,swift,b2,azureblob,azurefiles,seafile,memory,koofr,pixeldrain,filefabric,netstorage,internetarchive,gcs,smb,pcloud
       - name: Retain sanitized combined ledger
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: provider-evidence-Linux-combined
           path: ${{ runner.temp }}/provider-evidence-linux-combined.json
           if-no-files-found: warn
           retention-days: 14
   release:
-    name: Publish checked prerelease
-    needs: [test, audit, python-audit, smb-protocol, linux-provider-evidence, pcloud-oauth-feasibility, pcloud-oauth-authentication]
+    name: Publish Windows nightly
+    needs: [test, windows-architectures, audit, python-audit, smb-protocol, linux-provider-evidence, pcloud-oauth-feasibility, pcloud-oauth-authentication]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      pull-requests: read
       id-token: write
       attestations: write
     steps:
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - name: Require an exact merged PR into main
+        id: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          count=$(gh api "repos/$GH_REPO/commits/$COMMIT/pulls" --paginate | \
+            jq -s --arg sha "$COMMIT" --arg repo "$GH_REPO" \
+            '[.[][] | select(.merged_at != null and .base.ref == "main" and .base.repo.full_name == $repo and .merge_commit_sha == $sha)] | length')
+          if [[ "$count" -eq 0 ]]; then
+            echo 'No merged PR ends at this commit; nightly publication skipped.'
+            echo 'eligible=false' >> "$GITHUB_OUTPUT"
+          elif [[ "$count" -eq 1 ]]; then
+            echo 'eligible=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'Ambiguous merged PR source.' >&2
+            exit 1
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.source.outputs.eligible == 'true'
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        if: steps.source.outputs.eligible == 'true'
         with:
           name: rclone-triage-windows
-          path: artifact
-      - name: Package checked outputs
-        run: |
-          mkdir release
-          cp artifact/rclone-triage/target/release/rclone-triage.exe release/
-          cp artifact/rclone-triage/target/release/dependencies.json release/
-          cp artifact/rclone-version.env release/
-          cd release
-          sha256sum rclone-triage.exe dependencies.json rclone-version.env > SHA256SUMS
-      - name: Attest binary provenance
-        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+          path: artifacts/x64
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        if: steps.source.outputs.eligible == 'true'
         with:
-          subject-path: release/rclone-triage.exe
-      - name: Publish prerelease
+          name: rclone-triage-windows-x86
+          path: artifacts/x86
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        if: steps.source.outputs.eligible == 'true'
+        with:
+          name: rclone-triage-windows-arm64
+          path: artifacts/arm64
+      - name: Package checked outputs
+        if: steps.source.outputs.eligible == 'true'
+        env:
+          COMMIT: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          python3 -B scripts/package_windows_release.py \
+            --artifact-root artifacts --output release --commit "$COMMIT" \
+            --run-id "$RUN_ID" --run-attempt "$RUN_ATTEMPT" --runtime-manifest rclone-version.env
+      - name: Attest downloadable package provenance
+        if: steps.source.outputs.eligible == 'true'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: release/*.zip
+      - name: Publish nightly prerelease
+        if: steps.source.outputs.eligible == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -456,6 +565,15 @@ jobs:
           RUN_ID: ${{ github.run_id }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
+          cat > nightly-notes.md <<'NOTES'
+          Test build for Windows x64, x86 and ARM64. Download and extract the ZIP for your PC.
+
+          Automated checks passed for this commit. Real-account provider testing is still incomplete.
+          This nightly is not a full release. Full releases will wait for all-provider acceptance.
+
+          Each ZIP includes the executable, build details, dependency inventory, runtime pins and file checksums.
+          SHA256SUMS contains the ZIP checksums; the ZIPs also have GitHub build attestations.
+          NOTES
           gh release create "nightly-${RUN_ID}-${RUN_ATTEMPT}" release/* \
-            --target "$COMMIT" --title "Validated build ${COMMIT:0:12}" \
-            --prerelease --generate-notes
+            --target "$COMMIT" --title "Nightly ${COMMIT:0:12}" \
+            --prerelease --latest=false --notes-file nightly-notes.md

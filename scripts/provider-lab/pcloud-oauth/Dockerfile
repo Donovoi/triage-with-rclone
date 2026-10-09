@@ -32,6 +32,8 @@ for name, sha in sources.items():
 assert (root / 'Dockerfile').read_bytes() == (root / 'scripts/provider-lab/pcloud-oauth/Dockerfile').read_bytes()
 assert sources[lock['requirements']['path']] == lock['requirements']['sha256']
 keys = {'RCLONE_VERSION', 'RCLONE_EXE_SHA256', 'RCLONE_WINDOWS_ZIP_SHA256', 'RCLONE_LINUX_ZIP_SHA256', 'RCLONE_LINUX_EXE_SHA256'}
+extended = keys | {'RCLONE_WINDOWS_X86_EXE_SHA256', 'RCLONE_WINDOWS_X86_ZIP_SHA256',
+                   'RCLONE_WINDOWS_ARM64_EXE_SHA256', 'RCLONE_WINDOWS_ARM64_ZIP_SHA256'}
 data = (root / 'rclone-version.env').read_bytes()
 assert len(data) <= 4096
 pins = {}
@@ -39,10 +41,10 @@ for line in data.decode('ascii').splitlines():
     if not line or line.startswith('#'):
         continue
     key, sep, value = line.partition('=')
-    assert sep and key in keys and key not in pins
+    assert sep and key in extended and key not in pins
     assert re.fullmatch(r'(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)' if key == 'RCLONE_VERSION' else '[a-f0-9]{64}', value)
     pins[key] = value
-assert set(pins) == keys
+assert set(pins) in (keys, extended)
 assert hashlib.sha256((root / 'rclone').read_bytes()).hexdigest() == pins['RCLONE_LINUX_EXE_SHA256']
 PY
 printf '%s\n' 'PCLOUD_BUILD_PHASE=dependencies'

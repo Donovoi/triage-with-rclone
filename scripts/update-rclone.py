@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 import re
 import stat
+import struct
 import sys
 import tempfile
 import time
@@ -32,6 +33,18 @@ KEYS = (
     "RCLONE_WINDOWS_ZIP_SHA256",
     "RCLONE_LINUX_ZIP_SHA256",
     "RCLONE_LINUX_EXE_SHA256",
+    "RCLONE_WINDOWS_X86_EXE_SHA256",
+    "RCLONE_WINDOWS_X86_ZIP_SHA256",
+    "RCLONE_WINDOWS_ARM64_EXE_SHA256",
+    "RCLONE_WINDOWS_ARM64_ZIP_SHA256",
+)
+WINDOWS_ARCH_KEYS = frozenset(KEYS[5:])
+# Existing unqualified Windows keys remain the x64 pins for older consumers.
+PLATFORMS = (
+    ("windows-amd64", "RCLONE_WINDOWS_ZIP_SHA256", "RCLONE_EXE_SHA256", 0x8664),
+    ("linux-amd64", "RCLONE_LINUX_ZIP_SHA256", "RCLONE_LINUX_EXE_SHA256", None),
+    ("windows-386", "RCLONE_WINDOWS_X86_ZIP_SHA256", "RCLONE_WINDOWS_X86_EXE_SHA256", 0x014C),
+    ("windows-arm64", "RCLONE_WINDOWS_ARM64_ZIP_SHA256", "RCLONE_WINDOWS_ARM64_EXE_SHA256", 0xAA64),
 )
 MAX_ARCHIVE = 256 * 1024 * 1024
 MAX_BINARY = 512 * 1024 * 1024
@@ -60,8 +73,10 @@ def parse_manifest(text):
         elif not re.fullmatch(HASH_RE, value):
             raise UpdateError("Manifest contains an invalid SHA256")
         result[key] = value
-    if not set(KEYS[:-1]).issubset(result):
+    if not set(KEYS[:4]).issubset(result):
         raise UpdateError("Manifest is missing a required pin")
+    if WINDOWS_ARCH_KEYS.intersection(result) and set(result) != set(KEYS):
+        raise UpdateError("Manifest architecture pins must be complete")
     return result
 
 
@@ -74,7 +89,7 @@ def render_manifest(values):
 
 def validate_url(url):
     parsed = urllib.parse.urlsplit(url)
-    allowed_path = rf"/(?:version\.txt|v(?P<version>{VERSION_RE})/(?:SHA256SUMS|rclone-v(?P=version)-(?:windows|linux)-amd64\.zip))"
+    allowed_path = rf"/(?:version\.txt|v(?P<version>{VERSION_RE})/(?:SHA256SUMS|rclone-v(?P=version)-(?:windows-(?:amd64|386|arm64)|linux-amd64)\.zip))"
     if (
         parsed.scheme != "https"
         or parsed.netloc != "downloads.rclone.org"
@@ -143,11 +158,11 @@ def parse_checksums(text, names):
                 raise UpdateError("Duplicate archive checksum")
             found[match[2]] = match[1].lower()
     if set(found) != set(names):
-        raise UpdateError("Official checksums do not identify both exact platform archives")
+        raise UpdateError("Official checksums do not identify all exact platform archives")
     return found
 
 
-def extract_binary_hash(archive, entry_name, destination, magic):
+def extract_binary_hash(archive, entry_name, destination, magic, machine=None):
     with zipfile.ZipFile(archive) as source:
         entries = [item for item in source.infolist() if item.filename == entry_name]
         if len(entries) != 1:
@@ -164,14 +179,22 @@ def extract_binary_hash(archive, entry_name, destination, magic):
         with source.open(entry) as payload, destination.open("xb") as output:
             for chunk in iter(lambda: payload.read(1024 * 1024), b""):
                 if not prefix:
-                    prefix = chunk[: len(magic)]
+                    prefix = chunk[:4096]
                 size += len(chunk)
                 if size > MAX_BINARY:
                     raise UpdateError("Extracted executable exceeds the size limit")
                 digest.update(chunk)
                 output.write(chunk)
-        if size != entry.file_size or prefix != magic:
+        if size != entry.file_size or not prefix.startswith(magic):
             raise UpdateError("Executable size or platform signature is invalid")
+        if machine is not None:
+            if len(prefix) < 64:
+                raise UpdateError("Executable PE header is truncated")
+            pe_offset = struct.unpack_from("<I", prefix, 0x3C)[0]
+            if (pe_offset < 64 or pe_offset + 6 > len(prefix)
+                    or prefix[pe_offset:pe_offset + 4] != b"PE\0\0"
+                    or struct.unpack_from("<H", prefix, pe_offset + 4)[0] != machine):
+                raise UpdateError("Executable PE architecture does not match its archive")
     expected = digest.hexdigest()
     if sha256_file(destination) != expected:
         raise UpdateError("Extracted executable read-back hash mismatch")
@@ -219,21 +242,24 @@ def update(manifest_path, write=False, refresh_current=False, fetch=download):
         result = {"current_version": current["RCLONE_VERSION"], "version": latest, "changed": False, "written": False, "verified": False}
         if latest == current["RCLONE_VERSION"] and not refresh_current:
             return result
-        names = {platform: f"rclone-v{latest}-{platform}-amd64.zip" for platform in ("windows", "linux")}
+        names = {platform: f"rclone-v{latest}-{platform}.zip" for platform, *_ in PLATFORMS}
         sums_path = scratch / "SHA256SUMS"
         fetch(f"{ORIGIN}/v{latest}/SHA256SUMS", sums_path, 1024 * 1024)
         checksums = parse_checksums(sums_path.read_text(encoding="utf-8"), names.values())
         values = {"RCLONE_VERSION": latest}
-        for platform, name in names.items():
+        for platform, archive_key, binary_key, machine in PLATFORMS:
+            name = names[platform]
             archive = scratch / name
             fetch(f"{ORIGIN}/v{latest}/{name}", archive, MAX_ARCHIVE)
             archive_hash = sha256_file(archive)
             if archive_hash != checksums[name]:
                 raise UpdateError(f"Official {platform} archive SHA256 mismatch")
-            binary = "rclone.exe" if platform == "windows" else "rclone"
-            binary_hash = extract_binary_hash(archive, f"{name[:-4]}/{binary}", scratch / binary, b"MZ" if platform == "windows" else b"\x7fELF")
-            values[f"RCLONE_{platform.upper()}_ZIP_SHA256"] = archive_hash
-            values["RCLONE_EXE_SHA256" if platform == "windows" else "RCLONE_LINUX_EXE_SHA256"] = binary_hash
+            binary = "rclone.exe" if machine is not None else "rclone"
+            destination = scratch / f"{platform}-{binary}"
+            binary_hash = extract_binary_hash(archive, f"{name[:-4]}/{binary}", destination,
+                                              b"MZ" if machine is not None else b"\x7fELF", machine)
+            values[archive_key] = archive_hash
+            values[binary_key] = binary_hash
         if latest == current["RCLONE_VERSION"]:
             for key, value in current.items():
                 if values[key] != value:

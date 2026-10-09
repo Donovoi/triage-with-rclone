@@ -111,16 +111,18 @@ def pins(path):
     require(regular(path).st_size <= 4096, 'manifest_size_limit')
     expected = {'RCLONE_VERSION', 'RCLONE_EXE_SHA256', 'RCLONE_WINDOWS_ZIP_SHA256',
                 'RCLONE_LINUX_ZIP_SHA256', 'RCLONE_LINUX_EXE_SHA256'}
+    extended = expected | {'RCLONE_WINDOWS_X86_EXE_SHA256', 'RCLONE_WINDOWS_X86_ZIP_SHA256',
+                           'RCLONE_WINDOWS_ARM64_EXE_SHA256', 'RCLONE_WINDOWS_ARM64_ZIP_SHA256'}
     result = {}
     for line in path.read_text(encoding='ascii').splitlines():
         if not line or line.startswith('#'):
             continue
         key, separator, value = line.partition('=')
-        require(separator and key in expected and key not in result, 'invalid_runtime_manifest')
+        require(separator and key in extended and key not in result, 'invalid_runtime_manifest')
         result[key] = value
-    require(set(result) == expected and re.fullmatch(r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)',
+    require(set(result) in (expected, extended) and re.fullmatch(r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)',
             result['RCLONE_VERSION']), 'invalid_runtime_manifest')
-    require(all(re.fullmatch(r'[a-f0-9]{64}', result[key]) for key in expected - {'RCLONE_VERSION'}),
+    require(all(re.fullmatch(r'[a-f0-9]{64}', result[key]) for key in set(result) - {'RCLONE_VERSION'}),
             'invalid_runtime_manifest')
     return result['RCLONE_VERSION'], result['RCLONE_LINUX_EXE_SHA256']
 
