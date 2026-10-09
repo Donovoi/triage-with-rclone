@@ -14,7 +14,12 @@ function State([int]$Concurrent = 1, [int]$Launches = 2) {
     return $state
 }
 function Create($State, [uint32]$PidValue, [uint32]$TidValue, [bool]$Runtime) {
-    $State.Begin(3, $PidValue, $TidValue); $State.Create($Runtime); $State.Continued()
+    $role = if ($Runtime) { [TriageApplicationLab.HostedLaunchRole]::Runtime } else { [TriageApplicationLab.HostedLaunchRole]::Root }
+    $State.Begin(3, $PidValue, $TidValue); $State.Create($role); $State.Verified(); $State.Continued()
+}
+function Helper($State, [uint32]$PidValue) {
+    $State.Begin(3, $PidValue, $PidValue * 10)
+    $State.Create([TriageApplicationLab.HostedLaunchRole]::ConsoleHelper); $State.Verified(); $State.Continued()
 }
 function Breakpoint($State, [uint32]$PidValue, [uint32]$TidValue) {
     $State.Begin(1, $PidValue, $TidValue)
@@ -114,7 +119,7 @@ try {
         Reject { [TriageApplicationLab.HostedLaunchState]::CreateFailureDiagnostic(1, $role, $null, $null) }
     }
     $state = State 1 1; Create $state 10 100 $false; Create $state 20 200 $true
-    $state.Begin(3, 30, 300); Reject { $state.Create($true) }
+    $state.Begin(3, 30, 300); Reject { $state.Create([TriageApplicationLab.HostedLaunchRole]::Runtime) }
     $null = [TriageApplicationLab.HostedLaunchState]::CreateFailureDiagnostic($state.Events, 'system_console_host', $true, $true)
     Check ($state.Failure -ceq 'debug_launch_limit' -and $state.Launches -eq 2 -and $state.Peak -eq 2 -and -not $state.Qualified)
     # A late creator cannot admit Create/Resume after Finish has stopped startup.
@@ -180,14 +185,14 @@ try {
     $state = State 1 1
     Create $state 10 100 $false; Breakpoint $state 10 100
     Create $state 20 200 $true; Breakpoint $state 20 200; ExitProcess $state 20 200
-    $state.Begin(3, 30, 300); Reject { $state.Create($true) }; $state.Continued()
+    $state.Begin(3, 30, 300); Reject { $state.Create([TriageApplicationLab.HostedLaunchRole]::Runtime) }; $state.Continued()
     Check ($state.Failure -ceq 'debug_launch_limit' -and $state.Launches -eq 2)
     ExitProcess $state 30 300; ExitProcess $state 10 100
     Check ($state.Drained -and -not $state.Qualified)
     $state.Fail('debug_cleanup_failed'); Check ($state.Failure -ceq 'debug_launch_limit')
 
     $state = State 1 2; Create $state 10 100 $false; Create $state 20 200 $true
-    $state.Begin(3, 30, 300); Reject { $state.Create($true) }
+    $state.Begin(3, 30, 300); Reject { $state.Create([TriageApplicationLab.HostedLaunchRole]::Runtime) }
     Check ($state.Failure -ceq 'debug_launch_limit' -and $state.Peak -eq 2)
     $state = State; Create $state 10 100 $false
     $state.Begin(5, 10, 100); Check (-not $state.Drained)
@@ -198,7 +203,7 @@ try {
     Reject { $state.Begin(8, 99, 999) }
     $state = State; Reject { $state.Continued() }
     $state = State; Reject { $state.SetRoot(11) }
-    $state = State; $state.Begin(3, 10, 100); Reject { $state.Create($true) }
+    $state = State; $state.Begin(3, 10, 100); Reject { $state.Create([TriageApplicationLab.HostedLaunchRole]::Runtime) }
     foreach ($code in @(0, 10)) { $state = State; Reject { $state.Begin($code, 10, 100) } }
 
     $state = State; Create $state 10 100 $false; Breakpoint $state 10 100
@@ -217,6 +222,102 @@ try {
     Check ($state.Events -eq 4096); Reject { $state.Begin(8, 10, 100) }
     Check ($state.Failure -ceq 'debug_event_limit' -and -not $state.Drained)
     Reject { $state.Fail('private-path-or-secret') }
+    # Installed-object equality permits stable system hardlinks, never an
+    # arbitrary basename, changed object, reparse/directory, or mismatched hash.
+    $hash = 'a' * 64
+    $reference = [TriageApplicationLab.HostedInstalledImageIdentity]::new(32, 7, 91, 4096, 123, 2)
+    $same = [TriageApplicationLab.HostedInstalledImageIdentity]::new(32, 7, 91, 4096, 123, 2)
+    $fixed = 'C:\Windows\System32\conhost.exe'
+    Check ([TriageApplicationLab.HostedLaunchState]::InstalledImageMatches($reference, $same, $fixed, $fixed, $hash, $hash))
+    foreach ($row in @(@(33,7,91,4096,123,2), @(32,8,91,4096,123,2), @(32,7,92,4096,123,2),
+            @(32,7,91,4097,123,2), @(32,7,91,4096,124,2), @(32,7,91,4096,123,1))) {
+        $different = [TriageApplicationLab.HostedInstalledImageIdentity]::new($row[0],$row[1],$row[2],$row[3],$row[4],$row[5])
+        Check (-not [TriageApplicationLab.HostedLaunchState]::InstalledImageMatches($reference, $different, $fixed, $fixed, $hash, $hash))
+    }
+    foreach ($row in @(@(1040,4096,2), @(16,4096,2), @(32,0,2), @(32,268435457,2), @(32,4096,0))) {
+        $invalid = [TriageApplicationLab.HostedInstalledImageIdentity]::new($row[0],7,91,$row[1],123,$row[2])
+        Check (-not [TriageApplicationLab.HostedLaunchState]::InstalledImageMatches($invalid, $invalid, $fixed, $fixed, $hash, $hash))
+    }
+    foreach ($wrongPath in @('C:\owned\conhost.exe', 'C:\Windows\System32\conhost.exe.other', '', $null)) {
+        Check (-not [TriageApplicationLab.HostedLaunchState]::InstalledImageMatches($reference, $same, $fixed, $wrongPath, $hash, $hash))
+    }
+    foreach ($wrongHash in @(('b' * 64), ('A' * 64), ('a' * 63), '', $null)) {
+        Check (-not [TriageApplicationLab.HostedLaunchState]::InstalledImageMatches($reference, $same, $fixed, $fixed, $hash, $wrongHash))
+    }
+    foreach ($wrongHash in @(('A' * 64), ('a' * 63), '', $null)) {
+        Check (-not [TriageApplicationLab.HostedLaunchState]::InstalledImageMatches($reference, $same, $fixed, $fixed, $wrongHash, $wrongHash))
+    }
+    Check (-not [TriageApplicationLab.HostedLaunchState]::InstalledImageMatches($null, $same, $fixed, $fixed, $hash, $hash))
+
+    # Exact one/two sequential runtime+helper cases use disjoint counters and
+    # keep every role alive until its own continued EXIT, even after root exit.
+    foreach ($count in @(1, 2)) {
+        $state = State 1 $count; Create $state 10 100 $false; Breakpoint $state 10 100
+        for ($i=0; $i -lt $count; $i++) {
+            $runtimePid = 20 + $i * 2; $helperPid = $runtimePid + 1
+            Create $state $runtimePid ($runtimePid * 10) $true; Breakpoint $state $runtimePid ($runtimePid * 10)
+            Helper $state $helperPid; Breakpoint $state $helperPid ($helperPid * 10)
+            ExitProcess $state $runtimePid ($runtimePid * 10)
+            Check (-not $state.Drained)
+            ExitProcess $state $helperPid ($helperPid * 10)
+        }
+        ExitProcess $state 10 100
+        Check ($state.Qualified -and $state.Launches -eq $count -and $state.VerifiedLaunches -eq $count -and $state.Peak -eq 1)
+        Check ($state.HelperLaunches -eq $count -and $state.VerifiedHelpers -eq $count -and $state.HelperPeak -eq 1)
+        $record = [Collections.Generic.Dictionary[string,object]]::new(); $state.AddHelperSnapshot($record, $hash, $true)
+        Check ($record.Count -eq 5 -and $record.system_helper_image_observed -is [bool] -and $record.system_helper_image_observed)
+        Check ($record.system_helper_sha256 -ceq $hash -and $record.system_helper_launch_count -is [int] -and $record.system_helper_launch_count -eq $count)
+        Check ($record.peak_system_helper_processes -is [int] -and $record.peak_system_helper_processes -eq 1 -and $record.system_helper_reference_closed -is [bool] -and $record.system_helper_reference_closed)
+        $record = [Collections.Generic.Dictionary[string,object]]::new(); $state.AddHelperSnapshot($record, $hash, $false)
+        Check (-not $record.system_helper_reference_closed) # Events alone cannot prove reference closure.
+    }
+    # Candidate runtime count cannot sponsor any helper before image proof.
+    $state = State 1 1; Create $state 10 100 $false
+    $state.Begin(3,20,200); $state.Create([TriageApplicationLab.HostedLaunchRole]::Runtime); $state.Continued()
+    Check ($state.Launches -eq 1 -and $state.VerifiedLaunches -eq 0 -and $state.Failure -ceq 'debug_image_invalid')
+    $state.Begin(3,21,210); Reject { $state.Create([TriageApplicationLab.HostedLaunchRole]::ConsoleHelper) }; $state.Continued()
+    Check ($state.HelperLaunches -eq 1 -and $state.VerifiedHelpers -eq 0)
+    $record = [Collections.Generic.Dictionary[string,object]]::new(); $state.AddHelperSnapshot($record, $hash, $false)
+    Check (-not $record.system_helper_image_observed -and $null -eq $record.system_helper_sha256)
+    ExitProcess $state 20 200; ExitProcess $state 21 210; ExitProcess $state 10 100
+    Check ($state.Drained -and -not $state.Qualified)
+    $state = State; Create $state 10 100 $false
+    $state.Begin(3,21,210); Reject { $state.Create([TriageApplicationLab.HostedLaunchRole]::ConsoleHelper) }; $state.Continued()
+    Check ($state.Failure -ceq 'debug_launch_limit' -and $state.Launches -eq 0)
+    ExitProcess $state 21 210; ExitProcess $state 10 100; Check $state.Drained
+
+    # One verified runtime does not sponsor two helpers. Rejected/failed image
+    # records remain drainable, but can never turn into an uncounted admission.
+    $state = State 1 2; Create $state 10 100 $false; Create $state 20 200 $true; Helper $state 21
+    $state.Begin(3,22,220); Reject { $state.Create([TriageApplicationLab.HostedLaunchRole]::ConsoleHelper) }; $state.Continued()
+    Check ($state.HelperLaunches -eq 2 -and $state.VerifiedHelpers -eq 1 -and $state.Failure -ceq 'debug_launch_limit')
+    $record = [Collections.Generic.Dictionary[string,object]]::new(); $state.AddHelperSnapshot($record, $hash, $false)
+    Check (-not $record.system_helper_image_observed -and $null -eq $record.system_helper_sha256 -and -not $record.system_helper_reference_closed)
+    foreach ($role in @([TriageApplicationLab.HostedLaunchRole]::Rejected, [TriageApplicationLab.HostedLaunchRole]::Root)) {
+        $state = State; Create $state 10 100 $false; $state.Begin(3,20,200)
+        Reject { $state.Create($role) }; $state.Continued(); ExitProcess $state 20 200; ExitProcess $state 10 100
+        Check ($state.Drained -and -not $state.Qualified -and $state.Launches -eq 0 -and $state.HelperLaunches -eq 0)
+    }
+    $state = State; Create $state 10 100 $false; $state.Begin(3,20,200)
+    $state.Fail('debug_image_invalid'); $state.Continued() # Query/hash failure before classification.
+    ExitProcess $state 20 200; ExitProcess $state 10 100; Check ($state.Drained -and -not $state.Qualified)
+
+    $state = State 1 3; Create $state 10 100 $false
+    foreach ($id in @(20,30,40)) { Create $state $id ($id * 10) $true; ExitProcess $state $id ($id * 10) }
+    Helper $state 21; Helper $state 31
+    $state.Begin(3,41,410); Reject { $state.Create([TriageApplicationLab.HostedLaunchRole]::ConsoleHelper) }; $state.Continued()
+    Check ($state.HelperPeak -eq 3 -and $state.HelperLaunches -eq 3 -and $state.VerifiedHelpers -eq 2 -and $state.Failure -ceq 'debug_launch_limit')
+    foreach ($id in @(10,21,31,41)) { ExitProcess $state $id ($id * 10) }; Check $state.Drained
+
+    # The old absolute storage ceiling remains 34, even with a launch cap32.
+    $state = State 1 32; Create $state 10 100 $false
+    for ($id=20; $id -lt 52; $id++) { Create $state $id ($id * 10) $true; ExitProcess $state $id ($id * 10) }
+    Helper $state 60; ExitProcess $state 60 600
+    Reject { $state.Begin(3,61,610) }; Check ($state.Failure -ceq 'debug_launch_limit' -and -not $state.Qualified)
+    # Smaller configured budgets retain the derived root+runtime+helper ceiling.
+    $state = State 1 1; Create $state 10 100 $false; Create $state 20 200 $true; Helper $state 21
+    $state.Begin(3,22,220); Reject { $state.Create([TriageApplicationLab.HostedLaunchRole]::ConsoleHelper) }; $state.Continued()
+    Check ($state.Failure -ceq 'debug_launch_limit' -and -not $state.Qualified)
     [pscustomobject]@{ scope='hosted_launch_observer_pure'; result='passed'; checks=$script:passed; native_session_executed=$false } | ConvertTo-Json -Compress
 } catch {
     [pscustomobject]@{ scope='hosted_launch_observer_pure'; result='failed'; checks=$script:passed; native_session_executed=$false } | ConvertTo-Json -Compress

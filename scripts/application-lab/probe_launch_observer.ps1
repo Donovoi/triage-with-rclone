@@ -39,14 +39,17 @@ function Test-LaunchInteger($Value,[long]$Min,[long]$Max) {
     return (($Value -is [int] -or $Value -is [long] -or $Value -is [uint32]) -and $Value -ge $Min -and $Value -le $Max)
 }
 function Test-LaunchSnapshot($Value,[int]$Expected,[string]$Sha256) {
+    # Helper counts qualify these two inert scenarios, not a general Windows ratio.
+    # The helper hash is an installed-object witness, not a signer or ancestry claim.
     $names=@('schema_version','ok','state','app_exit_code','runtime_image_observed','runtime_sha256','runtime_process_count',
         'ctrl_c_sent','output_bytes','output_limit_exceeded','forced_termination','app_exited','observed_children_exited',
         'job_zero_confirmed','reader_joined','conpty_closed','errors','observation_kind','launch_image_observed','launch_sha256',
-        'runtime_launch_count','peak_runtime_processes','debug_event_count','debug_events_drained','debug_pump_joined','debug_handles_closed')
+        'runtime_launch_count','peak_runtime_processes','debug_event_count','debug_events_drained','debug_pump_joined','debug_handles_closed',
+        'system_helper_image_observed','system_helper_sha256','system_helper_launch_count','peak_system_helper_processes','system_helper_reference_closed')
     if ($Expected -notin @(1,2) -or $Sha256 -cnotmatch '\A[0-9a-f]{64}\z' -or $Value -isnot [Collections.IDictionary] -or $Value.Count -ne $names.Count) { return $false }
     foreach ($name in $names) { if (-not ([Collections.IDictionary]$Value).Contains($name)) { return $false } }
     foreach ($name in @('ok','app_exited','observed_children_exited','job_zero_confirmed','reader_joined','conpty_closed',
-        'launch_image_observed','debug_events_drained','debug_pump_joined','debug_handles_closed')) {
+        'launch_image_observed','debug_events_drained','debug_pump_joined','debug_handles_closed','system_helper_image_observed','system_helper_reference_closed')) {
         if ($Value[$name] -isnot [bool] -or -not $Value[$name]) { return $false }
     }
     foreach ($name in @('runtime_image_observed','ctrl_c_sent','output_limit_exceeded','forced_termination')) {
@@ -57,6 +60,9 @@ function Test-LaunchSnapshot($Value,[int]$Expected,[string]$Sha256) {
         $Value.observation_kind -ceq 'launch_image' -and $Value.launch_sha256 -is [string] -and $Value.launch_sha256 -ceq $Sha256 -and
         $null -eq $Value.runtime_sha256 -and $null -eq $Value.runtime_process_count -and
         (Test-LaunchInteger $Value.runtime_launch_count $Expected $Expected) -and (Test-LaunchInteger $Value.peak_runtime_processes 1 1) -and
+        $Value.system_helper_sha256 -is [string] -and $Value.system_helper_sha256 -cmatch '\A[0-9a-f]{64}\z' -and
+        (Test-LaunchInteger $Value.system_helper_launch_count $Expected $Expected) -and
+        (Test-LaunchInteger $Value.peak_system_helper_processes 1 ([Math]::Min($Expected,2))) -and
         (Test-LaunchInteger $Value.debug_event_count (2*($Expected+1)) 4096) -and (Test-LaunchInteger $Value.output_bytes 1 65536) -and
         $Value.errors -is [Array] -and $Value.errors.Count -eq 0)
 }
@@ -66,7 +72,9 @@ function New-LaunchDiagnostic($Value,[int]$Expected,[string]$Sha256) {
         launch_image_observed=$null; hash_matches=$null; legacy_fields_clear=$null; finished=$null; app_exit_code=$null;
         runtime_launch_count=$null; peak_runtime_processes=$null; debug_event_count=$null;
         app_exited=$null; observed_children_exited=$null; job_zero_confirmed=$null; reader_joined=$null; conpty_closed=$null;
-        forced_termination=$null; debug_events_drained=$null; debug_pump_joined=$null; debug_handles_closed=$null }
+        forced_termination=$null; debug_events_drained=$null; debug_pump_joined=$null; debug_handles_closed=$null;
+        system_helper_image_observed=$null; system_helper_hash_present=$null; system_helper_launch_count=$null;
+        peak_system_helper_processes=$null; system_helper_reference_closed=$null }
     $allowed=@('console_cleanup_failed','console_cleanup_timeout','ctrl_c_refused','deadline_exceeded','debug_cleanup_failed',
         'debug_start_failed','debug_event_failed','debug_image_invalid','debug_launch_limit','debug_exception_failed','debug_event_limit',
         'forced_termination','input_cleanup_failed','input_failed','input_timeout','job_assignment_failed','job_query_failed',
@@ -76,20 +84,22 @@ function New-LaunchDiagnostic($Value,[int]$Expected,[string]$Sha256) {
     $names=@('schema_version','ok','state','app_exit_code','runtime_image_observed','runtime_sha256','runtime_process_count',
         'ctrl_c_sent','output_bytes','output_limit_exceeded','forced_termination','app_exited','observed_children_exited',
         'job_zero_confirmed','reader_joined','conpty_closed','errors','observation_kind','launch_image_observed','launch_sha256',
-        'runtime_launch_count','peak_runtime_processes','debug_event_count','debug_events_drained','debug_pump_joined','debug_handles_closed')
+        'runtime_launch_count','peak_runtime_processes','debug_event_count','debug_events_drained','debug_pump_joined','debug_handles_closed',
+        'system_helper_image_observed','system_helper_sha256','system_helper_launch_count','peak_system_helper_processes','system_helper_reference_closed')
     if ($Value -isnot [Collections.IDictionary] -or $Value.Count -ne $names.Count) { return $row }
     foreach ($name in $names) { if (-not ([Collections.IDictionary]$Value).Contains($name)) { return $row } }
     foreach ($name in @('ok','runtime_image_observed','ctrl_c_sent','output_limit_exceeded','forced_termination','app_exited',
         'observed_children_exited','job_zero_confirmed','reader_joined','conpty_closed','launch_image_observed',
-        'debug_events_drained','debug_pump_joined','debug_handles_closed')) { if ($Value[$name] -isnot [bool]) { return $row } }
+        'debug_events_drained','debug_pump_joined','debug_handles_closed','system_helper_image_observed','system_helper_reference_closed')) { if ($Value[$name] -isnot [bool]) { return $row } }
     if (-not (Test-LaunchInteger $Value.schema_version 3 3) -or $Value.state -isnot [string] -or $Value.state -cnotin @('running','finished') -or
         $Value.observation_kind -isnot [string] -or $Value.observation_kind -cne 'launch_image' -or
         -not (Test-LaunchInteger $Value.runtime_launch_count 0 32) -or -not (Test-LaunchInteger $Value.peak_runtime_processes 0 4) -or
+        -not (Test-LaunchInteger $Value.system_helper_launch_count 0 32) -or -not (Test-LaunchInteger $Value.peak_system_helper_processes 0 3) -or
         -not (Test-LaunchInteger $Value.debug_event_count 0 4096) -or -not (Test-LaunchInteger $Value.output_bytes 0 65536) -or
         ($null -ne $Value.app_exit_code -and -not (Test-LaunchInteger $Value.app_exit_code 0 4294967295)) -or
         ($null -ne $Value.runtime_process_count -and -not (Test-LaunchInteger $Value.runtime_process_count 0 4)) -or
         $Value.errors -isnot [Array] -or $Value.errors.Count -gt $allowed.Count) { return $row }
-    foreach ($name in @('launch_sha256','runtime_sha256')) {
+    foreach ($name in @('launch_sha256','runtime_sha256','system_helper_sha256')) {
         if ($null -ne $Value[$name] -and ($Value[$name] -isnot [string] -or $Value[$name] -cnotmatch '\A[0-9a-f]{64}\z')) { return $row }
     }
     $seen=@()
@@ -99,10 +109,12 @@ function New-LaunchDiagnostic($Value,[int]$Expected,[string]$Sha256) {
     $row.snapshot_valid=$true; $row.errors=$seen
     foreach ($name in @('launch_image_observed','app_exit_code','runtime_launch_count','peak_runtime_processes','debug_event_count',
         'app_exited','observed_children_exited','job_zero_confirmed','reader_joined','conpty_closed','forced_termination',
-        'debug_events_drained','debug_pump_joined','debug_handles_closed')) { $row[$name]=$Value[$name] }
+        'debug_events_drained','debug_pump_joined','debug_handles_closed','system_helper_image_observed','system_helper_launch_count',
+        'peak_system_helper_processes','system_helper_reference_closed')) { $row[$name]=$Value[$name] }
     $row.hash_matches=$Value.launch_sha256 -ceq $Sha256
     $row.legacy_fields_clear=-not $Value.runtime_image_observed -and $null -eq $Value.runtime_sha256 -and $null -eq $Value.runtime_process_count
     $row.finished=$Value.state -ceq 'finished'
+    $row.system_helper_hash_present=$null -ne $Value.system_helper_sha256
     return $row
 }
 function Convert-LaunchFailureDiagnostic($Value) {
@@ -133,10 +145,11 @@ function Get-LaunchFailureDiagnostic($Session) {
 function New-LaunchChecks([bool]$Value) {
     $checks=[ordered]@{}
     foreach ($name in @('source_cwd','descendant_cwd','source_preserved','launch_count_exact','launch_hash_exact','peak_one',
-        'launch_only','transient_images_deleted','transcript_exact','session_cleanup','observer_cleanup')) { $checks[$name]=$Value }
+        'launch_only','transient_images_deleted','transcript_exact','session_cleanup','observer_cleanup','system_helper_observed',
+        'system_helper_hash_present','system_helper_count_exact','system_helper_peak_bounded','system_helper_reference_closed')) { $checks[$name]=$Value }
     return $checks
 }
-function New-LaunchCase([Collections.IDictionary]$Checks,[string]$Failure,[bool]$Cleanup,[bool]$Retained) {
+function New-LaunchCase([Collections.IDictionary]$Checks,[string]$Failure,[bool]$Cleanup,[bool]$Retained,$HelperSha=$null) {
     $names=New-LaunchChecks $false
     $allowed=@('not_run','hosted_only','setup_failed','compile_failed','launch_failed','observation_failed','transcript_failed',
         'preservation_failed','cleanup_failed','deadline_exceeded','unexpected_failure')
@@ -146,24 +159,27 @@ function New-LaunchCase([Collections.IDictionary]$Checks,[string]$Failure,[bool]
     foreach ($name in $names.Keys) {
         if (-not $Checks.Contains($name) -or $Checks[$name] -isnot [bool]) { throw 'report_invalid' }; $closed[$name]=$Checks[$name]
     }
+    if ($null -ne $HelperSha -and ($HelperSha -isnot [string] -or $HelperSha -cnotmatch '\A[0-9a-f]{64}\z')) { throw 'report_invalid' }
+    if (($closed.system_helper_observed -or $closed.system_helper_hash_present) -and $null -eq $HelperSha) { throw 'report_invalid' }
+    if (-not $closed.system_helper_observed -and $null -ne $HelperSha) { throw 'report_invalid' }
     $passed=$Failure -ceq '' -and $Cleanup -and @($closed.Values | Where-Object { -not $_ }).Count -eq 0
     if (-not $passed -and $Failure -ceq '') { throw 'report_invalid' }
     if ($Failure -cin @('not_run','hosted_only') -and (@($closed.Values | Where-Object { $_ }).Count -ne 0 -or -not $Cleanup)) { throw 'report_invalid' }
     $errors=@(); if ($Failure -cne '') { $errors+=@($Failure) }
     if (-not $Cleanup -and $Failure -cne 'cleanup_failed') { $errors+=@('cleanup_failed') }
     return [ordered]@{ result=$(if ($passed) { 'passed' } elseif ($Failure -ceq 'not_run') { 'not_run' } else { 'failed' });
-        checks=$closed; cleanup_complete=$Cleanup; tree_retained=$Retained; errors=$errors }
+        checks=$closed; system_helper_sha256=$HelperSha; cleanup_complete=$Cleanup; tree_retained=$Retained; errors=$errors }
 }
 function New-LaunchReport([Collections.IDictionary]$Cases,[Collections.IDictionary]$Sources,$InertSha,[string]$Failure) {
     if ($Cases.Count -ne 2 -or $Sources.Count -ne 4 -or $Failure -cnotin @('','hosted_only','setup_failed','compile_failed','source_changed','unexpected_failure')) { throw 'report_invalid' }
     $closed=[ordered]@{}
     foreach ($name in @('single_fast_child','two_sequential_children')) {
-        if (-not $Cases.Contains($name) -or $Cases[$name] -isnot [Collections.IDictionary] -or $Cases[$name].Count -ne 5) { throw 'report_invalid' }
+        if (-not $Cases.Contains($name) -or $Cases[$name] -isnot [Collections.IDictionary] -or $Cases[$name].Count -ne 6) { throw 'report_invalid' }
         $row=$Cases[$name]
-        foreach ($key in @('result','checks','cleanup_complete','tree_retained','errors')) { if (-not $row.Contains($key)) { throw 'report_invalid' } }
+        foreach ($key in @('result','checks','system_helper_sha256','cleanup_complete','tree_retained','errors')) { if (-not $row.Contains($key)) { throw 'report_invalid' } }
         if ($row.cleanup_complete -isnot [bool] -or $row.tree_retained -isnot [bool] -or $row.errors -isnot [Array] -or $row.errors.Count -gt 2) { throw 'report_invalid' }
         $error=''; if ($row.errors.Count -gt 0) { if ($row.errors[0] -isnot [string]) { throw 'report_invalid' }; $error=$row.errors[0] }
-        $verified=New-LaunchCase $row.checks $error $row.cleanup_complete $row.tree_retained
+        $verified=New-LaunchCase $row.checks $error $row.cleanup_complete $row.tree_retained $row.system_helper_sha256
         if ($row.result -cne $verified.result -or ($row.errors -join ',') -cne ($verified.errors -join ',')) { throw 'report_invalid' }
         $closed[$name]=$verified
     }
@@ -176,7 +192,7 @@ function New-LaunchReport([Collections.IDictionary]$Cases,[Collections.IDictiona
     $passed=$Failure -ceq '' -and @($closed.Values | Where-Object { $_.result -cne 'passed' }).Count -eq 0
     if ($passed -and ($null -eq $InertSha -or @($hashes.Values | Where-Object { $null -eq $_ }).Count -ne 0)) { throw 'report_invalid' }
     $errors=@(); if ($Failure -cne '') { $errors=@($Failure) }
-    return [ordered]@{ schema_version=1; scope='hosted_inert_launch_observer_probe'; result=$(if ($passed) { 'passed' } elseif ($Failure -ceq 'hosted_only') { 'unavailable' } else { 'failed' });
+    return [ordered]@{ schema_version=2; scope='hosted_inert_launch_observer_probe'; result=$(if ($passed) { 'passed' } elseif ($Failure -ceq 'hosted_only') { 'unavailable' } else { 'failed' });
         cases=$closed; source_sha256=$hashes; inert_sha256=$InertSha; errors=$errors;
         production_application_executed=$false; provider_accepted=$false; application_accepted=$false; live_image_observation=$false }
 }
@@ -201,7 +217,7 @@ function Read-LaunchSource([string]$Path,$Name) {
 function Invoke-LaunchCase([int]$Count,[string]$Parent) {
     if ($Count -notin @(1,2)) { throw 'setup_failed' }
     $checks=New-LaunchChecks $false; $failure=''; $phase='setup_failed'
-    $sandbox=$null; $owned=$false; $cleanup=$false; $session=$null; $sessionClosed=$true; $compilerClosed=$true; $final=$null; $sha=$null
+    $sandbox=$null; $owned=$false; $cleanup=$false; $session=$null; $sessionClosed=$true; $compilerClosed=$true; $final=$null; $sha=$null; $helperSha=$null
     $oldTemp=$env:TEMP; $oldTmp=$env:TMP
     $identities=[Collections.Generic.Dictionary[string,string]]::new([StringComparer]::OrdinalIgnoreCase)
     try {
@@ -285,7 +301,9 @@ public static class InertLaunchObserverProbe {
             }
         }
         $phase='observation_failed'; Assert-Probe $sessionClosed 'observation_failed'
-        foreach ($name in @('launch_count_exact','launch_hash_exact','peak_one','launch_only','session_cleanup','observer_cleanup')) { $checks[$name]=$true }
+        $helperSha=$final.system_helper_sha256
+        foreach ($name in @('launch_count_exact','launch_hash_exact','peak_one','launch_only','session_cleanup','observer_cleanup',
+            'system_helper_observed','system_helper_hash_present','system_helper_count_exact','system_helper_peak_bounded','system_helper_reference_closed')) { $checks[$name]=$true }
         $phase='transcript_failed'
         $text=[Text.Encoding]::ASCII.GetString((Read-ProbeFile $transcript 65536))
         $token=$(if ($Count -eq 1) { 'LAUNCH_PROBE_ONE_OK' } else { 'LAUNCH_PROBE_TWO_OK' })
@@ -317,7 +335,7 @@ public static class InertLaunchObserverProbe {
         [Console]::Out.WriteLine('launch_observer_failure='+(New-LaunchDiagnostic $final $Count $sha | ConvertTo-Json -Depth 3 -Compress))
         [Console]::Out.WriteLine('launch_observer_create_failure='+(Get-LaunchFailureDiagnostic $session | ConvertTo-Json -Depth 3 -Compress))
     }
-    return New-LaunchCase $checks $failure $cleanup ($null -ne $sandbox -and -not $cleanup)
+    return New-LaunchCase $checks $failure $cleanup ($null -ne $sandbox -and -not $cleanup) $helperSha
 }
 
 $cases=[ordered]@{ single_fast_child=(New-LaunchCase (New-LaunchChecks $false) 'not_run' $true $false);

@@ -10,7 +10,9 @@ import unittest
 PATH = Path(__file__).resolve().parents[1] / "application-lab/probe_launch_observer.ps1"
 SOURCE_PROBE = PATH.with_name("probe_source_directory.ps1")
 CHECKS = {"source_cwd", "descendant_cwd", "source_preserved", "launch_count_exact", "launch_hash_exact", "peak_one",
-          "launch_only", "transient_images_deleted", "transcript_exact", "session_cleanup", "observer_cleanup"}
+          "launch_only", "transient_images_deleted", "transcript_exact", "session_cleanup", "observer_cleanup",
+          "system_helper_observed", "system_helper_hash_present", "system_helper_count_exact",
+          "system_helper_peak_bounded", "system_helper_reference_closed"}
 
 
 @unittest.skipUnless(os.name == "nt", "Windows PowerShell pure parser and compilation checks")
@@ -58,12 +60,14 @@ function Snapshot([int]$Count) {
         observed_children_exited=$true; job_zero_confirmed=$true; reader_joined=$true; conpty_closed=$true;
         errors=[string[]]@(); observation_kind='launch_image'; launch_image_observed=$true; launch_sha256=('a'*64);
         runtime_launch_count=$Count; peak_runtime_processes=1; debug_event_count=23;
-        debug_events_drained=$true; debug_pump_joined=$true; debug_handles_closed=$true }
+        debug_events_drained=$true; debug_pump_joined=$true; debug_handles_closed=$true;
+        system_helper_image_observed=$true; system_helper_sha256=('b'*64); system_helper_launch_count=$Count;
+        peak_system_helper_processes=1; system_helper_reference_closed=$true }
 }
 function Sources { return [ordered]@{ probe=('1'*64); source_probe=('2'*64); private_creator=('3'*64); session_helper=('4'*64) } }
 function Cases { return [ordered]@{
-    single_fast_child=(New-LaunchCase (New-LaunchChecks $true) '' $true $false);
-    two_sequential_children=(New-LaunchCase (New-LaunchChecks $true) '' $true $false) } }
+    single_fast_child=(New-LaunchCase (New-LaunchChecks $true) '' $true $false ('b'*64));
+    two_sequential_children=(New-LaunchCase (New-LaunchChecks $true) '' $true $false ('b'*64)) } }
 $guard=@(Test-LaunchHosted 'true' 'Windows' 'github-hosted' 'Desktop' $true $true)
 foreach ($row in @(@('TRUE','Windows','github-hosted','Desktop',$true,$true),@('true','Linux','github-hosted','Desktop',$true,$true),
     @('true','Windows','self-hosted','Desktop',$true,$true),@('true','Windows','github-hosted','Core',$true,$true),
@@ -75,9 +79,10 @@ $nativeDictionary=[Collections.Generic.Dictionary[string,object]]::new()
 $ordered=Snapshot 1; foreach ($key in $ordered.Keys) { $nativeDictionary.Add($key,$ordered[$key]) }
 $positive+=Test-LaunchSnapshot $nativeDictionary 1 ('a'*64)
 $nativeDiagnostic=New-LaunchDiagnostic $nativeDictionary 1 ('a'*64)
+$v=Snapshot 2; $v.peak_system_helper_processes=2; $positive+=Test-LaunchSnapshot $v 2 ('a'*64)
 $falseSnapshots=@()
 foreach ($name in @('ok','app_exited','observed_children_exited','job_zero_confirmed','reader_joined','conpty_closed',
-    'launch_image_observed','debug_events_drained','debug_pump_joined','debug_handles_closed')) {
+    'launch_image_observed','debug_events_drained','debug_pump_joined','debug_handles_closed','system_helper_image_observed','system_helper_reference_closed')) {
     $v=Snapshot 1; $v[$name]=$false; $falseSnapshots+=Test-LaunchSnapshot $v 1 ('a'*64)
     $v=Snapshot 1; $v[$name]='true'; $falseSnapshots+=Test-LaunchSnapshot $v 1 ('a'*64)
 }
@@ -93,6 +98,25 @@ $v=Snapshot 1; $v.Remove('debug_handles_closed'); $falseSnapshots+=Test-LaunchSn
 $v=Snapshot 1; $v['private-canary']='x'; $falseSnapshots+=Test-LaunchSnapshot $v 1 ('a'*64)
 $falseSnapshots+=Test-LaunchSnapshot (Snapshot 1) 3 ('a'*64)
 $falseSnapshots+=Test-LaunchSnapshot (Snapshot 1) 1 'private-canary'
+$helperRefusals=@()
+foreach ($row in @(@('system_helper_sha256',$null),@('system_helper_sha256',''),@('system_helper_sha256',('B'*64)),
+    @('system_helper_sha256','private-canary'),@('system_helper_sha256',$true),@('system_helper_launch_count',0),
+    @('system_helper_launch_count',2),@('system_helper_launch_count','1'),@('system_helper_launch_count',$true),
+    @('peak_system_helper_processes',0),@('peak_system_helper_processes',2),@('peak_system_helper_processes',3),
+    @('peak_system_helper_processes','1'),@('system_helper_reference_closed',$false),@('system_helper_reference_closed','true'))) {
+    $v=Snapshot 1; $v[$row[0]]=$row[1]; $helperRefusals+=Test-LaunchSnapshot $v 1 ('a'*64)
+}
+foreach ($name in @('system_helper_image_observed','system_helper_sha256','system_helper_launch_count','peak_system_helper_processes','system_helper_reference_closed')) {
+    $v=Snapshot 1; $v.Remove($name); $helperRefusals+=Test-LaunchSnapshot $v 1 ('a'*64)
+}
+$v=Snapshot 1
+foreach ($name in @('system_helper_image_observed','system_helper_sha256','system_helper_launch_count','peak_system_helper_processes','system_helper_reference_closed')) { $v.Remove($name) }
+$helperRefusals+=Test-LaunchSnapshot $v 1 ('a'*64)
+$v=Snapshot 2; $v.system_helper_launch_count=1; $helperRefusals+=Test-LaunchSnapshot $v 2 ('a'*64)
+$v=Snapshot 2; $v.peak_system_helper_processes=3; $helperRefusals+=Test-LaunchSnapshot $v 2 ('a'*64)
+$v=Snapshot 1; $v.runtime_launch_count=0; $v.system_helper_launch_count=2; $helperRefusals+=Test-LaunchSnapshot $v 1 ('a'*64)
+$v=Snapshot 2; $v.peak_system_helper_processes=3; $v.system_helper_reference_closed=$false; $v.errors=@('debug_launch_limit','debug_cleanup_failed')
+$helperFailureDiagnostic=New-LaunchDiagnostic $v 2 ('a'*64)
 $diagnostics=@()
 $v=Snapshot 2; $v.runtime_launch_count=1; $v.debug_handles_closed=$false; $v.errors=@('debug_launch_limit','debug_cleanup_failed')
 $diagnostics+=New-LaunchDiagnostic $v 2 ('a'*64)
@@ -164,6 +188,11 @@ $invalid+=Reject { $c=Cases; $c.single_fast_child.checks.transient_images_delete
 $invalid+=Reject { $c=Cases; $c['extra'] = $c.single_fast_child; New-LaunchReport $c (Sources) ('a'*64) '' }
 $invalid+=Reject { $c=Cases; $c.single_fast_child=New-LaunchCase (New-LaunchChecks $false) 'observation_failed' $false $true;
     $c.single_fast_child.errors=@('observation_failed'); New-LaunchReport $c (Sources) ('a'*64) '' }
+$invalid+=Reject { New-LaunchCase (New-LaunchChecks $true) '' $true $false }
+$invalid+=Reject { New-LaunchCase (New-LaunchChecks $true) '' $true $false 'private-canary' }
+$invalid+=Reject { New-LaunchCase (New-LaunchChecks $false) 'observation_failed' $true $false ('b'*64) }
+$invalid+=Reject { $c=Cases; $c.single_fast_child.system_helper_sha256=$null; New-LaunchReport $c (Sources) ('a'*64) '' }
+$invalid+=Reject { $c=Cases; $c.single_fast_child.Remove('system_helper_sha256'); New-LaunchReport $c (Sources) ('a'*64) '' }
 $support=Get-LaunchSupport $reference
 $extract=@()
 $extract+=Reject { Get-LaunchSupport 'if (' }
@@ -215,6 +244,7 @@ foreach ($read in $sourceReads) {
     exact_extraction=$extractExact; compiled_literal_classes=$compiled; inert_entry_shape=$entryShape; native_dictionary_diagnostic=$nativeDiagnostic;
     guard_before_effects=$gateFirst; finalize_before_transcript=$finalizeBeforeRead; create_diagnostics=$createDiagnostics;
     invalid_create_diagnostics=$invalidCreate; getter_records=$getterRecords; getter_calls=$calls.Count; create_diagnostic_failure_only=$failureOnly;
+    helper_refusals=$helperRefusals; helper_failure_diagnostic=$helperFailureDiagnostic;
     source_limits=$sourceLimits; bounded_reads=$boundedReads; invalid_limits=$invalidLimits; both_source_reads_bound=$bothReadsBound;
     native_calls=0; native_entrypoint_invoked=$false
 } | ConvertTo-Json -Depth 9 -Compress))
@@ -251,7 +281,7 @@ foreach ($read in $sourceReads) {
         self.assertIs(self.value["both_source_reads_bound"], True)
 
     def test_exact_final_snapshots_for_one_and_two_short_lived_children(self):
-        self.assertEqual(self.value["positive_snapshots"], [True, True, True])
+        self.assertEqual(self.value["positive_snapshots"], [True, True, True, True])
         self.assertIs(self.value["native_dictionary_diagnostic"]["snapshot_valid"], True)
         self.assertGreater(len(self.value["rejected_snapshots"]), 40)
         self.assertTrue(all(value is False for value in self.value["rejected_snapshots"]))
@@ -262,20 +292,33 @@ foreach ($read in $sourceReads) {
                   "production_application_executed", "provider_accepted", "application_accepted", "live_image_observation"}
         for report in self.value["reports"]:
             self.assertEqual(set(report), fields)
-            self.assertEqual(report["schema_version"], 1)
+            self.assertEqual(report["schema_version"], 2)
             self.assertEqual(report["scope"], "hosted_inert_launch_observer_probe")
             self.assertEqual(set(report["cases"]), {"single_fast_child", "two_sequential_children"})
             self.assertEqual(set(report["source_sha256"]), {"probe", "source_probe", "private_creator", "session_helper"})
             for flag in ("production_application_executed", "provider_accepted", "application_accepted", "live_image_observation"):
                 self.assertIs(report[flag], False)
             for case in report["cases"].values():
-                self.assertEqual(set(case), {"result", "checks", "cleanup_complete", "tree_retained", "errors"})
+                self.assertEqual(set(case), {"result", "checks", "system_helper_sha256", "cleanup_complete", "tree_retained", "errors"})
                 self.assertEqual(set(case["checks"]), CHECKS)
                 self.assertTrue(all(type(value) is bool for value in case["checks"].values()))
+                if case["result"] == "passed":
+                    self.assertEqual(case["system_helper_sha256"], "b" * 64)
         self.assertEqual([row["result"] for row in (passed, failed, changed, unavailable)],
                          ["passed", "failed", "failed", "unavailable"])
         self.assertEqual(changed["errors"], ["source_changed"])
         self.assertEqual(unavailable["errors"], ["hosted_only"])
+
+    def test_helper_proof_is_separate_exact_and_mandatory_without_offsetting_missing_runtime(self):
+        self.assertEqual(self.value["helper_refusals"], [False] * 24)
+        # Failed snapshots can describe the attempted third helper, but cannot qualify it.
+        diagnostic = self.value["helper_failure_diagnostic"]
+        self.assertIs(diagnostic["snapshot_valid"], True)
+        self.assertEqual(diagnostic["system_helper_launch_count"], 2)
+        self.assertEqual(diagnostic["peak_system_helper_processes"], 3)
+        self.assertIs(diagnostic["system_helper_hash_present"], True)
+        self.assertIs(diagnostic["system_helper_reference_closed"], False)
+        self.assertEqual(diagnostic["errors"], ["debug_launch_limit", "debug_cleanup_failed"])
 
     def test_primary_and_cleanup_failure_both_survive(self):
         combined = self.value["combined_failure"]
