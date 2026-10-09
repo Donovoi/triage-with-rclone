@@ -16,7 +16,19 @@ function Get-SetupNodeCategory([string]$Root, [string]$Current) {
     if ($Current -ceq $helper) { return 'helper_root' }
     foreach ($name in @('temp','home','profile','appdata','localappdata')) {
         if ($Current -ceq [IO.Path]::Combine($Root, $name)) { return 'application_root' }
-        if ($Current -ceq [IO.Path]::Combine($helper, $name)) { return 'helper_private_root' }
+        $private = [IO.Path]::Combine($helper, $name)
+        if ([string]::Equals($Current, $private, [StringComparison]::OrdinalIgnoreCase)) { return 'helper_private_root' }
+        $prefix = $private + [IO.Path]::DirectorySeparatorChar
+        if ($Current.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
+            $relative = $Current.Substring($prefix.Length)
+            if ($relative.Length -eq 0) { return 'helper_descendant' }
+            if ($name -ceq 'temp') {
+                if ($relative.IndexOf([IO.Path]::DirectorySeparatorChar) -lt 0) { return 'helper_temp_direct' }
+                return 'helper_temp_deeper'
+            }
+            # Only fixed labels leave the helper; never the descendant's name.
+            return 'helper_' + $name + '_descendant'
+        }
     }
     if ($Current.StartsWith($helper + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) { return 'helper_descendant' }
     foreach ($name in @('bridge-stdout.private','bridge-stderr.private')) {

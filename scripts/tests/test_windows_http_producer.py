@@ -1695,7 +1695,9 @@ class ProducerTests(unittest.TestCase):
     def test_setup_verification_failure_has_closed_reasons_categories_and_nullable_owner_facts(self):
         reasons = ("verification_failed", "entry_limit", "metadata_read_failed", "reparse", "owner_invalid",
                    "root_unprotected", "acl_invalid", "acl_incomplete", "enumeration_failed")
-        categories = ("root", "application_root", "helper_root", "helper_private_root", "helper_descendant", "bridge_log", "other", "unknown")
+        categories = ("root", "application_root", "helper_root", "helper_private_root", "helper_descendant",
+                      "helper_temp_direct", "helper_temp_deeper", "helper_home_descendant", "helper_profile_descendant",
+                      "helper_appdata_descendant", "helper_localappdata_descendant", "bridge_log", "other", "unknown")
         for action in ("Create", "Verify"):
             stages = ["input", "parent", "identity", "verify"] if action == "Verify" else ["input", "parent", "identity", "acl", "compile", "create", "verify"]
             for reason in reasons:
@@ -1712,7 +1714,9 @@ class ProducerTests(unittest.TestCase):
     def test_setup_verification_diagnostic_rejects_private_untyped_or_contradictory_metadata(self):
         original = self.acl_failure()
         mutations = []
-        for key, value in (("reason", "private-canary"), ("category", str(self.root)), ("reason", []),
+        for key, value in (("reason", "private-canary"), ("category", str(self.root)),
+                           ("category", "helper_temp_direct/private-canary"),
+                           ("category", "helper_profile_descendant_private-canary"), ("reason", []),
                            ("category", None), ("owner_is_user", True), ("owner_is_user", 0),
                            ("owner_is_token_owner", 1), ("token_owner_is_user", "false")):
             mutations.append(dict(original, **{key: value}))
