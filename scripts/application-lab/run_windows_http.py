@@ -197,6 +197,26 @@ SETUP_STAGES = {
     "Verify": ("input", "parent", "identity", "verify", "complete"),
 }
 SETUP_OUTCOMES = frozenset({"timeout", "launch_failed", "environment_invalid", "exit_failed", "protocol_failed", "parent_changed"})
+SETUP_FAILURE_REASONS = frozenset({"verification_failed", "entry_limit", "metadata_read_failed", "reparse",
+                                   "owner_invalid", "root_unprotected", "acl_invalid", "acl_incomplete", "enumeration_failed"})
+SETUP_NODE_CATEGORIES = frozenset({"root", "application_root", "helper_root", "helper_private_root",
+                                  "helper_descendant", "bridge_log", "other", "unknown"})
+
+
+def setup_failure(value):
+    """Closed failure-only metadata; no child strings outside these enums."""
+    owner_keys = ("owner_is_user", "owner_is_token_owner", "token_owner_is_user")
+    need(type(value) is dict and set(value) == {"reason", "category", *owner_keys}, "case_setup_failed")
+    need(type(value["reason"]) is str and value["reason"] in SETUP_FAILURE_REASONS and
+         type(value["category"]) is str and value["category"] in SETUP_NODE_CATEGORIES, "case_setup_failed")
+    if value["reason"] == "owner_invalid":
+        need(value["owner_is_user"] is False, "case_setup_failed")
+        token_values = [value[key] for key in owner_keys[1:]]
+        need(all(item is None for item in token_values) or all(type(item) is bool for item in token_values), "case_setup_failed")
+        need(not all(item is True for item in token_values), "case_setup_failed")
+    else:
+        need(all(value[key] is None for key in owner_keys), "case_setup_failed")
+    return dict(value)
 
 
 def setup_progress(data, action):
@@ -209,7 +229,7 @@ def setup_progress(data, action):
     data = data.replace(b"\r\n", b"\n")
     need(b"\r" not in data, "case_setup_failed")
     lines = data[:-1].split(b"\n")
-    expected, stages, final = SETUP_STAGES[action], [], None
+    expected, stages, final, failure = SETUP_STAGES[action], [], None, None
     need(len(lines) <= len(expected) + 1, "case_setup_failed")
     for index, line in enumerate(lines):
         value = strict_json(line, 256)
@@ -218,19 +238,25 @@ def setup_progress(data, action):
             need(final is None and len(stages) < len(expected) and value["stage"] == expected[len(stages)], "case_setup_failed")
             stages.append(value["stage"])
         else:
-            need(set(value) == {"schema_version", "ok"} and type(value["ok"]) is bool and
+            need(set(value) in ({"schema_version", "ok"}, {"schema_version", "ok", "failure"}) and type(value["ok"]) is bool and
                  index == len(lines) - 1 and stages, "case_setup_failed")
             final = value["ok"]
+            if "failure" in value:
+                need(final is False and stages[-1] == "verify", "case_setup_failed")
+                failure = setup_failure(value["failure"])
     need(stages and (final is not True or tuple(stages) == expected), "case_setup_failed")
-    return stages[-1], final
+    return stages[-1], final, failure
 
 
-def setup_diagnostic(outcome, action, scope, exit_code, stage):
+def setup_diagnostic(outcome, action, scope, exit_code, stage, failure=None):
     """The sole public setup diagnostic: finite labels, never child text."""
     need(outcome in SETUP_OUTCOMES and action in SETUP_STAGES and scope in {"suite", *E.CASE_ORDER} and
          (exit_code is None or type(exit_code) is int and -(2**31) <= exit_code < 2**32) and
          (stage is None or stage in SETUP_STAGES[action]), "case_setup_failed")
     value = dict(outcome=outcome, action=action, scope=scope, exit_code=exit_code, last_stage=stage)
+    if failure is not None:
+        need(outcome == "exit_failed" and exit_code not in (None, 0) and stage == "verify", "case_setup_failed")
+        value["failure"] = setup_failure(failure)
     print("application_setup_diagnostic=" + E.compact(value).decode("ascii"), flush=True)
 
 
@@ -283,7 +309,7 @@ def prepare(parent, name, action="Create"):
                                 timeout=20, check=False, env=env, **hidden())
     except subprocess.TimeoutExpired as error:
         try:
-            stage, _ = setup_progress(error.stdout, action)
+            stage, _, _ = setup_progress(error.stdout, action)
         except (ProducerError, TypeError, ValueError):
             stage = None
         setup_diagnostic("timeout", action, scope, None, stage)
@@ -292,9 +318,9 @@ def prepare(parent, name, action="Create"):
         setup_diagnostic("launch_failed", action, scope, None, None)
         raise ProducerError("case_setup_failed") from None
     try:
-        stage, final = setup_progress(result.stdout, action)
+        stage, final, failure = setup_progress(result.stdout, action)
     except (ProducerError, TypeError, ValueError):
-        stage, final = None, None
+        stage, final, failure = None, None, None
     code = result.returncode
     code = code if type(code) is int and -(2**31) <= code < 2**32 else None
     try:
@@ -304,7 +330,11 @@ def prepare(parent, name, action="Create"):
     outcome = ("parent_changed" if not parent_unchanged else "protocol_failed" if code is None else
                "exit_failed" if code != 0 else "protocol_failed" if final is not True else None)
     if outcome is not None:
-        setup_diagnostic(outcome, action, scope, code, stage)
+        try:
+            setup_diagnostic(outcome, action, scope, code, stage,
+                             failure if outcome == "exit_failed" and final is False else None)
+        except BaseException:
+            pass  # A diagnostic failure cannot replace the setup failure.
         raise ProducerError("case_setup_failed")
     return parent / name
 

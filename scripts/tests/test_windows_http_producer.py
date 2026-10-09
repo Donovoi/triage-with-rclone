@@ -1212,16 +1212,18 @@ class ProducerTests(unittest.TestCase):
             P.fixture_valid("cancellation", state.snapshot())
 
     @staticmethod
-    def setup_stream(action="Create", stages=None, final=True):
+    def setup_stream(action="Create", stages=None, final=True, failure=None):
         # Literal sequence is independent of the parser's constants.
         if stages is None:
             stages = ["input", "parent", "identity", "acl", "compile", "create", "verify", "complete"] if action == "Create" else ["input", "parent", "identity", "verify", "complete"]
         records = [{"schema_version": 1, "stage": stage} for stage in stages]
         if final is not None:
             records.append({"schema_version": 1, "ok": final})
+            if failure is not None:
+                records[-1]["failure"] = failure
         return b"".join(json.dumps(value, separators=(",", ":")).encode() + b"\r\n" for value in records)
 
-    def prepare_result(self, result=None, error=None, identity_effect=None, action="Create"):
+    def prepare_result(self, result=None, error=None, identity_effect=None, action="Create", failure=None):
         output = io.StringIO()
         with mock.patch.dict(os.environ, {"GITHUB_ACTIONS": "true", "RUNNER_OS": "Windows", "RUNNER_ENVIRONMENT": "github-hosted"}), \
              mock.patch.object(P, "hosted_guard"), mock.patch.object(P, "powershell", return_value="fixed-system-powershell"), \
@@ -1238,7 +1240,9 @@ class ProducerTests(unittest.TestCase):
         self.assertEqual(len(lines), 1)
         self.assertTrue(lines[0].startswith("application_setup_diagnostic="))
         value = json.loads(lines[0].split("=", 1)[1])
-        self.assertEqual(set(value), {"outcome", "action", "scope", "exit_code", "last_stage"})
+        self.assertEqual(set(value), {"outcome", "action", "scope", "exit_code", "last_stage"} | ({"failure"} if failure is not None else set()))
+        if failure is not None:
+            self.assertEqual(value["failure"], failure)
         self.assertEqual(value["scope"], "suite")
         self.assertEqual(value["action"], action)
         self.assertNotIn("private-canary", output.getvalue())
@@ -1293,6 +1297,95 @@ class ProducerTests(unittest.TestCase):
                 P.setup_progress(raw, "Create")
         value = self.prepare_result(types.SimpleNamespace(returncode=True, stdout=valid))
         self.assertEqual((value["outcome"], value["exit_code"]), ("protocol_failed", None))
+
+    @staticmethod
+    def acl_failure(reason="owner_invalid", category="application_root"):
+        return dict(reason=reason, category=category, owner_is_user=False if reason == "owner_invalid" else None,
+                    owner_is_token_owner=None, token_owner_is_user=None)
+
+    def test_setup_verification_failure_has_closed_reasons_categories_and_nullable_owner_facts(self):
+        reasons = ("verification_failed", "entry_limit", "metadata_read_failed", "reparse", "owner_invalid",
+                   "root_unprotected", "acl_invalid", "acl_incomplete", "enumeration_failed")
+        categories = ("root", "application_root", "helper_root", "helper_private_root", "helper_descendant", "bridge_log", "other", "unknown")
+        for action in ("Create", "Verify"):
+            stages = ["input", "parent", "identity", "verify"] if action == "Verify" else ["input", "parent", "identity", "acl", "compile", "create", "verify"]
+            for reason in reasons:
+                for category in categories:
+                    failure = self.acl_failure(reason, category)
+                    raw = self.setup_stream(action, stages, False, failure)
+                    self.assertLessEqual(max(map(len, raw.splitlines())), 256)
+                    self.assertEqual(P.setup_progress(raw, action), ("verify", False, failure))
+        for pair in ((None, None), (True, False), (False, True), (False, False)):
+            failure = self.acl_failure()
+            failure.update(owner_is_token_owner=pair[0], token_owner_is_user=pair[1])
+            self.assertEqual(P.setup_failure(failure), failure)
+
+    def test_setup_verification_diagnostic_rejects_private_untyped_or_contradictory_metadata(self):
+        original = self.acl_failure()
+        mutations = []
+        for key, value in (("reason", "private-canary"), ("category", str(self.root)), ("reason", []),
+                           ("category", None), ("owner_is_user", True), ("owner_is_user", 0),
+                           ("owner_is_token_owner", 1), ("token_owner_is_user", "false")):
+            mutations.append(dict(original, **{key: value}))
+        mutations += [dict(original, sid="private-canary"), dict(original, owner_is_token_owner=True),
+                      dict(original, owner_is_token_owner=True, token_owner_is_user=True),
+                      dict(original, reason="acl_invalid"), {key: value for key, value in original.items() if key != "category"}]
+        for failure in mutations:
+            raw = self.setup_stream("Verify", ["input", "parent", "identity", "verify"], False, failure)
+            with self.assertRaises(P.ProducerError):
+                P.setup_progress(raw, "Verify")
+        valid = self.setup_stream("Verify", ["input", "parent", "identity", "verify"], False, original)
+        invalid = [valid[:-1], valid + valid.splitlines(keepends=True)[-1],
+                   valid.replace(b'"reason":"owner_invalid"', b'"reason":"owner_invalid","reason":"owner_invalid"'),
+                   valid.replace(b'"owner_is_user":false', b'"owner_is_user":NaN'),
+                   valid.replace(b'"category":"application_root"', b'"category":"' + b'x' * 256 + b'"'),
+                   valid.replace(b'"ok":false', b'"ok":true'),
+                   self.setup_stream("Verify", final=True, failure=original),
+                   self.setup_stream("Verify", ["input", "parent", "identity"], False, original),
+                   self.setup_stream("Verify", final=False, failure=original)]
+        for raw in invalid:
+            with self.assertRaises(P.ProducerError):
+                P.setup_progress(raw, "Verify")
+
+    def test_prepare_verification_diagnostic_does_not_replace_failure_or_expose_private_values(self):
+        failure = self.acl_failure()
+        failure.update(owner_is_token_owner=True, token_owner_is_user=False)
+        raw = self.setup_stream("Verify", ["input", "parent", "identity", "verify"], False, failure)
+        retained = self.root / "private-canary"
+        retained.write_bytes(b"private-canary")
+        result = types.SimpleNamespace(returncode=1, stdout=raw, stderr=b"private-canary")
+        value = self.prepare_result(result, action="Verify", failure=failure)
+        self.assertEqual((value["outcome"], value["last_stage"], value["exit_code"]), ("exit_failed", "verify", 1))
+        self.assertEqual(retained.read_bytes(), b"private-canary")
+
+    def test_prepare_verification_metadata_requires_failed_terminal_nonzero_and_stable_parent(self):
+        failure = self.acl_failure()
+        raw = self.setup_stream("Verify", ["input", "parent", "identity", "verify"], False, failure)
+        value = self.prepare_result(types.SimpleNamespace(returncode=0, stdout=raw), action="Verify")
+        self.assertEqual(value["outcome"], "protocol_failed")
+        value = self.prepare_result(types.SimpleNamespace(returncode=1, stdout=raw), action="Verify", identity_effect=[(1, 2), (1, 3)])
+        self.assertEqual(value["outcome"], "parent_changed")
+        value = self.prepare_result(error=P.subprocess.TimeoutExpired(["private-canary"], 20, output=raw), action="Verify")
+        self.assertEqual((value["outcome"], value["last_stage"]), ("timeout", "verify"))
+        bad = raw.replace(b'"owner_invalid"', b'"private-canary"')
+        value = self.prepare_result(types.SimpleNamespace(returncode=1, stdout=bad), action="Verify")
+        self.assertIsNone(value["last_stage"])
+        for outcome, code, stage in (("timeout", None, "verify"), ("protocol_failed", 0, "verify"), ("exit_failed", 1, "identity")):
+            with self.assertRaises(P.ProducerError), redirect_stdout(io.StringIO()) as output:
+                P.setup_diagnostic(outcome, "Verify", "listing", code, stage, failure)
+            self.assertEqual(output.getvalue(), "")
+
+    def test_prepare_diagnostic_error_still_raises_original_setup_failure_and_retains_tree(self):
+        raw = self.setup_stream("Verify", ["input", "parent", "identity", "verify"], False, self.acl_failure())
+        retained = self.root / "private-canary"
+        retained.write_bytes(b"private-canary")
+        with mock.patch.object(P, "hosted_guard"), mock.patch.object(P, "powershell", return_value="fixed-system-powershell"), \
+             mock.patch.object(P, "hidden", return_value={}), mock.patch.object(P.subprocess, "run", return_value=types.SimpleNamespace(returncode=1, stdout=raw)), \
+             mock.patch.object(P, "setup_diagnostic", side_effect=RuntimeError("private-canary")), redirect_stdout(io.StringIO()) as output:
+            with self.assertRaisesRegex(P.ProducerError, "^case_setup_failed$"):
+                P.prepare(self.root, "listing", "Verify")
+        self.assertEqual(output.getvalue(), "")
+        self.assertEqual(retained.read_bytes(), b"private-canary")
 
     def probe_patches(self):
         # App, fixture and session entry points must remain unreachable.

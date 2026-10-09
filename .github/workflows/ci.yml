@@ -232,6 +232,9 @@ jobs:
             Add-Type -Path ../scripts/acceptance/windows/ConPtyHarness.cs -ErrorAction Stop -WarningAction SilentlyContinue 2>$null
             [pscustomobject]@{ phase=$phase; result='passed'; elapsed_ms=$clock.ElapsedMilliseconds } | ConvertTo-Json -Compress
             & ../scripts/tests/test_hosted_session_pure.ps1
+            $phase = 'setup_diagnostic_pure_validation'
+            $clock.Restart()
+            & ../scripts/tests/test_prepare_case_pure.ps1
           } catch {
             [pscustomobject]@{ phase=$phase; result='failed'; elapsed_ms=$clock.ElapsedMilliseconds } | ConvertTo-Json -Compress
             [Console]::Error.WriteLine('windows_harness_validation_failed')
