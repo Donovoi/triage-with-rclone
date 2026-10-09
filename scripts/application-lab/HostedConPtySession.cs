@@ -564,6 +564,9 @@ namespace TriageApplicationLab {
                 launch.AddSnapshot(result); return result;
             }
         }
+        public Dictionary<string,object> LaunchFailureDiagnostic() {
+            lock(api) { Require(launch!=null); return launch.FailureDiagnostic(); }
+        }
         // DEBUG_PROCESS is opt-in. All debug APIs run on the creator thread.
         // That thread never takes api or calls Finish: Finish may be joining it.
         sealed class LaunchObserver {
@@ -592,10 +595,12 @@ namespace TriageApplicationLab {
             sealed class OwnedProcess { public IntPtr handle; public ulong created; }
             readonly HostedConPtySession session;
             readonly string appPath,appSha,expected;
+            readonly string systemDirectory=Environment.SystemDirectory;
             readonly object sync=new object();
             readonly HostedLaunchState state;
             readonly Dictionary<uint,OwnedProcess> processes=new Dictionary<uint,OwnedProcess>();
             readonly List<IntPtr> uncertainHandles=new List<IntPtr>();
+            Dictionary<string,object> failedCreate;
             readonly object startSignal=new object();
             bool startSignaled;
             Thread pump;
@@ -762,6 +767,31 @@ namespace TriageApplicationLab {
                 Require(IsProcessInJob(owned.handle,session.job,out belongs) && belongs && Created(owned.handle)==owned.created);
                 if(runtime) lock(sync) verified++;
             }
+            void CaptureFailedCreate(DebugEvent value) {
+                // Diagnostic only, before the failing CREATE's hFile is closed.
+                // The existing launch limit, error, termination and drain remain
+                // authoritative. No extra image bytes, paths or PIDs are emitted.
+                lock(sync) if(failedCreate!=null) return;
+                string role="unavailable",image=null;
+                bool? ownedJob=null,pathMatches=null;
+                try {
+                    OwnedProcess owned;
+                    if(processes.TryGetValue(value.pid,out owned) && owned.handle!=IntPtr.Zero && Created(owned.handle)==owned.created) {
+                        try { bool belongs; if(IsProcessInJob(owned.handle,session.job,out belongs)) ownedJob=belongs; } catch { }
+                        try {
+                            image=Image(owned.handle);
+                            role=HostedLaunchState.FailureImageRole(session.caseRoot,appPath,systemDirectory,image);
+                        } catch { }
+                        if(image!=null && value.info.create.file!=IntPtr.Zero && value.info.create.file!=new IntPtr(-1)) {
+                            try { pathMatches=String.Equals(FilePath(value.info.create.file),image,StringComparison.OrdinalIgnoreCase); } catch { }
+                        }
+                    }
+                } catch { }
+                lock(sync) if(failedCreate==null) failedCreate=HostedLaunchState.CreateFailureDiagnostic(state.Events,role,ownedJob,pathMatches);
+            }
+            public Dictionary<string,object> FailureDiagnostic() {
+                lock(sync) return failedCreate==null?null:new Dictionary<string,object>(failedCreate);
+            }
             void Pump() {
                 if(initialPid==0) return;
                 long drainEnd=Int64.MaxValue;
@@ -782,7 +812,10 @@ namespace TriageApplicationLab {
                     try {
                         Require(image!=new IntPtr(-1));
                         lock(sync) state.Begin(value.code,value.pid,value.tid);
-                        if(value.code==3) Create(value);
+                        if(value.code==3) {
+                            try { Create(value); }
+                            catch { try { CaptureFailedCreate(value); } catch { } throw; }
+                        }
                         else if(value.code==1) lock(sync) disposition=state.ExceptionDisposition(value.info.exception.record.code,value.info.exception.first);
                         else if(value.code==9) Fail("debug_event_failed");
                         lock(sync) { if(state.Failure!=null) { session.Error(state.Failure); startupFailed=true; } }
@@ -915,6 +948,24 @@ namespace TriageApplicationLab {
         public static bool EventOwnsCreationHandle(IntPtr creation,IntPtr debugEvent) {
             if(creation==IntPtr.Zero || creation==new IntPtr(-1) || debugEvent==IntPtr.Zero || debugEvent==new IntPtr(-1)) throw new ArgumentException("debug_event_failed");
             return creation==debugEvent;
+        }
+        public static Dictionary<string,object> CreateFailureDiagnostic(int ordinal,string role,bool? ownedJob,bool? pathMatches) {
+            if(ordinal<1 || ordinal>4096 || (role!="application_path" && role!="runtime_path" && role!="system_console_host" && role!="other" && role!="unavailable")) throw new ArgumentException("debug_event_failed");
+            return new Dictionary<string,object> {
+                {"schema_version",1},{"event_ordinal",ordinal},{"image_role",role},
+                {"owned_job",ownedJob},{"image_path_matches",pathMatches}
+            };
+        }
+        public static string FailureImageRole(string root,string application,string systemDirectory,string image) {
+            // Location classification is never admission or a runtime hash proof.
+            try {
+                if(String.IsNullOrEmpty(image) || image.Length>4096 || !String.Equals(System.IO.Path.GetFullPath(image),image,StringComparison.OrdinalIgnoreCase)) return "unavailable";
+                foreach(char value in image) if(Char.IsControl(value) || Char.IsSurrogate(value)) return "unavailable";
+                if(String.Equals(image,application,StringComparison.OrdinalIgnoreCase)) return "application_path";
+                if(RuntimeImagePathAllowed(root,image)) return "runtime_path";
+                if(!String.IsNullOrEmpty(systemDirectory) && String.Equals(image,System.IO.Path.Combine(systemDirectory,"conhost.exe"),StringComparison.OrdinalIgnoreCase)) return "system_console_host";
+                return "other";
+            } catch { return "unavailable"; }
         }
         public static string RuntimeTempPath(string root) {
             return System.IO.Path.Combine(System.IO.Path.GetDirectoryName(HostedSourceDirectory.SourcePath(root)),"temp");
