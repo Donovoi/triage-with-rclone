@@ -1479,6 +1479,26 @@ class ProducerTests(unittest.TestCase):
                     bridge.command("start")
                 self.assertEqual(bridge.process.stdin.write.call_count, 1)
 
+    def test_bridge_cold_ready_wait_is_separate_and_never_resets_lifetime(self):
+        for action in ("ready", "start", "poll", "finish", "close_ready"):
+            for remaining in (165, 10.5):
+                with self.subTest(action=action, remaining=remaining):
+                    bridge = self.bare_bridge(f"wait-{action}-{remaining}")
+                    bridge.deadline = remaining
+                    if action == "ready":
+                        reply = dict(schema_version=1, action=action, ok=True, state="ready")
+                    else:
+                        bridge.ready = True
+                        bridge.calls = bridge.responses = 1
+                        reply = (dict(schema_version=1, action=action, ok=True, state="closed") if action == "close_ready"
+                                 else session(action, final=action == "finish"))
+                    self.reply_on_write(bridge, json.dumps(reply).encode())
+                    bridge.messages.get = mock.Mock(wraps=bridge.messages.get)
+                    with mock.patch.object(P.time, "monotonic", return_value=0):
+                        bridge.command(action)
+                    bridge.messages.get.assert_called_once_with(timeout=min(60 if action == "ready" else 35, remaining))
+                    self.assertEqual(bridge.deadline, remaining)
+
     def test_reader_duplicate_ready_and_late_unsolicited_reply_are_sticky(self):
         line = b'{"schema_version":1,"action":"ready","ok":true,"state":"ready"}\n'
         bridge = self.bare_bridge("duplicate-wire")
@@ -1577,7 +1597,7 @@ class ProducerTests(unittest.TestCase):
             self.assertTrue(bridge.failed.is_set())
             self.assertNotIn("canary", output.getvalue())
             if failure == "timeout":
-                self.assertLessEqual(bridge.messages.get.call_args.kwargs["timeout"], 35)
+                self.assertLessEqual(bridge.messages.get.call_args.kwargs["timeout"], 60)
         for fields in (("private-canary", "wait", "timeout", None), ("ready", "private-canary", "timeout", None),
                        ("ready", "wait", "private-canary", None), ("ready", "wait", "timeout", "private-canary")):
             with redirect_stdout(io.StringIO()) as output, self.assertRaises(P.ProducerError):
