@@ -10,9 +10,11 @@ pub mod authorize;
 pub mod combine;
 pub mod config;
 pub mod connectivity;
+pub(crate) mod lifecycle;
 pub mod mount;
 pub mod oauth;
 pub mod process;
+pub(crate) mod runtime;
 pub mod web;
 
 pub use authorize::{authorize_fallback, AuthorizeFallbackResult};

@@ -112,6 +112,7 @@ pub(crate) fn perform_manual_config_flow<
     app: &mut App,
     terminal: &mut Terminal<B>,
 ) -> Result<()> {
+    app.quiesce_resources()?;
     let Some(provider) = app.provider.chosen.clone() else {
         app.auth_status = "No provider selected.".to_string();
         return Ok(());
@@ -132,310 +133,315 @@ pub(crate) fn perform_manual_config_flow<
             return Ok(());
         }
     };
-    app.cleanup_track_file(binary.path());
-    if let Some(dir) = binary.temp_dir() {
-        app.cleanup_track_dir(dir);
-    }
 
-    let rclone = crate::rclone::RcloneRunner::new(binary.path());
+    let mut list_next = false;
+    crate::ui::runtime::with_runtime(binary, |binary| {
+        let rclone = crate::rclone::RcloneRunner::from_extracted(binary);
 
-    let config_dir = app
-        .config_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("."));
-    app.track_env_var(
-        "RCLONE_CONFIG",
-        "Set RCLONE_CONFIG for manual backend config",
-    );
-    let config = match crate::rclone::RcloneConfig::for_case(&config_dir) {
-        Ok(config) => config,
-        Err(e) => {
-            app.auth_status = format!("Manual config failed (config): {}", e);
-            app.log_error(format!("Manual config failed (config): {}", e));
+        let config_dir = app
+            .config_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."));
+        app.track_env_var(
+            "RCLONE_CONFIG",
+            "Set RCLONE_CONFIG for manual backend config",
+        );
+        let config = match crate::rclone::RcloneConfig::for_case(&config_dir) {
+            Ok(config) => config,
+            Err(e) => {
+                app.auth_status = format!("Manual config failed (config): {}", e);
+                app.log_error(format!("Manual config failed (config): {}", e));
+                return Ok(());
+            }
+        };
+        app.cleanup_track_env_value("RCLONE_CONFIG", config.original_env());
+        app.track_file(config.path(), "Created/updated rclone config file");
+
+        let default_remote = match config.next_available_remote_name(provider.short_name()) {
+            Ok(name) => name,
+            Err(e) => {
+                app.auth_status = format!("Manual config failed (remote name): {}", e);
+                app.log_error(format!("Manual config failed (remote name): {}", e));
+                return Ok(());
+            }
+        };
+
+        let Some(remote_name_input) = prompt_text_in_tui(
+            app,
+            terminal,
+            "Remote Name",
+            &format!(
+                "Enter remote name.\n\nDefault: {}\n\nEnter submit | Esc cancel",
+                default_remote
+            ),
+        )?
+        else {
+            app.auth_status = "Manual configuration cancelled.".to_string();
+            app.state = crate::ui::AppState::ProviderSelect;
             return Ok(());
-        }
-    };
-    app.cleanup_track_env_value("RCLONE_CONFIG", config.original_env());
-    app.track_file(config.path(), "Created/updated rclone config file");
+        };
 
-    let default_remote = match config.next_available_remote_name(provider.short_name()) {
-        Ok(name) => name,
-        Err(e) => {
-            app.auth_status = format!("Manual config failed (remote name): {}", e);
-            app.log_error(format!("Manual config failed (remote name): {}", e));
-            return Ok(());
-        }
-    };
-
-    let Some(remote_name_input) = prompt_text_in_tui(
-        app,
-        terminal,
-        "Remote Name",
-        &format!(
-            "Enter remote name.\n\nDefault: {}\n\nEnter submit | Esc cancel",
+        let remote_name = if remote_name_input.trim().is_empty() {
             default_remote
-        ),
-    )?
-    else {
-        app.auth_status = "Manual configuration cancelled.".to_string();
-        app.state = crate::ui::AppState::ProviderSelect;
-        return Ok(());
-    };
-
-    let remote_name = if remote_name_input.trim().is_empty() {
-        default_remote
-    } else {
-        remote_name_input.trim().to_string()
-    };
-
-    let mut options: Vec<(String, String)> = Vec::new();
-
-    let schema = match crate::providers::schema::provider_schema_from_rclone(
-        &rclone,
-        provider.backend_name(),
-    ) {
-        Ok(schema) => schema,
-        Err(e) => {
-            app.log_info(format!(
-                "Provider option schema unavailable for {}: {}",
-                provider.short_name(),
-                e
-            ));
-            None
-        }
-    };
-
-    let known_keys_preview = schema.as_ref().map(|schema| {
-        let mut keys = schema
-            .options
-            .iter()
-            .filter(|o| o.required || o.hide <= 0)
-            .map(|o| o.name.clone())
-            .collect::<Vec<_>>();
-        keys.sort_by_key(|a| a.to_ascii_lowercase());
-        let max = 12usize;
-        let mut preview = keys.into_iter().take(max).collect::<Vec<_>>().join(", ");
-        if schema.options.len() > max {
-            preview.push_str(", ...");
-        }
-        preview
-    });
-
-    // Prompt required options from schema first (best-effort "plug and play" for non-OAuth backends).
-    if let Some(schema) = schema.as_ref() {
-        let required = schema
-            .options
-            .iter()
-            .filter(|o| o.required)
-            .collect::<Vec<_>>();
-
-        if required.is_empty() {
-            app.log_info(format!(
-                "Provider {} has no required options; falling back to free-form option entry.",
-                provider.short_name()
-            ));
         } else {
-            for opt in required {
-                loop {
-                    let default = opt.default_string();
-                    let blank_behavior = match default.as_deref() {
-                        Some(d) if !d.is_empty() => format!("Blank uses default: {}", d),
-                        _ => "Blank is not allowed for required options.".to_string(),
-                    };
+            remote_name_input.trim().to_string()
+        };
 
-                    let hint = format!(
-                        "Required option: {}\n\n{}\n\n{}\n\nEnter submit | Esc cancel",
-                        opt.name,
-                        opt.help_text(),
-                        blank_behavior
-                    );
+        let mut options: Vec<(String, String)> = Vec::new();
 
-                    let Some(mut value) =
-                        prompt_text_in_tui(app, terminal, "Required Option", &hint)?
-                    else {
-                        app.auth_status = "Manual configuration cancelled.".to_string();
-                        app.state = crate::ui::AppState::ProviderSelect;
-                        return Ok(());
-                    };
+        let schema = match crate::providers::schema::provider_schema_from_rclone(
+            &rclone,
+            provider.backend_name(),
+        ) {
+            Ok(schema) => schema,
+            Err(e) => {
+                app.log_info(format!(
+                    "Provider option schema unavailable for {}: {}",
+                    provider.short_name(),
+                    e
+                ));
+                None
+            }
+        };
 
-                    if value.trim().is_empty() {
-                        if let Some(d) = default.as_deref() {
-                            if !d.is_empty() {
-                                value = d.to_string();
-                            }
-                        }
-                    }
+        let known_keys_preview = schema.as_ref().map(|schema| {
+            let mut keys = schema
+                .options
+                .iter()
+                .filter(|o| o.required || o.hide <= 0)
+                .map(|o| o.name.clone())
+                .collect::<Vec<_>>();
+            keys.sort_by_key(|a| a.to_ascii_lowercase());
+            let max = 12usize;
+            let mut preview = keys.into_iter().take(max).collect::<Vec<_>>().join(", ");
+            if schema.options.len() > max {
+                preview.push_str(", ...");
+            }
+            preview
+        });
 
-                    if value.trim().is_empty() {
-                        // Required with no default; ask again.
-                        continue;
-                    }
+        // Prompt required options from schema first (best-effort "plug and play" for non-OAuth backends).
+        if let Some(schema) = schema.as_ref() {
+            let required = schema
+                .options
+                .iter()
+                .filter(|o| o.required)
+                .collect::<Vec<_>>();
 
-                    let needs_obscure = opt.is_password || should_obscure_option_key(&opt.name);
-                    if needs_obscure {
-                        let raw_prefix = "raw:";
-                        if value.to_ascii_lowercase().starts_with(raw_prefix) {
-                            value = value[raw_prefix.len()..].trim().to_string();
-                        } else {
-                            match obscure_with_rclone(&rclone, &value) {
-                                Ok(obscured) => value = obscured,
-                                Err(e) => {
-                                    app.auth_status = format!(
-                                        "Manual config failed (obscure {}): {}",
-                                        opt.name, e
-                                    );
-                                    app.log_error(format!(
-                                        "Manual config failed (obscure {}): {}",
-                                        opt.name, e
-                                    ));
-                                    return Ok(());
+            if required.is_empty() {
+                app.log_info(format!(
+                    "Provider {} has no required options; falling back to free-form option entry.",
+                    provider.short_name()
+                ));
+            } else {
+                for opt in required {
+                    loop {
+                        let default = opt.default_string();
+                        let blank_behavior = match default.as_deref() {
+                            Some(d) if !d.is_empty() => format!("Blank uses default: {}", d),
+                            _ => "Blank is not allowed for required options.".to_string(),
+                        };
+
+                        let hint = format!(
+                            "Required option: {}\n\n{}\n\n{}\n\nEnter submit | Esc cancel",
+                            opt.name,
+                            opt.help_text(),
+                            blank_behavior
+                        );
+
+                        let Some(mut value) =
+                            prompt_text_in_tui(app, terminal, "Required Option", &hint)?
+                        else {
+                            app.auth_status = "Manual configuration cancelled.".to_string();
+                            app.state = crate::ui::AppState::ProviderSelect;
+                            return Ok(());
+                        };
+
+                        if value.trim().is_empty() {
+                            if let Some(d) = default.as_deref() {
+                                if !d.is_empty() {
+                                    value = d.to_string();
                                 }
                             }
                         }
-                    }
 
-                    options.push((opt.name.clone(), value));
-                    break;
+                        if value.trim().is_empty() {
+                            // Required with no default; ask again.
+                            continue;
+                        }
+
+                        let needs_obscure = opt.is_password || should_obscure_option_key(&opt.name);
+                        if needs_obscure {
+                            let raw_prefix = "raw:";
+                            if value.to_ascii_lowercase().starts_with(raw_prefix) {
+                                value = value[raw_prefix.len()..].trim().to_string();
+                            } else {
+                                match obscure_with_rclone(&rclone, &value) {
+                                    Ok(obscured) => value = obscured,
+                                    Err(e) => {
+                                        app.auth_status = format!(
+                                            "Manual config failed (obscure {}): {}",
+                                            opt.name, e
+                                        );
+                                        app.log_error(format!(
+                                            "Manual config failed (obscure {}): {}",
+                                            opt.name, e
+                                        ));
+                                        return Ok(());
+                                    }
+                                }
+                            }
+                        }
+
+                        options.push((opt.name.clone(), value));
+                        break;
+                    }
                 }
             }
         }
-    }
 
-    loop {
-        let Some(key) = prompt_text_in_tui(
-            app,
-            terminal,
-            "Backend Option Key",
-            &format_option_key_hint(known_keys_preview.as_deref()),
-        )?
-        else {
-            app.auth_status = "Manual configuration cancelled.".to_string();
-            app.state = crate::ui::AppState::ProviderSelect;
-            return Ok(());
-        };
-        let key = key.trim().to_string();
-        if key.is_empty() {
-            break;
-        }
+        loop {
+            let Some(key) = prompt_text_in_tui(
+                app,
+                terminal,
+                "Backend Option Key",
+                &format_option_key_hint(known_keys_preview.as_deref()),
+            )?
+            else {
+                app.auth_status = "Manual configuration cancelled.".to_string();
+                app.state = crate::ui::AppState::ProviderSelect;
+                return Ok(());
+            };
+            let key = key.trim().to_string();
+            if key.is_empty() {
+                break;
+            }
 
-        let schema_opt = schema
-            .as_ref()
-            .and_then(|s| s.options.iter().find(|o| o.name.eq_ignore_ascii_case(&key)));
+            let schema_opt = schema
+                .as_ref()
+                .and_then(|s| s.options.iter().find(|o| o.name.eq_ignore_ascii_case(&key)));
 
-        let Some(mut value) = prompt_text_in_tui(
-            app,
-            terminal,
-            "Backend Option Value",
-            &format_option_value_hint(&key, schema_opt),
-        )?
-        else {
-            app.auth_status = "Manual configuration cancelled.".to_string();
-            app.state = crate::ui::AppState::ProviderSelect;
-            return Ok(());
-        };
+            let Some(mut value) = prompt_text_in_tui(
+                app,
+                terminal,
+                "Backend Option Value",
+                &format_option_value_hint(&key, schema_opt),
+            )?
+            else {
+                app.auth_status = "Manual configuration cancelled.".to_string();
+                app.state = crate::ui::AppState::ProviderSelect;
+                return Ok(());
+            };
 
-        let needs_obscure =
-            schema_opt.map(|o| o.is_password).unwrap_or(false) || should_obscure_option_key(&key);
-        if needs_obscure {
-            let raw_prefix = "raw:";
-            if value.to_ascii_lowercase().starts_with(raw_prefix) {
-                value = value[raw_prefix.len()..].trim().to_string();
+            let needs_obscure = schema_opt.map(|o| o.is_password).unwrap_or(false)
+                || should_obscure_option_key(&key);
+            if needs_obscure {
+                let raw_prefix = "raw:";
+                if value.to_ascii_lowercase().starts_with(raw_prefix) {
+                    value = value[raw_prefix.len()..].trim().to_string();
+                } else {
+                    match obscure_with_rclone(&rclone, &value) {
+                        Ok(obscured) => value = obscured,
+                        Err(e) => {
+                            app.auth_status =
+                                format!("Manual config failed (obscure {}): {}", key, e);
+                            app.log_error(format!("Manual config failed (obscure {}): {}", key, e));
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+
+            if let Some(existing) = options.iter_mut().find(|(k, _)| k == &key) {
+                existing.1 = value;
             } else {
-                match obscure_with_rclone(&rclone, &value) {
-                    Ok(obscured) => value = obscured,
-                    Err(e) => {
-                        app.auth_status = format!("Manual config failed (obscure {}): {}", key, e);
-                        app.log_error(format!("Manual config failed (obscure {}): {}", key, e));
-                        return Ok(());
-                    }
-                }
+                options.push((key, value));
             }
         }
 
-        if let Some(existing) = options.iter_mut().find(|(k, _)| k == &key) {
-            existing.1 = value;
-        } else {
-            options.push((key, value));
+        let options_ref: Vec<(&str, &str)> = options
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+
+        if let Err(e) = write_manual_remote(&config, &provider, &remote_name, &options_ref) {
+            app.auth_status = format!("Manual config failed (write remote): {}", e);
+            app.log_error(format!("Manual config failed (write remote): {}", e));
+            return Ok(());
         }
-    }
+        if !config.has_remote(&remote_name)? {
+            app.auth_status = format!("Remote {} was not created.", remote_name);
+            app.log_error(format!("Remote {} was not created.", remote_name));
+            return Ok(());
+        }
 
-    let options_ref: Vec<(&str, &str)> = options
-        .iter()
-        .map(|(k, v)| (k.as_str(), v.as_str()))
-        .collect();
+        app.remote.chosen = Some(remote_name.clone());
 
-    if let Err(e) = write_manual_remote(&config, &provider, &remote_name, &options_ref) {
-        app.auth_status = format!("Manual config failed (write remote): {}", e);
-        app.log_error(format!("Manual config failed (write remote): {}", e));
-        return Ok(());
-    }
-    if !config.has_remote(&remote_name)? {
-        app.auth_status = format!("Remote {} was not created.", remote_name);
-        app.log_error(format!("Remote {} was not created.", remote_name));
-        return Ok(());
-    }
+        // Track configured provider in case (best-effort: no user info).
+        if let Some(ref mut case) = app.forensics.case {
+            case.add_provider(crate::case::AuthenticatedProvider {
+                provider_id: provider.id.clone(),
+                provider_name: provider.display_name().to_string(),
+                remote_name: remote_name.clone(),
+                user_info: None,
+            });
+        }
 
-    app.remote.chosen = Some(remote_name.clone());
+        let runner = crate::rclone::RcloneRunner::from_extracted(binary)
+            .with_config(config.path())
+            .with_cancel_flag(app.shutdown.clone());
 
-    // Track configured provider in case (best-effort: no user info).
-    if let Some(ref mut case) = app.forensics.case {
-        case.add_provider(crate::case::AuthenticatedProvider {
-            provider_id: provider.id.clone(),
-            provider_name: provider.display_name().to_string(),
-            remote_name: remote_name.clone(),
-            user_info: None,
-        });
-    }
-
-    let runner = crate::rclone::RcloneRunner::new(binary.path())
-        .with_config(config.path())
-        .with_cancel_flag(app.shutdown.clone());
-
-    app.auth_status = "Testing connectivity...".to_string();
-    terminal.draw(|f| render_state(f, app))?;
-
-    // Retry connectivity up to 3 times with exponential backoff.
-    let max_retries: u32 = 3;
-    let mut connectivity = crate::rclone::test_connectivity(&runner, &remote_name)?;
-    let mut attempt: u32 = 1;
-    while !connectivity.ok && attempt <= max_retries && !runner.is_cancelled() {
-        let delay = crate::rclone::retry_delay(attempt - 1);
-        let msg = format!(
-            "Connectivity check failed (attempt {}/{}), retrying in {}s...",
-            attempt,
-            max_retries + 1,
-            delay.as_secs()
-        );
-        app.log_info(&msg);
-        app.auth_status = msg;
+        app.auth_status = "Testing connectivity...".to_string();
         terminal.draw(|f| render_state(f, app))?;
-        std::thread::sleep(delay);
-        connectivity = crate::rclone::test_connectivity(&runner, &remote_name)?;
-        attempt += 1;
-    }
 
-    if connectivity.ok {
-        app.log_info(format!(
-            "Connectivity OK ({} ms)",
-            connectivity.duration.as_millis()
-        ));
-    } else {
-        let err_msg = connectivity
-            .error
-            .unwrap_or_else(|| "Unknown error".to_string());
-        app.log_error(format!(
-            "Connectivity failed after {} attempts: {}",
-            attempt, err_msg
-        ));
-        app.auth_status = format!(
-            "Connectivity failed after {} attempts: {}",
-            attempt, err_msg
-        );
-    }
+        // Retry connectivity up to 3 times with exponential backoff.
+        let max_retries: u32 = 3;
+        let mut connectivity = crate::rclone::test_connectivity(&runner, &remote_name)?;
+        let mut attempt: u32 = 1;
+        while !connectivity.ok && attempt <= max_retries && !runner.is_cancelled() {
+            let delay = crate::rclone::retry_delay(attempt - 1);
+            let msg = format!(
+                "Connectivity check failed (attempt {}/{}), retrying in {}s...",
+                attempt,
+                max_retries + 1,
+                delay.as_secs()
+            );
+            app.log_info(&msg);
+            app.auth_status = msg;
+            terminal.draw(|f| render_state(f, app))?;
+            std::thread::sleep(delay);
+            connectivity = crate::rclone::test_connectivity(&runner, &remote_name)?;
+            attempt += 1;
+        }
 
-    if runner.is_cancelled() {
-        return Ok(());
+        if connectivity.ok {
+            app.log_info(format!(
+                "Connectivity OK ({} ms)",
+                connectivity.duration.as_millis()
+            ));
+        } else {
+            let err_msg = connectivity
+                .error
+                .unwrap_or_else(|| "Unknown error".to_string());
+            app.log_error(format!(
+                "Connectivity failed after {} attempts: {}",
+                attempt, err_msg
+            ));
+            app.auth_status = format!(
+                "Connectivity failed after {} attempts: {}",
+                attempt, err_msg
+            );
+        }
+
+        if runner.is_cancelled() {
+            return Ok(());
+        }
+        list_next = true;
+        Ok(())
+    })?;
+    if list_next {
+        crate::ui::flows::list::perform_list_flow(app, terminal)?;
     }
-    crate::ui::flows::list::perform_list_flow(app, terminal)
+    Ok(())
 }
 
 #[cfg(test)]

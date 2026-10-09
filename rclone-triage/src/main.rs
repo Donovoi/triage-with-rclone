@@ -108,7 +108,7 @@ fn run_cli(
 
         println!("Starting rclone Web GUI at {}", addr);
         let mut web = start_web_gui(
-            binary.path(),
+            binary,
             Some(config.path()),
             port,
             args.web_gui_user.as_deref(),
@@ -305,7 +305,7 @@ fn run_cli(
         println!("Authenticating {}...", display_name);
         let config = RcloneConfig::for_case(&case.output_dir)?;
         app_guard.track_env_value("RCLONE_CONFIG", config.original_env());
-        let runner = RcloneRunner::new(binary.path())
+        let runner = RcloneRunner::from_extracted(binary)
             .with_config(config.path())
             .with_cancel_flag(app_guard.shutdown.clone());
 
@@ -666,7 +666,7 @@ fn cli_list_remote(
     if matching[0].remote_type.is_empty() {
         bail!("Listing remote has no backend type");
     }
-    let runner = RcloneRunner::new(binary.path())
+    let runner = RcloneRunner::from_extracted(binary)
         .with_config(config.path())
         .with_cancel_flag(app_guard.shutdown.clone());
     // Canonicalize the existing parent before tempfile creates its path. On
@@ -739,7 +739,7 @@ fn cli_download_from_queue(
     let working_config = snapshot_config(&source_config, &dirs.config)?;
     let config = RcloneConfig::open_existing(&working_config)?;
     app_guard.track_env_value("RCLONE_CONFIG", config.original_env());
-    let runner = RcloneRunner::new(binary.path())
+    let runner = RcloneRunner::from_extracted(binary)
         .with_config(config.path())
         .with_cancel_flag(app_guard.shutdown.clone());
     let known_remotes: Vec<String> = config
@@ -857,7 +857,7 @@ fn cli_manual_config(
 ) -> Result<()> {
     use rclone_triage::providers::schema::provider_schema_from_rclone;
 
-    let rclone_runner = RcloneRunner::new(binary.path());
+    let rclone_runner = RcloneRunner::from_extracted(binary);
     let schema = provider_schema_from_rclone(&rclone_runner, backend)
         .ok()
         .flatten();
