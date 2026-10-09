@@ -31,7 +31,7 @@ FILES = {
 }
 METADATA = "/storage/v1/b/synthetic-bucket/o/README-synthetic.txt?alt=json&prettyPrint=false"
 MEDIA = "/media/README-synthetic.txt"
-CALLBACK = "http://localhost:53682/"
+CALLBACK = "http://127.0.0.1:53682/"
 SCOPE = "https://www.googleapis.com/auth/devstorage.read_write"
 README_SHA256 = "1e901527b93ae84dc9d95a8aa76bbc12d7d77dbf8ab449333c172cfc909c639e"
 MAX_REPLY = 16384
@@ -195,7 +195,7 @@ class GcsOAuthWireTests(unittest.TestCase):
         self.assertEqual(json.loads(body), {"status": "synthetic_authorization"})
         redirect = urlsplit(headers["Location"])
         self.assertTrue((redirect.scheme, redirect.netloc, redirect.path, redirect.fragment)
-                        == ("http", "localhost:53682", "/", ""), "redirect authority changed")
+                        == ("http", "127.0.0.1:53682", "/", ""), "redirect authority changed")
         return parse_qs(redirect.query, keep_blank_values=True, strict_parsing=True)
 
     def form(self, state, *, basic=False, refresh=False):

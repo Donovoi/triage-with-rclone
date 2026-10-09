@@ -30,7 +30,9 @@ BASE = Path('/opt/fixture')
 WORK = Path('/work')
 UID = 10001
 CALLBACK_PORT = 53682
-CALLBACK_URI = 'http://localhost:53682/'
+# rclone v1.75.1 GCS storageConfig uses oauthutil.RedirectURL (numeric loopback),
+# not RedirectLocalhostURL. Keep this exact across authorize, callback and exchange.
+CALLBACK_URI = 'http://127.0.0.1:53682/'
 MEMBER = 'README-synthetic.txt'
 FILES = {MEMBER: b'Synthetic provider protocol fixture. No account or user data.\n',
          'nested/space name.txt': b'Nested synthetic payload.\n',
@@ -591,9 +593,9 @@ def run_case(binary, manifest, mode):
                     values.update(error='access_denied', error_description='synthetic consent denied')
                 else:
                     values['code'] = state.alternate_code if mode == 'invalid_code' else state.code
-                route = validate_location(location, 'http', 'localhost:53682', '/', values)
+                route = validate_location(location, 'http', '127.0.0.1:53682', '/', values)
                 report['checks']['authorize'] = True
-                status, location, body = request(CALLBACK_PORT, route, 'localhost:53682')
+                status, location, body = request(CALLBACK_PORT, route, '127.0.0.1:53682')
                 report['observations']['callback_requests'] += 1
                 require(status == (400 if mode in ('wrong_state', 'blank_state', 'consent_denied') else 200)
                         and location is None and body, 'callback_response')

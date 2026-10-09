@@ -16,7 +16,9 @@ from urllib.parse import urlencode
 from fixture_pcloud import PCloudState, PCloudError, _PCloudHandler
 from fixture_tls import BoundedHttpsServer, FixtureCertificates, TlsLimits
 
-CALLBACK = "http://localhost:53682/"
+# GCS storageConfig in rclone v1.75.1 uses oauthutil.RedirectURL, not its
+# distinct RedirectLocalhostURL; authorize and both code forms must agree.
+CALLBACK = "http://127.0.0.1:53682/"
 SCOPE = "https://www.googleapis.com/auth/devstorage.read_write"
 MEMBER = "README-synthetic.txt"
 BUCKET = "synthetic-bucket"

@@ -173,7 +173,7 @@ class DriverHarness:
         secret = "i" * 32 if self.state.mode == "wrong_client_secret" else "b" * 32
         fields = ({"grant_type": "refresh_token", "refresh_token": "e" * 32} if refresh else
                   {"grant_type": "authorization_code", "code": "h" * 32 if self.state.mode == "invalid_code" else "c" * 32,
-                   "redirect_uri": "http://localhost:53682/"})
+                   "redirect_uri": "http://127.0.0.1:53682/"})
         if self.fault not in ("omit_basic", "omit_refresh_basic") or self.fault == "omit_refresh_basic" and not refresh:
             status, _, _ = self.wire("POST", "/oauth/token", urlencode(sorted(fields.items())).encode(),
                 "Basic " + base64.b64encode(("a" * 32 + ":" + secret).encode()).decode())
@@ -241,16 +241,29 @@ class DriverHarness:
         if port == 12345:
             assert host == "127.0.0.1:12345" and context == "owned-ca"
             if self.fault == "omit_authorize":
-                return 302, "http://localhost:53682/?code=" + "c" * 32 + "&state=" + ALT, b"synthetic redirect"
+                return 302, "http://127.0.0.1:53682/?code=" + "c" * 32 + "&state=" + ALT, b"synthetic redirect"
             return self.wire("GET", path)
         assert port == 53682 and context is None
         if path.startswith("/auth?"):
             assert path == "/auth?state=" + STATE and host == "127.0.0.1:53682"
-            fields = {"access_type": "offline", "client_id": "a" * 32, "redirect_uri": "http://localhost:53682/",
+            # Literal oracle from pinned GCS storageConfig -> oauthutil.RedirectURL;
+            # deliberately independent of the probe/fixture callback constants.
+            fields = {"access_type": "offline", "client_id": "a" * 32, "redirect_uri": "http://127.0.0.1:53682/",
                       "response_type": "code", "scope": "https://www.googleapis.com/auth/devstorage.read_write", "state": STATE}
+            if self.fault == "callback_hostname_alias":
+                fields["redirect_uri"] = "http://localhost:53682/"
+            elif self.fault == "callback_wrong_port":
+                fields["redirect_uri"] = "http://127.0.0.1:53683/"
+            elif self.fault == "authorize_missing_field":
+                del fields["access_type"]
+            elif self.fault == "authorize_extra_field":
+                fields["extra"] = "1"
             authority = "outside.invalid" if self.fault == "redirect_escape" else "127.0.0.1:12345"
-            return 307, "https://" + authority + "/oauth/authorize?" + urlencode(sorted(fields.items())), b"redirect"
-        assert host == "localhost:53682"
+            query = urlencode(sorted(fields.items()))
+            if self.fault == "authorize_duplicate_field":
+                query += "&state=" + STATE
+            return 307, "https://" + authority + "/oauth/authorize?" + query, b"redirect"
+        assert host == "127.0.0.1:53682"
         values = parse_qs(path.partition("?")[2], keep_blank_values=True)
         mode = self.state.mode
         if mode in ("wrong_state", "blank_state"):
@@ -362,6 +375,24 @@ class DriverHarness:
 
 
 class DriverOrchestrationTests(unittest.TestCase):
+    def test_authorize_query_drift_fails_before_https_and_reaps_owned_child(self):
+        for fault in ("callback_hostname_alias", "callback_wrong_port", "authorize_missing_field",
+                      "authorize_extra_field", "authorize_duplicate_field"):
+            with self.subTest(fault=fault), tempfile.TemporaryDirectory() as directory:
+                h = DriverHarness(directory, fault)
+                result = h.case("positive")
+                self.assertFalse(result["success"])
+                self.assertEqual(result["errors"], ["url_query_mismatch"])
+                self.assertEqual(result["observations"], {"native_commands": 3, "callback_requests": 1,
+                                                        "https_requests": 0, "http_transactions": 1})
+                self.assertFalse(result["checks"]["authorize"])
+                self.assertFalse(result["checks"]["token_exchange"])
+                self.assertEqual(h.states[0].events, [])
+                self.assertFalse(h.states[0].token_issued)
+                self.assertTrue(all(result["cleanup"].values()))
+                self.assertTrue(all(child.poll() is not None for child in h.processes.values()))
+                self.assertFalse(any(h.work.iterdir()))
+
     def test_suite_stops_after_real_failed_case_and_reaps_its_children(self):
         with tempfile.TemporaryDirectory() as directory:
             h = DriverHarness(directory, "generic_denial", fault_mode="invalid_code")

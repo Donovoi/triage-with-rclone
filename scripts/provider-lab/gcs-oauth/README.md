@@ -1,7 +1,7 @@
 # GCS OAuth lifecycle experiment
 
-This is an **unqualified source draft** for pinned rclone 1.75.1. No hosted native
-run has validated it. Every receipt remains `ledger_eligible: false`; existing
+This is an **unqualified experiment** for pinned rclone 1.75.1. Its first hosted
+native run failed; it has not earned coverage. Every receipt remains `ledger_eligible: false`; existing
 GCS coverage policy and static-token evidence are unchanged.
 
 The ten fresh-config cases are: positive callback/code exchange and README read;
@@ -61,7 +61,7 @@ Mocked checks can run without sockets or native processes:
 python -B -m unittest discover -s scripts/tests -p 'test_provider_gcs_oauth*.py'
 ```
 
-Local validation: 33 component/pure checks and nine full mocked orchestration
+Local validation: 35 component/pure checks and ten full mocked orchestration
 checks pass. The orchestration suite traverses all ten driver cases and the
 supervisor's staging, validation, reporting and cleanup using scripted external
 boundaries. It checks independent transcripts/config states and injected missing
@@ -69,12 +69,23 @@ stages, wrong tokens/options, denial request mismatches, failed cancellation,
 uncertain cleanup and malformed receipts. It exposed and fixed a denied-refresh
 verdict that did not bind the returned RC input to the exact copy request.
 
-Twelve hosted-only adversarial HTTP/TLS test methods pass on Linux. The first
-Windows run failed its final cleanup-verification check in every method; that
-failure remains under investigation. The tests skip outside a GitHub-hosted
-runner. These component results do not establish native rclone compatibility.
-Remaining gates are review, passing wire tests on both hosts, then bounded hosted
-native validation of request shapes, config serialization, error causes, timing
+Twelve hosted-only adversarial HTTP/TLS test methods passed on both Linux and
+Windows at commit `b00c959`. The initial Windows failure led to separate cleanup
+diagnostics and a five-second refusal check; the precise cause of that earlier
+failure was not established. Only an explicit refused connection passes.
+The tests skip outside a GitHub-hosted runner and do not establish native rclone
+compatibility.
+
+The first [native experiment](https://github.com/Donovoi/triage-with-rclone/actions/runs/37896906086)
+failed the positive case before authorization with `url_query_mismatch`. All
+reported cleanup checks passed. The fixture expected `localhost`, while pinned
+GCS uses the distinct numeric `127.0.0.1` callback. This revision corrects that
+contract and tests rejection of the old hostname, wrong port and missing,
+additional or duplicate query fields. The corrected native flow remains
+unverified; the other nine native cases have not run.
+
+Remaining gates are passing checks on this revision, then one bounded hosted
+native run covering request shapes, config serialization, error causes, timing
 and cleanup. Before ledger integration, define a separate strict lifecycle
 receipt mode and importer tests. Do not convert historical static-token receipts
 into OAuth evidence.
