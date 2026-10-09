@@ -13,8 +13,10 @@ main 994970f (same UI blobs as the reviewed 23a1e0d protocol).
 from __future__ import annotations
 
 import functools
+import json
 import re
 import time
+from types import SimpleNamespace
 
 
 PHASES = (
@@ -83,6 +85,65 @@ def _panel(screen, title):
         return None
     left, top, right, bottom = matches[0]
     return tuple((row, left+1, lines[row][left+1:right]) for row in range(top+1, bottom))
+
+
+def navigation_failure_diagnostic(phase, screen):
+    """Failure-only fixed facts from one bounded snapshot; never screen text.
+
+    Source: prompt.rs and manual_config.rs before the first Remote Name prompt.
+    Missing or malformed screen state is unknown, not a new navigation result.
+    """
+    try:
+        if type(phase) is not str or phase not in PHASES:
+            return
+        value = dict(phase=phase, screen_ready=None, screen_pending=None,
+                     remote_title=None, remote_panel=None, remote_hint=None,
+                     remote_empty_echo=None, remote_zero_length=None, manual_status=None,
+                     manual_extract_failed=None, manual_config_failed=None,
+                     manual_remote_name_failed=None)
+        try:
+            ready, pending = screen.ready, screen.pending
+            if type(ready) is bool and type(pending) is bool:
+                value.update(screen_ready=ready, screen_pending=pending)
+            columns, rows = screen.columns, screen.rows
+            if (ready is True and pending is False and type(columns) is int and
+                    type(rows) is int and 80 <= columns <= 120 and 24 <= rows <= 34):
+                lines = screen.lines()
+                if (type(lines) is tuple and len(lines) == rows and
+                        all(type(line) is str and len(line) == columns and
+                            all(ord(char) >= 32 and ord(char) != 127 for char in line)
+                            for line in lines)):
+                    snapshot = SimpleNamespace(lines=lambda: lines)
+                    remote = _panel(snapshot, re.escape("Remote Name"))
+                    auth = _panel(snapshot, "Authentication")
+                    remote_lines = [text.strip() for _, _, text in remote or ()]
+                    auth_lines = [text.strip() for _, _, text in auth or ()]
+                    value.update(
+                        remote_title=any(re.search("\u250cRemote Name[\u2500\u2510]", line) is not None
+                                         for line in lines),
+                        remote_panel=remote is not None,
+                        remote_hint="Enter remote name." in remote_lines,
+                        remote_empty_echo=remote_lines.count("> <empty>") == 1,
+                        remote_zero_length=remote_lines.count("Len: 0 char(s)") == 1,
+                        manual_status="Manual backend configuration" in auth_lines,
+                        manual_extract_failed=any(line.startswith("Manual config failed (extract):")
+                                                  for line in auth_lines),
+                        manual_config_failed=any(line.startswith("Manual config failed (config):")
+                                                 for line in auth_lines),
+                        manual_remote_name_failed=any(line.startswith("Manual config failed (remote name):")
+                                                      for line in auth_lines))
+        except Exception:
+            pass
+        # Only phase plus locally generated nullable booleans enter stdout.
+        if any(item is not None and type(item) is not bool
+               for key, item in value.items() if key != "phase"):
+            return
+        line = "application_tui_navigation_failure=" + json.dumps(
+            value, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+        if len(line.encode("ascii")) <= 1024:
+            print(line, flush=True)
+    except Exception:
+        pass
 
 
 def _has_prompt(screen):
@@ -325,8 +386,16 @@ class Navigator:
         try:
             self.controller.wait(predicate, seconds=seconds, observe=observe)
         except NavigationError:
+            try:
+                navigation_failure_diagnostic(phase, self.controller.screen)
+            except Exception:
+                pass
             raise
         except Exception:
+            try:
+                navigation_failure_diagnostic(phase, self.controller.screen)
+            except Exception:
+                pass
             raise NavigationError("navigation_timeout") from None
 
     def _key(self, key):
