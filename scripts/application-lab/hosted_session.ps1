@@ -35,7 +35,7 @@ try {
             }
             'start' {
                 if (-not $ready -or $null -ne $session) { throw 'protocol_invalid' }
-                [TriageApplicationLab.HostedProtocol]::Keys($request, 'action,app_path,app_sha256,args,case_root,environment,transcript_path,max_output_bytes,deadline_ms')
+                [TriageApplicationLab.HostedProtocol]::Keys($request, 'action,app_path,app_sha256,args,case_root,environment,transcript_path,max_output_bytes,deadline_ms,max_runtime_processes')
                 $session = [TriageApplicationLab.HostedConPtySession]::Start(
                     [TriageApplicationLab.HostedProtocol]::Text($request, 'app_path'),
                     [TriageApplicationLab.HostedProtocol]::Text($request, 'app_sha256'),
@@ -44,7 +44,8 @@ try {
                     [TriageApplicationLab.HostedProtocol]::EnvironmentMap($request),
                     [TriageApplicationLab.HostedProtocol]::Text($request, 'transcript_path'),
                     [TriageApplicationLab.HostedProtocol]::Integer($request, 'max_output_bytes'),
-                    [TriageApplicationLab.HostedProtocol]::Integer($request, 'deadline_ms'))
+                    [TriageApplicationLab.HostedProtocol]::Integer($request, 'deadline_ms'),
+                    [TriageApplicationLab.HostedProtocol]::RuntimeProcessLimit($request))
                 $result = $session.Poll()
             }
             'close_ready' {
@@ -86,7 +87,7 @@ try {
     if ($null -ne $session) { $result = $session.Abort() }
     else {
         $result = @{ schema_version=1; action='invalid'; ok=$false; state='finished'; app_exit_code=$null;
-            runtime_image_observed=$false; runtime_sha256=$null; ctrl_c_sent=$false; output_bytes=0;
+            runtime_image_observed=$false; runtime_sha256=$null; runtime_process_count=$null; ctrl_c_sent=$false; output_bytes=0;
             output_limit_exceeded=$false; forced_termination=$false; app_exited=$false;
             observed_children_exited=$false; job_zero_confirmed=$false; reader_joined=$false;
             conpty_closed=$false; errors=@('protocol_invalid') }

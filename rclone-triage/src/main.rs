@@ -74,12 +74,10 @@ fn main() -> Result<()> {
         return collect_debug_logs(&args);
     }
 
-    // Extract embedded rclone
+    // ExtractedBinary owns identity-checked runtime cleanup. Do not also register
+    // its paths with AppGuard: a path-only fallback could delete a replacement
+    // after the runtime owner's cleanup correctly refuses it.
     let binary = embedded::ExtractedBinary::extract()?;
-    app_guard.track_file(binary.path());
-    if let Some(dir) = binary.temp_dir() {
-        app_guard.track_dir(dir);
-    }
 
     // Initialize session
     let case = Case::new(&args.name, args.output_dir.clone())?;
@@ -918,18 +916,6 @@ impl AppGuard {
         Self {
             cleanup: Arc::new(Mutex::new(Cleanup::new())),
             shutdown: Arc::new(AtomicBool::new(false)),
-        }
-    }
-
-    fn track_file(&self, path: impl AsRef<std::path::Path>) {
-        if let Ok(mut cleanup) = self.cleanup.lock() {
-            cleanup.track_file(path);
-        }
-    }
-
-    fn track_dir(&self, path: impl AsRef<std::path::Path>) {
-        if let Ok(mut cleanup) = self.cleanup.lock() {
-            cleanup.track_dir(path);
         }
     }
 

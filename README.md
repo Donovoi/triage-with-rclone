@@ -28,7 +28,7 @@ A new nightly is published after each merged PR passes the required checks. Buil
 
 See [test status and known gaps](rclone-triage/tests/provider_testing.md) for the detailed results.
 
-Current work: protect saved case files and check downloads, provider sign-in and cleanup.
+Current work: finish Windows download and cleanup tests, then verify provider sign-in.
 
 ## What comes next
 
