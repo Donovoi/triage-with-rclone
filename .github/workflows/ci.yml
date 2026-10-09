@@ -574,6 +574,12 @@ jobs:
           cache-on-failure: true
       - name: Prepare matching verified runtime
         run: ../scripts/download-rclone.ps1 -Architecture '${{ matrix.arch }}'
+      - name: Inspect in-box Windows trace tool metadata
+        if: ${{ matrix.arch == 'arm64' }}
+        timeout-minutes: 1
+        run: |
+          ../scripts/tests/test_windows_trace_metadata.ps1
+          ../scripts/windows-trace-tool-metadata.ps1
       - name: Offline tests and local transfer regressions on the target
         run: cargo test --locked --release --target '${{ matrix.target }}' -- --test-threads=1
       - name: Target runtime provider catalog
