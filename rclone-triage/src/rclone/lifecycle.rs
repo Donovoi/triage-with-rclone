@@ -34,7 +34,17 @@ pub(crate) fn uncertain(error: anyhow::Error) -> anyhow::Error {
 }
 
 pub(crate) fn cleanup_runtime(binary: &mut ExtractedBinary) -> Result<()> {
-    binary.cleanup().map_err(uncertain)
+    finish_runtime_cleanup(binary.cleanup(), &mut std::io::stderr().lock())
+}
+
+fn finish_runtime_cleanup(result: Result<()>, writer: &mut impl std::io::Write) -> Result<()> {
+    result.map_err(|error| {
+        crate::embedded::write_runtime_cleanup_diagnostic(
+            writer,
+            crate::embedded::runtime_cleanup_diagnostic(&error),
+        );
+        uncertain(error)
+    })
 }
 
 pub(crate) fn cleanup_uncertain(error: &anyhow::Error) -> bool {
@@ -59,6 +69,63 @@ pub(crate) fn complete<T>(operation: Result<T>, cleanup: Result<()>) -> Result<T
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cleanup_success_emits_nothing() {
+        let mut written = Vec::new();
+        finish_runtime_cleanup(Ok(()), &mut written).unwrap();
+        assert!(written.is_empty());
+    }
+
+    #[test]
+    fn cleanup_failure_emits_only_finite_fields_and_preserves_the_error_chain() {
+        for already_uncertain in [false, true] {
+            let original = anyhow::Error::new(std::io::Error::other("private-canary/path"))
+                .context("private-context-canary");
+            let original = if already_uncertain {
+                uncertain(original)
+            } else {
+                original
+            };
+            let mut written = Vec::new();
+            let error = finish_runtime_cleanup(Err(original), &mut written).unwrap_err();
+            assert_eq!(written, b"runtime_cleanup_diagnostic={\"stage\":\"identity\",\"kind\":\"other\",\"os_code\":null}\n");
+            assert!(written.len() <= 113);
+            assert!(cleanup_uncertain(&error));
+            assert_eq!(error.root_cause().to_string(), "private-canary/path");
+            assert!(error.chain().any(|cause| cause.is::<std::io::Error>()));
+            assert!(format!("{error:#}").contains("private-context-canary"));
+            assert_eq!(
+                error
+                    .chain()
+                    .filter(|cause| cause.is::<CleanupUncertain>())
+                    .count(),
+                1
+            );
+        }
+    }
+
+    #[test]
+    fn diagnostic_writer_failure_cannot_replace_cleanup_failure() {
+        struct FailedWriter;
+        impl std::io::Write for FailedWriter {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::other("private-writer-canary"))
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Err(std::io::Error::other("private-flush-canary"))
+            }
+        }
+        let original = anyhow::Error::new(std::io::Error::from_raw_os_error(32));
+        let error = finish_runtime_cleanup(Err(original), &mut FailedWriter).unwrap_err();
+        assert!(cleanup_uncertain(&error));
+        let source = error
+            .chain()
+            .find_map(|cause| cause.downcast_ref::<std::io::Error>())
+            .unwrap();
+        assert_eq!(source.raw_os_error(), Some(32));
+        assert!(!format!("{error:#}").contains("writer-canary"));
+    }
 
     #[test]
     fn ordinary_startup_or_persistence_failure_does_not_imply_uncertain_cleanup() {

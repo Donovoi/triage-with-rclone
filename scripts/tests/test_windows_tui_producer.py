@@ -33,7 +33,7 @@ class ProducerFlowTests(unittest.TestCase):
         self.fixtures = []
         self.config = types.SimpleNamespace(data=b"config")
         self.removed = self.mock(P.H, "remove_owned")
-        self.mock(P.H, "prepare")
+        self.prepared = self.mock(P.H, "prepare")
         self.mock(P.H, "identity", return_value=(1, 2))
         self.mock(P.H, "create_private_roots", return_value={})
         self.mock(P.H, "private_directory")
@@ -143,7 +143,28 @@ class ProducerFlowTests(unittest.TestCase):
         self.assertTrue(all(result["checks"].values()))
         self.nav.wait_main.assert_called_once_with()
         self.assertEqual(self.listing.call_count, 2)
+        self.prepared.assert_called_with(self.root, P.ALIASES["manual_acquisition"], "Verify")
+        self.assertTrue(result["checks"]["process_cleanup"])
+        self.assertTrue(result["checks"]["temp_cleanup"])
         self.removed.assert_called_once()
+
+    def test_uncertain_final_verify_retains_case_and_clears_process_proof(self):
+        def prepare(_suite, _alias, action="Create"):
+            if action == "Verify":
+                raise RuntimeError("private verify helper uncertainty")
+        self.prepared.side_effect = prepare
+        result = self.execute()
+        self.assertTrue(self.finished)
+        self.bridge.close.assert_called_once_with()
+        self.prepared.assert_called_with(self.root, P.ALIASES["manual_acquisition"], "Verify")
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["failure_code"], "cleanup_failed")
+        self.assertEqual(result["failure_phase"], "case_cleanup")
+        self.assertFalse(result["checks"]["process_cleanup"])
+        self.assertFalse(result["checks"]["temp_cleanup"])
+        self.assertTrue(result["checks"]["fixture_cleanup"])
+        self.removed.assert_not_called()
+        self.assertNotIn("private verify helper uncertainty", str(result))
 
     def test_active_cancellation_requires_partial_runtime_and_manifest(self):
         result = self.execute("escape_cancellation")
