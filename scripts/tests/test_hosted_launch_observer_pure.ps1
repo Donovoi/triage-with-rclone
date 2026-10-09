@@ -59,6 +59,8 @@ try {
     foreach ($name in @('Start', 'StartSource', 'StartTui')) {
         Check ([TriageApplicationLab.HostedConPtySession].GetMethod($name).GetParameters().Count -eq 9)
     }
+    $diagnosticMethod = [TriageApplicationLab.HostedConPtySession].GetMethod('LaunchFailureDiagnostic')
+    Check ($diagnosticMethod.GetParameters().Count -eq 0 -and $diagnosticMethod.ReturnType -eq [Collections.Generic.Dictionary[string,object]])
 
     $root = 'C:\owned\case'
     Check ([TriageApplicationLab.HostedLaunchState]::RuntimeTempPath($root) -ceq 'C:\owned\case\temp')
@@ -73,6 +75,48 @@ try {
     foreach ($limits in @(@(0, 1), @(5, 1), @(1, 0), @(1, 33))) {
         Reject { [TriageApplicationLab.HostedLaunchState]::new($limits[0], $limits[1]) }
     }
+    # Only exact known location categories escape; a basename or common prefix
+    # never blesses an unexpected process, and no classification grants admission.
+    $application = 'C:\owned\case\application.exe'
+    $systemDirectory = 'C:\Windows\System32'
+    $roleCases = @(
+        @($application, 'application_path'),
+        @('C:\owned\case\APPLICATION.EXE', 'application_path'),
+        @('C:\owned\case\temp\rclone-triage-launch1\rclone.exe', 'runtime_path'),
+        @('C:\Windows\System32\conhost.exe', 'system_console_host'),
+        @('C:\WINDOWS\SYSTEM32\CONHOST.EXE', 'system_console_host'),
+        @('C:\owned\case\conhost.exe', 'other'),
+        @('C:\Windows\System32-other\conhost.exe', 'other'),
+        @('C:\Windows\System32\conhost.exe.other', 'other'),
+        @('C:\owned\case\temp\other\rclone.exe', 'other'),
+        @('C:\owned\case-other\application.exe', 'other'),
+        @('C:\outside\private-path-or-secret.exe', 'other'),
+        @('C:\owned\case\temp\rclone-triage-one\..\rclone.exe', 'unavailable'),
+        @('relative.exe', 'unavailable'), @('', 'unavailable'),
+        @("C:\owned\case\bad`nname.exe", 'unavailable')
+    )
+    foreach ($item in $roleCases) {
+        Check ([TriageApplicationLab.HostedLaunchState]::FailureImageRole($root, $application, $systemDirectory, $item[0]) -ceq $item[1])
+    }
+    $expectedKeys = @('schema_version', 'event_ordinal', 'image_role', 'owned_job', 'image_path_matches') | Sort-Object
+    foreach ($role in @('application_path', 'runtime_path', 'system_console_host', 'other', 'unavailable')) {
+        $record = [TriageApplicationLab.HostedLaunchState]::CreateFailureDiagnostic(57, $role, $null, $null)
+        Check (($record.Keys | Sort-Object) -join ',' -ceq ($expectedKeys -join ','))
+        Check ($record.schema_version -is [int] -and $record.schema_version -eq 1 -and $record.event_ordinal -is [int] -and $record.event_ordinal -eq 57)
+        Check ($record.image_role -ceq $role -and $null -eq $record.owned_job -and $null -eq $record.image_path_matches)
+    }
+    foreach ($flags in @(@($true, $false), @($false, $true))) {
+        $record = [TriageApplicationLab.HostedLaunchState]::CreateFailureDiagnostic(4096, 'other', $flags[0], $flags[1])
+        Check ($record.owned_job -is [bool] -and $record.owned_job -eq $flags[0] -and $record.image_path_matches -is [bool] -and $record.image_path_matches -eq $flags[1])
+    }
+    foreach ($ordinal in @(0, -1, 4097)) { Reject { [TriageApplicationLab.HostedLaunchState]::CreateFailureDiagnostic($ordinal, 'other', $null, $null) } }
+    foreach ($role in @('', 'Runtime_path', 'conhost.exe', 'private-path-or-secret')) {
+        Reject { [TriageApplicationLab.HostedLaunchState]::CreateFailureDiagnostic(1, $role, $null, $null) }
+    }
+    $state = State 1 1; Create $state 10 100 $false; Create $state 20 200 $true
+    $state.Begin(3, 30, 300); Reject { $state.Create($true) }
+    $null = [TriageApplicationLab.HostedLaunchState]::CreateFailureDiagnostic($state.Events, 'system_console_host', $true, $true)
+    Check ($state.Failure -ceq 'debug_launch_limit' -and $state.Launches -eq 2 -and $state.Peak -eq 2 -and -not $state.Qualified)
     # A late creator cannot admit Create/Resume after Finish has stopped startup.
     # Stopping is monotone and also applies before a root process is registered.
     $state = [TriageApplicationLab.HostedLaunchState]::new(1, 1)

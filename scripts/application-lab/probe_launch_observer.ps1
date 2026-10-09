@@ -105,6 +105,31 @@ function New-LaunchDiagnostic($Value,[int]$Expected,[string]$Sha256) {
     $row.finished=$Value.state -ceq 'finished'
     return $row
 }
+function Convert-LaunchFailureDiagnostic($Value) {
+    # This separate diagnostic never supplies launch, acceptance or cleanup proof.
+    $row=[ordered]@{ schema_version=1; diagnostic_valid=$false; event_ordinal=$null;
+        image_role='unavailable'; owned_job=$null; image_path_matches=$null }
+    $names=@('schema_version','event_ordinal','image_role','owned_job','image_path_matches')
+    if ($Value -isnot [Collections.IDictionary] -or $Value.Count -ne $names.Count) { return $row }
+    foreach ($name in $names) { if (-not ([Collections.IDictionary]$Value).Contains($name)) { return $row } }
+    if ($Value.schema_version -isnot [int] -or $Value.schema_version -ne 1 -or
+        $Value.event_ordinal -isnot [int] -or $Value.event_ordinal -lt 1 -or $Value.event_ordinal -gt 4096 -or
+        $Value.image_role -isnot [string] -or
+        $Value.image_role -cnotin @('application_path','runtime_path','system_console_host','other','unavailable')) { return $row }
+    foreach ($name in @('owned_job','image_path_matches')) {
+        if ($null -ne $Value[$name] -and $Value[$name] -isnot [bool]) { return $row }
+    }
+    $row.diagnostic_valid=$true
+    foreach ($name in @('event_ordinal','image_role','owned_job','image_path_matches')) { $row[$name]=$Value[$name] }
+    return $row
+}
+function Get-LaunchFailureDiagnostic($Session) {
+    $value=$null
+    if ($null -ne $Session) {
+        try { $value=$Session.LaunchFailureDiagnostic() } catch { $value=$null }
+    }
+    return Convert-LaunchFailureDiagnostic $value
+}
 function New-LaunchChecks([bool]$Value) {
     $checks=[ordered]@{}
     foreach ($name in @('source_cwd','descendant_cwd','source_preserved','launch_count_exact','launch_hash_exact','peak_one',
@@ -155,12 +180,19 @@ function New-LaunchReport([Collections.IDictionary]$Cases,[Collections.IDictiona
         cases=$closed; source_sha256=$hashes; inert_sha256=$InertSha; errors=$errors;
         production_application_executed=$false; provider_accepted=$false; application_accepted=$false; live_image_observation=$false }
 }
-function Read-LaunchSource([string]$Path) {
+function Get-LaunchSourceLimit($Name) {
+    if ($Name -isnot [string]) { throw 'setup_failed' }
+    if ($Name -ceq 'session_helper') { return 131072 }
+    if ($Name -cin @('probe','source_probe','private_creator')) { return 65536 }
+    throw 'setup_failed'
+}
+function Read-LaunchSource([string]$Path,$Name) {
     # Bootstrap bounded source read; the reviewed helper is extracted only afterward.
+    $limit=Get-LaunchSourceLimit $Name
     if (([IO.File]::GetAttributes($Path) -band ([IO.FileAttributes]::Directory -bor [IO.FileAttributes]::ReparsePoint)) -ne 0) { throw 'setup_failed' }
     $file=[IO.FileStream]::new($Path,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
     try {
-        if ($file.Length -le 0 -or $file.Length -gt 262144) { throw 'setup_failed' }
+        if ($file.Length -le 0 -or $file.Length -gt $limit) { throw 'setup_failed' }
         $bytes=[byte[]]::new([int]$file.Length); $offset=0
         while ($offset -lt $bytes.Length) { $n=$file.Read($bytes,$offset,$bytes.Length-$offset); if ($n -eq 0) { throw 'setup_failed' }; $offset+=$n }
         if ($file.ReadByte() -ne -1) { throw 'setup_failed' }; return ,$bytes
@@ -283,6 +315,7 @@ public static class InertLaunchObserverProbe {
     }
     if (-not $sessionClosed -and $null -ne $sha) {
         [Console]::Out.WriteLine('launch_observer_failure='+(New-LaunchDiagnostic $final $Count $sha | ConvertTo-Json -Depth 3 -Compress))
+        [Console]::Out.WriteLine('launch_observer_create_failure='+(Get-LaunchFailureDiagnostic $session | ConvertTo-Json -Depth 3 -Compress))
     }
     return New-LaunchCase $checks $failure $cleanup ($null -ne $sandbox -and -not $cleanup)
 }
@@ -298,7 +331,7 @@ $script:clock=[Diagnostics.Stopwatch]::StartNew(); $script:inertBytes=$null; $fa
 try {
     $paths=[ordered]@{ probe=$PSCommandPath; source_probe=(Join-Path $PSScriptRoot 'probe_source_directory.ps1');
         private_creator=(Join-Path $PSScriptRoot 'prepare_case.ps1'); session_helper=(Join-Path $PSScriptRoot 'HostedConPtySession.cs') }
-    $bytes=[ordered]@{}; foreach ($key in $paths.Keys) { $bytes[$key]=Read-LaunchSource $paths[$key] }
+    $bytes=[ordered]@{}; foreach ($key in $paths.Keys) { $bytes[$key]=Read-LaunchSource $paths[$key] $key }
     $utf8=[Text.UTF8Encoding]::new($false,$true)
     $support=Get-LaunchSupport ($utf8.GetString($bytes.source_probe))
     foreach ($definition in $support.functions) { . ([scriptblock]::Create($definition)) }
@@ -319,7 +352,7 @@ try {
     $cases.single_fast_child=Invoke-LaunchCase 1 $parent
     if ($cases.single_fast_child.result -ceq 'passed') { $cases.two_sequential_children=Invoke-LaunchCase 2 $parent }
     $phase='source_changed'
-    foreach ($key in $paths.Keys) { Assert-Probe ((Hash-Probe (Read-LaunchSource $paths[$key])) -ceq $hashes[$key]) 'source_changed' }
+    foreach ($key in $paths.Keys) { Assert-Probe ((Hash-Probe (Read-LaunchSource $paths[$key] $key)) -ceq $hashes[$key]) 'source_changed' }
 } catch { $failure=$phase }
 $inertSha=$null; if ($null -ne $script:inertBytes) { $inertSha=Hash-Probe $script:inertBytes }
 $report=New-LaunchReport $cases $hashes $inertSha $failure

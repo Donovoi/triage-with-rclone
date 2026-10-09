@@ -27,7 +27,8 @@ $tokens=$null; $errors=$null
 $ast=[System.Management.Automation.Language.Parser]::ParseInput($source,[ref]$tokens,[ref]$errors)
 if ($errors.Count -ne 0) { throw 'parse_failed' }
 foreach ($name in @('Test-LaunchHosted','Get-LaunchSupport','Test-LaunchInteger','Test-LaunchSnapshot',
-    'New-LaunchDiagnostic','New-LaunchChecks','New-LaunchCase','New-LaunchReport')) {
+    'New-LaunchDiagnostic','Convert-LaunchFailureDiagnostic','Get-LaunchFailureDiagnostic','New-LaunchChecks','New-LaunchCase','New-LaunchReport',
+    'Get-LaunchSourceLimit','Read-LaunchSource')) {
     $nodes=@($ast.EndBlock.Statements | Where-Object { $_ -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $_.Name -ceq $name })
     if ($nodes.Count -ne 1) { throw 'pure_function_shape' }
     . ([scriptblock]::Create($nodes[0].Extent.Text))
@@ -35,9 +36,21 @@ foreach ($name in @('Test-LaunchHosted','Get-LaunchSupport','Test-LaunchInteger'
 function Add-Type { throw 'compile_prohibited' }
 function Start-Process { throw 'process_prohibited' }
 function New-Item { throw 'filesystem_mutation_prohibited' }
-function Read-LaunchSource { throw 'probe_source_read_prohibited' }
 function Invoke-LaunchCase { throw 'native_probe_prohibited' }
 function Reject([scriptblock]$Action) { try { & $Action | Out-Null; return $false } catch { return $true } }
+$sourceLimits=@()
+$boundedReads=@()
+foreach ($name in @('probe','source_probe','private_creator','session_helper')) {
+    $sourceLimits+=Get-LaunchSourceLimit $name
+    $length=$(if ($name -ceq 'session_helper') { 131072 } else { 65536 })
+    $value=Read-LaunchSource (Join-Path '__FIXTURES__' ([string]$length+'.bin')) $name
+    $boundedReads+=($value -is [byte[]] -and $value.Length -eq $length -and $value[0] -eq 0 -and $value[-1] -eq 255)
+    $boundedReads+=Reject { Read-LaunchSource (Join-Path '__FIXTURES__' ([string]($length+1)+'.bin')) $name }
+    $boundedReads+=Reject { Read-LaunchSource (Join-Path '__FIXTURES__' 'empty.bin') $name }
+}
+$invalidLimits=@()
+foreach ($name in @('Session_helper','other','private-canary',65536,$null)) { $invalidLimits+=Reject { Get-LaunchSourceLimit $name } }
+$invalidLimits+=Reject { Read-LaunchSource (Join-Path '__FIXTURES__' '65536.bin') 'other' }
 function Snapshot([int]$Count) {
     return [ordered]@{ schema_version=3; ok=$true; state='finished'; app_exit_code=[uint32]0;
         runtime_image_observed=$false; runtime_sha256=$null; runtime_process_count=$null; ctrl_c_sent=$false;
@@ -90,6 +103,37 @@ foreach ($row in @(@('errors',@('private-canary')),@('state','private-canary'),@
 }
 $v=Snapshot 1; $v['private-canary']='x'; $diagnostics+=New-LaunchDiagnostic $v 1 ('a'*64)
 $diagnostics+=New-LaunchDiagnostic $null 1 ('a'*64)
+$createDiagnostics=@()
+foreach ($role in @('application_path','runtime_path','system_console_host','other','unavailable')) {
+    $v=[Collections.Generic.Dictionary[string,object]]::new()
+    $v.Add('schema_version',1); $v.Add('event_ordinal',57); $v.Add('image_role',$role)
+    $v.Add('owned_job',$true); $v.Add('image_path_matches',$false)
+    $createDiagnostics+=Convert-LaunchFailureDiagnostic $v
+}
+function CreateDiagnostic { return [ordered]@{schema_version=1; event_ordinal=1; image_role='unavailable'; owned_job=$null; image_path_matches=$null} }
+$createDiagnostics+=Convert-LaunchFailureDiagnostic (CreateDiagnostic)
+$v=CreateDiagnostic; $v.event_ordinal=4096; $v.owned_job=$false; $v.image_path_matches=$true
+$createDiagnostics+=Convert-LaunchFailureDiagnostic $v
+$invalidCreate=@()
+foreach ($row in @(@('schema_version',2),@('schema_version','1'),@('schema_version',$true),@('schema_version',[long]1),
+    @('event_ordinal',0),@('event_ordinal',4097),@('event_ordinal','57'),@('event_ordinal',[double]57),@('event_ordinal',$true),
+    @('image_role','System_console_host'),@('image_role','private-canary'),@('image_role',@('runtime_path')),
+    @('owned_job','false'),@('owned_job',0),@('image_path_matches','true'),@('image_path_matches',1))) {
+    $v=CreateDiagnostic; $v[$row[0]]=$row[1]; $invalidCreate+=Convert-LaunchFailureDiagnostic $v
+}
+$v=CreateDiagnostic; $v.Remove('owned_job'); $invalidCreate+=Convert-LaunchFailureDiagnostic $v
+$v=CreateDiagnostic; $v['private-canary']='private-canary'; $invalidCreate+=Convert-LaunchFailureDiagnostic $v
+$invalidCreate+=Convert-LaunchFailureDiagnostic $null
+$invalidCreate+=Convert-LaunchFailureDiagnostic 'private-canary'
+$calls=[Collections.Generic.List[int]]::new()
+$fake=[pscustomobject]@{ calls=$calls; value=(CreateDiagnostic); fail=$false }
+$fake | Add-Member -MemberType ScriptMethod -Name LaunchFailureDiagnostic -Value {
+    $this.calls.Add(1); if ($this.fail) { throw 'private-canary' }; return $this.value
+}
+$getterRecords=@((Get-LaunchFailureDiagnostic $fake))
+$fake.fail=$true; $getterRecords+=Get-LaunchFailureDiagnostic $fake
+$getterRecords+=Get-LaunchFailureDiagnostic $null
+$fake.fail=$false; $fake.value=$null; $getterRecords+=Get-LaunchFailureDiagnostic $fake
 $case=New-LaunchCase (New-LaunchChecks $false) 'observation_failed' $false $true
 $cleanFailure=New-LaunchCase (New-LaunchChecks $false) 'transcript_failed' $true $false
 $reports=@((New-LaunchReport (Cases) (Sources) ('a'*64) ''))
@@ -155,10 +199,24 @@ $finalizeBeforeRead=$launches.Count -eq 1 -and $launches[0].Arguments.Count -eq 
     $finalizers[0].Body.Extent.Text.Contains('::StartSourceObserved') -and
     $finalizers[0].Finally.Extent.Text.IndexOf('$session.LaunchSnapshot()') -gt $finalizers[0].Finally.Extent.Text.IndexOf('$session.Finish(10000)') -and
     $source.IndexOf('Read-ProbeFile $transcript') -gt $finalizers[0].Finally.Extent.EndOffset
+$failureBranches=@($ast.FindAll({param($n) $n -is [System.Management.Automation.Language.IfStatementAst] -and
+    $n.Extent.Text.Contains("[Console]::Out.WriteLine('launch_observer_create_failure='")},$true))
+$failureOnly=$failureBranches.Count -eq 1 -and
+    $failureBranches[0].Clauses[0].Item1.Extent.Text -ceq '-not $sessionClosed -and $null -ne $sha' -and
+    $failureBranches[0].Extent.StartOffset -gt $finalizers[0].Finally.Extent.EndOffset
+$sourceReads=@($ast.FindAll({param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -ceq 'Read-LaunchSource'},$true))
+$bothReadsBound=$sourceReads.Count -eq 2
+foreach ($read in $sourceReads) {
+    $bothReadsBound=$bothReadsBound -and $read.CommandElements.Count -eq 3 -and
+        $read.CommandElements[1].Extent.Text -ceq '$paths[$key]' -and $read.CommandElements[2].Extent.Text -ceq '$key'
+}
 [Console]::Out.WriteLine(([ordered]@{ guard=$guard; positive_snapshots=$positive; rejected_snapshots=$falseSnapshots;
     reports=$reports; combined_failure=$case; clean_failure=$cleanFailure; invalid_reports=$invalid; rejected_extractions=$extract; diagnostics=$diagnostics;
     exact_extraction=$extractExact; compiled_literal_classes=$compiled; inert_entry_shape=$entryShape; native_dictionary_diagnostic=$nativeDiagnostic;
-    guard_before_effects=$gateFirst; finalize_before_transcript=$finalizeBeforeRead; native_calls=0; native_entrypoint_invoked=$false
+    guard_before_effects=$gateFirst; finalize_before_transcript=$finalizeBeforeRead; create_diagnostics=$createDiagnostics;
+    invalid_create_diagnostics=$invalidCreate; getter_records=$getterRecords; getter_calls=$calls.Count; create_diagnostic_failure_only=$failureOnly;
+    source_limits=$sourceLimits; bounded_reads=$boundedReads; invalid_limits=$invalidLimits; both_source_reads_bound=$bothReadsBound;
+    native_calls=0; native_entrypoint_invoked=$false
 } | ConvertTo-Json -Depth 9 -Compress))
 """
         script = script.replace("__PROBE__", str(PATH).replace("'", "''"))
@@ -167,6 +225,12 @@ $finalizeBeforeRead=$launches.Count -eq 1 -and $launches[0].Arguments.Count -eq 
         # Only this generated pure driver is executed, never PATH/the native probe.
         # A file avoids Windows' encoded-command length ceiling as mutation cases grow.
         with tempfile.TemporaryDirectory(prefix="launch-observer-pure-") as directory:
+            fixture_root = Path(directory) / "fixtures"
+            fixture_root.mkdir()
+            for length in (65536, 65537, 131072, 131073):
+                (fixture_root / f"{length}.bin").write_bytes(bytes(range(256)) * (length // 256) + bytes(length % 256))
+            (fixture_root / "empty.bin").write_bytes(b"")
+            script = script.replace("__FIXTURES__", str(fixture_root).replace("'", "''"))
             driver = Path(directory) / "pure.ps1"
             driver.write_text(script, encoding="utf-8", newline="\n")
             result = subprocess.run([str(powershell), "-NoProfile", "-NonInteractive", "-File", str(driver)],
@@ -179,6 +243,12 @@ $finalizeBeforeRead=$launches.Count -eq 1 -and $launches[0].Arguments.Count -eq 
     def test_guard_rejects_non_hosted_or_wrong_typed_inputs_before_effects(self):
         self.assertEqual(self.value["guard"], [True] + [False] * 8)
         self.assertIs(self.value["guard_before_effects"], True)
+
+    def test_each_fixed_source_has_the_required_initial_and_preservation_read_bound(self):
+        self.assertEqual(self.value["source_limits"], [65536, 65536, 65536, 131072])
+        self.assertEqual(self.value["bounded_reads"], [True] * 12)
+        self.assertEqual(self.value["invalid_limits"], [True] * 6)
+        self.assertIs(self.value["both_source_reads_bound"], True)
 
     def test_exact_final_snapshots_for_one_and_two_short_lived_children(self):
         self.assertEqual(self.value["positive_snapshots"], [True, True, True])
@@ -228,6 +298,36 @@ $finalizeBeforeRead=$launches.Count -eq 1 -and $launches[0].Arguments.Count -eq 
             self.assertIsNone(row["runtime_launch_count"])
             self.assertIsNone(row["debug_handles_closed"])
         self.assertNotIn("private-canary", json.dumps(self.value["diagnostics"]))
+
+    def test_create_failure_record_is_closed_with_nullable_facts_and_event_ordinal_bounds(self):
+        fields = {"schema_version", "diagnostic_valid", "event_ordinal", "image_role", "owned_job", "image_path_matches"}
+        rows = self.value["create_diagnostics"]
+        self.assertEqual([row["image_role"] for row in rows[:5]],
+                         ["application_path", "runtime_path", "system_console_host", "other", "unavailable"])
+        for row in rows:
+            self.assertEqual(set(row), fields)
+            self.assertEqual(row["schema_version"], 1)
+            self.assertIs(row["diagnostic_valid"], True)
+        self.assertEqual([row["event_ordinal"] for row in rows], [57] * 5 + [1, 4096])
+        self.assertIsNone(rows[5]["owned_job"])
+        self.assertIsNone(rows[5]["image_path_matches"])
+        self.assertIs(rows[6]["owned_job"], False)
+        self.assertIs(rows[6]["image_path_matches"], True)
+
+    def test_malformed_create_record_becomes_one_fixed_private_text_free_invalid_record(self):
+        expected = {"schema_version": 1, "diagnostic_valid": False, "event_ordinal": None,
+                    "image_role": "unavailable", "owned_job": None, "image_path_matches": None}
+        self.assertEqual(len(self.value["invalid_create_diagnostics"]), 20)
+        self.assertTrue(all(row == expected for row in self.value["invalid_create_diagnostics"]))
+        self.assertNotIn("private-canary", json.dumps(self.value["invalid_create_diagnostics"]))
+
+    def test_throwing_or_empty_getter_cannot_mask_failure_and_is_only_consumed_after_failed_finalization(self):
+        records = self.value["getter_records"]
+        self.assertIs(records[0]["diagnostic_valid"], True)
+        self.assertTrue(all(row["diagnostic_valid"] is False for row in records[1:]))
+        self.assertEqual(self.value["getter_calls"], 3)
+        self.assertIs(self.value["create_diagnostic_failure_only"], True)
+        self.assertNotIn("private-canary", json.dumps(records))
 
     def test_missing_checks_forged_fields_hashes_and_partial_cleanup_cannot_pass(self):
         self.assertGreaterEqual(len(self.value["invalid_reports"]), 17)
