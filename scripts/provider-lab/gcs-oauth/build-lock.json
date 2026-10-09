@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "platform": "linux/amd64",
+  "base_image": "docker.io/library/python@sha256:9901e0a8d75037d8242ed43155cbcb2d1f61be1356383d8054afb59fd50e39c4",
+  "base_config_digest": "sha256:3abf66fa95bf9285d35eac802319797d29d01fbcfef9c0cd560f73d97f4289e8",
+  "python_version": "3.12.15",
+  "requirements": {
+    "path": "scripts/provider-lab/requirements-fixture.txt",
+    "sha256": "191f8711629dbb8d88a45ce4c44a6ef9cac3aa61ba17e50cb490413ae6210035",
+    "distributions": {
+      "cryptography": "50.0.2",
+      "cffi": "2.1.1",
+      "pycparser": "3.0"
+    }
+  },
+  "provenance": {
+    "discovery_tag": "3.12-slim-bookworm",
+    "index_digest": "sha256:54c85f3c47607a77f32adec749d3c81d1348bf25833671f512b26a9b6d778cb3",
+    "checked_utc": "2026-10-04",
+    "manifest_url": "https://registry-1.docker.io/v2/library/python/manifests/sha256:9901e0a8d75037d8242ed43155cbcb2d1f61be1356383d8054afb59fd50e39c4",
+    "config_url": "https://registry-1.docker.io/v2/library/python/blobs/sha256:3abf66fa95bf9285d35eac802319797d29d01fbcfef9c0cd560f73d97f4289e8",
+    "official_image_url": "https://hub.docker.com/_/python",
+    "support_url": "https://devguide.python.org/versions/",
+    "compressed_layer_bytes": 45898205,
+    "verification": "Official registry manifest and config bytes hashed; no layers downloaded or executed. Python 3.12 receives upstream security fixes through October 2028. Image OS vulnerability state and native compatibility are not established by metadata verification."
+  }
+}
