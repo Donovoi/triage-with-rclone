@@ -3,7 +3,6 @@
 use anyhow::{Context, Result};
 use chrono::Utc;
 use sha2::{Digest, Sha256};
-use std::fs;
 use std::path::Path;
 
 use super::Case;
@@ -266,15 +265,8 @@ pub fn write_report(path: impl AsRef<Path>, contents: &str) -> Result<()> {
         hash
     );
 
-    fs::write(path, &with_hash).with_context(|| format!("Failed to write report to {:?}", path))?;
-
-    // Restrict file permissions on Unix.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let perms = std::fs::Permissions::from_mode(0o644);
-        std::fs::set_permissions(path, perms).ok();
-    }
+    crate::utils::private_fs::write(path, with_hash.as_bytes())
+        .with_context(|| format!("Failed to write report to {:?}", path))?;
 
     Ok(())
 }
@@ -290,9 +282,7 @@ pub fn write_report_xlsx(
     use rust_xlsxwriter::Workbook;
 
     let path = path.as_ref();
-    let path_str = path
-        .to_str()
-        .ok_or_else(|| anyhow::anyhow!("Invalid path: {:?}", path))?;
+    crate::utils::path::ensure_no_link_components(path)?;
 
     let mut workbook = Workbook::new();
 
@@ -413,9 +403,16 @@ pub fn write_report_xlsx(
         }
     }
 
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let mut staged = crate::utils::private_fs::tempfile_in(parent, ".report-", ".xlsx")?;
     workbook
-        .save(path_str)
+        .save_to_writer(staged.as_file_mut())
         .context("Failed to save XLSX report")?;
+    staged.as_file().sync_all()?;
+    crate::utils::private_fs::persist(staged, path)?;
     Ok(())
 }
 
@@ -461,6 +458,20 @@ mod tests {
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("SHA-256:"));
         assert!(content.contains("Report Integrity"));
+    }
+
+    #[test]
+    fn repeated_report_updates_remain_private_and_replace_complete_contents() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("report.txt");
+        write_report(&path, "first report").unwrap();
+        write_report(&path, "second report").unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.starts_with("second report\n"));
+        assert!(!content.contains("first report"));
+        assert!(content.contains(&hex::encode(Sha256::digest(b"second report"))));
+        crate::utils::private_fs::open_private(&path).unwrap();
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
     }
 
     #[test]

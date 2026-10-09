@@ -3,13 +3,12 @@
 //! This module handles extracting the embedded rclone.exe to a temporary
 //! location, verifying its integrity, and cleaning up after use.
 
+use crate::utils::private_fs::{self, PrivateTempDir};
 use anyhow::{bail, Context, Result};
 use rust_embed::RustEmbed;
 use sha2::{Digest, Sha256};
-use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use tempfile::TempDir;
 
 /// Embedded assets (rclone.exe for Windows)
 #[derive(RustEmbed)]
@@ -22,16 +21,29 @@ pub const RCLONE_EXE_SHA256: &str = env!("TRIAGE_RCLONE_EXE_SHA256");
 /// Rclone version embedded
 pub const RCLONE_VERSION: &str = env!("TRIAGE_RCLONE_VERSION");
 
+/// Return only finite cleanup metadata, never formatted error messages or paths.
+pub fn runtime_cleanup_diagnostic(error: &anyhow::Error) -> private_fs::CleanupDiagnostic {
+    error
+        .chain()
+        .find_map(|cause| {
+            cause
+                .downcast_ref::<std::io::Error>()
+                .and_then(private_fs::cleanup_diagnostic)
+        })
+        .unwrap_or_else(private_fs::CleanupDiagnostic::ownership_unavailable)
+}
+
 /// Manages the extracted rclone binary
 pub struct ExtractedBinary {
     /// Path to the extracted executable
     pub path: PathBuf,
     /// Temporary directory holding the extracted executable.
     ///
-    /// When present, we prefer `TempDir::close()` for cleanup so errors can be detected.
-    temp_dir: Option<TempDir>,
+    /// Cleanup uses this identity guard; it never falls back to an unpinned path.
+    temp_dir: Option<PrivateTempDir>,
     /// Whether this instance owns the file (should clean up)
     owns_file: bool,
+    cleanup_failed: bool,
 }
 
 impl ExtractedBinary {
@@ -63,18 +75,13 @@ impl ExtractedBinary {
         }
 
         // Create a randomized temp directory (avoid predictable paths in world-writable temp dirs).
-        let instance_dir = tempfile::Builder::new()
-            .prefix("rclone-triage-")
-            .tempdir()
+        let instance_dir = private_fs::tempdir_in(std::env::temp_dir(), "rclone-triage-")
             .context("Failed to create temp directory for rclone extraction")?;
 
         let exe_path = instance_dir.path().join("rclone.exe");
 
         // Write the binary using exclusive create to avoid clobbering existing files.
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&exe_path)
+        let mut file = private_fs::create_new(&exe_path)
             .with_context(|| format!("Failed to create {:?}", exe_path))?;
         file.write_all(exe_bytes)
             .with_context(|| format!("Failed to write rclone.exe to {:?}", exe_path))?;
@@ -85,15 +92,16 @@ impl ExtractedBinary {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mut perms = fs::metadata(&exe_path)?.permissions();
+            let mut perms = std::fs::metadata(&exe_path)?.permissions();
             perms.set_mode(0o755);
-            fs::set_permissions(&exe_path, perms)?;
+            std::fs::set_permissions(&exe_path, perms)?;
         }
 
         Ok(Self {
             path: exe_path,
             temp_dir: Some(instance_dir),
             owns_file: true,
+            cleanup_failed: false,
         })
     }
 
@@ -112,35 +120,28 @@ impl ExtractedBinary {
     /// This is called automatically when the ExtractedBinary is dropped,
     /// but can be called manually for explicit cleanup.
     pub fn cleanup(&mut self) -> Result<()> {
+        if self.cleanup_failed {
+            bail!("Earlier runtime cleanup failed; retained paths require inspection");
+        }
         if !self.owns_file {
             return Ok(());
         }
 
         if let Some(temp_dir) = self.temp_dir.take() {
             let dir_path = temp_dir.path().to_path_buf();
-            temp_dir
-                .close()
-                .with_context(|| format!("Failed to remove temp directory {:?}", dir_path))?;
+            // close consumes the guard even on failure. Never let Drop retry
+            // against a pathname whose identity may have caused that failure.
             self.owns_file = false;
+            if let Err(error) = temp_dir.close() {
+                self.cleanup_failed = true;
+                return Err(error)
+                    .with_context(|| format!("Failed to remove temp directory {:?}", dir_path));
+            }
             return Ok(());
         }
-
-        // Remove the executable
-        if self.path.exists() {
-            fs::remove_file(&self.path)
-                .with_context(|| format!("Failed to remove {:?}", self.path))?;
-        }
-
-        // Remove the temp directory if empty
-        if let Some(dir) = self.path.parent() {
-            if dir.exists() {
-                // Try to remove, ignore errors (might not be empty)
-                let _ = fs::remove_dir(dir);
-            }
-        }
-
         self.owns_file = false;
-        Ok(())
+        self.cleanup_failed = true;
+        bail!("Runtime cleanup ownership guard is missing; retained for inspection")
     }
 
     /// Check if the extracted binary still exists
@@ -184,8 +185,54 @@ mod tests {
     use super::*;
 
     #[test]
+    fn failed_runtime_cleanup_never_retries_a_replaced_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let owned = private_fs::tempdir_in(root.path(), "runtime-").unwrap();
+        let original_path = owned.path().to_owned();
+        let moved = root.path().join("original-runtime");
+        private_fs::write(original_path.join("rclone.exe"), b"synthetic runtime").unwrap();
+        std::fs::rename(&original_path, &moved).unwrap();
+        private_fs::create_dir(&original_path).unwrap();
+        private_fs::write(original_path.join("rclone.exe"), b"unrelated replacement").unwrap();
+        let mut binary = ExtractedBinary {
+            path: original_path.join("rclone.exe"),
+            temp_dir: Some(owned),
+            owns_file: true,
+            cleanup_failed: false,
+        };
+        assert!(binary.cleanup().is_err());
+        assert!(binary.cleanup().is_err());
+        drop(binary);
+        assert_eq!(
+            std::fs::read(original_path.join("rclone.exe")).unwrap(),
+            b"unrelated replacement"
+        );
+        assert_eq!(
+            std::fs::read(moved.join("rclone.exe")).unwrap(),
+            b"synthetic runtime"
+        );
+    }
+
+    #[test]
     fn test_embedded_binary_exists() {
         assert!(Assets::get("rclone.exe").is_some());
+    }
+
+    #[test]
+    fn wrapped_cleanup_io_error_keeps_stage_without_exposing_context_or_path() {
+        let root = tempfile::tempdir().unwrap();
+        let owned = private_fs::tempdir_in(root.path(), "private-canary-").unwrap();
+        std::fs::remove_dir(owned.path()).unwrap();
+        let io_error = owned.close().unwrap_err();
+        let expected = private_fs::cleanup_diagnostic(&io_error)
+            .unwrap()
+            .to_string();
+        let error = anyhow::Error::new(io_error).context("private-canary/context");
+        let diagnostic = runtime_cleanup_diagnostic(&error).to_string();
+        assert_eq!(diagnostic, expected);
+        assert!(diagnostic.starts_with("{\"stage\":\"open_root\",\"kind\":\"not_found\","));
+        assert!(!diagnostic.contains("canary"));
+        assert!(!diagnostic.contains(root.path().to_string_lossy().as_ref()));
     }
 
     #[test]

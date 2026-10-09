@@ -4,9 +4,9 @@ use anyhow::{Context, Result};
 use csv::WriterBuilder;
 use rust_xlsxwriter::Workbook;
 use serde::Serialize;
-use std::fs::OpenOptions;
+use std::fs::File;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use super::listing::FileEntry;
 
@@ -48,24 +48,35 @@ fn excel_safe_text(value: &str) -> String {
 
 /// Streaming CSV writer for large listings.
 pub(crate) struct ListingCsvWriter {
-    writer: csv::Writer<std::fs::File>,
+    writer: csv::Writer<File>,
+    publication: Option<(tempfile::NamedTempFile, PathBuf)>,
 }
 
 impl ListingCsvWriter {
     pub(crate) fn create(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
-        let mut file = OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .write(true)
-            .open(path)
+        crate::utils::path::ensure_no_link_components(path)?;
+        let parent = path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        let staged = crate::utils::private_fs::tempfile_in(parent, ".listing-", ".tmp")
             .with_context(|| format!("Failed to create CSV: {:?}", path))?;
+        let mut writer = Self::from_file(staged.as_file().try_clone()?)?;
+        writer.publication = Some((staged, path.to_owned()));
+        Ok(writer)
+    }
 
-        // Write UTF-8 BOM for Excel
+    /// Use the already-created file; the caller retains publication ownership.
+    pub(crate) fn from_file(mut file: File) -> Result<Self> {
+        if file.metadata()?.len() != 0 {
+            anyhow::bail!("Listing output handle must be empty");
+        }
         file.write_all(&[0xEF, 0xBB, 0xBF])?;
-
-        let writer = WriterBuilder::new().has_headers(true).from_writer(file);
-        Ok(Self { writer })
+        Ok(Self {
+            writer: WriterBuilder::new().has_headers(true).from_writer(file),
+            publication: None,
+        })
     }
 
     pub(crate) fn write_entry(&mut self, entry: &FileEntry) -> Result<()> {
@@ -76,28 +87,22 @@ impl ListingCsvWriter {
 
     pub(crate) fn flush(mut self) -> Result<()> {
         self.writer.flush()?;
+        self.writer.get_ref().sync_all()?;
+        // Drop the duplicate handle before the atomic replacement. A failed
+        // enumeration never reaches this point and preserves an old export.
+        drop(self.writer);
+        if let Some((staged, destination)) = self.publication {
+            crate::utils::private_fs::persist(staged, &destination)?;
+        }
         Ok(())
     }
 }
 
 /// Export a listing to CSV with UTF-8 BOM for Excel compatibility
 pub fn export_listing(entries: &[FileEntry], path: impl AsRef<Path>) -> Result<()> {
-    let path = path.as_ref();
-    let mut file = OpenOptions::new()
-        .create(true)
-        .truncate(true)
-        .write(true)
-        .open(path)
-        .with_context(|| format!("Failed to create CSV: {:?}", path))?;
-
-    // Write UTF-8 BOM for Excel
-    file.write_all(&[0xEF, 0xBB, 0xBF])?;
-
-    let mut writer = WriterBuilder::new().has_headers(true).from_writer(file);
-
+    let mut writer = ListingCsvWriter::create(path)?;
     for entry in entries {
-        let record = CsvFileEntry::from(entry);
-        writer.serialize(record)?;
+        writer.write_entry(entry)?;
     }
 
     writer.flush()?;
@@ -107,9 +112,7 @@ pub fn export_listing(entries: &[FileEntry], path: impl AsRef<Path>) -> Result<(
 /// Export a listing to Excel (.xlsx)
 pub fn export_listing_xlsx(entries: &[FileEntry], path: impl AsRef<Path>) -> Result<()> {
     let path = path.as_ref();
-    let path_str = path
-        .to_str()
-        .ok_or_else(|| anyhow::anyhow!("Invalid XLSX path: {:?}", path))?;
+    crate::utils::path::ensure_no_link_components(path)?;
 
     let mut workbook = Workbook::new();
     let worksheet = workbook
@@ -165,7 +168,16 @@ pub fn export_listing_xlsx(entries: &[FileEntry], path: impl AsRef<Path>) -> Res
         }
     }
 
-    workbook.save(path_str).context("Failed to save workbook")?;
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let mut staged = crate::utils::private_fs::tempfile_in(parent, ".listing-", ".xlsx")?;
+    workbook
+        .save_to_writer(staged.as_file_mut())
+        .context("Failed to save workbook")?;
+    staged.as_file().sync_all()?;
+    crate::utils::private_fs::persist(staged, path)?;
     Ok(())
 }
 
@@ -173,6 +185,32 @@ pub fn export_listing_xlsx(entries: &[FileEntry], path: impl AsRef<Path>) -> Res
 mod tests {
     use super::*;
     use chrono::{DateTime, Utc};
+
+    #[test]
+    fn non_private_existing_export_is_preserved_on_refusal() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("existing.csv");
+        std::fs::write(&path, b"earlier export").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        }
+        assert!(export_listing(&[], &path).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"earlier export");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn private_export_can_be_updated_without_staging_leftovers() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("existing.csv");
+        crate::utils::private_fs::write(&path, b"earlier export").unwrap();
+        export_listing(&[], &path).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), [0xef, 0xbb, 0xbf]);
+        crate::utils::private_fs::open_private(&path).unwrap();
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
 
     #[test]
     fn csv_round_trip_keeps_exact_paths_without_formula_execution() {
