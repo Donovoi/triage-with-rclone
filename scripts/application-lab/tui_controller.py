@@ -41,6 +41,43 @@ SESSION_ACTIONS = frozenset({"start", "poll", "observe_runtime", "key", "text", 
 COUNTER_BOUNDS = {"input_commands": 256, "input_bytes": 8192, "resize_count": 16,
                   "protocol_commands": 1024, "protocol_bytes": 1024 * 1024,
                   "columns": 120, "rows": 34}
+WAIT_STAGES = frozenset({"precondition", "poll", "observe", "predicate", "deadline"})
+WAIT_ERRORS = frozenset({"deadline_exceeded", "session_failed", "preservation_failed"})
+
+
+def wait_failure_diagnostic(error, stage, screen, predicate_invoked):
+    """Finite facts only; no exception formatting or private screen contents.
+
+    Navigation deliberately has a smaller public failure vocabulary. Keep the
+    originating parser/transport failure visible before that translation. This
+    diagnostic never changes the acceptance result or replaces its exception.
+    """
+    try:
+        if type(stage) is not str or stage not in WAIT_STAGES or type(predicate_invoked) is not bool:
+            return
+        kind, code = "unexpected", "unexpected_failure"
+        if type(error) is S.ScreenError and type(error.code) is str and error.code in S.CODES:
+            kind, code = "screen", error.code
+        elif (type(error) is H.ProducerError and len(error.args) == 1 and
+              type(error.args[0]) is str and error.args[0] in WAIT_ERRORS):
+            kind, code = "controller", error.args[0]
+        # Require the actual parser, so arbitrary object properties cannot
+        # inject values or execute while constructing this public diagnostic.
+        ready = pending = byte_count = None
+        if type(screen) is S.Screen:
+            ready, pending, byte_count = screen.ready, screen.pending, screen.total_bytes
+            if (type(ready) is not bool or type(pending) is not bool or
+                    type(byte_count) is not int or not 0 <= byte_count <= S.MAX_BYTES):
+                return
+        payload = H.E.compact(dict(stage=stage, reason_type=kind, reason_code=code,
+            screen_ready=ready, screen_pending=pending, screen_bytes=byte_count,
+            predicate_invoked=predicate_invoked))
+        line = b"application_tui_wait_failure=" + payload
+        if len(line) + 1 <= 1024:
+            print(line.decode("ascii"), flush=True)
+    except Exception:
+        # Broken output must not hide the original failure or enable a retry.
+        pass
 
 
 def validate_snapshot(value, action):
@@ -189,22 +226,35 @@ class Controller:
         return value
 
     def wait(self, predicate, *, seconds=20, observe=None):
-        H.need(type(seconds) is int and 1 <= seconds <= 60, "deadline_exceeded")
-        H.need(not self.resize_unproven, "session_failed")
-        end = min(self.deadline, time.monotonic() + seconds)
-        while time.monotonic() < end:
-            value = self.poll()
-            H.need(time.monotonic() < end, "deadline_exceeded")
-            if observe is not None:
-                observe(value)
-            H.need(time.monotonic() < end, "deadline_exceeded")
-            matched = self.screen.ready and not self.screen.pending and predicate(self.screen)
-            H.need(time.monotonic() < end, "deadline_exceeded")
-            if matched:
-                H.need(not self.resize_unproven, "session_failed")
-                return
-            time.sleep(0.05)
-        raise H.ProducerError("deadline_exceeded")
+        stage, invoked = "precondition", False
+        try:
+            H.need(type(seconds) is int and 1 <= seconds <= 60, "deadline_exceeded")
+            H.need(not self.resize_unproven, "session_failed")
+            end = min(self.deadline, time.monotonic() + seconds)
+            while time.monotonic() < end:
+                stage = "poll"
+                value = self.poll()
+                H.need(time.monotonic() < end, "deadline_exceeded")
+                stage = "observe"
+                if observe is not None:
+                    observe(value)
+                H.need(time.monotonic() < end, "deadline_exceeded")
+                stage = "predicate"
+                matched = False
+                if self.screen.ready and not self.screen.pending:
+                    invoked = True
+                    matched = predicate(self.screen)
+                H.need(time.monotonic() < end, "deadline_exceeded")
+                if matched:
+                    H.need(not self.resize_unproven, "session_failed")
+                    return
+                stage = "deadline"
+                time.sleep(0.05)
+            stage = "deadline"
+            raise H.ProducerError("deadline_exceeded")
+        except Exception as error:
+            wait_failure_diagnostic(error, stage, self.screen, invoked)
+            raise
 
     def key(self, key):
         H.need(time.monotonic() < self.deadline, "deadline_exceeded")
