@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fresh isolated GCS OAuth lifecycle experiment; no ledger eligibility.
+"""Fresh isolated GCS OAuth lifecycle experiment; qualification requires explicit opt-in.
 
 Only GitHub-hosted Linux, an exact minimal context and owned image/container
 labels are accepted. Private process transcripts never enter the public receipt.
@@ -62,6 +62,8 @@ CASE_OBSERVATIONS = {'positive': counts(4,2,5),
     **{name: counts(3,2,3) for name in ('invalid_code','wrong_client_secret')},
     'callback_cancel': counts(3,0,0), 'refresh': counts(4,2,7),
     'refresh_denied': counts(4,2,5), 'refresh_cancel': counts(4,2,5)}
+LIFECYCLE_MODE = "gcs_oauth_lifecycle_v1"
+LIFECYCLE_CAPABILITIES = frozenset({"authentication", "refresh", "renewal_denial", "cancellation_cleanup"})
 FIXTURE_SHA256 = "c990bbd4909b227aae4c70d26f9da5534740a2eb10337ced47977f915fa617be"
 ENTRYPOINT = ["/opt/fixture/venv/bin/python"]
 COMMAND = ["/opt/fixture/scripts/provider-lab/gcs-oauth/probe.py", "--rclone", "/opt/fixture/rclone",
@@ -432,7 +434,101 @@ def compute_bindings(root=None):
             "source_sha256": sources, "lock": read_lock(root)}
 
 
-def run(binary, report_path):
+def validate_native_lifecycle(native, identity, bindings):
+    keys = {"schema_version", "scope", "ledger_eligible", "started_utc", "finished_utc", "success", "runtime",
+            "platform", "source_sha256", "source_digest", "dependency_lock_sha256", "dependency_versions",
+            "python_version", "base_image", "base_config_digest", "image_id", "container_isolation_verified", "probe",
+            "errors", "cleanup", "stage", "build_phase", "container_exit_code", "container_stdout_bytes",
+            "container_stderr_bytes", "container_oom_killed", "container_start_error_present", "build_cache_scope",
+            "probe_started_utc", "probe_finished_utc"}
+    check(type(native) is dict and set(native) == keys, "native_schema_mismatch")
+    check(type(native["schema_version"]) is int and native["schema_version"] == 1
+          and native["scope"] == "gcs_oauth_lifecycle_qualified_supervision" and native["ledger_eligible"] is False
+          and type(native["success"]) is bool and native["platform"] == "linux/amd64", "native_scope_mismatch")
+    sources, lock = bindings["source_sha256"], bindings["lock"]
+    check(native["runtime"] == identity and type(native["runtime"]) is dict and set(native["runtime"]) == {"version", "sha256"}
+          and native["source_sha256"] == sources and native["source_digest"] == bindings["harness_sha256"], "native_source_mismatch")
+    check(native["dependency_lock_sha256"] == lock["requirements"]["sha256"]
+          and native["dependency_versions"] == lock["requirements"]["distributions"]
+          and native["python_version"] == lock["python_version"] and native["base_image"] == lock["base_image"]
+          and native["base_config_digest"] == lock["base_config_digest"], "native_dependency_mismatch")
+    start, finish = parse_time(native["started_utc"]), parse_time(native["finished_utc"])
+    check(0 <= (finish - start).total_seconds() <= 900, "native_time_invalid")
+    check(type(native["container_isolation_verified"]) is bool
+          and (native["image_id"] is None or type(native["image_id"]) is str and re.fullmatch(r"sha256:[a-f0-9]{64}", native["image_id"]))
+          and native["build_cache_scope"] == "shared_daemon_cache_not_pruned"
+          and native["stage"] in ("preflight", "pull", "build", "create", "probe", "completed")
+          and native["build_phase"] in (None, "verify", "dependencies", "manifest"), "native_state_invalid")
+    check(type(native["cleanup"]) is dict and set(native["cleanup"]) == {"commands_stopped", "container_removed", "image_removed", "temporary_removed"}
+          and all(type(v) is bool for v in native["cleanup"].values()), "native_cleanup_invalid")
+    check(type(native["errors"]) is list and len(native["errors"]) <= 32
+          and all(type(x) is str and re.fullmatch(r"[a-z][a-z0-9_]{0,79}", x) for x in native["errors"]), "native_errors_invalid")
+    for field, maximum in (("container_exit_code", 255), ("container_stdout_bytes", 262144), ("container_stderr_bytes", 262144)):
+        value = native[field]
+        check(value is None or type(value) is int and (-255 if field == "container_exit_code" else 0) <= value <= maximum,
+              "native_diagnostic_invalid")
+    for field in ("container_oom_killed", "container_start_error_present"):
+        check(native[field] is None or type(native[field]) is bool, "native_diagnostic_invalid")
+    suite = native["probe"]
+    if suite is not None:
+        check(native["container_isolation_verified"] and native["image_id"] is not None
+              and all(native[key] is not None for key in ("container_exit_code", "container_stdout_bytes", "container_stderr_bytes",
+                                                          "container_oom_killed", "container_start_error_present")), "native_probe_unbound")
+        first, last = parse_time(native["probe_started_utc"]), parse_time(native["probe_finished_utc"])
+        check(start <= first <= last <= finish and (last - first).total_seconds() <= 360, "native_probe_time_invalid")
+        validate_suite(suite, identity, sources, lock, native["probe_started_utc"], native["probe_finished_utc"])
+        expected_bytes = len(json.dumps(suite, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()) + 1
+        check(native["container_stdout_bytes"] == expected_bytes, "native_stdout_framing_invalid")
+    else:
+        check(native["success"] is False, "native_probe_missing")
+        for value in (native["probe_started_utc"], native["probe_finished_utc"]):
+            check(value is None or start <= parse_time(value) <= finish, "native_probe_time_invalid")
+    inner_cleanup = suite is not None and all(all(row["report"]["cleanup"].values()) for row in suite["cases"])
+    cleaned = inner_cleanup and all(native["cleanup"].values())
+    complete = (suite is not None and suite["success"] and cleaned and native["stage"] == "completed"
+                and native["build_phase"] == "manifest" and native["container_exit_code"] == 0
+                and native["container_stdout_bytes"] > 0 and native["container_stderr_bytes"] == 0
+                and native["container_oom_killed"] is False and native["container_start_error_present"] is False
+                and not native["errors"])
+    check(native["success"] == complete, "native_success_contradiction")
+    return cleaned
+
+
+def lifecycle_evidence(native, bindings):
+    cleaned = validate_native_lifecycle(native, native["runtime"], bindings)
+    errors = [] if native["success"] else ["gcs_lifecycle_failed"]
+    return {"schema_version": 6, "scope": "rclone_backend_protocol_fixture", "runtime": dict(native["runtime"]),
+            "platform": "linux", "architecture": "amd64", "harness_sha256": bindings["harness_sha256"],
+            "fixture_manifest_sha256": bindings["fixture_manifest_sha256"],
+            "started_utc": native["started_utc"], "finished_utc": native["finished_utc"],
+            "success": native["success"], "cleanup_passed": cleaned, "errors": errors,
+            "backends": [{"backend": "gcs", "fixture_kind": "independent_oauth_container", "fixture_mode": LIFECYCLE_MODE,
+                          "capabilities": {key: "passed" if native["success"] else "failed" for key in sorted(LIFECYCLE_CAPABILITIES)}, "errors": errors.copy()}],
+            "native_evidence": native}
+
+
+def validate_lifecycle_evidence(receipt, runtime, bindings, now, max_age_hours=24):
+    check(type(bindings) is dict and set(bindings) == {"harness_sha256", "fixture_manifest_sha256", "source_sha256", "lock"}
+          and bindings["fixture_manifest_sha256"] == FIXTURE_SHA256
+          and set(bindings["source_sha256"]) == set(SOURCE_FILES)
+          and all(type(v) is str and HASH.fullmatch(v) for v in bindings["source_sha256"].values())
+          and bindings["harness_sha256"] == canonical_hash(bindings["source_sha256"]), "lifecycle_bindings_invalid")
+    check(type(receipt) is dict and set(receipt) == {"schema_version", "scope", "runtime", "platform", "architecture",
+          "harness_sha256", "fixture_manifest_sha256", "started_utc", "finished_utc", "success", "cleanup_passed",
+          "errors", "backends", "native_evidence"}, "lifecycle_receipt_schema_invalid")
+    identity = {key: runtime[key] for key in ("version", "sha256")}
+    check(runtime.get("platform") == "linux", "lifecycle_platform_invalid")
+    expected = lifecycle_evidence(receipt["native_evidence"], bindings)
+    # Canonical JSON preserves bool/int distinctions at every nested level.
+    check(canonical_hash(receipt) == canonical_hash(expected) and receipt["runtime"] == identity, "lifecycle_receipt_mismatch")
+    finished = parse_time(receipt["finished_utc"])
+    check(type(max_age_hours) is int and 1 <= max_age_hours <= 168
+          and 0 <= (now - finished).total_seconds() <= max_age_hours * 3600,
+          "lifecycle_receipt_stale_or_future")
+    return receipt
+
+
+def run(binary, report_path, lifecycle=False):
     check(sys.platform == "linux" and os.environ.get("GITHUB_ACTIONS") == "true"
           and os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted", "github_hosted_linux_required")
     check(report_path.is_absolute() and plain(report_path.parent) and report_path.parent.is_dir()
@@ -453,7 +549,8 @@ def run(binary, report_path):
               "container_stdout_bytes": None, "container_stderr_bytes": None,
               "container_oom_killed": None, "container_start_error_present": None,
               "build_cache_scope": "shared_daemon_cache_not_pruned"}
-    report.update(scope="gcs_oauth_lifecycle_supervision", probe_started_utc=None, probe_finished_utc=None)
+    report.update(scope=("gcs_oauth_lifecycle_qualified_supervision" if lifecycle else "gcs_oauth_lifecycle_supervision"),
+                  probe_started_utc=None, probe_finished_utc=None)
     root = Path(tempfile.mkdtemp(prefix="triage-gcs-oauth-"))
     root_identity = (root.stat().st_dev, root.stat().st_ino)
     docker, image, attempted_build, attempted_create = None, None, False, False
@@ -547,6 +644,9 @@ def run(binary, report_path):
             report["errors"].append("source_or_runtime_changed")
         report["success"] = report["success"] and not report["errors"] and all(report["cleanup"].values())
         report["finished_utc"] = utc_now()
+        if lifecycle:
+            report = lifecycle_evidence(report, {"harness_sha256": source_digest,
+                "fixture_manifest_sha256": FIXTURE_SHA256, "source_sha256": sources, "lock": lock})
         with report_path.open("x", encoding="utf-8") as stream:
             json.dump(report, stream, indent=2, sort_keys=True)
             stream.write("\n")
@@ -557,17 +657,19 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--rclone", required=True, type=Path)
     parser.add_argument("--report", required=True, type=Path)
+    parser.add_argument("--lifecycle-evidence", action="store_true",
+                        help="Run fresh lifecycle cases and emit separately qualified protocol evidence")
     args = parser.parse_args()
     def interrupted(_signum, _frame):
         raise KeyboardInterrupt
     signal.signal(signal.SIGTERM, interrupted)
     try:
-        result = run(args.rclone, args.report)
+        result = run(args.rclone, args.report, lifecycle=args.lifecycle_evidence)
     except (SupervisorError, OSError, ValueError, KeyError, TypeError, KeyboardInterrupt):
         print("GCS OAuth feasibility preflight failed", file=sys.stderr)
         return 1
     summary = {"success": result["success"], "errors": result["errors"]}
-    summary.update(ledger_eligible=False)
+    summary.update(ledger_eligible=args.lifecycle_evidence, scope="local_protocol" if args.lifecycle_evidence else "experiment")
     print(json.dumps(summary))
     return 0 if result["success"] else 1
 
