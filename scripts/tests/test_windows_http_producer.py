@@ -1,5 +1,6 @@
 """Offline producer tests. No application, helper, runtime or listener executes."""
 import copy
+import ctypes
 from contextlib import redirect_stderr, redirect_stdout
 import csv
 import hashlib
@@ -9,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import sys
 import threading
 import types
 import unittest
@@ -192,6 +194,161 @@ class Flow:
         return Session()
 
 
+class PrivateApi:
+    """Inert Win32 API model: only ordinary files inside this test's temp root."""
+    def __init__(self, case, member="source.conf", directory=False, failure=None):
+        from ctypes import wintypes as w
+        self.w, self.case, self.path = w, case, case / member
+        self.directory, self.failure = directory, failure
+        self.token, self.sid, self.sd = 0x100000001, 0x100000002, 0x100000003
+        self.text = ctypes.create_unicode_buffer("S-1-5-21-11-22-33-1001")
+        self.live, self.freed, self.closed, self.transferred = {}, [], [], []
+        self.fd, self.sddl, self.attributes, self.flags = None, None, [], []
+        self.kernel, self.security = types.SimpleNamespace(), types.SimpleNamespace()
+        class TokenUser(ctypes.Structure):
+            _fields_ = [("sid", ctypes.c_void_p), ("attributes", w.DWORD)]
+        self.TokenUser = TokenUser
+        for library, name, function in (
+            (self.kernel, "GetCurrentProcess", lambda: 0x100000004),
+            (self.kernel, "CloseHandle", self.close), (self.kernel, "LocalFree", self.free),
+            (self.security, "OpenProcessToken", self.open_token),
+            (self.security, "GetTokenInformation", self.token_info),
+            (self.security, "ConvertSidToStringSidW", self.sid_text),
+            (self.security, "ConvertStringSecurityDescriptorToSecurityDescriptorW", self.descriptor),
+            (self.kernel, "CreateDirectoryW", self.mkdir), (self.kernel, "CreateFileW", self.create),
+            (self.kernel, "GetFileInformationByHandle", self.information),
+            (self.kernel, "GetFinalPathNameByHandleW", self.final_path)):
+            setattr(library, name, mock.Mock(side_effect=function))
+
+    @staticmethod
+    def number(value):
+        return value.value if hasattr(value, "value") else value
+
+    def dll(self, name, **kwargs):
+        assert kwargs == dict(use_last_error=True, winmode=0x800)
+        return {"kernel32.dll": self.kernel, "advapi32.dll": self.security}[name]
+
+    def open_token(self, process, access, out):
+        assert process == 0x100000004 and access == 8
+        if self.failure == "token":
+            return False
+        out._obj.value = self.token
+        self.live[self.token] = None
+        return True
+
+    def token_info(self, token, kind, buffer, size, count):
+        assert self.number(token) == self.token and kind == 1
+        count._obj.value = ctypes.sizeof(self.TokenUser)
+        if buffer is None:
+            return False
+        if self.failure == "token_info":
+            return False
+        ctypes.cast(buffer, ctypes.POINTER(self.TokenUser)).contents.sid = self.sid
+        return True
+
+    def sid_text(self, sid, out):
+        assert sid == self.sid  # More than 32 bits must survive the API boundary.
+        if self.failure == "sid":
+            return False
+        out._obj.value = ctypes.addressof(self.text)
+        return True
+
+    def descriptor(self, sddl, revision, out, count):
+        self.sddl = sddl
+        assert revision == 1
+        if self.failure == "descriptor":
+            return False
+        out._obj.value = self.sd
+        count._obj.value = 0 if self.failure == "descriptor_size" else 64
+        return True
+
+    def free(self, pointer):
+        self.freed.append(self.number(pointer))
+        return 0
+
+    def close(self, handle):
+        handle = self.number(handle)
+        assert handle in self.live and handle not in self.transferred
+        self.closed.append(handle)
+        self.live.pop(handle)
+        if self.fd is not None and handle == 0x100000100:
+            os.close(self.fd)
+            self.fd = None
+        return not (self.failure == "cleanup" and handle == self.token)
+
+    def capture_attributes(self, attributes):
+        item = attributes._obj
+        self.attributes.append((item.length, ctypes.sizeof(item), item.descriptor, item.inherit))
+
+    def mkdir(self, path, attributes):
+        self.capture_attributes(attributes)
+        if self.failure == "create":
+            return False
+        try:
+            Path(path).mkdir()
+        except FileExistsError:
+            return False
+        return True
+
+    def create(self, path, access, share, attributes, disposition, flags, template):
+        self.flags.append((path, access, share, disposition, flags, template))
+        if disposition == 1:
+            self.capture_attributes(attributes)
+            assert (access, share, flags, template) == (0x40000080, 1, 0x00200080, None)
+            if self.failure == "create":
+                return ctypes.c_void_p(-1).value
+            try:
+                self.fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0))
+            except FileExistsError:
+                return ctypes.c_void_p(-1).value
+            handle = 0x100000100
+        else:
+            assert (access, share, attributes, disposition, flags, template) == (0x80, 3, None, 3, 0x02200000, None)
+            if self.failure == "parent":
+                return ctypes.c_void_p(-1).value
+            handle = 0x100000010 + len(self.live)
+        self.live[handle] = Path(path)
+        return handle
+
+    def information(self, handle, info):
+        path = self.live[handle]
+        if path == self.path and self.failure == "information":
+            return False
+        info._obj.attributes = 0x10 if path.is_dir() else 0x80
+        info._obj.links = 1
+        if path == self.path:
+            if self.failure == "reparse":
+                info._obj.attributes |= 0x400
+            if self.failure == "links":
+                info._obj.links = 2
+        return True
+
+    def final_path(self, handle, buffer, capacity, flags):
+        path = self.live[handle]
+        buffer.value = str(path)
+        if path == self.path and self.failure in ("path_zero", "path_truncated"):
+            return 0 if self.failure == "path_zero" else capacity
+        return len(buffer.value)
+
+    def open_fd(self, handle, flags):
+        assert handle == 0x100000100 and flags & getattr(os, "O_NOINHERIT", 0x80)
+        if self.failure == "open_fd":
+            raise OSError("private-canary")
+        self.transferred.append(handle)
+        self.live.pop(handle)
+        fd, self.fd = self.fd, None
+        self.returned_fd = fd
+        return fd
+
+    def invoke(self, function):
+        with mock.patch.object(P, "hosted_guard"), \
+             mock.patch.object(ctypes, "WinDLL", side_effect=self.dll, create=True), \
+             mock.patch.dict(sys.modules, {"msvcrt": types.SimpleNamespace(open_osfhandle=self.open_fd)}), \
+             mock.patch.object(os, "O_BINARY", getattr(os, "O_BINARY", 0), create=True), \
+             mock.patch.object(os, "O_NOINHERIT", getattr(os, "O_NOINHERIT", 0x80), create=True):
+            return function(self.case, self.path, self.directory)
+
+
 class ProducerTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -205,15 +362,245 @@ class ProducerTests(unittest.TestCase):
         self.digest = hashlib.sha256(self.app.read_bytes()).hexdigest()
         self.no_native = mock.patch.object(P.subprocess, "Popen", side_effect=AssertionError("native forbidden"))
         self.no_native.start()
+        self.real_private_create = P._private_create
+        self.real_native_create = P._native_private_create
+        self.created_streams = []
+        self.private_calls = []
+        self.private_creation = mock.patch.object(P, "_private_create", side_effect=self.fake_private_create)
+        self.private_creation.start()
+        self.no_native_creation = mock.patch.object(P, "_native_private_create", side_effect=AssertionError("native creation forbidden"))
+        self.no_native_creation.start()
         self.env = mock.patch.dict(os.environ, {"SYSTEMROOT": str(self.root), "GITHUB_SHA": "b" * 40,
             "RUNNER_TEMP": str(self.root), "USERPROFILE": str(self.profile),
             "APPDATA": str(self.profile / "AppData/Roaming"), "LOCALAPPDATA": str(self.profile / "AppData/Local"),
             "TEMP": str(self.root), "TMP": str(self.root)})
         self.env.start()
     def tearDown(self):
+        self.no_native_creation.stop()
+        self.private_creation.stop()
+        for stream in self.created_streams:
+            if not stream.closed:
+                stream.close()
         self.env.stop()
         self.no_native.stop()
         self.temp.cleanup()
+
+    def fake_private_create(self, case, member, directory):
+        self.assertIn(member, P.PRIVATE_DIRECTORIES if directory else P.PRIVATE_FILES)
+        self.private_calls.append((str(case), member, directory))
+        if directory:
+            (Path(case) / member).mkdir()
+            return None
+        stream = (Path(case) / member).open("xb", buffering=0)
+        self.created_streams.append(stream)
+        return stream
+
+    def test_private_creation_guard_precedes_bindings_and_paths_are_closed(self):
+        with mock.patch.object(P, "hosted_guard", side_effect=P.ProducerError("hosted_only")), \
+             mock.patch.object(ctypes, "WinDLL", create=True) as native:
+            with self.assertRaisesRegex(P.ProducerError, "^hosted_only$"):
+                self.real_native_create(self.root, self.root / "source.conf", False)
+            native.assert_not_called()
+        for name in ("../outside", "output/synthetic-case", "transcript.private", "source.conf/extra", "C:/private-canary"):
+            with mock.patch.object(P, "hosted_guard"), self.assertRaisesRegex(P.ProducerError, "^case_setup_failed$"):
+                self.real_private_create(self.root, name, False)
+        P._native_private_create.assert_not_called()
+        self.assertEqual(P.private_sddl("S-1-5-21-11-22-33-1001", True),
+            "O:S-1-5-21-11-22-33-1001D:P(A;OICI;FA;;;S-1-5-21-11-22-33-1001)(A;OICI;FA;;;SY)")
+        for sid in (None, "private-canary", "S-1-5-18)(A;;FA;;;WD)", "S-1-5-１８"):
+            with self.assertRaisesRegex(P.ProducerError, "^case_setup_failed$"):
+                P.private_sddl(sid, False)
+
+    def test_private_native_file_abi_descriptor_new_only_and_single_handle_transfer(self):
+        api = PrivateApi(self.root)
+        stream = api.invoke(self.real_native_create)
+        try:
+            self.assertFalse(os.get_inheritable(stream.fileno()))
+            self.assertEqual(stream.write(b"inert"), 5)
+            self.assertEqual(api.transferred, [0x100000100])
+            self.assertNotIn(0x100000100, api.closed)
+            self.assertEqual(api.live, {})
+            self.assertEqual(set(api.freed), {api.sd, ctypes.addressof(api.text)})
+            self.assertEqual(api.sddl, "O:S-1-5-21-11-22-33-1001D:P(A;;FA;;;S-1-5-21-11-22-33-1001)(A;;FA;;;SY)")
+            self.assertEqual(len(api.attributes), 1)
+            size, expected_size, descriptor, inherit = api.attributes[0]
+            self.assertEqual((size, descriptor, inherit), (expected_size, api.sd, 0))
+            self.assertEqual([call[3] for call in api.flags], [3, 1])
+            self.assertIs(api.kernel.CreateFileW.restype, ctypes.wintypes.HANDLE)
+            self.assertIs(api.kernel.LocalFree.restype, ctypes.c_void_p)
+            self.assertEqual(api.kernel.CloseHandle.argtypes, [ctypes.wintypes.HANDLE])
+            self.assertIs(api.security.ConvertSidToStringSidW.argtypes[0], ctypes.c_void_p)
+            self.assertEqual(len(api.kernel.CreateFileW.argtypes), 7)
+        finally:
+            stream.close()
+        with self.assertRaises(OSError):
+            os.fstat(api.returned_fd)
+        second = PrivateApi(self.root)
+        with self.assertRaisesRegex(P.ProducerError, "^case_setup_failed$"):
+            second.invoke(self.real_native_create)
+        self.assertEqual((self.root / "source.conf").read_bytes(), b"inert")
+        self.assertEqual(second.live, {})
+        self.assertFalse(second.transferred)
+
+    def test_private_native_directory_is_atomic_explicit_and_metadata_reopen_only(self):
+        api = PrivateApi(self.root, "temp", True)
+        self.assertIsNone(api.invoke(self.real_native_create))
+        self.assertTrue(api.path.is_dir())
+        self.assertEqual(api.live, {})
+        self.assertEqual(len(api.attributes), 1)
+        self.assertIn("(A;OICI;FA;;;", api.sddl)
+        self.assertTrue(all(call[1] == 0x80 and call[3] == 3 for call in api.flags))
+        self.assertFalse(api.transferred)
+        with self.assertRaisesRegex(P.ProducerError, "^case_setup_failed$"):
+            api.invoke(self.real_native_create)
+        self.assertTrue(api.path.is_dir())
+
+    def test_private_native_partial_failures_release_correct_resources_and_retain_file(self):
+        for failure in ("token", "token_info", "sid", "descriptor", "descriptor_size", "parent", "create",
+                        "information", "path_zero", "path_truncated", "reparse", "links", "open_fd", "cleanup"):
+            with self.subTest(failure=failure):
+                case = self.root / failure
+                case.mkdir()
+                api = PrivateApi(case, failure=failure)
+                with self.assertRaises(P.ProducerError) as raised:
+                    api.invoke(self.real_native_create)
+                self.assertIn(str(raised.exception), {"case_setup_failed", "preservation_failed", "cleanup_failed"})
+                self.assertNotIn("canary", str(raised.exception))
+                self.assertIn(raised.exception.creation_stage, P.CREATION_STAGES)
+                self.assertEqual(api.live, {})
+                self.assertEqual(len(api.closed), len(set(api.closed)))
+                self.assertEqual(len(api.freed), len(set(api.freed)))
+                if failure in {"information", "path_zero", "path_truncated", "reparse", "links", "open_fd", "cleanup"}:
+                    self.assertTrue(api.path.exists())  # No uncertain-path deletion.
+                if failure == "descriptor_size":
+                    self.assertIn(api.sd, api.freed)
+                if api.transferred:
+                    with self.assertRaises(OSError):
+                        os.fstat(api.returned_fd)
+
+    def test_private_native_fdopen_and_inheritance_failure_close_transferred_descriptor(self):
+        for failure in ("fdopen", "inheritable"):
+            case = self.root / failure
+            case.mkdir()
+            api = PrivateApi(case)
+            change = (mock.patch.object(P.os, "fdopen", side_effect=OSError("private-canary")) if failure == "fdopen" else
+                      mock.patch.object(P.os, "get_inheritable", return_value=True))
+            with change, self.assertRaises(P.ProducerError):
+                api.invoke(self.real_native_create)
+            self.assertEqual(api.live, {})
+            self.assertEqual(api.transferred, [0x100000100])
+            self.assertNotIn(0x100000100, api.closed)
+            with self.assertRaises(OSError):
+                os.fstat(api.returned_fd)
+
+    def test_private_creation_verifies_stream_identity_and_emits_only_static_failure(self):
+        wrong = self.root / "private-canary"
+        wrong.write_bytes(b"")
+        held = wrong.open("r+b")
+        (self.root / "source.conf").write_bytes(b"")
+        with mock.patch.object(P, "hosted_guard"), mock.patch.object(P, "_native_private_create", return_value=held), \
+             redirect_stdout(io.StringIO()) as output:
+            with self.assertRaisesRegex(P.ProducerError, "^preservation_failed$"):
+                self.real_private_create(self.root, "source.conf", False)
+        self.assertTrue(held.closed)
+        self.assertTrue(wrong.exists())
+        self.assertTrue((self.root / "source.conf").exists())
+        self.assertEqual(json.loads(output.getvalue().split("=", 1)[1]), {"category": "harness_file", "stage": "identity"})
+        self.assertNotIn("canary", output.getvalue())
+        with mock.patch.object(P, "hosted_guard"), mock.patch.object(P, "_native_private_create", side_effect=OSError("private SID/path/SDDL canary")), \
+             redirect_stdout(io.StringIO()) as output, self.assertRaisesRegex(P.ProducerError, "^case_setup_failed$"):
+            self.real_private_create(self.root, "queue.csv", False)
+        self.assertNotIn("canary", output.getvalue())
+
+    def test_private_write_flushes_and_syncs_retained_stream_and_propagates_failures(self):
+        for failure in (None, "write", "flush", "sync", "close"):
+            case = self.root / str(failure)
+            case.mkdir()
+            raw = (case / "source.conf").open("xb", buffering=0)
+            stream = mock.MagicMock(wraps=raw)
+            stream.__enter__.return_value = stream
+            stream.__exit__.side_effect = lambda *args: raw.close()
+            if failure == "write":
+                stream.write.return_value = 0
+            elif failure == "flush":
+                stream.flush.side_effect = OSError("private-canary")
+            elif failure == "close":
+                def failed_close(*args):
+                    raw.close()
+                    raise OSError("private-canary")
+                stream.__exit__.side_effect = failed_close
+            with mock.patch.object(P, "private_file", return_value=stream), \
+                 mock.patch.object(P.os, "fsync", side_effect=OSError("private-canary") if failure == "sync" else None) as sync:
+                if failure is None:
+                    P.private_write(case, "source.conf", b"synthetic")
+                    stream.flush.assert_called_once()
+                    sync.assert_called_once()
+                else:
+                    with self.assertRaises((P.ProducerError, OSError)):
+                        P.private_write(case, "source.conf", b"synthetic")
+            self.assertTrue(raw.closed)
+
+    def test_fixed_creation_wiring_never_precreates_application_outputs(self):
+        result, _, _ = self.execute_case("acquisition")
+        self.assertEqual(result["status"], "passed")
+        directories = [member for _, member, directory in self.private_calls if directory]
+        files = [member for _, member, directory in self.private_calls if not directory]
+        self.assertEqual(set(directories), P.PRIVATE_DIRECTORIES)
+        self.assertEqual(len(directories), len(P.PRIVATE_DIRECTORIES))
+        self.assertEqual(files, ["application.exe", "source.conf", "queue.csv"])
+        self.assertFalse(any("synthetic-case" in value for value in directories + files))
+        with mock.patch.object(P, "private_write", side_effect=OSError("private-canary")):
+            result, _, suite = self.execute_case("listing")
+        self.assertEqual(result["status"], "failed")
+        self.assertNotIn("private-canary", json.dumps(result))
+        self.assertTrue((suite / "listing").exists())
+
+    def test_bridge_logs_precede_launch_and_all_close_on_launch_or_creation_failure(self):
+        for failure in ("second_log", "launch"):
+            case = self.root / failure
+            case.mkdir()
+            def create(case, member):
+                if failure == "second_log" and member == "bridge-stderr.private":
+                    raise P.ProducerError("case_setup_failed")
+                return self.fake_private_create(case, member, False)
+            def launch(*args, **kwargs):
+                self.assertTrue(all((case / ("bridge-" + name + ".private")).exists() for name in ("stdout", "stderr")))
+                self.assertTrue(all(not stream.closed for stream in self.created_streams if str(case) in stream.name))
+                raise OSError("private-canary")
+            with mock.patch.object(P, "private_file", side_effect=create), mock.patch.object(P, "powershell", return_value="fixed"), \
+                 mock.patch.object(P, "hidden", return_value={}), mock.patch.object(P.subprocess, "Popen", side_effect=launch) as child, \
+                 redirect_stdout(io.StringIO()) as output, self.assertRaises((P.ProducerError, OSError)):
+                P.Bridge(case)
+            self.assertEqual(child.call_count, failure == "launch")
+            self.assertTrue(all(stream.closed for stream in self.created_streams))
+            self.assertNotIn("canary", output.getvalue())
+
+    def test_bridge_reader_start_failure_closes_unowned_pipes_and_logs(self):
+        for fail_at in (0, 1, 2):
+            for live in (False, True) if fail_at else (False,):
+                with self.subTest(fail_at=fail_at, live=live):
+                    case = self.root / f"thread-{fail_at}-{live}"
+                    case.mkdir()
+                    process = mock.Mock(returncode=-1)
+                    threads = [mock.Mock() for _ in range(3)]
+                    for index, thread in enumerate(threads):
+                        thread.is_alive.return_value = live and index < fail_at and index < 2
+                    threads[fail_at].start.side_effect = RuntimeError("private-canary")
+                    with mock.patch.object(P, "powershell", return_value="fixed"), mock.patch.object(P, "hidden", return_value={}), \
+                         mock.patch.object(P.subprocess, "Popen", return_value=process), \
+                         mock.patch.object(P.threading, "Thread", side_effect=threads), redirect_stdout(io.StringIO()) as output:
+                        with self.assertRaisesRegex(RuntimeError, "private-canary"):
+                            P.Bridge(case)
+                    process.kill.assert_called_once()
+                    process.wait.assert_called_once_with(timeout=5)
+                    process.stdin.close.assert_called_once()
+                    for index, pipe in enumerate((process.stdout, process.stderr)):
+                        if index < fail_at and live:
+                            pipe.close.assert_not_called()
+                        else:
+                            pipe.close.assert_called_once()
+                    self.assertTrue(all(stream.closed for stream in self.created_streams))
+                    self.assertNotIn("canary", output.getvalue())
 
     def execute_case(self, name, **kwargs):
         flow = Flow(name, **kwargs)
@@ -1046,6 +1433,8 @@ class ProducerTests(unittest.TestCase):
         bridge.threads = []
         bridge.watchdog = mock.Mock()
         bridge.watchdog.is_alive.return_value = False
+        actual_reader = bridge._reader
+        bridge._reader = lambda stream, name: actual_reader(stream, name, P.private_file(bridge.case, "bridge-" + name + ".private"))
         return bridge
 
     def reply_on_write(self, bridge, raw=b'{"schema_version":1,"action":"ready","ok":true,"state":"ready"}'):
