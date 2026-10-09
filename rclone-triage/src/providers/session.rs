@@ -513,7 +513,8 @@ impl SessionExtractor {
         let ciphertext = &encrypted[12..];
 
         let cipher = Aes256Gcm::new_from_slice(key).context("Failed to create cipher")?;
-        let nonce = Nonce::from_slice(nonce_bytes);
+        let nonce =
+            <&Nonce<_>>::try_from(nonce_bytes).context("Invalid Chromium cookie nonce length")?;
 
         let plaintext = cipher
             .decrypt(nonce, ciphertext)
@@ -636,7 +637,8 @@ impl SessionExtractor {
         let ciphertext = &encrypted[12..];
 
         let cipher = Aes256Gcm::new_from_slice(&key).context("Failed to create cipher")?;
-        let nonce = Nonce::from_slice(nonce_bytes);
+        let nonce =
+            <&Nonce<_>>::try_from(nonce_bytes).context("Invalid Chromium cookie nonce length")?;
 
         match cipher.decrypt(nonce, ciphertext) {
             Ok(plaintext) => Ok(String::from_utf8_lossy(&plaintext).to_string()),
@@ -866,6 +868,100 @@ pub fn browsers_with_sessions(provider: CloudProvider) -> Vec<(Browser, BrowserS
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn chromium_windows_decryption_matches_known_answer_and_rejects_tampering() {
+        // Fixed NIST CAVS vector, also published in RustCrypto's aes256gcm tests:
+        // https://github.com/RustCrypto/AEADs/blob/aes-gcm-v0.11.1/aes-gcm/tests/aes256gcm.rs#L679
+        // No browser, DPAPI, account data or encryption round trip supplies this oracle.
+        let key = hex::decode("31bdadd96698c204aa9ce1448ea94ae1fb4a9a0b3c9d773b51bb1822666b8f22")
+            .unwrap();
+        let plaintext = hex::decode("2db5168e932556f8089a0622981d017d").unwrap();
+        let encrypted = hex::decode(concat!(
+            "0d18e06c7c725ac9e362e1ce",
+            "fa4362189661d163fcd6a56d8bf0405a",
+            "d636ac1bbedd5cc3ee727dc2ab4a9489"
+        ))
+        .unwrap();
+        let extractor = SessionExtractor::new().unwrap();
+        assert_eq!(
+            extractor
+                .decrypt_chromium_v10_windows(&encrypted, Some(&key))
+                .unwrap(),
+            String::from_utf8_lossy(&plaintext)
+        );
+        for index in [0, 12, encrypted.len() - 1] {
+            let mut changed = encrypted.clone();
+            changed[index] ^= 1;
+            assert_eq!(
+                extractor
+                    .decrypt_chromium_v10_windows(&changed, Some(&key))
+                    .unwrap_err()
+                    .to_string(),
+                "Failed to decrypt Chromium cookie"
+            );
+        }
+        assert_eq!(
+            extractor
+                .decrypt_chromium_v10_windows(&encrypted[..27], Some(&key))
+                .unwrap_err()
+                .to_string(),
+            "Encrypted data too short"
+        );
+        assert_eq!(
+            extractor
+                .decrypt_chromium_v10_windows(&encrypted, Some(&key[..31]))
+                .unwrap_err()
+                .to_string(),
+            "Unexpected Chromium Local State key length: 31"
+        );
+        assert!(extractor
+            .decrypt_chromium_v10_windows(&encrypted, None)
+            .unwrap_err()
+            .to_string()
+            .starts_with("Missing Chromium Local State key"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn chromium_linux_synthetic_decryption_preserves_failure_fallback() {
+        use aes_gcm::{
+            aead::{Aead, KeyInit},
+            Aes256Gcm, Nonce,
+        };
+
+        // Exercise the existing fallback key only; this is not a browser-format claim.
+        let mut key = [0u8; 32];
+        pbkdf2::pbkdf2_hmac::<sha1::Sha1>(b"peanuts", b"saltysalt", 1, &mut key);
+        let nonce_bytes = [7u8; 12];
+        let nonce = <&Nonce<_>>::try_from(nonce_bytes.as_slice()).unwrap();
+        let plaintext = b"synthetic-cookie-value";
+        let mut encrypted = nonce_bytes.to_vec();
+        encrypted.extend(
+            Aes256Gcm::new_from_slice(&key)
+                .unwrap()
+                .encrypt(nonce, plaintext.as_slice())
+                .unwrap(),
+        );
+        let extractor = SessionExtractor::new().unwrap();
+        assert_eq!(
+            extractor.decrypt_chromium_v10_linux(&encrypted).unwrap(),
+            "synthetic-cookie-value"
+        );
+        for index in [0, 12, encrypted.len() - 1] {
+            let mut changed = encrypted.clone();
+            changed[index] ^= 1;
+            assert_eq!(extractor.decrypt_chromium_v10_linux(&changed).unwrap(), "");
+        }
+        assert_eq!(
+            extractor
+                .decrypt_chromium_v10_linux(&encrypted[..27])
+                .unwrap_err()
+                .to_string(),
+            "Encrypted data too short"
+        );
+    }
 
     #[test]
     fn test_provider_cookie_config() {
