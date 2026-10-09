@@ -658,13 +658,13 @@ class ProducerTests(unittest.TestCase):
             (case / "helper-env/profile").rename(case / "private-canary-old")
             (case / "helper-env/profile").mkdir()
         def large(case):
-            for index in range(28):
+            for index in range(26):
                 (case / "helper-env/profile" / ("private-canary-" + str(index))).mkdir()
         mutations = [(lambda c: (c / "helper-env/profile/private-canary").write_bytes(b"xyz"),
-                      "helper_directories", (6, 5, 1, 3)),
+                      "helper_directories", (8, 7, 1, 3)),
                      (large, "helper_limit", (33, 33, 0, 0)),
                      (replace, "helper_identity", (None, None, None, None)),
-                     (lambda c: (c / "helper-env/private-canary").mkdir(), "helper_layout", (6, 6, 0, 0))]
+                     (lambda c: (c / "helper-env/private-canary").mkdir(), "helper_layout", (8, 8, 0, 0))]
         for index, (mutate, stage, counts) in enumerate(mutations):
             with self.subTest(stage=stage), mock.patch.object(P, "remove_owned") as remove:
                 output = io.StringIO()
@@ -832,7 +832,7 @@ class ProducerTests(unittest.TestCase):
         case = self.root / "helper-bound"
         case.mkdir()
         leases = P.create_private_roots(case)
-        for index in range(27):
+        for index in range(25):
             (case / "helper-env/temp" / str(index)).mkdir()
         baseline = P.prestart_baseline("listing", case, leases)
         self.assertEqual(len(baseline), 32)
@@ -849,6 +849,80 @@ class ProducerTests(unittest.TestCase):
         self.assertNotIn("start", flow.events)
         self.assertFalse(result["checks"]["temp_cleanup"])
         remove.assert_not_called()
+
+    def test_observed_helper_support_directories_use_atomic_creator_and_fixed_leases(self):
+        case = self.root / "helper-support"
+        case.mkdir()
+        leases = P.create_private_roots(case)
+        fixed = {"temp", "home", "profile", "appdata", "localappdata",
+                 "profile/AppData", "profile/AppData/Roaming"}
+        self.assertEqual(set(leases["helper"]), fixed)
+        self.assertEqual([member for _, member, _ in self.private_calls][-2:],
+            ["helper-env/profile/AppData", "helper-env/profile/AppData/Roaming"])
+        self.assertEqual(set(P.prestart_baseline("listing", case, leases)), fixed)
+        for member in fixed:
+            self.assertEqual(leases["helper"][member], P.identity(case / "helper-env" / member))
+        for member in ("temp", "home", "profile", "appdata", "localappdata"):
+            self.assertEqual(P.inventory(case / member), {})
+        self.assertEqual(P.environment(case)["USERPROFILE"], str(case / "profile"))
+        self.assertEqual(P.environment(case)["APPDATA"], str(case / "appdata"))
+        self.assertFalse((case / "helper-env/profile/AppData/Local").exists())
+        self.assertFalse((case / "helper-env/profile/Documents").exists())
+        for index, member in enumerate(("helper-env/profile/AppData", "helper-env/profile/AppData/Roaming")):
+            other = self.root / ("helper-existing-" + str(index))
+            other.mkdir()
+            created = []
+            def competing_entry(root, current, directory):
+                if current == member:
+                    (Path(root) / current).mkdir()
+                    created.append(P.identity(Path(root) / current))
+                return self.fake_private_create(root, current, directory)
+            with mock.patch.object(P, "_private_create", side_effect=competing_entry), self.assertRaises(FileExistsError):
+                P.create_private_roots(other)
+            self.assertEqual(P.identity(other / member), created[0])
+            self.assertEqual(P.inventory(other / member), {})
+
+    def test_fixed_helper_support_removal_or_replacement_never_starts_or_passes(self):
+        for phase in ("prestart", "post_helper"):
+            for member in ("AppData", "AppData/Roaming"):
+                for replace in (False, True):
+                    def mutate(case):
+                        node = case / "helper-env/profile" / member
+                        node.rename(case / "private-canary-old")
+                        if replace:
+                            node.mkdir()
+                    label = phase + member.replace("/", "-") + str(replace)
+                    options = {"before_app" if phase == "prestart" else "after_app": mutate}
+                    output = io.StringIO()
+                    with self.subTest(phase=phase, member=member, replace=replace), mock.patch.object(P, "remove_owned") as remove:
+                        result, flow, suite = self.execute_profile_flow(label, output=output, **options)
+                    self.assertEqual(result["status"], "failed")
+                    self.assertFalse(result["checks"]["temp_cleanup"])
+                    self.assertEqual("start" in flow.events, phase == "post_helper")
+                    diagnostic = self.prestart_observation(output) if phase == "prestart" else self.post_helper_observation(output)
+                    self.assertEqual((diagnostic["stage"], diagnostic["location"]), ("helper_identity", "helper_env"))
+                    self.assertIsNone(diagnostic["entries"])
+                    self.assertTrue((suite / "listing/private-canary-old").exists())
+                    remove.assert_not_called()
+
+    def test_fixed_helper_support_identity_is_rechecked_after_inventory(self):
+        for member in ("AppData", "AppData/Roaming"):
+            case = self.root / ("helper-swap-" + member.replace("/", "-"))
+            case.mkdir()
+            leases = P.create_private_roots(case)
+            original_inventory = P.inventory
+            def changing_inventory(root):
+                value = original_inventory(root)
+                if Path(root) == case / "helper-env":
+                    node = case / "helper-env/profile" / member
+                    node.rename(case / "private-canary-old")
+                    node.mkdir()
+                return value
+            with mock.patch.object(P, "inventory", side_effect=changing_inventory), redirect_stdout(io.StringIO()) as output:
+                with self.assertRaisesRegex(P.ProducerError, "^cleanup_failed$"):
+                    P.prestart_baseline("listing", case, leases)
+            self.assertEqual(self.prestart_observation(output)["stage"], "helper_identity")
+            self.assertTrue((case / "private-canary-old").exists())
 
     def test_app_root_replacement_inside_inventory_never_establishes_a_new_lease(self):
         original_inventory = P.inventory
@@ -1865,7 +1939,7 @@ class ProducerTests(unittest.TestCase):
         self.assertEqual(inv.call_count, 2)
         self.assertLessEqual(len(output.getvalue().encode()), 4096)
         self.assertEqual(json.loads(output.getvalue().split("=", 1)[1]), dict(scope="listing",
-            known_nodes=["appdata", "local_appdata"], unknown_directory_count=1, unknown_file_count=1))
+            known_nodes=["appdata", "local_appdata", "roaming_appdata"], unknown_directory_count=1, unknown_file_count=1))
         self.assertNotIn("canary", output.getvalue())
         self.assertNotIn(str(case), output.getvalue())
         self.assertTrue((profile / "private-canary-file").exists())
@@ -1949,7 +2023,7 @@ class ProducerTests(unittest.TestCase):
             self.assertEqual(len(observations), 0 if printing_fails else 1)
             if observations:
                 self.assertEqual(json.loads(observations[0].split("=", 1)[1]), dict(scope="listing",
-                    known_nodes=["appdata", "local_appdata", "local_microsoft", "local_powershell", "local_windows"],
+                    known_nodes=["appdata", "local_appdata", "local_microsoft", "local_powershell", "local_windows", "roaming_appdata"],
                     unknown_directory_count=1, unknown_file_count=0))
             self.assertNotIn("canary", output.getvalue())
             self.assertNotIn(str(self.root), output.getvalue())

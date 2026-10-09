@@ -184,7 +184,8 @@ def hidden():
 
 
 PRIVATE_DIRECTORIES = frozenset({"temp", "home", "profile", "appdata", "localappdata", "helper-env", "output",
-                                 "helper-env/temp", "helper-env/home", "helper-env/profile", "helper-env/appdata", "helper-env/localappdata"})
+                                 "helper-env/temp", "helper-env/home", "helper-env/profile", "helper-env/appdata", "helper-env/localappdata",
+                                 "helper-env/profile/AppData", "helper-env/profile/AppData/Roaming"})
 PRIVATE_FILES = frozenset({"application.exe", "source.conf", "queue.csv", "bridge-stdout.private", "bridge-stderr.private"})
 CREATION_STAGES = frozenset({"validation", "bindings", "token", "sid", "descriptor", "parent", "create",
                              "handle", "stream", "identity", "cleanup"})
@@ -914,6 +915,11 @@ def create_private_roots(case):
     for name in PRIVATE_LOCATIONS:
         private_directory(case, "helper-env/" + name)
         leases["helper"][name] = identity(helper / name)
+    # Exactly the observed helper profile support paths; create with explicit
+    # ownership before the helper starts, and retain them as fixed leases.
+    for name in ("profile/AppData", "profile/AppData/Roaming"):
+        private_directory(case, "helper-env/" + name)
+        leases["helper"][name] = identity(helper / name)
     return leases
 
 
@@ -978,7 +984,7 @@ def application_roots_empty(case, leases, *, observation=None):
 
 
 def helper_cleanup_preserved(current, baseline):
-    # Root/fixed-five identities were just checked by helper_baseline. Only
+    # Root/fixed-directory identities were just checked by helper_baseline. Only
     # already-observed descendant directories may disappear during shutdown.
     need(baseline is not None and set(current).issubset(baseline) and
          all(baseline[path] == value for path, value in current.items()), "cleanup_failed")
