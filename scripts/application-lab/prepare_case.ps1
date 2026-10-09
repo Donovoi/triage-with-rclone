@@ -5,6 +5,17 @@ param([Parameter(Mandatory=$true)][ValidateSet('Create','Verify')][string]$Actio
       [Parameter(Mandatory=$true)][string]$Name)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+function Test-SetupName([string]$Value) {
+    if ($Value -cmatch '\Aapp-(http|webdav)-[a-f0-9]{32}\z') { return $true }
+    foreach ($literal in @(
+        'listing','acquisition','mismatch','missing','denial','cancellation',
+        'webdav-credential-setup','webdav-credentials','webdav-listing','webdav-acquisition','webdav-mismatch','webdav-missing',
+        'webdav-wrong-credentials','webdav-accepted-a','webdav-revoked-a','webdav-replacement-b',
+        'webdav-permission-denied','webdav-truncated-transfer','webdav-cancellation')) {
+        if ([string]::Equals($Value, $literal, [StringComparison]::Ordinal)) { return $true }
+    }
+    return $false
+}
 function Write-SetupStage([ValidateSet('input','parent','identity','acl','compile','create','verify','complete')][string]$Stage) {
     [Console]::Out.WriteLine('{"schema_version":1,"stage":"' + $Stage + '"}')
     [Console]::Out.Flush()
@@ -68,7 +79,7 @@ $ownerIsUser = $null; $ownerIsTokenOwner = $null; $tokenOwnerIsUser = $null
 try {
     Write-SetupStage 'input'
     if ($env:GITHUB_ACTIONS -cne 'true' -or $env:RUNNER_OS -cne 'Windows' -or $env:RUNNER_ENVIRONMENT -cne 'github-hosted' -or $PSVersionTable.PSEdition -ne 'Desktop') { throw 'hosted_only' }
-    if ($Name -cnotmatch '^(app-http-[a-f0-9]{32}|listing|acquisition|mismatch|missing|denial|cancellation)$') { throw 'name_invalid' }
+    if (-not (Test-SetupName $Name)) { throw 'name_invalid' }
     Write-SetupStage 'parent'
     $parentPath = [IO.Path]::GetFullPath($Parent)
     if ($parentPath.StartsWith('\\') -or -not [IO.Directory]::Exists($parentPath)) { throw 'parent_invalid' }
