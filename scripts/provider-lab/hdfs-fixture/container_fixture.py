@@ -92,7 +92,9 @@ def runtime_pin(path=PIN_FILE):
         values[key] = value
     keys = {"RCLONE_VERSION", "RCLONE_EXE_SHA256", "RCLONE_WINDOWS_ZIP_SHA256",
             "RCLONE_LINUX_ZIP_SHA256", "RCLONE_LINUX_EXE_SHA256"}
-    need(set(values) == keys and re.fullmatch(r"[1-9][0-9]*\.[0-9]+\.[0-9]+", values["RCLONE_VERSION"])
+    extended = keys | {"RCLONE_WINDOWS_X86_EXE_SHA256", "RCLONE_WINDOWS_X86_ZIP_SHA256",
+                       "RCLONE_WINDOWS_ARM64_EXE_SHA256", "RCLONE_WINDOWS_ARM64_ZIP_SHA256"}
+    need(set(values) in (keys, extended) and re.fullmatch(r"[1-9][0-9]*\.[0-9]+\.[0-9]+", values["RCLONE_VERSION"])
          and all(re.fullmatch(r"[a-f0-9]{64}", value) for key, value in values.items()
                  if key != "RCLONE_VERSION"), "runtime_invalid")
     return values["RCLONE_VERSION"], values["RCLONE_LINUX_EXE_SHA256"]

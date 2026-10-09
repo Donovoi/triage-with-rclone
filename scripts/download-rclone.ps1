@@ -1,24 +1,36 @@
 # Native Windows bootstrap. Never replace the existing asset until verification succeeds.
+param([ValidateSet('x64', 'x86', 'arm64')][string]$Architecture = 'x64')
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
 $runtime = @{}
 Get-Content -LiteralPath (Join-Path $repo 'rclone-version.env') | ForEach-Object {
     if ($_ -match '^(RCLONE_[A-Z0-9_]+)=(.+)$') { $runtime[$Matches[1]] = $Matches[2] }
 }
+$pins = switch ($Architecture) {
+    'x64' { @('amd64', 'RCLONE_WINDOWS_ZIP_SHA256', 'RCLONE_EXE_SHA256') }
+    'x86' { @('386', 'RCLONE_WINDOWS_X86_ZIP_SHA256', 'RCLONE_WINDOWS_X86_EXE_SHA256') }
+    'arm64' { @('arm64', 'RCLONE_WINDOWS_ARM64_ZIP_SHA256', 'RCLONE_WINDOWS_ARM64_EXE_SHA256') }
+}
+$archiveHash = $runtime[$pins[1]]
+$binaryHash = $runtime[$pins[2]]
+if ($runtime.RCLONE_VERSION -cnotmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' -or
+    $archiveHash -cnotmatch '^[a-f0-9]{64}$' -or $binaryHash -cnotmatch '^[a-f0-9]{64}$') {
+    throw 'Runtime architecture pins are missing or invalid'
+}
 $target = Join-Path $repo 'rclone-triage/assets/rclone.exe'
 if ((Test-Path -LiteralPath $target) -and
-    (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash -eq $runtime.RCLONE_EXE_SHA256) {
-    Write-Output "rclone $($runtime.RCLONE_VERSION) already verified."
+    (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash -eq $binaryHash) {
+    Write-Output "rclone $($runtime.RCLONE_VERSION) ($Architecture) already verified."
     exit 0
 }
 $tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
 $scratch = Join-Path $tempRoot ('triage-runtime-' + [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $scratch | Out-Null
 try {
-    $name = "rclone-v$($runtime.RCLONE_VERSION)-windows-amd64"
+    $name = "rclone-v$($runtime.RCLONE_VERSION)-windows-$($pins[0])"
     $zipPath = Join-Path $scratch 'runtime.zip'
     Invoke-WebRequest -Uri "https://github.com/rclone/rclone/releases/download/v$($runtime.RCLONE_VERSION)/$name.zip" -OutFile $zipPath
-    if ((Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash -ne $runtime.RCLONE_WINDOWS_ZIP_SHA256) {
+    if ((Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash -ne $archiveHash) {
         throw 'Runtime archive SHA256 mismatch'
     }
     Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -29,12 +41,12 @@ try {
         if ($null -eq $entry) { throw 'Runtime archive missing expected executable' }
         [IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $binary)
     } finally { $zip.Dispose() }
-    if ((Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash -ne $runtime.RCLONE_EXE_SHA256) {
+    if ((Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash -ne $binaryHash) {
         throw 'Runtime executable SHA256 mismatch'
     }
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $target) | Out-Null
     Copy-Item -LiteralPath $binary -Destination $target
-    Write-Output "Installed verified rclone $($runtime.RCLONE_VERSION)."
+    Write-Output "Installed verified rclone $($runtime.RCLONE_VERSION) ($Architecture)."
 } finally {
     $resolved = [IO.Path]::GetFullPath($scratch)
     if ($resolved.StartsWith($tempRoot, [StringComparison]::OrdinalIgnoreCase) -and

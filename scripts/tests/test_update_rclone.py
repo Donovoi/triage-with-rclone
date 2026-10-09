@@ -5,6 +5,7 @@ import importlib.util
 import io
 from pathlib import Path
 import stat
+import struct
 import tempfile
 import unittest
 from unittest import mock
@@ -17,10 +18,21 @@ UPDATER = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(UPDATER)
 
 
+def pe_bytes(machine):
+    value = bytearray(160)
+    value[:2] = b"MZ"
+    struct.pack_into("<I", value, 60, 128)
+    value[128:132] = b"PE\0\0"
+    struct.pack_into("<H", value, 132, machine)
+    return bytes(value)
+
+
 def archive_bytes(version, platform, payload=None, duplicate=False, symlink=False):
-    name = f"rclone-v{version}-{platform}-amd64"
-    executable = "rclone.exe" if platform == "windows" else "rclone"
-    payload = payload if payload is not None else (b"MZsynthetic" if platform == "windows" else b"\x7fELFsynthetic")
+    name = f"rclone-v{version}-{platform}"
+    windows = platform.startswith("windows-")
+    executable = "rclone.exe" if windows else "rclone"
+    machine = {"windows-amd64": 0x8664, "windows-386": 0x014c, "windows-arm64": 0xaa64}
+    payload = payload if payload is not None else (pe_bytes(machine[platform]) if windows else b"\x7fELFsynthetic")
     output = io.BytesIO()
     with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
         entry = zipfile.ZipInfo(f"{name}/{executable}")
@@ -50,15 +62,15 @@ class UpdaterTests(unittest.TestCase):
 
     @staticmethod
     def manifest_text(version):
-        return "\n".join([f"RCLONE_VERSION={version}"] + [f"{key}={'0' * 64}" for key in UPDATER.KEYS[1:-1]]) + "\n"
+        return "\n".join([f"RCLONE_VERSION={version}"] + [f"{key}={'0' * 64}" for key in UPDATER.KEYS[1:4]]) + "\n"
 
     @staticmethod
     def make_release(version, **windows_options):
         data = {f"{UPDATER.ORIGIN}/version.txt": f"rclone v{version}\n".encode()}
         checksums = []
-        for platform in ("windows", "linux"):
-            filename = f"rclone-v{version}-{platform}-amd64.zip"
-            payload = archive_bytes(version, platform, **(windows_options if platform == "windows" else {}))
+        for platform in ("windows-amd64", "linux-amd64", "windows-386", "windows-arm64"):
+            filename = f"rclone-v{version}-{platform}.zip"
+            payload = archive_bytes(version, platform, **(windows_options if platform.startswith("windows-") else {}))
             data[f"{UPDATER.ORIGIN}/v{version}/{filename}"] = payload
             checksums.append(f"{hashlib.sha256(payload).hexdigest()}  {filename}")
         data[f"{UPDATER.ORIGIN}/v{version}/SHA256SUMS"] = ("-----BEGIN PGP SIGNED MESSAGE-----\nHash: SHA1\n\n" + "\n".join(checksums) + "\n-----BEGIN PGP SIGNATURE-----\nsynthetic armor\n").encode()
@@ -71,12 +83,15 @@ class UpdaterTests(unittest.TestCase):
         self.assertLessEqual(len(payload), limit)
         destination.write_bytes(payload)
 
-    def test_dry_run_verifies_both_archives_and_binaries_without_edit(self):
+    def test_dry_run_verifies_all_archives_and_binaries_without_edit(self):
         result = UPDATER.update(self.manifest, fetch=self.fetch)
         self.assertTrue(result["verified"])
         self.assertTrue(result["changed"])
         self.assertFalse(result["written"])
-        self.assertEqual(result["pins"]["RCLONE_EXE_SHA256"], hashlib.sha256(b"MZsynthetic").hexdigest())
+        self.assertEqual(result["pins"]["RCLONE_EXE_SHA256"], hashlib.sha256(pe_bytes(0x8664)).hexdigest())
+        self.assertEqual(result["pins"]["RCLONE_WINDOWS_X86_EXE_SHA256"], hashlib.sha256(pe_bytes(0x014c)).hexdigest())
+        self.assertEqual(result["pins"]["RCLONE_WINDOWS_ARM64_EXE_SHA256"], hashlib.sha256(pe_bytes(0xaa64)).hexdigest())
+        self.assertEqual(len(self.urls), 6)
         self.assertEqual(result["pins"]["RCLONE_LINUX_EXE_SHA256"], hashlib.sha256(b"\x7fELFsynthetic").hexdigest())
         self.assertEqual(self.manifest.read_text(), self.original)
         self.assertFalse((self.root / "must-not-extract.txt").exists())
@@ -186,7 +201,7 @@ class UpdaterTests(unittest.TestCase):
 
     def test_extracted_readback_mismatch_preserves_manifest(self):
         original_hash = UPDATER.sha256_file
-        with mock.patch.object(UPDATER, "sha256_file", side_effect=lambda p: "0" * 64 if p.name == "rclone.exe" else original_hash(p)):
+        with mock.patch.object(UPDATER, "sha256_file", side_effect=lambda p: "0" * 64 if p.name.endswith("rclone.exe") else original_hash(p)):
             with self.assertRaisesRegex(UPDATER.UpdateError, "read-back"):
                 UPDATER.update(self.manifest, write=True, fetch=self.fetch)
         self.assertEqual(self.manifest.read_text(), self.original)
@@ -206,6 +221,37 @@ class UpdaterTests(unittest.TestCase):
         with self.assertRaisesRegex(UPDATER.UpdateError, "changed"):
             UPDATER.update(self.manifest, write=True, fetch=changed_fetch)
         self.assertEqual(self.manifest.read_text(), "concurrent edit\n")
+
+    def test_last_architecture_failure_cannot_partially_replace_manifest(self):
+        url = f"{UPDATER.ORIGIN}/v1.0.1/rclone-v1.0.1-windows-arm64.zip"
+        self.release[url] += b"changed"
+        with self.assertRaisesRegex(UPDATER.UpdateError, "archive SHA256"):
+            UPDATER.update(self.manifest, write=True, fetch=self.fetch)
+        self.assertEqual(self.manifest.read_text(), self.original)
+        self.assertEqual(self.urls[-1], url)
+
+    def test_wrong_architecture_rejected_despite_matching_archive_hash(self):
+        self.release = self.make_release("1.0.1", payload=pe_bytes(0x8664))
+        with self.assertRaisesRegex(UPDATER.UpdateError, "PE architecture"):
+            UPDATER.update(self.manifest, write=True, fetch=self.fetch)
+        self.assertEqual(self.manifest.read_text(), self.original)
+
+    def test_complete_legacy_and_new_pins_only_no_partial_architecture_group(self):
+        pins = UPDATER.update(self.manifest, fetch=self.fetch)["pins"]
+        for omitted in (set(UPDATER.KEYS[5:]), set(UPDATER.KEYS[4:]), set()):
+            body = "".join(f"{key}={value}\n" for key, value in pins.items() if key not in omitted)
+            self.assertEqual(UPDATER.parse_manifest(body), {k: v for k, v in pins.items() if k not in omitted})
+        for omitted in UPDATER.KEYS[4:]:
+            body = "".join(f"{key}={value}\n" for key, value in pins.items() if key != omitted)
+            with self.subTest(omitted=omitted), self.assertRaises(UPDATER.UpdateError):
+                UPDATER.parse_manifest(body)
+
+    def test_only_supported_platform_urls_are_allowed(self):
+        for platform in ("windows-386", "windows-arm64", "windows-amd64", "linux-amd64"):
+            UPDATER.validate_url(f"{UPDATER.ORIGIN}/v1.0.1/rclone-v1.0.1-{platform}.zip")
+        for platform in ("windows-x86", "windows-arm", "linux-arm64", "windows-386/other"):
+            with self.subTest(platform=platform), self.assertRaises(UPDATER.UpdateError):
+                UPDATER.validate_url(f"{UPDATER.ORIGIN}/v1.0.1/rclone-v1.0.1-{platform}.zip")
 
 
 if __name__ == "__main__":
