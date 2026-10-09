@@ -477,12 +477,16 @@ class ProducerTests(unittest.TestCase):
                 return original_inventory(path)
             with self.subTest(when=when), mock.patch.object(P, "inventory", side_effect=inventory), \
                  mock.patch.object(P, "remove_owned") as remove:
-                result, flow, suite = self.execute_profile_flow(when)
+                output = io.StringIO()
+                result, flow, suite = self.execute_profile_flow(when, output=output)
             self.assertEqual(changed, [True])
             self.assertEqual(result["failure_code"], "cleanup_failed")
             self.assertFalse(result["checks"]["temp_cleanup"])
             self.assertEqual("start" in flow.events, when == "cleanup")
             self.assertTrue((suite / "listing").is_dir())
+            if when == "cleanup":
+                self.assertEqual(self.post_helper_observation(output), dict(scope="listing", stage="private_identity", location="profile",
+                    entries=None, directories=None, files=None, total_bytes=None, comparison=None, allowlist=None))
             remove.assert_not_called()
 
     def test_late_fixture_failure_cannot_promote(self):
@@ -586,6 +590,15 @@ class ProducerTests(unittest.TestCase):
         self.assertEqual(set(value), {"scope", "stage", "location", "entries", "directories", "files", "total_bytes"})
         return value
 
+    def post_helper_observation(self, output):
+        lines = [line for line in output.getvalue().splitlines() if line.startswith("application_post_helper_diagnostic=")]
+        self.assertEqual(len(lines), 1)
+        value = json.loads(lines[0].split("=", 1)[1])
+        self.assertEqual(set(value), {"scope", "stage", "location", "entries", "directories", "files", "total_bytes", "comparison", "allowlist"})
+        self.assertNotIn("canary", output.getvalue())
+        self.assertNotIn(str(self.root), output.getvalue())
+        return value
+
     def test_cleanup_residue_reports_only_counts_and_preserves_primary_listing_failure(self):
         original_materialize = materialize
         def with_residue(case, name):
@@ -606,8 +619,8 @@ class ProducerTests(unittest.TestCase):
         self.assertFalse(result["checks"]["temp_cleanup"])
         remove.assert_not_called()
         self.assertEqual((suite / "listing/profile/private-name-canary/private-content-canary").read_bytes(), b"xyz")
-        self.assertEqual(self.cleanup_observation(output), dict(scope="listing", stage="private_inventory", location="profile",
-            entries=2, directories=1, files=1, total_bytes=3))
+        self.assertEqual(self.post_helper_observation(output), dict(scope="listing", stage="private_empty", location="profile",
+            entries=2, directories=1, files=1, total_bytes=3, comparison=None, allowlist=None))
         self.assertNotIn("canary", output.getvalue())
         self.assertNotIn(str(self.root), output.getvalue())
 
@@ -625,8 +638,8 @@ class ProducerTests(unittest.TestCase):
         self.assertFalse(result["checks"]["temp_cleanup"])
         self.assertTrue((suite / "listing").is_dir())
         remove.assert_not_called()
-        self.assertEqual(self.cleanup_observation(output), dict(scope="listing", stage="private_inventory", location="appdata",
-            entries=None, directories=None, files=None, total_bytes=None))
+        self.assertEqual(self.post_helper_observation(output), dict(scope="listing", stage="private_inventory", location="appdata",
+            entries=None, directories=None, files=None, total_bytes=None, comparison=None, allowlist=None))
         self.assertNotIn("canary", output.getvalue())
 
     def test_cleanup_removal_failure_is_distinct_from_successful_acl_verification(self):
@@ -640,6 +653,133 @@ class ProducerTests(unittest.TestCase):
         self.assertEqual(self.cleanup_observation(output), dict(scope="listing", stage="owned_removal", location=None,
             entries=None, directories=None, files=None, total_bytes=None))
         self.assertNotIn("canary", output.getvalue())
+
+    def test_post_helper_structure_and_difference_diagnostics_never_allow_removal(self):
+        def baseline(case):
+            (case / "helper-env/temp/owned-child").mkdir()
+        def replace(case):
+            (case / "helper-env/temp/owned-child").rename(case / "private-canary-old")
+            (case / "helper-env/temp/owned-child").mkdir()
+        def different(case):
+            (case / "helper-env/temp/owned-child").rmdir()
+            (case / "helper-env/temp/private-canary-new").mkdir()
+        def root_swap(case):
+            (case / "helper-env/profile").rename(case / "private-canary-profile")
+            (case / "helper-env/profile").mkdir()
+        def over_limit(case):
+            for index in range(28):
+                (case / "helper-env/home" / str(index)).mkdir()
+        variants = [
+            (lambda c: (c / "helper-env/temp/private-canary-new").mkdir(), "helper_comparison", (1, 0, 0)),
+            (replace, "helper_comparison", (0, 0, 1)), (different, "helper_comparison", (1, 1, 0)),
+            (root_swap, "helper_identity", None), (over_limit, "helper_limit", None),
+            (lambda c: (c / "helper-env/temp/private-canary-file").write_bytes(b"xyz"), "helper_directories", None),
+            (lambda c: (c / "helper-env/private-canary-root").mkdir(), "helper_layout", None)]
+        for index, (mutation, stage, counts) in enumerate(variants):
+            output = io.StringIO()
+            with self.subTest(stage=stage, index=index), mock.patch.object(P, "remove_owned") as remove:
+                result, flow, suite = self.execute_profile_flow("post-helper-" + str(index), before_app=baseline,
+                    after_app=mutation, output=output)
+            value = self.post_helper_observation(output)
+            self.assertEqual((value["stage"], value["location"]), (stage, "helper_env"))
+            self.assertEqual(value["comparison"], None if counts is None else
+                dict(zip(("new_entries", "removed_entries", "replaced_entries"), counts)))
+            self.assertIsNone(value["allowlist"])
+            if stage == "helper_identity":
+                self.assertIsNone(value["entries"])
+            else:
+                self.assertIs(type(value["entries"]), int)
+            self.assertEqual(result["failure_code"], "cleanup_failed")
+            self.assertTrue(result["checks"]["inventory_exact"])
+            self.assertTrue(result["checks"]["process_cleanup"])
+            self.assertFalse(result["checks"]["temp_cleanup"])
+            self.assertIn("start", flow.events)
+            self.assertTrue((suite / "listing").exists())
+            remove.assert_not_called()
+
+    def test_post_helper_unknown_inventory_and_diagnostic_failure_preserve_original(self):
+        case = self.root / "post-helper-direct"
+        case.mkdir()
+        leases = P.create_private_roots(case)
+        baseline = P.prestart_baseline("listing", case, leases)
+        original_inventory = P.inventory
+        error = OSError("private-canary")
+        for fail_output in (False, True):
+            def inventory(path):
+                if Path(path).name == "helper-env":
+                    raise error
+                return original_inventory(path)
+            with mock.patch.object(P, "inventory", side_effect=inventory), redirect_stdout(io.StringIO()) as output:
+                if fail_output:
+                    with mock.patch.object(P, "post_helper_diagnostic", side_effect=RuntimeError("private-canary-output")), \
+                         self.assertRaises(OSError) as caught:
+                        P.post_helper_preserved("listing", case, leases, baseline)
+                else:
+                    with self.assertRaises(OSError) as caught:
+                        P.post_helper_preserved("listing", case, leases, baseline)
+            self.assertIs(caught.exception, error)
+            if not fail_output:
+                self.assertEqual(self.post_helper_observation(output), dict(scope="listing", stage="helper_inventory", location="helper_env",
+                    entries=None, directories=None, files=None, total_bytes=None, comparison=None, allowlist=None))
+        for invalid in (None, {"private-canary": ("private-canary", 0)}):
+            with redirect_stdout(io.StringIO()) as output, self.assertRaisesRegex(P.ProducerError, "^cleanup_failed$"):
+                P.post_helper_preserved("listing", case, leases, invalid)
+            value = self.post_helper_observation(output)
+            self.assertEqual(value["stage"], "helper_comparison")
+            self.assertIsNone(value["comparison"])
+
+    def test_probe_case_allowlist_and_size_failure_diagnostics_are_closed_counts(self):
+        def extra(case):
+            (case / "private-canary-dir").mkdir()
+            (case / "private-canary-file").write_bytes(b"xyz")
+        variants = [(extra, "case_layout", (1, 0, 1, 0)),
+            (lambda c: (c / "bridge-stderr.private").unlink(), "case_layout", (0, 0, 0, 1)),
+            (lambda c: (c / "bridge-stderr.private").write_bytes(b"x" * (1024 * 1024 + 1)), "case_file_limit", None)]
+        for index, (mutation, stage, counts) in enumerate(variants):
+            with self.subTest(index=index), self.probe_patches(), mock.patch.object(P, "prepare", side_effect=fake_prepare), \
+                 mock.patch.object(P, "remove_owned") as remove, redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(P.bridge_probe(self.probe_bridge_factory(after_close=mutation)), 1)
+            value = self.post_helper_observation(output)
+            self.assertEqual((value["stage"], value["location"]), (stage, "case_root"))
+            self.assertIsNone(value["comparison"])
+            self.assertEqual(value["allowlist"], None if counts is None else
+                dict(zip(("unexpected_directories", "missing_directories", "unexpected_files", "missing_files"), counts)))
+            remove.assert_not_called()
+        # A directory disappearing from the final whole-case inventory must be
+        # reported distinctly even after its earlier leased-root check passed.
+        original_inventory = P.inventory
+        def missing_directory(path):
+            value = original_inventory(path)
+            if Path(path).name == "listing" and "bridge-stdout.private" in value:
+                value.pop("profile")
+            return value
+        with self.probe_patches(), mock.patch.object(P, "prepare", side_effect=fake_prepare), \
+             mock.patch.object(P, "inventory", side_effect=missing_directory), mock.patch.object(P, "remove_owned") as remove, \
+             redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(P.bridge_probe(self.probe_bridge_factory()), 1)
+        self.assertEqual(self.post_helper_observation(output)["allowlist"], dict(unexpected_directories=0,
+            missing_directories=1, unexpected_files=0, missing_files=0))
+        remove.assert_not_called()
+
+    def test_post_helper_diagnostic_rejects_unknown_fields_and_unsafe_counts(self):
+        summary = dict(entries=5, directories=5, files=0, total_bytes=0)
+        base = dict(name="listing", stage="helper_comparison", location="helper_env", summary=summary,
+            comparison=dict(new_entries=1, removed_entries=0, replaced_entries=0))
+        mutations = [dict(name="private-canary"), dict(stage="private-canary"), dict(location="private-canary"),
+            dict(stage="helper_identity"), dict(summary=dict(summary, entries=True)),
+            dict(comparison=dict(new_entries=33, removed_entries=0, replaced_entries=0)),
+            dict(comparison=dict(new_entries="1", removed_entries=0, replaced_entries=0)),
+            dict(comparison=dict(new_entries=1, removed_entries=0, replaced_entries=0, private_canary=1)),
+            dict(allowlist=dict(unexpected_directories=0, missing_directories=0, unexpected_files=0, missing_files=0))]
+        for mutation in mutations:
+            with redirect_stdout(io.StringIO()) as output, self.assertRaises(P.ProducerError):
+                P.post_helper_diagnostic(**dict(base, **mutation))
+            self.assertEqual(output.getvalue(), "")
+        for bad in (True, -1, 1025, "1"):
+            with redirect_stdout(io.StringIO()) as output, self.assertRaises(P.ProducerError):
+                P.post_helper_diagnostic("listing", "case_layout", "case_root", allowlist=dict(
+                    unexpected_directories=bad, missing_directories=0, unexpected_files=0, missing_files=0))
+            self.assertEqual(output.getvalue(), "")
 
     def test_cleanup_diagnostic_rejects_unbounded_or_nonfinite_fields(self):
         counts = dict(entries=2, directories=1, files=1, total_bytes=3)

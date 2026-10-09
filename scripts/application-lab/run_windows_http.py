@@ -741,6 +741,70 @@ def prestart_baseline(name, case, leases):
         raise
 
 
+POST_HELPER_STAGES = PRESTART_STAGES | {"helper_comparison", "case_inventory", "case_layout", "case_file_limit"}
+HELPER_COMPARISON_FIELDS = frozenset({"new_entries", "removed_entries", "replaced_entries"})
+CASE_ALLOWLIST_FIELDS = frozenset({"unexpected_directories", "missing_directories", "unexpected_files", "missing_files"})
+
+
+def bounded_diagnostic_fields(value, fields, limit):
+    if value is not None:
+        need(type(value) is dict and set(value) == fields and
+             all(type(count) is int and 0 <= count <= limit for count in value.values()), "cleanup_failed")
+    return value
+
+
+def post_helper_diagnostic(name, stage, location, summary=None, comparison=None, allowlist=None):
+    need(all(type(value) is str for value in (name, stage, location)) and
+         name in E.CASE_ORDER and stage in POST_HELPER_STAGES and
+         (location == "helper_env" if stage.startswith("helper_") else location == "case_root"
+          if stage.startswith("case_") else location in PRIVATE_LOCATIONS), "cleanup_failed")
+    need(summary is None or stage in {"private_empty", "helper_limit", "helper_directories", "helper_layout",
+         "helper_comparison", "case_layout", "case_file_limit"}, "cleanup_failed")
+    need(comparison is None or stage == "helper_comparison", "cleanup_failed")
+    need(allowlist is None or stage == "case_layout", "cleanup_failed")
+    value = dict(scope=name, stage=stage, location=location, **diagnostic_counts(summary),
+        comparison=bounded_diagnostic_fields(comparison, HELPER_COMPARISON_FIELDS, 32),
+        allowlist=bounded_diagnostic_fields(allowlist, CASE_ALLOWLIST_FIELDS, 1024))
+    print("application_post_helper_diagnostic=" + E.compact(value).decode("ascii"), flush=True)
+
+
+def post_helper_preserved(name, case, leases, baseline, *, probe=False):
+    """Keep the existing cleanup predicates; expose only failed finite observations."""
+    observation = dict(stage="private_identity", location="temp", summary=None, comparison=None, allowlist=None)
+    try:
+        application_roots_empty(case, leases, observation=observation)
+        current = helper_baseline(case, leases, observation=observation)
+        observation.update(stage="helper_comparison", summary=dict(entries=len(current), directories=len(current), files=0, total_bytes=0))
+        # Unknown/malformed private state cannot yield invented difference counts.
+        if type(baseline) is dict and len(baseline) <= 32 and all(type(path) is str and type(value) is tuple and
+                len(value) == 2 and all(type(part) is int and part >= 0 for part in value) for path, value in baseline.items()):
+            observation["comparison"] = dict(new_entries=len(set(current) - set(baseline)),
+                removed_entries=len(set(baseline) - set(current)),
+                replaced_entries=sum(current[path] != baseline[path] for path in set(current) & set(baseline)))
+        helper_cleanup_preserved(current, baseline)
+        if not probe:
+            return None
+        observation.update(stage="case_inventory", location="case_root", summary=None, comparison=None)
+        entries = inventory(case)
+        expected_dirs = set(PRIVATE_LOCATIONS) | {"helper-env"} | {"helper-env/" + path for path in current}
+        expected_files = {"bridge-stdout.private", "bridge-stderr.private"}
+        directories = {path for path, value in entries.items() if value[0]}
+        files = {path for path, value in entries.items() if not value[0]}
+        observation.update(stage="case_layout", summary=inventory_summary(entries), allowlist=dict(
+            unexpected_directories=len(directories - expected_dirs), missing_directories=len(expected_dirs - directories),
+            unexpected_files=len(files - expected_files), missing_files=len(expected_files - files)))
+        need(directories == expected_dirs and files == expected_files, "cleanup_failed")
+        observation.update(stage="case_file_limit", allowlist=None)
+        need(all(value[1] <= 1024 * 1024 for value in entries.values() if not value[0]), "cleanup_failed")
+        return entries
+    except BaseException:
+        try:
+            post_helper_diagnostic(name, **observation)
+        except BaseException:
+            pass
+        raise
+
+
 def cleanup_diagnostic(name, stage, location=None, summary=None):
     """Failure-only counts from an already bounded, link-checked inventory."""
     need(name in E.CASE_ORDER and stage in CLEANUP_STAGES and
@@ -1001,17 +1065,8 @@ def run_case(name, suite, application, application_sha, runtime, session_factory
                     if name != "listing":
                         cleanup_stage = "queue_bytes"
                         need(read(case / "queue.csv", 65536) == queue_bytes(name), "preservation_failed")
-                for child in PRIVATE_LOCATIONS:
-                    cleanup_stage, cleanup_location, cleanup_summary = "private_inventory", child, None
-                    need(identity(case / child) == private_leases["application"][child], "cleanup_failed")
-                    entries = inventory(case / child)
-                    need(identity(case / child) == private_leases["application"][child], "cleanup_failed")
-                    cleanup_summary = inventory_summary(entries)
-                    need(not entries, "cleanup_failed")
-                cleanup_stage, cleanup_location, cleanup_summary = "private_inventory", "helper_env", None
-                current_helper = helper_baseline(case, private_leases)
-                cleanup_summary = dict(entries=len(current_helper), directories=len(current_helper), files=0, total_bytes=0)
-                helper_cleanup_preserved(current_helper, helper_before)
+                cleanup_stage = "post_helper"
+                post_helper_preserved(name, case, private_leases, helper_before)
                 cleanup_stage, cleanup_location, cleanup_summary = "acl_verify", None, None
                 checks["process_cleanup"] = False
                 prepare(suite, name, "Verify")
@@ -1021,7 +1076,8 @@ def run_case(name, suite, application, application_sha, runtime, session_factory
                 checks["temp_cleanup"] = True
             except BaseException:
                 fail("cleanup_failed")
-                cleanup_diagnostic(name, cleanup_stage, cleanup_location, cleanup_summary)
+                if cleanup_stage != "post_helper":
+                    cleanup_diagnostic(name, cleanup_stage, cleanup_location, cleanup_summary)
         elif not case.exists():
             checks["temp_cleanup"] = True
     if not all(checks.values()) and record["failure_code"] is None:
@@ -1164,14 +1220,7 @@ def bridge_probe(session_factory=None):
         need(identity(parent) == parent_id and identity(suite) == suite_id and identity(case) == case_id,
              "preservation_failed")
         stage = "private_inventory"
-        application_roots_empty(case, private_leases)
-        current_helper = helper_baseline(case, private_leases)
-        helper_cleanup_preserved(current_helper, baseline)
-        entries = inventory(case)
-        expected_dirs = set(PRIVATE_LOCATIONS) | {"helper-env"} | {"helper-env/" + path for path in current_helper}
-        need({p for p, v in entries.items() if v[0]} == expected_dirs and
-             {p for p, v in entries.items() if not v[0]} == {"bridge-stdout.private", "bridge-stderr.private"} and
-             all(v[1] <= 1024 * 1024 for v in entries.values() if not v[0]), "cleanup_failed")
+        entries = post_helper_preserved("listing", case, private_leases, baseline, probe=True)
         stage = "case_acl"
         prepare(suite, "listing", "Verify")
         stage = "source"
