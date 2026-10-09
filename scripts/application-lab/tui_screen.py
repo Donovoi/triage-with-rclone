@@ -19,6 +19,13 @@ Snapshot availability is not proof that an application redraw has finished.
 References: Microsoft Console Virtual Terminal Sequences (cursor, erase, margins,
 SGR, OSC and alternate buffer); xterm ctlseqs (synchronized output); pinned
 crossterm 0.28.1 and ratatui-crossterm sources. No incoming escape is executed.
+
+Microsoft terminal/src/host/VtIo.cpp StartIfNeeded/Shutdown requests input modes
+1004/9001 and DA1. Input modes and exact DA1 requests have no rendering effect;
+we do not send focus/key events or fabricate capability replies. This source
+compatibility does not identify the bytes of any hosted failure. See:
+https://github.com/microsoft/terminal/blob/6676c6f938f7e98ad680f0cecedd3bafb6529734/src/host/VtIo.cpp
+https://github.com/microsoft/terminal/blob/6676c6f938f7e98ad680f0cecedd3bafb6529734/src/terminal/adapter/adaptDispatch.cpp
 """
 import codecs
 from typing import NamedTuple
@@ -320,6 +327,9 @@ class Screen:
         return values
 
     def _csi(self, body, final):
+        if final == "c" and body in ("", "0"):
+            # DA1 requests only. Replies/private queries remain unsupported.
+            return
         if body.startswith("?"):
             values = self._parameters(body[1:])
             if final not in "hl" or not values:
@@ -423,7 +433,8 @@ class Screen:
             self.cursor_visible = enabled
         elif value == 2026:
             self._sync = enabled
-        elif value not in (1, 12, 2004):  # Input cursor mode, cursor blink, bracketed paste.
+        # Input cursor mode, cursor blink, focus events, bracketed paste, Win32 input.
+        elif value not in (1, 12, 1004, 2004, 9001):
             self._fail("sequence_unsupported")
 
     def _sgr(self, values):
