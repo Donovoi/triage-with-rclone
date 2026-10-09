@@ -73,6 +73,7 @@ namespace TriageApplicationLab {
         IntPtr process,job,console;
         FileStream input,output,transcript;
         Thread reader,writer,closer,resizer;
+        LaunchObserver launch;
         Timer watchdog;
         string caseRoot;
         HostedSourceDirectory sourceDirectory;
@@ -223,7 +224,11 @@ namespace TriageApplicationLab {
         public static HostedConPtySession StartTui(string appPath,string appSha256,string[] arguments,string root,IDictionary<string,string> environment,string transcriptPath,int maxOutputBytes,int deadlineMilliseconds,int maxRuntimeProcesses) {
             return StartCore(appPath,appSha256,arguments,root,environment,transcriptPath,maxOutputBytes,deadlineMilliseconds,maxRuntimeProcesses,true,false);
         }
-        static HostedConPtySession StartCore(string appPath,string appSha256,string[] arguments,string root,IDictionary<string,string> environment,string transcriptPath,int maxOutputBytes,int deadlineMilliseconds,int maxRuntimeProcesses,bool tui,bool sourceCwd) {
+        public static HostedConPtySession StartSourceObserved(string appPath,string appSha256,string[] arguments,string root,IDictionary<string,string> environment,string transcriptPath,int maxOutputBytes,int deadlineMilliseconds,int maxRuntimeProcesses,string expectedRuntimeSha256,int maxRuntimeLaunches) {
+            Require(Sha(expectedRuntimeSha256) && maxRuntimeLaunches>=1 && maxRuntimeLaunches<=32);
+            return StartCore(appPath,appSha256,arguments,root,environment,transcriptPath,maxOutputBytes,deadlineMilliseconds,maxRuntimeProcesses,false,true,expectedRuntimeSha256,maxRuntimeLaunches);
+        }
+        static HostedConPtySession StartCore(string appPath,string appSha256,string[] arguments,string root,IDictionary<string,string> environment,string transcriptPath,int maxOutputBytes,int deadlineMilliseconds,int maxRuntimeProcesses,bool tui,bool sourceCwd,string launchSha=null,int maxLaunches=0) {
             Require(Sha(appSha256) && arguments!=null && arguments.Length<=64 && maxOutputBytes>=1024 && maxOutputBytes<=8388608 && deadlineMilliseconds>=1000 && deadlineMilliseconds<=180000 && RuntimeCountAllowed(maxRuntimeProcesses,1));
             if(sourceCwd) HostedSourceDirectory.SourcePath(root);
             root=FullPath(root); PrivateRoot(root); appPath=FullPath(appPath); PlainExisting(appPath,false);
@@ -233,11 +238,23 @@ namespace TriageApplicationLab {
             var command=new StringBuilder(Quote(appPath)); foreach(string argument in arguments) command.Append(' ').Append(Quote(argument));
             Require(command.Length<=16384);
             var s=new HostedConPtySession {caseRoot=root,maxOutput=maxOutputBytes,deadlineMs=deadlineMilliseconds,maxRuntimeProcesses=maxRuntimeProcesses,tui=tui};
+            if(launchSha!=null) {
+                Require(sourceCwd && !tui);
+                s.launch=new LaunchObserver(s,appPath,appSha256,launchSha,maxRuntimeProcesses,maxLaunches);
+                s.launch.Start(delegate { s.StartNative(appPath,appSha256,command,block,transcriptPath,sourceCwd); });
+                if(!s.launch.WaitStarted(Math.Min(20000,deadlineMilliseconds))) { s.Error("debug_start_failed"); s.Finish(0); }
+            } else s.StartNative(appPath,appSha256,command,block,transcriptPath,sourceCwd);
+            return s;
+        }
+        void StartNative(string appPath,string appSha256,StringBuilder command,string block,string transcriptPath,bool sourceCwd) {
+            var s=this; string root=caseRoot;
             IntPtr inRead=IntPtr.Zero,inWrite=IntPtr.Zero,outRead=IntPtr.Zero,outWrite=IntPtr.Zero,attrs=IntPtr.Zero,env=IntPtr.Zero;
             ProcessInfo pi=new ProcessInfo(); bool initialized=false;
             FileStream appLock=null;
             try {
+                if(s.launch!=null) s.launch.CheckStarting();
                 if(sourceCwd) s.sourceDirectory=HostedSourceDirectory.Acquire(root);
+                if(s.launch!=null) s.launch.AcquireTemp();
                 // Retain a non-delete/non-write sharing lock from hash verification
                 // through creation of the suspended image and its identity check.
                 appLock=new FileStream(appPath,FileMode.Open,FileAccess.Read,FileShare.Read);
@@ -257,30 +274,39 @@ namespace TriageApplicationLab {
                 var startup=new StartupEx(); startup.startup.cb=Marshal.SizeOf(typeof(StartupEx)); startup.startup.flags=0x100; startup.attributes=attrs;
                 env=Marshal.StringToHGlobalUni(block);
                 if(s.sourceDirectory!=null) s.sourceDirectory.Verify();
+                if(s.launch!=null) s.launch.CheckStarting();
                 // EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED.
-                Require(CreateProcessW(appPath,command,IntPtr.Zero,IntPtr.Zero,false,0x80404,env,s.sourceDirectory==null?root:s.sourceDirectory.Path,ref startup,out pi));
-                s.process=pi.process;
+                Require(CreateProcessW(appPath,command,IntPtr.Zero,IntPtr.Zero,false,s.launch==null?0x80404u:0x80405u,env,s.sourceDirectory==null?root:s.sourceDirectory.Path,ref startup,out pi));
+                if(s.launch==null) s.process=pi.process;
+                else s.process=s.launch.CaptureCreation(pi);
                 if(!AssignProcessToJobObject(s.job,s.process)) {
                     s.forced=true; s.Error("job_assignment_failed");
                     if(!TerminateProcess(s.process,99)) s.Error("termination_failed");
                     throw new InvalidOperationException("start_failed");
                 }
+                if(s.launch!=null) s.launch.Assigned();
                 Require(String.Equals(Image(s.process),appPath,StringComparison.OrdinalIgnoreCase));
                 if(s.sourceDirectory!=null) s.sourceDirectory.Verify();
+                if(s.launch!=null) s.launch.VerifyTemp();
+                if(s.launch!=null) s.launch.CheckStarting();
                 Require(!s.Deadline && ResumeThread(pi.thread)!=0xffffffff);
-                s.watchdog=new Timer(delegate { if(s.Deadline && !s.finished) { s.Error("deadline_exceeded"); s.Finish(0); } },null,100,100);
-                return s;
+                // The debug creator/pump enforces the same session deadline.
+                // Do not create a late timer after Finish has stopped startup.
+                if(s.launch==null) s.watchdog=new Timer(delegate { if(s.Deadline && !s.finished) { s.Error("deadline_exceeded"); s.Finish(0); } },null,100,100);
+                return;
             } catch(Exception e) {
-                foreach(string code in HostedSourceDirectory.FailureCodes(e)) s.Error(code);
+                if(s.launch!=null) s.launch.SourceFailure(e);
+                else foreach(string code in HostedSourceDirectory.FailureCodes(e)) s.Error(code);
                 s.Error("start_failed");
                 // Release parent copies before waiting for ConPTY/reader EOF.
                 if(inRead!=IntPtr.Zero) { CloseHandle(inRead); inRead=IntPtr.Zero; }
                 if(outWrite!=IntPtr.Zero) { CloseHandle(outWrite); outWrite=IntPtr.Zero; }
-                s.Finish(0); return s;
+                if(s.launch==null) s.Finish(0); else s.launch.StartFailed();
+                return;
             }
             finally {
                 if(appLock!=null) appLock.Dispose();
-                if(pi.thread!=IntPtr.Zero) CloseHandle(pi.thread);
+                if(s.launch==null && pi.thread!=IntPtr.Zero) CloseHandle(pi.thread);
                 if(initialized) DeleteProcThreadAttributeList(attrs); if(attrs!=IntPtr.Zero) Marshal.FreeHGlobal(attrs);
                 if(env!=IntPtr.Zero) Marshal.FreeHGlobal(env);
                 foreach(IntPtr handle in new IntPtr[]{inRead,inWrite,outRead,outWrite}) if(handle!=IntPtr.Zero) CloseHandle(handle);
@@ -350,7 +376,7 @@ namespace TriageApplicationLab {
             lock(api) {
                 runtimeProcessCount=null;
                 try {
-                    Require(!closing && !finished && !Deadline && Sha(expectedSha256));
+                    Require(launch==null && !closing && !finished && !Deadline && Sha(expectedSha256));
                     string root=FullPath(extractionRoot); Require(Inside(caseRoot,root)); PlainExisting(root,true);
                     Require(process!=IntPtr.Zero && !Exited(process)); ObserveChildren();
                     int matches=0; string runtimePath=null;
@@ -375,7 +401,7 @@ namespace TriageApplicationLab {
         }
         public Dictionary<string,object> SendCtrlCOnce() {
             lock(api) {
-                if(closing || finished || ctrlSent || !runtimeObserved || Deadline || process==IntPtr.Zero || Exited(process)) { Error("ctrl_c_refused"); return Finish(0); }
+                if(launch!=null || closing || finished || ctrlSent || !runtimeObserved || Deadline || process==IntPtr.Zero || Exited(process)) { Error("ctrl_c_refused"); return Finish(0); }
                 bool wrote=false;
                 writer=new Thread(delegate() { try { input.WriteByte(3); input.Flush(); wrote=true; } catch { Error("input_failed"); } }); writer.IsBackground=true; writer.Start();
                 if(!writer.Join(1000)) { Error("input_timeout"); return Finish(0); }
@@ -448,6 +474,15 @@ namespace TriageApplicationLab {
                 closing=true;
                 bool noProcess=process==IntPtr.Zero;
                 if(watchdog!=null) watchdog.Dispose();
+                if(launch!=null) {
+                    // The creator must continue EXIT events before process waits
+                    // and before any common handle/lease can be closed. It never
+                    // acquires api, including on errors or during this join.
+                    if(!launch.JoinForFinish(graceMilliseconds)) {
+                        Error("debug_cleanup_failed"); finished=true; return Snapshot();
+                    }
+                    launch.CheckQualification(); noProcess=process==IntPtr.Zero;
+                }
                 long end=Math.Min((long)deadlineMs,elapsed.ElapsedMilliseconds+graceMilliseconds);
                 try {
                     while(elapsed.ElapsedMilliseconds<end) {
@@ -467,7 +502,7 @@ namespace TriageApplicationLab {
                     if(!appExited || !childrenExited || !jobZero) Error("process_cleanup_failed");
                     if(process!=IntPtr.Zero && appExited) { uint code; Require(GetExitCodeProcess(process,out code)); appExit=code; }
                 } catch { Error("process_cleanup_failed"); }
-                if(job!=IntPtr.Zero) { if(!jobZero) forced=true; CloseHandle(job); job=IntPtr.Zero; }
+                if(job!=IntPtr.Zero) { if(!jobZero) forced=true; if(!CloseHandle(job) && launch!=null) launch.CommonCloseFailed(); job=IntPtr.Zero; }
                 closer=new Thread(delegate() {
                     try {
                         // Never close a ConPTY handle still in a resize call.
@@ -484,14 +519,15 @@ namespace TriageApplicationLab {
                 }); closer.IsBackground=true; closer.Start();
                 bool closerJoined=closer.Join(10000);
                 if(!closerJoined) Error("console_cleanup_timeout");
-                foreach(Child child in children) CloseHandle(child.handle);
-                if(process!=IntPtr.Zero) { CloseHandle(process); process=IntPtr.Zero; }
+                foreach(Child child in children) if(!CloseHandle(child.handle) && launch!=null) launch.CommonCloseFailed();
+                if(process!=IntPtr.Zero) { if(!CloseHandle(process) && launch!=null) launch.CommonCloseFailed(); process=IntPtr.Zero; }
+                bool quiet=(noProcess || (appExited && childrenExited && jobZero)) &&
+                    closerJoined && consoleClosed && readerJoined &&
+                    (writer==null || !writer.IsAlive) && (resizer==null || !resizer.IsAlive);
+                if(launch!=null) { if(quiet) launch.CloseTemp(); else Error("debug_cleanup_failed"); quiet=quiet && launch.Released; }
                 if(sourceDirectory!=null) {
                     // A failed launch may own pins before it owns a process/job.
                     // Uncertain process or reader/console lifetime retains the pins.
-                    bool quiet=(noProcess || (appExited && childrenExited && jobZero)) &&
-                        closerJoined && consoleClosed && readerJoined &&
-                        (writer==null || !writer.IsAlive) && (resizer==null || !resizer.IsAlive);
                     if(quiet) {
                         try { sourceDirectory.Verify(); } catch(Exception e) {
                             foreach(string code in HostedSourceDirectory.FailureCodes(e)) Error(code);
@@ -521,7 +557,380 @@ namespace TriageApplicationLab {
                 return result;
             }
         }
+        public Dictionary<string,object> LaunchSnapshot() {
+            lock(api) {
+                Require(launch!=null);
+                var result=Snapshot(); result["schema_version"]=3;
+                launch.AddSnapshot(result); return result;
+            }
+        }
+        // DEBUG_PROCESS is opt-in. All debug APIs run on the creator thread.
+        // That thread never takes api or calls Finish: Finish may be joining it.
+        sealed class LaunchObserver {
+            [StructLayout(LayoutKind.Sequential)] internal struct ExceptionRecord {
+                public uint code,flags; public IntPtr record,address; public uint count;
+                public UIntPtr p0,p1,p2,p3,p4,p5,p6,p7,p8,p9,p10,p11,p12,p13,p14;
+            }
+            [StructLayout(LayoutKind.Sequential)] internal struct ExceptionInfo { public ExceptionRecord record; public uint first; }
+            [StructLayout(LayoutKind.Sequential)] internal struct CreateInfo {
+                public IntPtr file,process,thread,baseAddress; public uint offset,size;
+                public IntPtr local,start,name; public ushort unicode;
+            }
+            [StructLayout(LayoutKind.Sequential)] internal struct LoadInfo {
+                public IntPtr file,baseAddress; public uint offset,size; public IntPtr name; public ushort unicode;
+            }
+            [StructLayout(LayoutKind.Explicit)] internal struct EventInfo {
+                [FieldOffset(0)] public ExceptionInfo exception;
+                [FieldOffset(0)] public CreateInfo create;
+                [FieldOffset(0)] public LoadInfo load;
+                [FieldOffset(0)] public uint exit;
+            }
+            [StructLayout(LayoutKind.Sequential)] internal struct DebugEvent { public uint code,pid,tid; public EventInfo info; }
+            [DllImport("kernel32.dll",SetLastError=true)] static extern bool WaitForDebugEvent(out DebugEvent value,uint milliseconds);
+            [DllImport("kernel32.dll",SetLastError=true)] static extern bool ContinueDebugEvent(uint pid,uint tid,uint status);
+            [DllImport("kernel32.dll",SetLastError=true)] static extern bool DuplicateHandle(IntPtr sourceProcess,IntPtr source,IntPtr targetProcess,out IntPtr target,uint access,bool inherit,uint options);
+            sealed class OwnedProcess { public IntPtr handle; public ulong created; }
+            readonly HostedConPtySession session;
+            readonly string appPath,appSha,expected;
+            readonly object sync=new object();
+            readonly HostedLaunchState state;
+            readonly Dictionary<uint,OwnedProcess> processes=new Dictionary<uint,OwnedProcess>();
+            readonly List<IntPtr> uncertainHandles=new List<IntPtr>();
+            readonly object startSignal=new object();
+            bool startSignaled;
+            Thread pump;
+            HostedSourceDirectory temp,imageParent;
+            IntPtr initialProcess,initialThread;
+            uint initialPid,initialTid;
+            bool assigned,creationSeen,terminationRequested,tempClosed;
+            volatile bool startupFailed,startOkay,joined,handlesFailed;
+            int verified;
+            long finishAt=Int64.MaxValue;
+            public LaunchObserver(HostedConPtySession s,string path,string appHash,string hash,int concurrent,int launches) {
+                session=s; appPath=path; appSha=appHash; expected=hash;
+                state=new HostedLaunchState(concurrent,launches);
+            }
+            public static Dictionary<string,int> Layout() {
+                return new Dictionary<string,int> {
+                    {"pointer",IntPtr.Size},{"event_size",Marshal.SizeOf(typeof(DebugEvent))},
+                    {"union_offset",Marshal.OffsetOf(typeof(DebugEvent),"info").ToInt32()},
+                    {"create_size",Marshal.SizeOf(typeof(CreateInfo))},
+                    {"create_process_offset",Marshal.OffsetOf(typeof(CreateInfo),"process").ToInt32()},
+                    {"create_thread_offset",Marshal.OffsetOf(typeof(CreateInfo),"thread").ToInt32()},
+                    {"exception_first_offset",Marshal.OffsetOf(typeof(ExceptionInfo),"first").ToInt32()}
+                };
+            }
+            void Fail(string code) { lock(sync) state.Fail(code); session.Error(code); }
+            public void CheckStarting() { lock(sync) state.CheckStarting(session.closing || session.finished,session.Deadline); }
+            public void SourceFailure(Exception error) {
+                string[] codes;
+                lock(sync) { codes=state.ObserveSourceFailure(error); if(state.CleanupUncertain) handlesFailed=true; }
+                foreach(string code in codes) session.Error(code);
+                if(handlesFailed) session.Error("debug_cleanup_failed");
+            }
+            public void AcquireTemp() { temp=HostedSourceDirectory.AcquireRuntimeTemp(session.caseRoot); temp.Verify(); }
+            public void VerifyTemp() { Require(temp!=null); temp.Verify(); }
+            static IntPtr Duplicate(IntPtr handle,bool sameAccess) {
+                IntPtr result; Require(DuplicateHandle(new IntPtr(-1),handle,new IntPtr(-1),out result,sameAccess?0u:0x00101000u,false,sameAccess?2u:0u));
+                Require(result!=IntPtr.Zero && result!=new IntPtr(-1)); return result;
+            }
+            public IntPtr CaptureCreation(ProcessInfo pi) {
+                // Keep PI originals live until CREATE permits an alias comparison.
+                initialProcess=pi.process; initialThread=pi.thread; initialPid=(uint)pi.pid; initialTid=(uint)pi.tid;
+                lock(sync) state.SetRoot(initialPid);
+                return Duplicate(initialProcess,true);
+            }
+            public void Assigned() { assigned=true; }
+            public void StartFailed() { startupFailed=true; Fail("debug_start_failed"); Terminate(); }
+            public void Start(Action create) {
+                pump=new Thread(delegate() {
+                    try { create(); Pump(); }
+                    catch(Exception error) { SourceFailure(error); handlesFailed=true; Fail("debug_cleanup_failed"); Terminate(); }
+                    finally { SignalStarted(); }
+                });
+                pump.IsBackground=true;
+                try { pump.Start(); } catch { pump=null; joined=true; startupFailed=true; Fail("debug_start_failed"); SignalStarted(); }
+            }
+            void SignalStarted() { lock(startSignal) { startSignaled=true; Monitor.PulseAll(startSignal); } }
+            public bool WaitStarted(int milliseconds) {
+                // A managed condition avoids adding an unreported kernel event
+                // handle whose lifetime could race Finish's bounded join.
+                var wait=Stopwatch.StartNew();
+                lock(startSignal) {
+                    while(!startSignaled) {
+                        int remaining=milliseconds-(int)wait.ElapsedMilliseconds;
+                        if(remaining<=0) return false;
+                        Monitor.Wait(startSignal,remaining);
+                    }
+                    return startOkay && !startupFailed;
+                }
+            }
+            public bool JoinForFinish(int grace) {
+                lock(sync) state.StopStarting();
+                Interlocked.Exchange(ref finishAt,Math.Min((long)session.deadlineMs,session.elapsed.ElapsedMilliseconds+grace));
+                joined=pump==null || pump.Join(grace+6000);
+                if(!joined) Fail("debug_cleanup_failed");
+                return joined && EventResourcesClosed;
+            }
+            void CloseOwned(ref IntPtr handle) {
+                if(handle==IntPtr.Zero) return;
+                IntPtr value=handle; handle=IntPtr.Zero;
+                if(!CloseHandle(value)) { uncertainHandles.Add(value); handlesFailed=true; Fail("debug_cleanup_failed"); }
+            }
+            void ResolveOriginals(CreateInfo info) {
+                Require(!creationSeen && initialProcess!=IntPtr.Zero && initialThread!=IntPtr.Zero);
+                // Live equal values identify one handle-table entry, whose OS
+                // event lifecycle must own the only close. Never compare after close.
+                if(HostedLaunchState.EventOwnsCreationHandle(initialProcess,info.process)) initialProcess=IntPtr.Zero;
+                else CloseOwned(ref initialProcess);
+                if(HostedLaunchState.EventOwnsCreationHandle(initialThread,info.thread)) initialThread=IntPtr.Zero;
+                else CloseOwned(ref initialThread);
+                creationSeen=true;
+            }
+            void Terminate() {
+                if(terminationRequested) return;
+                terminationRequested=true;
+                IntPtr root=session.process!=IntPtr.Zero?session.process:initialProcess;
+                try {
+                    bool live=assigned?!session.RefreshJob():root!=IntPtr.Zero && !Exited(root);
+                    if(live) {
+                        session.forced=true; session.Error("forced_termination");
+                        if(assigned) { if(!TerminateJobObject(session.job,99)) session.Error("termination_failed"); }
+                        else if(!TerminateProcess(root,99)) session.Error("termination_failed");
+                    }
+                } catch { Fail("debug_cleanup_failed"); }
+            }
+            static bool SameInfo(FileInfo a,FileInfo b) {
+                return a.attributes==b.attributes && a.volume==b.volume && a.indexHigh==b.indexHigh && a.indexLow==b.indexLow &&
+                    a.sizeHigh==b.sizeHigh && a.sizeLow==b.sizeLow && a.links==b.links && a.written.high==b.written.high && a.written.low==b.written.low;
+            }
+            string FilePath(IntPtr handle) {
+                var value=new StringBuilder(4096); uint n=GetFinalPathNameByHandleW(handle,value,4096,0);
+                Require(n>0 && n<4096); string result=value.ToString();
+                if(result.StartsWith(@"\\?\")) result=result.Substring(4);
+                return FullPath(result);
+            }
+            void HashImage(IntPtr handle,string path,string hash) {
+                Require(handle!=IntPtr.Zero && handle!=new IntPtr(-1));
+                FileInfo before,after; Require(GetFileInformationByHandle(handle,out before));
+                Require(before.links==1 && (before.attributes&((uint)FileAttributes.ReparsePoint|(uint)FileAttributes.Directory))==0 &&
+                    String.Equals(FilePath(handle),path,StringComparison.OrdinalIgnoreCase));
+                long end=Math.Min((long)session.deadlineMs,session.elapsed.ElapsedMilliseconds+10000);
+                using(var stream=new FileStream(new SafeFileHandle(handle,false),FileAccess.Read,65536,false))
+                using(var sha=SHA256.Create()) {
+                    Require(stream.Length>0 && stream.Length<=268435456); stream.Position=0;
+                    byte[] buffer=new byte[65536]; int count;
+                    while((count=stream.Read(buffer,0,buffer.Length))>0) {
+                        Require(session.elapsed.ElapsedMilliseconds<end);
+                        sha.TransformBlock(buffer,0,count,buffer,0);
+                    }
+                    sha.TransformFinalBlock(buffer,0,0);
+                    Require(session.elapsed.ElapsedMilliseconds<end && BitConverter.ToString(sha.Hash).Replace("-","").ToLowerInvariant()==hash);
+                }
+                Require(GetFileInformationByHandle(handle,out after) && SameInfo(before,after) && String.Equals(FilePath(handle),path,StringComparison.OrdinalIgnoreCase));
+            }
+            void Create(DebugEvent value) {
+                CreateInfo info=value.info.create;
+                Require(info.process!=IntPtr.Zero && info.thread!=IntPtr.Zero && processes.Count<34);
+                var owned=new OwnedProcess {handle=Duplicate(info.process,false)}; processes.Add(value.pid,owned);
+                owned.created=Created(owned.handle);
+                bool runtime=value.pid!=initialPid;
+                lock(sync) state.Create(runtime);
+                if(!runtime) { Require(value.tid==initialTid); ResolveOriginals(info); }
+                bool belongs; Require(IsProcessInJob(owned.handle,session.job,out belongs) && belongs);
+                string image=Image(owned.handle);
+                if(runtime) {
+                    Require(HostedLaunchState.RuntimeImagePathAllowed(session.caseRoot,image));
+                    VerifyTemp();
+                    // These descendant pins are transient. Keeping them after
+                    // continuation would block the application's runtime removal.
+                    Require(imageParent==null);
+                    imageParent=HostedSourceDirectory.AcquireRuntimeImageParent(session.caseRoot,image);
+                    try { HashImage(info.file,image,expected); imageParent.Verify(); }
+                    catch(Exception primary) {
+                        try { imageParent.Dispose(); imageParent=null; }
+                        catch { throw HostedSourceDirectory.CleanupFailure(primary); }
+                        throw;
+                    }
+                    // Preserve the lease reference on failed close; uncertainty
+                    // forbids releasing the fixed temp/source ownership leases.
+                    imageParent.Dispose(); imageParent=null;
+                    VerifyTemp();
+                } else {
+                    Require(String.Equals(image,appPath,StringComparison.OrdinalIgnoreCase)); HashImage(info.file,image,appSha);
+                }
+                Require(IsProcessInJob(owned.handle,session.job,out belongs) && belongs && Created(owned.handle)==owned.created);
+                if(runtime) lock(sync) verified++;
+            }
+            void Pump() {
+                if(initialPid==0) return;
+                long drainEnd=Int64.MaxValue;
+                while(true) {
+                    if(startupFailed || session.Deadline || session.elapsed.ElapsedMilliseconds>=Interlocked.Read(ref finishAt)) {
+                        if(session.Deadline) session.Error("deadline_exceeded");
+                        Terminate();
+                        if(drainEnd==Int64.MaxValue) drainEnd=session.elapsed.ElapsedMilliseconds+5000;
+                    }
+                    if(session.elapsed.ElapsedMilliseconds>=drainEnd) { Fail("debug_cleanup_failed"); return; }
+                    DebugEvent value;
+                    if(!WaitForDebugEvent(out value,100)) {
+                        if(Marshal.GetLastWin32Error()==121) continue;
+                        Fail("debug_event_failed"); Terminate(); return;
+                    }
+                    IntPtr image=value.code==3?value.info.create.file:value.code==6?value.info.load.file:IntPtr.Zero;
+                    uint disposition=value.code==1?0x80010001u:0x00010002u;
+                    try {
+                        Require(image!=new IntPtr(-1));
+                        lock(sync) state.Begin(value.code,value.pid,value.tid);
+                        if(value.code==3) Create(value);
+                        else if(value.code==1) lock(sync) disposition=state.ExceptionDisposition(value.info.exception.record.code,value.info.exception.first);
+                        else if(value.code==9) Fail("debug_event_failed");
+                        lock(sync) { if(state.Failure!=null) { session.Error(state.Failure); startupFailed=true; } }
+                    } catch(Exception error) {
+                        SourceFailure(error);
+                        string code; lock(sync) code=state.Failure;
+                        Fail(code??(value.code==3?"debug_image_invalid":"debug_event_failed")); startupFailed=true;
+                    } finally {
+                        // CREATE and LOAD_DLL hFile are debugger-owned. No DLL
+                        // bytes, target strings or target memory are read.
+                        if(image!=IntPtr.Zero && image!=new IntPtr(-1)) CloseOwned(ref image);
+                    }
+                    if(startupFailed || handlesFailed) { startupFailed=true; Terminate(); if(drainEnd==Int64.MaxValue) drainEnd=session.elapsed.ElapsedMilliseconds+5000; }
+                    if(!ContinueDebugEvent(value.pid,value.tid,disposition)) { Fail("debug_event_failed"); Terminate(); return; }
+                    try {
+                        lock(sync) state.Continued();
+                        if(value.code==5) {
+                            OwnedProcess owned=processes[value.pid];
+                            Require(WaitForSingleObject(owned.handle,1000)==0 && Created(owned.handle)==owned.created);
+                            CloseOwned(ref owned.handle);
+                        }
+                    } catch { Fail("debug_cleanup_failed"); Terminate(); return; }
+                    if(value.code==3 && value.pid==initialPid) { startOkay=!startupFailed && !handlesFailed; SignalStarted(); }
+                    lock(sync) if(state.Drained) return;
+                }
+            }
+            bool EventResourcesClosed { get {
+                if(!joined || handlesFailed || imageParent!=null || initialProcess!=IntPtr.Zero || initialThread!=IntPtr.Zero || uncertainHandles.Count!=0) return false;
+                foreach(OwnedProcess owned in processes.Values) if(owned.handle!=IntPtr.Zero) return false;
+                lock(sync) return initialPid==0 || state.Drained;
+            } }
+            public void CloseTemp() {
+                if(!EventResourcesClosed) { Fail("debug_cleanup_failed"); return; }
+                try { if(temp!=null) { temp.Verify(); temp.Dispose(); temp=null; } tempClosed=true; }
+                catch { handlesFailed=true; Fail("debug_cleanup_failed"); }
+            }
+            public bool Released { get { return EventResourcesClosed && tempClosed; } }
+            public void CommonCloseFailed() { handlesFailed=true; Fail("debug_cleanup_failed"); }
+            public void CheckQualification() { lock(sync) if(!state.Qualified || state.Launches!=verified) session.Error(state.Failure??"debug_image_invalid"); }
+            public void AddSnapshot(Dictionary<string,object> result) {
+                lock(sync) {
+                    result.Add("observation_kind","launch_image"); result.Add("launch_image_observed",verified>0);
+                    result.Add("launch_sha256",verified>0?expected:null); result.Add("runtime_launch_count",state.Launches);
+                    result.Add("peak_runtime_processes",state.Peak); result.Add("debug_event_count",state.Events);
+                    result.Add("debug_events_drained",initialPid==0?joined:state.Drained);
+                    result.Add("debug_pump_joined",joined); result.Add("debug_handles_closed",Released);
+                }
+            }
+        }
+        // Size/offset inspection only: safe for pure tests on either pointer width.
+        public static Dictionary<string,int> LaunchDebugLayout() { return LaunchObserver.Layout(); }
         public void Dispose() { Finish(0); }
+    }
+
+    // Pure event-order/limit model. It owns no handles and performs no native calls.
+    // The pump uses this same model; tests inject only typed event observations.
+    public sealed class HostedLaunchState {
+        sealed class Process { public uint initialThread; public bool runtime,exited,breakpoint; }
+        readonly Dictionary<uint,Process> processes=new Dictionary<uint,Process>();
+        readonly int maximumConcurrent,maximumLaunches;
+        uint root,code,pid,tid;
+        bool pending,startStopped;
+        int active;
+        public int Launches { get; private set; }
+        public int Peak { get; private set; }
+        public int Events { get; private set; }
+        public string Failure { get; private set; }
+        public bool CleanupUncertain { get; private set; }
+        public HostedLaunchState(int concurrent,int launches) {
+            if(concurrent<1 || concurrent>4 || launches<1 || launches>32) throw new ArgumentException("debug_launch_limit");
+            maximumConcurrent=concurrent; maximumLaunches=launches;
+        }
+        void Need(bool value,string error) { if(!value) { Fail(error); throw new InvalidOperationException(error); } }
+        public void Fail(string error) {
+            if(error!="debug_start_failed" && error!="debug_event_failed" && error!="debug_image_invalid" && error!="debug_launch_limit" && error!="debug_exception_failed" && error!="debug_event_limit" && error!="debug_cleanup_failed") throw new ArgumentException("debug_event_failed");
+            if(Failure==null) Failure=error;
+        }
+        public void SetRoot(uint value) { Need(root==0 && value!=0,"debug_event_failed"); root=value; }
+        public void StopStarting() { startStopped=true; }
+        public void CheckStarting(bool closing,bool expired) { Need(!startStopped && !closing && !expired && Failure==null,"debug_start_failed"); }
+        public string[] ObserveSourceFailure(Exception error) {
+            string[] codes=HostedSourceDirectory.FailureCodes(error);
+            foreach(string code in codes) if(code=="source_directory_cleanup_failed") { CleanupUncertain=true; Fail("debug_cleanup_failed"); }
+            return codes;
+        }
+        public void Begin(uint eventCode,uint processId,uint threadId) {
+            Need(!pending && root!=0 && processId!=0 && threadId!=0 && eventCode>=1 && eventCode<=9,"debug_event_failed");
+            Need(Events<4096,"debug_event_limit");
+            Process process;
+            Need(eventCode==3?!processes.ContainsKey(processId):processes.TryGetValue(processId,out process) && !process.exited,"debug_event_failed");
+            code=eventCode; pid=processId; tid=threadId; pending=true; Events++;
+        }
+        public void Create(bool runtime) {
+            Need(pending && code==3 && !processes.ContainsKey(pid) && processes.Count<34,"debug_event_failed");
+            Need((processes.Count==0)==(pid==root) && (pid!=root || !runtime),"debug_event_failed");
+            processes.Add(pid,new Process {initialThread=tid,runtime=runtime});
+            if(runtime) { Launches++; active++; Peak=Math.Max(Peak,active); }
+            Need(Launches<=maximumLaunches && active<=maximumConcurrent,"debug_launch_limit");
+        }
+        public uint ExceptionDisposition(uint exceptionCode,uint firstChance) {
+            Need(pending && code==1 && firstChance<=1,"debug_event_failed");
+            Process process=processes[pid];
+            // Only the OS initial first-chance breakpoint on the CREATE thread
+            // is consumed. Application exceptions retain their normal handlers.
+            if(exceptionCode==0x80000003 && firstChance==1 && tid==process.initialThread && !process.breakpoint) {
+                process.breakpoint=true; return 0x00010002;
+            }
+            if(firstChance==0 || exceptionCode==0x80000003) Fail("debug_exception_failed");
+            return 0x80010001;
+        }
+        public void Continued() {
+            Need(pending,"debug_event_failed");
+            if(code==3) Need(processes.ContainsKey(pid),"debug_event_failed");
+            if(code==5) {
+                Process process=processes[pid]; process.exited=true;
+                if(process.runtime) active--;
+            }
+            pending=false;
+        }
+        public bool Drained { get {
+            if(pending || processes.Count==0 || !processes.ContainsKey(root)) return false;
+            foreach(Process process in processes.Values) if(!process.exited) return false;
+            return true;
+        } }
+        public bool Qualified { get {
+            if(Failure!=null || !Drained || Launches<1 || Launches>maximumLaunches) return false;
+            foreach(Process process in processes.Values) if(!process.breakpoint) return false;
+            return true;
+        } }
+        public static bool EventOwnsCreationHandle(IntPtr creation,IntPtr debugEvent) {
+            if(creation==IntPtr.Zero || creation==new IntPtr(-1) || debugEvent==IntPtr.Zero || debugEvent==new IntPtr(-1)) throw new ArgumentException("debug_event_failed");
+            return creation==debugEvent;
+        }
+        public static string RuntimeTempPath(string root) {
+            return System.IO.Path.Combine(System.IO.Path.GetDirectoryName(HostedSourceDirectory.SourcePath(root)),"temp");
+        }
+        public static bool RuntimeImagePathAllowed(string root,string image) {
+            if(image==null || image.Length>2048) return false;
+            try {
+                string temp=RuntimeTempPath(root),parent=System.IO.Path.GetDirectoryName(image);
+                if(parent==null || !String.Equals(System.IO.Path.GetDirectoryName(parent),temp,StringComparison.OrdinalIgnoreCase) ||
+                    System.IO.Path.GetFileName(image)!="rclone.exe" || System.IO.Path.GetFullPath(image)!=image) return false;
+                string name=System.IO.Path.GetFileName(parent);
+                if(!name.StartsWith("rclone-triage-",StringComparison.Ordinal) || name.Length<=14 || name.Length>128) return false;
+                foreach(char c in name) if(!((c>='a'&&c<='z') || (c>='A'&&c<='Z') || (c>='0'&&c<='9') || c=='-' || c=='_')) return false;
+                return true;
+            } catch { return false; }
+        }
     }
 
     // Fixed source cwd, not a filesystem sandbox. Pins prevent path replacement;
@@ -603,6 +1012,17 @@ namespace TriageApplicationLab {
         }
         public static HostedSourceDirectory Acquire(string root) {
             string source=SourcePath(root); root=System.IO.Path.GetDirectoryName(source);
+            return AcquirePath(root,source);
+        }
+        internal static HostedSourceDirectory AcquireRuntimeTemp(string root) {
+            string temp=HostedLaunchState.RuntimeTempPath(root);
+            return AcquirePath(System.IO.Path.GetDirectoryName(temp),temp);
+        }
+        internal static HostedSourceDirectory AcquireRuntimeImageParent(string root,string image) {
+            Need(HostedLaunchState.RuntimeImagePathAllowed(root,image));
+            return AcquirePath(System.IO.Path.GetDirectoryName(HostedLaunchState.RuntimeTempPath(root)),System.IO.Path.GetDirectoryName(image));
+        }
+        static HostedSourceDirectory AcquirePath(string root,string source) {
             var chain=new List<string>();
             for(string path=source; !String.IsNullOrEmpty(path); path=System.IO.Path.GetDirectoryName(path)) {
                 Need(chain.Count<64); chain.Add(path);
@@ -610,7 +1030,7 @@ namespace TriageApplicationLab {
             chain.Reverse(); var lease=new HostedSourceDirectory {Path=source};
             try {
                 foreach(string path in chain) {
-                    bool owned=String.Equals(path,root,StringComparison.OrdinalIgnoreCase) || String.Equals(path,source,StringComparison.OrdinalIgnoreCase);
+                    bool owned=String.Equals(path,root,StringComparison.OrdinalIgnoreCase) || path.StartsWith(root+System.IO.Path.DirectorySeparatorChar,StringComparison.OrdinalIgnoreCase);
                     // LIST_DIRECTORY participates in sharing checks; metadata-only
                     // access does not. Add READ_ATTRIBUTES and owned READ_CONTROL.
                     // MS-FSA 2.1.5.1.2.2: omit DELETE sharing to hold each name.

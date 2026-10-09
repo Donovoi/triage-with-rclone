@@ -1767,8 +1767,10 @@ def bridge_probe(session_factory=None):
     try:
         hosted_guard()
         loaded_sources_preserved()
-        source_paths = ("prepare_case.ps1", "hosted_session.ps1", "HostedConPtySession.cs")
-        source_hashes = {name: sha(read(HERE / name, 65536)) for name in source_paths}
+        # The shared C# helper includes the opt-in launch observer. Keep the
+        # PowerShell source bounds unchanged and verify all bytes at each gate.
+        source_limits = {"prepare_case.ps1": 65536, "hosted_session.ps1": 65536, "HostedConPtySession.cs": 131072}
+        source_hashes = {name: sha(read(HERE / name, limit)) for name, limit in source_limits.items()}
         parent = Path(os.environ["RUNNER_TEMP"]).absolute()
         parent_id = identity(parent)
         suite = parent / ("app-http-" + uuid.uuid4().hex)
@@ -1802,7 +1804,7 @@ def bridge_probe(session_factory=None):
         prepare(suite, "listing", "Verify")
         stage = "source"
         loaded_sources_preserved()
-        need({name: sha(read(HERE / name, 65536)) for name in source_paths} == source_hashes, "preservation_failed")
+        need({name: sha(read(HERE / name, limit)) for name, limit in source_limits.items()} == source_hashes, "preservation_failed")
         stage = "identity"
         need(identity(parent) == parent_id and identity(suite) == suite_id and
              identity(case) == case_id and inventory(case) == entries, "preservation_failed")
@@ -1812,7 +1814,7 @@ def bridge_probe(session_factory=None):
         prepare(parent, suite.name, "Verify")
         stage = "source"
         loaded_sources_preserved()
-        need({name: sha(read(HERE / name, 65536)) for name in source_paths} == source_hashes, "preservation_failed")
+        need({name: sha(read(HERE / name, limit)) for name, limit in source_limits.items()} == source_hashes, "preservation_failed")
         stage = "identity"
         need(identity(parent) == parent_id and identity(suite) == suite_id and not inventory(suite), "preservation_failed")
         stage = "suite_removal"

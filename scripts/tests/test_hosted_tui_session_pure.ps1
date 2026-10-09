@@ -16,7 +16,7 @@ function Hex([byte[]]$Value) { [BitConverter]::ToString($Value) }
 
 $sourcePath = Join-Path $root 'application-lab/HostedConPtySession.cs'
 $source = [IO.File]::ReadAllText($sourcePath)
-Check ($source.Length -gt 0 -and $source.Length -le 65536)
+Check ($source.Length -gt 0 -and $source.Length -le 131072)
 if ($null -eq ('TriageApplicationLab.HostedConPtySession' -as [type])) {
     Add-Type -Path $sourcePath -ErrorAction Stop -WarningAction SilentlyContinue 2>$null
 }
