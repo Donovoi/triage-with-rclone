@@ -19,6 +19,7 @@ use std::time::{Duration, Instant};
 pub const STOP_TIMEOUT: Duration = Duration::from_secs(5);
 pub const JOIN_TIMEOUT: Duration = Duration::from_secs(3);
 const POLL_INTERVAL: Duration = Duration::from_millis(25);
+const PROVIDER_CATALOG_ARGS: &[&str] = &["config", "providers"];
 
 /// Windows-specific: CREATE_NO_WINDOW flag
 #[cfg(windows)]
@@ -102,6 +103,18 @@ impl RcloneRunner {
     /// Run a rclone command and capture output
     pub fn run(&self, args: &[&str]) -> Result<RcloneOutput> {
         self.run_with_timeout(args, self.default_timeout)
+    }
+
+    /// Read the built-in provider registry without loading a user config or
+    /// creating its default directory. Rclone may still inspect standard paths.
+    pub fn provider_catalog(&self) -> Result<RcloneOutput> {
+        self.provider_catalog_runner().run(PROVIDER_CATALOG_ARGS)
+    }
+
+    fn provider_catalog_runner(&self) -> Self {
+        // Rclone 1.75.2 treats an explicit empty --config as memory-only.
+        // Clone retains runtime ownership, cancellation and timeout controls.
+        self.clone().with_config("")
     }
 
     /// Run a rclone command with additional environment variables
@@ -972,6 +985,84 @@ fn read_process_lines<R: Read, F: FnMut(String)>(
         on_line(String::from_utf8_lossy(&current).into_owned());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod catalog_tests {
+    use super::*;
+
+    #[test]
+    fn catalog_uses_empty_config_without_changing_the_callers_config() {
+        for config in [None, Some(PathBuf::from("synthetic saved config.conf"))] {
+            let mut runner = RcloneRunner::new("unused-synthetic-runtime");
+            runner.config_path = config.clone();
+            let catalog = runner.provider_catalog_runner();
+            let command = catalog.build_command_with_env(PROVIDER_CATALOG_ARGS, None);
+            let args: Vec<_> = command.get_args().collect();
+            assert_eq!(
+                args,
+                ["--config", "", "config", "providers"].map(std::ffi::OsStr::new)
+            );
+            assert_eq!(command.get_program(), runner.exe_path().as_os_str());
+            assert_eq!(catalog.config_path(), Some(Path::new("")));
+            assert_eq!(runner.config_path, config);
+        }
+    }
+
+    #[test]
+    fn catalog_retains_runtime_gate_cancel_flags_and_timeout() {
+        let tracker = RuntimeTracker::new();
+        let first = Arc::new(AtomicBool::new(false));
+        let second = Arc::new(AtomicBool::new(false));
+        let mut runner = RcloneRunner::new("unused-synthetic-runtime")
+            .with_config("saved.conf")
+            .with_timeout(Duration::from_secs(17))
+            .with_cancel_flag(first.clone())
+            .with_cancel_flag(second.clone());
+        runner.runtime = Some(tracker.clone());
+        let catalog = runner.provider_catalog_runner();
+        assert_eq!(catalog.exe_path(), runner.exe_path());
+        assert_eq!(catalog.timeout(), Some(Duration::from_secs(17)));
+        assert_eq!(catalog.cancel.len(), 2);
+        assert!(Arc::ptr_eq(&catalog.cancel[0], &first));
+        assert!(Arc::ptr_eq(&catalog.cancel[1], &second));
+        assert!(Arc::ptr_eq(catalog.runtime.as_ref().unwrap(), &tracker));
+        assert!(!catalog.is_cancelled());
+        first.store(true, Ordering::SeqCst);
+        assert!(catalog.is_cancelled() && runner.is_cancelled());
+        first.store(false, Ordering::SeqCst);
+        second.store(true, Ordering::SeqCst);
+        assert!(catalog.is_cancelled() && runner.is_cancelled());
+        tracker.seal().unwrap();
+        assert!(catalog.runtime.as_ref().unwrap().reserve().is_err());
+        assert!(runner.runtime.as_ref().unwrap().reserve().is_err());
+        assert_eq!(runner.config_path(), Some(Path::new("saved.conf")));
+    }
+
+    #[test]
+    fn catalog_keeps_existing_environment_isolation_and_password_policy() {
+        // Seed the command directly; do not mutate process-global environment.
+        let runner = RcloneRunner::new("unused-synthetic-runtime").provider_catalog_runner();
+        let mut command = runner.build_command_with_env(PROVIDER_CATALOG_ARGS, None);
+        let keys = [
+            "RCLONE_CONFIG",
+            "RCLONE_CONFIG_SOURCE_REMOTE",
+            "RCLONE_DRY_RUN",
+            "RCLONE_CONFIG_PASS",
+        ];
+        for key in keys {
+            command.env(key, "synthetic-canary");
+        }
+        remove_rclone_env_overrides(&mut command, keys.map(std::ffi::OsString::from));
+        let env: std::collections::BTreeMap<_, _> = command.get_envs().collect();
+        for key in &keys[..3] {
+            assert_eq!(env.get(std::ffi::OsStr::new(key)), Some(&None));
+        }
+        assert_eq!(
+            env.get(std::ffi::OsStr::new("RCLONE_CONFIG_PASS")),
+            Some(&Some(std::ffi::OsStr::new("synthetic-canary")))
+        );
+    }
 }
 
 #[cfg(test)]

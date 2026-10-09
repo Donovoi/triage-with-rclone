@@ -161,7 +161,7 @@ pub fn providers_from_rclone_json(json: &str) -> Result<ProviderDiscoveryResult>
 
 /// Ask rclone for providers and return the full list.
 pub fn providers_from_rclone(runner: &RcloneRunner) -> Result<ProviderDiscoveryResult> {
-    let output = runner.run(&["config", "providers"])?;
+    let output = runner.provider_catalog()?;
     if !output.success() {
         bail!("rclone config providers failed: {}", output.stderr_string());
     }

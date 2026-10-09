@@ -305,6 +305,18 @@ pub fn render_state(frame: &mut Frame, app: &App) {
             if show_status_panel {
                 let mut help_lines = Vec::new();
                 help_lines.push(Line::from(mode.clone()));
+                let checked = app
+                    .provider
+                    .entries
+                    .iter()
+                    .zip(&app.provider.checked)
+                    .filter(|(_, checked)| **checked)
+                    .count();
+                help_lines.push(Line::from(format!(
+                    "Checked: {} of {}",
+                    checked,
+                    app.provider.entries.len()
+                )));
                 if let Some(provider) = app.provider.entries.get(app.provider.selected) {
                     help_lines.push(Line::from(format!("Selected: {}", provider.display_name())));
                     help_lines.push(Line::from(format!("Backend: {}", provider.short_name())));
@@ -1021,6 +1033,35 @@ mod tests {
 
     fn contains_qr_art(text: &str) -> bool {
         text.chars().any(|ch| matches!(ch, '▀' | '▄' | '█'))
+    }
+
+    #[test]
+    fn provider_status_counts_checked_rows_even_outside_the_viewport() {
+        let mut app = App::new();
+        app.state = AppState::ProviderSelect;
+        app.provider.entries = (0..80)
+            .map(|_| ProviderEntry::from_known(CloudProvider::GoogleDrive))
+            .collect();
+        app.provider.checked = vec![false; 80];
+        app.provider.selected = 0;
+
+        let initial = export_screen_text(&app, 120, 34);
+        assert!(initial.contains("Checked: 0 of 80"));
+        app.toggle_provider_selection();
+        assert!(export_screen_text(&app, 120, 34).contains("Checked: 1 of 80"));
+
+        app.provider.checked[79] = true;
+        // An extra stale flag must not count as a selectable provider.
+        app.provider.checked.push(true);
+        let rendered = export_screen_text(&app, 120, 34);
+        assert!(rendered.contains("Checked: 2 of 80"));
+        assert_eq!(app.selected_providers().len(), 2);
+        assert_eq!(app.provider.selected, 0);
+
+        app.toggle_provider_selection();
+        assert!(export_screen_text(&app, 120, 34).contains("Checked: 1 of 80"));
+        app.provider.checked[79] = false;
+        assert!(export_screen_text(&app, 120, 34).contains("Checked: 0 of 80"));
     }
 
     #[test]

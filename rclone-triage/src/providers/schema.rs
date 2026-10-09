@@ -121,7 +121,7 @@ pub fn provider_schema_from_rclone(
     runner: &RcloneRunner,
     backend: &str,
 ) -> Result<Option<ProviderSchema>> {
-    let output = runner.run(&["config", "providers"])?;
+    let output = runner.provider_catalog()?;
     if !output.success() {
         bail!("rclone config providers failed: {}", output.stderr_string());
     }

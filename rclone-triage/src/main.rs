@@ -81,18 +81,7 @@ fn main() -> Result<()> {
     let operation = run_cli(args, &app_guard, initial_state, &binary);
     let cleanup = binary.cleanup();
     finalize_cli_runtime(operation, cleanup, |diagnostic| {
-        use std::io::Write as _;
-        // A diagnostic write failure must not replace the operation/cleanup error.
-        let _ = writeln!(
-            std::io::stderr().lock(),
-            "runtime_cleanup_diagnostic={diagnostic}"
-        );
-        if let Some(residue) = diagnostic.residue() {
-            let _ = writeln!(
-                std::io::stderr().lock(),
-                "runtime_cleanup_residue={residue}"
-            );
-        }
+        embedded::write_runtime_cleanup_diagnostic(&mut std::io::stderr().lock(), diagnostic);
     })
 }
 
