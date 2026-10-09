@@ -44,7 +44,9 @@ read-only root, private bounded tmpfs, finite process/output/time limits and own
 container/image cleanup. Run it only after source review in the dedicated hosted
 Linux workflow; do not launch the inner probe or a container on a production host.
 
-Proposed hosted invocation, not yet wired into CI:
+The CI workflow has a manual `gcs_oauth_experiment` option, off by default.
+It requires the exact `expected_sha` and waits for both platform test jobs and
+the Python dependency audit. The hosted job runs this supervisor command once:
 
 ```bash
 python -B scripts/provider-lab/gcs-oauth/run_container.py \
@@ -67,10 +69,11 @@ stages, wrong tokens/options, denial request mismatches, failed cancellation,
 uncertain cleanup and malformed receipts. It exposed and fixed a denied-refresh
 verdict that did not bind the returned RC input to the exact copy request.
 
-Twelve hosted-only adversarial HTTP/TLS test methods have also been added; they
-remain unexecuted and skip outside a GitHub-hosted runner. Neither the local
-mocked checks nor that test source establishes wire behavior or native
-compatibility. Remaining gates are review, hosted wire tests, then bounded hosted
+Twelve hosted-only adversarial HTTP/TLS test methods pass on Linux. The first
+Windows run failed its final cleanup-verification check in every method; that
+failure remains under investigation. The tests skip outside a GitHub-hosted
+runner. These component results do not establish native rclone compatibility.
+Remaining gates are review, passing wire tests on both hosts, then bounded hosted
 native validation of request shapes, config serialization, error causes, timing
 and cleanup. Before ledger integration, define a separate strict lifecycle
 receipt mode and importer tests. Do not convert historical static-token receipts

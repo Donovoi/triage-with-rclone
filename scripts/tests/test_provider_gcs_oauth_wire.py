@@ -37,6 +37,79 @@ README_SHA256 = "1e901527b93ae84dc9d95a8aa76bbc12d7d77dbf8ab449333c172cfc909c639
 MAX_REPLY = 16384
 
 
+def _listener_outcome(port):
+    # A bounded observation, not a Windows root-cause assumption. Timeout is
+    # still a failure: only an explicit refusal proves this probe's condition.
+    try:
+        connection = socket.create_connection(("127.0.0.1", port), timeout=5)
+    except ConnectionRefusedError:
+        return "refused"
+    except TimeoutError:
+        return "timeout"
+    except OSError as error:
+        return "refused" if error.errno in (errno.ECONNREFUSED, 10061) else "other_os_error"
+    except Exception:
+        return "probe_error"
+    try:
+        connection.close()
+    except Exception:
+        return "connection_close_failed"
+    return "accepted"
+
+
+def _cleanup_observation(fixture, root):
+    checks = dict.fromkeys(("fixture_closed", "fixture_complete", "source_preserved",
+        "transport_complete", "connections_closed", "workers_joined", "timers_joined", "material_removed"), False)
+    try:
+        checks["fixture_closed"] = fixture.close() is True
+    except Exception:
+        pass
+    try:
+        snapshot = fixture.snapshot()
+    except Exception:
+        snapshot = None
+    if type(snapshot) is dict:
+        checks["fixture_complete"] = snapshot.get("cleanup_complete") is True
+        transport = snapshot.get("transport")
+        if type(transport) is dict:
+            checks["transport_complete"] = transport.get("cleanup_complete") is True
+            for check_name, field in (("connections_closed", "active_connections"),
+                    ("workers_joined", "active_workers"), ("timers_joined", "active_timers")):
+                checks[check_name] = type(transport.get(field)) is int and transport[field] == 0
+    try:
+        checks["source_preserved"] = fixture.state.source_preserved() is True
+    except Exception:
+        pass
+    try:
+        checks["material_removed"] = not any(root.iterdir())
+    except Exception:
+        pass
+    try:
+        outcome = _listener_outcome(fixture.port)
+    except Exception:
+        outcome = "probe_error"
+    return checks, outcome
+
+
+def _finish_cleanup(fixtures, root, uncertain):
+    # Each predicate is observed even after another one fails. Export only
+    # these fixed labels, never exception text, paths, socket addresses or keys.
+    failures = {"constructor_unproved"} if uncertain else set()
+    for fixture, material_root in reversed(fixtures):
+        checks, outcome = _cleanup_observation(fixture, material_root)
+        failures.update(name for name, passed in checks.items() if not passed)
+        if outcome != "refused":
+            failures.add("listener_" + outcome)
+    if not failures:
+        try:
+            shutil.rmtree(root)
+            if root.exists():
+                failures.add("temporary_remove_failed")
+        except Exception:
+            failures.add("temporary_remove_failed")
+    return sorted(failures)
+
+
 class GcsOAuthWireTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -63,34 +136,8 @@ class GcsOAuthWireTests(unittest.TestCase):
     def tearDown(self):
         # No TemporaryDirectory finalizer: never remove material under a worker
         # whose shutdown is unproved, even when a test failed earlier.
-        okay = not self.uncertain
-        for fixture, root in reversed(self.fixtures):
-            try:
-                stopped = fixture.close()
-                snapshot = fixture.snapshot()
-                transport = snapshot["transport"]
-                okay = bool(okay and stopped and snapshot["cleanup_complete"]
-                            and fixture.state.source_preserved()
-                            and transport["cleanup_complete"]
-                            and all(transport[key] == 0 for key in
-                                    ("active_connections", "active_workers", "active_timers"))
-                            and not any(root.iterdir()))
-                # A separate client must be refused after the owned listener is
-                # closed. A timeout or an accepted connection is not absence.
-                try:
-                    connection = socket.create_connection(("127.0.0.1", fixture.port), timeout=1)
-                except ConnectionRefusedError:
-                    pass
-                except OSError as error:
-                    okay = okay and error.errno in (errno.ECONNREFUSED, 10061)
-                else:
-                    connection.close()
-                    okay = False
-            except Exception:
-                okay = False
-        if okay:
-            shutil.rmtree(self.root)
-        self.assertTrue(okay, "owned fixture cleanup was not proved; private test root retained")
+        failures = _finish_cleanup(self.fixtures, self.root, self.uncertain)
+        self.assertFalse(failures, "owned fixture cleanup unproved; private root retained: " + ",".join(failures))
 
     @contextmanager
     def fixture(self, mode="positive"):
