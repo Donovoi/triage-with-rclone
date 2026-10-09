@@ -23,12 +23,25 @@ import sys
 import tempfile
 import threading
 import time
+from types import MappingProxyType
 from urllib.parse import urlsplit
 
 
 ROOT = Path(__file__).resolve().parents[1]
 WRAPPERS = {"alias", "cache", "chunker", "combine", "compress", "crypt", "hasher", "union"}
 TIERS = ("local_protocol", "application", "vendor")
+HTTP_APPLICATION_KEY = ("http", "http_anonymous_cli_v1", "windows")
+WEBDAV_APPLICATION_KEY = ("webdav", "webdav_basic_loopback_cli_v1", "windows")
+APPLICATION_BASE_CAPABILITIES = frozenset({"listing", "download_hash", "manifest_integrity",
+                                         "source_preservation", "cancellation", "cleanup"})
+# Receipt fields select only a closed repository entry, never an import path,
+# capability contract, completion privilege or expected source/binary digest.
+APPLICATION_REGISTRY = MappingProxyType({
+    HTTP_APPLICATION_KEY: MappingProxyType({"module": "application_evidence.py",
+        "producer": "application-lab/run_windows_http.py", "can_complete_application": True}),
+    WEBDAV_APPLICATION_KEY: MappingProxyType({"module": "webdav_application_evidence.py",
+        "producer": "application-lab/run_windows_webdav.py", "can_complete_application": False}),
+})
 PLATFORMS = frozenset(("windows", "linux"))
 AUTH_APPLICABILITY = frozenset(("none", "credentials", "oauth", "provider_specific"))
 LIFECYCLE_APPLICABILITY = frozenset(("required", "not_applicable", "review_required"))
@@ -376,15 +389,31 @@ def compute_harness_sha256(root):
     return digest.hexdigest()
 
 
-def application_module(producer=False):
+def application_entry(key):
+    if (type(key) is not tuple or len(key) != 3 or any(type(value) is not str for value in key)
+            or key not in APPLICATION_REGISTRY):
+        fail("application_mode_unsupported")
+    return APPLICATION_REGISTRY[key]
+
+
+def application_receipt_key(receipt):
+    if type(receipt) is not dict:
+        fail("application_receipt_fields_invalid")
+    key = tuple(receipt.get(name) for name in ("backend", "fixture_mode", "platform"))
+    application_entry(key)
+    return key
+
+
+def application_module(producer=False, *, key=HTTP_APPLICATION_KEY):
     """Import fixed repository definitions, never a path supplied by a receipt."""
-    relative = "application-lab/run_windows_http.py" if producer else "application_evidence.py"
+    entry = application_entry(key)
+    relative = entry["producer" if producer else "module"]
     path = plain_path(ROOT / "scripts" / relative)
     try:
         source = path.read_bytes()
         if len(source) > MAX_RECEIPT:
             fail("application_helper_size_limit")
-        spec = importlib.util.spec_from_file_location("coverage_application_" + str(producer), path)
+        spec = importlib.util.spec_from_file_location("coverage_application_" + key[0] + "_" + str(producer), path)
         module = importlib.util.module_from_spec(spec)
         exec(compile(source, str(path), "exec"), module.__dict__)
         return module
@@ -392,13 +421,30 @@ def application_module(producer=False):
         fail("application_helper_unavailable")
 
 
-def compute_application_bindings(application, build_commit):
+def compute_application_bindings(application, build_commit, *, key=HTTP_APPLICATION_KEY):
     """The current build and sources supply expectations; receipt claims do not."""
+    application_entry(key)
     try:
-        return application_module().compute_bindings(
-            ROOT, application, build_commit, application_module(producer=True).fixture_manifest())
+        if key == HTTP_APPLICATION_KEY:
+            # Preserve the legacy API and independently sourced HTTP manifest.
+            return application_module().compute_bindings(
+                ROOT, application, build_commit, application_module(producer=True).fixture_manifest())
+        return application_module(key=key).compute_bindings(ROOT, application, build_commit)
     except (OSError, ValueError, TypeError, KeyError):
         fail("application_bindings_invalid")
+
+
+def application_binding_map(bindings):
+    """Legacy flat expectations apply only to HTTP; multiple modes are explicit."""
+    if type(bindings) is not dict or not bindings:
+        fail("application_bindings_invalid")
+    if all(type(key) is str for key in bindings):
+        return {HTTP_APPLICATION_KEY: bindings}
+    for key, value in bindings.items():
+        application_entry(key)
+        if type(value) is not dict:
+            fail("application_bindings_invalid")
+    return bindings
 
 
 def smb_evidence_module():
@@ -948,16 +994,35 @@ def evaluate(catalog, policy, runtime, receipts, harness_sha256, now=None, max_a
             report["errors"].append(str(error))
     application_observations = {}
     if application_receipts:
-        helper = application_module()
+        helpers = {}
+        try:
+            binding_map = application_binding_map(application_bindings)
+        except CoverageError as error:
+            report["errors"].append(str(error))
+            binding_map = {}
         for receipt in application_receipts:
             try:
-                helper.validate_receipt(receipt, runtime, application_bindings, now=now,
-                                        max_age_hours=max_age_hours)
+                key = application_receipt_key(receipt)
+                if key not in binding_map:
+                    fail("application_bindings_invalid")
+                if key not in helpers:
+                    helpers[key] = application_module(key=key)
+                helper = helpers[key]
+                try:
+                    helper.validate_receipt(receipt, runtime, binding_map[key], now=now,
+                                            max_age_hours=max_age_hours)
+                except helper.ApplicationEvidenceError as error:
+                    # Each fixed helper owns its own exception class; never catch
+                    # a last-loaded helper's type for another backend/mode.
+                    report["errors"].append(str(error))
+                    continue
                 backend = receipt["backend"]
                 if backend not in {entry["backend"] for entry in catalog}:
                     fail("application_backend_absent_from_catalog")
                 observed = application_observations.setdefault(
-                    backend, {"capabilities": {}, "failed": False, "runs": []})
+                    backend, {"capabilities": {}, "failed": False, "runs": [], "modes": {}})
+                mode_observed = observed["modes"].setdefault(
+                    key, {"capabilities": {}, "failed": False, "runs": []})
                 run = {
                     "receipt_sha256": sha256_bytes(compact_json(receipt)),
                     "finished_utc": receipt["created_at"],
@@ -969,7 +1034,8 @@ def evaluate(catalog, policy, runtime, receipts, harness_sha256, now=None, max_a
                 # run even when the individual case observations had passed.
                 failed = receipt["result"] != "passed" or not receipt["cleanup_complete"] or bool(receipt["errors"])
                 merge_fixture_observation(observed, receipt["capabilities"], failed, run)
-            except (CoverageError, helper.ApplicationEvidenceError) as error:
+                merge_fixture_observation(mode_observed, receipt["capabilities"], failed, run)
+            except CoverageError as error:
                 report["errors"].append(str(error))
     for entry in catalog:
         backend = entry["backend"]
@@ -1045,17 +1111,24 @@ def evaluate(catalog, policy, runtime, receipts, harness_sha256, now=None, max_a
                     value = app["capabilities"].get(capability)
                     if value in ("passed", "failed"):
                         capabilities[capability] = value
-                # The complete six-case contract is mandatory independently of
-                # policy edits that might remove an inconvenient capability.
-                contract = {key: app["capabilities"].get(key, "not_verified") for key in sorted(helper.CAPABILITIES)}
-                mode_status = ("failed" if app["failed"] or "failed" in contract.values()
-                               else "passed" if all(value == "passed" for value in contract.values())
-                               else "not_verified")
                 evidence["runs"] = app["runs"]
-                evidence["modes"] = {helper.MODE: {"status": mode_status, "capabilities": contract, "runs": app["runs"]}}
-                if mode_status == "failed":
+                evidence["modes"] = {}
+                complete_mode = False
+                for key, mode in sorted(app["modes"].items()):
+                    # Each validated mode must satisfy its whole closed contract.
+                    # Combining partial capabilities from separate modes is not
+                    # a completion certificate, even under a weakened policy.
+                    contract = {cap: mode["capabilities"].get(cap, "not_verified")
+                                for cap in sorted(APPLICATION_BASE_CAPABILITIES)}
+                    mode_status = ("failed" if mode["failed"] or "failed" in contract.values()
+                                   else "passed" if all(value == "passed" for value in contract.values())
+                                   else "not_verified")
+                    evidence["modes"][key[1]] = {"status": mode_status, "capabilities": contract, "runs": mode["runs"]}
+                    complete_mode |= (application_entry(key)["can_complete_application"] and mode_status == "passed"
+                                      and all(mode["capabilities"].get(cap) == "passed" for cap in needed))
+                if app["failed"] or "failed" in capabilities.values():
                     evidence["status"] = "failed"
-                elif mode_status == "passed" and all(value == "passed" for value in capabilities.values()):
+                elif complete_mode:
                     evidence["status"] = "passed"
             row["evidence"][tier] = evidence
         row["complete"] = policy_status == "current" and not unresolved and all(
@@ -1068,7 +1141,8 @@ def evaluate(catalog, policy, runtime, receipts, harness_sha256, now=None, max_a
     return report
 
 
-def gate_errors(report, require_plans=False, require_fixtures=(), require_complete=False, require_application=(), require_gcs_static_token=False):
+def gate_errors(report, require_plans=False, require_fixtures=(), require_complete=False, require_application=(), require_gcs_static_token=False,
+                require_application_modes=()):
     errors = list(report["errors"])
     if require_plans and not report["all_plans_current"]:
         errors.append("provider_plans_incomplete")
@@ -1087,6 +1161,19 @@ def gate_errors(report, require_plans=False, require_fixtures=(), require_comple
     for backend in require_application:
         if backend not in rows or rows[backend]["evidence"]["application"]["status"] != "passed":
             errors.append("required_application_not_verified")
+    for key in require_application_modes:
+        try:
+            application_entry(key)
+        except CoverageError:
+            errors.append("application_mode_unsupported")
+            continue
+        row = rows.get(key[0], {})
+        application = row.get("evidence", {}).get("application", {})
+        mode = application.get("modes", {}).get(key[1], {})
+        if (row.get("policy_status") != "current" or report.get("runtime", {}).get("platform") != key[2]
+                or application.get("status") == "failed" or mode.get("status") != "passed"
+                or mode.get("capabilities") != dict.fromkeys(APPLICATION_BASE_CAPABILITIES, "passed")):
+            errors.append("required_application_mode_not_verified")
     if require_complete and not report["all_complete"]:
         errors.append("provider_coverage_incomplete")
     return sorted(set(errors))
@@ -1262,6 +1349,17 @@ def parse_required(raw):
     return sorted(set(part.strip() for part in parts))
 
 
+def parse_required_application_modes(values):
+    keys = []
+    for value in values:
+        if type(value) is not str:
+            fail("application_mode_unsupported")
+        key = tuple(value.split(":"))
+        application_entry(key)
+        keys.append(key)
+    return sorted(set(keys))
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--rclone", required=True, type=Path)
@@ -1278,6 +1376,8 @@ def main(argv=None):
     parser.add_argument("--require-gcs-static-token", action="store_true",
                         help="Require all eight GCS baseline checks without claiming lifecycle coverage")
     parser.add_argument("--require-application", default="")
+    parser.add_argument("--require-application-mode", action="append", default=[], metavar="BACKEND:MODE:PLATFORM",
+                        help="Require a registered application mode without claiming broader application coverage")
     parser.add_argument("--require-complete", action="store_true")
     args = parser.parse_args(argv)
     report = {"schema_version": 1, "all_plans_current": False, "all_complete": False,
@@ -1285,6 +1385,7 @@ def main(argv=None):
     try:
         required = parse_required(args.require_fixtures)
         required_application = parse_required(args.require_application)
+        required_application_modes = parse_required_application_modes(args.require_application_mode)
         runtime, catalog = query_runtime(args.rclone, args.manifest)
         # Even a malformed/missing policy must leave every discovered backend in
         # the failure receipt; a policy failure cannot erase the coverage gap.
@@ -1317,7 +1418,17 @@ def main(argv=None):
         if args.application_receipt:
             if not args.application or not args.application_build_commit:
                 fail("application_build_binding_required")
-            application_bindings = compute_application_bindings(args.application, args.application_build_commit)
+            keys = set()
+            for receipt in application_receipts:
+                try:
+                    keys.add(application_receipt_key(receipt))
+                except CoverageError as error:
+                    receipt_errors.append(str(error))
+            if keys == {HTTP_APPLICATION_KEY}:
+                application_bindings = compute_application_bindings(args.application, args.application_build_commit)
+            else:
+                application_bindings = {key: compute_application_bindings(
+                    args.application, args.application_build_commit, key=key) for key in sorted(keys)}
         elif args.application or args.application_build_commit:
             fail("application_receipt_required")
         smb_bindings = (compute_smb_bindings(ROOT / "scripts" / "provider-lab" / "smb")
@@ -1335,7 +1446,8 @@ def main(argv=None):
         report["errors"] = sorted(set(report["errors"] + receipt_errors))
         report["all_complete"] = report["all_complete"] and not report["errors"]
         report["gate_errors"] = gate_errors(report, args.require_plans, required, args.require_complete,
-                                            require_application=required_application, require_gcs_static_token=args.require_gcs_static_token)
+                                            require_application=required_application, require_gcs_static_token=args.require_gcs_static_token,
+                                            require_application_modes=required_application_modes)
     except MetadataDiagnosticError as error:
         report["errors"].extend(error.codes)
         report["gate_errors"] = list(report["errors"])

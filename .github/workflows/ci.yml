@@ -399,6 +399,22 @@ jobs:
             --application $application --application-sha256 $applicationHash `
             --build-commit $buildCommit --report "$env:RUNNER_TEMP/http-application.json"
           if ($LASTEXITCODE -ne 0) { throw 'Windows application acceptance failed.' }
+      - name: Verify configured WebDAV with the Windows application
+        id: webdav_application_acceptance
+        if: runner.os == 'Windows'
+        timeout-minutes: 22
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $application = (Resolve-Path target/release/rclone-triage.exe).Path
+          $runtime = (Resolve-Path assets/rclone.exe).Path
+          $buildCommit = (& git rev-parse --verify HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $buildCommit -notmatch '^[0-9a-f]{40}$') { throw 'Build revision unavailable.' }
+          $applicationHash = (Get-FileHash -LiteralPath $application -Algorithm SHA256).Hash.ToLowerInvariant()
+          python -B ../scripts/application-lab/run_windows_webdav.py `
+            --application $application --application-sha256 $applicationHash `
+            --build-commit $buildCommit --rclone $runtime --report "$env:RUNNER_TEMP/webdav-application.json"
+          if ($LASTEXITCODE -ne 0) { throw 'Configured WebDAV application acceptance failed.' }
       - name: Offline tests and local transfer regressions
         run: cargo test --locked --release -- --test-threads=1
       - name: Every provider against the pinned runtime catalog
@@ -431,6 +447,32 @@ jobs:
           path: |
             ${{ runner.temp }}/http-application.json
             ${{ runner.temp }}/provider-evidence-windows-application.json
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Require the same-build configured WebDAV evidence
+        if: ${{ !cancelled() && runner.os == 'Windows' && (steps.webdav_application_acceptance.outcome == 'success' || steps.webdav_application_acceptance.outcome == 'failure') }}
+        env:
+          PROVIDER_BINARY: ${{ format('{0}/rclone-triage/assets/rclone.exe', github.workspace) }}
+          APPLICATION_BINARY: ${{ format('{0}/rclone-triage/target/release/rclone-triage.exe', github.workspace) }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          BUILD_COMMIT="$(git rev-parse --verify HEAD)"
+          python -B ../scripts/provider_coverage.py --rclone "$PROVIDER_BINARY" \
+            --report "$RUNNER_TEMP/provider-evidence-windows-webdav-application.json" \
+            --application-receipt "$RUNNER_TEMP/http-application.json" \
+            --application-receipt "$RUNNER_TEMP/webdav-application.json" \
+            --application "$APPLICATION_BINARY" --application-build-commit "$BUILD_COMMIT" \
+            --require-plans --require-application http \
+            --require-application-mode webdav:webdav_basic_loopback_cli_v1:windows
+      - name: Retain sanitized configured WebDAV application evidence
+        if: always() && runner.os == 'Windows'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: provider-evidence-Windows-webdav-application
+          path: |
+            ${{ runner.temp }}/webdav-application.json
+            ${{ runner.temp }}/provider-evidence-windows-webdav-application.json
           if-no-files-found: warn
           retention-days: 14
       - name: Run isolated Windows TUI experiment
