@@ -9,6 +9,24 @@ function Write-SetupStage([ValidateSet('input','parent','identity','acl','compil
     [Console]::Out.WriteLine('{"schema_version":1,"stage":"' + $Stage + '"}')
     [Console]::Out.Flush()
 }
+function Get-SetupNodeCategory([string]$Root, [string]$Current) {
+    if (-not $Root -or -not $Current) { return 'unknown' }
+    if ($Current -ceq $Root) { return 'root' }
+    $helper = [IO.Path]::Combine($Root, 'helper-env')
+    if ($Current -ceq $helper) { return 'helper_root' }
+    foreach ($name in @('temp','home','profile','appdata','localappdata')) {
+        if ($Current -ceq [IO.Path]::Combine($Root, $name)) { return 'application_root' }
+        if ($Current -ceq [IO.Path]::Combine($helper, $name)) { return 'helper_private_root' }
+    }
+    if ($Current.StartsWith($helper + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) { return 'helper_descendant' }
+    foreach ($name in @('bridge-stdout.private','bridge-stderr.private')) {
+        if ($Current -ceq [IO.Path]::Combine($Root, $name)) { return 'bridge_log' }
+    }
+    return 'other'
+}
+$verificationReason = $null
+$current = $null
+$ownerIsUser = $null; $ownerIsTokenOwner = $null; $tokenOwnerIsUser = $null
 try {
     Write-SetupStage 'input'
     if ($env:GITHUB_ACTIONS -cne 'true' -or $env:RUNNER_OS -cne 'Windows' -or $env:RUNNER_ENVIRONMENT -cne 'github-hosted' -or $PSVersionTable.PSEdition -ne 'Desktop') { throw 'hosted_only' }
@@ -55,37 +73,63 @@ public static class AppLabPrivateDirectory {
         [AppLabPrivateDirectory]::Create($path, $acl.GetSecurityDescriptorBinaryForm())
     }
     Write-SetupStage 'verify'
+    $verificationReason = 'verification_failed'
     $pending = [Collections.Generic.Queue[string]]::new()
     $pending.Enqueue($path)
     $count = 0
     while ($pending.Count -gt 0) {
         $current = $pending.Dequeue()
+        $ownerIsUser = $null; $ownerIsTokenOwner = $null; $tokenOwnerIsUser = $null
         $count++
-        if ($count -gt 1024) { throw 'entry_limit' }
+        if ($count -gt 1024) { $verificationReason = 'entry_limit'; throw 'entry_limit' }
+        $verificationReason = 'metadata_read_failed'
         $attributes = [IO.File]::GetAttributes($current)
-        if (($attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'reparse' }
+        if (($attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { $verificationReason = 'reparse'; throw 'reparse' }
         $directory = ($attributes -band [IO.FileAttributes]::Directory) -ne 0
         if ($directory) { $observed = [IO.Directory]::GetAccessControl($current) }
         else { $observed = [IO.File]::GetAccessControl($current) }
-        if ($observed.GetOwner([Security.Principal.SecurityIdentifier]).Value -cne $sid.Value) { throw 'owner_invalid' }
-        if ($current -ceq $path -and -not $observed.AreAccessRulesProtected) { throw 'root_unprotected' }
+        $owner = $observed.GetOwner([Security.Principal.SecurityIdentifier])
+        if ($owner.Value -cne $sid.Value) {
+            $verificationReason = 'owner_invalid'
+            $ownerIsUser = $false
+            # Failure-only comparison; no SID or account name enters the protocol.
+            try {
+                $tokenOwner = [Security.Principal.WindowsIdentity]::GetCurrent().Owner
+                if ($null -ne $tokenOwner) {
+                    $ownerIsTokenOwner = $owner.Value -ceq $tokenOwner.Value
+                    $tokenOwnerIsUser = $tokenOwner.Value -ceq $sid.Value
+                }
+            } catch { $ownerIsTokenOwner = $null; $tokenOwnerIsUser = $null }
+            throw 'owner_invalid'
+        }
+        if ($current -ceq $path -and -not $observed.AreAccessRulesProtected) { $verificationReason = 'root_unprotected'; throw 'root_unprotected' }
         $userSeen = $false; $systemSeen = $false
         foreach ($rule in $observed.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])) {
             $who = $rule.IdentityReference.Value
             if ($rule.AccessControlType -ne 'Allow' -or ($who -cne $sid.Value -and $who -cne 'S-1-5-18') -or
                 ($rule.FileSystemRights -band [Security.AccessControl.FileSystemRights]::FullControl) -ne [Security.AccessControl.FileSystemRights]::FullControl -or
-                ($rule.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly) -ne 0) { throw 'acl_invalid' }
+                ($rule.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly) -ne 0) { $verificationReason = 'acl_invalid'; throw 'acl_invalid' }
             if ($who -ceq $sid.Value) { $userSeen=$true } else { $systemSeen=$true }
         }
-        if (-not $userSeen -or -not $systemSeen) { throw 'acl_incomplete' }
+        if (-not $userSeen -or -not $systemSeen) { $verificationReason = 'acl_incomplete'; throw 'acl_incomplete' }
+        $verificationReason = 'enumeration_failed'
         if ($directory) { foreach ($child in [IO.Directory]::EnumerateFileSystemEntries($current)) { $pending.Enqueue($child) } }
     }
+    $verificationReason = $null
     Write-SetupStage 'complete'
     [Console]::Out.WriteLine('{"schema_version":1,"ok":true}')
     [Console]::Out.Flush()
     exit 0
 } catch {
-    [Console]::Out.WriteLine('{"schema_version":1,"ok":false}')
+    $terminal = '{"schema_version":1,"ok":false}'
+    try {
+        if ($null -ne $verificationReason) {
+            $failure = [ordered]@{ reason=$verificationReason; category=(Get-SetupNodeCategory $path $current);
+                owner_is_user=$ownerIsUser; owner_is_token_owner=$ownerIsTokenOwner; token_owner_is_user=$tokenOwnerIsUser }
+            $terminal = [ordered]@{ schema_version=1; ok=$false; failure=$failure } | ConvertTo-Json -Compress
+        }
+    } catch { $terminal = '{"schema_version":1,"ok":false}' }
+    [Console]::Out.WriteLine($terminal)
     [Console]::Out.Flush()
     exit 1
 }
