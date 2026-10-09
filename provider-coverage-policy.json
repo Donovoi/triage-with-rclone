@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "scope": "Selectable backend baseline plans; a plan is not acceptance evidence or coverage of all account types and configuration modes.",
-  "reviewed_runtime_version": "1.75.1",
+  "reviewed_runtime_version": "1.75.2",
   "renewal_rule": "Refresh means acquiring replacement expiring credentials or service authorization using retained authority, including OAuth grants, service-session authorization, library authorization and SDK credentials. It is distinct from connection/session reauthentication. Unknown applicability blocks complete qualification. Fixed or externally replaced credentials still require expiry/revocation denial and explicit recovery.",
   "profiles": {
     "local-storage": {
@@ -1113,7 +1113,7 @@
         "The local ZIP protocol fixture separately verifies member payload hashes, CRC32, original archive bytes/hash and original config bytes/hash. Corrupt member, truncated archive, directory-as-file, missing-object and write rejection are protocol requirements; application acquisition, manifest integrity and cancellation remain separate required evidence."
       ],
       "source_links": [
-        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/archive.md"
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/archive.md"
       ],
       "auth_applicability": "none",
       "refresh_applicability": "not_applicable",
@@ -1150,16 +1150,16 @@
         "Connection/session reauthentication remains unresolved; the shared-key fixture does not settle this independent lifecycle dimension or waive other credential-renewal obligations."
       ],
       "source_links": [
-        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/azureblob.md",
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/azureblob.md",
         "https://learn.microsoft.com/en-us/azure/storage/common/storage-use-azurite",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/azureblob/auth/auth.go#L347-L550",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/azureblob/auth/auth.go#L570-L587",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/azureblob/auth/auth.go",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/azureblob/auth/auth.go",
         "https://pkg.go.dev/github.com/Azure/azure-sdk-for-go/sdk/azidentity@v1.14.0",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/azureblob/azureblob.go#L705-L727",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/azureblob/azureblob.go",
         "https://rclone.org/azureblob/#azure-storage-emulator-support",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/azureblob/auth/auth.go#L347-L386",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/azureblob/auth/auth.go#L556-L585",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/azureblob/azureblob.go#L1191-L1214",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/azureblob/auth/auth.go",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/azureblob/auth/auth.go",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/azureblob/azureblob.go",
         "https://github.com/Azure/azure-sdk-for-go/blob/sdk/storage/azblob/v1.8.0/sdk/storage/azblob/service/client.go#L73-L91",
         "https://github.com/Azure/azure-sdk-for-go/blob/sdk/storage/azblob/v1.8.0/sdk/storage/azblob/service/client.go#L151-L160",
         "https://github.com/Azure/azure-sdk-for-go/blob/sdk/storage/azblob/v1.8.0/sdk/storage/azblob/container/client.go#L142-L149",
@@ -1256,12 +1256,12 @@
         "The eight local capabilities do not establish credential renewal, general connection/session reauthentication, SAS, Entra ID, MSI, workload identity, share permissions, leases, hosted Azure, application behavior or uploads. Existing application/vendor obligations and unresolved authentication variants remain unchanged."
       ],
       "source_links": [
-        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/azurefiles.md",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/azureblob/auth/auth.go#L347-L550",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/azureblob/auth/auth.go#L570-L587",
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/azurefiles.md",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/azureblob/auth/auth.go",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/azureblob/auth/auth.go",
         "https://pkg.go.dev/github.com/Azure/azure-sdk-for-go/sdk/azidentity@v1.14.0",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/azurefiles/azurefiles.go#L168-L185",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/azurefiles/azurefiles.go",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/azurefiles/azurefiles.go",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/azurefiles/azurefiles.go",
         "https://github.com/Azure/azure-sdk-for-go/blob/sdk/storage/azfile/v1.7.0/sdk/storage/azfile/service/client.go",
         "https://github.com/Azure/azure-sdk-for-go/blob/sdk/storage/azfile/v1.7.0/sdk/storage/azfile/internal/generated/zz_directory_client.go",
         "https://github.com/Azure/azure-sdk-for-go/blob/sdk/storage/azfile/v1.7.0/sdk/storage/azfile/internal/generated/zz_file_client.go",
@@ -1354,18 +1354,18 @@
         "Connection/session reauthentication remains unresolved; the account-token fixture does not settle this independent lifecycle dimension."
       ],
       "source_links": [
-        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/b2.md",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/b2/b2.go#L448-L458",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/b2/b2.go#L651-L672",
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/b2.md",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/b2/b2.go",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/b2/b2.go",
         "https://www.backblaze.com/apidocs/b2-authorize-account",
         "https://rclone.org/b2/#b2-endpoint",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/b2/b2.go#L550-L560",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/b2/b2.go#L606-L634",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/b2/b2.go#L803-L854",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/b2/b2.go#L2000-L2103",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/b2/api/types.go#L125-L191",
-        "https://github.com/rclone/rclone/blob/v1.75.1/fs/pacer.go#L22-L33",
-        "https://github.com/rclone/rclone/blob/v1.75.1/lib/pacer/pacer.go#L220-L247",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/b2/b2.go",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/b2/b2.go",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/b2/b2.go",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/b2/b2.go",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/b2/api/types.go",
+        "https://github.com/rclone/rclone/blob/v1.75.2/fs/pacer.go",
+        "https://github.com/rclone/rclone/blob/v1.75.2/lib/pacer/pacer.go",
         "https://www.backblaze.com/apidocs/b2-list-file-names",
         "https://www.backblaze.com/apidocs/b2-download-file-by-id"
       ],
@@ -1403,7 +1403,7 @@
         "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension."
       ],
       "source_links": [
-        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/box.md"
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/box.md"
       ],
       "auth_applicability": "oauth",
       "refresh_applicability": "required",
@@ -1435,8 +1435,8 @@
         "The vendor also offers OAuth in other integrations. That is not configured by this pinned backend constructor and must not inherit this N/A decision."
       ],
       "source_links": [
-        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/cloudinary.md",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/cloudinary/cloudinary.go#L180-L187",
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/cloudinary.md",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/cloudinary/cloudinary.go",
         "https://cloudinary.com/documentation/admin_api"
       ],
       "auth_applicability": "credentials",
@@ -1468,7 +1468,7 @@
         "Connection/session reauthentication is N/A only for this local or public anonymous baseline; authenticated upstreams need a separate reviewed plan."
       ],
       "source_links": [
-        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/doi.md"
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/doi.md"
       ],
       "auth_applicability": "none",
       "refresh_applicability": "not_applicable",
@@ -1497,9 +1497,9 @@
         "Decision is for the pinned configured-key list/download route, not every vendor login method or future API. Expiring object URLs and transfer sessions need separate transfer-resilience tests."
       ],
       "source_links": [
-        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/drime.md",
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/drime.md",
         "https://rclone.org/drime/",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/drime/drime.go#L376-L384"
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/drime/drime.go"
       ],
       "auth_applicability": "credentials",
       "refresh_applicability": "not_applicable",
@@ -1530,7 +1530,7 @@
         "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension."
       ],
       "source_links": [
-        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/drive.md"
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/drive.md"
       ],
       "auth_applicability": "oauth",
       "refresh_applicability": "required",
@@ -1562,7 +1562,7 @@
         "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension."
       ],
       "source_links": [
-        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/dropbox.md",
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/dropbox.md",
         "https://docs.dropboxapi.com/dropbox-api/docs/oauth"
       ],
       "auth_applicability": "oauth",
@@ -1595,9 +1595,9 @@
         "Decision is for the pinned configured-key list/download route, not every vendor login method or future API. Expiring object URLs and transfer sessions need separate transfer-resilience tests."
       ],
       "source_links": [
-        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/fichier.md",
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/fichier.md",
         "https://rclone.org/fichier/",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/fichier/fichier.go#L214-L224"
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/fichier/fichier.go"
       ],
       "auth_applicability": "credentials",
       "refresh_applicability": "not_applicable",
@@ -1635,18 +1635,18 @@
         "Permanent-token provisioning, fresh account login, real appliance expiry/revocation, general session reauthentication, hosted appliances, TLS, pagination, native empty/range objects, application acceptance and account permissions remain unverified. Existing application/vendor lifecycle obligations are unchanged."
       ],
       "source_links": [
-        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/filefabric.md",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/filefabric/filefabric.go#L235-L419",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/filefabric/filefabric.go#L423-L517",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/filefabric/filefabric.go#L584-L678",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/filefabric/filefabric.go#L1095-L1203",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/filefabric/api/types.go#L15-L246",
-        "https://github.com/rclone/rclone/blob/v1.75.1/lib/dircache/dircache.go#L369-L380",
-        "https://github.com/rclone/rclone/blob/v1.75.1/fs/cache/cache.go",
-        "https://github.com/rclone/rclone/blob/v1.75.1/fs/configmap.go",
-        "https://github.com/rclone/rclone/blob/v1.75.1/fs/config/config.go",
-        "https://github.com/rclone/rclone/blob/v1.75.1/fs/config/configfile/configfile.go",
-        "https://github.com/rclone/rclone/blob/v1.75.1/fs/rc/jobs/job.go"
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/filefabric.md",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/filefabric/filefabric.go",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/filefabric/filefabric.go",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/filefabric/filefabric.go",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/filefabric/filefabric.go",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/filefabric/api/types.go",
+        "https://github.com/rclone/rclone/blob/v1.75.2/lib/dircache/dircache.go",
+        "https://github.com/rclone/rclone/blob/v1.75.2/fs/cache/cache.go",
+        "https://github.com/rclone/rclone/blob/v1.75.2/fs/configmap.go",
+        "https://github.com/rclone/rclone/blob/v1.75.2/fs/config/config.go",
+        "https://github.com/rclone/rclone/blob/v1.75.2/fs/config/configfile/configfile.go",
+        "https://github.com/rclone/rclone/blob/v1.75.2/fs/rc/jobs/job.go"
       ],
       "auth_applicability": "provider_specific",
       "refresh_applicability": "required",
@@ -1678,8 +1678,8 @@
         "Decision is for the pinned configured-key list/download route, not every vendor login method or future API. Expiring object URLs and transfer sessions need separate transfer-resilience tests."
       ],
       "source_links": [
-        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/filelu.md",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/filelu/filelu_client.go#L101-L111"
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/filelu.md",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/filelu/filelu_client.go"
       ],
       "auth_applicability": "credentials",
       "refresh_applicability": "not_applicable",
@@ -1711,8 +1711,8 @@
         "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension."
       ],
       "source_links": [
-        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/filen.md",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/filen/filen.go#L116-L145",
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/filen.md",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/filen/filen.go",
         "https://github.com/FilenCloudDienste/filen-sdk-go/blob/v0.0.39/filen/filen.go#L84-L104",
         "https://github.com/FilenCloudDienste/filen-sdk-go/blob/v0.0.39/filen/client/client.go#L116-L153",
         "https://rclone.org/filen/"
@@ -1748,8 +1748,8 @@
         "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension."
       ],
       "source_links": [
-        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/filescom.md",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/filescom/filescom.go#L247-L295",
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/filescom.md",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/filescom/filescom.go",
         "https://www.developers.files.com/rest/overview/authentication/",
         "https://www.files.com/docs/security-reference/authentication-and-sessions/access-revocation"
       ],
@@ -1796,9 +1796,9 @@
         "The current local protocol requirements do not attest connection recovery, replacement-credential renewal, or vendor-specific modes. Required application lifecycle cases remain unverified until separate evidence is supplied."
       ],
       "source_links": [
-        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/ftp.md",
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/ftp.md",
         "https://pyftpdlib.readthedocs.io/en/latest/",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/ftp/ftp.go#L543-L576"
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/ftp/ftp.go"
       ],
       "auth_applicability": "credentials",
       "refresh_applicability": "not_applicable",
@@ -1831,7 +1831,7 @@
         "Full local qualification requires both the eight-capability gcs_static_token_read_v1 mode and fresh schema-6 gcs_oauth_lifecycle_v1 evidence. The latter covers synthetic OAuth callback/exchange/persistence, actual expiry followed by refresh, replacement-token read, exact denial and owned-process cancellation. Historical unqualified experiments are not importable. This does not qualify service-account JWT, ADC, workload identity, revocation, session reauthentication, real Google consent/IAM, application or vendor acceptance."
       ],
       "source_links": [
-        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/googlecloudstorage.md"
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/googlecloudstorage.md"
       ],
       "auth_applicability": "provider_specific",
       "refresh_applicability": "required",
@@ -1863,9 +1863,9 @@
         "Decision is for the pinned configured-key list/download route, not every vendor login method or future API. Expiring object URLs and transfer sessions need separate transfer-resilience tests."
       ],
       "source_links": [
-        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/gofile.md",
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/gofile.md",
         "https://rclone.org/gofile/",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/gofile/gofile.go#L315-L325"
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/gofile/gofile.go"
       ],
       "auth_applicability": "credentials",
       "refresh_applicability": "not_applicable",
@@ -1896,7 +1896,7 @@
         "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension."
       ],
       "source_links": [
-        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/googlephotos.md",
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/googlephotos.md",
         "https://developers.google.com/photos/support/updates"
       ],
       "auth_applicability": "oauth",
@@ -1930,9 +1930,9 @@
         "Service-ticket renewal/reacquisition and RPC connection authentication are required and distinct from external CCache TGT renewal. These source-backed requirements do not claim a successful Kerberos deployment or automatic TGT extension."
       ],
       "source_links": [
-        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/hdfs.md",
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/hdfs.md",
         "https://hadoop.apache.org/docs/stable/hadoop-project-dist/hadoop-common/SingleCluster.html",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/hdfs/fs.go#L43-L111",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/hdfs/fs.go",
         "https://github.com/jcmturner/gokrb5/blob/v8.4.4/v8/client/client.go#L62-L111",
         "https://github.com/colinmarc/hdfs/blob/v2.4.0/internal/rpc/namenode.go#L145-L164",
         "https://github.com/colinmarc/hdfs/blob/v2.4.0/internal/rpc/namenode.go#L245-L274",
@@ -1981,7 +1981,7 @@
         "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension."
       ],
       "source_links": [
-        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/hidrive.md"
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/hidrive.md"
       ],
       "auth_applicability": "oauth",
       "refresh_applicability": "required",
@@ -2013,7 +2013,7 @@
         "Connection/session reauthentication is N/A only for this local or public anonymous baseline; authenticated upstreams need a separate reviewed plan."
       ],
       "source_links": [
-        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/http.md",
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/http.md",
         "https://docs.python.org/3/library/http.server.html"
       ],
       "auth_applicability": "none",
@@ -2043,7 +2043,7 @@
         "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension."
       ],
       "source_links": [
-        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/huaweidrive.md"
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/huaweidrive.md"
       ],
       "auth_applicability": "oauth",
       "refresh_applicability": "required",
@@ -2076,8 +2076,8 @@
         "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension."
       ],
       "source_links": [
-        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/iclouddrive.md",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/iclouddrive/api/client.go#L85-L156",
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/iclouddrive.md",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/iclouddrive/api/client.go",
         "https://rclone.org/iclouddrive/"
       ],
       "renewal_modes": [
@@ -2122,9 +2122,9 @@
         "Decision is for the pinned configured-key list/download route, not every vendor login method or future API. Expiring object URLs and transfer sessions need separate transfer-resilience tests."
       ],
       "source_links": [
-        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/imagekit.md",
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/imagekit.md",
         "https://rclone.org/imagekit/",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/imagekit/client/client.go#L33-L54"
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/imagekit/client/client.go"
       ],
       "auth_applicability": "credentials",
       "refresh_applicability": "not_applicable",
@@ -2160,11 +2160,11 @@
         "No hosted Internet Archive credential validation, account login, TLS, redirect/CDN containment, upload/derive queue, native empty-file or lifecycle acceptance is established. The local archive ZIP fixture is a different backend."
       ],
       "source_links": [
-        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/internetarchive.md",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/internetarchive/internetarchive.go#L366-L376",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/internetarchive/internetarchive.go#L333-L386",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/internetarchive/internetarchive.go#L766-L791",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/internetarchive/internetarchive.go#L1025-L1088",
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/internetarchive.md",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/internetarchive/internetarchive.go",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/internetarchive/internetarchive.go",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/internetarchive/internetarchive.go",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/internetarchive/internetarchive.go",
         "https://archive.org/developers/md-read.html"
       ],
       "auth_applicability": "credentials",
@@ -2209,9 +2209,9 @@
         "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension."
       ],
       "source_links": [
-        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/internxt.md",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/internxt/internxt.go#L304-L315",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/internxt/internxt.go#L334-L399"
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/internxt.md",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/internxt/internxt.go",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/internxt/internxt.go"
       ],
       "renewal_modes": [
         {
@@ -2243,7 +2243,7 @@
         "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension."
       ],
       "source_links": [
-        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/jottacloud.md"
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/jottacloud.md"
       ],
       "auth_applicability": "provider_specific",
       "refresh_applicability": "required",
@@ -2279,10 +2279,10 @@
         "This synthetic Basic read fixture provides no hosted account login, token acquisition, OAuth refresh, revocation, general session recovery, application acquisition or alternate-provider acceptance. Existing application/vendor and lifecycle obligations remain independent."
       ],
       "source_links": [
-        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/koofr.md",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/koofr/koofr.go#L315-L327",
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/koofr.md",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/koofr/koofr.go",
         "https://rclone.org/koofr/",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/koofr/koofr.go#L267-L367",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/koofr/koofr.go",
         "https://github.com/koofr/go-koofrclient/blob/cbd7fc9ad6a6/client_files.go#L16-L61",
         "https://github.com/koofr/go-koofrclient/blob/cbd7fc9ad6a6/client_files.go#L197-L229",
         "https://github.com/koofr/go-httpclient/blob/e20f8f203988/httpclient.go#L74-L116"
@@ -2317,9 +2317,9 @@
         "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension."
       ],
       "source_links": [
-        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/linkbox.md",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/linkbox/linkbox.go#L166-L175",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/linkbox/linkbox.go#L219-L275"
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/linkbox.md",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/linkbox/linkbox.go",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/linkbox/linkbox.go"
       ],
       "renewal_modes": [
         {
@@ -2366,8 +2366,8 @@
         "Connection/session reauthentication is N/A only for this local or public anonymous baseline; authenticated upstreams need a separate reviewed plan."
       ],
       "source_links": [
-        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/local.md",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/local/local.go#L85-L88"
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/local.md",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/local/local.go"
       ],
       "auth_applicability": "none",
       "refresh_applicability": "not_applicable",
@@ -2397,8 +2397,8 @@
         "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension."
       ],
       "source_links": [
-        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/mailru.md",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/mailru/mailru.go#L430-L518",
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/mailru.md",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/mailru/mailru.go",
         "https://rclone.org/mailru/"
       ],
       "renewal_modes": [
@@ -2432,8 +2432,8 @@
         "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension."
       ],
       "source_links": [
-        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/mega.md",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/mega/mega.go#L248-L292"
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/mega.md",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/mega/mega.go"
       ],
       "renewal_modes": [
         {
@@ -2479,10 +2479,10 @@
         "Seeding intentionally writes memory objects. The fixture does not claim write rejection, persistence after process exit, cancellation, credential renewal, session reauthentication or application acceptance; the application's separate-process source lifecycle remains unverified."
       ],
       "source_links": [
-        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/memory.md",
-        "https://github.com/rclone/rclone/blob/v1.75.1/cmd/rc/rc.go#L202-L218",
-        "https://github.com/rclone/rclone/blob/v1.75.1/fs/rc/jobs/job.go#L680-L727",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/memory/memory.go#L579-L681"
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/memory.md",
+        "https://github.com/rclone/rclone/blob/v1.75.2/cmd/rc/rc.go",
+        "https://github.com/rclone/rclone/blob/v1.75.2/fs/rc/jobs/job.go",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/memory/memory.go"
       ],
       "auth_applicability": "none",
       "refresh_applicability": "not_applicable",
@@ -2514,13 +2514,13 @@
         "This single-page, regular-file fixture establishes request-signature handling and independent download integrity only. Hosted Akamai eligibility, fresh account login, external secret rotation, lifecycle recovery, TLS/redirects, pagination, implicit directories, symlinks and application/vendor acceptance remain unverified."
       ],
       "source_links": [
-        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/netstorage.md",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/netstorage/netstorage.go#L830-L841",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/netstorage/netstorage.go#L1250-L1274",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/netstorage/netstorage.go#L216-L278",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/netstorage/netstorage.go#L356-L370",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/netstorage/netstorage.go#L903-L977",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/netstorage/netstorage.go#L1067-L1085"
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/netstorage.md",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/netstorage/netstorage.go",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/netstorage/netstorage.go",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/netstorage/netstorage.go",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/netstorage/netstorage.go",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/netstorage/netstorage.go",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/netstorage/netstorage.go"
       ],
       "auth_applicability": "credentials",
       "refresh_applicability": "not_applicable",
@@ -2551,7 +2551,7 @@
         "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension."
       ],
       "source_links": [
-        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/onedrive.md"
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/onedrive.md"
       ],
       "auth_applicability": "oauth",
       "refresh_applicability": "required",
@@ -2585,8 +2585,8 @@
         "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension."
       ],
       "source_links": [
-        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/oracleobjectstorage/_index.md",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/oracleobjectstorage/client.go#L39-L68",
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/oracleobjectstorage/_index.md",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/oracleobjectstorage/client.go",
         "https://docs.oracle.com/en-us/iaas/tools/go/65.99.0/common/auth/index.html"
       ],
       "renewal_modes": [
@@ -2644,9 +2644,9 @@
         "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension."
       ],
       "source_links": [
-        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/opendrive.md",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/opendrive/opendrive.go#L218-L233",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/opendrive/opendrive.go#L743-L761"
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/opendrive.md",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/opendrive/opendrive.go",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/opendrive/opendrive.go"
       ],
       "renewal_modes": [
         {
@@ -2679,14 +2679,14 @@
         "Do not claim tokens can never be revoked or expire server-side. A zero-expiry config value is client behavior, not a vendor lifetime guarantee.",
         "Provider-supported refresh contract for nonstandard/expiring imported tokens remains unestablished.",
         "The predefined pcloud_saved_token_read_v1 local protocol fixture uses only generated synthetic saved tokens, an owned loopback HTTPS endpoint and a per-child CA. Its ten observed capabilities cover the complete three-file synthetic inventory, hashes and readback, saved-token use/rejection, member read denial, missing objects, fixture write rejection, byte-preserved config/source and cleanup.",
-        "The separate Linux/amd64 schema-5 pcloud_oauth_authentication_v1 suite contributes only authentication: full callback/exchange/persistence/fresh-child read, wrong nonempty state, denied consent, exact invalid-code and wrong-secret Basic-then-form denials, and owned waiting-process cancellation. The saved-token and authentication receipts must both pass with current runtime/source bindings; default positive feasibility receipts remain ineligible.",
-        "Process cancellation is not application cancellation. Blank state is accepted upstream, and callback hostname influences the token endpoint; the fixture retains network-none containment and never claims comprehensive CSRF or authority confinement. Token refresh, vendor revocation, regional service behavior and application/vendor acceptance remain separate. Both lifecycle applicability reviews and all application/vendor obligations are unchanged.",
+        "The source-bound Linux/amd64 OAuth authentication suite must cover fresh callback, exchange, persistence and fresh-child read; wrong and blank state; invalid callback hostname; denied consent; exact invalid-code and wrong-secret Basic-then-form denials; and owned waiting-process cancellation. It contributes only authentication. The saved-token and authentication receipts must both pass with current runtime/source bindings; positive feasibility receipts remain ineligible.",
+        "The pinned runtime requires matching OAuth state and validates callback hostnames under pcloud.com. The fixture must use its exact synthetic hostname, verified TLS authority and loopback-only mapping inside network-none containment. Process cancellation is not application cancellation, and these cases do not establish comprehensive CSRF or vendor authority confinement. Token refresh, vendor revocation, regional service behavior and application/vendor acceptance remain separate. Both lifecycle applicability reviews and all application/vendor obligations are unchanged.",
         "Current receipt provenance includes the TLS and pCloud fixture sources and the fully hashed fixture dependency lock. The producer must also validate its loaded dependency versions; a lock hash alone is not proof of the installed environment."
       ],
       "source_links": [
-        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/pcloud.md",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/pcloud/pcloud.go#L315-L347",
-        "https://github.com/rclone/rclone/blob/v1.75.1/lib/oauthutil/oauthutil.go#L409-L430",
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/pcloud.md",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/pcloud/pcloud.go",
+        "https://github.com/rclone/rclone/blob/v1.75.2/lib/oauthutil/oauthutil.go",
         "https://docs.pcloud.com/methods/oauth_2.0/oauth2_token.html"
       ],
       "auth_applicability": "oauth",
@@ -2730,10 +2730,10 @@
         "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension."
       ],
       "source_links": [
-        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/pikpak.md",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/pikpak/pikpak.go#L88-L141",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/pikpak/pikpak.go#L409-L455",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/pikpak/pikpak.go#L521-L522"
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/pikpak.md",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/pikpak/pikpak.go",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/pikpak/pikpak.go",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/pikpak/pikpak.go"
       ],
       "renewal_modes": [
         {
@@ -2768,15 +2768,15 @@
         "The native manifest contains three nonempty synthetic files. HTTP range/empty-file unit tests are separate evidence. This fixture does not attest hosted plan eligibility, anonymous shared roots, real login, credential replacement/revocation, OAuth or lifecycle behavior, production application acquisition, TLS or general writes. Existing application/vendor/lifecycle obligations remain unchanged."
       ],
       "source_links": [
-        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/pixeldrain.md",
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/pixeldrain.md",
         "https://rclone.org/pixeldrain/",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/pixeldrain/pixeldrain.go#L140-L145",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/pixeldrain/pixeldrain.go#L110-L178",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/pixeldrain/pixeldrain.go#L191-L225",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/pixeldrain/api_client.go#L18-L51",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/pixeldrain/api_client.go#L175-L201",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/pixeldrain/api_client.go#L233-L265",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/pixeldrain/api_client.go#L386-L400"
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/pixeldrain/pixeldrain.go",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/pixeldrain/pixeldrain.go",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/pixeldrain/pixeldrain.go",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/pixeldrain/api_client.go",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/pixeldrain/api_client.go",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/pixeldrain/api_client.go",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/pixeldrain/api_client.go"
       ],
       "auth_applicability": "credentials",
       "refresh_applicability": "not_applicable",
@@ -2807,7 +2807,7 @@
         "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension."
       ],
       "source_links": [
-        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/premiumizeme.md"
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/premiumizeme.md"
       ],
       "auth_applicability": "oauth",
       "refresh_applicability": "required",
@@ -2840,9 +2840,9 @@
         "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension."
       ],
       "source_links": [
-        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/protondrive.md",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/protondrive/protondrive.go#L342-L362",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/protondrive/protondrive.go#L483-L532",
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/protondrive.md",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/protondrive/protondrive.go",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/protondrive/protondrive.go",
         "https://github.com/rclone/go-proton-api/blob/v1.0.4/client.go#L142-L150",
         "https://github.com/rclone/go-proton-api/blob/v1.0.4/client.go#L174-L210",
         "https://github.com/rclone/go-proton-api/blob/v1.0.4/manager_auth.go#L105-L124"
@@ -2879,9 +2879,9 @@
         "Current provider token lifetime/renewal semantics beyond the documented zero-expiry client configuration are not established."
       ],
       "source_links": [
-        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/putio.md",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/putio/fs.go#L72-L93",
-        "https://github.com/rclone/rclone/blob/v1.75.1/lib/oauthutil/oauthutil.go#L409-L430",
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/putio.md",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/putio/fs.go",
+        "https://github.com/rclone/rclone/blob/v1.75.2/lib/oauthutil/oauthutil.go",
         "https://help.put.io/en/articles/5972538-how-to-get-an-oauth-token-from-put-io"
       ],
       "auth_applicability": "oauth",
@@ -2924,8 +2924,8 @@
         "Runtime/environment credential-provider behavior is not source-resolved in this pass."
       ],
       "source_links": [
-        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/qingstor.md",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/qingstor/qingstor.go#L232-L283"
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/qingstor.md",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/qingstor/qingstor.go"
       ],
       "auth_applicability": "credentials",
       "refresh_applicability": "review_required",
@@ -2968,8 +2968,8 @@
         "Decision is for the pinned configured-key list/download route, not every vendor login method or future API. Expiring object URLs and transfer sessions need separate transfer-resilience tests."
       ],
       "source_links": [
-        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/quatrix.md",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/quatrix/quatrix.go#L202-L212"
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/quatrix.md",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/quatrix/quatrix.go"
       ],
       "auth_applicability": "credentials",
       "refresh_applicability": "not_applicable",
@@ -3003,9 +3003,9 @@
         "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension."
       ],
       "source_links": [
-        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/s3.md",
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/s3.md",
         "https://garagehq.deuxfleurs.fr/documentation/quick-start/",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/s3/s3.go#L1501-L1579",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/s3/s3.go",
         "https://docs.aws.amazon.com/sdk-for-go/v2/developer-guide/configure-gosdk.html"
       ],
       "renewal_modes": [
@@ -3088,16 +3088,16 @@
         "Positive listing/download verdicts require observed JSON account-token acquisition followed by use of that exact token. Wrong-password and invalid cached-token rejection are separate negative checks. Relative payload links remain on the owned listener. These checks establish neither vendor login nor account-token refresh, encrypted-library authorization renewal, session recovery, application acceptance, or coverage of other Seafile versions."
       ],
       "source_links": [
-        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/seafile.md",
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/seafile.md",
         "https://rclone.org/seafile/",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/seafile/seafile.go#L235-L282",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/seafile/webapi.go#L33-L72",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/seafile/webapi.go#L86-L96",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/seafile/renew.go#L18-L53",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/seafile/webapi.go#L247-L298",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/seafile/webapi.go#L489-L650",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/seafile/api/types.go#L7-L93",
-        "https://github.com/rclone/rclone/blob/v1.75.1/lib/rest/rest.go#L334-L407"
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/seafile/seafile.go",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/seafile/webapi.go",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/seafile/webapi.go",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/seafile/renew.go",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/seafile/webapi.go",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/seafile/webapi.go",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/seafile/api/types.go",
+        "https://github.com/rclone/rclone/blob/v1.75.2/lib/rest/rest.go"
       ],
       "renewal_modes": [
         {
@@ -3155,10 +3155,10 @@
         "The current local protocol requirements do not attest connection recovery, replacement-credential renewal, or vendor-specific modes. Required application lifecycle cases remain unverified until separate evidence is supplied."
       ],
       "source_links": [
-        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/sftp.md",
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/sftp.md",
         "https://www.openssh.com/",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/sftp/sftp.go#L1369-L1424",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/sftp/sftp.go#L1461-L1539"
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/sftp/sftp.go",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/sftp/sftp.go"
       ],
       "auth_applicability": "credentials",
       "refresh_applicability": "review_required",
@@ -3204,10 +3204,10 @@
         "CORRECTION: a static API key here is upstream authority for a renewable JWT. It is not a static-token-only backend."
       ],
       "source_links": [
-        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/shade.md",
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/shade.md",
         "https://rclone.org/shade/",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/shade/shade.go#L121-L139",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/shade/shade.go#L190-L216"
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/shade/shade.go",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/shade/shade.go"
       ],
       "auth_applicability": "credentials",
       "refresh_applicability": "required",
@@ -3239,7 +3239,7 @@
         "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension."
       ],
       "source_links": [
-        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/sharefile.md"
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/sharefile.md"
       ],
       "auth_applicability": "oauth",
       "refresh_applicability": "required",
@@ -3272,9 +3272,9 @@
         "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension."
       ],
       "source_links": [
-        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/sia.md",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/sia/sia.go#L43-L62",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/sia/sia.go#L469-L474"
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/sia.md",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/sia/sia.go",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/sia/sia.go"
       ],
       "renewal_modes": [
         {
@@ -3307,10 +3307,10 @@
         "The current local protocol requirements do not attest connection recovery, replacement-credential renewal, or vendor-specific modes. Required application lifecycle cases remain unverified until separate evidence is supplied."
       ],
       "source_links": [
-        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/smb.md",
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/smb.md",
         "https://www.samba.org/",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/smb/connpool.go#L24-L70",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/smb/kerberos.go#L18-L99",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/smb/connpool.go",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/smb/kerberos.go",
         "https://github.com/jcmturner/gokrb5/blob/v8.4.4/v8/client/client.go#L62-L111",
         "https://github.com/cloudsoda/go-smb2/blob/d8c5600d73b8/krb5.go#L35-L49",
         "https://github.com/jcmturner/gokrb5/blob/v8.4.4/v8/client/cache.go#L99-L132",
@@ -3360,9 +3360,9 @@
         "Grant-renewal N/A does not establish connection/session reauthentication N/A. Pinned Uplink transport/session behavior requires separate source review and acceptance."
       ],
       "source_links": [
-        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/storj.md",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/storj/fs.go#L188-L219",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/storj/fs.go#L269-L280",
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/storj.md",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/storj/fs.go",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/storj/fs.go",
         "https://storj.dev/learn/concepts/access/access-grants",
         "https://storj.dev/learn/concepts/access/access-grants/api-key/restriction"
       ],
@@ -3407,7 +3407,7 @@
         "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension."
       ],
       "source_links": [
-        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/sugarsync.md"
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/sugarsync.md"
       ],
       "auth_applicability": "provider_specific",
       "refresh_applicability": "required",
@@ -3444,10 +3444,10 @@
         "The local receipt does not qualify OAuth refresh, TLS, Keystone v2/v3, application credentials, environment-provided credentials, token/storage URL overrides, large objects, vendor deployments, application cancellation, or a general connection-recovery case."
       ],
       "source_links": [
-        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/swift.md",
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/swift.md",
         "https://docs.openstack.org/swift/latest/development_saio.html",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/swift/swift.go#L473-L546",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/swift/swift.go#L83-L105",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/swift/swift.go",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/swift/swift.go",
         "https://github.com/ncw/swift/blob/v2.0.5/auth.go#L92-L125",
         "https://github.com/ncw/swift/blob/v2.0.5/swift.go#L528-L618",
         "https://github.com/ncw/swift/blob/v2.0.5/swift.go#L650-L658",
@@ -3500,13 +3500,13 @@
         "Grant-renewal N/A does not establish connection/session reauthentication N/A. Pinned Uplink transport/session behavior requires separate source review and acceptance."
       ],
       "source_links": [
-        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/storj.md",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/storj/fs.go",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/storj/fs.go#L188-L219",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/storj/fs.go#L269-L280",
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/storj.md",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/storj/fs.go",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/storj/fs.go",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/storj/fs.go",
         "https://storj.dev/learn/concepts/access/access-grants",
         "https://storj.dev/learn/concepts/access/access-grants/api-key/restriction",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/storj/fs.go#L39-L45"
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/storj/fs.go"
       ],
       "auth_applicability": "credentials",
       "refresh_applicability": "not_applicable",
@@ -3550,8 +3550,8 @@
         "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension."
       ],
       "source_links": [
-        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/ulozto.md",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/ulozto/ulozto.go#L220-L276"
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/ulozto.md",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/ulozto/ulozto.go"
       ],
       "renewal_modes": [
         {
@@ -3584,12 +3584,12 @@
         "The current local protocol requirements do not attest connection recovery, replacement-credential renewal, or vendor-specific modes. Required application lifecycle cases remain unverified until separate evidence is supplied."
       ],
       "source_links": [
-        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/webdav.md",
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/webdav.md",
         "https://httpd.apache.org/docs/2.4/mod/mod_dav.html",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/webdav/webdav.go#L293-L300",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/webdav/webdav.go#L504-L534",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/webdav/webdav.go#L619-L635",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/webdav/webdav.go#L681-L709"
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/webdav/webdav.go",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/webdav/webdav.go",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/webdav/webdav.go",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/webdav/webdav.go"
       ],
       "auth_applicability": "credentials",
       "refresh_applicability": "required",
@@ -3661,9 +3661,9 @@
         "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension."
       ],
       "source_links": [
-        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/yandex.md",
-        "https://github.com/rclone/rclone/blob/v1.75.1/backend/yandex/yandex.go#L286-L303",
-        "https://github.com/rclone/rclone/blob/v1.75.1/lib/oauthutil/oauthutil.go#L270-L340"
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/yandex.md",
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/yandex/yandex.go",
+        "https://github.com/rclone/rclone/blob/v1.75.2/lib/oauthutil/oauthutil.go"
       ],
       "renewal_modes": [
         {
@@ -3695,7 +3695,7 @@
         "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension."
       ],
       "source_links": [
-        "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/zoho.md"
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/zoho.md"
       ],
       "auth_applicability": "oauth",
       "refresh_applicability": "required",

@@ -17,8 +17,8 @@ SOURCE = Path(__file__).resolve().parents[1] / "provider-lab/pcloud-oauth/probe.
 probe = types.ModuleType("pcloud_oauth_auth_probe_under_test")
 probe.__file__ = str(SOURCE)
 exec(compile(SOURCE.read_bytes(), str(SOURCE), "exec"), probe.__dict__)
-NAMES = ("positive", "wrong_state", "consent_denied", "invalid_code", "wrong_client_secret", "cancelled")
-COMMON = {"environment", "version_binding", "initial_config_question", "callback_ownership",
+NAMES = ("positive", "wrong_state", "blank_state", "invalid_hostname", "consent_denied", "invalid_code", "wrong_client_secret", "cancelled")
+COMMON = {"environment", "tls_authority_bound", "authority_preserved", "version_binding", "initial_config_question", "callback_ownership",
           "no_token_persisted", "config_preserved", "no_read", "source_preserved", "request_sequence"}
 STATE = "AAECAwQFBgcICQoLDA0ODw"
 ALTERNATE = "EBESExQVFhcYGRobHB0eHw"
@@ -31,6 +31,9 @@ def denial(mode, expected=STATE, alternate=ALTERNATE):
     causes = {
         "wrong_state": ('Error: Auth state doesn\'t match\nCode: ""\nDescription: Expecting "'
                         + expected + '" got "' + alternate + '"\nHelp: '),
+        "blank_state": ('Error: Auth state doesn\'t match\nCode: ""\nDescription: Expecting "'
+                        + expected + '" got ""\nHelp: '),
+        "invalid_hostname": 'invalid hostname "fixture.invalid" in oauth response',
         "consent_denied": ('Error: Auth Error\nCode: ""\nDescription: No code returned by remote server: '
                            'access_denied: synthetic consent denied\nHelp: '),
         "invalid_code": 'failed to get token: oauth2: "invalid_grant" "synthetic authorization code rejected"',
@@ -160,7 +163,7 @@ class FakeState:
 
 
 class FakeFixture:
-    host, port = "127.0.0.1:12345", 12345
+    host, port = "fixture.pcloud.com", 443
 
     def __init__(self, owner):
         self.owner, self.cleanup_complete = owner, False
@@ -172,7 +175,9 @@ class FakeFixture:
         return self
 
     def snapshot(self):
-        return {"transport": {"failure_codes": ["synthetic_failure"] if self.owner.failure == "transport" else []}}
+        return {"certificate_cleanup": True, "transport": {"cleanup_complete": True, "active_connections": 0,
+            "active_workers": 0, "active_timers": 0,
+            "failure_codes": ["synthetic_failure"] if self.owner.failure == "transport" else []}}
 
 
 class FakeNative:
@@ -194,8 +199,8 @@ class FakeNative:
         expected_secret = state.alternate_secret if state.mode == "wrong_client_secret" else state.client_secret
         self.owner.assertEqual(self.options, {
             "type": "pcloud", "client_id": state.client_id, "client_secret": expected_secret,
-            "client_credentials": "false", "root_folder_id": "d100", "hostname": "127.0.0.1:12345",
-            "auth_url": "https://127.0.0.1:12345/oauth2/authorize", "token_url": "https://127.0.0.1:12345/oauth2_token"})
+            "client_credentials": "false", "root_folder_id": "d100", "hostname": "fixture.pcloud.com",
+            "auth_url": "https://fixture.pcloud.com/oauth2/authorize", "token_url": "https://fixture.pcloud.com/oauth2_token"})
         write_config(self.config, self.options)
         self.initial_bytes = self.config.read_bytes()
         return 0, json.dumps(QUESTION).encode(), b""
@@ -283,14 +288,14 @@ class NegativeOrchestrationTests(unittest.TestCase):
             self.assertEqual((port, path, host, context), (53682, "/auth?state=" + STATE, "127.0.0.1:53682", None))
             fields = {"access_type": "offline", "client_id": state.client_id, "redirect_uri": "http://localhost:53682/",
                       "response_type": "code", "state": STATE}
-            authority = "external.invalid" if self.failure == "authority" else "127.0.0.1:12345"
+            authority = "external.invalid" if self.failure == "authority" else "fixture.pcloud.com"
             return 307, "https://" + authority + "/oauth2/authorize?" + urlencode(sorted(fields.items())), b"redirect"
         if self.requests == 2:
             self.assertEqual(state.bound, STATE)
-            self.assertEqual((port, host, context), (12345, "127.0.0.1:12345", self.fixture))
+            self.assertEqual((port, host, context), (443, "fixture.pcloud.com", self.fixture))
             state.events, state.requests, state.authorize_requests, state.phase = [("authorize", "")], 1, 1, "authorized"
-            fields = {"state": state.alternate_state if state.mode == "wrong_state" else STATE,
-                      "locationid": "1", "hostname": "127.0.0.1:12345"}
+            fields = {"state": state.alternate_state if state.mode == "wrong_state" else "" if state.mode == "blank_state" else STATE,
+                      "locationid": "1", "hostname": "fixture.invalid" if state.mode == "invalid_hostname" else "fixture.pcloud.com"}
             if state.mode == "consent_denied":
                 fields.update(error="access_denied", error_description="synthetic consent denied")
             else:
@@ -299,8 +304,8 @@ class NegativeOrchestrationTests(unittest.TestCase):
             return 302, "http://localhost:53682/?" + urlencode(sorted(fields.items())), b"redirect"
         self.assertEqual(self.requests, 3)
         self.assertEqual((port, host, context), (53682, "localhost:53682", None))
-        callback_denied = state.mode in ("wrong_state", "consent_denied")
-        if not callback_denied:
+        callback_denied = state.mode in ("wrong_state", "blank_state", "consent_denied")
+        if state.mode in ("invalid_code", "wrong_client_secret"):
             error = "invalid_grant" if state.mode == "invalid_code" else "invalid_client"
             state.events.extend([("token_denied_basic", error), ("token_denied_form", error)])
             state.requests = 3
@@ -319,6 +324,9 @@ class NegativeOrchestrationTests(unittest.TestCase):
             for name, value in (("BASE", self.base), ("WORK", self.work), ("UID", self.root.stat().st_uid)):
                 stack.enter_context(patch.object(probe, name, value))
             stack.enter_context(patch.object(probe, "environment_checks"))
+            stack.enter_context(patch.object(probe, "authority_environment", return_value=("fixed", b"0\n")))
+            stack.enter_context(patch.object(probe, "fixture_authority", side_effect=
+                [None, probe.ProbeError("fixture_authority_mismatch")] if failure == "authority_after" else None))
             stack.enter_context(patch.object(probe, "Native", side_effect=self.make_native))
             stack.enter_context(patch.object(probe, "regular", side_effect=lambda path, private=False: self.old_regular(path)))
             stack.enter_context(patch.object(probe, "wait_callback", return_value=STATE))
@@ -339,18 +347,18 @@ class NegativeOrchestrationTests(unittest.TestCase):
             finally:
                 sys.path[:] = old_path
 
-    def test_five_full_mock_flows_have_exact_observations_and_no_secret_report(self):
+    def test_seven_full_mock_flows_have_exact_observations_and_no_secret_report(self):
         for mode in NAMES[1:]:
             with self.subTest(mode=mode):
                 report = self.execute(mode)
                 self.assertTrue(report["success"], report["errors"])
                 self.assertEqual(report["scope"], "pcloud_oauth_authentication_case")
                 self.assertIs(report["ledger_eligible"], False)
-                extras = {"owned_process_cancel"} if mode == "cancelled" else {"authorize", "callback_denial" if mode in NAMES[1:3] else "token_denial"}
+                extras = {"owned_process_cancel"} if mode == "cancelled" else {"authorize", "callback_denial" if mode in ("wrong_state", "blank_state", "consent_denied") else "hostname_denial" if mode == "invalid_hostname" else "token_denial"}
                 self.assertEqual(set(report["checks"]), COMMON | extras)
                 self.assertTrue(all(report["checks"].values()))
                 self.assertTrue(all(report["cleanup"].values()))
-                https, callback = (0, 0) if mode == "cancelled" else (1, 2) if mode in NAMES[1:3] else (3, 2)
+                https, callback = (0, 0) if mode == "cancelled" else (1, 2) if mode in ("wrong_state", "blank_state", "invalid_hostname", "consent_denied") else (3, 2)
                 self.assertEqual(report["observations"], {"native_commands": 3, "http_transactions": https + callback,
                                                          "https_requests": https, "callback_requests": callback})
                 self.assertEqual(self.closed, 1)
@@ -380,7 +388,7 @@ class NegativeOrchestrationTests(unittest.TestCase):
                 with self.subTest(mode=mode, failure=failure):
                     report = self.execute(mode, failure)
                     self.assertFalse(report["success"])
-                    self.assertFalse(report["checks"]["callback_denial" if mode in NAMES[1:3] else "token_denial"])
+                    self.assertFalse(report["checks"]["callback_denial" if mode in ("wrong_state", "blank_state", "consent_denied") else "hostname_denial" if mode == "invalid_hostname" else "token_denial"])
                     self.assertTrue(all(report["cleanup"].values()))
 
     def test_callback_response_and_owned_url_are_required_before_credit(self):
@@ -400,7 +408,26 @@ class NegativeOrchestrationTests(unittest.TestCase):
                 self.assertFalse(report["success"])
                 self.assertTrue(report["errors"])
                 self.assertTrue(report["cleanup"]["children_stopped"])
-                self.assertTrue(report["cleanup"]["temporary_removed"])
+                self.assertEqual(report["cleanup"]["temporary_removed"], failure != "source")
+
+    def test_new_callback_denials_cannot_hide_token_read_or_authority_poisoning(self):
+        for mode in ("blank_state", "invalid_hostname"):
+            for failure in ("saved_token", "token_issued", "config_scope", "config_bytes", "read_counter", "payload_counter", "output"):
+                with self.subTest(mode=mode, failure=failure):
+                    report = self.execute(mode, failure)
+                    self.assertFalse(report["success"])
+                    self.assertTrue(report["errors"])
+                    self.assertEqual(self.state.token_requests, 0)
+                    self.assertTrue(all(report["cleanup"].values()))
+
+    def test_changed_authority_after_completed_denial_cannot_pass(self):
+        report = self.execute("invalid_hostname", "authority_after")
+        self.assertFalse(report["success"])
+        self.assertTrue(report["checks"]["hostname_denial"])
+        self.assertTrue(report["checks"]["tls_authority_bound"])
+        self.assertFalse(report["checks"]["authority_preserved"])
+        self.assertIn("fixture_authority_mismatch", report["errors"])
+        self.assertTrue(all(report["cleanup"].values()))
 
     def test_any_read_artifact_payload_or_request_sequence_drift_fails(self):
         for failure in ("read_counter", "payload_counter", "output", "failed", "unexpected", "events", "basic_counter", "extra_child"):
@@ -417,8 +444,19 @@ class NegativeOrchestrationTests(unittest.TestCase):
                 self.assertFalse(report["success"])
                 self.assertTrue(report["checks"]["request_sequence"])
                 self.assertTrue(report["cleanup"]["children_stopped"])
-                self.assertTrue(report["cleanup"]["temporary_removed"])
-                self.assertEqual(list(self.work.iterdir()), [])
+                self.assertFalse(report["cleanup"]["temporary_removed"])
+                self.assertTrue(list(self.work.iterdir()))
+
+    def test_failed_fixture_construction_without_returned_object_retains_root(self):
+        with patch.object(self, "service", side_effect=probe.ProbeError("synthetic_constructor_failure")):
+            report = self.execute("blank_state")
+        self.assertFalse(report["success"])
+        self.assertIn("synthetic_constructor_failure", report["errors"])
+        self.assertIn("fixture_cleanup_failed", report["errors"])
+        self.assertTrue(report["cleanup"]["children_stopped"])
+        self.assertTrue(report["cleanup"]["listeners_closed"])
+        self.assertFalse(report["cleanup"]["temporary_removed"])
+        self.assertTrue(list(self.work.iterdir()))
 
     def test_child_cleanup_failure_preserves_owned_temp_and_cannot_pass(self):
         for failure in ("children", "close_raises"):
@@ -445,7 +483,7 @@ class SuiteTests(unittest.TestCase):
                 "cleanup": {"children_stopped": passed, "listeners_closed": True, "temporary_removed": passed},
                 "errors": [] if passed else ["temporary_cleanup_failed"]}
 
-    def test_all_six_cases_execute_once_in_fixed_order_and_remain_ineligible(self):
+    def test_all_eight_cases_execute_once_in_fixed_order_and_remain_ineligible(self):
         calls = []
         def positive(binary, manifest):
             calls.append("positive")

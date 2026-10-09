@@ -25,7 +25,7 @@ QUESTION = {"State": "*oauth-islocal,,,", "Option": {"Name": "config_is_local", 
 TERMINAL = {"State": "", "Option": None, "Error": "", "Result": ""}
 STATE = "AAECAwQFBgcICQoLDA0ODw"
 README = b"Synthetic provider protocol fixture. No account or user data.\n"
-CHECK_NAMES = {"environment", "version_binding", "initial_config_question", "callback_ownership", "authorize",
+CHECK_NAMES = {"environment", "tls_authority_bound", "authority_preserved", "version_binding", "initial_config_question", "callback_ownership", "authorize",
                "token_exchange", "config_persisted", "fresh_child_read", "source_preserved",
                "post_auth_config_preserved", "request_sequence"}
 
@@ -325,7 +325,7 @@ class FakeState:
 
 
 class FakeFixture:
-    host, port = "127.0.0.1:12345", 12345
+    host, port = "fixture.pcloud.com", 443
 
     def __init__(self, owner, state):
         self.owner, self.state, self.cleanup_complete = owner, state, False
@@ -337,7 +337,9 @@ class FakeFixture:
         return self
 
     def snapshot(self):
-        return {"transport": {"failure_codes": ["synthetic_tls_failure"] if self.owner.failure == "transport" else []}}
+        return {"certificate_cleanup": True, "transport": {"cleanup_complete": True, "active_connections": 0,
+            "active_workers": 0, "active_timers": 0,
+            "failure_codes": ["synthetic_tls_failure"] if self.owner.failure == "transport" else []}}
 
 
 class FakeNative:
@@ -431,15 +433,15 @@ class ProbeOrchestrationTests(unittest.TestCase):
             self.assertEqual((port, host, path), (53682, "127.0.0.1:53682", "/auth?state=" + STATE))
             values = {"access_type": "offline", "client_id": state.client_id, "redirect_uri": "http://localhost:53682/",
                       "response_type": "code", "state": STATE}
-            authority = "external.invalid" if self.failure == "authority" else "127.0.0.1:12345"
+            authority = "external.invalid" if self.failure == "authority" else "fixture.pcloud.com"
             return 307, "https://" + authority + "/oauth2/authorize?" + urlencode(sorted(values.items())), b"redirect"
         if self.requests == 2:
             self.assertEqual(state.bound, STATE)
-            self.assertEqual((port, host), (12345, "127.0.0.1:12345"))
+            self.assertEqual((port, host), (443, "fixture.pcloud.com"))
             state.events.append(("authorize", ""))
             state.requests += 1
             state.authorize_requests = 1
-            values = {"code": state.code, "state": STATE, "locationid": "1", "hostname": "127.0.0.1:12345"}
+            values = {"code": state.code, "state": STATE, "locationid": "1", "hostname": "fixture.pcloud.com"}
             return 302, "http://localhost:53682/?" + urlencode(sorted(values.items())), b"redirect"
         self.assertEqual((port, host), (53682, "localhost:53682"))
         self.assertIsNone(context)
@@ -457,6 +459,8 @@ class ProbeOrchestrationTests(unittest.TestCase):
             stack.enter_context(patch.object(probe, "WORK", self.work))
             stack.enter_context(patch.object(probe, "UID", self.root.stat().st_uid))
             stack.enter_context(patch.object(probe, "environment_checks"))
+            stack.enter_context(patch.object(probe, "authority_environment", return_value=("fixed", b"0\n")))
+            stack.enter_context(patch.object(probe, "fixture_authority"))
             stack.enter_context(patch.object(probe, "Native", side_effect=self.make_native))
             stack.enter_context(patch.object(probe, "regular", side_effect=lambda path, private=False: self.old_regular(path)))
             stack.enter_context(patch.object(probe, "wait_callback", return_value=STATE))
@@ -510,10 +514,10 @@ class ProbeOrchestrationTests(unittest.TestCase):
                 self.assertFalse(report["success"])
                 self.assertTrue(report["errors"])
                 self.assertTrue(report["cleanup"]["children_stopped"])
-                self.assertTrue(report["cleanup"]["temporary_removed"])
-                self.assertEqual(list(self.work.iterdir()), [])
+                self.assertEqual(report["cleanup"]["temporary_removed"], failure != "source")
+                self.assertEqual(bool(list(self.work.iterdir())), failure == "source")
 
-    def test_transport_or_listener_failure_does_not_skip_owned_temp_cleanup(self):
+    def test_transport_or_listener_failure_retains_owned_temporary_root(self):
         for failure in ("transport", "listeners"):
             with self.subTest(failure=failure):
                 self.requests = self.closed = 0
@@ -523,8 +527,8 @@ class ProbeOrchestrationTests(unittest.TestCase):
                     self.assertFalse(report["cleanup"]["listeners_closed"])
                 else:
                     self.assertIn("fixture_cleanup_failed", report["errors"])
-                self.assertTrue(report["cleanup"]["temporary_removed"])
-                self.assertEqual(list(self.work.iterdir()), [])
+                self.assertFalse(report["cleanup"]["temporary_removed"])
+                self.assertTrue(list(self.work.iterdir()))
 
     def test_observed_native_version_mismatch_stops_before_authentication(self):
         report = self.execute("version")
