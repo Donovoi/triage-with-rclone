@@ -470,7 +470,7 @@ impl DownloadQueue {
             }
             if !self.dry_run {
                 if let Some(parent) = dest.parent() {
-                    std::fs::create_dir_all(parent)?;
+                    crate::utils::private_fs::create_dir_all(parent)?;
                 }
             }
             crate::utils::path::ensure_no_link_components(dest)?;
@@ -527,10 +527,7 @@ impl DownloadQueue {
                 .parent()
                 .filter(|p| !p.as_os_str().is_empty())
                 .unwrap_or_else(|| Path::new("."));
-            match tempfile::Builder::new()
-                .prefix(".triage-transfer-")
-                .tempdir_in(parent)
-            {
+            match crate::utils::private_fs::tempdir_in(parent, ".triage-transfer-") {
                 Ok(directory) => Some(directory),
                 Err(error) => {
                     return failed_result(request, error.to_string(), IntegrityStatus::Failed)
@@ -552,21 +549,28 @@ impl DownloadQueue {
                 progress(done, size);
             }
         });
-        match output {
+        let mut result = match output {
             Ok(output) if output.success() => {
                 if staging.is_some() {
-                    if let Err(error) = publish_staged_file(
+                    match publish_staged_file(
                         Path::new(&transfer.destination),
                         Path::new(&request.destination),
+                        || runner.is_cancelled(),
                     ) {
-                        return failed_result(
+                        Ok(()) => self.verify_destination(&runner, request),
+                        Err(error) => failed_result(
                             request,
                             format!("Cannot publish acquired file safely: {error}"),
-                            IntegrityStatus::Failed,
-                        );
+                            if runner.is_cancelled() {
+                                IntegrityStatus::Cancelled
+                            } else {
+                                IntegrityStatus::Failed
+                            },
+                        ),
                     }
+                } else {
+                    self.verify_destination(&runner, request)
                 }
-                self.verify_destination(&runner, request)
             }
             Ok(output) => failed_result(
                 request,
@@ -586,7 +590,24 @@ impl DownloadQueue {
                     IntegrityStatus::Failed
                 },
             ),
+        };
+        if let Some(staging) = staging {
+            if let Err(error) = staging.close() {
+                // Drop cannot prove removal. Preserve an earlier mismatch/cancellation
+                // and make otherwise successful acquisition fail on owned cleanup.
+                if result.success {
+                    result.integrity = IntegrityStatus::Failed;
+                }
+                result.success = false;
+                result.error = Some(match result.error {
+                    Some(previous) => {
+                        format!("{previous}; transfer staging cleanup failed: {error}")
+                    }
+                    None => format!("Transfer staging cleanup failed: {error}"),
+                });
+            }
         }
+        result
     }
 
     fn verify_destination(
@@ -689,7 +710,15 @@ impl DownloadQueue {
     }
 }
 
-fn publish_staged_file(staged: &Path, destination: &Path) -> Result<()> {
+#[cfg(not(windows))]
+fn publish_staged_file<F: FnMut() -> bool>(
+    staged: &Path,
+    destination: &Path,
+    mut cancelled: F,
+) -> Result<()> {
+    if cancelled() {
+        bail!("Acquisition publication cancelled");
+    }
     crate::utils::path::ensure_no_link_components(staged)?;
     crate::utils::path::ensure_no_link_components(destination)?;
     if !std::fs::symlink_metadata(staged)?.is_file() {
@@ -701,26 +730,192 @@ fn publish_staged_file(staged: &Path, destination: &Path) -> Result<()> {
         .open(staged)?
         .sync_all()?;
 
-    // tempfile's Windows persist calls Win32 directly without adding the
-    // extended-length prefix. A short destination can still have a staging
-    // path beyond MAX_PATH. Canonicalize existing parents only, retaining the
-    // final components and the no-replace rename (never a copy fallback).
-    #[cfg(windows)]
-    let (staged, destination) = {
-        let extended_path = |path: &Path| -> Result<std::path::PathBuf> {
-            let parent = path
-                .parent()
-                .filter(|p| !p.as_os_str().is_empty())
-                .unwrap_or_else(|| Path::new("."));
-            let name = path
-                .file_name()
-                .context("Publication path has no file name")?;
-            Ok(std::fs::canonicalize(parent)?.join(name))
-        };
-        (extended_path(staged)?, extended_path(destination)?)
-    };
+    if cancelled() {
+        bail!("Acquisition publication cancelled");
+    }
     tempfile::TempPath::from_path(staged).persist_noclobber(destination)?;
     Ok(())
+}
+
+/// Verify our copy against the acquired bytes, never against the remote's
+/// expected hash/size: those can deliberately mismatch and must remain evidence.
+#[cfg(any(windows, test))]
+fn copy_and_verify_staged<R, W, F>(
+    source: &mut R,
+    target: &mut W,
+    length: u64,
+    cancelled: &mut F,
+) -> Result<()>
+where
+    R: Read,
+    W: Read + std::io::Write + std::io::Seek,
+    F: FnMut() -> bool,
+{
+    use std::io::SeekFrom;
+    let mut buffer = [0_u8; 64 * 1024];
+    let mut remaining = length;
+    let mut source_hash = Sha256::new();
+    while remaining != 0 {
+        if cancelled() {
+            bail!("Acquisition publication cancelled");
+        }
+        let limit = remaining.min(buffer.len() as u64) as usize;
+        let count = source.read(&mut buffer[..limit])?;
+        if count == 0 {
+            bail!("Staged acquisition size changed");
+        }
+        target.write_all(&buffer[..count])?;
+        source_hash.update(&buffer[..count]);
+        remaining -= count as u64;
+    }
+    if cancelled() {
+        bail!("Acquisition publication cancelled");
+    }
+    if source.read(&mut buffer[..1])? != 0 {
+        bail!("Staged acquisition size changed");
+    }
+    target.flush()?;
+    target.seek(SeekFrom::Start(0))?;
+    remaining = length;
+    let mut target_hash = Sha256::new();
+    while remaining != 0 {
+        if cancelled() {
+            bail!("Acquisition publication cancelled");
+        }
+        let limit = remaining.min(buffer.len() as u64) as usize;
+        let count = target.read(&mut buffer[..limit])?;
+        if count == 0 {
+            bail!("Acquisition publication size mismatch");
+        }
+        target_hash.update(&buffer[..count]);
+        remaining -= count as u64;
+    }
+    if target.read(&mut buffer[..1])? != 0 || source_hash.finalize() != target_hash.finalize() {
+        bail!("Acquisition publication hash or size mismatch");
+    }
+    if cancelled() {
+        bail!("Acquisition publication cancelled");
+    }
+    Ok(())
+}
+
+/// Keep each existing ancestor immovable throughout the publication transaction.
+/// Existing ancestor owners/permissions are neither changed nor restricted here.
+#[cfg(windows)]
+fn pin_publication_parent(path: &Path) -> Result<(std::path::PathBuf, Vec<File>)> {
+    use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+    use std::path::Component;
+    if path
+        .components()
+        .any(|part| matches!(part, Component::ParentDir))
+    {
+        bail!("Publication parent contains traversal");
+    }
+    let absolute = std::path::absolute(path)?;
+    let parent = absolute
+        .parent()
+        .context("Publication path has no parent")?;
+    let mut pins = Vec::new();
+    for directory in parent.ancestors().collect::<Vec<_>>().into_iter().rev() {
+        // FILE_READ_ATTRIBUTES; SHARE_READ|SHARE_WRITE, deliberately no DELETE.
+        // BACKUP_SEMANTICS|OPEN_REPARSE_POINT opens the directory itself.
+        let handle = std::fs::OpenOptions::new()
+            .read(true)
+            .access_mode(0x80)
+            .share_mode(0x3)
+            .custom_flags(0x0220_0000)
+            .open(directory)?;
+        let metadata = handle.metadata()?;
+        if !metadata.is_dir() || metadata.file_attributes() & 0x400 != 0 {
+            bail!("Publication parent is not a plain directory");
+        }
+        pins.push(handle);
+    }
+    let name = absolute
+        .file_name()
+        .context("Publication path has no file name")?;
+    Ok((std::fs::canonicalize(parent)?.join(name), pins))
+}
+
+#[cfg(windows)]
+fn publish_staged_file<F: FnMut() -> bool>(
+    staged: &Path,
+    destination: &Path,
+    mut cancelled: F,
+) -> Result<()> {
+    use std::os::windows::io::AsRawHandle;
+    use windows::Win32::Foundation::{FILETIME, HANDLE};
+    use windows::Win32::Storage::FileSystem::{GetFileTime, SetFileTime};
+
+    if cancelled() {
+        bail!("Acquisition publication cancelled");
+    }
+    let (staged, _source_parents) = pin_publication_parent(staged)?;
+    let (destination, _target_parents) = pin_publication_parent(destination)?;
+    let mut source = crate::utils::private_fs::open_stable_read(&staged)?;
+    let length = source.metadata()?.len();
+    let mut created = FILETIME::default();
+    let mut accessed = FILETIME::default();
+    let mut modified = FILETIME::default();
+    // Capture before reads; keep all three original timestamps, without copying
+    // the child's security descriptor or using an OS path-copy operation.
+    unsafe {
+        GetFileTime(
+            HANDLE(source.as_raw_handle()),
+            Some(&mut created),
+            Some(&mut accessed),
+            Some(&mut modified),
+        )?;
+    }
+    let parent = destination
+        .parent()
+        .context("Publication path has no parent")?;
+    let mut publication =
+        crate::utils::private_fs::tempfile_in(parent, ".triage-publish-", ".tmp")?;
+    let prepared = (|| -> Result<()> {
+        copy_and_verify_staged(
+            &mut source,
+            publication.as_file_mut(),
+            length,
+            &mut cancelled,
+        )?;
+        unsafe {
+            SetFileTime(
+                HANDLE(publication.as_file().as_raw_handle()),
+                Some(&created),
+                Some(&accessed),
+                Some(&modified),
+            )?;
+        }
+        publication.as_file().sync_all()?;
+        if cancelled() {
+            bail!("Acquisition publication cancelled");
+        }
+        Ok(())
+    })();
+    if let Err(error) = prepared {
+        return match publication.close() {
+            Ok(()) => Err(error),
+            Err(cleanup) => Err(error.context(format!("Publication cleanup failed: {cleanup}"))),
+        };
+    }
+    // Cancellation observed before this atomic no-replace commit prevents
+    // publication. A later cancellation cannot undo a committed evidence file.
+    match publication.persist_noclobber(&destination) {
+        Ok(_published) => Ok(()),
+        Err(error) => {
+            let cause = anyhow::Error::new(error.error);
+            match error.file.close() {
+                Ok(()) => Err(cause),
+                Err(cleanup) => {
+                    Err(cause.context(format!("Publication cleanup failed: {cleanup}")))
+                }
+            }
+        }
+    }
+    // The original child file remains in the owned transfer directory. Its
+    // caller closes that directory explicitly and makes any removal failure
+    // sticky; no source pathname is deleted after releasing the stable handle.
 }
 
 fn failed_result(
@@ -952,10 +1147,13 @@ mod tests {
         let destination = root.path().join("acquired.txt");
         fs::write(&staged, b"acquired bytes\0\xff").unwrap();
 
-        publish_staged_file(&staged, &destination).unwrap();
+        publish_staged_file(&staged, &destination, || false).unwrap();
 
         assert_eq!(fs::read(&destination).unwrap(), b"acquired bytes\0\xff");
+        #[cfg(not(windows))]
         assert!(!staged.exists());
+        #[cfg(windows)]
+        assert_eq!(fs::read(&staged).unwrap(), b"acquired bytes\0\xff");
     }
 
     #[test]
@@ -966,7 +1164,7 @@ mod tests {
         fs::write(&staged, b"new acquisition").unwrap();
         fs::write(&destination, b"earlier evidence").unwrap();
 
-        assert!(publish_staged_file(&staged, &destination).is_err());
+        assert!(publish_staged_file(&staged, &destination, || false).is_err());
 
         assert_eq!(fs::read(&destination).unwrap(), b"earlier evidence");
     }
@@ -1002,10 +1200,10 @@ mod tests {
         assert_eq!(destination.as_os_str().encode_wide().count(), 248);
         fs::write(&staged, b"long staging path bytes").unwrap();
 
-        publish_staged_file(&staged, &destination).unwrap();
+        publish_staged_file(&staged, &destination, || false).unwrap();
 
         assert_eq!(fs::read(&destination).unwrap(), b"long staging path bytes");
-        assert!(!staged.exists());
+        assert_eq!(fs::read(&staged).unwrap(), b"long staging path bytes");
     }
 
     #[cfg(windows)]
@@ -1022,12 +1220,226 @@ mod tests {
         let destination = parent.join("a spaced name.txt");
         assert!(destination.as_os_str().encode_wide().count() > 260);
         fs::write(&staged, b"earlier evidence").unwrap();
-        publish_staged_file(&staged, &destination).unwrap();
-        assert!(!staged.exists());
+        publish_staged_file(&staged, &destination, || false).unwrap();
+        assert_eq!(fs::read(&staged).unwrap(), b"earlier evidence");
 
         fs::write(&staged, b"replacement bytes").unwrap();
-        assert!(publish_staged_file(&staged, &destination).is_err());
+        assert!(publish_staged_file(&staged, &destination, || false).is_err());
         assert_eq!(fs::read(&destination).unwrap(), b"earlier evidence");
+    }
+
+    #[test]
+    fn publication_copy_is_byte_exact_for_empty_and_multiple_chunks() {
+        use std::io::Cursor;
+        for bytes in [
+            Vec::new(),
+            vec![0, 255, 0, 91],
+            vec![173; 2 * 64 * 1024 + 17],
+        ] {
+            let mut source = Cursor::new(bytes.clone());
+            let mut target = Cursor::new(Vec::new());
+            copy_and_verify_staged(&mut source, &mut target, bytes.len() as u64, &mut || false)
+                .unwrap();
+            assert_eq!(target.into_inner(), bytes);
+        }
+    }
+
+    #[test]
+    fn publication_copy_rejects_wrong_stage_length_and_cancellation_at_each_phase() {
+        use std::io::Cursor;
+        let bytes = vec![123; 64 * 1024 + 7];
+        for length in [0, bytes.len() as u64 - 1, bytes.len() as u64 + 1] {
+            assert!(copy_and_verify_staged(
+                &mut Cursor::new(bytes.clone()),
+                &mut Cursor::new(Vec::new()),
+                length,
+                &mut || false,
+            )
+            .is_err());
+        }
+        let mut total = 0;
+        copy_and_verify_staged(
+            &mut Cursor::new(bytes.clone()),
+            &mut Cursor::new(Vec::new()),
+            bytes.len() as u64,
+            &mut || {
+                total += 1;
+                false
+            },
+        )
+        .unwrap();
+        assert!(
+            total >= 6,
+            "copy, verification and precommit checks are required"
+        );
+        for stop in 1..=total {
+            let mut seen = 0;
+            let error = copy_and_verify_staged(
+                &mut Cursor::new(bytes.clone()),
+                &mut Cursor::new(Vec::new()),
+                bytes.len() as u64,
+                &mut || {
+                    seen += 1;
+                    seen == stop
+                },
+            )
+            .unwrap_err();
+            assert_eq!(error.to_string(), "Acquisition publication cancelled");
+        }
+    }
+
+    #[test]
+    fn publication_copy_rejects_io_faults_and_corrupt_readback() {
+        use std::io::{self, Cursor, Seek, SeekFrom, Write};
+        struct Faulty {
+            bytes: Cursor<Vec<u8>>,
+            fault: &'static str,
+        }
+        impl Read for Faulty {
+            fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+                if self.fault == "read" {
+                    return Err(io::Error::other("injected_read"));
+                }
+                let count = self.bytes.read(buffer)?;
+                if self.fault == "corrupt" && count != 0 {
+                    buffer[0] ^= 1;
+                }
+                Ok(count)
+            }
+        }
+        impl Write for Faulty {
+            fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+                if self.fault == "write" {
+                    return Err(io::Error::other("injected_full"));
+                }
+                self.bytes.write(buffer)
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                if self.fault == "flush" {
+                    return Err(io::Error::other("injected_flush"));
+                }
+                Ok(())
+            }
+        }
+        impl Seek for Faulty {
+            fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
+                if self.fault == "seek" {
+                    return Err(io::Error::other("injected_seek"));
+                }
+                self.bytes.seek(position)
+            }
+        }
+        for fault in ["read", "write", "flush", "seek", "corrupt"] {
+            let mut target = Faulty {
+                bytes: Cursor::new(Vec::new()),
+                fault,
+            };
+            assert!(copy_and_verify_staged(
+                &mut Cursor::new(b"retained mismatch bytes"),
+                &mut target,
+                23,
+                &mut || false,
+            )
+            .is_err());
+        }
+        let mut source = Faulty {
+            bytes: Cursor::new(vec![1; 23]),
+            fault: "read",
+        };
+        assert!(
+            copy_and_verify_staged(&mut source, &mut Cursor::new(Vec::new()), 23, &mut || false,)
+                .is_err()
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn publication_rejects_parent_traversal_before_path_normalization() {
+        let error = pin_publication_parent(Path::new(r"C:\never-opened\..\payload")).unwrap_err();
+        assert_eq!(error.to_string(), "Publication parent contains traversal");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn publication_is_private_preserves_times_and_leaves_source_for_owned_cleanup() {
+        use std::os::windows::fs::MetadataExt;
+        let root = tempdir().unwrap();
+        let staging =
+            crate::utils::private_fs::tempdir_in(root.path(), ".triage-transfer-").unwrap();
+        let staged = staging.path().join("payload");
+        let destination = root.path().join("acquired");
+        fs::write(&staged, b"retained mismatch bytes").unwrap();
+        let when = std::time::UNIX_EPOCH + Duration::from_secs(1_704_067_200);
+        File::options()
+            .write(true)
+            .open(&staged)
+            .unwrap()
+            .set_times(
+                std::fs::FileTimes::new()
+                    .set_modified(when)
+                    .set_accessed(when),
+            )
+            .unwrap();
+        let before = fs::metadata(&staged).unwrap();
+        publish_staged_file(&staged, &destination, || false).unwrap();
+        let after = fs::metadata(&destination).unwrap();
+        assert_eq!(before.creation_time(), after.creation_time());
+        assert_eq!(before.last_write_time(), after.last_write_time());
+        assert_eq!(before.last_access_time(), after.last_access_time());
+        let mut secured = crate::utils::private_fs::open_private(&destination).unwrap();
+        let mut bytes = Vec::new();
+        secured.read_to_end(&mut bytes).unwrap();
+        assert_eq!(bytes, b"retained mismatch bytes");
+        assert!(staged.exists());
+        staging.close().unwrap();
+        assert!(!staged.exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn publication_cancellation_never_publishes_or_leaves_a_private_copy() {
+        let root = tempdir().unwrap();
+        let staged = root.path().join("payload");
+        let destination = root.path().join("acquired");
+        fs::write(&staged, vec![123; 64 * 1024 + 7]).unwrap();
+        // Include cancellation before opening, during both loops, after copy,
+        // and the final check after timestamp preservation and sync.
+        for stop in 1..=8 {
+            let mut seen = 0;
+            let result = publish_staged_file(&staged, &destination, || {
+                seen += 1;
+                seen == stop
+            });
+            assert!(
+                result.is_err(),
+                "cancellation must be observed before commit"
+            );
+            assert!(!destination.exists());
+            assert!(staged.exists());
+            assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn publication_rejects_linked_or_concurrently_writable_stage() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let root = tempdir().unwrap();
+        let staged = root.path().join("payload");
+        let destination = root.path().join("acquired");
+        fs::write(&staged, b"held source").unwrap();
+        let held = File::options()
+            .write(true)
+            .share_mode(0x7)
+            .open(&staged)
+            .unwrap();
+        assert!(publish_staged_file(&staged, &destination, || false).is_err());
+        assert!(!destination.exists());
+        drop(held);
+        let link = root.path().join("linked");
+        fs::hard_link(&staged, &link).unwrap();
+        assert!(publish_staged_file(&staged, &destination, || false).is_err());
+        assert!(!destination.exists());
     }
 
     #[test]

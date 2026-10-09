@@ -4,7 +4,7 @@ use anyhow::{bail, Context, Result};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -83,7 +83,10 @@ fn advance_checkpoint(line: &str, state: &mut LogCheckpoint) -> Result<()> {
     Ok(())
 }
 fn read_checkpoint(path: &Path, count: Option<u64>) -> Result<LogCheckpoint> {
-    let reader = BufReader::new(File::open(path)?);
+    read_checkpoint_from(BufReader::new(File::open(path)?), count)
+}
+
+fn read_checkpoint_from(reader: impl BufRead, count: Option<u64>) -> Result<LogCheckpoint> {
     let mut state = LogCheckpoint::default();
     for line in reader.lines() {
         let line = line?;
@@ -112,18 +115,13 @@ impl ForensicLogger {
     pub fn new(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
+            crate::utils::private_fs::create_dir_all(parent)?;
         }
-        let state = if path.exists() {
-            read_checkpoint(&path, None).context("Refusing to append to an invalid forensic log")?
-        } else {
-            LogCheckpoint::default()
-        };
-        let mut file = OpenOptions::new()
-            .create(true)
-            .read(true)
-            .append(true)
-            .open(&path)?;
+        let mut file = crate::utils::private_fs::open_append(&path)?;
+        // Verify the same handle that will be extended. Reopening a path between
+        // verification and append could bind the chain to a different file.
+        let state = read_checkpoint_from(BufReader::new(&mut file), None)
+            .context("Refusing to append to an invalid forensic log")?;
         if file.metadata()?.len() == 0 {
             writeln!(file, "# rclone-triage Forensic Log\n# Format v2: JSON Lines; SHA256(JSON([2,prev_hash,timestamp,message]))")?;
             file.sync_all()?;
@@ -137,6 +135,7 @@ impl ForensicLogger {
                 file.sync_all()?;
             }
         }
+        file.seek(SeekFrom::End(0))?;
         Ok(Self {
             path,
             file: Mutex::new(file),
@@ -267,7 +266,7 @@ mod tests {
         let timestamp = "2026-01-01T00:00:00Z";
         let hash = compute_entry_hash(GENESIS_HASH, timestamp, "legacy");
         let old = format!("{timestamp}|{hash}|{GENESIS_HASH}|legacy");
-        std::fs::write(&path, &old).unwrap();
+        crate::utils::private_fs::write(&path, old.as_bytes()).unwrap();
         let logger = ForensicLogger::new(&path).unwrap();
         logger.log("new\nrecord").unwrap();
         assert!(logger.verify_integrity().unwrap());
@@ -278,8 +277,26 @@ mod tests {
     fn corrupted_chain_cannot_be_reopened_for_append() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("bad.log");
-        std::fs::write(&path, "broken entry\n").unwrap();
+        crate::utils::private_fs::write(&path, b"broken entry\n").unwrap();
         assert!(ForensicLogger::new(&path).is_err());
+    }
+
+    #[test]
+    fn non_private_legacy_log_remains_readable_but_cannot_be_extended() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("legacy.log");
+        let timestamp = "2026-01-01T00:00:00Z";
+        let hash = compute_entry_hash(GENESIS_HASH, timestamp, "legacy");
+        let original = format!("{timestamp}|{hash}|{GENESIS_HASH}|legacy\n");
+        std::fs::write(&path, &original).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        }
+        assert!(ForensicLogger::verify_log_file(&path).unwrap());
+        assert!(ForensicLogger::new(&path).is_err());
+        assert_eq!(std::fs::read_to_string(path).unwrap(), original);
     }
 
     #[test]

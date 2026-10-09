@@ -9,6 +9,24 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class WorkflowObligationTests(unittest.TestCase):
+    def test_application_gate_uses_workspace_absolute_binary_paths(self):
+        text = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        steps = re.split(r"(?m)^      - ", text)
+        gates = [step for step in steps if "--require-application http" in step]
+        self.assertEqual(len(gates), 1)
+        gate = gates[0]
+        # The importer rejects relative runtime paths before reading a receipt.
+        # Both build inputs must use the same checkout's absolute workspace.
+        for flag, variable, suffix in (
+            ("--rclone", "PROVIDER_BINARY", "rclone-triage/assets/rclone.exe"),
+            ("--application", "APPLICATION_BINARY", "rclone-triage/target/release/rclone-triage.exe"),
+        ):
+            with self.subTest(flag=flag):
+                match = re.search(re.escape(flag) + r'\s+("[^"\n]+"|\S+)', gate)
+                self.assertIsNotNone(match)
+                self.assertEqual(match.group(1), '"$' + variable + '"')
+                self.assertIn(variable + ": ${{ format('{0}/" + suffix + "', github.workspace) }}", gate)
+
     def test_windows_target_inventory_uses_absolute_paths(self):
         workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
         job = workflow.split("  windows-architectures:\n", 1)[1].split("  linux-provider-evidence:\n", 1)[0]
@@ -37,6 +55,7 @@ class WorkflowObligationTests(unittest.TestCase):
         unresolved = {
             "ci.yml": [
                 {"hdfs", "smb", "pcloud"},  # Cross-platform matrix; latter two run in separate Linux jobs.
+                {"hdfs", "smb", "pcloud"},  # Windows application ledger reuses that protocol evidence.
                 {"hdfs"},                  # Combined Linux evidence; secure HDFS is still unverified.
             ],
             "provider-smoke.yml": [{"hdfs"}],

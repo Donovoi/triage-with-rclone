@@ -222,7 +222,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 40
+    timeout-minutes: 55
     defaults:
       run:
         working-directory: rclone-triage
@@ -253,6 +253,40 @@ jobs:
             --index-url https://pypi.org/simple --require-hashes --only-binary=:all: \
             --no-input --timeout 30 --retries 2 -r ../scripts/provider-lab/requirements-fixture.txt
           printf '%s\n' "$TEST_BIN" >> "$GITHUB_PATH"
+      - name: Validate Windows acceptance harnesses
+        if: runner.os == 'Windows'
+        timeout-minutes: 2
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $phase = 'acceptance_source_validation'
+          $clock = [Diagnostics.Stopwatch]::StartNew()
+          try {
+            Get-ChildItem ../scripts/acceptance/windows -Filter *.ps1 | ForEach-Object {
+              $parseErrors = $null
+              [void][System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$null, [ref]$parseErrors)
+              if ($parseErrors) { throw 'acceptance_source_invalid' }
+            }
+            $phase = 'standalone_conpty_add_type'
+            $clock.Restart()
+            [pscustomobject]@{ phase=$phase; result='started'; elapsed_ms=0 } | ConvertTo-Json -Compress
+            Add-Type -Path ../scripts/acceptance/windows/ConPtyHarness.cs -ErrorAction Stop -WarningAction SilentlyContinue 2>$null
+            [pscustomobject]@{ phase=$phase; result='passed'; elapsed_ms=$clock.ElapsedMilliseconds } | ConvertTo-Json -Compress
+            & ../scripts/tests/test_hosted_session_pure.ps1
+            $phase = 'setup_diagnostic_pure_validation'
+            $clock.Restart()
+            & ../scripts/tests/test_prepare_case_pure.ps1
+          } catch {
+            [pscustomobject]@{ phase=$phase; result='failed'; elapsed_ms=$clock.ElapsedMilliseconds } | ConvertTo-Json -Compress
+            [Console]::Error.WriteLine('windows_harness_validation_failed')
+            exit 1
+          }
+      - name: Check hosted Windows test folder setup
+        if: runner.os == 'Windows'
+        run: python -B ../scripts/application-lab/run_windows_http.py --setup-probe
+      - name: Check hosted Windows helper readiness and cleanup
+        if: runner.os == 'Windows'
+        run: python -B ../scripts/application-lab/run_windows_http.py --bridge-probe
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: rclone-triage -> target
@@ -311,27 +345,58 @@ jobs:
           retention-days: 14
       - name: Formatting
         run: cargo fmt --all -- --check
-      - name: Validate Windows acceptance harnesses
-        if: runner.os == 'Windows'
-        shell: powershell
-        run: |
-          $ErrorActionPreference = 'Stop'
-          Get-ChildItem ../scripts/acceptance/windows -Filter *.ps1 | ForEach-Object {
-            $parseErrors = $null
-            [void][System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$null, [ref]$parseErrors)
-            if ($parseErrors) { throw ($parseErrors | Out-String) }
-          }
-          Add-Type -Path ../scripts/acceptance/windows/ConPtyHarness.cs
       - name: Clippy
         run: cargo clippy --locked --all-targets --all-features -- -D warnings
+      - name: Build release
+        run: cargo build --locked --release
+      - name: Verify real Windows application against synthetic HTTP data
+        id: application_acceptance
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $application = (Resolve-Path target/release/rclone-triage.exe).Path
+          $buildCommit = (& git rev-parse --verify HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $buildCommit -notmatch '^[0-9a-f]{40}$') { throw 'Build revision unavailable.' }
+          $applicationHash = (Get-FileHash -LiteralPath $application -Algorithm SHA256).Hash.ToLowerInvariant()
+          python -B ../scripts/application-lab/run_windows_http.py `
+            --application $application --application-sha256 $applicationHash `
+            --build-commit $buildCommit --report "$env:RUNNER_TEMP/http-application.json"
+          if ($LASTEXITCODE -ne 0) { throw 'Windows application acceptance failed.' }
       - name: Offline tests and local transfer regressions
         run: cargo test --locked --release -- --test-threads=1
       - name: Every provider against the pinned runtime catalog
         env:
           RCLONE_PROVIDER_SCHEMA_BINARY: ${{ runner.os == 'Windows' && format('{0}/rclone-triage/assets/rclone.exe', github.workspace) || format('{0}/rclone-native', runner.temp) }}
         run: cargo test --locked --release --test provider_matrix pinned_rclone_catalog_matches_provider_contracts -- --ignored --exact --test-threads=1
-      - name: Build release
-        run: cargo build --locked --release
+      - name: Require the same-build HTTP application evidence
+        if: ${{ !cancelled() && runner.os == 'Windows' && (steps.application_acceptance.outcome == 'success' || steps.application_acceptance.outcome == 'failure') }}
+        env:
+          PROVIDER_BINARY: ${{ format('{0}/rclone-triage/assets/rclone.exe', github.workspace) }}
+          APPLICATION_BINARY: ${{ format('{0}/rclone-triage/target/release/rclone-triage.exe', github.workspace) }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          BUILD_COMMIT="$(git rev-parse --verify HEAD)"
+          python -B ../scripts/provider_coverage.py --rclone "$PROVIDER_BINARY" \
+            --report "$RUNNER_TEMP/provider-evidence-windows-application.json" \
+            --fixture-receipt "$RUNNER_TEMP/provider-fixtures.json" \
+            --fixture-receipt "$RUNNER_TEMP/filefabric-renewal-fixture.json" \
+            --fixture-receipt "$RUNNER_TEMP/internetarchive-low-auth-fixture.json" \
+            --application-receipt "$RUNNER_TEMP/http-application.json" \
+            --application "$APPLICATION_BINARY" --application-build-commit "$BUILD_COMMIT" \
+            --require-plans --require-application http \
+            --require-fixtures local,archive,http,webdav,ftp,sftp,s3,swift,b2,azureblob,azurefiles,seafile,memory,koofr,pixeldrain,filefabric,netstorage,internetarchive,gcs
+      - name: Retain sanitized Windows application evidence
+        if: always() && runner.os == 'Windows'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: provider-evidence-Windows-application
+          path: |
+            ${{ runner.temp }}/http-application.json
+            ${{ runner.temp }}/provider-evidence-windows-application.json
+          if-no-files-found: warn
+          retention-days: 14
       - name: Record dependency inventory
         if: runner.os == 'Windows'
         shell: bash
