@@ -230,7 +230,8 @@ class DriverHarness:
         elif args[:3] == ["rc", "--loopback", "operations/copyfile"]:
             self.copy_process = child
             params = dict(word.split("=", 1) for word in args[3:])
-            assert params == {"srcFs": "Synthetic:synthetic-bucket", "srcRemote": MEMBER,
+            assert params == {"srcFs": "Synthetic:synthetic-bucket",
+                              "srcRemote": "another-object" if self.fault == "denial_launch_drift" else MEMBER,
                               "dstFs": str(self.current_root / "output"), "dstRemote": MEMBER}
             self.copy(child, params)
         else:
@@ -300,11 +301,17 @@ class DriverHarness:
                 return
             if mode == "refresh_denied":
                 error = {"error": "loopback: call failed: invalid_grant: maybe token expired? - reconnect",
-                         "input": params, "path": "operations/copyfile", "status": 500}
-                if self.fault == "denial_wrong_input":
-                    error["input"] = {**params, "srcRemote": "another-object"}
+                         "path": "operations/copyfile", "status": 500}
+                if self.fault == "denial_extra_input":
+                    error["input"] = params
+                if self.fault == "denial_wrong_path":
+                    error["path"] = "operations/list"
+                if self.fault == "denial_wrong_status":
+                    error["status"] = 400
                 if self.fault == "wrong_denial_cause":
                     error["error"] = "unrelated network failure"
+                if self.fault == "wrong_denial_origin":
+                    error["error"] = "unrelated: invalid_grant: maybe token expired?"
                 if self.fault == "denial_writes_payload":
                     (Path(params["dstFs"]) / MEMBER).write_bytes(PAYLOAD)
                 if self.fault == "denial_mutates_config":
@@ -351,6 +358,14 @@ class DriverHarness:
             use(P, "remove_owned", side_effect=self.remove)
             use(P, "utc_now", return_value=STAMP)
             use(P.subprocess, "Popen", side_effect=self.popen)
+            if self.fault == "denial_launch_drift":
+                original_start = P.Native.start
+                def changed_start(native, arguments, ca_args=(), notice=False):
+                    if arguments[:3] == ['rc', '--loopback', 'operations/copyfile']:
+                        arguments = [*arguments]
+                        arguments[4] = 'srcRemote=another-object'
+                    return original_start(native, arguments, ca_args, notice)
+                use(P.Native, "start", new=changed_start)
             use(P.sys, "platform", new="linux")
             use(P.os, "getuid", return_value=10001, create=True)
             use(P.os, "getgid", return_value=10001, create=True)
@@ -453,14 +468,22 @@ class DriverOrchestrationTests(unittest.TestCase):
                 ("wrong_state", "denial_mutates_config", "failed_auth_config_changed"),
                 ("refresh_denied", "denial_mutates_config", "credential_changed_unexpectedly"),
                 ("refresh_denied", "denial_writes_payload", "negative_read_or_output"),
-                ("refresh_denied", "denial_wrong_input", "refresh_denial_result"),
+                ("refresh_denied", "denial_extra_input", "refresh_denial_result"),
+                ("refresh_denied", "denial_wrong_path", "refresh_denial_result"),
+                ("refresh_denied", "denial_wrong_status", "refresh_denial_result"),
+                ("refresh_denied", "denial_launch_drift", "copy_request_mismatch"),
                 ("refresh_denied", "wrong_denial_cause", "refresh_denial_result"),
+                ("refresh_denied", "wrong_denial_origin", "refresh_denial_result"),
                 ("invalid_code", "generic_denial", "expected_auth_denial_absent"),
                 ("positive", "redirect_escape", "location_authority_mismatch")):
             with self.subTest(mode=mode, fault=fault), tempfile.TemporaryDirectory() as directory:
-                result = DriverHarness(directory, fault).case(mode)
+                h = DriverHarness(directory, fault)
+                result = h.case(mode)
                 self.assertFalse(result["success"], fault)
                 self.assertEqual(result["errors"], [cause])
+                self.assertTrue(all(result["cleanup"].values()))
+                self.assertTrue(all(child.poll() is not None for child in h.processes.values()))
+                self.assertFalse(any(h.work.iterdir()))
 
     def test_cleanup_uncertainty_retains_root_and_fails_even_after_valid_flow(self):
         for mode, fault in (("positive", "fixture_cleanup"), ("positive", "transport_error"),

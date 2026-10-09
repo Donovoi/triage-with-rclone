@@ -355,11 +355,28 @@ class DriverTests(unittest.TestCase):
 
     def test_denied_refresh_requires_typed_error_not_generic_exit(self):
         response = {"error": 'loopback: call failed: invalid_grant: maybe token expired? - reconnect',
-                    "input": {}, "path": "operations/copyfile", "status": 500}
-        P.refresh_denial_output(1, json.dumps(response).encode(), {})
-        for field, value in (("status", True), ("path", "operations/list"), ("error", "network failed")):
+                    "path": "operations/copyfile", "status": 500}
+        P.refresh_denial_output(1, json.dumps(response).encode())
+        for field, value in (("status", True), ("status", 400), ("path", "operations/list"),
+                             ("error", "network failed"), ("input", {}), ("extra", "canary"),
+                             ("error", "invalid_grant: maybe token expired?")):
             with self.subTest(field=field), self.assertRaises(P.ProbeError):
-                P.refresh_denial_output(1, json.dumps({**response, field: value}).encode(), {})
+                P.refresh_denial_output(1, json.dumps({**response, field: value}).encode())
+        for code in (0, True, None):
+            with self.subTest(code=code), self.assertRaisesRegex(P.ProbeError, 'refresh_denial_exit'):
+                P.refresh_denial_output(code, json.dumps(response).encode())
+
+    def test_copy_request_requires_exact_launched_operation_and_all_four_inputs(self):
+        destination = Path('/synthetic-owned/output')
+        arguments = ('rc', '--loopback', 'operations/copyfile', 'srcFs=Synthetic:synthetic-bucket',
+                     'srcRemote=README-synthetic.txt', 'dstFs=' + str(destination),
+                     'dstRemote=README-synthetic.txt')
+        P.copy_request_matches(arguments, destination)
+        bad_values = [arguments[:-1], arguments + ('extra=canary',), list(arguments)]
+        bad_values += [arguments[:i] + ('canary',) + arguments[i+1:] for i in range(len(arguments))]
+        for value in bad_values:
+            with self.subTest(value_type=type(value).__name__), self.assertRaisesRegex(P.ProbeError, '^copy_request_mismatch$'):
+                P.copy_request_matches(value, destination)
 
     def test_cancellation_requires_exact_owned_live_process(self):
         process = Mock(pid=123)

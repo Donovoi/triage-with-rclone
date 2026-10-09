@@ -1,7 +1,7 @@
 # GCS OAuth lifecycle experiment
 
-This is an **unqualified experiment** for pinned rclone 1.75.1. Its first hosted
-native run failed; it has not earned coverage. Every receipt remains `ledger_eligible: false`; existing
+This is an **unqualified experiment** for pinned rclone 1.75.1. Both hosted
+native runs failed; it has not earned coverage. Every receipt remains `ledger_eligible: false`; existing
 GCS coverage policy and static-token evidence are unchanged.
 
 The ten fresh-config cases are: positive callback/code exchange and README read;
@@ -61,13 +61,13 @@ Mocked checks can run without sockets or native processes:
 python -B -m unittest discover -s scripts/tests -p 'test_provider_gcs_oauth*.py'
 ```
 
-Local validation: 35 component/pure checks and ten full mocked orchestration
+Local validation: 36 component/pure checks and ten full mocked orchestration
 checks pass. The orchestration suite traverses all ten driver cases and the
 supervisor's staging, validation, reporting and cleanup using scripted external
 boundaries. It checks independent transcripts/config states and injected missing
 stages, wrong tokens/options, denial request mismatches, failed cancellation,
-uncertain cleanup and malformed receipts. It exposed and fixed a denied-refresh
-verdict that did not bind the returned RC input to the exact copy request.
+uncertain cleanup and malformed receipts. The denied-refresh oracle binds the
+actual launched copy arguments and rejects extra or mismatched RC error fields.
 
 Twelve hosted-only adversarial HTTP/TLS test methods passed on both Linux and
 Windows at commit `b00c959`. The initial Windows failure led to separate cleanup
@@ -81,8 +81,16 @@ failed the positive case before authorization with `url_query_mismatch`. All
 reported cleanup checks passed. The fixture expected `localhost`, while pinned
 GCS uses the distinct numeric `127.0.0.1` callback. This revision corrects that
 contract and tests rejection of the old hostname, wrong port and missing,
-additional or duplicate query fields. The corrected native flow remains
-unverified; the other nine native cases have not run.
+additional or duplicate query fields.
+
+The [corrected run](https://github.com/Donovoi/triage-with-rclone/actions/runs/37900450046)
+passed its first eight cases, including expiry followed by refresh and a
+replacement-token read. It failed the ninth case at `refresh_denial_result`;
+all reported cleanup checks passed, and refresh cancellation did not run.
+Pinned loopback RC errors contain exactly `error`, `path` and `status`; this
+probe had incorrectly required the HTTP RC server's `input` field. This revision
+corrects that envelope and independently binds the actual child arguments to the
+exact owned copy request. The correction still requires a hosted native check.
 
 Remaining gates are passing checks on this revision, then one bounded hosted
 native run covering request shapes, config serialization, error causes, timing
@@ -100,4 +108,5 @@ Pinned references:
 - [GCS OAuth configuration and scope](https://github.com/rclone/rclone/blob/v1.75.1/backend/googlecloudstorage/googlecloudstorage.go#L58-L85)
 - [Callback checks](https://github.com/rclone/rclone/blob/v1.75.1/lib/oauthutil/oauthutil.go#L983-L1041)
 - [Refresh and token persistence](https://github.com/rclone/rclone/blob/v1.75.1/lib/oauthutil/oauthutil.go#L289-L357)
+- [Loopback RC error envelope](https://github.com/rclone/rclone/blob/v1.75.1/cmd/rc/rc.go#L189-L218)
 - [Basic/form probing and refresh-token handling](https://github.com/golang/oauth2/blob/v0.36.0/internal/token.go#L199-L239)
