@@ -1499,7 +1499,8 @@ class ProducerTests(unittest.TestCase):
 
     def test_bridge_and_app_maps_stay_scrubbed_and_private_values_never_enter_evidence(self):
         extras = {"APPLICATION_LAB_SENTINEL": "private-canary", "AWS_SECRET_ACCESS_KEY": "private-canary",
-                  "RCLONE_CONFIG": "private-canary", "HTTPS_PROXY": "private-canary", "PATH": "private-canary"}
+                  "RCLONE_CONFIG": "private-canary", "HTTPS_PROXY": "private-canary", "PATH": "private-canary",
+                  "PSModuleAnalysisCachePath": "private-canary"}
         with mock.patch.dict(os.environ, self.synthetic_setup_environment(**extras), clear=True):
             with mock.patch.object(P, "powershell", return_value="fixed-system-powershell"), \
                  mock.patch.object(P, "hidden", return_value={}), \
@@ -1511,7 +1512,9 @@ class ProducerTests(unittest.TestCase):
                 "TEMP", "TMP", "HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA"})
             helper_env = P.environment(self.root / "helper-env")
             self.assertEqual(child.call_args.kwargs["env"], dict(helper_env,
-                GITHUB_ACTIONS="true", RUNNER_OS="Windows", RUNNER_ENVIRONMENT="github-hosted"))
+                GITHUB_ACTIONS="true", RUNNER_OS="Windows", RUNNER_ENVIRONMENT="github-hosted",
+                PSModuleAnalysisCachePath="nul"))
+            self.assertEqual(os.environ["PSModuleAnalysisCachePath"], "private-canary")
             for key, folder in (("TEMP", "temp"), ("TMP", "temp"), ("HOME", "home"), ("USERPROFILE", "profile"),
                                 ("APPDATA", "appdata"), ("LOCALAPPDATA", "localappdata")):
                 self.assertEqual(application_env[key], str(self.root / folder))
