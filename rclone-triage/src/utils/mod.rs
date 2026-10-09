@@ -2,6 +2,7 @@
 
 pub mod network;
 pub mod path;
+pub mod private_fs;
 pub mod windows;
 
 pub use network::get_local_ip_address;

@@ -296,15 +296,18 @@ impl RcloneConfig {
 
             // Create parent directories
             if let Some(parent) = config_path.parent() {
-                fs::create_dir_all(parent)
+                crate::utils::private_fs::create_dir_all(parent)
                     .with_context(|| format!("Failed to create config directory: {:?}", parent))?;
             }
 
             // Check if we need to create the file
             let created = !config_path.exists();
             if created {
-                fs::write(&config_path, "# rclone-triage config\n")
+                use std::io::Write;
+                let mut file = crate::utils::private_fs::create_new(&config_path)
                     .with_context(|| format!("Failed to create config file: {:?}", config_path))?;
+                file.write_all(b"# rclone-triage config\n")?;
+                file.sync_all()?;
                 // Restrict permissions so other users cannot read OAuth tokens.
                 #[cfg(unix)]
                 {

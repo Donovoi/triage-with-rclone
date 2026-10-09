@@ -191,8 +191,8 @@ pub fn write_acquisition_manifest(
     let parent = path
         .parent()
         .context("Manifest path needs a parent directory")?;
-    std::fs::create_dir_all(parent)?;
-    let mut temp = tempfile::NamedTempFile::new_in(parent)?;
+    crate::utils::private_fs::create_dir_all(parent)?;
+    let mut temp = crate::utils::private_fs::tempfile_in(parent, ".manifest-", ".tmp")?;
     serde_json::to_writer_pretty(
         &mut temp,
         &Manifest {
@@ -209,9 +209,7 @@ pub fn write_acquisition_manifest(
         },
     )?;
     temp.as_file().sync_all()?;
-    temp.persist(path)
-        .map_err(|e| e.error)
-        .context("Failed to save acquisition manifest")?;
+    crate::utils::private_fs::persist(temp, path).context("Failed to save acquisition manifest")?;
     Ok(())
 }
 
