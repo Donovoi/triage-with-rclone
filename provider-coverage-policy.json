@@ -1087,7 +1087,11 @@
           "read_denial",
           "source_preservation",
           "config_preservation",
-          "cleanup"
+          "cleanup",
+          "authentication",
+          "refresh",
+          "renewal_denial",
+          "cancellation_cleanup"
         ]
       },
       "review_required": false,
@@ -1823,7 +1827,8 @@
         "Google Cloud project/bucket, authorized OAuth client or service-account/identity profile and IAM. No official storage emulator is established by this research.",
         "Free account/API eligibility: review_required",
         "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension.",
-        "The gcs_static_token_read_v1 local fixture uses only configured synthetic static bearer tokens and an independent loopback server. Its 401 proves rejection of the wrong configured token; its separate 403 proves read denial with the valid token. It does not verify fresh OAuth setup, service-account or workload identity, ADC, credential renewal, revocation, connection reauthentication, real TLS/IAM, application or hosted-provider acceptance."
+        "The gcs_static_token_read_v1 local fixture uses only configured synthetic static bearer tokens and an independent loopback server. Its 401 proves rejection of the wrong configured token; its separate 403 proves read denial with the valid token. It does not verify fresh OAuth setup, service-account or workload identity, ADC, credential renewal, revocation, connection reauthentication, real TLS/IAM, application or hosted-provider acceptance.",
+        "Full local qualification requires both the eight-capability gcs_static_token_read_v1 mode and fresh schema-6 gcs_oauth_lifecycle_v1 evidence. The latter covers synthetic OAuth callback/exchange/persistence, actual expiry followed by refresh, replacement-token read, exact denial and owned-process cancellation. Historical unqualified experiments are not importable. This does not qualify service-account JWT, ADC, workload identity, revocation, session reauthentication, real Google consent/IAM, application or vendor acceptance."
       ],
       "source_links": [
         "https://raw.githubusercontent.com/rclone/rclone/v1.75.1/docs/content/googlecloudstorage.md"

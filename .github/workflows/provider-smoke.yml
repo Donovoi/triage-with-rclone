@@ -120,8 +120,14 @@ jobs:
           python -B ../scripts/provider-lab/pcloud-oauth/run_container.py \
             --rclone "$RUNNER_TEMP/rclone-smoke" --authentication-evidence \
             --report "$RUNNER_TEMP/pcloud-oauth-authentication.json"
-      # IA requires both read modes; pCloud requires saved-token plus fresh auth.
-      # Independent Linux SMB and pCloud evidence bring the local gate to 21.
+      - name: Qualify isolated GCS OAuth lifecycle
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          python -B ../scripts/provider-lab/gcs-oauth/run_container.py \
+            --rclone "$RUNNER_TEMP/rclone-smoke" --lifecycle-evidence \
+            --report "$RUNNER_TEMP/gcs-oauth-lifecycle.json"
+      # All 21 Linux profiles: both IA modes, both pCloud modes and both GCS modes.
       - name: Require current provider plans and protocol evidence
         if: ${{ !cancelled() }}
         run: |
@@ -132,6 +138,7 @@ jobs:
             --fixture-receipt "$RUNNER_TEMP/internetarchive-low-auth-fixture.json" \
             --fixture-receipt "$RUNNER_TEMP/smb-protocol.json" \
             --fixture-receipt "$RUNNER_TEMP/pcloud-oauth-authentication.json" \
+            --fixture-receipt "$RUNNER_TEMP/gcs-oauth-lifecycle.json" \
             --require-plans --require-fixtures local,archive,http,webdav,ftp,sftp,s3,swift,b2,azureblob,azurefiles,seafile,memory,koofr,pixeldrain,filefabric,netstorage,internetarchive,gcs,smb,pcloud
       - name: Offline provider contracts
         run: cargo test --locked --release --test provider_smoke --test provider_matrix -- --test-threads=1
@@ -226,6 +233,7 @@ jobs:
             ${{ runner.temp }}/internetarchive-low-auth-fixture.json
             ${{ runner.temp }}/smb-protocol.json
             ${{ runner.temp }}/pcloud-oauth-authentication.json
+            ${{ runner.temp }}/gcs-oauth-lifecycle.json
             ${{ runner.temp }}/provider-evidence.json
           if-no-files-found: warn
           retention-days: 14

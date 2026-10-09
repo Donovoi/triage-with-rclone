@@ -551,6 +551,8 @@ class DockerScript:
     def run(self, args, **kwargs):
         self.calls.append(tuple(args))
         if args == ["info", "--format", "{{json .}}"]:
+            if self.fault == "preflight_failed":
+                raise S.SupervisorError("docker_operation_failed")
             return 0, b'{"OSType":"linux","Architecture":"amd64"}'
         if args[:2] == ["image", "pull"]:
             assert args == ["image", "pull", "--quiet", "--platform", "linux/amd64", self.lock["base_image"]]
@@ -563,6 +565,7 @@ class DockerScript:
             assert (context / "Dockerfile").read_bytes() == (ROOT / "Dockerfile").read_bytes()
             Path(args[args.index("--iidfile") + 1]).write_text(self.image, encoding="ascii")
             self.images = True
+            self.build_phase = "manifest"
             return 0, b""
         if args[0] == "create":
             assert args[args.index("--network") + 1] == "none"
@@ -590,7 +593,7 @@ class DockerScript:
                 suite["cases"][0]["report"]["token"] = "synthetic-private-token"
             elif self.fault == "native_stderr":
                 self.last_stderr = b"synthetic private output"
-            return 0, json.dumps(suite).encode()
+            return 0, (json.dumps(suite, sort_keys=True, separators=(",", ":")) + "\n").encode()
         if args == ["rm", "--force", self.container]:
             if self.fault == "cleanup_unreaped":
                 self.commands_stopped = False
@@ -605,7 +608,7 @@ class DockerScript:
 
 
 class SupervisorOrchestrationTests(unittest.TestCase):
-    def execute(self, directory, fault=None):
+    def execute(self, directory, fault=None, lifecycle=False):
         base = Path(directory)
         child_base = base / "child"
         child_base.mkdir()
@@ -629,10 +632,35 @@ class SupervisorOrchestrationTests(unittest.TestCase):
                 str(root) if kwargs.get("prefix") == "triage-gcs-oauth-" else original_mkdtemp(*args, **kwargs)))
             stack.enter_context(patch.object(socket, "socket", side_effect=AssertionError("real socket forbidden")))
             stack.enter_context(patch.object(subprocess, "Popen", side_effect=AssertionError("real process forbidden")))
-            result = S.run(driver.binary, report_path)
+            result = S.run(driver.binary, report_path, lifecycle=lifecycle)
         self.assertEqual(json.loads(report_path.read_text()), result)
-        self.assertFalse(result["ledger_eligible"])
+        if not lifecycle:
+            self.assertFalse(result["ledger_eligible"])
         return result, docker, root
+
+    def test_explicit_qualification_runs_real_orchestration_and_preserves_failed_cleanup(self):
+        for fault in (None, "preflight_failed", "unsafe_network", "cleanup_unreaped", "cleanup_wrong_owner", "native_stderr"):
+            with self.subTest(fault=fault), tempfile.TemporaryDirectory() as directory:
+                result, docker, root = self.execute(directory, fault, lifecycle=True)
+                self.assertEqual(result["schema_version"], 6)
+                native = result["native_evidence"]
+                self.assertEqual(native["scope"], "gcs_oauth_lifecycle_qualified_supervision")
+                self.assertIs(native["ledger_eligible"], False)
+                self.assertEqual(result["success"], fault is None)
+                self.assertEqual(result["backends"][0]["capabilities"], dict.fromkeys(
+                    ("authentication", "refresh", "renewal_denial", "cancellation_cleanup"),
+                    "passed" if fault is None else "failed"))
+                if fault in ("preflight_failed", "unsafe_network"):
+                    self.assertIsNone(native["probe"])
+                    self.assertFalse(docker.started)
+                if fault in ("cleanup_unreaped", "cleanup_wrong_owner"):
+                    self.assertTrue(root.exists())
+                    self.assertFalse(result["cleanup_passed"])
+                elif fault is None:
+                    self.assertFalse(root.exists())
+                    self.assertEqual(len(native["probe"]["cases"]), 10)
+                    self.assertTrue(result["cleanup_passed"])
+                self.assertNotIn("synthetic private output", json.dumps(result))
 
     def test_full_supervisor_runs_validated_ten_case_suite_then_owned_cleanup(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -56,14 +56,15 @@ class GcsCoverageTests(unittest.TestCase):
         self.assertIn("required_fixture_not_verified", C.gate_errors(report, require_fixtures=["gcs"]))
         return report
 
-    def test_exact_static_mode_can_pass_local_gate_only(self):
+    def test_exact_static_mode_passes_baseline_gate_but_not_full_lifecycle(self):
         report = self.evaluate([receipt()])
         self.assertEqual(report["errors"], [])
-        self.assertEqual(C.gate_errors(report, require_plans=True, require_fixtures=["gcs"]), [])
+        self.assertEqual(C.gate_errors(report, require_plans=True, require_gcs_static_token=True), [])
         local = self.local(report)
-        self.assertEqual(local["status"], "passed")
-        self.assertEqual(local["capabilities"], dict.fromkeys(CAPS, "passed"))
-        self.assertEqual(set(local["modes"]), {MODE})
+        self.assertEqual(local["status"], "not_verified")
+        self.assertEqual(local["capabilities"], dict(dict.fromkeys(CAPS, "passed"), **dict.fromkeys(
+            ("authentication", "refresh", "renewal_denial", "cancellation_cleanup"), "not_verified")))
+        self.assertEqual(set(local["modes"]), {MODE, "gcs_oauth_lifecycle_v1"})
         self.assertEqual(local["modes"][MODE]["status"], "passed")
         self.assertEqual(local["runs"][0]["fixture_mode"], MODE)
         self.assertEqual(local["modes"][MODE]["runs"], local["runs"])
@@ -82,7 +83,7 @@ class GcsCoverageTests(unittest.TestCase):
         new = self.actual["profiles"][entry["profile"]]
         remaining = copy.deepcopy(new); del remaining["required"]["local_protocol"]
         self.assertEqual(remaining, old)
-        self.assertEqual(set(new["required"]["local_protocol"]), set(CAPS))
+        self.assertEqual(set(new["required"]["local_protocol"]), set(CAPS) | {"authentication", "refresh", "renewal_denial", "cancellation_cleanup"})
         self.assertEqual(entry["schema_sha256"], "35f3d13d23fd498bb3ea4fbd72acf1b7c2f0717fc18e5e77669821675606b236")
         self.assertEqual(entry["auth_applicability"], "provider_specific")
         self.assertEqual(entry["refresh_applicability"], "required")
@@ -210,7 +211,7 @@ class GcsCoverageTests(unittest.TestCase):
             for index, use_receipt in enumerate((False, True)):
                 output = root / (str(index)+".json")
                 args = ["--rclone", str(root / "never-executed"), "--policy", str(policy), "--report", str(output),
-                        "--require-plans", "--require-fixtures", "gcs"]
+                        "--require-plans", "--require-gcs-static-token"]
                 if use_receipt: args += ["--fixture-receipt", str(evidence)]
                 with patch.object(C, "query_runtime", return_value=(RUNTIME, self.catalog)), \
                         patch.object(C, "compute_harness_sha256", return_value="b" * 64), \
