@@ -406,7 +406,10 @@ SETUP_FAILURE_REASONS = frozenset({"verification_failed", "entry_limit", "metada
 SETUP_NODE_CATEGORIES = frozenset({"root", "application_root", "helper_root", "helper_private_root",
                                   "helper_descendant", "helper_temp_direct", "helper_temp_deeper",
                                   "helper_home_descendant", "helper_profile_descendant", "helper_appdata_descendant",
-                                  "helper_localappdata_descendant", "bridge_log", "other", "unknown"})
+                                  "helper_localappdata_descendant", "bridge_log", "other", "unknown",
+                                  "application_binary", "source_config", "acquisition_queue", "session_transcript",
+                                  "output_root", "case_root", "case_logs", "case_downloads", "case_listings", "case_config",
+                                  "listing_inventory", "working_config", "config_provenance"})
 
 
 def setup_failure(value):

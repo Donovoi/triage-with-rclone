@@ -34,6 +34,32 @@ function Get-SetupNodeCategory([string]$Root, [string]$Current) {
     foreach ($name in @('bridge-stdout.private','bridge-stderr.private')) {
         if ($Current -ceq [IO.Path]::Combine($Root, $name)) { return 'bridge_log' }
     }
+    # Fixed synthetic listing nodes only; no descendant names leave this function.
+    $output = [IO.Path]::Combine($Root, 'output')
+    $case = [IO.Path]::Combine($output, 'synthetic-case')
+    $config = [IO.Path]::Combine($case, 'config')
+    $nodes = @(
+        @([IO.Path]::Combine($Root, 'application.exe'), 'application_binary'),
+        @([IO.Path]::Combine($Root, 'source.conf'), 'source_config'),
+        @([IO.Path]::Combine($Root, 'queue.csv'), 'acquisition_queue'),
+        @([IO.Path]::Combine($Root, 'transcript.private'), 'session_transcript'),
+        @($output, 'output_root'), @($case, 'case_root'),
+        @([IO.Path]::Combine($case, 'logs'), 'case_logs'),
+        @([IO.Path]::Combine($case, 'downloads'), 'case_downloads'),
+        @([IO.Path]::Combine($case, 'listings'), 'case_listings'),
+        @($config, 'case_config'),
+        @([IO.Path]::Combine([IO.Path]::Combine($case, 'listings'), 'inventory.csv'), 'listing_inventory')
+    )
+    foreach ($node in $nodes) {
+        if ([string]::Equals($Current, $node[0], [StringComparison]::OrdinalIgnoreCase)) { return $node[1] }
+    }
+    $configPrefix = $config + [IO.Path]::DirectorySeparatorChar
+    if ($Current.StartsWith($configPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+        $leaf = $Current.Substring($configPrefix.Length)
+        # Match the producer's direct-child grammar, not arbitrary config descendants.
+        if ([regex]::IsMatch($leaf, '\Aworking-[A-Za-z0-9_-]+\.conf\z')) { return 'working_config' }
+        if ([regex]::IsMatch($leaf, '\Aworking-[A-Za-z0-9_-]+\.provenance\.json\z')) { return 'config_provenance' }
+    }
     return 'other'
 }
 $verificationReason = $null

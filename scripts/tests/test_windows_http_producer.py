@@ -1791,15 +1791,22 @@ class ProducerTests(unittest.TestCase):
                    "root_unprotected", "acl_invalid", "acl_incomplete", "enumeration_failed")
         categories = ("root", "application_root", "helper_root", "helper_private_root", "helper_descendant",
                       "helper_temp_direct", "helper_temp_deeper", "helper_home_descendant", "helper_profile_descendant",
-                      "helper_appdata_descendant", "helper_localappdata_descendant", "bridge_log", "other", "unknown")
+                      "helper_appdata_descendant", "helper_localappdata_descendant", "bridge_log", "other", "unknown",
+                      "application_binary", "source_config", "acquisition_queue", "session_transcript", "output_root",
+                      "case_root", "case_logs", "case_downloads", "case_listings", "case_config", "listing_inventory",
+                      "working_config", "config_provenance")
+        self.assertEqual(P.SETUP_NODE_CATEGORIES, frozenset(categories))
         for action in ("Create", "Verify"):
             stages = ["input", "parent", "identity", "verify"] if action == "Verify" else ["input", "parent", "identity", "acl", "compile", "create", "verify"]
             for reason in reasons:
                 for category in categories:
-                    failure = self.acl_failure(reason, category)
-                    raw = self.setup_stream(action, stages, False, failure)
-                    self.assertLessEqual(max(map(len, raw.splitlines())), 256)
-                    self.assertEqual(P.setup_progress(raw, action), ("verify", False, failure))
+                    pairs = ((None, None), (True, False), (False, True), (False, False)) if reason == "owner_invalid" else ((None, None),)
+                    for pair in pairs:
+                        failure = self.acl_failure(reason, category)
+                        failure.update(owner_is_token_owner=pair[0], token_owner_is_user=pair[1])
+                        raw = self.setup_stream(action, stages, False, failure)
+                        self.assertLessEqual(max(map(len, raw.splitlines())), 256)
+                        self.assertEqual(P.setup_progress(raw, action), ("verify", False, failure))
         for pair in ((None, None), (True, False), (False, True), (False, False)):
             failure = self.acl_failure()
             failure.update(owner_is_token_owner=pair[0], token_owner_is_user=pair[1])
@@ -1810,7 +1817,9 @@ class ProducerTests(unittest.TestCase):
         mutations = []
         for key, value in (("reason", "private-canary"), ("category", str(self.root)),
                            ("category", "helper_temp_direct/private-canary"),
-                           ("category", "helper_profile_descendant_private-canary"), ("reason", []),
+                           ("category", "helper_profile_descendant_private-canary"),
+                           ("category", "case_root/private-canary"), ("category", "working_config_private-canary"),
+                           ("category", "config_provenance/private-canary"), ("reason", []),
                            ("category", None), ("owner_is_user", True), ("owner_is_user", 0),
                            ("owner_is_token_owner", 1), ("token_owner_is_user", "false")):
             mutations.append(dict(original, **{key: value}))
