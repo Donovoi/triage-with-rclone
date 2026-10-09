@@ -1543,6 +1543,137 @@ class ProducerTests(unittest.TestCase):
         self.assertEqual(json.loads(lines[0].split("=", 1)[1]), dict(scope="listing", stage="remove_tree", kind="permission_denied", os_code=32))
         self.assertNotIn("private-canary", output.getvalue())
 
+    def residue_pair(self, **changes):
+        value = dict(root="same_private_directory", executable="regular_file", other_files=0,
+                     other_directories=0, other_reparse_points=0, other_entries=0, complete=True)
+        value.update(changes)
+        diagnostic = b'runtime_cleanup_diagnostic={"stage":"remove_tree","kind":"other","os_code":32}\n'
+        line = b"runtime_cleanup_residue=" + json.dumps(value, separators=(",", ":")).encode("ascii") + b"\n"
+        return value, diagnostic + line
+
+    def test_runtime_residue_pair_accepts_only_complete_bounded_observations(self):
+        for kind in ("absent", "regular_file", "directory", "reparse_point", "other"):
+            for count in (0, 1, 7):
+                value, pair = self.residue_pair(executable=kind, other_files=count)
+                self.assertEqual(P.parse_runtime_cleanup_residue(pair), value)
+                self.assertEqual(P.parse_runtime_cleanup_residue(pair.replace(b"\n", b"\r\n")), value)
+        value, pair = self.residue_pair(root="unavailable", executable="unavailable", complete=False,
+            other_files=None, other_directories=None, other_reparse_points=None, other_entries=None)
+        self.assertEqual(P.parse_runtime_cleanup_residue(pair), value)
+        value, pair = self.residue_pair(executable="absent", other_directories=8)
+        self.assertEqual(P.parse_runtime_cleanup_residue(pair), value)
+
+    def test_runtime_residue_parser_rejects_ambiguous_private_or_normalized_records(self):
+        _, pair = self.residue_pair()
+        diagnostic, residue, _ = pair.split(b"\n")
+        bad = [None, "private-canary", bytearray(pair), b"", b"x" * (8 * 1024 * 1024 + 1),
+            residue + b"\n", pair[:-1], pair + pair, pair + b"runtime_cleanup_residue=private-canary\n",
+            diagnostic + b"\ninterleaved\n" + residue + b"\n", residue + b"\n" + diagnostic + b"\n",
+            pair.replace(b"remove_tree", b"security"), pair.replace(b"same_private_directory", b"private-canary"),
+            pair.replace(b"regular_file", b"private-canary"), pair.replace(b"regular_file", b"regular_\x1b[0mfile"),
+            pair.replace(b"regular_file", b"regular_\nfile"), pair.replace(b"regular_file", b"regular\\u005ffile"),
+            pair.replace(b'"other_files":0', b'"other_files":true'),
+            pair.replace(b'"other_files":0', b'"other_files":0,"other_files":1'),
+            pair.replace(b'"complete":true', b'"complete":true,"path":"private-canary"'),
+            pair.replace(b'"complete":true', b'"complete":true,"owner":"private-canary"'),
+            pair.replace(b'"complete":true', b'"complete":true,"pid":123'),
+            pair.replace(b"residue=", b"residue= "), pair.replace(b"residue=", b"residue:"),
+            diagnostic + b"\n" + b"x" * 4096 + residue + b"\n"]
+        for data in bad:
+            self.assertIsNone(P.parse_runtime_cleanup_residue(data))
+        for changes in ({"complete": 1}, {"complete": False}, {"other_files": -1},
+            {"other_files": 8}, {"other_files": 4, "other_entries": 4}, {"other_files": 0.0},
+            {"other_files": None}, {"executable": "unavailable"}, {"root": "unavailable"}):
+            _, data = self.residue_pair(**changes)
+            self.assertIsNone(P.parse_runtime_cleanup_residue(data))
+
+    def test_runtime_residue_output_excludes_surrounding_terminal_and_private_text(self):
+        expected, pair = self.residue_pair()
+        lines = pair.splitlines()
+        decorated = b"private-canary\n" + b"\n".join(b"\x1b[0m" + line + b" private-canary" for line in lines) + b"\n"
+        with redirect_stdout(io.StringIO()) as output:
+            P.runtime_cleanup_residue("missing", P.parse_runtime_cleanup_residue(decorated))
+        self.assertEqual(json.loads(output.getvalue().split("=", 1)[1]), dict(scope="missing", **expected))
+        self.assertNotIn("private-canary", output.getvalue())
+        self.assertNotIn("\x1b", output.getvalue())
+
+    def test_runtime_residue_retains_failure_and_owned_material(self):
+        expected, pair = self.residue_pair()
+        def residue(case):
+            (case / "transcript.private").write_bytes(b"private-canary\n" + pair)
+            (case / "temp/private-canary").mkdir()
+        with redirect_stdout(io.StringIO()) as output:
+            record, _, suite = self.execute_case("listing", after_app=residue)
+        self.assertEqual((record["status"], record["failure_code"]), ("failed", "cleanup_failed"))
+        self.assertFalse(record["checks"]["temp_cleanup"])
+        self.assertTrue((suite / "listing/temp/private-canary").is_dir())
+        lines = [s for s in output.getvalue().splitlines() if s.startswith("application_runtime_cleanup_residue=")]
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(json.loads(lines[0].split("=", 1)[1]), dict(scope="listing", **expected))
+        self.assertNotIn("private-canary", output.getvalue())
+
+    def test_runtime_residue_reader_binds_pair_to_saved_diagnostic_and_case(self):
+        value, pair = self.residue_pair()
+        case = self.root / "paired-diagnostic"
+        case.mkdir()
+        (case / "transcript.private").write_bytes(pair)
+        lease = P.identity(case)
+        diagnostic = dict(stage="remove_tree", kind="other", os_code=32)
+        self.assertEqual(P.read_runtime_cleanup_residue(case, lease, diagnostic), value)
+        for changed in (dict(diagnostic, os_code=None), dict(diagnostic, kind="permission_denied"),
+                        dict(diagnostic, stage="identity"), None):
+            self.assertIsNone(P.read_runtime_cleanup_residue(case, lease, changed))
+        with mock.patch.object(P, "identity", side_effect=[lease, (-1, -1)]):
+            self.assertIsNone(P.read_runtime_cleanup_residue(case, lease, diagnostic))
+        with mock.patch.object(P, "read", side_effect=OSError("private-canary")), redirect_stdout(io.StringIO()) as output:
+            self.assertIsNone(P.read_runtime_cleanup_residue(case, lease, diagnostic))
+        self.assertEqual(output.getvalue(), "")
+
+    def test_runtime_residue_changed_between_reads_keeps_original_failure_only(self):
+        _, pair = self.residue_pair()
+        original_read = P.read_runtime_cleanup_diagnostic
+        def after_app(case):
+            (case / "transcript.private").write_bytes(pair)
+            (case / "temp/private-canary").mkdir()
+        def change_after_first_read(case, lease):
+            first = original_read(case, lease)
+            (case / "transcript.private").write_bytes(pair.replace(b'"os_code":32', b'"os_code":5'))
+            return first
+        with mock.patch.object(P, "read_runtime_cleanup_diagnostic", side_effect=change_after_first_read), redirect_stdout(io.StringIO()) as output:
+            record, _, suite = self.execute_case("listing", after_app=after_app)
+        self.assertEqual((record["status"], record["failure_code"]), ("failed", "cleanup_failed"))
+        self.assertFalse(record["checks"]["temp_cleanup"])
+        self.assertTrue((suite / "listing/temp/private-canary").is_dir())
+        lines = [s for s in output.getvalue().splitlines() if s.startswith("application_runtime_cleanup_diagnostic=")]
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(json.loads(lines[0].split("=", 1)[1])["os_code"], 32)
+        self.assertNotIn("application_runtime_cleanup_residue=", output.getvalue())
+        self.assertNotIn("private-canary", output.getvalue())
+
+    def test_runtime_residue_is_not_read_on_success_or_unconfirmed_helper_close(self):
+        _, pair = self.residue_pair()
+        def transcript(case):
+            (case / "transcript.private").write_bytes(pair)
+        with mock.patch.object(P, "read_runtime_cleanup_residue", side_effect=AssertionError("must not read")) as read:
+            passed, _, _ = self.execute_case("listing", after_app=transcript)
+            failed, _, suite = self.execute_case("listing", suite_name="unconfirmed", after_app=transcript, close_ok=False)
+        read.assert_not_called()
+        self.assertEqual(passed["status"], "passed")
+        self.assertEqual(failed["status"], "failed")
+        self.assertTrue((suite / "listing").is_dir())
+
+    def test_runtime_residue_diagnostic_errors_never_replace_original_failure(self):
+        _, pair = self.residue_pair()
+        def residue(case):
+            (case / "transcript.private").write_bytes(pair)
+            (case / "temp/private-canary").mkdir()
+        for function in ("read_runtime_cleanup_residue", "runtime_cleanup_residue"):
+            with mock.patch.object(P, function, side_effect=RuntimeError("private-canary")), redirect_stdout(io.StringIO()) as output:
+                record, _, suite = self.execute_case("listing", suite_name=function, after_app=residue)
+            self.assertEqual((record["status"], record["failure_code"]), ("failed", "cleanup_failed"))
+            self.assertTrue((suite / "listing/temp/private-canary").is_dir())
+            self.assertNotIn("private-canary", output.getvalue())
+
     def test_runtime_cleanup_diagnostic_captures_early_failure_before_existing_removal(self):
         def failed_listing(case):
             (case / "transcript.private").write_bytes(b'runtime_cleanup_diagnostic={"stage":"security","kind":"other","os_code":null}\n')
