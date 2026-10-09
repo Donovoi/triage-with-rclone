@@ -1800,6 +1800,187 @@ class ProducerTests(unittest.TestCase):
         self.assertEqual(output.getvalue(), "")
         self.assertEqual(retained.read_bytes(), b"private-canary")
 
+    def test_profile_owner_marker_requires_exact_validated_failed_verify(self):
+        for action, reason, category, code in (
+                ("Verify", "owner_invalid", "helper_profile_descendant", 1),
+                ("Verify", "owner_invalid", "helper_temp_direct", 1),
+                ("Verify", "owner_invalid", "application_root", 1),
+                ("Verify", "acl_invalid", "helper_profile_descendant", 1),
+                ("Verify", "owner_invalid", "helper_profile_descendant", 0),
+                ("Create", "owner_invalid", "helper_profile_descendant", 1)):
+            failure = self.acl_failure(reason, category)
+            stages = ["input", "parent", "identity", "verify"] if action == "Verify" else [
+                "input", "parent", "identity", "acl", "compile", "create", "verify"]
+            raw = self.setup_stream(action, stages, False, failure)
+            with self.subTest(action=action, category=category, code=code), \
+                 mock.patch.object(P, "hosted_guard"), mock.patch.object(P, "powershell", return_value="fixed-system-powershell"), \
+                 mock.patch.object(P, "hidden", return_value={}), mock.patch.object(P.subprocess, "run", return_value=types.SimpleNamespace(returncode=code, stdout=raw)), \
+                 redirect_stdout(io.StringIO()):
+                with self.assertRaisesRegex(P.ProducerError, "^case_setup_failed$") as caught:
+                    P.prepare(self.root, "listing", action)
+            self.assertIs(getattr(caught.exception, "helper_profile_owner_failure", None),
+                action == "Verify" and reason == "owner_invalid" and category == "helper_profile_descendant" and code == 1)
+
+    def test_profile_layout_has_literal_nodes_and_only_unknown_counts(self):
+        paths = ["AppData", "AppData/Local", "AppData/LocalLow", "AppData/Roaming", "Documents",
+                 "Documents/WindowsPowerShell", "Documents/WindowsPowerShell/Modules",
+                 "AppData/Local/Microsoft", "AppData/Local/Microsoft/Windows", "AppData/Local/Microsoft/Windows/PowerShell",
+                 "AppData/Roaming/Microsoft", "AppData/Roaming/Microsoft/Windows", "AppData/Roaming/Microsoft/Windows/PowerShell"]
+        entries = {path: (True, 0, 1, index + 1) for index, path in enumerate(paths)}
+        expected = ["appdata", "local_appdata", "low_appdata", "roaming_appdata", "documents", "powershell_documents",
+                    "powershell_modules", "local_microsoft", "local_windows", "local_powershell", "roaming_microsoft",
+                    "roaming_windows", "roaming_powershell"]
+        self.assertEqual(P.helper_profile_layout(entries), dict(known_nodes=sorted(expected), unknown_directory_count=0, unknown_file_count=0))
+        unknowns = ("private-canary", "AppDataSibling", "Documents/WindowsPowerShellSibling",
+                    "AppData/Local/Microsoft/Windows/PowerShellSibling", "AppData/Local/Microsoft/Windows/PowerShеll",
+                    "elsewhere/AppData/Local")
+        for path in unknowns:
+            entries[path] = (True, 0, 1, 99)
+        entries["AppData/Local/Microsoft/Windows/PowerShell/private-canary-file"] = (False, 8, 1, 100)
+        value = P.helper_profile_layout(entries)
+        self.assertEqual(value, dict(known_nodes=sorted(expected), unknown_directory_count=6, unknown_file_count=1))
+        self.assertNotIn("canary", json.dumps(value))
+        self.assertEqual(P.helper_profile_layout({"APPDATA/LOCAL": (True, 0, 1, 1), "Documents": (False, 2, 1, 2)}),
+            dict(known_nodes=["local_appdata"], unknown_directory_count=0, unknown_file_count=1))
+        for invalid in (None, {str(i): (True, 0, 1, i) for i in range(33)},
+                {"Documents": (True, 0, 1, 1), "DOCUMENTS": (True, 0, 1, 2)},
+                {"PowerShell": (True, 0, 1, 1), "Powerſhell": (True, 0, 1, 2)},
+                {"Documents": (1, 0, 1, 1)}, {"Documents": (True, 0, True, 1)}, {"Documents": (True, -1, 1, 1)}):
+            with self.subTest(invalid_type=type(invalid).__name__), self.assertRaises(P.ProducerError):
+                P.helper_profile_layout(invalid)
+
+    def test_profile_diagnostic_uses_two_safe_inventories_and_original_leases(self):
+        case = self.root / "profile-observation"
+        case.mkdir()
+        leases = P.create_private_roots(case)
+        profile = case / "helper-env/profile"
+        (profile / "AppData/Local").mkdir(parents=True)
+        (profile / "private-canary").mkdir()
+        (profile / "private-canary-file").write_bytes(b"private-canary-body")
+        error = P.ProducerError("case_setup_failed")
+        error.helper_profile_owner_failure = True
+        with mock.patch.object(P, "inventory", wraps=P.inventory) as inv, redirect_stdout(io.StringIO()) as output:
+            P.helper_profile_failure_diagnostic("listing", case, P.identity(case), leases, error)
+        inv.assert_has_calls([mock.call(profile), mock.call(profile)])
+        self.assertEqual(inv.call_count, 2)
+        self.assertLessEqual(len(output.getvalue().encode()), 4096)
+        self.assertEqual(json.loads(output.getvalue().split("=", 1)[1]), dict(scope="listing",
+            known_nodes=["appdata", "local_appdata"], unknown_directory_count=1, unknown_file_count=1))
+        self.assertNotIn("canary", output.getvalue())
+        self.assertNotIn(str(case), output.getvalue())
+        self.assertTrue((profile / "private-canary-file").exists())
+
+    def test_profile_diagnostic_suppresses_unknown_context_and_inventory_uncertainty(self):
+        case = self.root / "profile-uncertainty"
+        case.mkdir()
+        leases = P.create_private_roots(case)
+        original = P.identity(case)
+        profile = case / "helper-env/profile"
+        error = P.ProducerError("case_setup_failed")
+        error.helper_profile_owner_failure = True
+        for invalid in (P.ProducerError("case_setup_failed"), ValueError("private-canary"), P.ProducerError("cleanup_failed")):
+            with mock.patch.object(P, "inventory") as inv, redirect_stdout(io.StringIO()) as output:
+                P.helper_profile_failure_diagnostic("listing", case, original, leases, invalid)
+            inv.assert_not_called()
+            self.assertEqual(output.getvalue(), "")
+        for bad in ("case", "helper_root", "profile"):
+            changed = copy.deepcopy(leases)
+            case_id = original
+            if bad == "case":
+                case_id = (-1, -1)
+            elif bad == "profile":
+                changed["helper"]["profile"] = (-1, -1)
+            else:
+                changed[bad] = (-1, -1)
+            with mock.patch.object(P, "inventory") as inv, redirect_stdout(io.StringIO()) as output:
+                P.helper_profile_failure_diagnostic("listing", case, case_id, changed, error)
+            inv.assert_not_called()
+            self.assertEqual(output.getvalue(), "")
+        for effects in ([OSError("private-canary")], [{}, {"private-canary": (True, 0, 1, 1)}],
+                        [{str(i): (True, 0, 1, i) for i in range(33)}]):
+            with mock.patch.object(P, "inventory", side_effect=effects), redirect_stdout(io.StringIO()) as output:
+                P.helper_profile_failure_diagnostic("listing", case, original, leases, error)
+            self.assertEqual(output.getvalue(), "")
+        identity = P.identity
+        for replaced_after in (1, 2):
+            count = 0
+            def inv(path):
+                nonlocal count
+                count += 1
+                return {}
+            def identity_after(path):
+                return (-1, -1) if Path(path) == profile and count >= replaced_after else identity(path)
+            with mock.patch.object(P, "inventory", side_effect=inv), mock.patch.object(P, "identity", side_effect=identity_after), \
+                 redirect_stdout(io.StringIO()) as output:
+                P.helper_profile_failure_diagnostic("listing", case, original, leases, error)
+            self.assertEqual(output.getvalue(), "")
+        with mock.patch.object(P, "plain", side_effect=P.ProducerError("private-canary")), redirect_stdout(io.StringIO()) as output:
+            P.helper_profile_failure_diagnostic("listing", case, original, leases, error)
+        self.assertEqual(output.getvalue(), "")
+
+    def test_profile_diagnostic_failure_never_replaces_failed_probe_or_allows_removal(self):
+        for printing_fails in (False, True):
+            error = P.ProducerError("case_setup_failed")
+            error.helper_profile_owner_failure = True
+            events = []
+            def prepare(parent, name, action="Create"):
+                value = fake_prepare(parent, name, action)
+                if name == "listing" and action == "Verify":
+                    raise error
+                return value
+            def baseline(case):
+                (case / "helper-env/profile/AppData/Local/Microsoft/Windows/PowerShell").mkdir(parents=True)
+                (case / "helper-env/profile/private-canary").mkdir()
+            original_print = print
+            def printing(*args, **kwargs):
+                if printing_fails and str(args[0]).startswith("application_helper_profile_diagnostic="):
+                    raise OSError("private-canary")
+                original_print(*args, **kwargs)
+            with self.subTest(printing_fails=printing_fails), self.probe_patches(), \
+                 mock.patch.object(P, "prepare", side_effect=prepare), mock.patch.object(P, "remove_owned") as remove, \
+                 mock.patch("builtins.print", side_effect=printing), redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(P.bridge_probe(self.probe_bridge_factory(before_ready=baseline, events=events)), 1)
+            self.assertEqual(events, ["ready", "close_ready", "close"])
+            lines = output.getvalue().splitlines()
+            self.assertEqual(lines[-1], "application_bridge_probe_failed")
+            self.assertEqual(json.loads(next(line.split("=", 1)[1] for line in lines if line.startswith("application_bridge_probe_diagnostic="))),
+                dict(stage="case_acl", failure_code="case_setup_failed"))
+            observations = [line for line in lines if line.startswith("application_helper_profile_diagnostic=")]
+            self.assertEqual(len(observations), 0 if printing_fails else 1)
+            if observations:
+                self.assertEqual(json.loads(observations[0].split("=", 1)[1]), dict(scope="listing",
+                    known_nodes=["appdata", "local_appdata", "local_microsoft", "local_powershell", "local_windows"],
+                    unknown_directory_count=1, unknown_file_count=0))
+            self.assertNotIn("canary", output.getvalue())
+            self.assertNotIn(str(self.root), output.getvalue())
+            remove.assert_not_called()
+        self.assertEqual(len(list(self.root.glob("app-http-*"))), 2)
+
+    def test_profile_observation_does_not_promote_application_or_cleanup(self):
+        error = P.ProducerError("case_setup_failed")
+        error.helper_profile_owner_failure = True
+        def prepare(parent, name, action="Create"):
+            result = fake_prepare(parent, name, action)
+            if action == "Verify":
+                raise error
+            return result
+        def baseline(case):
+            (case / "helper-env/profile/Documents/WindowsPowerShell").mkdir(parents=True)
+        flow = Flow("listing", before_app=baseline)
+        suite = self.root / "application-profile-failure"
+        suite.mkdir()
+        with mock.patch.object(P, "prepare", side_effect=prepare), mock.patch.object(P.F, "serve_http", side_effect=flow.serve), \
+             mock.patch.object(P.time, "sleep"), mock.patch.object(P, "remove_owned") as remove, redirect_stdout(io.StringIO()) as output:
+            record = P.run_case("listing", suite, self.app, self.digest, RUNTIME, session_factory=flow.factory)
+        self.assertEqual(record["status"], "failed")
+        self.assertEqual(record["failure_code"], "cleanup_failed")
+        self.assertFalse(record["checks"]["temp_cleanup"])
+        self.assertFalse(record["checks"]["process_cleanup"])
+        self.assertTrue(record["checks"]["inventory_exact"])
+        self.assertIn("application_helper_profile_diagnostic=", output.getvalue())
+        self.assertTrue((suite / "listing").exists())
+        remove.assert_not_called()
+
     def probe_patches(self):
         # App, fixture and session entry points must remain unreachable.
         stack = __import__("contextlib").ExitStack()
