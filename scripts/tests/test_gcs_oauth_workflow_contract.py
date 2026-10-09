@@ -104,7 +104,8 @@ def validate(text):
     for name, definition in definitions.items():
         if name != JOB:
             require(not re.search(r"^    needs:.*\bgcs-oauth-experiment\b", definition, re.MULTILINE), "no_release_or_ledger_dependency")
-            require("gcs-oauth-experiment.json" not in definition and "gcs-oauth/run_container.py" not in definition,
+            require("gcs-oauth-experiment.json" not in definition
+                    and ("gcs-oauth/run_container.py" not in definition or name == "gcs-oauth-lifecycle"),
                     "no_extra_experiment_or_import")
 
 

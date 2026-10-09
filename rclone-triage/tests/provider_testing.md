@@ -71,7 +71,7 @@ python -B scripts/provider-lab/run_lab.py --rclone $runtime --internetarchive-lo
 if ($LASTEXITCODE -ne 0) { throw 'Internet Archive LOW fixture failed; inspect the sanitized receipt' }
 python -B scripts/provider_coverage.py --rclone $runtime --report $evidence `
   --fixture-receipt $fixtures --fixture-receipt $renewal --fixture-receipt $iaLow `
-  --require-plans --require-fixtures local,archive,http,webdav,ftp,sftp,s3,swift,b2,azureblob,azurefiles,seafile,memory,koofr,pixeldrain,filefabric,internetarchive,netstorage,gcs
+  --require-plans --require-fixtures local,archive,http,webdav,ftp,sftp,s3,swift,b2,azureblob,azurefiles,seafile,memory,koofr,pixeldrain,filefabric,internetarchive,netstorage --require-gcs-static-token
 ```
 
 `--require-plans` fails for missing, unreviewed, changed or retired backend plans. `--require-fixtures` requires current passing local-protocol evidence for each supplied backend ID. `--require-complete` requires every applicable layer and all applicability reviews; it is expected to fail while acceptance work remains. The report is written before a gate failure is returned. Do not replace this strict gate with a count of discovered providers or selected accounts.
@@ -230,3 +230,14 @@ For a curated provider, update metadata, its independent schema contract, config
 Continue acceptance by the highest-impact feasible case, preserving a private checkpoint of blockers and the next action. Reuse approved accounts, store all credentials in a private vault, and keep only sanitized evidence in shared artifacts. Check current API entitlements before creating an account: free storage does not necessarily grant free API access. The pinned documentation for [1Fichier](https://rclone.org/fichier/), [Gofile](https://rclone.org/gofile/) and [Pixeldrain filesystem](https://rclone.org/pixeldrain/) describes paid prerequisites; missing paid access stays a blocker, not a pass or permission to purchase. [Memory](https://rclone.org/memory/) is process-local, so the application's separate child processes need a supported source lifecycle before this backend can qualify. A local archive baseline does not qualify a remotely hosted archive's upstream provider.
 
 For each real account type, separately verify browser/MFA login, listing, sample acquisition and independent hashes, refresh, denial/cancellation and cleanup. Enterprise variants, Shared Drives and Google Photos restrictions need their own cases. Record the exact tested binary, scope and outcome without account information. See [HARDENING.md](../../HARDENING.md) for completed live acceptance and outstanding gaps. Synthetic tests and schema checks do not replace those account-level results.
+
+GCS has two independent local modes. The baseline gate above requires all eight
+static-token checks while leaving OAuth lifecycle unverified. Full Linux GCS
+qualification additionally requires a fresh `--lifecycle-evidence` receipt from
+`gcs-oauth/run_container.py`: all ten callback, exchange, expiry, refresh, denial
+and cancellation cases, with exact source/runtime bindings and complete cleanup.
+The CI combined ledger and Provider Smoke require both modes; Windows never
+borrows Linux lifecycle evidence. Historical default experiment receipts remain
+ineligible. These protocol modes do not establish application/vendor acceptance,
+revocation, session reauthentication, service-account, ADC or workload-identity
+coverage. See [the GCS lifecycle contract](../../scripts/provider-lab/gcs-oauth/README.md).
