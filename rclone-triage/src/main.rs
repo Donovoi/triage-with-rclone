@@ -428,7 +428,7 @@ fn main() -> Result<()> {
                         .join(format!("{}_files.ps.csv", remote_name))
                 });
             if let Some(parent) = out_path.parent() {
-                std::fs::create_dir_all(parent)?;
+                rclone_triage::utils::private_fs::create_dir_all(parent)?;
             }
             let hash_type = if include_hashes {
                 known.and_then(|p| p.hash_types().first().copied())
@@ -583,8 +583,9 @@ fn cli_list_remote(
     app_guard: &AppGuard,
 ) -> Result<()> {
     use rclone_triage::case::directory::{create_case_directories, snapshot_config};
-    use rclone_triage::files::listing::list_remote_to_csv;
+    use rclone_triage::files::listing::list_remote_to_file;
     use rclone_triage::utils::path::ensure_no_link_components;
+    use rclone_triage::utils::private_fs;
 
     let source_config = std::path::Path::new(source_config);
     ensure_no_link_components(source_config)?;
@@ -595,8 +596,8 @@ fn cli_list_remote(
     // a failed run or be mistaken for this invocation's result.
     let base = case.output_dir.join(case.session_id());
     ensure_no_link_components(&base)?;
-    std::fs::create_dir_all(&case.output_dir)?;
-    std::fs::create_dir(&base).context("Listing requires a new case directory")?;
+    private_fs::create_dir_all(&case.output_dir)?;
+    private_fs::create_dir(&base).context("Listing requires a new case directory")?;
     let dirs = create_case_directories(case)?;
     let working = snapshot_config(source_config, &dirs.config)?;
     let config = RcloneConfig::open_existing(&working)?;
@@ -621,21 +622,16 @@ fn cli_list_remote(
     // direct Win32 no-replace publication, for BOTH source and destination.
     ensure_no_link_components(&dirs.listings)?;
     let listings = std::fs::canonicalize(&dirs.listings)?;
-    let staged = tempfile::Builder::new()
-        .prefix(".inventory-")
-        .suffix(".tmp")
-        .tempfile_in(&listings)?;
+    let staged = private_fs::tempfile_in(&listings, ".inventory-", ".tmp")?;
     // Full recursive CSV with exact remote provenance and no retained entries,
     // hash/fast-list fallback, or partial-success publication.
-    let total_entries = list_remote_to_csv(&runner, remote, staged.path())?;
+    let total_entries = list_remote_to_file(&runner, remote, staged.as_file().try_clone()?)?;
     if total_entries == 0 {
         // The shared exporter emits its header with the first row. An empty
         // successful inventory still needs the same explicit column schema.
-        let mut writer = csv::Writer::from_writer(
-            std::fs::OpenOptions::new()
-                .append(true)
-                .open(staged.path())?,
-        );
+        // The clone shares the original cursor, already after the BOM. Keep
+        // writing through the created handle rather than reopening its path.
+        let mut writer = csv::Writer::from_writer(staged.as_file().try_clone()?);
         writer.write_record([
             "path_encoding",
             "remote",
@@ -769,7 +765,10 @@ fn cli_download_from_queue(
     let checkpoint_path = dirs
         .logs
         .join(format!("acquisition-{}.checkpoint.json", run_id));
-    std::fs::write(&checkpoint_path, serde_json::to_vec_pretty(&checkpoint)?)?;
+    rclone_triage::utils::private_fs::write(
+        &checkpoint_path,
+        serde_json::to_vec_pretty(&checkpoint)?,
+    )?;
     let mut metadata = ReportMetadata::from_environment();
     metadata.rclone_version = Some(embedded::RCLONE_VERSION.to_string());
     let report = generate_report_with_metadata(

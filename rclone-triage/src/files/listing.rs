@@ -6,7 +6,6 @@ use serde::de::{self, SeqAccess, Visitor};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
-use std::fs::OpenOptions;
 use std::io::Write;
 use std::io::{self, BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
@@ -492,6 +491,30 @@ pub fn list_remote_to_csv(
     })
 }
 
+/// Stream into a retained, empty output handle; the caller owns publication.
+pub fn list_remote_to_file(
+    rclone: &RcloneRunner,
+    remote: &str,
+    file: std::fs::File,
+) -> Result<usize> {
+    write_remote_listing_with_writer(
+        rclone,
+        remote,
+        crate::files::export::ListingCsvWriter::from_file(file)?,
+        |on_entry| {
+            run_lsjson_streaming(
+                rclone,
+                &format!("{remote}:"),
+                false,
+                false,
+                on_entry,
+                None,
+                true,
+            )
+        },
+    )
+}
+
 fn write_remote_listing_csv<F>(
     rclone: &RcloneRunner,
     remote: &str,
@@ -501,7 +524,23 @@ fn write_remote_listing_csv<F>(
 where
     F: FnOnce(&mut dyn FnMut(RcloneLsJsonEntry) -> Result<()>) -> Result<usize>,
 {
-    let mut csv = crate::files::export::ListingCsvWriter::create(csv_path)?;
+    write_remote_listing_with_writer(
+        rclone,
+        remote,
+        crate::files::export::ListingCsvWriter::create(csv_path)?,
+        enumerate,
+    )
+}
+
+fn write_remote_listing_with_writer<F>(
+    rclone: &RcloneRunner,
+    remote: &str,
+    mut csv: crate::files::export::ListingCsvWriter,
+    enumerate: F,
+) -> Result<usize>
+where
+    F: FnOnce(&mut dyn FnMut(RcloneLsJsonEntry) -> Result<()>) -> Result<usize>,
+{
     let mut on_entry = |raw: RcloneLsJsonEntry| -> Result<()> {
         if rclone.is_cancelled() {
             bail!("Listing cancelled");
@@ -540,11 +579,12 @@ where
     F: FnMut(usize),
 {
     let out_path = out_path.as_ref();
-    let mut out_file = OpenOptions::new()
-        .create(true)
-        .truncate(true)
-        .write(true)
-        .open(out_path)
+    crate::utils::path::ensure_no_link_components(out_path)?;
+    let parent = out_path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let mut out_file = crate::utils::private_fs::tempfile_in(parent, ".listing-", ".tmp")
         .with_context(|| format!("Failed to create listing output: {:?}", out_path))?;
 
     let mut args: Vec<&str> = vec![
@@ -621,6 +661,11 @@ where
     if status.code().unwrap_or(-1) != 0 {
         bail!("rclone lsf failed: {}", stderr_lines.join("\n"));
     }
+    if rclone.is_cancelled() {
+        bail!("Listing cancelled");
+    }
+    out_file.as_file().sync_all()?;
+    crate::utils::private_fs::persist(out_file, out_path)?;
 
     Ok(LargeListingResult {
         truncated: total_entries > entries.len(),
@@ -1293,6 +1338,8 @@ mod tests {
             },
         );
         assert!(result.unwrap_err().to_string().contains("cancelled"));
+        assert!(!root.path().join("staged.csv").exists());
+        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
     }
 
     #[test]

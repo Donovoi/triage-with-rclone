@@ -122,10 +122,8 @@ fn execute_plan<B: ratatui::backend::Backend<Error: std::error::Error + Send + S
     // A retry must not erase the earlier plan, failures or completed-file evidence.
     if manifest_path.exists() {
         use std::io::Write;
-        let mut archive = tempfile::Builder::new()
-            .prefix("acquisition-prior-")
-            .suffix(".json")
-            .tempfile_in(&dirs.base)?;
+        let mut archive =
+            crate::utils::private_fs::tempfile_in(&dirs.base, "acquisition-prior-", ".json")?;
         archive.write_all(&std::fs::read(&manifest_path)?)?;
         archive.as_file().sync_all()?;
         archive.keep().map_err(|error| error.error)?;
@@ -135,7 +133,7 @@ fn execute_plan<B: ratatui::backend::Backend<Error: std::error::Error + Send + S
     queue.set_verify_hashes(true);
     for file in &plan.files {
         if let Some(parent) = std::path::Path::new(&file.request.destination).parent() {
-            std::fs::create_dir_all(parent)?;
+            crate::utils::private_fs::create_dir_all(parent)?;
         }
         queue.add(file.request.clone());
     }
@@ -371,7 +369,7 @@ fn write_reports(app: &App) -> Result<()> {
         .map(|logger| logger.checkpoint())
         .transpose()?;
     if let Some(checkpoint) = &checkpoint {
-        std::fs::write(
+        crate::utils::private_fs::write(
             dirs.base.join("log-checkpoint.json"),
             serde_json::to_vec_pretty(checkpoint)?,
         )?;

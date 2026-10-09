@@ -6,6 +6,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use super::Case;
+use crate::utils::private_fs;
 
 /// Preserve an imported config and use a uniquely named working copy for token
 /// refreshes and generated remotes. Never open the source with write permissions.
@@ -13,21 +14,14 @@ pub fn snapshot_config(source: &Path, config_dir: &Path) -> Result<PathBuf> {
     use sha2::{Digest, Sha256};
     crate::utils::path::ensure_no_link_components(config_dir)?;
     let bytes = fs::read(source).with_context(|| format!("Read source config {:?}", source))?;
-    fs::create_dir_all(config_dir)?;
+    private_fs::create_dir_all(config_dir)?;
+    private_fs::verify_directory(config_dir)?;
     crate::utils::path::ensure_no_link_components(config_dir)?;
     // tempfile's Windows keep() uses SetFileAttributesW directly. Canonicalize
     // the existing parent before creation so the snapshot and its provenance
     // share an extended-length path, including cases beyond MAX_PATH.
     let config_dir = fs::canonicalize(config_dir)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&config_dir, fs::Permissions::from_mode(0o700))?;
-    }
-    let mut snapshot = tempfile::Builder::new()
-        .prefix("working-")
-        .suffix(".conf")
-        .tempfile_in(&config_dir)?;
+    let mut snapshot = private_fs::tempfile_in(&config_dir, "working-", ".conf")?;
     snapshot.write_all(&bytes)?;
     snapshot.as_file().sync_all()?;
     let provenance = serde_json::json!({
@@ -38,10 +32,7 @@ pub fn snapshot_config(source: &Path, config_dir: &Path) -> Result<PathBuf> {
         "snapshotted_at": chrono::Utc::now(),
     });
     let metadata_path = snapshot.path().with_extension("provenance.json");
-    let mut metadata = fs::OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .open(metadata_path)?;
+    let mut metadata = private_fs::create_new(&metadata_path)?;
     metadata.write_all(&serde_json::to_vec_pretty(&provenance)?)?;
     metadata.sync_all()?;
     let (_, path) = snapshot.keep()?;
@@ -71,17 +62,19 @@ pub fn create_case_directories(case: &Case) -> Result<CaseDirectories> {
     for path in [&base, &logs, &downloads, &listings, &config, &report] {
         crate::utils::path::ensure_no_link_components(path)?;
     }
-    fs::create_dir_all(&base)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&base, fs::Permissions::from_mode(0o700))?;
-    }
+    private_fs::create_dir_all(&base)?;
+    private_fs::verify_directory(&base)?;
 
-    fs::create_dir_all(&logs).with_context(|| format!("Failed to create {:?}", logs))?;
-    fs::create_dir_all(&downloads).with_context(|| format!("Failed to create {:?}", downloads))?;
-    fs::create_dir_all(&listings).with_context(|| format!("Failed to create {:?}", listings))?;
-    fs::create_dir_all(&config).with_context(|| format!("Failed to create {:?}", config))?;
+    private_fs::create_dir_all(&logs).with_context(|| format!("Failed to create {:?}", logs))?;
+    private_fs::create_dir_all(&downloads)
+        .with_context(|| format!("Failed to create {:?}", downloads))?;
+    private_fs::create_dir_all(&listings)
+        .with_context(|| format!("Failed to create {:?}", listings))?;
+    private_fs::create_dir_all(&config)
+        .with_context(|| format!("Failed to create {:?}", config))?;
+    for directory in [&logs, &downloads, &listings, &config] {
+        private_fs::verify_directory(directory)?;
+    }
 
     Ok(CaseDirectories {
         base,
