@@ -761,7 +761,10 @@ class Bridge:
             self.process.stdin.write(payload)
             self.process.stdin.flush()
             phase = "wait"
-            data = self.messages.get(timeout=max(0.01, min(35, self.deadline - time.monotonic())))
+            # The first reply includes cold helper compilation. It consumes the
+            # existing lifetime budget; later commands keep their shorter cap.
+            response_seconds = 60 if action == "ready" else 35
+            data = self.messages.get(timeout=max(0.01, min(response_seconds, self.deadline - time.monotonic())))
             phase = "reply"
             need(not self.failed.is_set(), "session_failed")
             value = strict_json(data, 65536)
