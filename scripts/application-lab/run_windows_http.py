@@ -417,6 +417,9 @@ class Bridge:
         self.deadline = time.monotonic() + 165
         env = environment(case / "helper-env")
         env.update(GITHUB_ACTIONS="true", RUNNER_OS="Windows", RUNNER_ENVIRONMENT="github-hosted")
+        # PS5.1 writes this optional cache asynchronously after module imports.
+        # Disable it only for the helper; keep all residue checks unchanged.
+        env["PSModuleAnalysisCachePath"] = "nul"
         try:
             self.process = subprocess.Popen([powershell(), "-NoProfile", "-NonInteractive", "-File", str(HERE / "hosted_session.ps1")],
                 cwd=case, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **hidden())
