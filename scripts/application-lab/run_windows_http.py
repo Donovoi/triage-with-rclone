@@ -1334,14 +1334,34 @@ def check_manifest(name, case, config, runtime):
             "cancellation": {"manifest_incomplete": True, "cancelled_result_exact": True, "no_partial_outputs": True, "no_download_outputs": True}}[name]
 
 
-def partial_active(case):
+def partial_active(case, case_lease):
+    need(identity(case) == case_lease, "preservation_failed")
     base = case / "output" / CASE_NAME / "downloads"
     if not base.exists():
+        need(identity(case) == case_lease, "preservation_failed")
         return False
-    matches = [(path, info) for path, info in inventory(base).items()
-               if not info[0] and re.fullmatch(r"Synthetic/large/\.triage-transfer-[A-Za-z0-9_-]+/payload", path)]
+    base_lease = identity(base)
+    entries = inventory(base)
+    need(identity(base) == base_lease and identity(case) == case_lease, "preservation_failed")
+    # Source contract, not an observation of the earlier failed native case:
+    # private_fs uses 32 lowercase hex digits; pinned rclone v1.75.1 Copy's
+    # default partial upload is payload.<8 lowercase CRC32 hex digits>.partial.
+    matches = [(path, info) for path, info in entries.items() if not info[0] and re.fullmatch(
+        r"Synthetic/large/\.triage-transfer-[0-9a-f]{32}/payload\.[0-9a-f]{8}\.partial", path)]
     need(len(matches) <= 1, "cancellation_failed")
-    return bool(matches and 0 < matches[0][1][1] < ROWS[1][1])
+    if not matches:
+        return False
+    path, observed = matches[0]
+    need(all(info[0] or name == path for name, info in entries.items()), "cancellation_failed")
+    stage = path.rsplit("/", 1)[0]
+    stage_info = entries.get(stage)
+    need(stage_info is not None and stage_info[0] and
+         identity(base / stage) == stage_info[2:4], "preservation_failed")
+    current = plain(base / path)
+    need((current.st_dev, current.st_ino) == observed[2:4] and
+         identity(base / stage) == stage_info[2:4] and identity(base) == base_lease and
+         identity(case) == case_lease, "preservation_failed")
+    return 0 < observed[1] < ROWS[1][1] and 0 < current.st_size < ROWS[1][1]
 
 
 def fixture_valid(name, snapshot):
@@ -1429,7 +1449,7 @@ def run_case(name, suite, application, application_sha, runtime, session_factory
         record["runtime_sha256"] = response["runtime_sha256"]
         state.release_observation()
         if name == "cancellation":
-            while not (state.cancel_started.is_set() and partial_active(case)):
+            while not (state.cancel_started.is_set() and partial_active(case, lease)):
                 need(time.monotonic() < deadline, "deadline_exceeded")
                 response = bridge.command("poll")
                 need(response["ok"] and not response["app_exited"], "cancellation_failed")
