@@ -11,6 +11,29 @@ $functions = @($ast.FindAll({ param($node)
 if ($functions.Count -ne 1) { throw 'prepare_source_invalid' }
 # Extract the one reviewed pure function, never the script's creation/verification body.
 . ([scriptblock]::Create($functions[0].Extent.Text))
+$nameFunctions = @($ast.FindAll({ param($node)
+    $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Test-SetupName'
+}, $false))
+if ($nameFunctions.Count -ne 1) { throw 'prepare_source_invalid' }
+. ([scriptblock]::Create($nameFunctions[0].Extent.Text))
+$acceptedNames = @('listing','acquisition','mismatch','missing','denial','cancellation',
+    'webdav-credential-setup','webdav-credentials','webdav-listing','webdav-acquisition','webdav-mismatch','webdav-missing',
+    'webdav-wrong-credentials','webdav-accepted-a','webdav-revoked-a','webdav-replacement-b',
+    'webdav-permission-denied','webdav-truncated-transfer','webdav-cancellation',
+    ('app-http-' + ('a' * 32)), ('app-webdav-' + ('b' * 32)))
+foreach ($name in $acceptedNames) {
+    if (-not (Test-SetupName $name)) { throw 'prepare_name_rejected' }
+    foreach ($invalid in @($name.ToUpperInvariant(), ($name + "`n"), ($name + '\child'),
+        ('..\' + $name), (' ' + $name), ($name + ' '), ($name + [char]0))) {
+        if (Test-SetupName $invalid) { throw 'prepare_name_boundary_failed' }
+    }
+}
+foreach ($invalid in @('', 'webdav', 'webdav-unknown', 'webdav_wrong_credentials', 'accepted_a',
+    'webdav-suite', 'app-webdav-', ('app-webdav-' + ('a' * 31)), ('app-webdav-' + ('a' * 33)),
+    ('app-webdav-' + ('g' * 32)), 'app-http-private-canary')) {
+    if (Test-SetupName $invalid) { throw 'prepare_name_unknown_accepted' }
+}
+[Console]::Out.WriteLine('prepare_names_pure_passed:' + $acceptedNames.Count)
 $root = 'X:\synthetic'
 $cases = @(
     @('', 'unknown'), @($root, 'root'), @(($root + '\helper-env'), 'helper_root'),

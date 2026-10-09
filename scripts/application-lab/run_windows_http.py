@@ -457,9 +457,31 @@ def setup_progress(data, action):
     return stages[-1], final, failure
 
 
+WEBDAV_CASE_NAMES = {name: "webdav-" + name.replace("_", "-") for name in (
+    "listing", "acquisition", "mismatch", "missing", "wrong_credentials", "accepted_a",
+    "revoked_a", "replacement_b", "permission_denied", "truncated_transfer", "cancellation",
+)}
+SETUP_SCOPES = frozenset({"suite", "webdav_suite", "webdav_credentials", "webdav_credential_setup", *E.CASE_ORDER,
+                          *WEBDAV_CASE_NAMES.values()})
+
+
+def setup_scope(name):
+    need(type(name) is str, "case_setup_failed")
+    if re.fullmatch(r"app-http-[a-f0-9]{32}", name):
+        return "suite"
+    if re.fullmatch(r"app-webdav-[a-f0-9]{32}", name):
+        return "webdav_suite"
+    if name == "webdav-credentials":
+        return "webdav_credentials"
+    if name == "webdav-credential-setup":
+        return "webdav_credential_setup"
+    need(name in E.CASE_ORDER or name in WEBDAV_CASE_NAMES.values(), "case_setup_failed")
+    return name
+
+
 def setup_diagnostic(outcome, action, scope, exit_code, stage, failure=None):
     """The sole public setup diagnostic: finite labels, never child text."""
-    need(outcome in SETUP_OUTCOMES and action in SETUP_STAGES and scope in {"suite", *E.CASE_ORDER} and
+    need(outcome in SETUP_OUTCOMES and action in SETUP_STAGES and scope in SETUP_SCOPES and
          (exit_code is None or type(exit_code) is int and -(2**31) <= exit_code < 2**32) and
          (stage is None or stage in SETUP_STAGES[action]), "case_setup_failed")
     value = dict(outcome=outcome, action=action, scope=scope, exit_code=exit_code, last_stage=stage)
@@ -501,8 +523,8 @@ def setup_environment():
 
 def prepare(parent, name, action="Create"):
     hosted_guard()
-    scope = "suite" if re.fullmatch(r"app-http-[a-f0-9]{32}", name) else name
-    need(action in SETUP_STAGES and scope in {"suite", *E.CASE_ORDER}, "case_setup_failed")
+    scope = setup_scope(name)
+    need(action in SETUP_STAGES, "case_setup_failed")
     parent = Path(parent).absolute()
     original = identity(parent)
     try:
