@@ -5,6 +5,7 @@
 //! files retain the verified handle; callers must write through that handle.
 //! These helpers do not govern files subsequently created/replaced by rclone.
 
+use std::ffi::OsStr;
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::{Component, Path, PathBuf};
@@ -41,6 +42,39 @@ pub struct CleanupDiagnostic {
     stage: CleanupStage,
     kind: &'static str,
     os_code: Option<i32>,
+    residue: Option<CleanupResidue>,
+}
+
+/// A bounded observation after failed removal, never a cleanup/holder verdict.
+#[derive(Clone, Copy, Debug, serde::Serialize)]
+pub struct CleanupResidue {
+    root: &'static str,
+    executable: &'static str,
+    other_files: Option<u8>,
+    other_directories: Option<u8>,
+    other_reparse_points: Option<u8>,
+    other_entries: Option<u8>,
+    complete: bool,
+}
+
+impl CleanupResidue {
+    fn unavailable() -> Self {
+        Self {
+            root: "unavailable",
+            executable: "unavailable",
+            other_files: None,
+            other_directories: None,
+            other_reparse_points: None,
+            other_entries: None,
+            complete: false,
+        }
+    }
+}
+
+impl std::fmt::Display for CleanupResidue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&serde_json::to_string(self).map_err(|_| std::fmt::Error)?)
+    }
 }
 
 impl CleanupDiagnostic {
@@ -50,7 +84,12 @@ impl CleanupDiagnostic {
             stage: CleanupStage::Identity,
             kind: "other",
             os_code: None,
+            residue: None,
         }
+    }
+
+    pub fn residue(&self) -> Option<CleanupResidue> {
+        self.residue
     }
 }
 
@@ -74,6 +113,7 @@ impl std::fmt::Display for CleanupDiagnostic {
 struct CleanupFailure {
     stage: CleanupStage,
     source: io::Error,
+    residue: Option<CleanupResidue>,
 }
 
 impl std::fmt::Display for CleanupFailure {
@@ -93,7 +133,14 @@ impl std::error::Error for CleanupFailure {
 }
 
 fn cleanup_failure(stage: CleanupStage, source: io::Error) -> io::Error {
-    io::Error::new(source.kind(), CleanupFailure { stage, source })
+    io::Error::new(
+        source.kind(),
+        CleanupFailure {
+            stage,
+            source,
+            residue: None,
+        },
+    )
 }
 
 /// Classify only errors produced by the identity-checked cleanup path.
@@ -115,6 +162,7 @@ pub fn cleanup_diagnostic(error: &io::Error) -> Option<CleanupDiagnostic> {
             .source
             .raw_os_error()
             .filter(|code| (0..=65535).contains(code)),
+        residue: failure.residue,
     })
 }
 
@@ -348,8 +396,24 @@ impl PrivateTempDir {
         self.remove(&path)
     }
 
+    /// Observe only the exact expected leaf after removal fails. Missing roots
+    /// stay unavailable: no new root-absence proof is implied by a failed open.
+    pub(crate) fn close_with_residue(mut self, expected_leaf: &OsStr) -> io::Result<()> {
+        let path = self.path.take().unwrap();
+        self.remove_with(&path, Some(expected_leaf), |path| fs::remove_dir_all(path))
+    }
+
     fn remove(&self, path: &Path) -> io::Result<()> {
-        let (canonical, _parents) =
+        self.remove_with(path, None, |path| fs::remove_dir_all(path))
+    }
+
+    fn remove_with(
+        &self,
+        path: &Path,
+        expected_leaf: Option<&OsStr>,
+        remove: impl FnOnce(&Path) -> io::Result<()>,
+    ) -> io::Result<()> {
+        let (canonical, parents) =
             target(path).map_err(|error| cleanup_failure(CleanupStage::Target, error))?;
         let pin = platform::open_directory(&canonical)
             .map_err(|error| cleanup_failure(CleanupStage::OpenRoot, error))?;
@@ -366,8 +430,134 @@ impl PrivateTempDir {
         // The directory's protected DACL excludes other users. Release its
         // delete-denying handle only for std's non-following recursive removal.
         drop(pin);
-        fs::remove_dir_all(canonical)
-            .map_err(|error| cleanup_failure(CleanupStage::RemoveTree, error))
+        remove(&canonical).map_err(|source| {
+            let residue = expected_leaf.map(|leaf| {
+                self.observe_residue(&canonical, &parents, leaf)
+                    .unwrap_or_else(|_| CleanupResidue::unavailable())
+            });
+            io::Error::new(
+                source.kind(),
+                CleanupFailure {
+                    stage: CleanupStage::RemoveTree,
+                    source,
+                    residue,
+                },
+            )
+        })
+    }
+
+    #[cfg(not(windows))]
+    fn observe_residue(&self, _: &Path, _: &[File], _: &OsStr) -> io::Result<CleanupResidue> {
+        Ok(CleanupResidue::unavailable())
+    }
+
+    #[cfg(windows)]
+    fn observe_residue(
+        &self,
+        path: &Path,
+        parents: &[File],
+        leaf: &OsStr,
+    ) -> io::Result<CleanupResidue> {
+        self.observe_residue_with(path, parents, leaf, || Ok(()))
+    }
+
+    #[cfg(windows)]
+    fn observe_residue_with(
+        &self,
+        path: &Path,
+        parents: &[File],
+        leaf: &OsStr,
+        between: impl FnOnce() -> io::Result<()>,
+    ) -> io::Result<CleanupResidue> {
+        platform::validate_name(leaf)?;
+        if Path::new(leaf).file_name() != Some(leaf) {
+            return Err(refused("Residue leaf is not one exact name"));
+        }
+        let verify_parents = || -> io::Result<()> {
+            let parent = path
+                .parent()
+                .ok_or_else(|| refused("Missing residue parent"))?;
+            let (canonical, observed) = directory(parent)?;
+            if canonical != parent || observed.len() != parents.len() {
+                return Err(refused("Residue ancestry changed"));
+            }
+            for (before, after) in parents.iter().zip(&observed) {
+                if platform::identity(before)? != platform::identity(after)? {
+                    return Err(refused("Residue ancestry changed"));
+                }
+            }
+            Ok(())
+        };
+        verify_parents()?;
+        let root = platform::open_directory(path)?;
+        if platform::identity(&root)? != self.identity {
+            return Err(refused("Residue root changed"));
+        }
+        platform::verify_residue_root(&root, path)?;
+        let scan = || -> io::Result<_> {
+            let mut entries = std::collections::BTreeMap::new();
+            for entry in fs::read_dir(path)? {
+                let entry = entry?;
+                if entries.len() == 8 {
+                    return Err(refused("Residue entry bound"));
+                }
+                let name = entry.file_name();
+                platform::validate_name(&name)?;
+                let (pin, stamp) = platform::residue_entry(&path.join(&name))?;
+                if entries.insert(name, (pin, stamp)).is_some() {
+                    return Err(refused("Residue entry repeated"));
+                }
+            }
+            Ok(entries)
+        };
+        // No content is read. Release first-pass child pins so a changed entry
+        // is detected by identity, then hold second-pass pins through rechecks.
+        let before: std::collections::BTreeMap<_, _> = scan()?
+            .into_iter()
+            .map(|(name, (_pin, stamp))| (name, stamp))
+            .collect();
+        between()?;
+        let after = scan()?;
+        if before.len() != after.len()
+            || before
+                .iter()
+                .any(|(name, stamp)| after.get(name).map(|(_, value)| value) != Some(stamp))
+        {
+            return Err(refused("Residue entries changed"));
+        }
+        for (name, (pin, stamp)) in &after {
+            if platform::residue_stamp(pin, &path.join(name))? != *stamp {
+                return Err(refused("Residue entry changed"));
+            }
+        }
+        platform::verify_residue_root(&root, path)?;
+        if platform::identity(&root)? != self.identity {
+            return Err(refused("Residue root changed"));
+        }
+        verify_parents()?;
+        let mut result = CleanupResidue {
+            root: "same_private_directory",
+            executable: "absent",
+            other_files: Some(0),
+            other_directories: Some(0),
+            other_reparse_points: Some(0),
+            other_entries: Some(0),
+            complete: true,
+        };
+        for (name, (_, stamp)) in &after {
+            if name == leaf {
+                result.executable = stamp.kind;
+            } else {
+                let count = match stamp.kind {
+                    "regular_file" => &mut result.other_files,
+                    "directory" => &mut result.other_directories,
+                    "reparse_point" => &mut result.other_reparse_points,
+                    _ => &mut result.other_entries,
+                };
+                *count = count.map(|n| n + 1);
+            }
+        }
+        Ok(result)
     }
 }
 
@@ -607,6 +797,13 @@ mod platform {
                 "Artifact type, reparse point, or link count is invalid",
             ));
         }
+        if final_path(file)? != fs::canonicalize(path)? {
+            return Err(refused("Artifact handle path mismatch"));
+        }
+        Ok(())
+    }
+
+    fn final_path(file: &File) -> io::Result<PathBuf> {
         let mut name = vec![0u16; 32768];
         let length = unsafe {
             GetFinalPathNameByHandleW(
@@ -622,11 +819,64 @@ mod platform {
             return Err(refused("Artifact final path exceeds bound"));
         }
         name.truncate(length);
-        let observed = PathBuf::from(OsString::from_wide(&name));
-        if observed != fs::canonicalize(path)? {
-            return Err(refused("Artifact handle path mismatch"));
+        Ok(PathBuf::from(OsString::from_wide(&name)))
+    }
+
+    pub fn verify_residue_root(file: &File, path: &Path) -> io::Result<()> {
+        verify(file, path, true)?;
+        verify_private(file, true)
+    }
+
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    pub struct ResidueStamp {
+        pub kind: &'static str,
+        identity: (u64, u64),
+        attributes: u32,
+        links: u32,
+        size: u64,
+        created: u64,
+        modified: u64,
+    }
+
+    pub fn residue_stamp(file: &File, path: &Path) -> io::Result<ResidueStamp> {
+        let info = information(file)?;
+        // No canonicalize on a child: it could follow a reparse point. The
+        // retained handle was opened on the entry itself, never its target.
+        if unsafe { GetFileType(handle(file)) } != FILE_TYPE_DISK || final_path(file)? != path {
+            return Err(refused("Residue entry handle mismatch"));
         }
-        Ok(())
+        let kind = if info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0 {
+            "reparse_point"
+        } else if info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY.0 != 0 {
+            "directory"
+        } else if info.nNumberOfLinks == 1 {
+            "regular_file"
+        } else {
+            "other"
+        };
+        Ok(ResidueStamp {
+            kind,
+            identity: identity(file)?,
+            attributes: info.dwFileAttributes,
+            links: info.nNumberOfLinks,
+            size: (u64::from(info.nFileSizeHigh) << 32) | u64::from(info.nFileSizeLow),
+            created: (u64::from(info.ftCreationTime.dwHighDateTime) << 32)
+                | u64::from(info.ftCreationTime.dwLowDateTime),
+            modified: (u64::from(info.ftLastWriteTime.dwHighDateTime) << 32)
+                | u64::from(info.ftLastWriteTime.dwLowDateTime),
+        })
+    }
+
+    pub fn residue_entry(path: &Path) -> io::Result<(File, ResidueStamp)> {
+        let file = open(
+            path,
+            FILE_READ_ATTRIBUTES.0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            OPEN_EXISTING,
+            None,
+        )?;
+        let stamp = residue_stamp(&file, path)?;
+        Ok((file, stamp))
     }
     pub fn verify_private(file: &File, directory: bool) -> io::Result<()> {
         unsafe {
@@ -965,6 +1215,201 @@ mod tests {
             assert!("runtime_cleanup_diagnostic=".len() + diagnostic.to_string().len() <= 112);
         }
         assert!(cleanup_diagnostic(&io::Error::other("unclassified-canary")).is_none());
+    }
+
+    #[test]
+    fn residue_failure_preserves_original_error_and_never_implies_absence() {
+        let source = io::Error::from_raw_os_error(32);
+        let error = io::Error::new(
+            source.kind(),
+            CleanupFailure {
+                stage: CleanupStage::RemoveTree,
+                source,
+                residue: Some(CleanupResidue::unavailable()),
+            },
+        );
+        let diagnostic = cleanup_diagnostic(&error).unwrap();
+        assert_eq!(diagnostic.os_code, Some(32));
+        assert_eq!(
+            diagnostic.to_string(),
+            "{\"stage\":\"remove_tree\",\"kind\":\"other\",\"os_code\":32}"
+        );
+        let value = diagnostic.residue().unwrap().to_string();
+        assert_eq!(value, "{\"root\":\"unavailable\",\"executable\":\"unavailable\",\"other_files\":null,\"other_directories\":null,\"other_reparse_points\":null,\"other_entries\":null,\"complete\":false}");
+        assert!(value.is_ascii() && value.len() < 320);
+        let original = error
+            .get_ref()
+            .unwrap()
+            .downcast_ref::<CleanupFailure>()
+            .unwrap();
+        assert_eq!(original.source.raw_os_error(), Some(32));
+    }
+
+    #[cfg(windows)]
+    fn residue_snapshot(
+        owned: &PrivateTempDir,
+        between: impl FnOnce() -> io::Result<()>,
+    ) -> CleanupResidue {
+        let (path, parents) = target(owned.path()).unwrap();
+        owned
+            .observe_residue_with(&path, &parents, OsStr::new("rclone.exe"), between)
+            .unwrap_or_else(|_| CleanupResidue::unavailable())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn residue_observes_exact_leaf_and_aggregates_other_names_without_contents() {
+        let root = tempfile::tempdir().unwrap();
+        let owned = tempdir_in(root.path(), "private-canary-").unwrap();
+        write(owned.path().join("rclone.exe"), b"synthetic").unwrap();
+        write(
+            owned.path().join("private-name-canary"),
+            b"private-body-canary",
+        )
+        .unwrap();
+        create_dir(owned.path().join("private-directory-canary")).unwrap();
+        let observed = residue_snapshot(&owned, || Ok(()));
+        assert!(observed.complete);
+        assert_eq!(observed.root, "same_private_directory");
+        assert_eq!(observed.executable, "regular_file");
+        assert_eq!(observed.other_files, Some(1));
+        assert_eq!(observed.other_directories, Some(1));
+        assert_eq!(observed.other_reparse_points, Some(0));
+        assert_eq!(observed.other_entries, Some(0));
+        assert!(!observed.to_string().contains("canary"));
+        assert!(!observed
+            .to_string()
+            .contains(root.path().to_string_lossy().as_ref()));
+        assert!(observed.to_string().len() < 320);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn residue_case_alias_is_an_other_entry_not_the_expected_executable() {
+        let root = tempfile::tempdir().unwrap();
+        let owned = tempdir_in(root.path(), "runtime-").unwrap();
+        write(owned.path().join("RCLONE.EXE"), b"synthetic").unwrap();
+        let observed = residue_snapshot(&owned, || Ok(()));
+        assert!(observed.complete);
+        assert_eq!(observed.executable, "absent");
+        assert_eq!(observed.other_files, Some(1));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn residue_entry_replacement_with_equal_content_is_unavailable() {
+        let root = tempfile::tempdir().unwrap();
+        let owned = tempdir_in(root.path(), "runtime-").unwrap();
+        let entry = owned.path().join("rclone.exe");
+        write(&entry, b"same synthetic bytes").unwrap();
+        let moved = root.path().join("prior-entry");
+        let observed = residue_snapshot(&owned, || {
+            fs::rename(&entry, &moved)?;
+            write(&entry, b"same synthetic bytes")
+        });
+        assert_eq!(
+            observed.to_string(),
+            CleanupResidue::unavailable().to_string()
+        );
+        assert_eq!(fs::read(&moved).unwrap(), b"same synthetic bytes");
+        assert_eq!(fs::read(&entry).unwrap(), b"same synthetic bytes");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn residue_overflow_or_inspection_failure_never_publishes_partial_counts() {
+        let root = tempfile::tempdir().unwrap();
+        let owned = tempdir_in(root.path(), "runtime-").unwrap();
+        for index in 0..8 {
+            write(
+                owned.path().join(format!("private-canary-{index}")),
+                b"synthetic",
+            )
+            .unwrap();
+        }
+        assert_eq!(residue_snapshot(&owned, || Ok(())).other_files, Some(8));
+        let observed = residue_snapshot(&owned, || Err(io::Error::other("raw-error-canary")));
+        assert_eq!(
+            observed.to_string(),
+            CleanupResidue::unavailable().to_string()
+        );
+        write(owned.path().join("ninth-entry"), b"synthetic").unwrap();
+        let observed = residue_snapshot(&owned, || panic!("overflow must stop before second scan"));
+        assert_eq!(
+            observed.to_string(),
+            CleanupResidue::unavailable().to_string()
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn residue_partial_deletion_and_missing_root_keep_original_failure() {
+        let root = tempfile::tempdir().unwrap();
+        for remove_root in [false, true] {
+            let mut owned = tempdir_in(root.path(), "runtime-").unwrap();
+            let path = owned.path.take().unwrap(); // mirror consuming close: Drop cannot retry
+            write(path.join("rclone.exe"), b"synthetic").unwrap();
+            let mut attempts = 0;
+            let error = owned
+                .remove_with(&path, Some(OsStr::new("rclone.exe")), |path| {
+                    attempts += 1;
+                    fs::remove_file(path.join("rclone.exe"))?;
+                    if remove_root {
+                        fs::remove_dir(path)?;
+                    }
+                    Err(io::Error::from_raw_os_error(32))
+                })
+                .unwrap_err();
+            let diagnostic = cleanup_diagnostic(&error).unwrap();
+            assert_eq!(diagnostic.os_code, Some(32));
+            let observed = diagnostic.residue().unwrap();
+            if remove_root {
+                assert_eq!(
+                    observed.to_string(),
+                    CleanupResidue::unavailable().to_string()
+                );
+            } else {
+                assert!(observed.complete);
+                assert_eq!(observed.executable, "absent");
+                assert_eq!(observed.other_files, Some(0));
+            }
+            drop(owned);
+            assert_eq!(attempts, 1);
+            assert_eq!(path.exists(), !remove_root);
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn residue_replaced_root_is_unavailable_and_drop_preserves_both_roots() {
+        let root = tempfile::tempdir().unwrap();
+        let mut owned = tempdir_in(root.path(), "runtime-").unwrap();
+        let path = owned.path.take().unwrap();
+        write(path.join("rclone.exe"), b"original").unwrap();
+        let moved = root.path().join("original-root");
+        let mut attempts = 0;
+        let error = owned
+            .remove_with(&path, Some(OsStr::new("rclone.exe")), |path| {
+                attempts += 1;
+                fs::rename(path, &moved)?;
+                create_dir(path)?;
+                write(path.join("replacement-canary"), b"unrelated")?;
+                Err(io::Error::from_raw_os_error(32))
+            })
+            .unwrap_err();
+        let diagnostic = cleanup_diagnostic(&error).unwrap();
+        assert_eq!(diagnostic.os_code, Some(32));
+        assert_eq!(
+            diagnostic.residue().unwrap().to_string(),
+            CleanupResidue::unavailable().to_string()
+        );
+        drop(owned);
+        assert_eq!(attempts, 1);
+        assert_eq!(fs::read(moved.join("rclone.exe")).unwrap(), b"original");
+        assert_eq!(
+            fs::read(path.join("replacement-canary")).unwrap(),
+            b"unrelated"
+        );
     }
 
     #[test]

@@ -87,6 +87,12 @@ fn main() -> Result<()> {
             std::io::stderr().lock(),
             "runtime_cleanup_diagnostic={diagnostic}"
         );
+        if let Some(residue) = diagnostic.residue() {
+            let _ = writeln!(
+                std::io::stderr().lock(),
+                "runtime_cleanup_residue={residue}"
+            );
+        }
     })
 }
 
