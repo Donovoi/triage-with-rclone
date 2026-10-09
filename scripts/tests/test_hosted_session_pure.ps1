@@ -73,6 +73,29 @@ try {
 
 Check ([TriageApplicationLab.HostedConPtySession]::Quote('') -ceq '""')
 Check ([TriageApplicationLab.HostedConPtySession]::Quote('plain') -ceq '"plain"')
+Check ([TriageApplicationLab.HostedSourceDirectory]::SourcePath('C:\owned\case') -ceq 'C:\owned\case\source')
+Check ([TriageApplicationLab.HostedSourceDirectory]::SourcePath('C:/owned/case/') -ceq 'C:\owned\case\source')
+foreach ($invalid in @('', 'relative', 'C:relative', 'C:\', '\\server\case', '\\?\C:\owned',
+        'C:\owned\..\outside', 'C:\owned\.\case', 'C:\owned\case:stream', '1:\owned', "C:\owned`ncase", ('C:\' + ('a' * 2001)))) {
+    $path = $invalid
+    Reject { [TriageApplicationLab.HostedSourceDirectory]::SourcePath($path) }
+}
+# Only the pure path derivation above executes; Acquire, Verify and Dispose are native.
+Check ([TriageApplicationLab.HostedSourceDirectory].GetMethod('Acquire').ReturnType -eq [TriageApplicationLab.HostedSourceDirectory])
+$cleanupFactory = [TriageApplicationLab.HostedSourceDirectory].GetMethod('CleanupFailure', [Reflection.BindingFlags]'Static,NonPublic')
+Check ($null -ne $cleanupFactory -and $cleanupFactory.ReturnType -eq [Exception])
+$primaryFailure = [InvalidOperationException]::new('source_directory_invalid', [Exception]::new('private-canary'))
+# Invoke only the pure exception combiner, never any directory/handle operation.
+$combinedFailure = $cleanupFactory.Invoke($null, [object[]]@($primaryFailure))
+Check ([object]::ReferenceEquals($combinedFailure.InnerException, $primaryFailure))
+$codes = [TriageApplicationLab.HostedSourceDirectory]::FailureCodes($combinedFailure)
+Check ($codes.Count -eq 2 -and $codes[0] -ceq 'source_directory_cleanup_failed' -and $codes[1] -ceq 'source_directory_invalid')
+Check ([TriageApplicationLab.HostedSourceDirectory]::FailureCodes([Exception]::new('private-canary')).Count -eq 0)
+$repeatedFailure = $cleanupFactory.Invoke($null, [object[]]@($combinedFailure))
+Check ([TriageApplicationLab.HostedSourceDirectory]::FailureCodes($repeatedFailure).Count -eq 2)
+foreach ($method in @('Start','StartTui','StartSource')) {
+    Check ([TriageApplicationLab.HostedConPtySession].GetMethod($method).GetParameters().Count -eq 9)
+}
 Check ([TriageApplicationLab.HostedConPtySession]::Quote('a b') -ceq '"a b"')
 Check ([TriageApplicationLab.HostedConPtySession]::Quote('a"b') -ceq '"a\"b"')
 Check ([TriageApplicationLab.HostedConPtySession]::Quote('a\') -ceq '"a\\"')
@@ -150,6 +173,18 @@ $tokens = $null
 $errors = $null
 $bridgeAst = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $root 'application-lab/hosted_session.ps1'), [ref]$tokens, [ref]$errors)
 Check ($errors.Count -eq 0)
+$switches = @($bridgeAst.FindAll({ param($node) $node -is [System.Management.Automation.Language.SwitchStatementAst] }, $true))
+Check ($switches.Count -eq 1)
+$sourceClauses = @($switches[0].Clauses | Where-Object { $_.Item1.Extent.Text -ceq "'start_source'" })
+Check ($sourceClauses.Count -eq 1)
+$sourceCalls = @($sourceClauses[0].Item2.FindAll({ param($node)
+    $node -is [System.Management.Automation.Language.InvokeMemberExpressionAst] -and $node.Member.Value -ceq 'StartSource'
+}, $true))
+Check ($sourceCalls.Count -eq 1 -and $sourceCalls[0].Arguments.Count -eq 9)
+$sourceKeys = @($sourceClauses[0].Item2.FindAll({ param($node)
+    $node -is [System.Management.Automation.Language.InvokeMemberExpressionAst] -and $node.Member.Value -ceq 'Keys'
+}, $true))
+Check ($sourceKeys.Count -eq 1 -and $sourceKeys[0].Arguments[1].Value -ceq 'action,app_path,app_sha256,args,case_root,environment,transcript_path,max_output_bytes,deadline_ms,max_runtime_processes')
 # The standalone bridge must refuse non-hosted callers before compiling or reading commands.
 $outerTry = @($bridgeAst.FindAll({ param($node) $node -is [System.Management.Automation.Language.TryStatementAst] }, $true))[0]
 $guard = $outerTry.Body.Statements[0]
