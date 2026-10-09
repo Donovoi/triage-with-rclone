@@ -1477,7 +1477,7 @@ mod tests {
         let temp = tempdir().unwrap();
         let config = temp.path().join("empty.conf");
         fs::write(&config, "").unwrap();
-        let runner = RcloneRunner::new(binary.path()).with_config(config);
+        let runner = RcloneRunner::from_extracted(&binary).with_config(config);
         let source = temp.path().join("was-a-file");
         fs::write(&source, "listed as a file").unwrap();
         let destination = temp.path().join("result.bin");
@@ -1504,7 +1504,7 @@ mod tests {
         fs::write(&source, "new bytes").unwrap();
         fs::write(&destination, "earlier evidence").unwrap();
         let result = DownloadQueue::new().download_one_verified(
-            &RcloneRunner::new(binary.path()),
+            &RcloneRunner::from_extracted(&binary),
             &DownloadRequest::new_copyto(source.to_string_lossy(), destination.to_string_lossy()),
         );
         assert!(!result.success);
@@ -1587,7 +1587,7 @@ mod tests {
         let temp = tempdir().unwrap();
         let config = temp.path().join("isolated.conf");
         fs::write(&config, "").unwrap();
-        let runner = RcloneRunner::new(binary.path()).with_config(&config);
+        let runner = RcloneRunner::from_extracted(&binary).with_config(&config);
         let source = temp.path().join("source.txt");
         let destination = temp.path().join("downloaded.txt");
         fs::write(&source, "verified bytes").unwrap();
@@ -1611,7 +1611,7 @@ mod tests {
         let binary = ExtractedBinary::extract().unwrap();
         let temp = tempdir().unwrap();
         let runner =
-            RcloneRunner::new(binary.path()).with_config(temp.path().join("isolated.conf"));
+            RcloneRunner::from_extracted(&binary).with_config(temp.path().join("isolated.conf"));
         let source = temp.path().join("source.txt");
         fs::write(&source, "data").unwrap();
         let destination = temp.path().join("download.txt");
@@ -1640,7 +1640,7 @@ mod tests {
         let binary = ExtractedBinary::extract().unwrap();
         let temp = tempdir().unwrap();
         let runner =
-            RcloneRunner::new(binary.path()).with_config(temp.path().join("isolated.conf"));
+            RcloneRunner::from_extracted(&binary).with_config(temp.path().join("isolated.conf"));
         let source = temp.path().join("source.txt");
         fs::write(&source, "data").unwrap();
         let mut queue = DownloadQueue::new();
@@ -1672,7 +1672,7 @@ mod tests {
     #[test]
     fn test_download_copyto_local() {
         let binary = ExtractedBinary::extract().expect("Failed to extract rclone");
-        let runner = RcloneRunner::new(binary.path());
+        let runner = RcloneRunner::from_extracted(&binary);
         let mut queue = DownloadQueue::new();
         queue.set_dry_run(true);
 
@@ -1698,7 +1698,7 @@ mod tests {
         // Due to rclone WSL/filesystem quirks with local-to-local copies,
         // we use dry-run mode to avoid false failures from size checks.
         let binary = ExtractedBinary::extract().expect("Failed to extract rclone");
-        let runner = RcloneRunner::new(binary.path());
+        let runner = RcloneRunner::from_extracted(&binary);
         let mut queue = DownloadQueue::new();
         queue.set_verify_hashes(false);
         queue.set_dry_run(true); // Use dry-run to avoid WSL copy quirks

@@ -288,7 +288,7 @@ fn apply_queue_entries(
     Ok(app.files.to_download.len())
 }
 
-fn try_refresh_providers(app: &mut App) {
+fn try_refresh_providers(app: &mut App) -> Result<()> {
     let allow = std::env::var("RCLONE_TRIAGE_DYNAMIC_PROVIDERS")
         .map(|v| v != "0")
         .unwrap_or(true);
@@ -302,7 +302,7 @@ fn try_refresh_providers(app: &mut App) {
             app,
             Some("Provider refresh disabled by RCLONE_TRIAGE_DYNAMIC_PROVIDERS=0.".to_string()),
         );
-        return;
+        return Ok(());
     }
 
     app.provider.status = "Refreshing providers...".to_string();
@@ -317,28 +317,27 @@ fn try_refresh_providers(app: &mut App) {
                 app,
                 Some(format!("Provider discovery failed (extract): {}", e)),
             );
-            return;
+            return Ok(());
         }
     };
 
-    app.cleanup_track_file(binary.path());
-    if let Some(dir) = binary.temp_dir() {
-        app.cleanup_track_dir(dir);
-    }
+    crate::ui::runtime::with_runtime(binary, |binary| {
+        let runner = crate::rclone::RcloneRunner::from_extracted(binary);
+        let discovery = match crate::providers::discovery::providers_from_rclone(&runner) {
+            Ok(discovery) => discovery,
+            Err(e) => {
+                let message = format!("Provider discovery failed: {}", e);
+                app.provider.status =
+                    format!("Provider discovery failed: {}. Using built-in list.", e);
+                app.log_error(message.clone());
+                record_provider_refresh(app, Some(message));
+                return Ok(());
+            }
+        };
 
-    let runner = crate::rclone::RcloneRunner::new(binary.path());
-    let discovery = match crate::providers::discovery::providers_from_rclone(&runner) {
-        Ok(discovery) => discovery,
-        Err(e) => {
-            let message = format!("Provider discovery failed: {}", e);
-            app.provider.status = format!("Provider discovery failed: {}. Using built-in list.", e);
-            app.log_error(message.clone());
-            record_provider_refresh(app, Some(message));
-            return;
-        }
-    };
-
-    apply_discovered_providers(app, discovery);
+        apply_discovered_providers(app, discovery);
+        Ok(())
+    })
 }
 
 fn perform_csv_download_flow<
@@ -447,6 +446,7 @@ fn perform_web_gui_flow<
     app: &mut App,
     terminal: &mut Terminal<B>,
 ) -> Result<()> {
+    app.quiesce_resources()?;
     app.menu_status = "Starting rclone Web GUI...".to_string();
     terminal.draw(|f| render_state(f, app))?;
 
@@ -458,42 +458,48 @@ fn perform_web_gui_flow<
             return Ok(());
         }
     };
-    app.cleanup_track_file(binary.path());
-    if let Some(dir) = binary.temp_dir() {
-        app.cleanup_track_dir(dir);
-    }
 
-    let config_dir = app
-        .config_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("."));
-    let config = match crate::rclone::RcloneConfig::for_case(&config_dir) {
-        Ok(config) => config,
-        Err(e) => {
-            app.menu_status = format!("Web GUI failed (config): {}", e);
-            app.log_error(format!("Web GUI failed (config): {}", e));
-            return Ok(());
-        }
-    };
-    app.cleanup_track_env_value("RCLONE_CONFIG", config.original_env());
+    crate::ui::runtime::with_runtime(binary, |binary| {
+        let config_dir = app
+            .config_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."));
+        let config = match crate::rclone::RcloneConfig::for_case(&config_dir) {
+            Ok(config) => config,
+            Err(e) => {
+                app.menu_status = format!("Web GUI failed (config): {}", e);
+                app.log_error(format!("Web GUI failed (config): {}", e));
+                return Ok(());
+            }
+        };
+        app.cleanup_track_env_value("RCLONE_CONFIG", config.original_env());
 
-    let port = 5572u16;
-    match crate::rclone::start_web_gui(binary.path(), Some(config.path()), port, None, None) {
-        Ok(web) => {
-            let addr = format!("http://127.0.0.1:{}/", port);
-            app.web_gui_process = Some(web);
-            app.menu_status = format!(
+        let port = 5572u16;
+        match crate::rclone::web::start_web_gui_owned(
+            binary.take()?,
+            Some(config.path()),
+            port,
+            None,
+            None,
+        ) {
+            Ok(web) => {
+                let addr = format!("http://127.0.0.1:{}/", port);
+                app.web_gui_process = Some(web);
+                app.menu_status = format!(
                 "rclone Web GUI started at {}\n\nOpen in your browser. It will run until you exit.",
                 addr
             );
-            app.log_info(format!("Started rclone Web GUI at {}", addr));
+                app.log_info(format!("Started rclone Web GUI at {}", addr));
+            }
+            Err(e) => {
+                app.menu_status = format!("Web GUI failed: {}", e);
+                app.log_error(format!("Web GUI failed: {}", e));
+                app.resource_shutdown_failed = true;
+                return Err(e);
+            }
         }
-        Err(e) => {
-            app.menu_status = format!("Web GUI failed: {}", e);
-            app.log_error(format!("Web GUI failed: {}", e));
-        }
-    }
 
-    Ok(())
+        Ok(())
+    })
 }
 
 fn perform_update_tools_flow<
@@ -514,12 +520,7 @@ fn perform_update_tools_flow<
 
     // Check FUSE/WinFSP availability (needed for mount)
     match crate::embedded::ExtractedBinary::extract() {
-        Ok(binary) => {
-            app.cleanup_track_file(binary.path());
-            if let Some(dir) = binary.temp_dir() {
-                app.cleanup_track_dir(dir);
-            }
-
+        Ok(mut binary) => {
             let manager = crate::rclone::MountManager::new(binary.path());
             match manager {
                 Ok(m) => match m.check_fuse_available() {
@@ -542,7 +543,7 @@ fn perform_update_tools_flow<
             }
 
             // Show rclone version
-            let runner = crate::rclone::RcloneRunner::new(binary.path());
+            let runner = crate::rclone::RcloneRunner::from_extracted(&binary);
             match runner.run(&["version"]) {
                 Ok(output) => {
                     if let Some(first_line) = output.stdout.first() {
@@ -551,6 +552,7 @@ fn perform_update_tools_flow<
                 }
                 Err(e) => lines.push(format!("rclone version check failed: {}", e)),
             }
+            crate::ui::runtime::cleanup_runtime(&mut binary)?;
         }
         Err(e) => lines.push(format!("Binary extraction failed: {}", e)),
     }
@@ -565,6 +567,7 @@ fn perform_configure_oauth_flow<
     app: &mut App,
     terminal: &mut Terminal<B>,
 ) -> Result<()> {
+    app.quiesce_resources()?;
     app.menu_status = "Configure custom OAuth credentials".to_string();
     terminal.draw(|f| render_state(f, app))?;
 
@@ -645,6 +648,7 @@ fn perform_onedrive_vault_flow<
     app: &mut App,
     terminal: &mut Terminal<B>,
 ) -> Result<()> {
+    app.quiesce_resources()?;
     app.menu_status = "OneDrive Vault: preparing...".to_string();
     terminal.draw(|f| render_state(f, app))?;
 
@@ -724,13 +728,18 @@ fn perform_onedrive_vault_flow<
 /// - Backspace: previous state
 /// - q / Esc: quit
 pub fn run_loop(app: &mut App) -> Result<()> {
-    enable_raw_mode()?;
-    let mut out = stdout();
-    execute!(out, EnterAlternateScreen, EnableBracketedPaste)?;
+    let operation = run_loop_inner(app);
+    if operation
+        .as_ref()
+        .is_err_and(crate::ui::runtime::cleanup_uncertain)
+    {
+        app.resource_shutdown_failed = true;
+    }
+    let cleanup = app.shutdown_resources();
+    crate::ui::runtime::complete(operation, cleanup)
+}
 
-    let backend = CrosstermBackend::new(out);
-    let mut terminal = Terminal::new(backend)?;
-
+fn run_loop_inner(app: &mut App) -> Result<()> {
     // Ensure terminal is restored even if we exit early
     struct TuiGuard;
     impl Drop for TuiGuard {
@@ -741,6 +750,12 @@ pub fn run_loop(app: &mut App) -> Result<()> {
         }
     }
     let _guard = TuiGuard;
+    enable_raw_mode()?;
+    let mut out = stdout();
+    execute!(out, EnterAlternateScreen, EnableBracketedPaste)?;
+
+    let backend = CrosstermBackend::new(out);
+    let mut terminal = Terminal::new(backend)?;
 
     // Always start at the main menu for a consistent entry flow.
     app.state = crate::ui::AppState::MainMenu;
@@ -748,14 +763,14 @@ pub fn run_loop(app: &mut App) -> Result<()> {
     app.selected_action = None;
     app.menu_status.clear();
 
-    try_refresh_providers(app);
+    try_refresh_providers(app)?;
 
     let mut last_nav: Option<(KeyCode, Instant)> = None;
     let mut needs_redraw = true;
 
     loop {
         if app.shutdown.load(std::sync::atomic::Ordering::Relaxed) {
-            app.cancel_listing();
+            app.cancel_listing()?;
             break;
         }
         if needs_redraw {
@@ -784,17 +799,17 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                         app.provider.status = format!("Listing... ({} found)", c);
                     }
                     crate::ui::ListingProgress::Done(entries) => {
-                        crate::ui::flows::list::finalize_listing(app, entries);
+                        crate::ui::flows::list::finalize_listing(app, entries)?;
                     }
                     crate::ui::ListingProgress::LargeDone(result) => {
-                        crate::ui::flows::list::finalize_large_listing(app, result);
+                        crate::ui::flows::list::finalize_large_listing(app, result)?;
                     }
                     crate::ui::ListingProgress::Error(e) => {
                         let error_detail = format!("Listing failed: {}", e);
                         app.config_browser.status = error_detail.clone();
                         app.config_browser.last_error = Some(error_detail.clone());
                         app.log_error(error_detail);
-                        app.cancel_listing();
+                        app.cancel_listing()?;
                         app.state = crate::ui::AppState::ConfigBrowser;
                     }
                 }
@@ -869,11 +884,11 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                                 app.config_browser.selected_config = None;
                                 app.state = crate::ui::AppState::MainMenu;
                             } else if app.state == crate::ui::AppState::Listing {
-                                app.cancel_listing();
+                                app.cancel_listing()?;
                                 app.config_browser.status = "Listing cancelled.".to_string();
                                 app.state = crate::ui::AppState::ConfigBrowser;
                             } else if app.state == crate::ui::AppState::Mounted {
-                                app.unmount_remote();
+                                app.unmount_remote()?;
                                 app.log_info("Unmounted remote");
                                 if matches!(
                                     app.selected_action,
@@ -890,7 +905,7 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                         KeyCode::Enter if app.state == crate::ui::AppState::Listing => {}
                         KeyCode::Enter => {
                             if app.state == crate::ui::AppState::MainMenu {
-                                if handle_main_menu_enter(app) {
+                                if handle_main_menu_enter(app)? {
                                     break;
                                 }
                                 if matches!(
@@ -1215,7 +1230,7 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                             } else if app.state == crate::ui::AppState::ConfigBrowser {
                                 app.config_browser.go_parent();
                             } else if app.state == crate::ui::AppState::Listing {
-                                app.cancel_listing();
+                                app.cancel_listing()?;
                                 app.config_browser.status = "Listing cancelled.".to_string();
                                 app.state = crate::ui::AppState::ConfigBrowser;
                             } else if app.state == crate::ui::AppState::RemoteSelect {
@@ -1223,7 +1238,7 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                                 app.remote.selected = 0;
                                 app.back();
                             } else if app.state == crate::ui::AppState::Mounted {
-                                app.unmount_remote();
+                                app.unmount_remote()?;
                                 app.log_info("Unmounted remote");
                                 if matches!(
                                     app.selected_action,
@@ -1321,7 +1336,7 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                         }
                         KeyCode::Char('r') => {
                             if app.state == crate::ui::AppState::ProviderSelect {
-                                try_refresh_providers(app);
+                                try_refresh_providers(app)?;
                             } else if app.state == crate::ui::AppState::ReviewDetectedAccounts {
                                 crate::ui::flows::auto_detect::perform_detection_flow(
                                     app,
@@ -1346,114 +1361,13 @@ pub fn run_loop(app: &mut App) -> Result<()> {
                                 continue;
                             }
 
-                            let binary = match crate::embedded::ExtractedBinary::extract() {
-                                Ok(binary) => binary,
-                                Err(e) => {
-                                    app.log_error(format!("Mount failed (extract): {}", e));
-                                    continue;
-                                }
-                            };
-                            app.cleanup_track_file(binary.path());
-                            if let Some(dir) = binary.temp_dir() {
-                                app.cleanup_track_dir(dir);
-                            }
-
-                            let config_dir = app
-                                .config_dir()
-                                .unwrap_or_else(|| std::path::PathBuf::from("."));
-                            app.track_env_var("RCLONE_CONFIG", "Set RCLONE_CONFIG for mount");
-                            let config_result = if let Some(source) = &app.acquisition {
-                                crate::rclone::RcloneConfig::open_existing(&source.config_path)
-                            } else {
-                                crate::rclone::RcloneConfig::for_case(&config_dir)
-                            };
-                            let config = match config_result {
-                                Ok(config) => config,
-                                Err(e) => {
-                                    app.log_error(format!("Mount failed (config): {}", e));
-                                    continue;
-                                }
-                            };
-                            app.cleanup_track_env_value("RCLONE_CONFIG", config.original_env());
-
-                            let remote_name = app.remote.chosen.clone().or_else(|| {
-                                app.provider
-                                    .chosen
-                                    .as_ref()
-                                    .map(|p| p.short_name().to_string())
-                            });
-                            let Some(remote_name) = remote_name else {
-                                app.log_error("Mount failed: no remote selected");
-                                continue;
-                            };
-
-                            let mut manager = match crate::rclone::MountManager::new(binary.path())
-                            {
-                                Ok(manager) => manager.with_config(config.path()),
-                                Err(e) => {
-                                    app.log_error(format!("Mount failed: {}", e));
-                                    continue;
-                                }
-                            };
-
-                            // Keep mount points and caches inside the case directory to reduce system footprint.
-                            if let Some(ref dirs) = app.forensics.directories {
-                                let mount_base = dirs.base.join("mounts");
-                                let cache_dir = dirs.base.join("cache").join("rclone");
-
-                                if let Err(e) = std::fs::create_dir_all(&mount_base) {
-                                    app.log_error(format!(
-                                        "Mount failed (mount dir {:?}): {}",
-                                        mount_base, e
-                                    ));
-                                    continue;
-                                }
-                                app.track_file(
-                                    &mount_base,
-                                    "Created mount base directory inside case",
-                                );
-
-                                if let Err(e) = std::fs::create_dir_all(&cache_dir) {
-                                    app.log_error(format!(
-                                        "Mount failed (cache dir {:?}): {}",
-                                        cache_dir, e
-                                    ));
-                                    continue;
-                                }
-                                app.track_file(
-                                    &cache_dir,
-                                    "Created rclone cache directory inside case",
-                                );
-
-                                manager = manager
-                                    .with_mount_base(&mount_base)
-                                    .with_cache_dir(&cache_dir);
-                            }
-
-                            match manager.mount_and_explore(&remote_name, None) {
-                                Ok(mounted) => {
-                                    let mount_path = mounted.mount_point().to_path_buf();
-                                    app.mounted_remote = Some(mounted);
-                                    app.log_info(format!("Mounted remote at {:?}", mount_path));
-                                    if let Some(path) = app.selection_file_path() {
-                                        app.log_info(format!(
-                                            "Create selection file at {:?} (one path per line), then press 'i' to load.",
-                                            path
-                                        ));
-                                    } else {
-                                        app.log_info("No selection file path available");
-                                    }
-                                }
-                                Err(e) => {
-                                    app.log_error(format!("Mount failed: {}", e));
-                                }
-                            }
+                            perform_selection_mount(app)?;
                         }
                         KeyCode::Char('u')
                             if app.state == crate::ui::AppState::FileList
                                 || app.state == crate::ui::AppState::Mounted =>
                         {
-                            app.unmount_remote();
+                            app.unmount_remote()?;
                             app.log_info("Unmounted remote");
                             if app.state == crate::ui::AppState::Mounted {
                                 if matches!(
@@ -1558,10 +1472,101 @@ pub fn run_loop(app: &mut App) -> Result<()> {
         }
     }
 
-    // Clean up combine remote from config if one was created
-    app.cleanup_combine_remote();
-
     Ok(())
+}
+
+fn perform_selection_mount(app: &mut App) -> Result<()> {
+    app.quiesce_resources()?;
+    let binary = match crate::embedded::ExtractedBinary::extract() {
+        Ok(binary) => binary,
+        Err(e) => {
+            app.log_error(format!("Mount failed (extract): {}", e));
+            return Ok(());
+        }
+    };
+
+    crate::ui::runtime::with_runtime(binary, |binary| {
+        let config_dir = app
+            .config_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."));
+        app.track_env_var("RCLONE_CONFIG", "Set RCLONE_CONFIG for mount");
+        let config_result = if let Some(source) = &app.acquisition {
+            crate::rclone::RcloneConfig::open_existing(&source.config_path)
+        } else {
+            crate::rclone::RcloneConfig::for_case(&config_dir)
+        };
+        let config = match config_result {
+            Ok(config) => config,
+            Err(e) => {
+                app.log_error(format!("Mount failed (config): {}", e));
+                return Ok(());
+            }
+        };
+        app.cleanup_track_env_value("RCLONE_CONFIG", config.original_env());
+
+        let remote_name = app.remote.chosen.clone().or_else(|| {
+            app.provider
+                .chosen
+                .as_ref()
+                .map(|p| p.short_name().to_string())
+        });
+        let Some(remote_name) = remote_name else {
+            app.log_error("Mount failed: no remote selected");
+            return Ok(());
+        };
+
+        let mut manager = match crate::rclone::MountManager::new(binary.path()) {
+            Ok(manager) => manager.with_config(config.path()),
+            Err(e) => {
+                app.log_error(format!("Mount failed: {}", e));
+                return Ok(());
+            }
+        };
+
+        // Keep mount points and caches inside the case directory to reduce system footprint.
+        if let Some(ref dirs) = app.forensics.directories {
+            let mount_base = dirs.base.join("mounts");
+            let cache_dir = dirs.base.join("cache").join("rclone");
+
+            if let Err(e) = std::fs::create_dir_all(&mount_base) {
+                app.log_error(format!("Mount failed (mount dir {:?}): {}", mount_base, e));
+                return Ok(());
+            }
+            app.track_file(&mount_base, "Created mount base directory inside case");
+
+            if let Err(e) = std::fs::create_dir_all(&cache_dir) {
+                app.log_error(format!("Mount failed (cache dir {:?}): {}", cache_dir, e));
+                return Ok(());
+            }
+            app.track_file(&cache_dir, "Created rclone cache directory inside case");
+
+            manager = manager
+                .with_mount_base(&mount_base)
+                .with_cache_dir(&cache_dir);
+        }
+
+        match manager.mount_and_explore(binary.take()?, &remote_name, None) {
+            Ok(mounted) => {
+                let mount_path = mounted.mount_point().to_path_buf();
+                app.mounted_remote = Some(mounted);
+                app.log_info(format!("Mounted remote at {:?}", mount_path));
+                if let Some(path) = app.selection_file_path() {
+                    app.log_info(format!(
+                    "Create selection file at {:?} (one path per line), then press 'i' to load.",
+                    path
+                ));
+                } else {
+                    app.log_info("No selection file path available");
+                }
+            }
+            Err(e) => {
+                app.log_error(format!("Mount failed: {}", e));
+                app.resource_shutdown_failed = true;
+                return Err(e);
+            }
+        }
+        Ok(())
+    })
 }
 
 fn should_handle_key(key: &KeyEvent) -> bool {
@@ -1602,17 +1607,17 @@ fn handle_export_screen<
     }
 }
 
-fn handle_main_menu_enter(app: &mut App) -> bool {
+fn handle_main_menu_enter(app: &mut App) -> Result<bool> {
     if app.menu_selected >= app.menu_items.len() {
-        return false;
+        return Ok(false);
     }
 
     let action = app.menu_items[app.menu_selected].action;
     app.selected_action = Some(action);
     app.menu_status.clear();
-    app.reset_flow_state();
+    app.reset_flow_state()?;
 
-    match action {
+    Ok(match action {
         crate::ui::MenuAction::Exit => {
             app.exit_requested = true;
             true
@@ -1667,11 +1672,11 @@ fn handle_main_menu_enter(app: &mut App) -> bool {
                 }
             } else {
                 app.state = crate::ui::AppState::ProviderSelect;
-                try_refresh_providers(app);
+                try_refresh_providers(app)?;
             }
             false
         }
-    }
+    })
 }
 
 fn resume_remote_flow<
@@ -1741,6 +1746,7 @@ fn perform_post_auth_list<
     app: &mut App,
     terminal: &mut Terminal<B>,
 ) -> Result<()> {
+    app.quiesce_resources()?;
     let Some(remote_name) = app.remote.chosen.clone() else {
         app.auth_status = "No remote available. Authenticate again.".into();
         return Ok(());
@@ -1776,6 +1782,7 @@ fn perform_post_auth_mount<
     app: &mut App,
     terminal: &mut Terminal<B>,
 ) -> Result<()> {
+    app.quiesce_resources()?;
     let Some(remote_name) = app.remote.chosen.clone() else {
         app.auth_status = "No remote available. Try authenticating again.".to_string();
         app.state = crate::ui::AppState::Mounted;
@@ -1801,104 +1808,104 @@ fn perform_post_auth_mount<
     terminal.draw(|f| crate::ui::render::render_state(f, app))?;
 
     let binary = crate::embedded::ExtractedBinary::extract()?;
-    app.cleanup_track_file(binary.path());
-    if let Some(dir) = binary.temp_dir() {
-        app.cleanup_track_dir(dir);
-    }
+    crate::ui::runtime::with_runtime(binary, |binary| {
+        let config_dir = app
+            .config_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."));
+        let config = crate::rclone::RcloneConfig::for_case(&config_dir)?;
 
-    let config_dir = app
-        .config_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("."));
-    let config = crate::rclone::RcloneConfig::for_case(&config_dir)?;
+        // Determine mount target — combine when multiple remotes
+        let mount_target = if app.authenticated_remotes.len() > 1 {
+            let remote_names: Vec<String> = app
+                .authenticated_remotes
+                .iter()
+                .map(|(r, _)| r.clone())
+                .collect();
+            let combine_name =
+                crate::rclone::combine::create_combine_remote(&config, &remote_names)?;
+            app.combine_remote_created = true;
+            app.generated_combines
+                .push((config.path().to_path_buf(), combine_name.clone()));
+            app.log_info(format!(
+                "Created combine remote '{}' for mount with upstreams: {}",
+                combine_name,
+                remote_names.join(", ")
+            ));
+            combine_name
+        } else {
+            remote_name.clone()
+        };
 
-    // Determine mount target — combine when multiple remotes
-    let mount_target = if app.authenticated_remotes.len() > 1 {
-        let remote_names: Vec<String> = app
-            .authenticated_remotes
-            .iter()
-            .map(|(r, _)| r.clone())
-            .collect();
-        let combine_name = crate::rclone::combine::create_combine_remote(&config, &remote_names)?;
-        app.combine_remote_created = true;
-        app.generated_combines
-            .push((config.path().to_path_buf(), combine_name.clone()));
-        app.log_info(format!(
-            "Created combine remote '{}' for mount with upstreams: {}",
-            combine_name,
-            remote_names.join(", ")
-        ));
-        combine_name
-    } else {
-        remote_name.clone()
-    };
+        // --- Mount the remote for file explorer access ---
+        let mut manager = match crate::rclone::MountManager::new(binary.path()) {
+            Ok(manager) => manager.with_config(config.path()),
+            Err(e) => {
+                app.auth_status = format!("Mount failed: {}", e);
+                app.log_error(format!("Mount failed: {}", e));
+                app.state = crate::ui::AppState::Mounted;
+                return Err(e);
+            }
+        };
 
-    // --- Mount the remote for file explorer access ---
-    let mut manager = match crate::rclone::MountManager::new(binary.path()) {
-        Ok(manager) => manager.with_config(config.path()),
-        Err(e) => {
-            app.auth_status = format!("Mount failed: {}", e);
-            app.log_error(format!("Mount failed: {}", e));
-            app.state = crate::ui::AppState::Mounted;
-            return Ok(());
-        }
-    };
+        // Check FUSE/WinFSP availability and auto-install if missing
+        match manager.check_fuse_available() {
+            Ok(true) => {}
+            Ok(false) => {
+                app.auth_status = "Mounting...".to_string();
+                terminal.draw(|f| crate::ui::render::render_state(f, app))?;
+                app.log_info("FUSE/WinFSP not detected — attempting auto-install");
 
-    // Check FUSE/WinFSP availability and auto-install if missing
-    match manager.check_fuse_available() {
-        Ok(true) => {}
-        Ok(false) => {
-            app.auth_status = "Mounting...".to_string();
-            terminal.draw(|f| crate::ui::render::render_state(f, app))?;
-            app.log_info("FUSE/WinFSP not detected — attempting auto-install");
-
-            match manager.install_fuse() {
-                Ok(true) => {
-                    app.log_info("FUSE/WinFSP installed successfully");
-                }
-                Ok(false) | Err(_) => {
-                    app.log_error("FUSE/WinFSP auto-install failed");
-                    app.auth_status = "Mount skipped (FUSE/WinFSP not available).".to_string();
-                    app.state = crate::ui::AppState::Mounted;
-                    return Ok(());
+                match manager.install_fuse() {
+                    Ok(true) => {
+                        app.log_info("FUSE/WinFSP installed successfully");
+                    }
+                    Ok(false) | Err(_) => {
+                        app.log_error("FUSE/WinFSP auto-install failed");
+                        app.auth_status = "Mount skipped (FUSE/WinFSP not available).".to_string();
+                        app.state = crate::ui::AppState::Mounted;
+                        return Ok(());
+                    }
                 }
             }
+            Err(e) => {
+                app.log_info(format!("FUSE check failed: {}", e));
+            }
         }
-        Err(e) => {
-            app.log_info(format!("FUSE check failed: {}", e));
+
+        // Keep mount inside case directory
+        if let Some(ref dirs) = app.forensics.directories {
+            let mount_base = dirs.base.join("mounts");
+            let cache_dir = dirs.base.join("cache").join("rclone");
+            let _ = std::fs::create_dir_all(&mount_base);
+            let _ = std::fs::create_dir_all(&cache_dir);
+            app.track_file(&mount_base, "Created mount base directory inside case");
+            app.track_file(&cache_dir, "Created rclone cache directory inside case");
+            manager = manager
+                .with_mount_base(&mount_base)
+                .with_cache_dir(&cache_dir);
         }
-    }
 
-    // Keep mount inside case directory
-    if let Some(ref dirs) = app.forensics.directories {
-        let mount_base = dirs.base.join("mounts");
-        let cache_dir = dirs.base.join("cache").join("rclone");
-        let _ = std::fs::create_dir_all(&mount_base);
-        let _ = std::fs::create_dir_all(&cache_dir);
-        app.track_file(&mount_base, "Created mount base directory inside case");
-        app.track_file(&cache_dir, "Created rclone cache directory inside case");
-        manager = manager
-            .with_mount_base(&mount_base)
-            .with_cache_dir(&cache_dir);
-    }
+        app.auth_status = format!("Mounting {}...", mount_target);
+        terminal.draw(|f| crate::ui::render::render_state(f, app))?;
 
-    app.auth_status = format!("Mounting {}...", mount_target);
-    terminal.draw(|f| crate::ui::render::render_state(f, app))?;
-
-    match manager.mount_and_explore(&mount_target, None) {
-        Ok(mounted) => {
-            let mount_path = mounted.mount_point().to_path_buf();
-            app.mounted_remote = Some(mounted);
-            app.log_info(format!("Mounted {} at {:?}", mount_target, mount_path));
-            app.auth_status = format!("Mounted at {:?}", mount_path);
+        match manager.mount_and_explore(binary.take()?, &mount_target, None) {
+            Ok(mounted) => {
+                let mount_path = mounted.mount_point().to_path_buf();
+                app.mounted_remote = Some(mounted);
+                app.log_info(format!("Mounted {} at {:?}", mount_target, mount_path));
+                app.auth_status = format!("Mounted at {:?}", mount_path);
+            }
+            Err(e) => {
+                app.log_error(format!("Mount failed: {}", e));
+                app.auth_status = format!("Mount failed: {}", e);
+                app.resource_shutdown_failed = true;
+                return Err(e);
+            }
         }
-        Err(e) => {
-            app.log_error(format!("Mount failed: {}", e));
-            app.auth_status = format!("Mount failed: {}", e);
-        }
-    }
 
-    app.state = crate::ui::AppState::Mounted;
-    Ok(())
+        app.state = crate::ui::AppState::Mounted;
+        Ok(())
+    })
 }
 
 /// Extract the preferred hash type and OneDrive flag from a chosen provider.
@@ -2075,7 +2082,7 @@ mod tests {
             .unwrap();
         app.menu_selected = index;
 
-        let exited = handle_main_menu_enter(&mut app);
+        let exited = handle_main_menu_enter(&mut app).unwrap();
 
         assert!(!exited);
         assert_eq!(app.state, crate::ui::AppState::AdditionalOptions);
@@ -2095,7 +2102,7 @@ mod tests {
             .unwrap();
         app.menu_selected = index;
 
-        let exited = handle_main_menu_enter(&mut app);
+        let exited = handle_main_menu_enter(&mut app).unwrap();
 
         assert!(!exited);
         assert_eq!(app.state, crate::ui::AppState::ProviderSelect);
@@ -2116,7 +2123,7 @@ mod tests {
             .unwrap();
         app.menu_selected = index;
 
-        let exited = handle_main_menu_enter(&mut app);
+        let exited = handle_main_menu_enter(&mut app).unwrap();
 
         assert!(!exited);
         assert_eq!(app.state, crate::ui::AppState::DetectingAccounts);

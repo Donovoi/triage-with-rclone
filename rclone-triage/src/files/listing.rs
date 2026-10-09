@@ -227,130 +227,25 @@ pub fn spawn_list_with_progress(
     config_path: PathBuf,
     target: String,
     options: ListPathOptions,
-) -> (
-    std::thread::JoinHandle<()>,
-    mpsc::Receiver<crate::ui::ListingProgress>,
-    Arc<AtomicBool>,
-) {
-    use crate::ui::ListingProgress;
-
-    let (tx, rx) = mpsc::channel();
-    let cancel = Arc::new(AtomicBool::new(false));
-    let cancel_clone = cancel.clone();
-
-    let handle = thread::spawn(move || {
-        let run = || -> Result<Vec<FileEntry>> {
-            let runner = RcloneRunner::new(binary.path())
-                .with_config(&config_path)
-                .with_cancel_flag(cancel_clone.clone());
-            let args_owned =
-                build_lsjson_args_owned(&target, options.include_hashes, options.fast_list);
-            let args: Vec<&str> = args_owned.iter().map(|s| s.as_str()).collect();
-            tracing::info!(
-                target = &*target,
-                fast_list = options.fast_list,
-                include_hashes = options.include_hashes,
-                "Starting background rclone lsjson"
-            );
-            let mut child = runner.spawn(&args)?;
-
-            let stdout = child.stdout.take().expect("stdout piped");
-            let stderr = child.stderr.take().expect("stderr piped");
-
-            let stderr_handle = thread::spawn(move || {
-                let reader = BufReader::new(stderr);
-                reader.lines().map_while(Result::ok).collect::<Vec<_>>()
-            });
-
-            let tx_progress = tx.clone();
-            let cancel_inner = cancel_clone.clone();
-            let mut entries = Vec::new();
-            let mut count: usize = 0;
-            let mut last_emit: usize = 0;
-
-            let mut on_entry = |raw: RcloneLsJsonEntry| -> Result<()> {
-                if cancel_inner.load(Ordering::Relaxed) {
-                    bail!("Listing cancelled by user");
-                }
-                entries.push(FileEntry::from(raw));
-                count += 1;
-                if count - last_emit >= 100 {
-                    let _ = tx_progress.send(ListingProgress::Count(count));
-                    last_emit = count;
-                    if cancel_inner.load(Ordering::Relaxed) {
-                        bail!("Listing cancelled by user");
-                    }
-                }
-                Ok(())
-            };
-
-            let stdout_reader = BufReader::new(stdout);
-            let stream_result =
-                stream_lsjson_entries_from_reader(stdout_reader, &mut on_entry, None);
-
-            let was_killed = stream_result.count.is_err();
-            if was_killed {
-                let _ = child.kill();
-            }
-
-            let status = child.wait()?;
-            let stderr_lines = stderr_handle
-                .join()
-                .unwrap_or_else(|_| vec!["<stderr capture panicked>".to_string()]);
-            let exit_code = status.code().unwrap_or(-1);
-            let stderr_msg = stderr_lines.join("\n");
-
-            if was_killed {
-                if exit_code == 0 && !stream_result.found_json {
-                    return Ok(Vec::new());
-                }
-                let parse_err = stream_result.count.unwrap_err();
-                let detail = if !stderr_msg.trim().is_empty() {
-                    format!("stderr: {}", stderr_msg)
-                } else {
-                    format!("exit code {}", exit_code)
-                };
-                return Err(parse_err.context(format!(
-                    "rclone lsjson output could not be parsed ({})",
-                    detail
-                )));
-            }
-
-            if exit_code != 0 {
-                if stderr_msg.trim().is_empty() {
-                    bail!(
-                        "rclone lsjson failed (exit code {}). Check that the remote is properly configured and the token is valid.",
-                        exit_code
-                    );
-                } else {
-                    bail!("rclone lsjson failed: {}", stderr_msg);
-                }
-            }
-
-            // Attempt fallbacks on failure
-            Ok(entries)
+) -> Result<ListingWorker> {
+    spawn_listing_worker(binary, move |binary, tx, cancel| {
+        let runner = RcloneRunner::from_extracted(binary)
+            .with_config(config_path)
+            .with_cancel_flag(cancel);
+        let mut on_progress = |count| {
+            let _ = tx.send(crate::ui::ListingProgress::Count(count));
         };
-
-        match run() {
-            Ok(entries) => {
-                let _ = tx.send(ListingProgress::Done(entries));
-            }
-            Err(e) => {
-                // If cancelled, don't report as error
-                if cancel_clone.load(Ordering::Relaxed) {
-                    let _ = tx.send(ListingProgress::Error("Listing cancelled".to_string()));
-                } else {
-                    let _ = tx.send(ListingProgress::Error(format!("{:#}", e)));
-                }
-            }
-        }
-    });
-
-    (handle, rx, cancel)
+        let entries = list_path_with_progress_inner(
+            &runner,
+            &target,
+            options.include_hashes,
+            options.fast_list,
+            &mut on_progress,
+        )?;
+        Ok(crate::ui::ListingProgress::Done(entries))
+    })
 }
 
-/// Background bounded-memory inventory. The worker owns the executable and
-/// cancellation kills a quiet child independently of stdout parsing.
 pub fn spawn_large_list_with_progress(
     binary: crate::embedded::ExtractedBinary,
     config_path: PathBuf,
@@ -358,19 +253,11 @@ pub fn spawn_large_list_with_progress(
     options: ListPathOptions,
     csv_path: PathBuf,
     max_in_memory: usize,
-) -> (
-    std::thread::JoinHandle<()>,
-    mpsc::Receiver<crate::ui::ListingProgress>,
-    Arc<AtomicBool>,
-) {
-    use crate::ui::ListingProgress;
-    let (tx, rx) = mpsc::channel();
-    let cancel = Arc::new(AtomicBool::new(false));
-    let worker_cancel = cancel.clone();
-    let handle = thread::spawn(move || {
-        let runner = RcloneRunner::new(binary.path())
+) -> Result<ListingWorker> {
+    spawn_listing_worker(binary, move |binary, tx, cancel| {
+        let runner = RcloneRunner::from_extracted(binary)
             .with_config(config_path)
-            .with_cancel_flag(worker_cancel.clone());
+            .with_cancel_flag(cancel);
         let result = list_path_large_to_csv_with_progress(
             &runner,
             &target,
@@ -378,34 +265,83 @@ pub fn spawn_large_list_with_progress(
             csv_path,
             max_in_memory,
             |count| {
-                let _ = tx.send(ListingProgress::Count(count));
+                let _ = tx.send(crate::ui::ListingProgress::Count(count));
             },
-        );
-        let event = if worker_cancel.load(Ordering::Relaxed) {
-            ListingProgress::Error("Listing cancelled".into())
-        } else {
-            match result {
-                Ok(result) => ListingProgress::LargeDone(result),
-                Err(error) => ListingProgress::Error(format!("{error:#}")),
-            }
-        };
-        let _ = tx.send(event);
-    });
-    (handle, rx, cancel)
+        )?;
+        Ok(crate::ui::ListingProgress::LargeDone(result))
+    })
 }
 
-fn build_lsjson_args_owned(target: &str, include_hashes: bool, fast_list: bool) -> Vec<String> {
-    let mut args = vec!["lsjson".to_string(), "-v".to_string()];
-    if include_hashes {
-        args.push("--hash".to_string());
+type ListingWorker = (
+    std::thread::JoinHandle<Result<()>>,
+    mpsc::Receiver<crate::ui::ListingProgress>,
+    Arc<AtomicBool>,
+);
+
+fn spawn_listing_worker<F>(
+    binary: crate::embedded::ExtractedBinary,
+    run: F,
+) -> Result<ListingWorker>
+where
+    F: FnOnce(
+            &crate::embedded::ExtractedBinary,
+            &mpsc::Sender<crate::ui::ListingProgress>,
+            Arc<AtomicBool>,
+        ) -> Result<crate::ui::ListingProgress>
+        + Send
+        + 'static,
+{
+    let (tx, rx) = mpsc::channel();
+    let cancel = Arc::new(AtomicBool::new(false));
+    let worker_cancel = cancel.clone();
+    // Thread setup failure leaves the runtime in the caller for explicit cleanup.
+    let owner = Arc::new(std::sync::Mutex::new(Some(binary)));
+    let worker_owner = owner.clone();
+    let spawn = thread::Builder::new()
+        .name("inventory-worker".into())
+        .spawn(move || {
+            let mut binary = worker_owner
+                .lock()
+                .map_err(|_| anyhow::anyhow!("Listing runtime owner poisoned"))?
+                .take()
+                .context("Listing runtime owner missing")?;
+            let operation = run(&binary, &tx, worker_cancel.clone());
+            let cleanup = crate::ui::runtime::cleanup_runtime(&mut binary);
+            let cleanup_failed = cleanup.is_err();
+            let result = crate::ui::runtime::complete(operation, cleanup);
+            match result {
+                Ok(event) if !worker_cancel.load(Ordering::Relaxed) => {
+                    let _ = tx.send(event);
+                    Ok(())
+                }
+                Ok(_) => {
+                    let _ = tx.send(crate::ui::ListingProgress::Error(
+                        "Listing cancelled".into(),
+                    ));
+                    Ok(())
+                }
+                Err(error) => {
+                    let _ = tx.send(crate::ui::ListingProgress::Error(format!("{error:#}")));
+                    if cleanup_failed {
+                        Err(error)
+                    } else {
+                        Ok(())
+                    }
+                }
+            }
+        });
+    match spawn {
+        Ok(handle) => Ok((handle, rx, cancel)),
+        Err(error) => {
+            let mut owner = owner
+                .lock()
+                .map_err(|_| anyhow::anyhow!("Listing runtime owner poisoned"))?;
+            let cleanup = crate::ui::runtime::cleanup_runtime(
+                owner.as_mut().context("Listing runtime owner missing")?,
+            );
+            crate::ui::runtime::complete(Err(error.into()), cleanup)
+        }
     }
-    args.push("--recursive".to_string());
-    if fast_list {
-        args.push("--fast-list".to_string());
-    }
-    args.push("--".to_string());
-    args.push(target.to_string());
-    args
 }
 
 /// List files for a given rclone path, streaming the output to CSV while keeping at most
@@ -615,10 +551,7 @@ where
     let stdout = child.stdout.take().expect("stdout piped");
     let stderr = child.stderr.take().expect("stderr piped");
 
-    let stderr_handle = thread::spawn(move || {
-        let reader = BufReader::new(stderr);
-        reader.lines().map_while(Result::ok).collect::<Vec<_>>()
-    });
+    let stderr_handle = child.spawn_reader("listing-stderr", move || capture_stderr(stderr))?;
 
     let stdout_reader = BufReader::new(stdout);
     let mut entries: Vec<FileEntry> = Vec::new();
@@ -626,7 +559,7 @@ where
     let mut last_emit: usize = 0;
 
     for line in stdout_reader.lines() {
-        let line = line.unwrap_or_default();
+        let line = line.inspect_err(|_| child.retain())?;
         if line.trim().is_empty() {
             continue;
         }
@@ -654,12 +587,14 @@ where
     }
 
     let status = child.wait()?;
-    let stderr_lines = stderr_handle
-        .join()
-        .unwrap_or_else(|_| vec!["<stderr capture panicked>".to_string()]);
+    let stderr_msg = stderr_handle
+        .join(crate::rclone::process::JOIN_TIMEOUT)
+        .and_then(|result| result)
+        .inspect_err(|_| child.retain())?;
+    child.finish()?;
 
     if status.code().unwrap_or(-1) != 0 {
-        bail!("rclone lsf failed: {}", stderr_lines.join("\n"));
+        bail!("rclone lsf failed: {}", stderr_msg);
     }
     if rclone.is_cancelled() {
         bail!("Listing cancelled");
@@ -672,6 +607,20 @@ where
         entries,
         total_entries,
     })
+}
+
+fn capture_stderr(mut input: impl std::io::Read) -> std::io::Result<String> {
+    let mut bytes = Vec::new();
+    let mut buffer = [0u8; 4096];
+    loop {
+        let count = input.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        let keep = count.min((64 * 1024usize).saturating_sub(bytes.len()));
+        bytes.extend_from_slice(&buffer[..keep]);
+    }
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 fn build_lsjson_args(target: &str, include_hashes: bool, fast_list: bool) -> Vec<&str> {
@@ -696,6 +645,9 @@ fn list_path_inner(
 ) -> Result<Vec<FileEntry>> {
     let mut entries = Vec::new();
     let mut on_entry = |raw: RcloneLsJsonEntry| -> Result<()> {
+        if rclone.is_cancelled() {
+            bail!("Listing cancelled");
+        }
         entries.push(FileEntry::from(raw));
         Ok(())
     };
@@ -724,6 +676,9 @@ where
 {
     let mut entries = Vec::new();
     let mut on_entry = |raw: RcloneLsJsonEntry| -> Result<()> {
+        if rclone.is_cancelled() {
+            bail!("Listing cancelled");
+        }
         entries.push(FileEntry::from(raw));
         Ok(())
     };
@@ -805,26 +760,27 @@ fn run_lsjson_streaming<'a>(
     let stdout = child.stdout.take().expect("stdout piped");
     let stderr = child.stderr.take().expect("stderr piped");
 
-    let stderr_handle = thread::spawn(move || {
-        let reader = BufReader::new(stderr);
-        reader.lines().map_while(Result::ok).collect::<Vec<_>>()
-    });
+    let stderr_handle = child.spawn_reader("listing-stderr", move || capture_stderr(stderr))?;
 
     let stdout_reader = BufReader::new(stdout);
     let stream_result = stream_lsjson_entries_from_reader(stdout_reader, on_entry, on_progress);
 
     let was_killed = stream_result.count.is_err();
     if was_killed {
-        let _ = child.kill();
+        child.stop_and_reap(crate::rclone::process::STOP_TIMEOUT)?;
     }
 
     let status = child.wait()?;
-    let stderr_lines = stderr_handle
-        .join()
-        .unwrap_or_else(|_| vec!["<stderr capture panicked>".to_string()]);
+    let stderr_msg = stderr_handle
+        .join(crate::rclone::process::JOIN_TIMEOUT)
+        .and_then(|result| result)
+        .inspect_err(|_| child.retain())?;
+    child.finish()?;
+    if rclone.is_cancelled() {
+        bail!("Listing cancelled");
+    }
 
     let exit_code = status.code().unwrap_or(-1);
-    let stderr_msg = stderr_lines.join("\n");
 
     // Log raw stdout prefix (non-JSON bytes rclone printed before any payload).
     // This is often the actual error message on failure.

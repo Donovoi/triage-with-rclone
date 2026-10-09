@@ -3,9 +3,11 @@
 //! Mounts cloud storage remotes as local file systems and opens file explorer.
 //! Supports Windows (via WinFsp), Linux (via FUSE), and macOS (via macFUSE).
 
+use crate::embedded::ExtractedBinary;
+use crate::rclone::process::{DrainHandle, ManagedChild, RcloneRunner, JOIN_TIMEOUT, STOP_TIMEOUT};
 use anyhow::{bail, Context, Result};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -14,69 +16,109 @@ use std::time::Duration;
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
-/// A mounted rclone remote
+/// A mounted remote owns its exact child and extracted runtime together.
 pub struct MountedRemote {
-    /// The rclone process handle
-    process: Child,
-    /// Mount point path
+    process: ManagedChild,
+    runtime: ExtractedBinary,
+    stderr: Option<DrainHandle<std::io::Result<String>>>,
     mount_point: PathBuf,
-    /// Remote name (e.g., "gdrive:")
     remote: String,
-    /// Whether the mount is active
     active: Arc<AtomicBool>,
+    stopped: bool,
+    failed: bool,
 }
-
 impl MountedRemote {
-    /// Get the mount point path
     pub fn mount_point(&self) -> &Path {
         &self.mount_point
     }
-
-    /// Get the remote name
     pub fn remote(&self) -> &str {
         &self.remote
     }
-
-    /// Check if the mount is still active
     pub fn is_active(&self) -> bool {
         self.active.load(Ordering::SeqCst)
     }
-
-    /// Unmount and cleanup
-    pub fn unmount(mut self) -> Result<()> {
-        self.active.store(false, Ordering::SeqCst);
-
-        // Kill the rclone process
-        let _ = self.process.kill();
-        let _ = self.process.wait();
-
-        // On Windows, we may need to use fusermount or just wait
-        #[cfg(target_os = "linux")]
-        {
-            let _ = Command::new("fusermount")
-                .args(["-u", self.mount_point.to_str().unwrap_or("")])
-                .output();
+    fn retain(&mut self) {
+        self.failed = true;
+        self.process.retain();
+        self.runtime.retain();
+    }
+    /// A failed shutdown retains this owner; callers must not replace it.
+    pub fn unmount(&mut self) -> Result<()> {
+        if self.failed {
+            bail!("Earlier mount shutdown failed; runtime retained");
         }
-
-        #[cfg(target_os = "macos")]
-        {
-            let _ = Command::new("umount").arg(&self.mount_point).output();
+        if self.stopped {
+            return Ok(());
         }
-
-        // Clean up mount point directory if empty
-        if self.mount_point.exists() {
-            let _ = std::fs::remove_dir(&self.mount_point);
+        let result = (|| {
+            self.process
+                .stop_and_reap(STOP_TIMEOUT)
+                .context("Mount child shutdown failed")?;
+            if let Some(stderr) = self.stderr.take() {
+                stderr
+                    .join(JOIN_TIMEOUT)
+                    .context("Mount stderr join failed")??;
+            }
+            self.process
+                .finish()
+                .context("Mount child finalization failed")?;
+            #[cfg(target_os = "linux")]
+            {
+                let output = RcloneRunner::new("fusermount")
+                    .with_timeout(STOP_TIMEOUT)
+                    .run(&[
+                        "-u",
+                        self.mount_point.to_str().context("Invalid mount point")?,
+                    ])?;
+                if !output.success() {
+                    bail!("Mount helper did not confirm unmount");
+                }
+            }
+            #[cfg(target_os = "macos")]
+            {
+                let output = RcloneRunner::new("umount")
+                    .with_timeout(STOP_TIMEOUT)
+                    .run(&[self.mount_point.to_str().context("Invalid mount point")?])?;
+                if !output.success() {
+                    bail!("Mount helper did not confirm unmount");
+                }
+            }
+            self.runtime.cleanup()?;
+            Ok(())
+        })();
+        match result {
+            Ok(()) => {
+                self.stopped = true;
+                self.active.store(false, Ordering::SeqCst);
+                Ok(())
+            }
+            Err(error) => {
+                self.retain();
+                Err(error)
+            }
         }
-
-        Ok(())
+    }
+}
+impl Drop for MountedRemote {
+    fn drop(&mut self) {
+        if !self.stopped && !self.failed {
+            let _ = self.unmount();
+        }
     }
 }
 
-impl Drop for MountedRemote {
-    fn drop(&mut self) {
-        self.active.store(false, Ordering::SeqCst);
-        let _ = self.process.kill();
+fn drain_mount_stderr(mut input: impl std::io::Read) -> std::io::Result<String> {
+    let mut kept = Vec::new();
+    let mut buffer = [0; 4096];
+    loop {
+        let count = input.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        let remaining = (64 * 1024usize).saturating_sub(kept.len());
+        kept.extend_from_slice(&buffer[..count.min(remaining)]);
     }
+    Ok(String::from_utf8_lossy(&kept).into_owned())
 }
 
 /// Download the latest WinFSP MSI from GitHub and install it silently.
@@ -341,7 +383,74 @@ impl MountManager {
     }
 
     /// Mount a remote and return the mount handle
-    pub fn mount(&self, remote: &str, subfolder: Option<&str>) -> Result<MountedRemote> {
+    pub fn mount(
+        &self,
+        mut binary: ExtractedBinary,
+        remote: &str,
+        subfolder: Option<&str>,
+    ) -> Result<MountedRemote> {
+        let started = self.spawn_mount(&binary, remote, subfolder);
+        let (process, mount_point) = match started {
+            Ok(started) => started,
+            Err(error) => {
+                return match binary.cleanup() {
+                    Ok(()) => Err(error),
+                    Err(cleanup) => {
+                        Err(error.context(format!("Mount startup cleanup also failed: {cleanup}")))
+                    }
+                }
+            }
+        };
+        let mut mounted = MountedRemote {
+            process,
+            runtime: binary,
+            stderr: None,
+            mount_point,
+            remote: remote.to_string(),
+            active: Arc::new(AtomicBool::new(true)),
+            stopped: false,
+            failed: false,
+        };
+        let startup = (|| {
+            let stderr = mounted
+                .process
+                .stderr
+                .take()
+                .context("Mount stderr unavailable")?;
+            mounted.stderr = Some(
+                mounted
+                    .process
+                    .spawn_reader("mount-stderr", move || drain_mount_stderr(stderr))?,
+            );
+            if !Self::wait_for_mount(
+                &mounted.mount_point,
+                &mut mounted.process,
+                Duration::from_secs(30),
+            )? {
+                bail!("Mount startup did not confirm a running child");
+            }
+            Ok(())
+        })();
+        if let Err(error) = startup {
+            return match mounted.unmount() {
+                Ok(()) => Err(error),
+                Err(cleanup) => {
+                    Err(error.context(format!("Mount startup shutdown also failed: {cleanup}")))
+                }
+            };
+        }
+        Ok(mounted)
+    }
+
+    fn spawn_mount(
+        &self,
+        binary: &ExtractedBinary,
+        remote: &str,
+        subfolder: Option<&str>,
+    ) -> Result<(ManagedChild, PathBuf)> {
+        if binary.path() != self.rclone_path {
+            bail!("Mount runtime does not match its owner");
+        }
         // Check FUSE availability, auto-install if missing
         if !self.ensure_fuse_available()? {
             bail!(
@@ -434,50 +543,10 @@ impl MountManager {
             .stderr(Stdio::piped())
             .stdin(Stdio::null());
 
-        // Spawn the mount process
-        let mut process = cmd
-            .spawn()
-            .with_context(|| format!("Failed to start rclone mount for {}", remote))?;
-
-        let active = Arc::new(AtomicBool::new(true));
-
-        // Wait for rclone to initialize the FUSE/WinFSP mount
-        std::thread::sleep(Duration::from_secs(2));
-
-        // Verify mount point has content (entries visible from the cloud remote)
-        let mount_ok = Self::wait_for_mount(&mount_point, &mut process, Duration::from_secs(30));
-
-        if !mount_ok {
-            // Capture stderr from the failed rclone process for diagnostics
-            let stderr_msg = process
-                .stderr
-                .take()
-                .and_then(|mut err| {
-                    use std::io::Read;
-                    let mut buf = String::new();
-                    err.read_to_string(&mut buf).ok()?;
-                    Some(buf)
-                })
-                .unwrap_or_default();
-
-            let _ = process.kill();
-            let _ = process.wait();
-            let _ = std::fs::remove_dir(&mount_point);
-
-            let detail = stderr_msg.trim();
-            if detail.is_empty() {
-                bail!("Mount failed: rclone exited without producing output. Check that FUSE/WinFSP is installed and the remote is configured correctly.");
-            } else {
-                bail!("Mount failed: {}", detail);
-            }
-        }
-
-        Ok(MountedRemote {
-            process,
-            mount_point,
-            remote: remote.to_string(),
-            active,
-        })
+        let process = RcloneRunner::from_extracted(binary)
+            .spawn_command(&mut cmd)
+            .context("Failed to start rclone mount")?;
+        Ok((process, mount_point))
     }
 
     /// Wait for mount point to become accessible with actual content.
@@ -486,19 +555,23 @@ impl MountManager {
     /// alone always succeeds on the empty dir. We must wait until entries appear
     /// (FUSE/WinFSP is serving content). Also checks that the rclone process
     /// hasn't crashed.
-    fn wait_for_mount(mount_point: &Path, process: &mut Child, timeout: Duration) -> bool {
+    fn wait_for_mount(
+        mount_point: &Path,
+        process: &mut ManagedChild,
+        timeout: Duration,
+    ) -> Result<bool> {
         let start = std::time::Instant::now();
         while start.elapsed() < timeout {
             // If rclone exited, the mount won't work
-            if let Ok(Some(_status)) = process.try_wait() {
+            if let Some(_status) = process.try_wait()? {
                 tracing::warn!("rclone mount process exited during startup");
-                return false;
+                return Ok(false);
             }
 
             // Check for actual entries — not just that the dir is readable
             if let Ok(mut entries) = mount_point.read_dir() {
                 if entries.next().is_some() {
-                    return true;
+                    return Ok(true);
                 }
             }
             std::thread::sleep(Duration::from_millis(500));
@@ -507,20 +580,25 @@ impl MountManager {
         // (some remotes may have a genuinely empty root).
         // The pre-created directory always passes read_dir().is_ok(), so
         // checking that the process hasn't exited is the real signal.
-        matches!(process.try_wait(), Ok(None))
+        Ok(process.try_wait()?.is_none())
     }
 
     /// Mount a remote and open file explorer
     pub fn mount_and_explore(
         &self,
+        binary: ExtractedBinary,
         remote: &str,
         subfolder: Option<&str>,
     ) -> Result<MountedRemote> {
-        let mounted = self.mount(remote, subfolder)?;
-
-        // Open file explorer
-        open_file_explorer(mounted.mount_point())?;
-
+        let mut mounted = self.mount(binary, remote, subfolder)?;
+        if let Err(error) = open_file_explorer(mounted.mount_point()) {
+            return match mounted.unmount() {
+                Ok(()) => Err(error),
+                Err(cleanup) => {
+                    Err(error.context(format!("Explorer failure shutdown also failed: {cleanup}")))
+                }
+            };
+        }
         Ok(mounted)
     }
 

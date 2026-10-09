@@ -1180,6 +1180,7 @@ pub(crate) fn perform_auth_flow<
     app: &mut App,
     terminal: &mut Terminal<B>,
 ) -> Result<()> {
+    app.quiesce_resources()?;
     if app.auth_batch.total == 0
         && app.auth_batch.pending.is_empty()
         && app.auth_batch.current.is_none()
@@ -1203,118 +1204,165 @@ pub(crate) fn perform_auth_flow<
     terminal.draw(|f| render_state(f, app))?;
 
     let binary = crate::embedded::ExtractedBinary::extract()?;
+    crate::ui::runtime::with_runtime(binary, |binary| {
+        // Track the extracted binary
+        app.track_file(binary.path(), "Extracted rclone binary to temp directory");
 
-    // Track the extracted binary
-    app.track_file(binary.path(), "Extracted rclone binary to temp directory");
-    app.cleanup_track_file(binary.path());
-    if let Some(dir) = binary.temp_dir() {
-        app.cleanup_track_dir(dir);
-    }
+        app.auth_status = "Creating config...".to_string();
+        terminal.draw(|f| render_state(f, app))?;
 
-    app.auth_status = "Creating config...".to_string();
-    terminal.draw(|f| render_state(f, app))?;
+        // Use case config directory if available, otherwise current dir
+        let config_dir = app
+            .config_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."));
+        // Track env var change before config sets it
+        app.track_env_var("RCLONE_CONFIG", "Set RCLONE_CONFIG for case config");
+        let config = crate::rclone::RcloneConfig::for_case(&config_dir)?;
 
-    // Use case config directory if available, otherwise current dir
-    let config_dir = app
-        .config_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("."));
-    // Track env var change before config sets it
-    app.track_env_var("RCLONE_CONFIG", "Set RCLONE_CONFIG for case config");
-    let config = crate::rclone::RcloneConfig::for_case(&config_dir)?;
+        // Track config file creation
+        app.track_file(config.path(), "Created rclone config file");
+        app.cleanup_track_env_value("RCLONE_CONFIG", config.original_env());
 
-    // Track config file creation
-    app.track_file(config.path(), "Created rclone config file");
-    app.cleanup_track_env_value("RCLONE_CONFIG", config.original_env());
+        let runner = crate::rclone::RcloneRunner::from_extracted(binary).with_config(config.path());
 
-    let runner = crate::rclone::RcloneRunner::new(binary.path()).with_config(config.path());
+        let mut last_success: Option<(crate::providers::ProviderEntry, AuthOutcome)> = None;
 
-    let mut last_success: Option<(crate::providers::ProviderEntry, AuthOutcome)> = None;
+        while let Some(task) = app.next_auth_task() {
+            let task_label = format_batch_progress(app, &task);
 
-    while let Some(task) = app.next_auth_task() {
-        let task_label = format_batch_progress(app, &task);
+            match perform_single_auth_task(app, terminal, &runner, &config, &task) {
+                Ok(result) => {
+                    let auth_type = if result.was_silent {
+                        "SSO"
+                    } else {
+                        "interactive"
+                    };
+                    app.log_info(format!(
+                        "Authentication successful for {} ({})",
+                        task.provider.display_name(),
+                        auth_type
+                    ));
 
-        match perform_single_auth_task(app, terminal, &runner, &config, &task) {
-            Ok(result) => {
-                let auth_type = if result.was_silent {
-                    "SSO"
-                } else {
-                    "interactive"
-                };
-                app.log_info(format!(
-                    "Authentication successful for {} ({})",
-                    task.provider.display_name(),
-                    auth_type
-                ));
-
-                let connectivity_label = if app.auth_batch.total > 1 {
-                    Some(task_label.as_str())
-                } else {
-                    None
-                };
-                app.auth_status = build_connectivity_status(
-                    connectivity_label,
-                    "Testing connectivity...",
-                    task.provider.display_name(),
-                    result.user_info.as_deref(),
-                );
-                terminal.draw(|f| render_state(f, app))?;
-
-                let max_retries: u32 = 3;
-                let mut connectivity =
-                    crate::rclone::test_connectivity(&runner, &result.remote_name)?;
-                let mut attempt: u32 = 1;
-                while !connectivity.ok && attempt <= max_retries {
-                    let delay = crate::rclone::retry_delay(attempt - 1);
-                    let msg = format!(
-                        "Connectivity check failed (attempt {}/{}), retrying in {}s...",
-                        attempt,
-                        max_retries + 1,
-                        delay.as_secs()
-                    );
-                    app.log_info(&msg);
+                    let connectivity_label = if app.auth_batch.total > 1 {
+                        Some(task_label.as_str())
+                    } else {
+                        None
+                    };
                     app.auth_status = build_connectivity_status(
                         connectivity_label,
-                        &msg,
+                        "Testing connectivity...",
                         task.provider.display_name(),
                         result.user_info.as_deref(),
                     );
                     terminal.draw(|f| render_state(f, app))?;
-                    std::thread::sleep(delay);
-                    connectivity = crate::rclone::test_connectivity(&runner, &result.remote_name)?;
-                    attempt += 1;
-                }
 
-                if connectivity.ok {
-                    let extra = if attempt > 1 {
-                        format!(" (succeeded on attempt {})", attempt)
+                    let max_retries: u32 = 3;
+                    let mut connectivity =
+                        crate::rclone::test_connectivity(&runner, &result.remote_name)?;
+                    let mut attempt: u32 = 1;
+                    while !connectivity.ok && attempt <= max_retries {
+                        let delay = crate::rclone::retry_delay(attempt - 1);
+                        let msg = format!(
+                            "Connectivity check failed (attempt {}/{}), retrying in {}s...",
+                            attempt,
+                            max_retries + 1,
+                            delay.as_secs()
+                        );
+                        app.log_info(&msg);
+                        app.auth_status = build_connectivity_status(
+                            connectivity_label,
+                            &msg,
+                            task.provider.display_name(),
+                            result.user_info.as_deref(),
+                        );
+                        terminal.draw(|f| render_state(f, app))?;
+                        std::thread::sleep(delay);
+                        connectivity =
+                            crate::rclone::test_connectivity(&runner, &result.remote_name)?;
+                        attempt += 1;
+                    }
+
+                    if connectivity.ok {
+                        let extra = if attempt > 1 {
+                            format!(" (succeeded on attempt {})", attempt)
+                        } else {
+                            String::new()
+                        };
+                        app.log_info(format!(
+                            "Connectivity OK ({} ms){}",
+                            connectivity.duration.as_millis(),
+                            extra
+                        ));
+
+                        record_authenticated_remote(app, &task.provider, &result);
+                        last_success = Some((task.provider.clone(), result.clone()));
+                        app.finish_current_auth_task();
                     } else {
-                        String::new()
-                    };
-                    app.log_info(format!(
-                        "Connectivity OK ({} ms){}",
-                        connectivity.duration.as_millis(),
-                        extra
-                    ));
-
-                    record_authenticated_remote(app, &task.provider, &result);
-                    last_success = Some((task.provider.clone(), result.clone()));
-                    app.finish_current_auth_task();
-                } else {
-                    let err_msg = connectivity
-                        .error
-                        .unwrap_or_else(|| "Unknown error".to_string());
-                    let failure = format!(
+                        let err_msg = connectivity
+                            .error
+                            .unwrap_or_else(|| "Unknown error".to_string());
+                        let failure = format!(
                         "Authentication succeeded, but connectivity check failed after {} attempts: {}",
                         attempt, err_msg
                     );
-                    app.log_error(failure.clone());
-                    if let Err(cleanup_error) = config.remove_remote(&result.remote_name) {
-                        app.log_error(format!(
-                            "Failed to clean up remote '{}' after connectivity failure: {}",
-                            result.remote_name, cleanup_error
-                        ));
+                        app.log_error(failure.clone());
+                        if let Err(cleanup_error) = config.remove_remote(&result.remote_name) {
+                            app.log_error(format!(
+                                "Failed to clean up remote '{}' after connectivity failure: {}",
+                                result.remote_name, cleanup_error
+                            ));
+                        }
+                        app.fail_current_auth_task(failure.clone());
+                        app.auth_batch.current = None;
+
+                        if last_success.is_some() {
+                            let remaining_tasks = app.auth_batch.pending.len();
+                            app.auth_batch.pending.clear();
+                            app.auth_status = build_batch_stopped_status(
+                                &task_label,
+                                app.auth_batch.completed,
+                                app.auth_batch.total,
+                                remaining_tasks,
+                                &failure,
+                                Some(&partial_success_retry_guidance(&task.provider)),
+                            );
+                            break;
+                        }
+
+                        let guidance = no_success_retry_guidance(&task.provider);
+                        let status = build_batch_stopped_status(
+                            &task_label,
+                            app.auth_batch.completed,
+                            app.auth_batch.total,
+                            app.auth_batch.pending.len(),
+                            &failure,
+                            Some(&guidance),
+                        );
+                        app.auth_status = status.clone();
+                        app.provider.status = status;
+                        app.clear_auth_batch();
+                        app.state = crate::ui::AppState::ProviderSelect;
+                        return Ok(());
                     }
-                    app.fail_current_auth_task(failure.clone());
+
+                    if app.auth_batch.completed < app.auth_batch.total {
+                        app.auth_status = format!(
+                            "Completed {}/{}: {}\n\nPreparing next authentication...",
+                            app.auth_batch.completed,
+                            app.auth_batch.total,
+                            task.description()
+                        );
+                        terminal.draw(|f| render_state(f, app))?;
+                    }
+                }
+                Err(e) => {
+                    let error_text = format!(
+                        "Authentication failed for {}: {}",
+                        task.provider.display_name(),
+                        e
+                    );
+                    app.log_error(error_text.clone());
+                    app.fail_current_auth_task(error_text.clone());
                     app.auth_batch.current = None;
 
                     if last_success.is_some() {
@@ -1325,99 +1373,50 @@ pub(crate) fn perform_auth_flow<
                             app.auth_batch.completed,
                             app.auth_batch.total,
                             remaining_tasks,
-                            &failure,
+                            &error_text,
                             Some(&partial_success_retry_guidance(&task.provider)),
                         );
                         break;
                     }
 
-                    let guidance = no_success_retry_guidance(&task.provider);
-                    let status = build_batch_stopped_status(
-                        &task_label,
-                        app.auth_batch.completed,
-                        app.auth_batch.total,
-                        app.auth_batch.pending.len(),
-                        &failure,
-                        Some(&guidance),
-                    );
-                    app.auth_status = status.clone();
-                    app.provider.status = status;
-                    app.clear_auth_batch();
-                    app.state = crate::ui::AppState::ProviderSelect;
+                    app.auth_status = if app.auth_batch.total > 1 {
+                        build_batch_stopped_status(
+                            &task_label,
+                            app.auth_batch.completed,
+                            app.auth_batch.total,
+                            app.auth_batch.pending.len(),
+                            &error_text,
+                            None,
+                        )
+                    } else {
+                        format!("Auth failed: {}", e)
+                    };
                     return Ok(());
                 }
-
-                if app.auth_batch.completed < app.auth_batch.total {
-                    app.auth_status = format!(
-                        "Completed {}/{}: {}\n\nPreparing next authentication...",
-                        app.auth_batch.completed,
-                        app.auth_batch.total,
-                        task.description()
-                    );
-                    terminal.draw(|f| render_state(f, app))?;
-                }
-            }
-            Err(e) => {
-                let error_text = format!(
-                    "Authentication failed for {}: {}",
-                    task.provider.display_name(),
-                    e
-                );
-                app.log_error(error_text.clone());
-                app.fail_current_auth_task(error_text.clone());
-                app.auth_batch.current = None;
-
-                if last_success.is_some() {
-                    let remaining_tasks = app.auth_batch.pending.len();
-                    app.auth_batch.pending.clear();
-                    app.auth_status = build_batch_stopped_status(
-                        &task_label,
-                        app.auth_batch.completed,
-                        app.auth_batch.total,
-                        remaining_tasks,
-                        &error_text,
-                        Some(&partial_success_retry_guidance(&task.provider)),
-                    );
-                    break;
-                }
-
-                app.auth_status = if app.auth_batch.total > 1 {
-                    build_batch_stopped_status(
-                        &task_label,
-                        app.auth_batch.completed,
-                        app.auth_batch.total,
-                        app.auth_batch.pending.len(),
-                        &error_text,
-                        None,
-                    )
-                } else {
-                    format!("Auth failed: {}", e)
-                };
-                return Ok(());
             }
         }
-    }
 
-    if let Some((provider, result)) = last_success {
-        let total_steps = app.auth_batch.total;
-        let last_error = app.auth_batch.last_error.clone();
-        app.auth_status = build_auth_completion_status(
-            &app.authenticated_remotes,
-            total_steps,
-            &provider,
-            &result,
-            last_error.as_deref(),
-        );
+        if let Some((provider, result)) = last_success {
+            let total_steps = app.auth_batch.total;
+            let last_error = app.auth_batch.last_error.clone();
+            app.auth_status = build_auth_completion_status(
+                &app.authenticated_remotes,
+                total_steps,
+                &provider,
+                &result,
+                last_error.as_deref(),
+            );
 
-        app.post_auth_selected = 0;
-        app.post_auth_action = None;
-        app.clear_auth_batch();
-        app.advance();
-    } else {
-        app.auth_status = "No provider selected".to_string();
-    }
+            app.post_auth_selected = 0;
+            app.post_auth_action = None;
+            app.clear_auth_batch();
+            app.advance();
+        } else {
+            app.auth_status = "No provider selected".to_string();
+        }
 
-    Ok(())
+        Ok(())
+    })
 }
 
 #[cfg(test)]

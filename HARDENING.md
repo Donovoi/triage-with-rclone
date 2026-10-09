@@ -82,6 +82,14 @@ Coverage plans now bind every selectable backend to its actual option contract. 
 
 The account-free lab exercises real local, HTTP, WebDAV, FTP, SFTP and S3 backends using loopback-only services, synthetic data and isolated configuration. It requires independent payload hashes, missing-file rejection, source preservation and cleanup; the independent HTTP/WebDAV/FTP fixtures also reject credential and write probes. SFTP/S3 use rclone's own servers, limiting those results to interoperability regressions. HTTP/WebDAV truncation and forced-process cancellation cases do not replace actual application cancellation or real vendor acceptance.
 
+## Runtime and menu cleanup
+
+Each extracted runtime now tracks the commands that use it. Cleanup closes admission to new commands and requires confirmed child exit, joined output readers and closed process handles. An uncertain shutdown keeps the runtime for inspection and reports failure. It does not retry deletion by path.
+
+Mount and Web GUI owners keep their runtime until shutdown. Menu actions stop workers and services before changing account settings or resetting the flow. Worker, operation and cleanup errors remain visible together. Cancelling sign-in cannot return credentials from a process that already exited successfully.
+
+Regression tests cover ownership, reader limits, cancellation and configuration retention, including panic paths. Full mount, Web GUI and menu acceptance still requires the isolated Windows lab; these changes do not add real-provider coverage.
+
 ## Acceptance still required
 
 The provider results above cover only the named account types and scenarios. For remaining providers, run configured Test remotes using the explicit smoke workflow, then verify auth, listing, sample download, token refresh, and cleanup. Live cloud TUI acquisition, Shared Drives, actual grant revocation and mid-download cloud cancellation remain unverified. AP hardware, real browser encryption, and vault accessibility need dedicated Windows lab acceptance. Abrupt process/OS termination is not equivalent to graceful cleanup; retain manifests and inspect partial files after interruption.

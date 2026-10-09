@@ -3,12 +3,14 @@
 //! This module handles extracting the embedded rclone.exe to a temporary
 //! location, verifying its integrity, and cleaning up after use.
 
+use crate::rclone::runtime::RuntimeTracker;
 use crate::utils::private_fs::{self, PrivateTempDir};
 use anyhow::{bail, Context, Result};
 use rust_embed::RustEmbed;
 use sha2::{Digest, Sha256};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 /// Embedded assets (rclone.exe for Windows)
 #[derive(RustEmbed)]
@@ -44,6 +46,7 @@ pub struct ExtractedBinary {
     /// Whether this instance owns the file (should clean up)
     owns_file: bool,
     cleanup_failed: bool,
+    tracker: Arc<RuntimeTracker>,
 }
 
 impl ExtractedBinary {
@@ -102,6 +105,7 @@ impl ExtractedBinary {
             temp_dir: Some(instance_dir),
             owns_file: true,
             cleanup_failed: false,
+            tracker: RuntimeTracker::new(),
         })
     }
 
@@ -115,6 +119,21 @@ impl ExtractedBinary {
         self.path.parent()
     }
 
+    pub(crate) fn tracker(&self) -> Arc<RuntimeTracker> {
+        self.tracker.clone()
+    }
+
+    /// Keep exact owned material after an uncertain child or drain outcome.
+    /// This permanently closes the spawn gate and is never a deletion retry.
+    pub fn retain(&mut self) {
+        self.tracker.retain();
+        if let Some(directory) = self.temp_dir.take() {
+            directory.keep();
+        }
+        self.owns_file = false;
+        self.cleanup_failed = true;
+    }
+
     /// Manually clean up the extracted binary and its directory
     ///
     /// This is called automatically when the ExtractedBinary is dropped,
@@ -122,6 +141,10 @@ impl ExtractedBinary {
     pub fn cleanup(&mut self) -> Result<()> {
         if self.cleanup_failed {
             bail!("Earlier runtime cleanup failed; retained paths require inspection");
+        }
+        if let Err(error) = self.tracker.seal() {
+            self.retain();
+            return Err(error).context("Runtime exit/drain ownership is unconfirmed; retained");
         }
         if !self.owns_file {
             return Ok(());
@@ -185,6 +208,30 @@ mod tests {
     use super::*;
 
     #[test]
+    fn active_runtime_lease_retains_exact_tree_and_never_reopens_admission() {
+        let root = tempfile::tempdir().unwrap();
+        let owned = private_fs::tempdir_in(root.path(), "runtime-").unwrap();
+        let path = owned.path().join("rclone.exe");
+        private_fs::write(&path, b"synthetic runtime").unwrap();
+        let tracker = RuntimeTracker::new();
+        let lease = tracker.reserve().unwrap();
+        let mut binary = ExtractedBinary {
+            path: path.clone(),
+            temp_dir: Some(owned),
+            owns_file: true,
+            cleanup_failed: false,
+            tracker: tracker.clone(),
+        };
+        let runner = crate::rclone::RcloneRunner::from_extracted(&binary);
+        assert!(binary.cleanup().is_err());
+        lease.complete();
+        assert!(binary.cleanup().is_err());
+        assert!(runner.spawn(&["version"]).is_err());
+        drop(binary);
+        assert_eq!(std::fs::read(path).unwrap(), b"synthetic runtime");
+    }
+
+    #[test]
     fn failed_runtime_cleanup_never_retries_a_replaced_directory() {
         let root = tempfile::tempdir().unwrap();
         let owned = private_fs::tempdir_in(root.path(), "runtime-").unwrap();
@@ -199,6 +246,7 @@ mod tests {
             temp_dir: Some(owned),
             owns_file: true,
             cleanup_failed: false,
+            tracker: RuntimeTracker::new(),
         };
         assert!(binary.cleanup().is_err());
         assert!(binary.cleanup().is_err());
