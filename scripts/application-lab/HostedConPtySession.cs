@@ -592,6 +592,7 @@ namespace TriageApplicationLab {
             [DllImport("kernel32.dll",SetLastError=true)] static extern bool WaitForDebugEvent(out DebugEvent value,uint milliseconds);
             [DllImport("kernel32.dll",SetLastError=true)] static extern bool ContinueDebugEvent(uint pid,uint tid,uint status);
             [DllImport("kernel32.dll",SetLastError=true)] static extern bool DuplicateHandle(IntPtr sourceProcess,IntPtr source,IntPtr targetProcess,out IntPtr target,uint access,bool inherit,uint options);
+            [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern IntPtr CreateFileW(string name,uint access,uint share,IntPtr security,uint disposition,uint flags,IntPtr template);
             sealed class OwnedProcess { public IntPtr handle; public ulong created; }
             readonly HostedConPtySession session;
             readonly string appPath,appSha,expected;
@@ -604,12 +605,15 @@ namespace TriageApplicationLab {
             readonly object startSignal=new object();
             bool startSignaled;
             Thread pump;
-            HostedSourceDirectory temp,imageParent;
+            HostedSourceDirectory temp,imageParent,systemParent;
+            IntPtr systemFile;
+            FileInfo systemInfo;
+            string systemPath,systemSha;
+            bool systemClosed;
             IntPtr initialProcess,initialThread;
             uint initialPid,initialTid;
             bool assigned,creationSeen,terminationRequested,tempClosed;
             volatile bool startupFailed,startOkay,joined,handlesFailed;
-            int verified;
             long finishAt=Int64.MaxValue;
             public LaunchObserver(HostedConPtySession s,string path,string appHash,string hash,int concurrent,int launches) {
                 session=s; appPath=path; appSha=appHash; expected=hash;
@@ -633,7 +637,23 @@ namespace TriageApplicationLab {
                 foreach(string code in codes) session.Error(code);
                 if(handlesFailed) session.Error("debug_cleanup_failed");
             }
-            public void AcquireTemp() { temp=HostedSourceDirectory.AcquireRuntimeTemp(session.caseRoot); temp.Verify(); }
+            public void AcquireTemp() {
+                temp=HostedSourceDirectory.AcquireRuntimeTemp(session.caseRoot); temp.Verify();
+                CheckStarting();
+                // An installed-object reference, not a signer/publisher proof.
+                // This fixed system file may legitimately have multiple links.
+                systemPath=FullPath(Path.Combine(systemDirectory,"conhost.exe"));
+                systemParent=HostedSourceDirectory.AcquireInstalledImageParent(systemPath);
+                CheckStarting();
+                // Noninheritable OPEN_EXISTING; real read access and READ-only
+                // sharing prevent replacement/writes while the reference lives.
+                // learn.microsoft.com/windows/win32/api/fileapi/nf-fileapi-createfilew
+                systemFile=CreateFileW(systemPath,0x80000000,1,IntPtr.Zero,3,0x00200000,IntPtr.Zero);
+                Require(systemFile!=IntPtr.Zero && systemFile!=new IntPtr(-1));
+                Require(GetFileInformationByHandle(systemFile,out systemInfo));
+                systemSha=ReadImage(systemFile,systemPath,true);
+                VerifySystemReference(); CheckStarting();
+            }
             public void VerifyTemp() { Require(temp!=null); temp.Verify(); }
             static IntPtr Duplicate(IntPtr handle,bool sameAccess) {
                 IntPtr result; Require(DuplicateHandle(new IntPtr(-1),handle,new IntPtr(-1),out result,sameAccess?0u:0x00101000u,false,sameAccess?2u:0u));
@@ -715,12 +735,17 @@ namespace TriageApplicationLab {
                 if(result.StartsWith(@"\\?\")) result=result.Substring(4);
                 return FullPath(result);
             }
-            void HashImage(IntPtr handle,string path,string hash) {
+            static HostedInstalledImageIdentity Identity(FileInfo info) {
+                return new HostedInstalledImageIdentity(info.attributes,info.volume,((ulong)info.indexHigh<<32)|info.indexLow,
+                    ((ulong)info.sizeHigh<<32)|info.sizeLow,((ulong)info.written.high<<32)|info.written.low,info.links);
+            }
+            string ReadImage(IntPtr handle,string path,bool installed) {
                 Require(handle!=IntPtr.Zero && handle!=new IntPtr(-1));
                 FileInfo before,after; Require(GetFileInformationByHandle(handle,out before));
-                Require(before.links==1 && (before.attributes&((uint)FileAttributes.ReparsePoint|(uint)FileAttributes.Directory))==0 &&
+                Require((installed?before.links>=1:before.links==1) && (before.attributes&((uint)FileAttributes.ReparsePoint|(uint)FileAttributes.Directory))==0 &&
                     String.Equals(FilePath(handle),path,StringComparison.OrdinalIgnoreCase));
                 long end=Math.Min((long)session.deadlineMs,session.elapsed.ElapsedMilliseconds+10000);
+                string hash;
                 using(var stream=new FileStream(new SafeFileHandle(handle,false),FileAccess.Read,65536,false))
                 using(var sha=SHA256.Create()) {
                     Require(stream.Length>0 && stream.Length<=268435456); stream.Position=0;
@@ -730,22 +755,41 @@ namespace TriageApplicationLab {
                         sha.TransformBlock(buffer,0,count,buffer,0);
                     }
                     sha.TransformFinalBlock(buffer,0,0);
-                    Require(session.elapsed.ElapsedMilliseconds<end && BitConverter.ToString(sha.Hash).Replace("-","").ToLowerInvariant()==hash);
+                    Require(session.elapsed.ElapsedMilliseconds<end);
+                    hash=BitConverter.ToString(sha.Hash).Replace("-","").ToLowerInvariant();
                 }
                 Require(GetFileInformationByHandle(handle,out after) && SameInfo(before,after) && String.Equals(FilePath(handle),path,StringComparison.OrdinalIgnoreCase));
+                return hash;
+            }
+            void HashImage(IntPtr handle,string path,string hash) { Require(ReadImage(handle,path,false)==hash); }
+            void VerifySystemReference() {
+                Require(systemParent!=null && systemFile!=IntPtr.Zero && systemFile!=new IntPtr(-1) && !systemClosed);
+                systemParent.Verify(); FileInfo current;
+                Require(GetFileInformationByHandle(systemFile,out current) && SameInfo(systemInfo,current) &&
+                    String.Equals(FilePath(systemFile),systemPath,StringComparison.OrdinalIgnoreCase));
+            }
+            void VerifySystemImage(IntPtr file,string image) {
+                VerifySystemReference(); FileInfo before,after;
+                Require(GetFileInformationByHandle(file,out before) && SameInfo(systemInfo,before));
+                string hash=ReadImage(file,image,true);
+                Require(GetFileInformationByHandle(file,out after) && SameInfo(before,after) &&
+                    HostedLaunchState.InstalledImageMatches(Identity(systemInfo),Identity(after),systemPath,image,systemSha,hash));
+                VerifySystemReference();
             }
             void Create(DebugEvent value) {
                 CreateInfo info=value.info.create;
                 Require(info.process!=IntPtr.Zero && info.thread!=IntPtr.Zero && processes.Count<34);
                 var owned=new OwnedProcess {handle=Duplicate(info.process,false)}; processes.Add(value.pid,owned);
                 owned.created=Created(owned.handle);
-                bool runtime=value.pid!=initialPid;
-                lock(sync) state.Create(runtime);
-                if(!runtime) { Require(value.tid==initialTid); ResolveOriginals(info); }
+                bool root=value.pid==initialPid;
+                if(root) { Require(value.tid==initialTid); ResolveOriginals(info); }
                 bool belongs; Require(IsProcessInJob(owned.handle,session.job,out belongs) && belongs);
                 string image=Image(owned.handle);
-                if(runtime) {
-                    Require(HostedLaunchState.RuntimeImagePathAllowed(session.caseRoot,image));
+                HostedLaunchRole role=root?HostedLaunchRole.Root:
+                    HostedLaunchState.RuntimeImagePathAllowed(session.caseRoot,image)?HostedLaunchRole.Runtime:
+                    String.Equals(image,systemPath,StringComparison.OrdinalIgnoreCase)?HostedLaunchRole.ConsoleHelper:HostedLaunchRole.Rejected;
+                lock(sync) state.Create(role);
+                if(role==HostedLaunchRole.Runtime) {
                     VerifyTemp();
                     // These descendant pins are transient. Keeping them after
                     // continuation would block the application's runtime removal.
@@ -761,11 +805,13 @@ namespace TriageApplicationLab {
                     // forbids releasing the fixed temp/source ownership leases.
                     imageParent.Dispose(); imageParent=null;
                     VerifyTemp();
+                } else if(role==HostedLaunchRole.ConsoleHelper) {
+                    VerifySystemImage(info.file,image);
                 } else {
                     Require(String.Equals(image,appPath,StringComparison.OrdinalIgnoreCase)); HashImage(info.file,image,appSha);
                 }
                 Require(IsProcessInJob(owned.handle,session.job,out belongs) && belongs && Created(owned.handle)==owned.created);
-                if(runtime) lock(sync) verified++;
+                lock(sync) state.Verified();
             }
             void CaptureFailedCreate(DebugEvent value) {
                 // Diagnostic only, before the failing CREATE's hFile is closed.
@@ -837,7 +883,7 @@ namespace TriageApplicationLab {
                             Require(WaitForSingleObject(owned.handle,1000)==0 && Created(owned.handle)==owned.created);
                             CloseOwned(ref owned.handle);
                         }
-                    } catch { Fail("debug_cleanup_failed"); Terminate(); return; }
+                    } catch { handlesFailed=true; Fail("debug_cleanup_failed"); Terminate(); return; }
                     if(value.code==3 && value.pid==initialPid) { startOkay=!startupFailed && !handlesFailed; SignalStarted(); }
                     lock(sync) if(state.Drained) return;
                 }
@@ -849,19 +895,28 @@ namespace TriageApplicationLab {
             } }
             public void CloseTemp() {
                 if(!EventResourcesClosed) { Fail("debug_cleanup_failed"); return; }
-                try { if(temp!=null) { temp.Verify(); temp.Dispose(); temp=null; } tempClosed=true; }
+                try {
+                    if(systemFile!=IntPtr.Zero && systemFile!=new IntPtr(-1)) {
+                        VerifySystemReference(); CloseOwned(ref systemFile);
+                        if(handlesFailed) return;
+                    } else systemFile=IntPtr.Zero;
+                    if(systemParent!=null) { systemParent.Verify(); systemParent.Dispose(); systemParent=null; }
+                    systemClosed=true;
+                    if(temp!=null) { temp.Verify(); temp.Dispose(); temp=null; } tempClosed=true;
+                }
                 catch { handlesFailed=true; Fail("debug_cleanup_failed"); }
             }
-            public bool Released { get { return EventResourcesClosed && tempClosed; } }
+            public bool Released { get { return EventResourcesClosed && tempClosed && systemClosed; } }
             public void CommonCloseFailed() { handlesFailed=true; Fail("debug_cleanup_failed"); }
-            public void CheckQualification() { lock(sync) if(!state.Qualified || state.Launches!=verified) session.Error(state.Failure??"debug_image_invalid"); }
+            public void CheckQualification() { lock(sync) if(!state.Qualified) session.Error(state.Failure??"debug_image_invalid"); }
             public void AddSnapshot(Dictionary<string,object> result) {
                 lock(sync) {
-                    result.Add("observation_kind","launch_image"); result.Add("launch_image_observed",verified>0);
-                    result.Add("launch_sha256",verified>0?expected:null); result.Add("runtime_launch_count",state.Launches);
+                    result.Add("observation_kind","launch_image"); result.Add("launch_image_observed",state.VerifiedLaunches>0);
+                    result.Add("launch_sha256",state.VerifiedLaunches>0?expected:null); result.Add("runtime_launch_count",state.Launches);
                     result.Add("peak_runtime_processes",state.Peak); result.Add("debug_event_count",state.Events);
                     result.Add("debug_events_drained",initialPid==0?joined:state.Drained);
                     result.Add("debug_pump_joined",joined); result.Add("debug_handles_closed",Released);
+                    state.AddHelperSnapshot(result,systemSha,systemClosed);
                 }
             }
         }
@@ -870,16 +925,28 @@ namespace TriageApplicationLab {
         public void Dispose() { Finish(0); }
     }
 
+    public enum HostedLaunchRole { Rejected,Root,Runtime,ConsoleHelper }
+    public sealed class HostedInstalledImageIdentity {
+        public readonly uint Attributes,Volume,Links;
+        public readonly ulong Index,Size,Written;
+        public HostedInstalledImageIdentity(uint attributes,uint volume,ulong index,ulong size,ulong written,uint links) {
+            Attributes=attributes; Volume=volume; Index=index; Size=size; Written=written; Links=links;
+        }
+    }
     // Pure event-order/limit model. It owns no handles and performs no native calls.
     // The pump uses this same model; tests inject only typed event observations.
     public sealed class HostedLaunchState {
-        sealed class Process { public uint initialThread; public bool runtime,exited,breakpoint; }
+        sealed class Process { public uint initialThread; public HostedLaunchRole role; public bool classified,verified,exited,breakpoint; }
         readonly Dictionary<uint,Process> processes=new Dictionary<uint,Process>();
         readonly int maximumConcurrent,maximumLaunches;
         uint root,code,pid,tid;
         bool pending,startStopped;
-        int active;
+        int active,helperActive;
         public int Launches { get; private set; }
+        public int VerifiedLaunches { get; private set; }
+        public int HelperLaunches { get; private set; }
+        public int VerifiedHelpers { get; private set; }
+        public int HelperPeak { get; private set; }
         public int Peak { get; private set; }
         public int Events { get; private set; }
         public string Failure { get; private set; }
@@ -907,13 +974,34 @@ namespace TriageApplicationLab {
             Process process;
             Need(eventCode==3?!processes.ContainsKey(processId):processes.TryGetValue(processId,out process) && !process.exited,"debug_event_failed");
             code=eventCode; pid=processId; tid=threadId; pending=true; Events++;
+            if(code==3) {
+                // Reserve the rejected record before any fallible image/handle
+                // inspection. A failed CREATE can still receive its EXIT event.
+                // Exhausting the absolute storage cap retains the whole session.
+                Need(processes.Count<34,"debug_launch_limit");
+                processes.Add(pid,new Process {initialThread=tid,role=HostedLaunchRole.Rejected});
+            }
         }
-        public void Create(bool runtime) {
-            Need(pending && code==3 && !processes.ContainsKey(pid) && processes.Count<34,"debug_event_failed");
-            Need((processes.Count==0)==(pid==root) && (pid!=root || !runtime),"debug_event_failed");
-            processes.Add(pid,new Process {initialThread=tid,runtime=runtime});
-            if(runtime) { Launches++; active++; Peak=Math.Max(Peak,active); }
-            Need(Launches<=maximumLaunches && active<=maximumConcurrent,"debug_launch_limit");
+        public void Create(HostedLaunchRole role) {
+            Need(pending && code==3 && processes.ContainsKey(pid) && !processes[pid].classified,"debug_event_failed");
+            Need(Enum.IsDefined(typeof(HostedLaunchRole),role) && (processes.Count==1)==(pid==root) &&
+                (pid==root)==(role==HostedLaunchRole.Root),"debug_event_failed");
+            Process process=processes[pid]; process.role=role; process.classified=true;
+            if(role==HostedLaunchRole.Runtime) { Launches++; active++; Peak=Math.Max(Peak,active); }
+            if(role==HostedLaunchRole.ConsoleHelper) { HelperLaunches++; helperActive++; HelperPeak=Math.Max(HelperPeak,helperActive); }
+            Need(role!=HostedLaunchRole.Rejected,"debug_image_invalid");
+            // Two live helpers is a conservative qualification budget, not a
+            // Windows guarantee or a claim that a runtime parented each helper.
+            Need(processes.Count<=1+2*maximumLaunches && Launches<=maximumLaunches && active<=maximumConcurrent && HelperLaunches<=maximumLaunches &&
+                HelperLaunches<=VerifiedLaunches && helperActive<=2,"debug_launch_limit");
+        }
+        public void Verified() {
+            Need(pending && code==3 && Failure==null,"debug_image_invalid");
+            Process process=processes[pid];
+            Need(process.classified && !process.verified && process.role!=HostedLaunchRole.Rejected,"debug_image_invalid");
+            process.verified=true;
+            if(process.role==HostedLaunchRole.Runtime) VerifiedLaunches++;
+            if(process.role==HostedLaunchRole.ConsoleHelper) VerifiedHelpers++;
         }
         public uint ExceptionDisposition(uint exceptionCode,uint firstChance) {
             Need(pending && code==1 && firstChance<=1,"debug_event_failed");
@@ -929,9 +1017,11 @@ namespace TriageApplicationLab {
         public void Continued() {
             Need(pending,"debug_event_failed");
             if(code==3) Need(processes.ContainsKey(pid),"debug_event_failed");
+            if(code==3 && !processes[pid].verified) Fail("debug_image_invalid");
             if(code==5) {
                 Process process=processes[pid]; process.exited=true;
-                if(process.runtime) active--;
+                if(process.role==HostedLaunchRole.Runtime) active--;
+                if(process.role==HostedLaunchRole.ConsoleHelper) helperActive--;
             }
             pending=false;
         }
@@ -941,10 +1031,25 @@ namespace TriageApplicationLab {
             return true;
         } }
         public bool Qualified { get {
-            if(Failure!=null || !Drained || Launches<1 || Launches>maximumLaunches) return false;
-            foreach(Process process in processes.Values) if(!process.breakpoint) return false;
+            if(Failure!=null || !Drained || Launches<1 || Launches>maximumLaunches || VerifiedLaunches!=Launches || VerifiedHelpers!=HelperLaunches) return false;
+            foreach(Process process in processes.Values) if(!process.breakpoint || !process.verified || process.role==HostedLaunchRole.Rejected) return false;
             return true;
         } }
+        public void AddHelperSnapshot(Dictionary<string,object> result,string hash,bool referenceClosed) {
+            bool observed=HelperLaunches>0 && HelperLaunches==VerifiedHelpers;
+            result.Add("system_helper_image_observed",observed); result.Add("system_helper_sha256",observed?hash:null);
+            result.Add("system_helper_launch_count",HelperLaunches); result.Add("peak_system_helper_processes",HelperPeak);
+            result.Add("system_helper_reference_closed",referenceClosed);
+        }
+        public static bool InstalledImageMatches(HostedInstalledImageIdentity reference,HostedInstalledImageIdentity image,
+                string expectedPath,string actualPath,string expectedSha,string actualSha) {
+            if(reference==null || image==null || reference.Links<1 || reference.Size<1 || reference.Size>268435456 ||
+                (reference.Attributes&0x410)!=0 || String.IsNullOrEmpty(expectedPath) ||
+                !String.Equals(expectedPath,actualPath,StringComparison.OrdinalIgnoreCase) || expectedSha==null || expectedSha.Length!=64 || expectedSha!=actualSha) return false;
+            foreach(char c in expectedSha) if(!((c>='0'&&c<='9') || (c>='a'&&c<='f'))) return false;
+            return reference.Attributes==image.Attributes && reference.Volume==image.Volume && reference.Index==image.Index &&
+                reference.Size==image.Size && reference.Written==image.Written && reference.Links==image.Links;
+        }
         public static bool EventOwnsCreationHandle(IntPtr creation,IntPtr debugEvent) {
             if(creation==IntPtr.Zero || creation==new IntPtr(-1) || debugEvent==IntPtr.Zero || debugEvent==new IntPtr(-1)) throw new ArgumentException("debug_event_failed");
             return creation==debugEvent;
@@ -1073,6 +1178,13 @@ namespace TriageApplicationLab {
             Need(HostedLaunchState.RuntimeImagePathAllowed(root,image));
             return AcquirePath(System.IO.Path.GetDirectoryName(HostedLaunchState.RuntimeTempPath(root)),System.IO.Path.GetDirectoryName(image));
         }
+        internal static HostedSourceDirectory AcquireInstalledImageParent(string image) {
+            // Caller supplies only its internal SystemDirectory/conhost.exe.
+            // Installed ancestors use identity/final-path/no-reparse checks,
+            // never the private case ACL policy or permission repair.
+            Need(String.Equals(image,System.IO.Path.Combine(Environment.SystemDirectory,"conhost.exe"),StringComparison.OrdinalIgnoreCase));
+            return AcquirePath(null,System.IO.Path.GetDirectoryName(image));
+        }
         static HostedSourceDirectory AcquirePath(string root,string source) {
             var chain=new List<string>();
             for(string path=source; !String.IsNullOrEmpty(path); path=System.IO.Path.GetDirectoryName(path)) {
@@ -1081,7 +1193,7 @@ namespace TriageApplicationLab {
             chain.Reverse(); var lease=new HostedSourceDirectory {Path=source};
             try {
                 foreach(string path in chain) {
-                    bool owned=String.Equals(path,root,StringComparison.OrdinalIgnoreCase) || path.StartsWith(root+System.IO.Path.DirectorySeparatorChar,StringComparison.OrdinalIgnoreCase);
+                    bool owned=root!=null && (String.Equals(path,root,StringComparison.OrdinalIgnoreCase) || path.StartsWith(root+System.IO.Path.DirectorySeparatorChar,StringComparison.OrdinalIgnoreCase));
                     // LIST_DIRECTORY participates in sharing checks; metadata-only
                     // access does not. Add READ_ATTRIBUTES and owned READ_CONTROL.
                     // MS-FSA 2.1.5.1.2.2: omit DELETE sharing to hold each name.
