@@ -2,11 +2,22 @@
 
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
-use ratatui::Terminal;
+use ratatui::layout::Rect;
+use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
+use ratatui::{Frame, Terminal};
 use std::time::Duration;
 
 use crate::ui::{layout::centered_rect, render::render_state, App};
+
+fn render_prompt_overlay(frame: &mut Frame, overlay: Rect, title: &str, content: &str) {
+    // Paragraph only overwrites its text; erase the underlying screen inside
+    // the modal so short and empty lines cannot retain background content.
+    frame.render_widget(Clear, overlay);
+    let modal = Paragraph::new(content)
+        .block(Block::default().title(title).borders(Borders::ALL))
+        .wrap(Wrap { trim: false });
+    frame.render_widget(modal, overlay);
+}
 
 /// Prompt for a single line of input without leaving the TUI.
 ///
@@ -52,10 +63,7 @@ pub(crate) fn prompt_text_in_tui<
                 "{}\n\n> {}\n\nLen: {} char(s)\n\nEnter submit | Esc cancel | Backspace delete | Ctrl+U clear | Ctrl+W delete word",
                 hint, display, total_chars
             );
-            let modal = Paragraph::new(content)
-                .block(Block::default().title(title).borders(Borders::ALL))
-                .wrap(Wrap { trim: false });
-            f.render_widget(modal, overlay);
+            render_prompt_overlay(f, overlay, title, &content);
         })?;
 
         if !event::poll(Duration::from_millis(200))? {
@@ -118,6 +126,71 @@ pub(crate) fn prompt_text_in_tui<
                 }
             }
             _ => {}
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::backend::TestBackend;
+    use ratatui::style::{Color, Modifier, Style};
+    use ratatui::text::Line;
+
+    #[test]
+    fn prompt_clears_background_cells_and_styles_only_inside_overlay() {
+        let mut terminal = Terminal::new(TestBackend::new(120, 34)).unwrap();
+        let background_style = Style::default()
+            .fg(Color::Red)
+            .bg(Color::Blue)
+            .add_modifier(Modifier::BOLD);
+        let content = "Enter remote name.\n\nDefault: http\n\nEnter submit | Esc cancel\n\n> <empty>\n\nLen: 0 char(s)\n\nEnter submit | Esc cancel | Backspace delete | Ctrl+U clear | Ctrl+W delete word";
+        terminal
+            .draw(|frame| {
+                let background =
+                    Paragraph::new(vec![Line::from("x".repeat(120)); 34]).style(background_style);
+                frame.render_widget(background, frame.area());
+                let overlay = centered_rect(80, 40, frame.area());
+                assert_eq!(overlay, Rect::new(12, 10, 96, 14));
+                render_prompt_overlay(frame, overlay, "Remote Name", content);
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let expected_lines = [
+            "Enter remote name.",
+            "",
+            "Default: http",
+            "",
+            "Enter submit | Esc cancel",
+            "",
+            "> <empty>",
+            "",
+            "Len: 0 char(s)",
+            "",
+            "Enter submit | Esc cancel | Backspace delete | Ctrl+U clear | Ctrl+W delete word",
+            "",
+        ];
+        for (row, expected) in expected_lines.into_iter().enumerate() {
+            let actual: String = (13..107)
+                .map(|x| buffer[(x, 11 + row as u16)].symbol())
+                .collect();
+            assert_eq!(actual, format!("{expected:<94}"));
+        }
+        for y in 0..34 {
+            for x in 0..120 {
+                let cell = &buffer[(x, y)];
+                if (12..108).contains(&x) && (10..24).contains(&y) {
+                    assert_eq!(cell.fg, Color::Reset);
+                    assert_eq!(cell.bg, Color::Reset);
+                    assert_eq!(cell.modifier, Modifier::empty());
+                } else {
+                    assert_eq!(cell.symbol(), "x");
+                    assert_eq!(cell.fg, Color::Red);
+                    assert_eq!(cell.bg, Color::Blue);
+                    assert_eq!(cell.modifier, Modifier::BOLD);
+                }
+            }
         }
     }
 }

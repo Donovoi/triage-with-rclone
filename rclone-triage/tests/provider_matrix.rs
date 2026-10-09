@@ -519,7 +519,9 @@ fn pinned_rclone_catalog_matches_provider_contracts() {
         version.stdout.first().unwrap(),
         &format!("rclone v{}", release_pin("RCLONE_VERSION"))
     );
-    let output = runner.run(&["config", "providers"]).unwrap();
+    // Exercise the same memory-only catalog path used by TUI discovery/schema,
+    // even when its caller has an explicit saved config. No global env mutation.
+    let output = runner.provider_catalog().unwrap();
     assert!(output.success(), "offline provider catalog command failed");
     let json = output.stdout_string();
     let schemas = schema::providers_from_rclone_json(&json).unwrap();
@@ -638,6 +640,12 @@ fn pinned_rclone_catalog_matches_provider_contracts() {
         b"",
         "metadata probe changed its config"
     );
+    assert_eq!(runner.config_path(), Some(config_path.as_path()));
+    let remaining: Vec<_> = std::fs::read_dir(scratch.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    assert_eq!(remaining, [std::ffi::OsString::from("empty.conf")]);
     println!("Validated {} backend schemas, {} discoverable entries and {} known-provider contracts; no account login was attempted.",
         schemas.len(), catalog.providers.len(), CloudProvider::all().len());
 }

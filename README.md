@@ -14,7 +14,7 @@ View files in cloud storage, choose what to collect, and save copies with a reco
 .\rclone-triage.exe --tui --name case-001 --output-dir C:\Cases
 ```
 
-4. Follow the menus to connect an account, view its files and choose what to collect.
+4. Follow the menus to connect an account, view its files and choose what to collect. In the provider list, press **Space** to check a provider, then **Enter** to continue.
 
 For command options, run `.\rclone-triage.exe --help`.
 
@@ -28,7 +28,7 @@ A new nightly is published after each merged PR passes the required checks. Buil
 
 See [test status and known gaps](rclone-triage/tests/provider_testing.md) for the detailed results.
 
-Current work: keep rclone up to date, test sign-ins and expired logins, and check Windows menus, WebDAV downloads and cleanup with test files.
+Current work: resolve a Windows cleanup failure and extend sign-in and provider tests.
 
 ## What comes next
 

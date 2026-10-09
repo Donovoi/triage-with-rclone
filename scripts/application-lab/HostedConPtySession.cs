@@ -41,6 +41,7 @@ namespace TriageApplicationLab {
         }
         [DllImport("kernel32.dll",SetLastError=true)] static extern bool CreatePipe(out IntPtr read,out IntPtr write,IntPtr security,uint size);
         [DllImport("kernel32.dll")] static extern int CreatePseudoConsole(Coord size,IntPtr input,IntPtr output,uint flags,out IntPtr console);
+        [DllImport("kernel32.dll")] static extern int ResizePseudoConsole(IntPtr console,Coord size);
         [DllImport("kernel32.dll")] static extern void ClosePseudoConsole(IntPtr console);
         [DllImport("kernel32.dll",SetLastError=true)] static extern bool InitializeProcThreadAttributeList(IntPtr list,int count,uint flags,ref IntPtr size);
         [DllImport("kernel32.dll",SetLastError=true)] static extern bool UpdateProcThreadAttribute(IntPtr list,uint flags,IntPtr attribute,IntPtr value,IntPtr size,IntPtr previous,IntPtr returned);
@@ -71,7 +72,7 @@ namespace TriageApplicationLab {
         readonly Stopwatch elapsed=Stopwatch.StartNew();
         IntPtr process,job,console;
         FileStream input,output,transcript;
-        Thread reader,writer,closer;
+        Thread reader,writer,closer,resizer;
         Timer watchdog;
         string caseRoot;
         int deadlineMs,maxOutput,maxRuntimeProcesses;
@@ -81,6 +82,9 @@ namespace TriageApplicationLab {
         bool appExited,childrenExited,jobZero,runtimeObserved;
         string runtimeSha;
         long? appExit;
+        bool tui;
+        readonly HostedTuiInputBudget tuiBudget=new HostedTuiInputBudget();
+        int columns=120,rows=34;
 
         static void Require(bool value) { if(!value) throw new InvalidOperationException("invalid_request"); }
         static bool Sha(string value) {
@@ -210,6 +214,12 @@ namespace TriageApplicationLab {
         public static bool RuntimeCountAllowed(int maximum,int count) { return maximum>=1 && maximum<=4 && count>=1 && count<=maximum; }
         public static bool SameRuntimeImage(string first,string next) { return !String.IsNullOrEmpty(next) && (first==null || String.Equals(first,next,StringComparison.OrdinalIgnoreCase)); }
         public static HostedConPtySession Start(string appPath,string appSha256,string[] arguments,string root,IDictionary<string,string> environment,string transcriptPath,int maxOutputBytes,int deadlineMilliseconds,int maxRuntimeProcesses) {
+            return StartCore(appPath,appSha256,arguments,root,environment,transcriptPath,maxOutputBytes,deadlineMilliseconds,maxRuntimeProcesses,false);
+        }
+        public static HostedConPtySession StartTui(string appPath,string appSha256,string[] arguments,string root,IDictionary<string,string> environment,string transcriptPath,int maxOutputBytes,int deadlineMilliseconds,int maxRuntimeProcesses) {
+            return StartCore(appPath,appSha256,arguments,root,environment,transcriptPath,maxOutputBytes,deadlineMilliseconds,maxRuntimeProcesses,true);
+        }
+        static HostedConPtySession StartCore(string appPath,string appSha256,string[] arguments,string root,IDictionary<string,string> environment,string transcriptPath,int maxOutputBytes,int deadlineMilliseconds,int maxRuntimeProcesses,bool tui) {
             Require(Sha(appSha256) && arguments!=null && arguments.Length<=64 && maxOutputBytes>=1024 && maxOutputBytes<=8388608 && deadlineMilliseconds>=1000 && deadlineMilliseconds<=180000 && RuntimeCountAllowed(maxRuntimeProcesses,1));
             root=FullPath(root); PrivateRoot(root); appPath=FullPath(appPath); PlainExisting(appPath,false);
             transcriptPath=FullPath(transcriptPath); Require(Inside(root,transcriptPath) && !File.Exists(transcriptPath) && !Directory.Exists(transcriptPath));
@@ -217,7 +227,7 @@ namespace TriageApplicationLab {
             string block=BuildEnvironment(root,environment);
             var command=new StringBuilder(Quote(appPath)); foreach(string argument in arguments) command.Append(' ').Append(Quote(argument));
             Require(command.Length<=16384);
-            var s=new HostedConPtySession {caseRoot=root,maxOutput=maxOutputBytes,deadlineMs=deadlineMilliseconds,maxRuntimeProcesses=maxRuntimeProcesses};
+            var s=new HostedConPtySession {caseRoot=root,maxOutput=maxOutputBytes,deadlineMs=deadlineMilliseconds,maxRuntimeProcesses=maxRuntimeProcesses,tui=tui};
             IntPtr inRead=IntPtr.Zero,inWrite=IntPtr.Zero,outRead=IntPtr.Zero,outWrite=IntPtr.Zero,attrs=IntPtr.Zero,env=IntPtr.Zero;
             ProcessInfo pi=new ProcessInfo(); bool initialized=false;
             FileStream appLock=null;
@@ -277,6 +287,9 @@ namespace TriageApplicationLab {
                         continue; // Keep draining without writing bytes beyond the cap.
                     }
                     transcript.Write(data,0,count);
+                    // Only this reader owns the transcript writer. Short TUI
+                    // prompts must be visible without waiting for its buffer.
+                    if(tui) transcript.Flush();
                 }
             } catch(IOException e) { if(!closing || ((e.HResult&65535)!=109 && (e.HResult&65535)!=232 && (e.HResult&65535)!=233)) Error("reader_failed"); }
             catch(ObjectDisposedException) { if(!closing) Error("reader_failed"); }
@@ -361,6 +374,62 @@ namespace TriageApplicationLab {
                 return Snapshot();
             }
         }
+        void RequireTuiLive() {
+            Require(tui && !closing && !finished && !ctrlSent && !Deadline && process!=IntPtr.Zero && console!=IntPtr.Zero && job!=IntPtr.Zero);
+            lock(errorLock) Require(errors.Count==0);
+            bool belongs; Require(!Exited(process) && IsProcessInJob(process,job,out belongs) && belongs);
+            ObserveChildren();
+        }
+        Dictionary<string,object> TuiFailure(string code) {
+            Error(code); Finish(0); return TuiSnapshot();
+        }
+        int TuiWaitBudget() { return (int)Math.Max(0,Math.Min(1000,(long)deadlineMs-elapsed.ElapsedMilliseconds)); }
+        Dictionary<string,object> SendTuiInput(byte[] bytes) {
+            RequireTuiLive(); tuiBudget.ReserveInput(bytes.Length);
+            Require(writer==null || !writer.IsAlive);
+            bool wrote=false;
+            writer=new Thread(delegate() {
+                try { input.Write(bytes,0,bytes.Length); input.Flush(); wrote=true; }
+                catch { Error("input_failed"); }
+            });
+            writer.IsBackground=true;
+            try { writer.Start(); } catch { writer=null; throw; }
+            if(!writer.Join(TuiWaitBudget())) return TuiFailure("input_timeout");
+            if(Deadline) return TuiFailure("deadline_exceeded");
+            if(!wrote) return TuiFailure("input_failed");
+            return TuiSnapshot();
+        }
+        public Dictionary<string,object> SendTuiKey(string key) {
+            lock(api) {
+                try { return SendTuiInput(HostedTuiProtocol.KeyBytes(key)); }
+                catch { return TuiFailure("tui_input_refused"); }
+            }
+        }
+        public Dictionary<string,object> SendTuiText(string text) {
+            lock(api) {
+                try { return SendTuiInput(HostedTuiProtocol.TextBytes(text)); }
+                catch { return TuiFailure("tui_input_refused"); }
+            }
+        }
+        public Dictionary<string,object> ResizeTui(int width,int height) {
+            lock(api) {
+                try {
+                    RequireTuiLive(); tuiBudget.ReserveResize(width,height);
+                    Require(resizer==null || !resizer.IsAlive);
+                    bool resized=false;
+                    resizer=new Thread(delegate() {
+                        try { resized=ResizePseudoConsole(console,new Coord {x=(short)width,y=(short)height})==0; }
+                        catch { Error("resize_failed"); }
+                    });
+                    resizer.IsBackground=true;
+                    try { resizer.Start(); } catch { resizer=null; throw; }
+                    if(!resizer.Join(TuiWaitBudget())) return TuiFailure("resize_timeout");
+                    if(Deadline) return TuiFailure("deadline_exceeded");
+                    if(!resized) return TuiFailure("resize_failed");
+                    columns=width; rows=height; return TuiSnapshot();
+                } catch { return TuiFailure("tui_resize_refused"); }
+            }
+        }
         public Dictionary<string,object> Abort() { Error("protocol_invalid"); return Finish(0); }
         public Dictionary<string,object> Finish(int graceMilliseconds) {
             lock(api) {
@@ -391,6 +460,9 @@ namespace TriageApplicationLab {
                 if(job!=IntPtr.Zero) { if(!jobZero) forced=true; CloseHandle(job); job=IntPtr.Zero; }
                 closer=new Thread(delegate() {
                     try {
+                        // Never close a ConPTY handle still in a resize call.
+                        // Uncertain completion retains its handles/transcript.
+                        if(resizer!=null && !resizer.Join(1000)) { Error("resize_cleanup_failed"); return; }
                         if(console!=IntPtr.Zero) { ClosePseudoConsole(console); console=IntPtr.Zero; }
                         consoleClosed=true;
                         if(input!=null) input.Dispose();
@@ -416,7 +488,88 @@ namespace TriageApplicationLab {
                 {"job_zero_confirmed",jobZero},{"reader_joined",readerJoined},{"conpty_closed",consoleClosed},{"errors",current}
             };
         }
+        public Dictionary<string,object> TuiSnapshot() {
+            lock(api) {
+                var result=Snapshot(); result["schema_version"]=2;
+                result.Add("input_commands",tuiBudget.InputCommands); result.Add("input_bytes",tuiBudget.InputBytes);
+                result.Add("resize_count",tuiBudget.ResizeCount); result.Add("columns",columns); result.Add("rows",rows);
+                return result;
+            }
+        }
         public void Dispose() { Finish(0); }
+    }
+
+    // Pure state/encoding helpers used by the separate TUI bridge. None calls
+    // native APIs; a rejected budget is sticky and cannot be reused.
+    public sealed class HostedTuiInputBudget {
+        int inputCommands,resizeCount;
+        long inputBytes;
+        bool failed;
+        public int InputCommands { get { return inputCommands; } }
+        public long InputBytes { get { return inputBytes; } }
+        public int ResizeCount { get { return resizeCount; } }
+        void Need(bool value) { if(failed || !value) { failed=true; throw new FormatException("protocol_invalid"); } }
+        public void ReserveInput(int length) {
+            Need(length>=1 && length<=256 && inputCommands<256 && inputBytes+length<=8192);
+            inputCommands++; inputBytes+=length;
+        }
+        public void ReserveResize(int columns,int rows) {
+            Need(HostedTuiProtocol.SizeAllowed(columns,rows) && resizeCount<16); resizeCount++;
+        }
+    }
+
+    public sealed class HostedTuiProtocol {
+        int commands;
+        long bytes;
+        bool failed;
+        public int CommandCount { get { return commands; } }
+        public long RequestBytes { get { return bytes; } }
+        public static bool SizeAllowed(int columns,int rows) { return (columns==120 && rows==34) || (columns==80 && rows==24); }
+        public static byte[] KeyBytes(string key) {
+            string value;
+            switch(key) {
+                case "enter": value="\r"; break; case "escape": value="\x1b"; break;
+                case "up": value="\x1b[A"; break; case "down": value="\x1b[B"; break;
+                case "right": value="\x1b[C"; break; case "left": value="\x1b[D"; break;
+                case "tab": value="\t"; break; case "backspace": value="\x7f"; break;
+                case "home": value="\x1b[H"; break; case "end": value="\x1b[F"; break;
+                case "page_up": value="\x1b[5~"; break; case "page_down": value="\x1b[6~"; break;
+                case "space": value=" "; break;
+                default: throw new FormatException("protocol_invalid");
+            }
+            return Encoding.ASCII.GetBytes(value);
+        }
+        public static byte[] TextBytes(string text) {
+            if(text==null || text.Length<1 || text.Length>256) throw new FormatException("protocol_invalid");
+            foreach(char c in text) if(c<32 || c>126) throw new FormatException("protocol_invalid");
+            return Encoding.ASCII.GetBytes(text);
+        }
+        public Dictionary<string,object> Read(TextReader reader) {
+            try {
+                if(failed || reader==null) throw new FormatException("protocol_invalid");
+                var line=new StringBuilder(); int c;
+                while((c=reader.Read())!=-1) {
+                    if(bytes>=1048576 || c>127) throw new FormatException("protocol_invalid");
+                    bytes++;
+                    if(c==10) {
+                        if(commands>=1024) throw new FormatException("protocol_invalid");
+                        commands++; return HostedProtocol.Parse(line.ToString());
+                    }
+                    if(line.Length>=65536) throw new FormatException("protocol_invalid");
+                    line.Append((char)c);
+                }
+                if(line.Length!=0) throw new FormatException("protocol_invalid");
+                return null;
+            } catch { failed=true; throw new FormatException("protocol_invalid"); }
+        }
+        public Dictionary<string,object> Counters(Dictionary<string,object> value) {
+            value.Add("protocol_commands",commands); value.Add("protocol_bytes",bytes); return value;
+        }
+        public Dictionary<string,object> Failure() {
+            var result=HostedProtocol.Failure(); result["schema_version"]=2;
+            result.Add("input_commands",0); result.Add("input_bytes",0L); result.Add("resize_count",0);
+            result.Add("columns",120); result.Add("rows",34); return Counters(result);
+        }
     }
 
     // Small closed JSON reader: no duplicate keys, floats, nonfinite values,
