@@ -807,7 +807,23 @@ def post_helper_preserved(name, case, leases, baseline, *, probe=False):
             post_helper_diagnostic(name, **observation)
         except BaseException:
             pass
+        if observation["stage"] == "case_layout":
+            try:
+                case_layout_diagnostic(name, directories, files, expected_dirs, expected_files)
+            except BaseException:
+                pass
         raise
+
+
+def case_layout_diagnostic(name, directories, files, expected_dirs, expected_files):
+    """Recognize only an exact path layout, never its contents or creating process."""
+    need(type(name) is str and name in E.CASE_ORDER, "cleanup_failed")
+    cache_dirs = {"Microsoft", "Microsoft/Windows", "Microsoft/Windows/PowerShell"}
+    cache_files = {"Microsoft/Windows/PowerShell/ModuleAnalysisCache"}
+    known = (expected_dirs.issubset(directories) and expected_files.issubset(files) and
+             directories - expected_dirs == cache_dirs and files - expected_files == cache_files)
+    label = "powershell_module_cache_path_layout" if known else "unknown"
+    print("application_case_layout_diagnostic=" + E.compact(dict(scope=name, classification=label)).decode("ascii"), flush=True)
 
 
 def cleanup_diagnostic(name, stage, location=None, summary=None):

@@ -761,6 +761,83 @@ class ProducerTests(unittest.TestCase):
             missing_directories=1, unexpected_files=0, missing_files=0))
         remove.assert_not_called()
 
+    def test_probe_exact_cache_layout_diagnostic_never_allows_acceptance(self):
+        def cache(case, filename="ModuleAnalysisCache", directory=False):
+            parent = case / "Microsoft/Windows/PowerShell"
+            parent.mkdir(parents=True)
+            target = parent / filename
+            if directory:
+                target.mkdir()
+            else:
+                target.write_bytes(b"private-content-canary")
+        def extra(case, directory=False):
+            cache(case)
+            if directory:
+                (case / "private-name-canary").mkdir()
+            else:
+                (case / "private-name-canary").write_bytes(b"private-content-canary")
+        def missing(case):
+            cache(case)
+            (case / "bridge-stderr.private").unlink()
+        variants = [
+            (cache, "powershell_module_cache_path_layout"),
+            (lambda c: cache(c, "ModuleAnalysisCache-private-canary"), "unknown"),
+            (extra, "unknown"), (lambda c: extra(c, True), "unknown"),
+            (lambda c: cache(c, directory=True), "unknown"),
+            (lambda c: (c / "Microsoft").write_bytes(b"private-content-canary"), "unknown"),
+            (missing, "unknown"),
+        ]
+        for index, (mutation, label) in enumerate(variants):
+            with self.subTest(index=index), self.probe_patches(), mock.patch.object(P, "prepare", side_effect=fake_prepare), \
+                 mock.patch.object(P, "remove_owned") as remove, redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(P.bridge_probe(self.probe_bridge_factory(after_close=mutation)), 1)
+            lines = [line for line in output.getvalue().splitlines() if line.startswith("application_case_layout_diagnostic=")]
+            self.assertEqual(len(lines), 1)
+            self.assertEqual(json.loads(lines[0].split("=", 1)[1]), dict(scope="listing", classification=label))
+            self.assertEqual(self.post_helper_observation(output)["stage"], "case_layout")
+            self.assertNotIn("ModuleAnalysisCache", output.getvalue())
+            self.assertNotIn("Microsoft/", output.getvalue())
+            self.assertNotIn("application_bridge_probe_passed", output.getvalue())
+            remove.assert_not_called()
+
+    def test_probe_unsafe_inventory_never_classifies_a_layout(self):
+        original_inventory = P.inventory
+        def unsafe(path):
+            if Path(path).name == "listing" and (Path(path) / "bridge-stdout.private").exists():
+                raise OSError("private-content-canary")
+            return original_inventory(path)
+        with self.probe_patches(), mock.patch.object(P, "prepare", side_effect=fake_prepare), \
+             mock.patch.object(P, "inventory", side_effect=unsafe), mock.patch.object(P, "remove_owned") as remove, \
+             redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(P.bridge_probe(self.probe_bridge_factory()), 1)
+        self.assertEqual(self.post_helper_observation(output)["stage"], "case_inventory")
+        self.assertNotIn("application_case_layout_diagnostic=", output.getvalue())
+        remove.assert_not_called()
+
+    def test_case_layout_diagnostic_failure_preserves_original_exception(self):
+        case = self.root / "layout-diagnostic"
+        case.mkdir()
+        leases = P.create_private_roots(case)
+        baseline = P.prestart_baseline("listing", case, leases)
+        # Missing required transcript files force the unchanged layout check.
+        original = P.ProducerError("cleanup_failed")
+        original_need = P.need
+        def need(condition, code):
+            if not condition and code == "cleanup_failed":
+                raise original
+            return original_need(condition, code)
+        with mock.patch.object(P, "need", side_effect=need), \
+             mock.patch.object(P, "case_layout_diagnostic", side_effect=OSError("private-content-canary")) as diagnostic, \
+             redirect_stdout(io.StringIO()) as output, self.assertRaises(P.ProducerError) as caught:
+            P.post_helper_preserved("listing", case, leases, baseline, probe=True)
+        self.assertIs(caught.exception, original)
+        diagnostic.assert_called_once()
+        self.assertNotIn("canary", output.getvalue())
+        self.assertTrue(case.is_dir())
+        with redirect_stdout(io.StringIO()) as output, self.assertRaises(P.ProducerError):
+            P.case_layout_diagnostic("private-name-canary", set(), set(), set(), set())
+        self.assertEqual(output.getvalue(), "")
+
     def test_post_helper_diagnostic_rejects_unknown_fields_and_unsafe_counts(self):
         summary = dict(entries=5, directories=5, files=0, total_bytes=0)
         base = dict(name="listing", stage="helper_comparison", location="helper_env", summary=summary,
