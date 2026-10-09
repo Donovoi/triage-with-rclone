@@ -14,7 +14,7 @@ if ($functions.Count -ne 1) { throw 'prepare_source_invalid' }
 $root = 'X:\synthetic'
 $cases = @(
     @('', 'unknown'), @($root, 'root'), @(($root + '\helper-env'), 'helper_root'),
-    @(($root + '\helper-env\profile\private-canary'), 'helper_descendant'),
+    @(($root + '\helper-env\profile\private-canary'), 'helper_profile_descendant'),
     @(($root + '\helper-env-other\profile'), 'other'), @(($root + '\profile\private-canary'), 'other'),
     @(($root + '\bridge-stdout.private'), 'bridge_log'), @(($root + '\bridge-stderr.private'), 'bridge_log'),
     @(($root + '\bridge-stdout.private-canary'), 'other'), @('private-canary', 'other')
@@ -22,9 +22,18 @@ $cases = @(
 foreach ($name in @('temp','home','profile','appdata','localappdata')) {
     $cases += ,@(($root + '\' + $name), 'application_root')
     $cases += ,@(($root + '\helper-env\' + $name), 'helper_private_root')
+    $cases += ,@(($root + '\HELPER-ENV\' + $name.ToUpperInvariant()), 'helper_private_root')
+    $direct = if ($name -ceq 'temp') { 'helper_temp_direct' } else { 'helper_' + $name + '_descendant' }
+    $deeper = if ($name -ceq 'temp') { 'helper_temp_deeper' } else { $direct }
+    $cases += ,@(($root + '\helper-env\' + $name + '\private-canary'), $direct)
+    $cases += ,@(($root + '\HELPER-ENV\' + $name.ToUpperInvariant() + '\private-canary'), $direct)
+    $cases += ,@(($root + '\helper-env\' + $name + '\private-canary\child'), $deeper)
+    $cases += ,@(($root + '\helper-env\' + $name + '-other\private-canary'), 'helper_descendant')
+    $cases += ,@(($root + '\helper-env\' + $name + '\'), 'helper_descendant')
 }
+$cases += ,@(($root + '\helper-env\unknown\private-canary'), 'helper_descendant')
 foreach ($case in $cases) {
     if ((Get-SetupNodeCategory $root $case[0]) -cne $case[1]) { throw 'prepare_category_failed' }
 }
 if ((Get-SetupNodeCategory '' 'private-canary') -cne 'unknown') { throw 'prepare_category_failed' }
-[Console]::Out.WriteLine('prepare_category_pure_passed:21')
+[Console]::Out.WriteLine('prepare_category_pure_passed:' + ($cases.Count + 1))
