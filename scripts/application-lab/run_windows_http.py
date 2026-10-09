@@ -152,8 +152,13 @@ def runtime_pins(path):
         raise ProducerError("binding_failed") from None
     keys = {"RCLONE_VERSION", "RCLONE_EXE_SHA256", "RCLONE_WINDOWS_ZIP_SHA256",
             "RCLONE_LINUX_ZIP_SHA256", "RCLONE_LINUX_EXE_SHA256"}
-    need(set(values) == keys and re.fullmatch(r"(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)", values["RCLONE_VERSION"]), "binding_failed")
-    need(all(re.fullmatch(r"[a-f0-9]{64}", values[key]) for key in keys - {"RCLONE_VERSION"}), "binding_failed")
+    architecture_keys = {"RCLONE_WINDOWS_X86_EXE_SHA256", "RCLONE_WINDOWS_X86_ZIP_SHA256",
+                         "RCLONE_WINDOWS_ARM64_EXE_SHA256", "RCLONE_WINDOWS_ARM64_ZIP_SHA256"}
+    need(set(values) in (keys, keys | architecture_keys), "binding_failed")
+    need(re.fullmatch(r"(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)", values["RCLONE_VERSION"]), "binding_failed")
+    need(all(re.fullmatch(r"[a-f0-9]{64}", values[key]) for key in values if key != "RCLONE_VERSION"), "binding_failed")
+    # This producer exercises the x64 application; the additional pins must be
+    # valid but must not replace the x64 runtime binding in its receipt.
     return {"version": values["RCLONE_VERSION"], "sha256": values["RCLONE_EXE_SHA256"], "platform": "windows"}
 
 

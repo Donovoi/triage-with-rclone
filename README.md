@@ -28,6 +28,8 @@ A new nightly is published after each merged PR passes the required checks. Buil
 
 See [test status and known gaps](rclone-triage/tests/provider_testing.md) for the detailed results.
 
+Current work: check that the Windows app copies sample files correctly and removes temporary files after errors or cancellation.
+
 ## What comes next
 
 - Finish tests for login, file lists, downloads, cancellation and cleanup across all providers.
