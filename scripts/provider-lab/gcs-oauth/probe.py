@@ -206,6 +206,7 @@ class Native:
 
     def start(self, arguments, ca_args=(), notice=False):
         require(len(self.records) < 4 and time.monotonic() < self.deadline, 'native_budget_exceeded')
+        arguments = tuple(arguments)
         index = len(self.records) + 1
         out, err = self.root / f'child-{index}.out', self.root / f'child-{index}.err'
         command = [str(self.binary), '--config', str(self.config), '--cache-dir', str(self.root / 'cache'),
@@ -214,7 +215,7 @@ class Native:
         with out.open('xb') as stdout, err.open('xb') as stderr:
             process = subprocess.Popen(command, cwd=self.root, env=self.env, stdin=subprocess.DEVNULL,
                                        stdout=stdout, stderr=stderr, start_new_session=True)
-        record = {'process': process, 'out': out, 'err': err, 'identity': None,
+        record = {'process': process, 'out': out, 'err': err, 'identity': None, 'arguments': arguments,
                   'deadline': min(self.deadline, time.monotonic() + 20)}
         self.records.append(record)
         try:
@@ -519,13 +520,21 @@ def callback_denial(mode, code, output, error, original, alternate):
     require(marker in error, 'expected_auth_denial_absent')
 
 
-def refresh_denial_output(code, output, expected_input):
+def copy_request_matches(arguments, destination):
+    # Bind the actual owned child's operation arguments. Loopback RC error
+    # responses do not echo input (v1.75.1 cmd/rc/rc.go errorf/doCall).
+    require(type(arguments) is tuple and arguments == (
+        'rc', '--loopback', 'operations/copyfile', 'srcFs=Synthetic:synthetic-bucket',
+        'srcRemote=' + MEMBER, 'dstFs=' + str(destination), 'dstRemote=' + MEMBER),
+        'copy_request_mismatch')
+
+
+def refresh_denial_output(code, output):
     require(type(code) is int and code > 0, 'refresh_denial_exit')
     data = strict_json(output)
-    require(type(data) is dict and set(data) == {'error', 'input', 'path', 'status'}
+    require(type(data) is dict and set(data) == {'error', 'path', 'status'}
             and data['path'] == 'operations/copyfile' and type(data['status']) is int and data['status'] == 500
-            and type(expected_input) is dict and type(data['input']) is dict and data['input'] == expected_input
-            and type(data['error']) is str
+            and type(data['error']) is str and data['error'].startswith('loopback: call failed: ')
             and 'invalid_grant: maybe token expired?' in data['error'], 'refresh_denial_result')
 
 
@@ -620,6 +629,7 @@ def run_case(binary, manifest, mode):
                     args = ['rc', '--loopback', 'operations/copyfile', 'srcFs=Synthetic:synthetic-bucket',
                             'srcRemote=' + MEMBER, 'dstFs=' + str(destination), 'dstRemote=' + MEMBER]
                     record = native.start(args, fixture.rclone_ca_args())
+                    copy_request_matches(record['arguments'], destination)
                     if mode == 'refresh_cancel':
                         while not state.refresh_received.wait(0.01):
                             native.check(record)
@@ -634,8 +644,7 @@ def run_case(binary, manifest, mode):
                     else:
                         code, output, _ = native.finish(record)
                         if mode == 'refresh_denied':
-                            refresh_denial_output(code, output, {'srcFs': 'Synthetic:synthetic-bucket',
-                                'srcRemote': MEMBER, 'dstFs': str(destination), 'dstRemote': MEMBER})
+                            refresh_denial_output(code, output)
                             report['checks']['refresh_denial'] = True
                         else:
                             require(code == 0 and strict_json(output) == {}, 'synthetic_read_failed')
