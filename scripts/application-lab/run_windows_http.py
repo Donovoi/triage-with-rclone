@@ -6,6 +6,7 @@ Imports perform no native work. Raw application/bridge diagnostics remain privat
 from __future__ import annotations
 
 import argparse
+from contextlib import ExitStack
 import csv
 from datetime import datetime, timezone
 import hashlib
@@ -180,6 +181,208 @@ def hidden():
     info.dwFlags |= subprocess.STARTF_USESHOWWINDOW
     info.wShowWindow = 0
     return {"startupinfo": info, "creationflags": subprocess.CREATE_NO_WINDOW}
+
+
+PRIVATE_DIRECTORIES = frozenset({"temp", "home", "profile", "appdata", "localappdata", "helper-env", "output",
+                                 "helper-env/temp", "helper-env/home", "helper-env/profile", "helper-env/appdata", "helper-env/localappdata"})
+PRIVATE_FILES = frozenset({"application.exe", "source.conf", "queue.csv", "bridge-stdout.private", "bridge-stderr.private"})
+CREATION_STAGES = frozenset({"validation", "bindings", "token", "sid", "descriptor", "parent", "create",
+                             "handle", "stream", "identity", "cleanup"})
+
+
+def private_creation_diagnostic(member, directory, stage):
+    # Fixed categories only: no SID, descriptor, exception, path or native error.
+    category = ("helper_root" if member == "helper-env" else "helper_private_root" if member in PRIVATE_DIRECTORIES and member.startswith("helper-env/")
+                else "application_root" if member in PRIVATE_DIRECTORIES else "bridge_log" if member in {"bridge-stdout.private", "bridge-stderr.private"}
+                else "harness_file" if member in PRIVATE_FILES else "unknown")
+    need(type(directory) is bool and stage in CREATION_STAGES, "case_setup_failed")
+    print("application_creation_diagnostic=" + json.dumps(dict(category=category, stage=stage), sort_keys=True, separators=(",", ":")))
+
+
+def private_sddl(sid, directory):
+    need(type(sid) is str and re.fullmatch(r"S-1-[0-9]+(?:-[0-9]+){1,15}", sid, flags=re.ASCII) and
+         len(sid) <= 184 and type(directory) is bool, "case_setup_failed")
+    inherit = "OICI" if directory else ""
+    return f"O:{sid}D:P(A;{inherit};FA;;;{sid})(A;{inherit};FA;;;SY)"
+
+
+def _native_private_create(case, path, directory):
+    """Hosted-only creation. No token mutation, post-creation ACL repair or reopen-to-write."""
+    hosted_guard()
+    import ctypes as c
+    from ctypes import wintypes as w
+    import msvcrt
+
+    kernel = c.WinDLL("kernel32.dll", use_last_error=True, winmode=0x800)
+    security = c.WinDLL("advapi32.dll", use_last_error=True, winmode=0x800)
+    class Attributes(c.Structure):
+        _fields_ = [("length", w.DWORD), ("descriptor", c.c_void_p), ("inherit", w.BOOL)]
+    class TokenUser(c.Structure):
+        _fields_ = [("sid", c.c_void_p), ("attributes", w.DWORD)]
+    class FileInfo(c.Structure):
+        _fields_ = [("attributes", w.DWORD), ("creation", w.FILETIME), ("access", w.FILETIME),
+                    ("write", w.FILETIME), ("volume", w.DWORD), ("size_high", w.DWORD),
+                    ("size_low", w.DWORD), ("links", w.DWORD), ("index_high", w.DWORD), ("index_low", w.DWORD)]
+    def bind(library, name, result, *arguments):
+        call = getattr(library, name)
+        call.restype, call.argtypes = result, list(arguments)
+        return call
+    current_process = bind(kernel, "GetCurrentProcess", w.HANDLE)
+    close = bind(kernel, "CloseHandle", w.BOOL, w.HANDLE)
+    free = bind(kernel, "LocalFree", c.c_void_p, c.c_void_p)
+    open_token = bind(security, "OpenProcessToken", w.BOOL, w.HANDLE, w.DWORD, c.POINTER(w.HANDLE))
+    token_info = bind(security, "GetTokenInformation", w.BOOL, w.HANDLE, c.c_int, c.c_void_p, w.DWORD, c.POINTER(w.DWORD))
+    sid_text = bind(security, "ConvertSidToStringSidW", w.BOOL, c.c_void_p, c.POINTER(c.c_void_p))
+    descriptor = bind(security, "ConvertStringSecurityDescriptorToSecurityDescriptorW", w.BOOL,
+                      w.LPCWSTR, w.DWORD, c.POINTER(c.c_void_p), c.POINTER(w.DWORD))
+    mkdir = bind(kernel, "CreateDirectoryW", w.BOOL, w.LPCWSTR, c.POINTER(Attributes))
+    create = bind(kernel, "CreateFileW", w.HANDLE, w.LPCWSTR, w.DWORD, w.DWORD, c.POINTER(Attributes), w.DWORD, w.DWORD, w.HANDLE)
+    information = bind(kernel, "GetFileInformationByHandle", w.BOOL, w.HANDLE, c.POINTER(FileInfo))
+    final_path = bind(kernel, "GetFinalPathNameByHandleW", w.DWORD, w.HANDLE, w.LPWSTR, w.DWORD, w.DWORD)
+    invalid = c.c_void_p(-1).value
+    stage = "token"
+    def close_handle(handle):
+        nonlocal stage
+        if not close(handle):
+            stage = "cleanup"
+            raise ProducerError("cleanup_failed")
+    def free_memory(pointer):
+        nonlocal stage
+        if free(pointer):
+            stage = "cleanup"
+            raise ProducerError("cleanup_failed")
+    def valid_handle(handle):
+        need(handle not in (None, 0, invalid), "case_setup_failed")
+        return handle
+    def check_handle(handle, expected, is_directory):
+        info, name = FileInfo(), c.create_unicode_buffer(32768)
+        need(information(handle, c.byref(info)), "case_setup_failed")
+        length = final_path(handle, name, len(name), 0)
+        need(0 < length < len(name) and same_path(name.value, expected), "preservation_failed")
+        need(not info.attributes & 0x400 and bool(info.attributes & 0x10) == is_directory, "preservation_failed")
+        if not is_directory:
+            need(info.links == 1 and info.size_high == 0 and info.size_low == 0, "preservation_failed")
+
+    stream, fd = None, None
+    try:
+        with ExitStack() as resources:
+            token, count = w.HANDLE(), w.DWORD()
+            need(open_token(current_process(), 0x0008, c.byref(token)), "case_setup_failed")  # TOKEN_QUERY only.
+            resources.callback(close_handle, token)
+            valid_handle(token.value)
+            need(not token_info(token, 1, None, 0, c.byref(count)) and 0 < count.value <= 65536, "case_setup_failed")
+            buffer = c.create_string_buffer(count.value)
+            need(token_info(token, 1, buffer, len(buffer), c.byref(count)) and
+                 c.sizeof(TokenUser) <= count.value <= len(buffer), "case_setup_failed")
+            user = c.cast(buffer, c.POINTER(TokenUser)).contents
+            stage = "sid"
+            text_pointer = c.c_void_p()
+            need(sid_text(user.sid, c.byref(text_pointer)), "case_setup_failed")
+            resources.callback(free_memory, text_pointer)
+            need(text_pointer.value, "case_setup_failed")
+            sddl = private_sddl(c.wstring_at(text_pointer), directory)
+            stage = "descriptor"
+            sd, sd_length = c.c_void_p(), w.DWORD()
+            need(descriptor(sddl, 1, c.byref(sd), c.byref(sd_length)), "case_setup_failed")
+            resources.callback(free_memory, sd)
+            need(sd.value and 0 < sd_length.value <= 65536, "case_setup_failed")
+            attributes = Attributes(c.sizeof(Attributes), sd, False)
+            # Pin the case and immediate parent against rename/deletion while creating.
+            stage = "parent"
+            for parent in dict.fromkeys((case, path.parent)):
+                handle = valid_handle(create(str(parent), 0x80, 3, None, 3, 0x02200000, None))
+                resources.callback(close_handle, handle)
+                check_handle(handle, parent, True)
+            if directory:
+                stage = "create"
+                need(mkdir(str(path), c.byref(attributes)), "case_setup_failed")
+                stage = "handle"
+                handle = valid_handle(create(str(path), 0x80, 3, None, 3, 0x02200000, None))
+                resources.callback(close_handle, handle)
+                check_handle(handle, path, True)
+            else:
+                stage = "create"
+                handle = valid_handle(create(str(path), 0x40000080, 1, c.byref(attributes), 1, 0x00200080, None))
+                raw_owner = [handle]
+                resources.callback(lambda: close_handle(raw_owner[0]) if raw_owner[0] is not None else None)
+                stage = "handle"
+                check_handle(handle, path, False)
+                stage = "stream"
+                fd = msvcrt.open_osfhandle(handle, os.O_WRONLY | os.O_BINARY | os.O_NOINHERIT)
+                need(type(fd) is int and fd >= 0, "case_setup_failed")
+                raw_owner[0] = None  # Successful transfer: only the CRT/file stream may close it.
+                stream = os.fdopen(fd, "wb", buffering=0)
+                fd = None
+                need(not os.get_inheritable(stream.fileno()), "preservation_failed")
+        return stream
+    except BaseException as error:
+        try:
+            if stream is not None:
+                stream.close()
+            elif fd is not None and fd >= 0:
+                os.close(fd)
+        except BaseException:
+            stage, error = "cleanup", ProducerError("cleanup_failed")
+        failure = error if isinstance(error, ProducerError) else ProducerError("case_setup_failed")
+        failure.creation_stage = stage
+        raise failure from None
+
+
+def _private_create(case, member, directory):
+    hosted_guard()
+    need(type(member) is str and member in (PRIVATE_DIRECTORIES if directory else PRIVATE_FILES), "case_setup_failed")
+    case = Path(case).absolute()
+    path = case / member
+    stage = "validation"
+    stream = None
+    try:
+        original, parent = identity(case), identity(path.parent)
+        stage = "bindings"
+        stream = _native_private_create(case, path, directory)
+        stage = "identity"
+        need(identity(case) == original and identity(path.parent) == parent, "preservation_failed")
+        if directory:
+            need(stream is None, "case_setup_failed")
+            plain(path, True)
+        else:
+            info = plain(path)
+            opened = os.fstat(stream.fileno())
+            need(stat.S_ISREG(opened.st_mode) and opened.st_nlink == 1 and opened.st_size == info.st_size == 0 and
+                 (opened.st_dev, opened.st_ino) == (info.st_dev, info.st_ino), "preservation_failed")
+        return stream
+    except BaseException as error:
+        try:
+            if stream is not None:
+                stream.close()
+        except BaseException:
+            stage, error = "cleanup", ProducerError("cleanup_failed")
+        try:
+            private_creation_diagnostic(member, directory, getattr(error, "creation_stage", stage))
+        except BaseException:
+            pass
+        if isinstance(error, ProducerError):
+            raise error from None
+        raise ProducerError("case_setup_failed") from None
+
+
+def private_directory(case, member):
+    _private_create(case, member, True)
+
+
+def private_file(case, member):
+    return _private_create(case, member, False)
+
+
+def private_write(case, member, data):
+    lease = identity(case)
+    with private_file(case, member) as stream:
+        opened = os.fstat(stream.fileno())
+        need(stream.write(data) == len(data), "case_setup_failed")
+        stream.flush()
+        os.fsync(stream.fileno())
+        last = plain(case / member)
+        need(identity(case) == lease and (last.st_dev, last.st_ino, last.st_size) ==
+             (opened.st_dev, opened.st_ino, len(data)), "preservation_failed")
 
 
 def environment(case):
@@ -450,39 +653,54 @@ class Bridge:
         # PS5.1 writes this optional cache asynchronously after module imports.
         # Disable it only for the helper; keep all residue checks unchanged.
         env["PSModuleAnalysisCachePath"] = "nul"
-        try:
-            self.process = subprocess.Popen([powershell(), "-NoProfile", "-NonInteractive", "-File", str(HERE / "hosted_session.ps1")],
-                cwd=case, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **hidden())
-        except BaseException:
+        # Both new, explicitly owned logs exist before any helper can start.
+        # Unbuffered streams have no buffered-writer lock to strand on failure.
+        with ExitStack() as logs:
+            output = {name: logs.enter_context(private_file(case, "bridge-" + name + ".private"))
+                      for name in ("stdout", "stderr")}
             try:
-                session_diagnostic("invalid", "launch", "launch_failed")
+                self.process = subprocess.Popen([powershell(), "-NoProfile", "-NonInteractive", "-File", str(HERE / "hosted_session.ps1")],
+                    cwd=case, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **hidden())
             except BaseException:
-                pass
-            raise
-        try:
-            for stream, name in ((self.process.stdout, "stdout"), (self.process.stderr, "stderr")):
-                thread = threading.Thread(target=self._reader, args=(stream, name), daemon=True)
-                thread.start()
-                self.threads.append(thread)
-            self.watchdog = threading.Thread(target=self._watch, daemon=True)
-            self.watchdog.start()
-        except BaseException:
-            self._diagnostic("invalid", "reader_start", "thread_failed")
-            self.forced = True
-            self.process.kill()
-            self.process.wait(timeout=5)
-            raise
+                self._diagnostic("invalid", "launch", "launch_failed")
+                raise
+            try:
+                for stream, name in ((self.process.stdout, "stdout"), (self.process.stderr, "stderr")):
+                    thread = threading.Thread(target=self._reader, args=(stream, name, output[name]), daemon=True)
+                    thread.start()
+                    self.threads.append(thread)
+                self.watchdog = threading.Thread(target=self._watch, daemon=True)
+                self.watchdog.start()
+            except BaseException:
+                self._diagnostic("invalid", "reader_start", "thread_failed")
+                self.forced = True
+                self.done.set()
+                try:
+                    self.process.kill()
+                    self.process.wait(timeout=5)
+                finally:
+                    try:
+                        for thread in self.threads:
+                            thread.join(2)
+                    finally:
+                        with ExitStack() as pipes:
+                            pipes.callback(self.process.stdin.close)
+                            for index, pipe in enumerate((self.process.stdout, self.process.stderr)):
+                                if index >= len(self.threads) or not self.threads[index].is_alive():
+                                    pipes.callback(pipe.close)
+                raise
+            logs.pop_all()  # Each started reader now owns exactly its log stream.
 
-    def _reader(self, stream, name):
+    def _reader(self, stream, name, log):
         total, buffer = 0, bytearray()
         try:
-            with (self.case / ("bridge-" + name + ".private")).open("xb") as log:
+            with log:
                 while data := stream.read1(4096):
                     total += len(data)
                     if total > 1024 * 1024:
                         self.failed.set()
                         return
-                    log.write(data)
+                    need(log.write(data) == len(data), "session_failed")
                     if name == "stderr":
                         with self.response_lock:
                             if len(self.stage_bytes) + len(data) > 4096:
@@ -678,13 +896,13 @@ PRESTART_STAGES = frozenset({"helper_identity", "helper_inventory", "helper_limi
 def create_private_roots(case):
     leases = {"application": {}, "helper": {}}
     for name in PRIVATE_LOCATIONS:
-        (case / name).mkdir()
+        private_directory(case, name)
         leases["application"][name] = identity(case / name)
     helper = case / "helper-env"
-    helper.mkdir()
+    private_directory(case, "helper-env")
     leases["helper_root"] = identity(helper)
     for name in PRIVATE_LOCATIONS:
-        (helper / name).mkdir()
+        private_directory(case, "helper-env/" + name)
         leases["helper"][name] = identity(helper / name)
     return leases
 
@@ -1003,16 +1221,13 @@ def run_case(name, suite, application, application_sha, runtime, session_factory
         prepared = True
         lease = identity(case)
         private_leases = create_private_roots(case)
-        (case / "output").mkdir()
+        private_directory(case, "output")
         # Cargo may hardlink the release output. Only this read permits links;
         # the helper locks and executes a fresh, single-link owned copy.
         application_bytes = read(application, 512 * 1024 * 1024, allow_hardlinks=True)
         need(sha(application_bytes) == application_sha, "binding_failed")
         owned_application = case / "application.exe"
-        with owned_application.open("xb") as stream:
-            stream.write(application_bytes)
-            stream.flush()
-            os.fsync(stream.fileno())
+        private_write(case, "application.exe", application_bytes)
         del application_bytes
         need(sha(read(owned_application, 512 * 1024 * 1024)) == application_sha, "binding_failed")
         state = F.AppHttpState(payloads(), "baseline" if name == "acquisition" else name)
@@ -1021,9 +1236,9 @@ def run_case(name, suite, application, application_sha, runtime, session_factory
         server = context.__enter__()
         entered = True
         config_bytes = ("[Synthetic]\ntype = http\nurl = " + server.endpoint + "\n").encode("ascii")
-        (case / "source.conf").write_bytes(config_bytes)
+        private_write(case, "source.conf", config_bytes)
         if name != "listing":
-            (case / "queue.csv").write_bytes(queue_bytes(name))
+            private_write(case, "queue.csv", queue_bytes(name))
         deadline = time.monotonic() + CASE_SECONDS
         session_attempted = True
         bridge = session_factory(case)

@@ -120,6 +120,38 @@ namespace TriageApplicationLab {
             }
             Require(user && system);
         }
+        static FileStream CreateTranscript(string path) {
+            // Assign ownership in CREATE_NEW itself. Inherited permissions do
+            // not override the process token's default owner on Windows.
+            var sid=WindowsIdentity.GetCurrent().User;
+            var acl=new FileSecurity(); acl.SetOwner(sid); acl.SetAccessRuleProtection(true,false);
+            foreach(var principal in new SecurityIdentifier[]{sid,new SecurityIdentifier("S-1-5-18")})
+                acl.AddAccessRule(new FileSystemAccessRule(principal,FileSystemRights.FullControl,AccessControlType.Allow));
+            var stream=new FileStream(path,FileMode.CreateNew,FileSystemRights.Write|FileSystemRights.ReadPermissions,
+                FileShare.Read,4096,FileOptions.None,acl);
+            try {
+                FileInfo info; Require(GetFileInformationByHandle(stream.SafeFileHandle.DangerousGetHandle(),out info));
+                Require(info.links==1 && info.sizeHigh==0 && info.sizeLow==0 &&
+                    (info.attributes&((uint)FileAttributes.ReparsePoint|(uint)FileAttributes.Directory))==0);
+                var finalPath=new StringBuilder(4096);
+                uint n=GetFinalPathNameByHandleW(stream.SafeFileHandle.DangerousGetHandle(),finalPath,4096,0);
+                Require(n>0 && n<4096); string actual=finalPath.ToString();
+                if(actual.StartsWith(@"\\?\")) actual=actual.Substring(4);
+                Require(String.Equals(FullPath(actual),path,StringComparison.OrdinalIgnoreCase));
+                var observed=stream.GetAccessControl();
+                Require(observed.AreAccessRulesProtected && observed.GetOwner(typeof(SecurityIdentifier)).Value==sid.Value);
+                bool user=false,system=false;
+                foreach(FileSystemAccessRule rule in observed.GetAccessRules(true,true,typeof(SecurityIdentifier))) {
+                    string who=rule.IdentityReference.Value;
+                    Require(rule.AccessControlType==AccessControlType.Allow && (who==sid.Value||who=="S-1-5-18"));
+                    Require((rule.FileSystemRights&FileSystemRights.FullControl)==FileSystemRights.FullControl &&
+                        rule.InheritanceFlags==InheritanceFlags.None && rule.PropagationFlags==PropagationFlags.None);
+                    if(who==sid.Value) user=true; else system=true;
+                }
+                Require(user && system);
+                return stream;
+            } catch { stream.Dispose(); throw; }
+        }
         public static string Quote(string value) {
             Require(PlainText(value,4096));
             var result=new StringBuilder("\""); int slashes=0;
@@ -198,7 +230,7 @@ namespace TriageApplicationLab {
                 Require(CreatePseudoConsole(new Coord {x=120,y=34},inRead,outWrite,0,out s.console)==0);
                 s.input=new FileStream(new SafeFileHandle(inWrite,true),FileAccess.Write,4096,false); inWrite=IntPtr.Zero;
                 s.output=new FileStream(new SafeFileHandle(outRead,true),FileAccess.Read,4096,false); outRead=IntPtr.Zero;
-                s.transcript=new FileStream(transcriptPath,FileMode.CreateNew,FileAccess.Write,FileShare.Read);
+                s.transcript=CreateTranscript(transcriptPath);
                 s.reader=new Thread(s.ReadLoop); s.reader.IsBackground=true; s.reader.Start();
                 IntPtr size=IntPtr.Zero; InitializeProcThreadAttributeList(IntPtr.Zero,1,0,ref size); Require(size!=IntPtr.Zero);
                 attrs=Marshal.AllocHGlobal(size); Require(InitializeProcThreadAttributeList(attrs,1,0,ref size)); initialized=true;
