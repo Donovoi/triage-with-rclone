@@ -78,7 +78,8 @@ def main():
     return Frame().panel("rclone-triage // mission menu", ["[AUTH] Browser auth on suspect device", "[CONFIG] Use configuration"], top=4, height=25, focus=0)
 
 
-def provider(backend="drive", *, count=3, dynamic=True, marker=">", style=FOCUS):
+def provider(backend="drive", *, count=3, dynamic=True, marker=">", style=FOCUS,
+             checked=(), checked_total=None):
     names = {"drive": "Google Drive", "local": "Local", "http": "HTTP", "combine": "Combine several remotes into one", "gcs": "Google Cloud Storage (this is not Google Drive)", "s3": S3_LABEL}
     order = ("combine", "gcs", "drive", "http", "local") if count == 5 else ("s3", "combine", "gcs", "drive", "http", "local") if count == 6 else ("drive", "local", "http")
     index = order.index(backend)
@@ -91,17 +92,18 @@ def provider(backend="drive", *, count=3, dynamic=True, marker=">", style=FOCUS)
             if row >= 29:
                 break
             prefix = marker+" " if item_index == index and part_index == 0 else "  "
-            content = ("[ ] " if part_index == 0 else "    ")+part
+            content = (("[x] " if item in checked else "[ ] ") if part_index == 0 else "    ")+part
             # Unselected rows may be clipped by List's reserved marker columns.
             result.put(row, 1, (prefix+content)[:76], style if item_index == index else PLAIN)
             row += 1
     # Discovery drops Description when it equals display_name; do not duplicate
     # the long S3 label and invent a Status layout that the app never emits.
-    logical = ["Mode: Authenticate", f"Selected: {names[backend]}", f"Backend: {backend}", "Auth: Unknown/manual", "Hashes: unknown", "", f"Providers: {count}", "Last update: 2026-10-10 12:00:00", "Last error: none"]
+    total = len(checked) if checked_total is None else checked_total
+    logical = ["Mode: Authenticate with the chosen Browsers & Providers (TO BE RUN ON SUSPECT DEVICE)", f"Checked: {total} of {count}", f"Selected: {names[backend]}", f"Backend: {backend}", "Auth: Unknown/manual", "Hashes: unknown", "", f"Providers: {count}", "Last update: 2026-10-10 12:00:00", "Last error: none"]
     logical += [f"Status: Loaded {count} providers from rclone."] if dynamic else ["Status: Provider discovery failed.", "Using built-in list."]
     physical = [part for line in logical for part in (textwrap.wrap(line, width=40) if line else [""])]
     result.panel("Status", [], left=78, width=42, height=30)
-    for index, line in enumerate(physical):
+    for index, line in enumerate(physical[:28]):
         result.put(index+1, 79, line)
     return result
 
@@ -150,11 +152,11 @@ def postauth():
 
 def back_steps(remote="TuiHttpA", selected=None, from_complete=False):
     steps = [("key", "backspace", files(remote, selected))] if from_complete else []
-    return steps + [("key", "backspace", postauth()), ("key", "backspace", Frame().panel("Authentication", ["Authenticated: HTTP"])), ("key", "backspace", Frame().panel("Browsers", ["System Default"])), ("key", "backspace", provider("http", dynamic=False)), ("key", "backspace", main())]
+    return steps + [("key", "backspace", postauth()), ("key", "backspace", Frame().panel("Authentication", ["Authenticated: HTTP"])), ("key", "backspace", Frame().panel("Browsers", ["System Default"])), ("key", "backspace", provider("http", dynamic=False, checked=("http",))), ("key", "backspace", main())]
 
 
 def setup_steps(remote="TuiHttpA", url=URL_A, *, listing=None):
-    return [("key", "enter", provider()), ("key", "down", provider("local")), ("key", "down", provider("http")), ("key", "enter", prompt("Remote Name")), ("text", remote, prompt("Remote Name", remote)), ("key", "enter", prompt("Required Option")), ("text", url, prompt("Required Option", url)), ("key", "enter", prompt("Backend Option Key")), ("key", "enter", listing or files(remote))]
+    return [("key", "enter", provider()), ("key", "down", provider("local")), ("key", "down", provider("http")), ("key", "space", provider("http", checked=("http",))), ("key", "enter", prompt("Remote Name")), ("text", remote, prompt("Remote Name", remote)), ("key", "enter", prompt("Required Option")), ("text", url, prompt("Required Option", url)), ("key", "enter", prompt("Backend Option Key")), ("key", "enter", listing or files(remote))]
 
 
 def select_steps(member="README-synthetic.txt", remote="TuiHttpA", *, highlighted=None, checked=None):
@@ -265,12 +267,93 @@ class NavigationTests(unittest.TestCase):
         self.assertEqual(n.state, "files")
 
     def test_remote_prompt_cancel_then_reopen_without_config_submission(self):
-        steps = setup_steps()[:4] + [("key", "escape", provider("http")), ("key", "enter", prompt("Remote Name"))]
+        steps = setup_steps()[:5] + [("key", "escape", provider("http", checked=("http",))), ("key", "space", provider("http")), ("key", "space", provider("http", checked=("http",))), ("key", "enter", prompt("Remote Name"))]
         n, c = self.navigation(steps)
         n.wait_main(); n.open_manual_http(); n.cancel_remote_prompt(); n.open_manual_http()
         self.assertEqual(n.state, "remote_prompt")
         self.assertFalse(n.configured)
         self.assertFalse(any(kind == "text" for kind, _, _ in c.inputs))
+        self.assertEqual([(kind, value) for kind, value, _ in c.inputs][-4:],
+                         [("key", "escape"), ("key", "space"), ("key", "space"), ("key", "enter")])
+
+    def test_http_requires_observed_zero_then_checked_one_before_enter(self):
+        n, c = self.navigation(setup_steps()[:5])
+        n.wait_main(); n.open_manual_http()
+        self.assertEqual([(kind, value) for kind, value, _ in c.inputs],
+                         [("key", "enter"), ("key", "down"), ("key", "down"),
+                          ("key", "space"), ("key", "enter")])
+        self.assertEqual(n.state, "remote_prompt")
+        self.assertFalse(c.steps)
+
+    def test_initial_hidden_visible_or_malformed_checks_prevent_space(self):
+        invalid = [provider("http", checked_total=1),
+                   provider("http", checked=("local",), checked_total=0),
+                   provider("http", checked=("http",)),
+                   provider("http").put(4, 79, "Checked: 0 of 4".ljust(40)),
+                   provider("http").put(4, 79, "Checked: 0 of 3 extra".ljust(40)),
+                   provider("http").put(4, 79, " ".ljust(40)),
+                   provider("http").put(28, 79, "Checked: 0 of 3".ljust(40))]
+        for screen in invalid:
+            with self.subTest(lines=screen.lines()[4]):
+                n, c = self.navigation([("key", "enter", screen)])
+                n.wait_main()
+                self.rejected(n.open_manual_http, "navigation_timeout")
+                self.assertEqual([(k, v) for k, v, _ in c.inputs], [("key", "enter")])
+
+    def test_space_requires_exact_styled_http_and_complete_catalog_count(self):
+        invalid = [provider("http"), provider("http", checked_total=1),
+                   provider("http", checked=("http",), checked_total=2),
+                   provider("http", checked=("http", "local"), checked_total=1),
+                   provider("local", checked=("local",)),
+                   provider("http", checked=("http",), style=PLAIN),
+                   provider("http", checked=("http",), count=4),
+                   provider("http", checked=("http",)).put(4, 79, "Checked: 1 of 4".ljust(40)),
+                   provider("http", checked=("http",)).put(28, 79, "Checked: 1 of 3".ljust(40))]
+        for screen in invalid:
+            with self.subTest(lines=screen.lines()[4]):
+                n, c = self.navigation([("key", "enter", provider("http")), ("key", "space", screen)])
+                n.wait_main()
+                self.rejected(n.open_manual_http, "navigation_timeout")
+                self.assertEqual([(k, v) for k, v, _ in c.inputs], [("key", "enter"), ("key", "space")])
+                self.rejected(n.open_manual_http, "navigation_failed")
+
+    def test_prompt_cancel_requires_retained_http_before_deselecting(self):
+        for screen in (provider("http"), provider("http", checked=("http",), checked_total=2),
+                       provider("local", checked=("local",))):
+            n, c = self.navigation(setup_steps()[:5] + [("key", "escape", screen)])
+            n.wait_main(); n.open_manual_http()
+            self.rejected(n.cancel_remote_prompt, "navigation_timeout")
+            self.assertEqual([(k, v) for k, v, _ in c.inputs][-1], ("key", "escape"))
+            self.assertFalse(n.configured)
+
+    def test_prompt_cancel_requires_observed_clear_and_cannot_retry_on_uncertainty(self):
+        for screen in (provider("http", checked=("http",)), provider("http", checked_total=1)):
+            n, c = self.navigation(setup_steps()[:5] + [
+                ("key", "escape", provider("http", checked=("http",))), ("key", "space", screen)])
+            n.wait_main(); n.open_manual_http()
+            self.rejected(n.cancel_remote_prompt, "navigation_timeout")
+            count = len(c.inputs)
+            self.rejected(n.open_manual_http, "navigation_failed")
+            self.assertEqual(len(c.inputs), count)
+
+    def test_prompt_cancel_back_to_main_does_not_toggle_again(self):
+        n, c = self.navigation(setup_steps()[:5] + [
+            ("key", "escape", provider("http", checked=("http",))),
+            ("key", "space", provider("http")), ("key", "backspace", main())])
+        n.wait_main(); n.open_manual_http(); n.cancel_remote_prompt(); n.back_to_main()
+        self.assertEqual(n.state, "main")
+        self.assertFalse(c.steps)
+        self.assertEqual([(k, v) for k, v, _ in c.inputs].count(("key", "space")), 2)
+
+    def test_main_reset_must_clear_retained_provider_check_before_new_setup(self):
+        n, c = self.navigation(setup_steps() + back_steps() + [
+            ("key", "enter", provider("http", checked=("http",)))])
+        self.setup(n); n.back_to_main()
+        prior = len(c.inputs)
+        n.wait_main()
+        self.rejected(n.open_manual_http, "navigation_timeout")
+        self.assertEqual([(k, v) for k, v, _ in c.inputs[prior:]], [("key", "enter")])
+        self.assertEqual(n.configured, {"TuiHttpA": URL_A})
 
     def test_dynamic_count_without_loaded_status_cannot_enter_provider(self):
         n, c = self.navigation([("key", "enter", provider("http", dynamic=False))])
@@ -296,7 +379,7 @@ class NavigationTests(unittest.TestCase):
             self.assertEqual(len(c.inputs), 1)
 
     def test_backend_status_change_without_matching_selected_row_is_refused(self):
-        mismatch = provider("local").put(2, 79, "Selected: Google Drive".ljust(40))
+        mismatch = provider("local").put(5, 79, "Selected: Google Drive".ljust(40))
         n, c = self.navigation([("key", "enter", provider()), ("key", "down", mismatch)])
         n.wait_main()
         self.rejected(n.open_manual_http)
@@ -305,11 +388,11 @@ class NavigationTests(unittest.TestCase):
     def test_wrapped_combine_and_gcs_status_traversal_reaches_http(self):
         combine, gcs = provider("combine", count=5), provider("gcs", count=5)
         # Literal expectations independently bind the physical40-column wrap.
-        self.assertEqual(combine.lines()[2][79:119].rstrip(), "Selected: Combine several remotes into")
-        self.assertEqual(combine.lines()[3][79:119].rstrip(), "one")
-        self.assertEqual(gcs.lines()[2][79:119].rstrip(), "Selected: Google Cloud Storage (this is")
-        self.assertEqual(gcs.lines()[3][79:119].rstrip(), "not Google Drive)")
-        steps = [("key", "enter", combine), ("key", "down", gcs), ("key", "down", provider("drive", count=5)), ("key", "down", provider("http", count=5)), ("key", "enter", prompt("Remote Name"))]
+        self.assertEqual(combine.lines()[5][79:119].rstrip(), "Selected: Combine several remotes into")
+        self.assertEqual(combine.lines()[6][79:119].rstrip(), "one")
+        self.assertEqual(gcs.lines()[5][79:119].rstrip(), "Selected: Google Cloud Storage (this is")
+        self.assertEqual(gcs.lines()[6][79:119].rstrip(), "not Google Drive)")
+        steps = [("key", "enter", combine), ("key", "down", gcs), ("key", "down", provider("drive", count=5)), ("key", "down", provider("http", count=5)), ("key", "space", provider("http", count=5, checked=("http",))), ("key", "enter", prompt("Remote Name"))]
         n, c = self.navigation(steps)
         n.wait_main(); n.open_manual_http()
         self.assertEqual(n.state, "remote_prompt")
@@ -320,7 +403,7 @@ class NavigationTests(unittest.TestCase):
     def test_wrapped_selected_field_refuses_missing_extra_duplicate_or_wrong_continuation(self):
         for replacement in ("", "other provider", "Backend: gcs", "Selected: one", "Description: one"):
             with self.subTest(replacement=replacement):
-                changed = provider("combine", count=5).put(3, 79, replacement.ljust(40))
+                changed = provider("combine", count=5).put(6, 79, replacement.ljust(40))
                 n, c = self.navigation([("key", "enter", changed)])
                 n.wait_main()
                 self.rejected(n.open_manual_http)
@@ -330,9 +413,9 @@ class NavigationTests(unittest.TestCase):
         changed = provider("combine", count=5)
         # Keep the full expected label in a later Description; omit its actual
         # Selected continuation. The field boundary must not search/fill it.
-        changed.put(3, 79, "Description: one".ljust(40))
-        changed.put(4, 79, "Auth: Unknown/manual".ljust(40))
-        changed.put(5, 79, "Backend: combine".ljust(40))
+        changed.put(6, 79, "Description: one".ljust(40))
+        changed.put(7, 79, "Auth: Unknown/manual".ljust(40))
+        changed.put(8, 79, "Backend: combine".ljust(40))
         n, c = self.navigation([("key", "enter", changed)])
         n.wait_main()
         self.rejected(n.open_manual_http)
@@ -343,7 +426,10 @@ class NavigationTests(unittest.TestCase):
         self.assertEqual(first.lines()[1][1:77].rstrip(), "> [ ] Amazon S3 Compliant Storage Providers including AWS, Alibaba,")
         self.assertEqual(first.lines()[2][1:77].rstrip(), "      ArvanCloud, BizflyCloud, Ceph, ChinaMobile, Cloudflare, Cubbit,")
         self.assertIn("Backend: s3", [line[79:119].strip() for line in first.lines()])
-        steps = [("key", "enter", first)] + [("key", "down", provider(name, count=6)) for name in ("combine", "gcs", "drive", "http")] + [("key", "enter", prompt("Remote Name"))]
+        self.assertEqual(first.lines()[4][79:119].rstrip(), "Checked: 0 of 6")
+        self.assertEqual(first.lines()[27][79:119].rstrip(), "Last error: none")
+        self.assertEqual(first.lines()[28][79:119].rstrip(), "Status: Loaded 6 providers from rclone.")
+        steps = [("key", "enter", first)] + [("key", "down", provider(name, count=6)) for name in ("combine", "gcs", "drive", "http")] + [("key", "space", provider("http", count=6, checked=("http",))), ("key", "enter", prompt("Remote Name"))]
         n, c = self.navigation(steps)
         n.wait_main(); n.open_manual_http()
         self.assertEqual(n.state, "remote_prompt")
@@ -381,21 +467,21 @@ class NavigationTests(unittest.TestCase):
     def test_only_frozen_remote_and_literal_owned_loopback_inputs_are_accepted(self):
         pairs = [("Other", URL_A), ("TuiHttpA", "http://localhost:45121/"), ("TuiHttpA", "http://127.0.0.1:65536/"), ("TuiHttpA", "https://127.0.0.1:45121/"), ("TuiHttpA", URL_A+"extra"), ("TuiHttpA", "http://user@127.0.0.1:45121/"), ("TuiHttpA", "http://127.0.0.1:04512/")]
         for remote, url in pairs:
-            n, c = self.navigation(setup_steps()[:4])
+            n, c = self.navigation(setup_steps()[:5])
             n.wait_main(); n.open_manual_http()
             count = len(c.inputs)
             self.rejected(lambda: n.configure_http(remote, url), "navigation_input")
             self.assertEqual(len(c.inputs), count)
 
     def test_second_remote_cannot_reuse_first_endpoint(self):
-        n, c = self.navigation(setup_steps() + back_steps() + setup_steps("TuiHttpB", URL_B)[:4])
+        n, c = self.navigation(setup_steps() + back_steps() + setup_steps("TuiHttpB", URL_B)[:5])
         self.setup(n); n.back_to_main(); n.open_manual_http()
         count = len(c.inputs)
         self.rejected(lambda: n.configure_http("TuiHttpB", URL_A), "navigation_input")
         self.assertEqual(len(c.inputs), count)
 
     def test_wrong_prompt_and_missing_echo_prevent_next_submission(self):
-        for index, wrong in ((4, prompt("Remote Name")), (5, prompt("Required Option", hint="Required option: password")), (6, prompt("Required Option")), (7, prompt("Backend Option Key", "token"))):
+        for index, wrong in ((5, prompt("Remote Name")), (6, prompt("Required Option", hint="Required option: password")), (7, prompt("Required Option")), (8, prompt("Backend Option Key", "token"))):
             steps = setup_steps()
             kind, text, _ = steps[index]
             steps[index] = (kind, text, wrong)
@@ -414,11 +500,11 @@ class NavigationTests(unittest.TestCase):
         # Removing the actual echo cannot be replaced by a hint-only proof.
         missing = prompt("Required Option").put(21, 13, " " * 94)
         steps = setup_steps()
-        steps[5] = ("key", "enter", missing)
+        steps[6] = ("key", "enter", missing)
         n, c = self.navigation(steps)
         n.wait_main(); n.open_manual_http()
         self.rejected(lambda: n.configure_http("TuiHttpA", URL_A))
-        self.assertEqual(len(c.inputs), 6)
+        self.assertEqual(len(c.inputs), 7)
 
     def test_listing_requires_exact_source_inventory_and_zero_selected(self):
         malformed = [files("TuiHttpB"), files(selected=MEMBERS[0]), files().put(8, 3, "[ ] extra.txt"), files().put(31, 0, "5 of 6 entries \u2022 0 selected \u2022 Source: TuiHttpA".ljust(120))]
@@ -432,7 +518,7 @@ class NavigationTests(unittest.TestCase):
             n, c = self.navigation(setup_steps()+select_steps(highlighted=wrong))
             self.setup(n)
             self.rejected(lambda: n.select_one(MEMBERS[0]))
-            self.assertNotIn(("key", "space"), [(k, v) for k, v, _ in c.inputs])
+            self.assertEqual([(k, v) for k, v, _ in c.inputs].count(("key", "space")), 1)
 
     def test_checked_count_and_exact_row_required_before_acquisition(self):
         n, c = self.navigation(setup_steps()+select_steps(checked=files()))

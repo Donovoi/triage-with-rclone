@@ -14,7 +14,7 @@ View files in cloud storage, choose what to collect, and save copies with a reco
 .\rclone-triage.exe --tui --name case-001 --output-dir C:\Cases
 ```
 
-4. Follow the menus to connect an account, view its files and choose what to collect.
+4. Follow the menus to connect an account, view its files and choose what to collect. In the provider list, press **Space** to check a provider, then **Enter** to continue.
 
 For command options, run `.\rclone-triage.exe --help`.
 

@@ -8,7 +8,9 @@ observed executable performed discovery. No resize gate is cleared here.
 
 Source: ui/render.rs, runner.rs, prompt.rs, flows/manual_config.rs,
 flows/download.rs, widgets/{menu_list,provider_list,file_tree}.rs and theme.rs at
-main 994970f (same UI blobs as the reviewed 23a1e0d protocol).
+main 994970f plus ProviderSelect's explicit Checked aggregate. Enter confirms
+checked providers, not the highlighted row; Remote Name cancellation retains
+that checkbox until the navigator explicitly clears and observes it.
 """
 from __future__ import annotations
 
@@ -188,7 +190,7 @@ def _provider_highlighted(screen, panel):
             cell.style.background == SELECTION_BG and 1 in cell.style.flags
             for cell in cells[row][left:left+len(raw)] if cell.character != " ")
         if index == starts[0]:
-            if not selected or not text[2:].startswith("[ ] "):
+            if not selected or not text[2:].startswith(("[ ] ", "[x] ")):
                 return None
             parts.append(text[2:])
         elif selected:
@@ -211,7 +213,7 @@ def _provider_highlighted(screen, panel):
     return value if len(value) <= 1028 else None
 
 
-def _provider(screen, *, dynamic):
+def _provider(screen, *, dynamic, checked=False):
     if _has_prompt(screen):
         return None
     lines = screen.lines()
@@ -224,9 +226,14 @@ def _provider(screen, *, dynamic):
     highlighted = _provider_highlighted(screen, panel)
     if panel is None or status is None or highlighted is None:
         return None
-    if any("[x]" in text for _, _, text in panel):
+    if sum(text.count("[x]") for _, _, text in panel) != int(checked):
         return None
     status_lines = [text.strip() for _, _, text in status]
+    # This source-rendered aggregate covers every catalog entry, including
+    # offscreen rows. A visible checkbox alone cannot exclude hidden checks.
+    if [line for line in status_lines if line.startswith("Checked:")] != [
+            f"Checked: {int(checked)} of {count}"]:
+        return None
     backend_rows = [i for i, line in enumerate(status_lines) if line.startswith("Backend: ")]
     selected_rows = [i for i, line in enumerate(status_lines) if line.startswith("Selected: ")]
     if len(backend_rows) != 1 or len(selected_rows) != 1:
@@ -245,14 +252,17 @@ def _provider(screen, *, dynamic):
     backend = [status_lines[end][9:]]
     if len(selected[0]) > 1024 or not re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", backend[0]):
         return None
-    if highlighted != "[ ] " + selected[0]:
+    prefix = "[x] " if checked else "[ ] "
+    if highlighted != prefix + selected[0]:
         return None
     if dynamic:
         combined = " ".join(status_lines)
         if (f"Status: Loaded {count} providers from rclone." not in combined or
                 "Last error: none" not in status_lines or "Last update: never" in status_lines):
             return None
-    if backend[0] == "http" and (selected[0] != "HTTP" or highlighted != "[ ] HTTP"):
+    if checked and backend[0] != "http":
+        return None
+    if backend[0] == "http" and (selected[0] != "HTTP" or highlighted != prefix + "HTTP"):
         return None
     return count, backend[0]
 
@@ -356,6 +366,7 @@ class Navigator:
         self.failed = False
         self.inputs = self.waits = 0
         self.remote = self.selected = None
+        self.provider_count = None
         self.configured = {}
         if observe is not None and not callable(observe):
             raise NavigationError("navigation_input")
@@ -422,9 +433,13 @@ class Navigator:
             self._key("enter")  # This MainMenu action performs reset_flow_state.
         self._wait("providers", lambda screen: _provider(screen, dynamic=True) is not None, 30)
         count, backend = _provider(self.controller.screen, dynamic=True)
+        self.provider_count = count
         visited = {backend}
         for _ in range(count):
             if backend == "http":
+                self._key("space")
+                self._wait("provider_step", lambda screen: _provider(
+                    screen, dynamic=True, checked=True) == (count, "http"))
                 self._key("enter")
                 self._wait("remote_prompt", lambda screen: _prompt(screen, "Remote Name"))
                 self.state = "remote_prompt"
@@ -477,7 +492,11 @@ class Navigator:
         self._require(self.state == "remote_prompt")
         self._wait("remote_prompt", lambda screen: _prompt(screen, "Remote Name"))
         self._key("escape")
-        self._wait("prompt_cancel", lambda screen: _provider(screen, dynamic=True) is not None)
+        self._wait("prompt_cancel", lambda screen: _provider(
+            screen, dynamic=True, checked=True) == (self.provider_count, "http"))
+        self._key("space")
+        self._wait("prompt_cancel", lambda screen: _provider(
+            screen, dynamic=True) == (self.provider_count, "http"))
         self.state = "providers"
 
     @_operation
@@ -525,6 +544,13 @@ class Navigator:
     @_operation
     def back_to_main(self):
         self._require(self.state in ("complete", "selected", "files", "providers"))
+        # Returning from a configured source preserves checked HTTP; returning
+        # after prompt cancellation has already observed its explicit removal.
+        # Backspace does not toggle either state. The next MainMenu reset must
+        # independently render a zero aggregate before another setup begins.
+        def providers(screen):
+            return _provider(screen, dynamic=False, checked=self.remote is not None) == (
+                self.provider_count, "http")
         if self.state == "complete":
             self._require(_complete(self.controller.screen, self.remote, False) or
                           _complete(self.controller.screen, self.remote, True), "navigation_screen")
@@ -534,12 +560,13 @@ class Navigator:
         if self.state in ("files", "selected"):
             self._wait("back_files", lambda screen: _files(screen, self.remote, self.selected))
             for phase, predicate in (("back_postauth", _post_auth), ("back_auth", _auth), ("back_browser", _browser),
-                                     ("back_providers", lambda screen: _provider(screen, dynamic=False) is not None)):
+                                     ("back_providers", providers)):
                 self._key("backspace")
                 self._wait(phase, predicate)
             self.state = "providers"
-        self._wait("back_providers", lambda screen: _provider(screen, dynamic=False) is not None)
+        self._wait("back_providers", providers)
         self._key("backspace")
         self._wait("back_main", _main)
         self.remote = self.selected = None
+        self.provider_count = None
         self.state = "main"
