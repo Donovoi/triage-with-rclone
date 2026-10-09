@@ -307,6 +307,9 @@ jobs:
             $phase = 'setup_diagnostic_pure_validation'
             $clock.Restart()
             & ../scripts/tests/test_prepare_case_pure.ps1
+            $phase = 'tui_protocol_pure_validation'
+            $clock.Restart()
+            & ../scripts/tests/test_hosted_tui_session_pure.ps1
           } catch {
             [pscustomobject]@{ phase=$phase; result='failed'; elapsed_ms=$clock.ElapsedMilliseconds } | ConvertTo-Json -Compress
             [Console]::Error.WriteLine('windows_harness_validation_failed')
@@ -429,6 +432,44 @@ jobs:
             ${{ runner.temp }}/http-application.json
             ${{ runner.temp }}/provider-evidence-windows-application.json
           if-no-files-found: warn
+          retention-days: 14
+      - name: Run isolated Windows TUI experiment
+        id: tui_experiment
+        if: runner.os == 'Windows'
+        timeout-minutes: 10
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:GITHUB_ACTIONS -cne 'true' -or $env:RUNNER_ENVIRONMENT -cne 'github-hosted') { throw 'tui_hosted_required' }
+          $application = (Resolve-Path target/release/rclone-triage.exe).Path
+          $buildCommit = (& git rev-parse --verify HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $buildCommit -notmatch '^[0-9a-f]{40}$' -or $env:GITHUB_SHA -cne $buildCommit) { throw 'tui_build_binding_failed' }
+          $applicationHash = (Get-FileHash -LiteralPath $application -Algorithm SHA256).Hash.ToLowerInvariant()
+          python -B ../scripts/application-lab/run_windows_tui.py `
+            --application $application --application-sha256 $applicationHash `
+            --build-commit $buildCommit --report "$env:RUNNER_TEMP/tui-experiment.private.json"
+          if ($LASTEXITCODE -ne 0) { throw 'tui_experiment_failed' }
+      - name: Validate the same-build TUI experiment evidence
+        id: tui_evidence
+        if: ${{ !cancelled() && runner.os == 'Windows' && (steps.tui_experiment.outcome == 'success' || steps.tui_experiment.outcome == 'failure') }}
+        timeout-minutes: 3
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $application = (Resolve-Path target/release/rclone-triage.exe).Path
+          $buildCommit = (& git rev-parse --verify HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $buildCommit -notmatch '^[0-9a-f]{40}$' -or $env:GITHUB_SHA -cne $buildCommit) { throw 'tui_build_binding_failed' }
+          python -B ../scripts/tui_application_evidence.py `
+            --receipt "$env:RUNNER_TEMP/tui-experiment.private.json" --application $application `
+            --build-commit $buildCommit --report "$env:RUNNER_TEMP/tui-experiment-validation.json"
+          if ($LASTEXITCODE -ne 0) { throw 'tui_experiment_evidence_failed' }
+      - name: Retain sanitized TUI experiment evidence
+        if: ${{ !cancelled() && runner.os == 'Windows' && (steps.tui_evidence.outcome == 'success' || steps.tui_evidence.outcome == 'failure') }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: tui-experiment-Windows
+          path: ${{ runner.temp }}/tui-experiment-validation.json
+          if-no-files-found: error
           retention-days: 14
       - name: Record dependency inventory
         if: runner.os == 'Windows'
