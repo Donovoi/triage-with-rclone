@@ -16,14 +16,14 @@ use crate::ui::{App, AppState};
 /// Always reap workers, including on terminal errors and early returns.
 struct DownloadJob {
     cancel: Arc<AtomicBool>,
-    handle: Option<JoinHandle<Vec<DownloadResult>>>,
+    handle: Option<JoinHandle<(Vec<DownloadResult>, Result<()>)>>,
 }
 
 impl Drop for DownloadJob {
     fn drop(&mut self) {
         self.cancel.store(true, Ordering::Relaxed);
         if let Some(handle) = self.handle.take() {
-            let _ = handle.join();
+            let _ = crate::ui::runtime::join_worker(handle);
         }
     }
 }
@@ -71,7 +71,7 @@ pub(crate) fn perform_download_flow<
     terminal: &mut Terminal<B>,
 ) -> Result<()> {
     let result = (|| {
-        app.unmount_remote();
+        app.quiesce_resources()?;
         let source = app
             .acquisition
             .as_ref()
@@ -79,12 +79,15 @@ pub(crate) fn perform_download_flow<
             .clone();
         let plan = prepare_plan(app)?;
         let binary = crate::embedded::ExtractedBinary::extract()?;
-        let runner = crate::rclone::RcloneRunner::new(binary.path())
+        let runner = crate::rclone::RcloneRunner::from_extracted(&binary)
             .with_config(&source.config_path)
             .with_cancel_flag(app.shutdown.clone());
         execute_plan(app, terminal, plan, runner, Some(binary), true)
     })();
     if let Err(error) = result {
+        if crate::ui::runtime::cleanup_uncertain(&error) {
+            app.resource_shutdown_failed = true;
+        }
         app.download.status = format!("Acquisition failed: {error:#}");
         app.provider.status = app.download.status.clone();
         app.auth_status.clear();
@@ -102,6 +105,25 @@ fn execute_plan<B: ratatui::backend::Backend<Error: std::error::Error + Send + S
     plan: AcquisitionPlan,
     runner: crate::rclone::RcloneRunner,
     binary: Option<crate::embedded::ExtractedBinary>,
+    poll_input: bool,
+) -> Result<()> {
+    let mut binary = binary;
+    let operation = execute_plan_inner(app, terminal, plan, runner, &mut binary, poll_input);
+    let cleanup = match binary.as_mut() {
+        Some(binary) => crate::ui::runtime::cleanup_runtime(binary),
+        None => Ok(()),
+    };
+    crate::ui::runtime::complete(operation, cleanup)
+}
+
+fn execute_plan_inner<
+    B: ratatui::backend::Backend<Error: std::error::Error + Send + Sync + 'static>,
+>(
+    app: &mut App,
+    terminal: &mut Terminal<B>,
+    plan: AcquisitionPlan,
+    runner: crate::rclone::RcloneRunner,
+    binary: &mut Option<crate::embedded::ExtractedBinary>,
     poll_input: bool,
 ) -> Result<()> {
     let source = app
@@ -180,13 +202,42 @@ fn execute_plan<B: ratatui::backend::Backend<Error: std::error::Error + Send + S
     let cancel = Arc::new(AtomicBool::new(initial_render.is_err()));
     let worker_cancel = cancel.clone();
     let (sender, receiver) = mpsc::sync_channel(64);
-    let handle = std::thread::spawn(move || {
-        let _binary_owner = binary;
-        queue.download_all_with_progress_cancel(&runner, worker_cancel, |progress| {
-            // Progress is replaceable; child output must not wait on terminal speed.
-            let _ = sender.try_send(progress.clone());
-        })
-    });
+    let owner = Arc::new(std::sync::Mutex::new(binary.take()));
+    let worker_owner = owner.clone();
+    let worker_plan = plan.clone();
+    let worker_config = source.config_path.clone();
+    let worker_manifest = manifest_path.clone();
+    let spawn = std::thread::Builder::new()
+        .name("acquisition-worker".into())
+        .spawn(move || {
+            let mut binary = worker_owner.lock().expect("Acquisition owner lock").take();
+            let results =
+                queue.download_all_with_progress_cancel(&runner, worker_cancel, |progress| {
+                    let _ = sender.try_send(progress.clone());
+                });
+            // Durable outcomes are independent of terminal lifetime and UI join success.
+            let persisted = write_acquisition_manifest(
+                &worker_plan,
+                &worker_config,
+                &results,
+                &worker_manifest,
+            );
+            let cleanup = match binary.as_mut() {
+                Some(binary) => crate::ui::runtime::cleanup_runtime(binary),
+                None => Ok(()),
+            };
+            (results, crate::ui::runtime::complete(persisted, cleanup))
+        });
+    let handle = match spawn {
+        Ok(handle) => handle,
+        Err(error) => {
+            *binary = owner
+                .lock()
+                .map_err(|_| anyhow::anyhow!("Acquisition owner lock poisoned"))?
+                .take();
+            return Err(error.into());
+        }
+    };
     let mut job = DownloadJob {
         cancel,
         handle: Some(handle),
@@ -230,95 +281,110 @@ fn execute_plan<B: ratatui::backend::Backend<Error: std::error::Error + Send + S
                 apply_progress(app, &progress, &mut bytes, &mut completed);
             }
             terminal.draw(|frame| render_state(frame, app))?;
+            if job.cancel.load(Ordering::Relaxed) {
+                break;
+            }
         }
         Ok(())
     })();
     if interaction_result.is_err() {
         job.cancel.store(true, Ordering::Relaxed);
     }
-    let results = job
-        .handle
-        .take()
-        .context("Download worker missing")?
-        .join()
-        .map_err(|_| anyhow::anyhow!("Download worker panicked"))?;
-    write_acquisition_manifest(&plan, &source.config_path, &results, &manifest_path)?;
-    let mut verified = 0usize;
-    let mut successful = 0usize;
-    for (file, result) in plan.files.iter().zip(&results) {
-        let display = displays
-            .get(&(file.remote_name.clone(), file.path.clone()))
-            .cloned()
-            .unwrap_or_else(|| format!("[{}] {}", file.remote_name, file.path));
-        if result.success {
-            successful += 1;
-            if result.hash_verified == Some(true) {
-                verified += 1;
-            }
-        } else {
-            app.download.failures.push(display);
+    let joined =
+        crate::ui::runtime::join_worker(job.handle.take().context("Download worker missing")?);
+    let (results, worker_finalization) = match joined {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            app.resource_shutdown_failed = true;
+            return crate::ui::runtime::complete(interaction_result, Err(error));
         }
+    };
+    if worker_finalization.is_err() {
+        app.resource_shutdown_failed = true;
+    }
+    let postprocessing = (|| -> Result<()> {
+        // Retry manifest persistence on the UI path only if worker persistence failed;
+        // never erase the completed outcomes when cleanup itself failed.
+        write_acquisition_manifest(&plan, &source.config_path, &results, &manifest_path)?;
+        let mut verified = 0usize;
+        let mut successful = 0usize;
+        for (file, result) in plan.files.iter().zip(&results) {
+            let display = displays
+                .get(&(file.remote_name.clone(), file.path.clone()))
+                .cloned()
+                .unwrap_or_else(|| format!("[{}] {}", file.remote_name, file.path));
+            if result.success {
+                successful += 1;
+                if result.hash_verified == Some(true) {
+                    verified += 1;
+                }
+            } else {
+                app.download.failures.push(display);
+            }
+            app.log_info(format!(
+                "Acquisition {:?}: {} -> {} ({} bytes; {:?})",
+                result.integrity,
+                result.source,
+                result.destination,
+                result.size.unwrap_or(0),
+                result.error
+            ));
+            // Mismatch bytes remain evidence, with their explicit verification status.
+            if result.size.is_some() && std::path::Path::new(&result.destination).is_file() {
+                app.track_file(
+                    &result.destination,
+                    format!("Acquired {}:{}", file.remote_name, file.path),
+                );
+                if let Some(case) = &mut app.forensics.case {
+                    case.add_download(crate::case::DownloadedFile {
+                        path: file.path.clone(),
+                        size: result.size.unwrap_or(0),
+                        hash: result.hash.clone(),
+                        hash_type: result.hash_type.clone(),
+                        hash_verified: result.hash_verified,
+                        hash_error: result.hash_error.clone(),
+                        remote_name: Some(file.remote_name.clone()),
+                    });
+                }
+            }
+        }
+        if let Some(case) = &mut app.forensics.case {
+            case.finalize();
+        }
+        let failures = app.download.failures.len();
+        app.download.progress = (results.len(), plan.files.len());
+        app.download.status = format!(
+            "Acquired {}/{} files ({} source hashes verified, {} failed or cancelled)",
+            successful,
+            plan.files.len(),
+            verified,
+            failures
+        );
+        app.log_info(&app.download.status);
         app.log_info(format!(
-            "Acquisition {:?}: {} -> {} ({} bytes; {:?})",
-            result.integrity,
-            result.source,
-            result.destination,
-            result.size.unwrap_or(0),
-            result.error
+            "Acquisition manifest written to {:?}",
+            manifest_path
         ));
-        // Mismatch bytes remain evidence, with their explicit verification status.
-        if result.size.is_some() && std::path::Path::new(&result.destination).is_file() {
-            app.track_file(
-                &result.destination,
-                format!("Acquired {}:{}", file.remote_name, file.path),
-            );
-            if let Some(case) = &mut app.forensics.case {
-                case.add_download(crate::case::DownloadedFile {
-                    path: file.path.clone(),
-                    size: result.size.unwrap_or(0),
-                    hash: result.hash.clone(),
-                    hash_type: result.hash_type.clone(),
-                    hash_verified: result.hash_verified,
-                    hash_error: result.hash_error.clone(),
-                    remote_name: Some(file.remote_name.clone()),
-                });
-            }
-        }
-    }
-    if let Some(case) = &mut app.forensics.case {
-        case.finalize();
-    }
-    let failures = app.download.failures.len();
-    app.download.progress = (results.len(), plan.files.len());
-    app.download.status = format!(
-        "Acquired {}/{} files ({} source hashes verified, {} failed or cancelled)",
-        successful,
-        plan.files.len(),
-        verified,
-        failures
-    );
-    app.log_info(&app.download.status);
-    app.log_info(format!(
-        "Acquisition manifest written to {:?}",
-        manifest_path
-    ));
-    write_reports(app)?;
-    app.download.report_lines = vec![
-        "=== Acquisition complete ===".into(),
-        app.download.status.clone(),
-        format!("Source: {}", source.label),
-        format!("Destination: {}", dirs.downloads.display()),
-        format!("Manifest: {}", manifest_path.display()),
-        format!("Report: {}", dirs.report.display()),
-        if failures > 0 {
-            "Press r to retry failed files, or q to exit.".into()
-        } else {
-            "Press q to exit.".into()
-        },
-    ];
-    app.state = AppState::Complete;
+        write_reports(app)?;
+        app.download.report_lines = vec![
+            "=== Acquisition complete ===".into(),
+            app.download.status.clone(),
+            format!("Source: {}", source.label),
+            format!("Destination: {}", dirs.downloads.display()),
+            format!("Manifest: {}", manifest_path.display()),
+            format!("Report: {}", dirs.report.display()),
+            if failures > 0 {
+                "Press r to retry failed files, or q to exit.".into()
+            } else {
+                "Press q to exit.".into()
+            },
+        ];
+        app.state = AppState::Complete;
+        Ok(())
+    })();
     // Terminal failure must not discard completed, partial or cancelled outcomes.
-    interaction_result?;
+    let operation = crate::ui::runtime::complete(interaction_result, postprocessing);
+    crate::ui::runtime::complete(operation, worker_finalization)?;
     terminal.draw(|frame| render_state(frame, app))?;
     Ok(())
 }
@@ -442,7 +508,7 @@ mod tests {
             let _ = temp;
             let binary = crate::embedded::ExtractedBinary::extract().unwrap();
             (
-                crate::rclone::RcloneRunner::new(binary.path()).with_config(config),
+                crate::rclone::RcloneRunner::from_extracted(&binary).with_config(config),
                 Some(binary),
             )
         }
@@ -518,7 +584,7 @@ esac
         .unwrap();
         let (_, receiver) = mpsc::channel();
         app.listing_task = Some(crate::ui::ListingTask {
-            handle: std::thread::spawn(|| {}),
+            handle: std::thread::spawn(|| Ok(())),
             progress_rx: receiver,
             cancel: Arc::new(AtomicBool::new(false)),
             started: std::time::Instant::now(),
@@ -532,7 +598,7 @@ esac
                 listing_csv: None,
             },
         });
-        crate::ui::flows::list::finalize_listing(&mut app, entries);
+        crate::ui::flows::list::finalize_listing(&mut app, entries).unwrap();
         assert!(app.provider.chosen.is_none());
         app.select_all_files();
         assert_eq!(app.files.to_download.len(), 2);

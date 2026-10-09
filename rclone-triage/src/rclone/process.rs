@@ -3,17 +3,22 @@
 //! Wraps spawning rclone processes with Windows-specific handling
 //! for hiding console windows and capturing output.
 
+use super::runtime::{RuntimeLease, RuntimeTracker};
 use anyhow::{bail, Context, Result};
-use std::io::Read;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStderr, ChildStdout, Command, ExitStatus, Stdio};
 use std::sync::mpsc;
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc, Mutex,
+    atomic::{AtomicBool, AtomicUsize, Ordering},
+    Arc, Mutex, TryLockError,
 };
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+pub const STOP_TIMEOUT: Duration = Duration::from_secs(5);
+pub const JOIN_TIMEOUT: Duration = Duration::from_secs(3);
+const POLL_INTERVAL: Duration = Duration::from_millis(25);
 
 /// Windows-specific: CREATE_NO_WINDOW flag
 #[cfg(windows)]
@@ -60,6 +65,7 @@ pub struct RcloneRunner {
     /// Default timeout for commands
     default_timeout: Option<Duration>,
     cancel: Vec<Arc<AtomicBool>>,
+    runtime: Option<Arc<RuntimeTracker>>,
 }
 
 impl RcloneRunner {
@@ -70,7 +76,15 @@ impl RcloneRunner {
             config_path: None,
             default_timeout: None,
             cancel: Vec::new(),
+            runtime: None,
         }
+    }
+
+    /// Bind every child and reader to the extraction's atomic cleanup gate.
+    pub fn from_extracted(binary: &crate::embedded::ExtractedBinary) -> Self {
+        let mut runner = Self::new(binary.path());
+        runner.runtime = Some(binary.tracker());
+        runner
     }
 
     /// Set the config file path
@@ -161,25 +175,36 @@ impl RcloneRunner {
         if self.is_cancelled() {
             bail!("Operation cancelled");
         }
-        let mut child = ReapedChild(
-            self.build_command_with_env(args, Some(envs))
-                .spawn()
-                .with_context(|| format!("Failed to spawn rclone: {:?}", self.exe_path))?,
-        );
-        let stdout = child.stdout.take().context("Missing child stdout")?;
-        let stderr = child.stderr.take().context("Missing child stderr")?;
+        let mut runner = self.clone();
+        runner.default_timeout = timeout;
+        let mut child = runner.spawn_command(&mut self.build_command_with_env(args, Some(envs)))?;
         let (tx, rx) = mpsc::sync_channel(256);
         let out_tx = tx.clone();
-        let stdout_thread = thread::spawn(move || {
-            read_process_lines(stdout, |line| {
-                let _ = out_tx.send((false, line));
-            })
-        });
-        let stderr_thread = thread::spawn(move || {
-            read_process_lines(stderr, |line| {
-                let _ = tx.send((true, line));
-            })
-        });
+        let mut readers = [None, None];
+        let setup = (|| -> Result<()> {
+            let stdout = child.stdout.take().context("Missing child stdout")?;
+            let stderr = child.stderr.take().context("Missing child stderr")?;
+            readers[0] = Some(child.spawn_reader("rclone-stdout", move || {
+                read_process_lines(stdout, |line| {
+                    let _ = out_tx.send((false, line));
+                })
+            })?);
+            readers[1] = Some(child.spawn_reader("rclone-stderr", move || {
+                read_process_lines(stderr, |line| {
+                    let _ = tx.send((true, line));
+                })
+            })?);
+            Ok(())
+        })();
+        if let Err(failure) = setup {
+            drop(rx);
+            let mut failure = Some(failure);
+            if let Err(cleanup) = child.stop_and_reap(STOP_TIMEOUT) {
+                combine_error(&mut failure, cleanup.into());
+            }
+            finish_readers(&mut child, readers, &mut failure);
+            return Err(failure.expect("reader setup failure retained"));
+        }
         let started = std::time::Instant::now();
         let mut output = RcloneOutput {
             stdout: Vec::new(),
@@ -191,24 +216,21 @@ impl RcloneRunner {
         let mut exited = false;
         let mut disconnected = false;
         let mut error = None;
+        let mut exit_time = None;
         loop {
             if !exited {
                 output.cancelled = self.is_cancelled();
                 output.timed_out = timeout.is_some_and(|limit| started.elapsed() >= limit);
-                if output.cancelled || output.timed_out {
-                    let _ = child.kill();
-                }
                 match child.try_wait() {
                     Ok(Some(status)) => {
                         output.status = status.code().unwrap_or(-1);
                         exited = true;
+                        exit_time = Some(Instant::now());
                     }
                     Ok(None) => {}
                     Err(e) => {
-                        error = Some(e);
-                        let _ = child.kill();
-                        let _ = child.wait();
-                        exited = true;
+                        error = Some(anyhow::Error::new(e));
+                        break;
                     }
                 }
             }
@@ -231,20 +253,25 @@ impl RcloneRunner {
             if exited && disconnected {
                 break;
             }
+            if exit_time.is_some_and(|time| time.elapsed() >= JOIN_TIMEOUT) {
+                child.retain();
+                error = Some(anyhow::anyhow!("child_pipe_drain_timeout"));
+                break;
+            }
             if disconnected && !exited {
                 thread::sleep(Duration::from_millis(25));
             }
         }
-        // Reap before joining readers. No child survives cancellation or errors.
-        let _ = child.wait();
-        stdout_thread
-            .join()
-            .map_err(|_| anyhow::anyhow!("stdout reader panicked"))??;
-        stderr_thread
-            .join()
-            .map_err(|_| anyhow::anyhow!("stderr reader panicked"))??;
+        // Release channel backpressure before bounded stop/join on an error.
+        drop(rx);
+        if !exited {
+            if let Err(cleanup) = child.stop_and_reap(STOP_TIMEOUT) {
+                combine_error(&mut error, cleanup.into());
+            }
+        }
+        finish_readers(&mut child, readers, &mut error);
         if let Some(error) = error {
-            return Err(error.into());
+            return Err(error);
         }
         if output.cancelled {
             output.stderr.push("Operation cancelled".into());
@@ -259,14 +286,45 @@ impl RcloneRunner {
     ///
     /// This is useful for streaming large outputs without buffering them in memory.
     pub fn spawn(&self, args: &[&str]) -> Result<ManagedChild> {
+        self.spawn_command(&mut self.build_command_with_env(args, None))
+    }
+
+    /// Reserve ownership before spawning, including raw mount/auth commands.
+    pub fn spawn_command(&self, command: &mut Command) -> Result<ManagedChild> {
         if self.is_cancelled() {
             bail!("Operation cancelled");
         }
-        let mut cmd = self.build_command_with_env(args, None);
-        let child = cmd
-            .spawn()
-            .with_context(|| format!("Failed to spawn rclone: {:?}", self.exe_path))?;
-        Ok(ManagedChild::new(child, self.clone()))
+        if command.get_program() != self.exe_path.as_os_str() {
+            bail!("runtime_command_mismatch");
+        }
+        let lease = self
+            .runtime
+            .as_ref()
+            .map(|tracker| tracker.reserve())
+            .transpose()?;
+        let child = match command.spawn() {
+            Ok(child) => child,
+            Err(error) => {
+                if let Some(lease) = lease {
+                    lease.complete();
+                }
+                return Err(error).context("Failed to spawn rclone");
+            }
+        };
+        // From this line onward a guard owns the exact process, even if pipe
+        // setup or watchdog thread creation fails.
+        let mut child = ManagedChild::new(child, lease, self.runtime.clone())?;
+        if let Err(error) = child.start_watchdog(self.clone()) {
+            let mut failure = Some(anyhow::Error::new(error));
+            if let Err(cleanup) = child.stop_and_reap(STOP_TIMEOUT) {
+                combine_error(&mut failure, cleanup.into());
+            }
+            if let Err(cleanup) = child.finish() {
+                combine_error(&mut failure, cleanup.into());
+            }
+            return Err(failure.expect("thread creation error retained"));
+        }
+        Ok(child)
     }
 
     /// Get rclone version
@@ -363,105 +421,522 @@ fn remove_rclone_env_overrides(
     }
 }
 
-// Also reap during unwinding if a caller's progress callback panics.
-struct ReapedChild(Child);
+fn combine_error(primary: &mut Option<anyhow::Error>, failure: anyhow::Error) {
+    *primary = Some(match primary.take() {
+        Some(original) => {
+            original.context(format!("Additional child finalization failure: {failure}"))
+        }
+        None => failure,
+    });
+}
 
-impl std::ops::Deref for ReapedChild {
-    type Target = Child;
-    fn deref(&self) -> &Child {
-        &self.0
+fn finish_readers(
+    child: &mut ManagedChild,
+    readers: [Option<DrainHandle<io::Result<()>>>; 2],
+    error: &mut Option<anyhow::Error>,
+) {
+    for reader in readers.into_iter().flatten() {
+        if let Err(failure) = reader.join(JOIN_TIMEOUT).and_then(|result| result) {
+            child.retain();
+            combine_error(error, failure.into());
+        }
+    }
+    if let Err(cleanup) = child.finish() {
+        combine_error(error, cleanup.into());
     }
 }
 
-impl std::ops::DerefMut for ReapedChild {
-    fn deref_mut(&mut self) -> &mut Child {
-        &mut self.0
+struct ChildScope {
+    runtime: Option<Arc<RuntimeTracker>>,
+    resources: AtomicUsize,
+    uncertain: AtomicBool,
+}
+
+impl ChildScope {
+    fn new(runtime: Option<Arc<RuntimeTracker>>) -> Arc<Self> {
+        Arc::new(Self {
+            runtime,
+            resources: AtomicUsize::new(0),
+            uncertain: AtomicBool::new(false),
+        })
+    }
+
+    fn retain(&self) {
+        self.uncertain.store(true, Ordering::SeqCst);
+        if let Some(runtime) = &self.runtime {
+            runtime.retain();
+        }
+    }
+
+    fn resource(self: &Arc<Self>) -> io::Result<ResourceLease> {
+        self.resources
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |count| {
+                count.checked_add(1).filter(|count| *count <= 64)
+            })
+            .map_err(|_| {
+                self.retain();
+                io::Error::other("child_resource_limit")
+            })?;
+        Ok(ResourceLease {
+            scope: self.clone(),
+            completed: false,
+        })
     }
 }
 
-impl Drop for ReapedChild {
+struct ResourceLease {
+    scope: Arc<ChildScope>,
+    completed: bool,
+}
+
+impl ResourceLease {
+    fn complete(mut self) {
+        self.completed = true;
+    }
+}
+
+impl Drop for ResourceLease {
     fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
+        if !self.completed {
+            self.scope.retain();
+        }
+        self.scope.resources.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
-/// Owns a streaming child while a separate watchdog handles quiet-process
-/// cancellation and timeout. Drop always terminates and reaps the child.
+/// A moved pipe keeps the child scope outstanding until its actual handle closes.
+pub struct TrackedPipe<T> {
+    pipe: Option<T>,
+    lease: Option<ResourceLease>,
+}
+
+impl<T> TrackedPipe<T> {
+    fn new(pipe: T, scope: &Arc<ChildScope>) -> io::Result<Self> {
+        Ok(Self {
+            pipe: Some(pipe),
+            lease: Some(scope.resource()?),
+        })
+    }
+}
+
+impl<T: Read> Read for TrackedPipe<T> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        self.pipe.as_mut().expect("live pipe").read(buffer)
+    }
+}
+
+impl<T> Drop for TrackedPipe<T> {
+    fn drop(&mut self) {
+        drop(self.pipe.take());
+        if let Some(lease) = self.lease.take() {
+            lease.complete();
+        }
+    }
+}
+
+/// Dropping a join handle is not joining a thread, even if its pipe reached EOF.
+pub struct DrainHandle<T> {
+    thread: Option<thread::JoinHandle<T>>,
+    lease: Option<ResourceLease>,
+    scope: Arc<ChildScope>,
+}
+
+impl<T> std::fmt::Debug for DrainHandle<T> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("DrainHandle")
+            .field(
+                "finished",
+                &self
+                    .thread
+                    .as_ref()
+                    .is_some_and(thread::JoinHandle::is_finished),
+            )
+            .finish_non_exhaustive()
+    }
+}
+
+impl<T> DrainHandle<T> {
+    pub fn join(mut self, timeout: Duration) -> io::Result<T> {
+        let started = Instant::now();
+        while !self.thread.as_ref().expect("live reader").is_finished() {
+            if started.elapsed() >= timeout.min(JOIN_TIMEOUT) {
+                self.scope.retain();
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "child_reader_join_timeout",
+                ));
+            }
+            thread::sleep(POLL_INTERVAL);
+        }
+        match self.thread.take().expect("live reader").join() {
+            Ok(value) => {
+                if let Some(lease) = self.lease.take() {
+                    lease.complete();
+                }
+                Ok(value)
+            }
+            Err(_) => {
+                self.scope.retain();
+                Err(io::Error::other("child_reader_panicked"))
+            }
+        }
+    }
+}
+
+struct ChildControl {
+    child: Option<Child>,
+    exit: Option<ExitStatus>,
+}
+
+fn poll_control(
+    control: &Mutex<ChildControl>,
+    scope: &ChildScope,
+) -> io::Result<Option<ExitStatus>> {
+    let mut state = match control.try_lock() {
+        Ok(state) => state,
+        Err(TryLockError::WouldBlock) => return Ok(None),
+        Err(TryLockError::Poisoned(_)) => {
+            scope.retain();
+            return Err(io::Error::other("child_lock_poisoned"));
+        }
+    };
+    if state.exit.is_none() {
+        state.exit = state
+            .child
+            .as_mut()
+            .ok_or_else(|| {
+                scope.retain();
+                io::Error::other("child_handle_missing")
+            })?
+            .try_wait()
+            .inspect_err(|_| scope.retain())?;
+    }
+    Ok(state.exit)
+}
+
+fn kill_control(control: &Mutex<ChildControl>) -> io::Result<bool> {
+    let mut state = match control.try_lock() {
+        Ok(state) => state,
+        Err(TryLockError::WouldBlock) => return Ok(false),
+        Err(TryLockError::Poisoned(_)) => return Err(io::Error::other("child_lock_poisoned")),
+    };
+    if state.exit.is_none() {
+        state
+            .child
+            .as_mut()
+            .ok_or_else(|| io::Error::other("child_handle_missing"))?
+            .kill()?;
+    }
+    Ok(true)
+}
+
+fn stop_control(
+    control: &Mutex<ChildControl>,
+    scope: &ChildScope,
+    timeout: Duration,
+) -> io::Result<ExitStatus> {
+    let started = Instant::now();
+    let mut killed = false;
+    let mut kill_error = None;
+    loop {
+        if let Some(status) = poll_control(control, scope)? {
+            return Ok(status);
+        }
+        if !killed {
+            match kill_control(control) {
+                Ok(attempted) => killed = attempted,
+                Err(error) => {
+                    killed = true;
+                    kill_error = Some(error.kind());
+                }
+            }
+        }
+        if started.elapsed() >= timeout.min(STOP_TIMEOUT) {
+            scope.retain();
+            return Err(io::Error::new(
+                kill_error.unwrap_or(io::ErrorKind::TimedOut),
+                "child_stop_unconfirmed",
+            ));
+        }
+        thread::sleep(POLL_INTERVAL);
+    }
+}
+
+/// Owns one exact child. Exit observation and full finalization are separate.
 pub struct ManagedChild {
-    pub stdout: Option<ChildStdout>,
-    pub stderr: Option<ChildStderr>,
-    child: Arc<Mutex<Child>>,
+    pub stdout: Option<TrackedPipe<ChildStdout>>,
+    pub stderr: Option<TrackedPipe<ChildStderr>>,
+    child: Arc<Mutex<ChildControl>>,
+    scope: Arc<ChildScope>,
+    lease: Option<RuntimeLease>,
     done: Arc<AtomicBool>,
+    stop_requested: Arc<AtomicBool>,
+    stop_failed: Arc<AtomicBool>,
     watchdog: Option<thread::JoinHandle<()>>,
+    finalized: bool,
+}
+
+impl std::fmt::Debug for ManagedChild {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ManagedChild")
+            .field("finalized", &self.finalized)
+            .field("uncertain", &self.scope.uncertain.load(Ordering::SeqCst))
+            .finish_non_exhaustive()
+    }
 }
 
 impl ManagedChild {
-    fn new(mut child: Child, runner: RcloneRunner) -> Self {
-        let stdout = child.stdout.take();
-        let stderr = child.stderr.take();
-        let child = Arc::new(Mutex::new(child));
-        let done = Arc::new(AtomicBool::new(false));
-        let watched = child.clone();
-        let finished = done.clone();
-        let watchdog = thread::spawn(move || {
-            let started = std::time::Instant::now();
-            while !finished.load(Ordering::Relaxed) {
-                if runner.is_cancelled() || runner.timeout().is_some_and(|t| started.elapsed() >= t)
-                {
-                    if let Ok(mut child) = watched.lock() {
-                        let _ = child.kill();
-                    }
-                    break;
-                }
-                thread::sleep(Duration::from_millis(25));
-            }
-        });
-        Self {
-            stdout,
-            stderr,
-            child,
-            done,
-            watchdog: Some(watchdog),
-        }
-    }
-
-    pub fn kill(&mut self) -> std::io::Result<()> {
-        self.child
-            .lock()
-            .map_err(|_| std::io::Error::other("child lock poisoned"))?
-            .kill()
-    }
-
-    pub fn wait(&mut self) -> std::io::Result<ExitStatus> {
-        loop {
-            let status = self
+    fn new(
+        child: Child,
+        lease: Option<RuntimeLease>,
+        runtime: Option<Arc<RuntimeTracker>>,
+    ) -> io::Result<Self> {
+        let mut owned = Self {
+            stdout: None,
+            stderr: None,
+            child: Arc::new(Mutex::new(ChildControl {
+                child: Some(child),
+                exit: None,
+            })),
+            scope: ChildScope::new(runtime),
+            lease,
+            done: Arc::new(AtomicBool::new(false)),
+            stop_requested: Arc::new(AtomicBool::new(false)),
+            stop_failed: Arc::new(AtomicBool::new(false)),
+            watchdog: None,
+            finalized: false,
+        };
+        let (stdout, stderr) = {
+            let mut state = owned
                 .child
                 .lock()
-                .map_err(|_| std::io::Error::other("child lock poisoned"))?
-                .try_wait()?;
-            if let Some(status) = status {
-                self.done.store(true, Ordering::Relaxed);
-                if let Some(watchdog) = self.watchdog.take() {
-                    let _ = watchdog.join();
+                .map_err(|_| io::Error::other("child_lock_poisoned"))?;
+            // No supported command is interactive through stdin. Closing it also
+            // prevents wait deadlocks for raw commands supplied by callers.
+            let child = state.child.as_mut().expect("new child owned");
+            drop(child.stdin.take());
+            (child.stdout.take(), child.stderr.take())
+        };
+        owned.stdout = stdout
+            .map(|pipe| TrackedPipe::new(pipe, &owned.scope))
+            .transpose()?;
+        owned.stderr = stderr
+            .map(|pipe| TrackedPipe::new(pipe, &owned.scope))
+            .transpose()?;
+        Ok(owned)
+    }
+
+    fn start_watchdog(&mut self, runner: RcloneRunner) -> io::Result<()> {
+        self.start_watchdog_with(runner, |watch| {
+            thread::Builder::new()
+                .name("rclone-watchdog".into())
+                .spawn(watch)
+        })
+    }
+
+    fn start_watchdog_with<S>(&mut self, runner: RcloneRunner, spawn: S) -> io::Result<()>
+    where
+        S: FnOnce(Box<dyn FnOnce() + Send>) -> io::Result<thread::JoinHandle<()>>,
+    {
+        let control = self.child.clone();
+        let scope = self.scope.clone();
+        let done = self.done.clone();
+        let requested = self.stop_requested.clone();
+        let failed = self.stop_failed.clone();
+        self.watchdog = Some(spawn(Box::new(move || {
+            let started = Instant::now();
+            while !done.load(Ordering::SeqCst) {
+                if requested.load(Ordering::SeqCst)
+                    || runner.is_cancelled()
+                    || runner
+                        .timeout()
+                        .is_some_and(|limit| started.elapsed() >= limit)
+                {
+                    if stop_control(&control, &scope, STOP_TIMEOUT).is_err() {
+                        failed.store(true, Ordering::SeqCst);
+                    }
+                    done.store(true, Ordering::SeqCst);
+                    return;
                 }
+                thread::sleep(POLL_INTERVAL);
+            }
+        }))?);
+        Ok(())
+    }
+
+    pub fn spawn_reader<T, F>(&self, name: &str, read: F) -> io::Result<DrainHandle<T>>
+    where
+        T: Send + 'static,
+        F: FnOnce() -> T + Send + 'static,
+    {
+        self.spawn_reader_with(read, |read| {
+            thread::Builder::new().name(name.to_owned()).spawn(read)
+        })
+    }
+
+    fn spawn_reader_with<T, F, S>(&self, read: F, spawn: S) -> io::Result<DrainHandle<T>>
+    where
+        T: Send + 'static,
+        F: FnOnce() -> T + Send + 'static,
+        S: FnOnce(F) -> io::Result<thread::JoinHandle<T>>,
+    {
+        if self.finalized {
+            return Err(io::Error::other("child_already_finalized"));
+        }
+        let lease = self.scope.resource()?;
+        match spawn(read) {
+            Ok(thread) => Ok(DrainHandle {
+                thread: Some(thread),
+                lease: Some(lease),
+                scope: self.scope.clone(),
+            }),
+            Err(error) => {
+                lease.complete();
+                Err(error)
+            }
+        }
+    }
+
+    pub fn retain(&self) {
+        self.scope.retain();
+    }
+
+    pub fn kill(&mut self) -> io::Result<()> {
+        self.stop_requested.store(true, Ordering::SeqCst);
+        kill_control(&self.child).map(|_| ())
+    }
+
+    pub fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
+        if self.stop_failed.load(Ordering::SeqCst)
+            || (self
+                .watchdog
+                .as_ref()
+                .is_some_and(thread::JoinHandle::is_finished)
+                && !self.done.load(Ordering::SeqCst))
+        {
+            self.retain();
+            return Err(io::Error::other("child_watchdog_failed"));
+        }
+        let status = poll_control(&self.child, &self.scope)?;
+        if status.is_some() {
+            self.done.store(true, Ordering::SeqCst);
+        }
+        Ok(status)
+    }
+
+    pub fn wait(&mut self) -> io::Result<ExitStatus> {
+        loop {
+            if let Some(status) = self.try_wait()? {
                 return Ok(status);
             }
-            thread::sleep(Duration::from_millis(25));
+            thread::sleep(POLL_INTERVAL);
         }
+    }
+
+    pub fn stop_and_reap(&mut self, timeout: Duration) -> io::Result<ExitStatus> {
+        self.stop_requested.store(true, Ordering::SeqCst);
+        let result = stop_control(&self.child, &self.scope, timeout);
+        if result.is_ok() {
+            self.done.store(true, Ordering::SeqCst);
+        }
+        result
+    }
+
+    /// Call after dropping/joining caller-owned pipes/readers. A timeout or an
+    /// earlier uncertain result permanently retains the runtime, even if a later
+    /// observation sees exit. This never treats a wait error as an exit status.
+    pub fn finish(&mut self) -> io::Result<ExitStatus> {
+        if self.finalized {
+            return Err(io::Error::other("child_already_finalized"));
+        }
+        self.finalized = true;
+        drop(self.stdout.take());
+        drop(self.stderr.take());
+        let mut result = self.finish_inner();
+        if result.is_ok() {
+            if let Some(lease) = self.lease.take() {
+                lease.complete();
+            }
+        } else {
+            self.retain();
+            // A mistaken early finish must not abandon a live owned process.
+            // Preserve the failed finalization even if this bounded stop works.
+            if let Err(cleanup) = self.stop_and_reap(STOP_TIMEOUT) {
+                let primary = result.expect_err("failed finalization");
+                result = Err(io::Error::new(
+                    primary.kind(),
+                    format!("{primary}; additional stop failure: {cleanup}"),
+                ));
+            }
+        }
+        result
+    }
+
+    fn finish_inner(&mut self) -> io::Result<ExitStatus> {
+        let started = Instant::now();
+        let status = loop {
+            if let Some(status) = poll_control(&self.child, &self.scope)? {
+                break status;
+            }
+            // A watchdog can briefly hold the control mutex while recording
+            // exit. Do not mistake that contention for an unconfirmed exit.
+            if started.elapsed() >= JOIN_TIMEOUT {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "child_exit_unconfirmed",
+                ));
+            }
+            thread::sleep(POLL_INTERVAL);
+        };
+        self.done.store(true, Ordering::SeqCst);
+        while self.scope.resources.load(Ordering::SeqCst) != 0
+            || self
+                .watchdog
+                .as_ref()
+                .is_some_and(|thread| !thread.is_finished())
+        {
+            if started.elapsed() >= JOIN_TIMEOUT {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "child_finalization_timeout",
+                ));
+            }
+            thread::sleep(POLL_INTERVAL);
+        }
+        if let Some(watchdog) = self.watchdog.take() {
+            watchdog
+                .join()
+                .map_err(|_| io::Error::other("child_watchdog_panicked"))?;
+        }
+        // The guard can remain in a long-lived wrapper after finish. Close the
+        // exact process handle here, before the runtime lease can be released.
+        let process = self
+            .child
+            .try_lock()
+            .map_err(|_| io::Error::other("child_handle_close_unconfirmed"))?
+            .child
+            .take();
+        drop(process);
+        if self.scope.uncertain.load(Ordering::SeqCst) || self.stop_failed.load(Ordering::SeqCst) {
+            return Err(io::Error::other("child_finalization_uncertain"));
+        }
+        Ok(status)
     }
 }
 
 impl Drop for ManagedChild {
     fn drop(&mut self) {
-        self.done.store(true, Ordering::Relaxed);
-        if let Ok(mut child) = self.child.lock() {
-            let _ = child.kill();
-            let _ = child.wait();
+        if !self.finalized {
+            if self.stop_and_reap(STOP_TIMEOUT).is_err() {
+                self.retain();
+            }
+            let _ = self.finish();
         }
-        if let Some(watchdog) = self.watchdog.take() {
-            let _ = watchdog.join();
-        }
+        // A timed-out detached watchdog/reader may still hold the scope. Its
+        // uncertainty was recorded before any runtime owner can attempt cleanup.
+        self.done.store(true, Ordering::SeqCst);
     }
 }
 
@@ -499,10 +974,219 @@ fn read_process_lines<R: Read, F: FnMut(String)>(
     Ok(())
 }
 
+#[cfg(test)]
+mod ownership_tests {
+    use super::*;
+
+    fn exited_child(tracker: &Arc<RuntimeTracker>) -> ManagedChild {
+        #[cfg(unix)]
+        use std::os::unix::process::ExitStatusExt;
+        #[cfg(windows)]
+        use std::os::windows::process::ExitStatusExt;
+        ManagedChild {
+            stdout: None,
+            stderr: None,
+            child: Arc::new(Mutex::new(ChildControl {
+                child: None,
+                exit: Some(ExitStatus::from_raw(0)),
+            })),
+            scope: ChildScope::new(Some(tracker.clone())),
+            lease: Some(tracker.reserve().unwrap()),
+            done: Arc::new(AtomicBool::new(false)),
+            stop_requested: Arc::new(AtomicBool::new(false)),
+            stop_failed: Arc::new(AtomicBool::new(false)),
+            watchdog: None,
+            finalized: false,
+        }
+    }
+
+    #[test]
+    fn exit_observation_does_not_release_the_child_lease() {
+        let tracker = RuntimeTracker::new();
+        let mut child = exited_child(&tracker);
+        assert!(child.try_wait().unwrap().unwrap().success());
+        assert!(child.lease.is_some());
+        child.finish().unwrap();
+        assert!(child.lease.is_none());
+        assert!(child.child.lock().unwrap().child.is_none());
+        tracker.seal().unwrap();
+        assert!(tracker.reserve().is_err());
+    }
+
+    #[test]
+    fn moved_pipe_prevents_finalization_and_late_close_cannot_clear_failure() {
+        let tracker = RuntimeTracker::new();
+        let mut child = exited_child(&tracker);
+        let pipe = TrackedPipe::new(io::Cursor::new(b"synthetic"), &child.scope).unwrap();
+        assert_eq!(child.scope.resources.load(Ordering::SeqCst), 1);
+        assert!(child.finish().is_err());
+        drop(pipe);
+        assert!(child.finish().is_err());
+        drop(child);
+        assert!(tracker.seal().is_err());
+    }
+
+    #[test]
+    fn detached_and_panicked_readers_poison_runtime_cleanup() {
+        let tracker = RuntimeTracker::new();
+        let mut child = exited_child(&tracker);
+        let reader = child.spawn_reader("synthetic-reader", || ()).unwrap();
+        drop(reader);
+        assert!(child.finish().is_err());
+        assert!(tracker.seal().is_err());
+
+        let tracker = RuntimeTracker::new();
+        let mut child = exited_child(&tracker);
+        let reader = child
+            .spawn_reader("synthetic-panic", || panic!("synthetic reader panic"))
+            .unwrap();
+        assert!(reader.join(JOIN_TIMEOUT).is_err());
+        assert!(child.finish().is_err());
+        assert!(tracker.seal().is_err());
+    }
+
+    #[test]
+    fn reader_timeout_is_sticky_after_the_thread_later_finishes() {
+        let tracker = RuntimeTracker::new();
+        let mut child = exited_child(&tracker);
+        let (release, blocked) = mpsc::channel();
+        let (completed, completion) = mpsc::channel();
+        let reader = child
+            .spawn_reader("synthetic-blocked", move || {
+                blocked.recv().unwrap();
+                completed.send(()).unwrap();
+            })
+            .unwrap();
+        assert!(reader.join(Duration::ZERO).is_err());
+        release.send(()).unwrap();
+        completion.recv_timeout(JOIN_TIMEOUT).unwrap();
+        assert!(child.finish().is_err());
+        assert!(tracker.seal().is_err());
+    }
+
+    #[test]
+    fn thread_start_failure_releases_only_the_unstarted_reservation() {
+        let tracker = RuntimeTracker::new();
+        let mut child = exited_child(&tracker);
+        let pipe = TrackedPipe::new(io::Cursor::new(b"synthetic"), &child.scope).unwrap();
+        let result = child.spawn_reader_with(
+            move || drop(pipe),
+            |_read| Err(io::Error::other("synthetic thread creation failure")),
+        );
+        assert!(result.is_err());
+        assert_eq!(child.scope.resources.load(Ordering::SeqCst), 0);
+        assert!(child.lease.is_some());
+        assert!(child
+            .start_watchdog_with(RcloneRunner::new("unused"), |_watch| {
+                Err(io::Error::other("synthetic watchdog creation failure"))
+            })
+            .is_err());
+        assert!(child.lease.is_some());
+        child.stop_and_reap(STOP_TIMEOUT).unwrap();
+        child.finish().unwrap();
+        tracker.seal().unwrap();
+    }
+
+    #[test]
+    fn missing_or_poisoned_control_never_synthesizes_exit() {
+        let tracker = RuntimeTracker::new();
+        let mut child = exited_child(&tracker);
+        child.child.lock().unwrap().exit = None;
+        assert!(child.try_wait().is_err());
+        assert!(child.finish().is_err());
+        assert!(tracker.seal().is_err());
+
+        let tracker = RuntimeTracker::new();
+        let mut child = exited_child(&tracker);
+        let control = child.child.clone();
+        let _ = std::panic::catch_unwind(move || {
+            let _guard = control.lock().unwrap();
+            panic!("synthetic lock poison");
+        });
+        assert!(child.try_wait().is_err());
+        assert!(child.finish().is_err());
+        assert!(tracker.seal().is_err());
+    }
+
+    #[test]
+    fn reader_io_failure_keeps_primary_error_and_runtime_retention() {
+        let tracker = RuntimeTracker::new();
+        let mut child = exited_child(&tracker);
+        let reader = child
+            .spawn_reader("synthetic-io", || {
+                Err(io::Error::other("synthetic read failure"))
+            })
+            .unwrap();
+        let mut error = Some(anyhow::anyhow!("synthetic operation failure"));
+        finish_readers(&mut child, [Some(reader), None], &mut error);
+        let errors = format!("{:#}", error.unwrap());
+        assert!(errors.contains("synthetic operation failure"));
+        assert!(errors.contains("synthetic read failure"));
+        assert!(tracker.seal().is_err());
+    }
+}
+
 #[cfg(all(test, windows))]
 mod tests {
     use super::*;
     use crate::embedded::ExtractedBinary;
+
+    #[test]
+    fn finalized_live_guard_no_longer_holds_runtime_or_process_handle() {
+        let mut binary = ExtractedBinary::extract().unwrap();
+        let runner = RcloneRunner::from_extracted(&binary);
+        let mut child = runner.spawn(&["version"]).unwrap();
+        let stdout = child.stdout.take().unwrap();
+        let stderr = child.stderr.take().unwrap();
+        let out = child
+            .spawn_reader("test-runtime-out", move || {
+                read_process_lines(stdout, |_| {})
+            })
+            .unwrap();
+        let err = child
+            .spawn_reader("test-runtime-err", move || {
+                read_process_lines(stderr, |_| {})
+            })
+            .unwrap();
+        assert!(child.wait().unwrap().success());
+        out.join(JOIN_TIMEOUT).unwrap().unwrap();
+        err.join(JOIN_TIMEOUT).unwrap().unwrap();
+        child.finish().unwrap();
+        assert!(child.child.lock().unwrap().child.is_none());
+        binary.cleanup().unwrap();
+        assert!(!binary.exists());
+        assert!(runner.spawn(&["version"]).is_err());
+        drop(child);
+    }
+
+    #[test]
+    fn watchdog_start_failure_keeps_immediate_owned_child_until_reaped() {
+        let tracker = RuntimeTracker::new();
+        let runner = RcloneRunner::new("powershell.exe");
+        let lease = tracker.reserve().unwrap();
+        let raw = runner
+            .build_command_with_env(
+                &[
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-Command",
+                    "Start-Sleep -Seconds 60",
+                ],
+                None,
+            )
+            .spawn()
+            .unwrap();
+        let mut child = ManagedChild::new(raw, Some(lease), Some(tracker.clone())).unwrap();
+        assert!(child
+            .start_watchdog_with(runner, |_watch| Err(io::Error::other(
+                "synthetic watchdog start"
+            )))
+            .is_err());
+        child.stop_and_reap(STOP_TIMEOUT).unwrap();
+        child.finish().unwrap();
+        assert!(child.child.lock().unwrap().child.is_none());
+        tracker.seal().unwrap();
+    }
 
     #[test]
     fn explicit_config_environment_keeps_only_password_and_explicit_overrides() {
@@ -586,7 +1270,7 @@ mod tests {
     #[test]
     fn test_run_version() {
         let binary = ExtractedBinary::extract().expect("Failed to extract rclone");
-        let runner = RcloneRunner::new(binary.path());
+        let runner = RcloneRunner::from_extracted(&binary);
 
         let version = runner.version().expect("Failed to get version");
         assert!(
@@ -599,7 +1283,7 @@ mod tests {
     #[test]
     fn test_run_help() {
         let binary = ExtractedBinary::extract().expect("Failed to extract rclone");
-        let runner = RcloneRunner::new(binary.path());
+        let runner = RcloneRunner::from_extracted(&binary);
 
         let output = runner.run(&["--help"]).expect("Failed to run help");
         assert!(output.success());
@@ -609,7 +1293,7 @@ mod tests {
     #[test]
     fn test_run_streaming() {
         let binary = ExtractedBinary::extract().expect("Failed to extract rclone");
-        let runner = RcloneRunner::new(binary.path());
+        let runner = RcloneRunner::from_extracted(&binary);
 
         let mut lines_received = 0;
         let output = runner
@@ -625,7 +1309,7 @@ mod tests {
     #[test]
     fn test_timeout() {
         let binary = ExtractedBinary::extract().expect("Failed to extract rclone");
-        let runner = RcloneRunner::new(binary.path()).with_timeout(Duration::from_millis(1)); // Very short timeout
+        let runner = RcloneRunner::from_extracted(&binary).with_timeout(Duration::from_millis(1)); // Very short timeout
 
         // This should timeout (though rclone --help might be faster)
         let output = runner.run(&["--help"]).expect("Failed to run");

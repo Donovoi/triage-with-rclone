@@ -25,6 +25,7 @@ pub mod layout;
 pub mod prompt;
 pub mod render;
 pub mod runner;
+pub(crate) mod runtime;
 pub mod screens;
 pub mod theme;
 pub mod widgets;
@@ -392,7 +393,7 @@ pub struct ListingContext {
 /// A background listing task with cancellation support.
 pub struct ListingTask {
     /// Thread handle for the listing worker.
-    pub handle: JoinHandle<()>,
+    pub handle: JoinHandle<Result<()>>,
     /// Receives progress updates from the worker.
     pub progress_rx: mpsc::Receiver<ListingProgress>,
     /// Flag to signal cancellation; checked by the worker.
@@ -628,6 +629,7 @@ pub struct ForensicsContext {
 /// Core application state container
 pub struct App {
     pub shutdown: Arc<AtomicBool>,
+    pub(crate) resource_shutdown_failed: bool,
     pub case_name: String,
     pub case_output_dir: PathBuf,
     pub acquisition: Option<AcquisitionSource>,
@@ -719,12 +721,16 @@ impl App {
             .collect();
     }
 
-    pub fn cancel_listing(&mut self) {
+    pub fn cancel_listing(&mut self) -> Result<()> {
         if let Some(task) = self.listing_task.take() {
             task.cancel
                 .store(true, std::sync::atomic::Ordering::Relaxed);
-            let _ = task.handle.join();
+            if let Err(error) = runtime::join_worker(task.handle).and_then(|result| result) {
+                self.resource_shutdown_failed = true;
+                return Err(error);
+            }
         }
+        Ok(())
     }
 
     /// Create a new app with the initial state
@@ -747,6 +753,7 @@ impl App {
 
         Self {
             shutdown: Arc::new(AtomicBool::new(false)),
+            resource_shutdown_failed: false,
             case_name: String::new(),
             case_output_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             acquisition: None,
@@ -1081,24 +1088,6 @@ impl App {
         self.forensics.cleanup = Some(cleanup);
     }
 
-    /// Track a temp file for cleanup
-    pub fn cleanup_track_file(&self, path: impl AsRef<std::path::Path>) {
-        if let Some(ref cleanup) = self.forensics.cleanup {
-            if let Ok(mut cleanup) = cleanup.lock() {
-                cleanup.track_file(path);
-            }
-        }
-    }
-
-    /// Track a temp directory for cleanup
-    pub fn cleanup_track_dir(&self, path: impl AsRef<std::path::Path>) {
-        if let Some(ref cleanup) = self.forensics.cleanup {
-            if let Ok(mut cleanup) = cleanup.lock() {
-                cleanup.track_dir(path);
-            }
-        }
-    }
-
     /// Track an env var change for cleanup
     pub fn cleanup_track_env_value(&self, name: impl Into<String>, old_value: Option<String>) {
         if let Some(ref cleanup) = self.forensics.cleanup {
@@ -1166,9 +1155,8 @@ impl App {
     /// Called at the top of every MainMenu Enter handler to ensure stale
     /// state from a previous "Retrieve list" / "Authenticate" / etc. flow
     /// does not leak into the new action.
-    pub fn reset_flow_state(&mut self) {
-        self.cancel_listing();
-        self.cleanup_combine_remote();
+    pub fn reset_flow_state(&mut self) -> Result<()> {
+        self.shutdown_resources()?;
         self.acquisition = None;
         self.config_snapshot = None;
         self.files.entries.clear();
@@ -1203,6 +1191,7 @@ impl App {
         self.listing_task = None;
         self.authenticated_remotes.clear();
         self.combine_remote_created = false;
+        Ok(())
     }
 
     /// Move to the next state in the flow
@@ -1787,23 +1776,70 @@ impl App {
         Ok(self.files.to_download.len())
     }
 
-    /// Unmount the currently mounted remote (if any).
-    pub fn unmount_remote(&mut self) {
-        if let Some(mounted) = self.mounted_remote.take() {
-            let _ = mounted.unmount();
+    /// Owners stay installed on failure, preventing replacement or config mutation.
+    pub fn unmount_remote(&mut self) -> Result<()> {
+        if let Some(mounted) = self.mounted_remote.as_mut() {
+            if let Err(error) = mounted.unmount() {
+                self.resource_shutdown_failed = true;
+                return Err(error);
+            }
+            self.mounted_remote = None;
         }
+        Ok(())
     }
 
-    /// Remove the auto-generated combine remote from the config (cleanup on exit).
-    pub fn cleanup_combine_remote(&mut self) {
-        for (config_path, name) in std::mem::take(&mut self.generated_combines) {
-            if let Ok(config) = crate::rclone::RcloneConfig::open_existing(&config_path) {
-                if let Err(error) = config.remove_remote(&name) {
-                    self.log_error(format!("Could not remove generated remote {name}: {error}"));
-                }
+    pub fn stop_web_gui(&mut self) -> Result<()> {
+        if let Some(web) = self.web_gui_process.as_mut() {
+            if let Err(error) = web.stop() {
+                self.resource_shutdown_failed = true;
+                return Err(error);
             }
+            self.web_gui_process = None;
         }
-        self.combine_remote_created = false;
+        Ok(())
+    }
+
+    pub fn quiesce_resources(&mut self) -> Result<()> {
+        let mut result = self.cancel_listing();
+        result = runtime::complete(result, self.unmount_remote());
+        result = runtime::complete(result, self.stop_web_gui());
+        if self.resource_shutdown_failed {
+            return runtime::complete(
+                result,
+                Err(anyhow::anyhow!(
+                    "Resource shutdown remains uncertain; configuration retained"
+                )),
+            );
+        }
+        result
+    }
+
+    pub fn shutdown_resources(&mut self) -> Result<()> {
+        self.quiesce_resources()?;
+        self.cleanup_combine_remote()
+    }
+
+    pub fn cleanup_combine_remote(&mut self) -> Result<()> {
+        anyhow::ensure!(
+            !self.resource_shutdown_failed
+                && self.listing_task.is_none()
+                && self.mounted_remote.is_none()
+                && self.web_gui_process.is_none(),
+            "Cannot mutate configuration while resources may be active"
+        );
+        let mut result = Ok(());
+        let mut retained = Vec::new();
+        for (config_path, name) in std::mem::take(&mut self.generated_combines) {
+            let remove = crate::rclone::RcloneConfig::open_existing(&config_path)
+                .and_then(|config| config.remove_remote(&name));
+            if remove.is_err() {
+                retained.push((config_path, name));
+            }
+            result = runtime::complete(result, remove);
+        }
+        self.generated_combines = retained;
+        self.combine_remote_created = !self.generated_combines.is_empty();
+        result
     }
 
     /// Select all files for download
@@ -1829,9 +1865,12 @@ impl Default for App {
 
 impl Drop for App {
     fn drop(&mut self) {
-        self.cancel_listing();
-        self.unmount_remote();
-        self.cleanup_combine_remote();
+        // A stack-owned job may have detached after a bounded join during unwind.
+        // Still stop installed owners, but never mutate their configuration.
+        if std::thread::panicking() {
+            self.resource_shutdown_failed = true;
+        }
+        let _ = self.shutdown_resources();
     }
 }
 
@@ -1842,6 +1881,76 @@ mod tests {
         BrowserProfileSource, DetectedAccountCandidate, DetectedBrowserProfile,
         DetectionCapability, DetectionConfidence, DetectionReport,
     };
+
+    fn shutdown_test_task(result: Result<()>) -> ListingTask {
+        let (_, progress_rx) = mpsc::channel();
+        ListingTask {
+            handle: std::thread::spawn(move || result),
+            progress_rx,
+            cancel: Arc::new(AtomicBool::new(false)),
+            started: Instant::now(),
+            count: 0,
+            context: ListingContext {
+                remote_name: "Synthetic".into(),
+                remote_type: "local".into(),
+                combine_remotes: vec![],
+                include_hashes: false,
+                config_path: PathBuf::from("not-opened.conf"),
+                listing_csv: None,
+            },
+        }
+    }
+
+    #[test]
+    fn app_unwind_preserves_generated_config_after_job_ownership_becomes_uncertain() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("synthetic.conf");
+        let original = b"[SyntheticCombine]\ntype = combine\nupstreams = Synthetic=Source:\n";
+        crate::utils::private_fs::write(&path, original).unwrap();
+        let mut app = App::new();
+        app.generated_combines
+            .push((path.clone(), "SyntheticCombine".into()));
+        let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let _owner = app;
+            panic!("synthetic UI unwind");
+        }));
+        assert!(failure.is_err());
+        assert_eq!(std::fs::read(path).unwrap(), original);
+    }
+
+    #[test]
+    fn failed_listing_join_blocks_reset_and_config_cleanup() {
+        let mut app = App::new();
+        app.files.entries = vec!["preserved-inventory".into()];
+        app.generated_combines.push((
+            PathBuf::from("must-not-open.conf"),
+            "SyntheticCombine".into(),
+        ));
+        app.listing_task = Some(shutdown_test_task(Err(anyhow::anyhow!(
+            "runtime cleanup sentinel"
+        ))));
+        let error = app.reset_flow_state().unwrap_err();
+        assert!(format!("{error:#}").contains("runtime cleanup sentinel"));
+        assert!(app.resource_shutdown_failed);
+        assert_eq!(app.files.entries, ["preserved-inventory"]);
+        assert_eq!(app.generated_combines.len(), 1);
+        assert!(app.shutdown_resources().is_err());
+        assert_eq!(app.generated_combines.len(), 1);
+    }
+
+    #[test]
+    fn successful_listing_join_allows_reset_only_after_worker_completion() {
+        let mut app = App::new();
+        app.files.entries = vec!["old-inventory".into()];
+        let task = shutdown_test_task(Ok(()));
+        let cancel = task.cancel.clone();
+        app.listing_task = Some(task);
+        app.reset_flow_state().unwrap();
+        assert!(cancel.load(std::sync::atomic::Ordering::Relaxed));
+        assert!(app.listing_task.is_none());
+        assert!(app.files.entries.is_empty());
+        assert!(!app.resource_shutdown_failed);
+    }
 
     fn sample_detected_candidate(
         capability: DetectionCapability,

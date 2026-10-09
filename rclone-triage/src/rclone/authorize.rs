@@ -4,13 +4,102 @@
 
 use anyhow::{bail, Context, Result};
 use regex::Regex;
-use std::io::{BufRead, BufReader};
-use std::process::{Child, Command, Stdio};
-use std::sync::mpsc;
+use std::io::{self, Read};
+use std::process::{Command, Stdio};
+use std::sync::{
+    atomic::{AtomicBool, AtomicUsize, Ordering},
+    mpsc, Arc,
+};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::rclone::process::RcloneRunner;
+use crate::rclone::process::{DrainHandle, ManagedChild, RcloneRunner, JOIN_TIMEOUT, STOP_TIMEOUT};
+
+const MAX_AUTHORIZE_BYTES: usize = 1024 * 1024;
+const MAX_AUTHORIZE_LINE: usize = 256 * 1024;
+const MAX_AUTHORIZE_LINES: usize = 4096;
+
+#[derive(Debug, Default)]
+struct AuthorizeOutputLimit {
+    bytes: AtomicUsize,
+    lines: AtomicUsize,
+    failed: AtomicBool,
+}
+
+fn read_authorize_output<R: Read>(
+    mut reader: R,
+    tx: mpsc::Sender<(AuthorizeOutputStream, String)>,
+    stream: AuthorizeOutputStream,
+    limit: &AuthorizeOutputLimit,
+) -> io::Result<()> {
+    let operation = (|| {
+        let mut buffer = [0u8; 8192];
+        let mut line = Vec::new();
+        let emit = |line: &mut Vec<u8>| -> io::Result<()> {
+            if line.is_empty() {
+                return Ok(());
+            }
+            if limit.lines.fetch_add(1, Ordering::SeqCst) >= MAX_AUTHORIZE_LINES {
+                return Err(io::Error::other(
+                    "Authorization output exceeded the line limit",
+                ));
+            }
+            tx.send((stream, String::from_utf8_lossy(line).into_owned()))
+                .map_err(|_| {
+                    io::Error::new(
+                        io::ErrorKind::BrokenPipe,
+                        "Authorization output receiver closed",
+                    )
+                })?;
+            line.clear();
+            Ok(())
+        };
+        loop {
+            let count = reader.read(&mut buffer)?;
+            if count == 0 {
+                break;
+            }
+            if limit
+                .bytes
+                .fetch_add(count, Ordering::SeqCst)
+                .saturating_add(count)
+                > MAX_AUTHORIZE_BYTES
+            {
+                return Err(io::Error::other(
+                    "Authorization output exceeded the byte limit",
+                ));
+            }
+            for &byte in &buffer[..count] {
+                if byte == b'\r' || byte == b'\n' {
+                    emit(&mut line)?;
+                } else {
+                    if line.len() == MAX_AUTHORIZE_LINE {
+                        return Err(io::Error::other(
+                            "Authorization output line exceeded its limit",
+                        ));
+                    }
+                    line.push(byte);
+                }
+            }
+        }
+        emit(&mut line)
+    })();
+    if operation.is_err() {
+        limit.failed.store(true, Ordering::SeqCst);
+    }
+    operation
+}
+
+fn finish_authorize_result<T>(operation: Result<T>, cleanup: Result<()>) -> Result<T> {
+    match (operation, cleanup) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(_), Err(error)) => Err(error),
+        (Err(error), Err(cleanup)) => {
+            Err(error.context(format!("Authorization cleanup also failed: {cleanup:#}")))
+        }
+    }
+}
 
 /// Windows-specific: CREATE_NO_WINDOW flag
 #[cfg(windows)]
@@ -154,18 +243,52 @@ pub enum AuthorizeOutputStream {
 pub struct RunningAuthorize {
     runner: RcloneRunner,
     backend: String,
-    child: Child,
+    child: ManagedChild,
     rx: mpsc::Receiver<(AuthorizeOutputStream, String)>,
     stdout: Vec<String>,
     stderr: Vec<String>,
     auth_url: Option<String>,
     redirect_uri: Option<String>,
     expected_state: Option<String>,
-    stdout_handle: Option<thread::JoinHandle<()>>,
-    stderr_handle: Option<thread::JoinHandle<()>>,
+    stdout_handle: Option<DrainHandle<io::Result<()>>>,
+    stderr_handle: Option<DrainHandle<io::Result<()>>>,
+    output_limit: Arc<AuthorizeOutputLimit>,
+    finalized: bool,
 }
 
 impl RunningAuthorize {
+    fn finalize(&mut self) -> Result<()> {
+        if self.finalized {
+            bail!("Authorization finalization was already attempted");
+        }
+        // Explicit finalization is authoritative, including a refused stop/join.
+        self.finalized = true;
+        let mut result = self
+            .child
+            .stop_and_reap(STOP_TIMEOUT)
+            .map(|_| ())
+            .context("Could not confirm authorization child exit");
+        for handle in [self.stdout_handle.take(), self.stderr_handle.take()]
+            .into_iter()
+            .flatten()
+        {
+            let joined = handle
+                .join(JOIN_TIMEOUT)
+                .and_then(|reader| reader)
+                .context("Authorization output reader did not finish successfully");
+            result = finish_authorize_result(result, joined);
+        }
+        if result.is_err() {
+            self.child.retain();
+        }
+        let finished = self
+            .child
+            .finish()
+            .map(|_| ())
+            .context("Authorization runtime finalization failed");
+        finish_authorize_result(result, finished)
+    }
+
     pub fn backend(&self) -> &str {
         &self.backend
     }
@@ -199,6 +322,20 @@ impl RunningAuthorize {
 
     /// Drain output until an auth URL is found or the timeout expires.
     pub fn wait_for_auth_url(&mut self, timeout: Duration) -> Result<Option<String>> {
+        if self.runner.is_cancelled() {
+            return finish_authorize_result(
+                Err(anyhow::anyhow!("Authorization cancelled")),
+                self.finalize(),
+            );
+        }
+        if self.output_limit.failed.load(Ordering::SeqCst) {
+            return finish_authorize_result(
+                Err(anyhow::anyhow!(
+                    "Authorization output could not be read safely"
+                )),
+                self.finalize(),
+            );
+        }
         if self.auth_url.is_some() {
             return Ok(self.auth_url.clone());
         }
@@ -206,9 +343,18 @@ impl RunningAuthorize {
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
             if self.runner.is_cancelled() {
-                let _ = self.child.kill();
-                let _ = self.child.wait();
-                bail!("Authorization cancelled");
+                return finish_authorize_result(
+                    Err(anyhow::anyhow!("Authorization cancelled")),
+                    self.finalize(),
+                );
+            }
+            if self.output_limit.failed.load(Ordering::SeqCst) {
+                return finish_authorize_result(
+                    Err(anyhow::anyhow!(
+                        "Authorization output could not be read safely"
+                    )),
+                    self.finalize(),
+                );
             }
             let remaining = deadline.saturating_duration_since(Instant::now());
             let chunk = remaining.min(Duration::from_millis(200));
@@ -224,6 +370,20 @@ impl RunningAuthorize {
             }
         }
 
+        if self.runner.is_cancelled() {
+            return finish_authorize_result(
+                Err(anyhow::anyhow!("Authorization cancelled")),
+                self.finalize(),
+            );
+        }
+        if self.output_limit.failed.load(Ordering::SeqCst) {
+            return finish_authorize_result(
+                Err(anyhow::anyhow!(
+                    "Authorization output could not be read safely"
+                )),
+                self.finalize(),
+            );
+        }
         Ok(self.auth_url.clone())
     }
 
@@ -231,25 +391,31 @@ impl RunningAuthorize {
     pub fn wait(mut self, timeout: Option<Duration>) -> Result<AuthorizeInteractiveResult> {
         let started = Instant::now();
         let mut timed_out = false;
-        let status = loop {
-            if self.runner.is_cancelled() || timeout.is_some_and(|t| started.elapsed() >= t) {
-                timed_out = !self.runner.is_cancelled();
-                let _ = self.child.kill();
-                break self.child.wait()?;
+        let mut operation = (|| -> Result<_> {
+            loop {
+                if self.output_limit.failed.load(Ordering::SeqCst) {
+                    bail!("Authorization output could not be read safely");
+                }
+                if self.runner.is_cancelled() {
+                    bail!("Authorization cancelled");
+                }
+                if timeout.is_some_and(|t| started.elapsed() >= t) {
+                    timed_out = true;
+                    break Ok(self.child.stop_and_reap(STOP_TIMEOUT)?);
+                }
+                if let Some(status) = self.child.try_wait()? {
+                    break Ok(status);
+                }
+                thread::sleep(Duration::from_millis(25));
             }
-            if let Some(status) = self.child.try_wait()? {
-                break status;
-            }
-            thread::sleep(Duration::from_millis(25));
-        };
-
-        // Ensure readers are done so the channel is fully populated.
-        if let Some(handle) = self.stdout_handle.take() {
-            let _ = handle.join();
+        })();
+        let cleanup = self.finalize();
+        // Cancellation during a successful child's drain joins must not turn
+        // into a token that a caller can persist as a completed authorization.
+        if self.runner.is_cancelled() && operation.is_ok() {
+            operation = Err(anyhow::anyhow!("Authorization cancelled"));
         }
-        if let Some(handle) = self.stderr_handle.take() {
-            let _ = handle.join();
-        }
+        let status = finish_authorize_result(operation, cleanup)?;
 
         // Drain remaining lines.
         let drained: Vec<(AuthorizeOutputStream, String)> = self.rx.try_iter().collect();
@@ -258,6 +424,9 @@ impl RunningAuthorize {
         }
 
         let token_json = extract_token_json(&self.stdout, &self.stderr);
+        if self.runner.is_cancelled() {
+            bail!("Authorization cancelled");
+        }
 
         Ok(AuthorizeInteractiveResult {
             backend: std::mem::take(&mut self.backend),
@@ -275,13 +444,8 @@ impl RunningAuthorize {
 
 impl Drop for RunningAuthorize {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-        if let Some(handle) = self.stdout_handle.take() {
-            let _ = handle.join();
-        }
-        if let Some(handle) = self.stderr_handle.take() {
-            let _ = handle.join();
+        if !self.finalized {
+            let _ = self.finalize();
         }
     }
 }
@@ -417,38 +581,20 @@ pub fn spawn_authorize(
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
 
-    let mut child = cmd
-        .spawn()
+    let child = runner
+        .spawn_command(&mut cmd)
         .with_context(|| format!("Failed to spawn rclone authorize for {}", backend))?;
+    own_authorize_readers(runner, backend, child)
+}
 
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| anyhow::anyhow!("stdout was not captured"))?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| anyhow::anyhow!("stderr was not captured"))?;
-
+fn own_authorize_readers(
+    runner: &RcloneRunner,
+    backend: String,
+    child: ManagedChild,
+) -> Result<RunningAuthorize> {
     let (tx, rx) = mpsc::channel::<(AuthorizeOutputStream, String)>();
-    let tx_out = tx.clone();
-    let tx_err = tx.clone();
-
-    let stdout_handle = thread::spawn(move || {
-        let reader = BufReader::new(stdout);
-        for line in reader.lines().map_while(Result::ok) {
-            let _ = tx_out.send((AuthorizeOutputStream::Stdout, line));
-        }
-    });
-
-    let stderr_handle = thread::spawn(move || {
-        let reader = BufReader::new(stderr);
-        for line in reader.lines().map_while(Result::ok) {
-            let _ = tx_err.send((AuthorizeOutputStream::Stderr, line));
-        }
-    });
-
-    Ok(RunningAuthorize {
+    // Establish the complete owner before pipe extraction or fallible readers.
+    let mut running = RunningAuthorize {
         runner: runner.clone(),
         backend,
         child,
@@ -458,14 +604,170 @@ pub fn spawn_authorize(
         auth_url: None,
         redirect_uri: None,
         expected_state: None,
-        stdout_handle: Some(stdout_handle),
-        stderr_handle: Some(stderr_handle),
-    })
+        stdout_handle: None,
+        stderr_handle: None,
+        output_limit: Arc::new(AuthorizeOutputLimit::default()),
+        finalized: false,
+    };
+    let operation = (|| -> Result<()> {
+        let stdout = running
+            .child
+            .stdout
+            .take()
+            .context("stdout was not captured")?;
+        let stderr = running
+            .child
+            .stderr
+            .take()
+            .context("stderr was not captured")?;
+        let tx_out = tx.clone();
+        let limit = running.output_limit.clone();
+        running.stdout_handle =
+            Some(running.child.spawn_reader("authorize-stdout", move || {
+                read_authorize_output(stdout, tx_out, AuthorizeOutputStream::Stdout, &limit)
+            })?);
+        let limit = running.output_limit.clone();
+        running.stderr_handle =
+            Some(running.child.spawn_reader("authorize-stderr", move || {
+                read_authorize_output(stderr, tx, AuthorizeOutputStream::Stderr, &limit)
+            })?);
+        Ok(())
+    })();
+    if let Err(error) = operation {
+        return finish_authorize_result(Err(error), running.finalize());
+    }
+    Ok(running)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // These process tests run only in the hosted suite. The child is the test
+    // harness itself and emits synthetic output; it never contacts a provider.
+    #[test]
+    fn authorize_output_fixture() {
+        if std::env::var_os("TRIAGE_AUTHORIZE_FIXTURE_CHILD").is_some() {
+            println!(r#"{{"access_token":"fixture-token","token_type":"Bearer"}}"#);
+        }
+    }
+
+    fn completed_authorize_fixture() -> (RunningAuthorize, Arc<AtomicBool>) {
+        let exe = std::env::current_exe().unwrap();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let runner = RcloneRunner::new(&exe)
+            .with_cancel_flag(cancel.clone())
+            .with_timeout(Duration::from_secs(15));
+        let mut command = Command::new(&exe);
+        command
+            .args([
+                "--exact",
+                "rclone::authorize::tests::authorize_output_fixture",
+                "--nocapture",
+            ])
+            .env("TRIAGE_AUTHORIZE_FIXTURE_CHILD", "1")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .stdin(Stdio::null());
+        let child = runner.spawn_command(&mut command).unwrap();
+        let mut running = own_authorize_readers(&runner, "synthetic".into(), child).unwrap();
+        assert!(running.child.wait().unwrap().success());
+        (running, cancel)
+    }
+
+    #[test]
+    fn completed_authorization_fixture_returns_its_synthetic_token() {
+        let (running, _) = completed_authorize_fixture();
+        let result = running.wait(Some(Duration::from_secs(5))).unwrap();
+        let token: serde_json::Value =
+            serde_json::from_str(result.token_json.as_deref().unwrap()).unwrap();
+        assert_eq!(token["access_token"], "fixture-token");
+        assert!(!result.timed_out);
+        assert_eq!(result.status, 0);
+    }
+
+    #[test]
+    fn cancelled_completed_authorization_cannot_return_a_token() {
+        let (running, cancel) = completed_authorize_fixture();
+        cancel.store(true, Ordering::SeqCst);
+        let error = running.wait(Some(Duration::from_secs(5))).unwrap_err();
+        assert!(format!("{error:#}").contains("Authorization cancelled"));
+    }
+
+    #[test]
+    fn cached_authorization_url_cannot_hide_cancellation_or_reader_failure() {
+        for cancelled in [false, true] {
+            let (mut running, cancel) = completed_authorize_fixture();
+            running.auth_url = Some("https://example.invalid/synthetic-authorize".into());
+            if cancelled {
+                cancel.store(true, Ordering::SeqCst);
+            } else {
+                running.output_limit.failed.store(true, Ordering::SeqCst);
+            }
+            let error = running
+                .wait_for_auth_url(Duration::from_secs(1))
+                .unwrap_err();
+            assert!(format!("{error:#}").contains(if cancelled {
+                "Authorization cancelled"
+            } else {
+                "Authorization output could not be read safely"
+            }));
+        }
+    }
+
+    #[test]
+    fn authorize_readers_bound_lines_and_total_output_without_losing_final_line() {
+        let limit = AuthorizeOutputLimit::default();
+        let (tx, rx) = mpsc::channel();
+        read_authorize_output(
+            &b"first\r\nsecond"[..],
+            tx,
+            AuthorizeOutputStream::Stdout,
+            &limit,
+        )
+        .unwrap();
+        assert_eq!(
+            rx.try_iter().map(|(_, text)| text).collect::<Vec<_>>(),
+            ["first", "second"]
+        );
+        let (tx, _rx) = mpsc::channel();
+        assert!(read_authorize_output(
+            &vec![b'x'; MAX_AUTHORIZE_LINE + 1][..],
+            tx,
+            AuthorizeOutputStream::Stderr,
+            &limit
+        )
+        .is_err());
+        assert!(limit.failed.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn authorize_readers_share_a_finite_byte_and_line_budget() {
+        for (bytes, lines) in [(MAX_AUTHORIZE_BYTES, 0), (0, MAX_AUTHORIZE_LINES)] {
+            let limit = AuthorizeOutputLimit::default();
+            limit.bytes.store(bytes, Ordering::SeqCst);
+            limit.lines.store(lines, Ordering::SeqCst);
+            let (tx, rx) = mpsc::channel();
+            assert!(
+                read_authorize_output(&b"x\n"[..], tx, AuthorizeOutputStream::Stdout, &limit)
+                    .is_err()
+            );
+            assert!(rx.try_iter().next().is_none());
+            assert!(limit.failed.load(Ordering::SeqCst));
+        }
+    }
+
+    #[test]
+    fn authorize_finalization_keeps_both_operation_and_cleanup_errors() {
+        let error = finish_authorize_result::<()>(
+            Err(anyhow::anyhow!("operation-marker")),
+            Err(anyhow::anyhow!("cleanup-marker")),
+        )
+        .unwrap_err();
+        let text = format!("{error:#}");
+        assert!(text.contains("operation-marker") && text.contains("cleanup-marker"));
+        assert!(finish_authorize_result(Ok(()), Err(anyhow::anyhow!("cleanup-marker"))).is_err());
+    }
 
     #[test]
     fn hidrive_authorize_uses_read_only_user_scope() {
