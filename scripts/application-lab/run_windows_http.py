@@ -535,12 +535,17 @@ def prepare(parent, name, action="Create"):
     outcome = ("parent_changed" if not parent_unchanged else "protocol_failed" if code is None else
                "exit_failed" if code != 0 else "protocol_failed" if final is not True else None)
     if outcome is not None:
+        setup_error = ProducerError("case_setup_failed")
+        # Carry only a closed failure-context marker; never child strings.
+        setup_error.helper_profile_owner_failure = (action == "Verify" and outcome == "exit_failed" and
+            final is False and failure is not None and failure["reason"] == "owner_invalid" and
+            failure["category"] == "helper_profile_descendant")
         try:
             setup_diagnostic(outcome, action, scope, code, stage,
                              failure if outcome == "exit_failed" and final is False else None)
         except BaseException:
             pass  # A diagnostic failure cannot replace the setup failure.
-        raise ProducerError("case_setup_failed")
+        raise setup_error
     return parent / name
 
 
@@ -1029,6 +1034,67 @@ def post_helper_diagnostic(name, stage, location, summary=None, comparison=None,
     print("application_post_helper_diagnostic=" + E.compact(value).decode("ascii"), flush=True)
 
 
+# Windows KNOWNFOLDERID defaults and documented PowerShell profile/cache parents.
+# These names classify observations only; they are never creation/cleanup rules.
+PROFILE_NODE_LABELS = {
+    "appdata": "appdata",
+    "appdata/local": "local_appdata",
+    "appdata/locallow": "low_appdata",
+    "appdata/roaming": "roaming_appdata",
+    "documents": "documents",
+    "documents/windowspowershell": "powershell_documents",
+    "documents/windowspowershell/modules": "powershell_modules",
+    "appdata/local/microsoft": "local_microsoft",
+    "appdata/local/microsoft/windows": "local_windows",
+    "appdata/local/microsoft/windows/powershell": "local_powershell",
+    "appdata/roaming/microsoft": "roaming_microsoft",
+    "appdata/roaming/microsoft/windows": "roaming_windows",
+    "appdata/roaming/microsoft/windows/powershell": "roaming_powershell",
+}
+
+
+def helper_profile_layout(entries):
+    """Reduce an already-safe private inventory to closed labels/counts only."""
+    need(type(entries) is dict and len(entries) <= 32 and all(type(path) is str and
+         type(value) is tuple and len(value) == 4 and type(value[0]) is bool and
+         all(type(part) is int and part >= 0 for part in value[1:]) for path, value in entries.items()), "cleanup_failed")
+    need(len({path.casefold() for path in entries}) == len(entries), "cleanup_failed")
+    known, unknown_directories, unknown_files = [], 0, 0
+    for path, value in entries.items():
+        label = PROFILE_NODE_LABELS.get(path.lower()) if path.isascii() else None
+        if not value[0]:
+            unknown_files += 1
+        elif label is None:
+            unknown_directories += 1
+        else:
+            known.append(label)
+    return dict(known_nodes=sorted(known), unknown_directory_count=unknown_directories, unknown_file_count=unknown_files)
+
+
+def helper_profile_failure_diagnostic(name, case, case_id, leases, error):
+    """Best-effort observation after the specific failed ACL check; never credit."""
+    try:
+        if not (isinstance(error, ProducerError) and str(error) == "case_setup_failed" and
+                getattr(error, "helper_profile_owner_failure", None) is True):
+            return
+        need(name in E.CASE_ORDER, "cleanup_failed")
+        helper, profile = case / "helper-env", case / "helper-env/profile"
+        def preserved():
+            need(identity(case) == case_id and identity(helper) == leases["helper_root"] and
+                 identity(profile) == leases["helper"]["profile"], "cleanup_failed")
+        preserved()
+        entries = inventory(profile)
+        preserved()
+        value = dict(scope=name, **helper_profile_layout(entries))
+        need(inventory(profile) == entries, "cleanup_failed")
+        preserved()
+        rendered = "application_helper_profile_diagnostic=" + E.compact(value).decode("ascii")
+        need(len(rendered.encode("ascii")) + 1 <= 4096, "cleanup_failed")
+        print(rendered, flush=True)
+    except BaseException:
+        pass  # Uncertain metadata/output cannot replace or soften the failure.
+
+
 def post_helper_preserved(name, case, leases, baseline, *, probe=False):
     """Keep the existing cleanup predicates; expose only failed finite observations."""
     observation = dict(stage="private_identity", location="temp", summary=None, comparison=None, allowlist=None)
@@ -1348,8 +1414,10 @@ def run_case(name, suite, application, application_sha, runtime, session_factory
                 cleanup_stage = "owned_removal"
                 remove_owned(case, lease)
                 checks["temp_cleanup"] = True
-            except BaseException:
+            except BaseException as error:
                 fail("cleanup_failed")
+                if cleanup_stage == "acl_verify":
+                    helper_profile_failure_diagnostic(name, case, lease, private_leases, error)
                 if cleanup_stage != "post_helper":
                     cleanup_diagnostic(name, cleanup_stage, cleanup_location, cleanup_summary)
         elif not case.exists():
@@ -1518,6 +1586,8 @@ def bridge_probe(session_factory=None):
         return 0
     except BaseException as error:
         code = str(error) if isinstance(error, ProducerError) and str(error) in E.FAILURE_CODES else "unexpected_failure"
+        if stage == "case_acl":
+            helper_profile_failure_diagnostic("listing", case, case_id, private_leases, error)
         if bridge is not None and not close_attempted:
             try:
                 bridge.close()
