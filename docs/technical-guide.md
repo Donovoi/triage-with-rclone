@@ -1,6 +1,6 @@
 # Technical guide
 
-Windows cloud acquisition CLI and terminal UI, built in Rust with a verified rclone runtime embedded in the executable. The current development version is **0.2.0**; [rclone-version.env](../rclone-version.env) records the embedded runtime version and hashes. Windows 10/11 are the deployment targets; Linux CI exercises the portable library and mocked integrations.
+Windows cloud acquisition CLI and terminal UI, built in Rust with a verified rclone runtime embedded in the executable. The current development version is **0.2.0**; [rclone-version.env](../rclone-version.env) records the embedded runtime version and hashes. Windows 10/11 are the deployment targets; Linux CI exercises the portable library, mocked integrations and isolated native protocol fixtures.
 
 ## Build and run
 
