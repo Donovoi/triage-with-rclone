@@ -13,19 +13,34 @@ class WorkflowObligationTests(unittest.TestCase):
         text = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
         steps = re.split(r"(?m)^      - ", text)
         gates = [step for step in steps if "--require-application http" in step]
-        self.assertEqual(len(gates), 1)
-        gate = gates[0]
+        expected = (
+            ("name: Require the same-build HTTP application evidence",
+             ["http-application.json"], None),
+            ("name: Require the same-build configured WebDAV evidence",
+             ["http-application.json", "webdav-application.json"],
+             "webdav:webdav_basic_loopback_cli_v1:windows"),
+        )
+        self.assertEqual([gate.splitlines()[0] for gate in gates], [row[0] for row in expected])
         # The importer rejects relative runtime paths before reading a receipt.
         # Both build inputs must use the same checkout's absolute workspace.
-        for flag, variable, suffix in (
-            ("--rclone", "PROVIDER_BINARY", "rclone-triage/assets/rclone.exe"),
-            ("--application", "APPLICATION_BINARY", "rclone-triage/target/release/rclone-triage.exe"),
-        ):
-            with self.subTest(flag=flag):
-                match = re.search(re.escape(flag) + r'\s+("[^"\n]+"|\S+)', gate)
-                self.assertIsNotNone(match)
-                self.assertEqual(match.group(1), '"$' + variable + '"')
-                self.assertIn(variable + ": ${{ format('{0}/" + suffix + "', github.workspace) }}", gate)
+        for gate, (name, receipts, mode) in zip(gates, expected):
+            with self.subTest(gate=name):
+                self.assertEqual(re.findall(r'--application-receipt\s+"\$RUNNER_TEMP/([^"\n]+)"', gate), receipts)
+                self.assertEqual(len(re.findall(r"--application-receipt(?=[\s=])", gate)), len(receipts))
+                self.assertEqual(re.findall(r"--require-application-mode\s+(\S+)", gate), [mode] if mode else [])
+                self.assertEqual(len(re.findall(r"--require-application-mode(?=[\s=])", gate)), int(mode is not None))
+                self.assertIn('--application-build-commit "$BUILD_COMMIT"', gate)
+                self.assertEqual(len(re.findall(r"--application-build-commit(?=[\s=])", gate)), 1)
+                for flag, variable, suffix in (
+                    ("--rclone", "PROVIDER_BINARY", "rclone-triage/assets/rclone.exe"),
+                    ("--application", "APPLICATION_BINARY", "rclone-triage/target/release/rclone-triage.exe"),
+                ):
+                    with self.subTest(flag=flag):
+                        self.assertEqual(len(re.findall(re.escape(flag) + r"(?=[\s=])", gate)), 1)
+                        match = re.search(re.escape(flag) + r'\s+("[^"\n]+"|\S+)', gate)
+                        self.assertIsNotNone(match)
+                        self.assertEqual(match.group(1), '"$' + variable + '"')
+                        self.assertIn(variable + ": ${{ format('{0}/" + suffix + "', github.workspace) }}", gate)
 
     def test_windows_target_inventory_uses_absolute_paths(self):
         workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
