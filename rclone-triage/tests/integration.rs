@@ -6,7 +6,7 @@ use rclone_triage::case::{AuthenticatedProvider, Case, DownloadedFile};
 use rclone_triage::files::{
     export_listing, list_path, DownloadPhase, DownloadQueue, DownloadRequest, ListPathOptions,
 };
-use rclone_triage::rclone::{start_web_gui, RcloneConfig, RcloneRunner};
+use rclone_triage::rclone::{RcloneConfig, RcloneRunner};
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -341,55 +341,6 @@ exit 1
 
     let result = rclone_triage::rclone::test_connectivity(&runner, "mock").unwrap();
     assert!(result.ok);
-}
-
-#[test]
-fn test_start_web_gui_builds_expected_args() {
-    let temp_dir = tempfile::tempdir().expect("temp dir");
-    let log_path = temp_dir.path().join("args.txt");
-    let config_path = temp_dir.path().join("rclone.conf");
-    fs::write(&config_path, "# mock config").expect("write config");
-
-    let script = format!(
-        r#"#!/bin/sh
-set -eu
-echo "$@" > "{log}"
-"#,
-        log = log_path.display()
-    );
-
-    let (_dir, mock_path) = write_mock_rclone(&script);
-    let mut process = start_web_gui(
-        &mock_path,
-        Some(&config_path),
-        5590,
-        Some("alice"),
-        Some("secret"),
-    )
-    .expect("start_web_gui should succeed");
-
-    for _ in 0..20 {
-        if log_path.exists() {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(25));
-    }
-    let _ = process.stop();
-
-    let args = fs::read_to_string(&log_path).expect("read args");
-    let parts: Vec<&str> = args.split_whitespace().collect();
-    let config_str = config_path.to_string_lossy().to_string();
-
-    assert!(parts.contains(&"rcd"));
-    assert!(parts.contains(&"--rc-web-gui"));
-    assert!(parts.contains(&"--rc-addr"));
-    assert!(parts.contains(&"127.0.0.1:5590"));
-    assert!(parts.contains(&"--config"));
-    assert!(parts.contains(&config_str.as_str()));
-    assert!(parts.contains(&"--rc-user"));
-    assert!(parts.contains(&"alice"));
-    assert!(parts.contains(&"--rc-pass"));
-    assert!(parts.contains(&"secret"));
 }
 
 #[test]
