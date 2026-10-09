@@ -165,14 +165,14 @@ class Flow:
                     if flow.name == "cancellation":
                         flow.state.cancel_started.set()
                         if flow.grow:
-                            partial = case / "output/synthetic-case/downloads/Synthetic/large/.triage-transfer-synthetic/payload"
+                            partial = case / "output/synthetic-case/downloads/Synthetic/large/.triage-transfer-0123456789abcdef0123456789abcdef/payload.89abcdef.partial"
                             partial.parent.mkdir(parents=True)
                             partial.write_bytes(b"synthetic prefix")
                 else:
                     assert flow.state._observation_release.is_set()
                     if flow.name == "cancellation":
                         assert action == "ctrl_c"
-                        partial = case / "output/synthetic-case/downloads/Synthetic/large/.triage-transfer-synthetic/payload"
+                        partial = case / "output/synthetic-case/downloads/Synthetic/large/.triage-transfer-0123456789abcdef0123456789abcdef/payload.89abcdef.partial"
                         assert partial.stat().st_size > 0
                         partial.unlink()
                         partial.parent.rmdir()
@@ -988,6 +988,89 @@ class ProducerTests(unittest.TestCase):
         self.assertFalse(result["checks"]["ctrl_c_sent"])
         self.assertNotIn("ctrl_c", flow.events)
         self.assertEqual(result["status"], "failed")
+
+    def cancellation_partial_case(self, label, relative=None, size=32):
+        case = self.root / label
+        case.mkdir()
+        base = case / "output/synthetic-case/downloads"
+        path = base / (relative or "Synthetic/large/.triage-transfer-0123456789abcdef0123456789abcdef/payload.89abcdef.partial")
+        path.parent.mkdir(parents=True)
+        path.write_bytes(b"x" * size)
+        return case, base, path
+
+    def test_cancellation_partial_requires_exact_pinned_filename_and_incomplete_size(self):
+        for index, size in enumerate((0, 1, 65536, 2097151, 2097152, 2097153)):
+            case, _, _ = self.cancellation_partial_case("partial-size-" + str(index), size=size)
+            self.assertEqual(P.partial_active(case, P.identity(case)), 0 < size < 2097152)
+        root = "Synthetic/large/.triage-transfer-0123456789abcdef0123456789abcdef/"
+        bad = [root + "payload", root + "payload.partial", root + "payload.89ABCDEF.partial",
+               root + "payload.89abcde.partial", root + "payload.089abcdef.partial",
+               root + "payload.89abcdef.partial.extra", root + "other.89abcdef.partial",
+               root + "nested/payload.89abcdef.partial", "Synthetic/large/cancel.bin",
+               "Synthetic/large/.triage-transfer-synthetic/payload.89abcdef.partial",
+               "Synthetic/large/.triage-transfer-0123456789ABCDEF0123456789abcdef/payload.89abcdef.partial",
+               "Synthetic/large-sibling/.triage-transfer-0123456789abcdef0123456789abcdef/payload.89abcdef.partial",
+               "Synthetic-other/large/.triage-transfer-0123456789abcdef0123456789abcdef/payload.89abcdef.partial"]
+        for index, name in enumerate(bad):
+            with self.subTest(index=index):
+                case, _, _ = self.cancellation_partial_case("partial-name-" + str(index), name)
+                self.assertFalse(P.partial_active(case, P.identity(case)))
+
+    def test_cancellation_partial_rejects_duplicate_or_other_completed_file(self):
+        for extra in ("Synthetic/large/.triage-transfer-ffffffffffffffffffffffffffffffff/payload.12345678.partial",
+                      "Synthetic/large/cancel.bin", "Synthetic/large/private-canary"):
+            case, base, _ = self.cancellation_partial_case("partial-extra-" + str(len(list(self.root.iterdir()))))
+            second = base / extra
+            second.parent.mkdir(parents=True, exist_ok=True)
+            second.write_bytes(b"inert")
+            with self.assertRaisesRegex(P.ProducerError, "^cancellation_failed$"):
+                P.partial_active(case, P.identity(case))
+
+    def test_cancellation_partial_rejects_case_stage_and_file_identity_replacement(self):
+        case, _, _ = self.cancellation_partial_case("partial-case-replaced")
+        lease = P.identity(case)
+        with mock.patch.object(P, "identity", return_value=(lease[0], lease[1] + 1)), \
+             mock.patch.object(P, "inventory") as inventory:
+            with self.assertRaisesRegex(P.ProducerError, "^preservation_failed$"):
+                P.partial_active(case, lease)
+            inventory.assert_not_called()
+        for kind in ("stage", "file", "downloads"):
+            case, base, path = self.cancellation_partial_case("partial-replaced-" + kind)
+            lease, snapshot = P.identity(case), P.inventory(base)
+            def replace(_):
+                if kind == "file":
+                    path.rename(case / "retained-original-file")
+                    path.write_bytes(b"replacement")
+                elif kind == "stage":
+                    path.parent.rename(case / "retained-original-stage")
+                    path.parent.mkdir()
+                    path.write_bytes(b"replacement")
+                else:
+                    base.rename(case / "retained-original-downloads")
+                    base.mkdir()
+                return snapshot
+            with mock.patch.object(P, "inventory", side_effect=replace):
+                with self.assertRaisesRegex(P.ProducerError, "^preservation_failed$"):
+                    P.partial_active(case, lease)
+
+    def test_cancellation_partial_inventory_or_link_refusal_remains_failed(self):
+        directory_case, _, directory_path = self.cancellation_partial_case("partial-directory")
+        directory_path.unlink()
+        directory_path.mkdir()
+        self.assertFalse(P.partial_active(directory_case, P.identity(directory_case)))
+        case, _, path = self.cancellation_partial_case("partial-link-refusal")
+        lease = P.identity(case)
+        real_plain = P.plain
+        def reject(path_to_check, *args, **kwargs):
+            if Path(path_to_check) == path:
+                raise P.ProducerError("preservation_failed")
+            return real_plain(path_to_check, *args, **kwargs)
+        with mock.patch.object(P, "plain", side_effect=reject):
+            with self.assertRaisesRegex(P.ProducerError, "^preservation_failed$"):
+                P.partial_active(case, lease)
+        with mock.patch.object(P, "inventory", side_effect=OSError("private-canary")):
+            with self.assertRaises(OSError):
+                P.partial_active(case, lease)
 
     def test_literal_manifest_queue_and_payload_are_independent(self):
         expected = [{"path": path, "size": len(body), "sha256": hashlib.sha256(body).hexdigest()} for path, body in sorted(BODIES.items())]
