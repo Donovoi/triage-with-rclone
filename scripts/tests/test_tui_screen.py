@@ -2,10 +2,11 @@
 from pathlib import Path
 from contextlib import redirect_stderr, redirect_stdout
 import io
+import importlib.util
 import random
 from types import ModuleType
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 
 SOURCE = Path(__file__).resolve().parents[1] / "application-lab" / "tui_screen.py"
@@ -177,6 +178,126 @@ class ScreenTests(unittest.TestCase):
         screen.feed(ESC + b"[?1049lX")
         self.assertFalse(screen.alternate)
         self.assertEqual(screen.lines()[0][:5], "MAINX")
+
+    def test_first_alternate_draw_without_ed2_at_every_chunk_split(self):
+        # App EnterAlternateScreen -> Ratatui first MoveTo/diff: no clear() call.
+        # Expected cells remain the independent literal frame, including blanks.
+        data = self.frame().replace(ESC + b"[2J", b"")
+        self.assertNotIn(ESC + b"[2J", data)
+        for split in range(len(data) + 1):
+            with self.subTest(split=split):
+                screen = T.Screen()
+                screen.feed(data[:split])
+                screen.feed(data[split:])
+                screen.finish()
+                self.assert_frame(screen)
+
+    def test_cleared_alternate_still_requires_absolute_cursor_from_nonhome_main(self):
+        screen = T.Screen()
+        screen.feed(b"\x1b[9;17HMAIN\x1b[?1049h")
+        self.assertFalse(screen.ready)
+        self.assert_code("screen_not_ready", screen.cells)
+        # Neither relative movement nor input modes establishes the inherited
+        # cursor. Do not infer home merely because the new buffer is blank.
+        screen.feed(b"\x1b[2A\x1b[3C\x1b[?1004;9001h\x1b[0c")
+        self.assertFalse(screen.ready)
+        self.assert_code("screen_not_ready", lambda: screen.cursor)
+        screen.feed(b"\x1b[3;4fUI")
+        self.assertTrue(screen.ready)
+        self.assertEqual(screen.cursor, (5, 2))
+        self.assertEqual(screen.lines()[2], "   UI".ljust(120))
+        self.assertTrue(all(not row.strip() for i, row in enumerate(screen.lines()) if i != 2))
+
+    def test_alternate_reentry_clears_prior_alternate_without_exposing_main(self):
+        screen = T.Screen()
+        screen.feed(b"\x1b[5;7HMAIN\x1b[?1049h\x1b[2;3HOLD ALTERNATE")
+        self.assertIn("OLD ALTERNATE", screen.text())
+        screen.feed(b"\x1b[?1049l")
+        self.assertEqual(screen.lines()[4], "      MAIN".ljust(120))
+        self.assertEqual(screen.cursor, (10, 4))
+        screen.feed(b"\x1b[?1049h")
+        self.assertFalse(screen.ready)
+        self.assert_code("screen_not_ready", screen.lines)
+        screen.feed(b"\x1b[HNEW")
+        self.assertEqual(screen.lines()[0], "NEW".ljust(120))
+        self.assertTrue(all(not row.strip() for row in screen.lines()[1:]))
+        screen.feed(b"\x1b[?1049l")
+        self.assertEqual(screen.lines()[4], "      MAIN".ljust(120))
+
+    def test_preposition_cell_mutations_are_sticky_not_speculative(self):
+        for mutation in (b"X", b"\n", b"\x1bD", b"\x1bE", b"\x1bM",
+                         b"\x1b[J", b"\x1b[0J", b"\x1b[1J", b"\x1b[K",
+                         b"\x1b[1K", b"\x1b[2K", b"\x1b[L", b"\x1b[M",
+                         b"\x1b[@", b"\x1b[P", b"\x1b[X"):
+            with self.subTest(mutation=mutation):
+                screen = T.Screen()
+                screen.feed(b"\x1b[9;17HMAIN\x1b[?1049h")
+                self.assert_code("screen_not_ready", lambda: screen.feed(mutation))
+                # A later CUP/full clear must not launder invented cell state.
+                self.assert_code("screen_not_ready", lambda: screen.feed(b"\x1b[2J\x1b[H"))
+                self.assert_code("screen_not_ready", screen.cells)
+                self.assertFalse(screen.ready)
+
+    def test_alternate_erase_and_text_keep_colors_clear_flags_and_restore_main(self):
+        screen = T.Screen()
+        screen.feed(b"\x1b[9;17H\x1b[1;2;3;4;5;6;7;8;9;21m"
+                    b"\x1b[38;2;1;2;3;48;5;200;58;2;4;5;6mM")
+        original = T.Style(frozenset({1, 2, 3, 4, 5, 6, 7, 8, 9, 21}),
+                           ("rgb", 1, 2, 3), ("index", 200), ("rgb", 4, 5, 6))
+        erased = T.Style(frozenset(), ("rgb", 1, 2, 3), ("index", 200), ("rgb", 4, 5, 6))
+        self.assertEqual(screen.cells()[8][16], T.Cell("M", original))
+        screen.feed(b"\x1b[?1049h")
+        self.assertFalse(screen.ready)
+        screen.feed(b"\x1b[2;3H")
+        self.assertTrue(all(cell == T.Cell(" ", erased) for row in screen.cells() for cell in row))
+        screen.feed(b"A")
+        self.assertEqual(screen.cells()[1][2], T.Cell("A", erased))
+        self.assertEqual(screen.lines()[1], "  A".ljust(120))  # Conceal/reverse did not leak in.
+        screen.feed(b"\x1b[?1049l")
+        self.assertEqual(screen.cursor, (17, 8))
+        screen.feed(b"N")
+        self.assertEqual(screen.cells()[8][16:18], (T.Cell("M", original), T.Cell("N", original)))
+
+    def test_position_independent_clear_scroll_and_controls_do_not_invent_position(self):
+        screen = T.Screen()
+        screen.feed(b"\x1b[9;17HMAIN\x1b[?1049h")
+        # Full clear, scrollback discard and whole-region scroll do not depend
+        # on the inherited cursor; relative motion still does not prove it.
+        screen.feed(b"\x1b[2J\x1b[3J\x1b[2S\x1b[T\x1b[2A\x1b[3C\x1b[0m")
+        self.assertFalse(screen.ready)
+        self.assert_code("screen_not_ready", screen.lines)
+        screen.feed(b"\x1b[HUI")
+        self.assertEqual(screen.lines()[0], "UI".ljust(120))
+        self.assertTrue(all(not row.strip() for row in screen.lines()[1:]))
+
+    def test_new_alternate_does_not_unlock_controller_resize_freshness(self):
+        path = SOURCE.with_name("tui_controller.py")
+        spec = importlib.util.spec_from_file_location("tui_screen_resize_controller", path)
+        controller_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(controller_module)
+        # No Controller constructor or native transport: exercise its real
+        # resize/wait methods with an empty transcript and synthetic reply.
+        controller = object.__new__(controller_module.Controller)
+        controller.screen = T.Screen()
+        controller.resize_unproven = False
+        controller.deadline = 100
+        controller.transcript = Mock()
+        controller.transcript.available.return_value = b""
+        controller.bridge = Mock()
+        controller.bridge.command.return_value = {"ok": True}
+        predicate = Mock(return_value=True)
+        with patch.object(controller_module.time, "monotonic", return_value=0):
+            controller.resize(80, 24)
+            controller.screen.feed(b"\x1b[?1049h\x1b[HNEW")
+            self.assertTrue(controller.screen.ready)
+            self.assertTrue(controller.resize_unproven)
+            with redirect_stdout(io.StringIO()):
+                with self.assertRaisesRegex(controller_module.H.ProducerError, "session_failed"):
+                    controller.wait(predicate)
+        predicate.assert_not_called()
+        controller.bridge.command.assert_called_once_with("resize", columns=80, rows=24)
+        controller.screen.feed(b"\x1b[?1049l\x1b[H")
+        self.assertFalse(controller.screen.ready)  # Resized primary still needs ED2.
 
     def test_resize_requires_full_erase_and_absolute_position_for_each_buffer(self):
         screen = T.Screen()

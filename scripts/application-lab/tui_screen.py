@@ -15,6 +15,11 @@ resize() discards both grids and invalidates them until each active buffer recei
 ED2 plus an absolute CUP/HVP. Drain old-size transcript bytes before acknowledging
 resize; this parser cannot establish the ordering of ConPTY output and resize.
 Snapshot availability is not proof that an application redraw has finished.
+Entering DEC1049 clears the new alternate buffer, but does not prove its cursor
+position. An absolute position is still required before exposing that buffer.
+Cell edits that depend on an unproven position fail closed. Microsoft alternate
+entry clears character flags while preserving the foreground/background and
+underline colors for both erased cells and subsequent text.
 
 References: Microsoft Console Virtual Terminal Sequences (cursor, erase, margins,
 SGR, OSC and alternate buffer); xterm ctlseqs (synchronized output); pinned
@@ -26,6 +31,12 @@ we do not send focus/key events or fabricate capability replies. This source
 compatibility does not identify the bytes of any hosted failure. See:
 https://github.com/microsoft/terminal/blob/6676c6f938f7e98ad680f0cecedd3bafb6529734/src/host/VtIo.cpp
 https://github.com/microsoft/terminal/blob/6676c6f938f7e98ad680f0cecedd3bafb6529734/src/terminal/adapter/adaptDispatch.cpp
+DEC1049 clearing: https://invisible-island.net/xterm/ctlseqs/ctlseqs.html
+Microsoft _CreateAltBuffer preserves the viewport-relative cursor, not home:
+https://github.com/microsoft/terminal/blob/6676c6f938f7e98ad680f0cecedd3bafb6529734/src/host/screenInfo.cpp
+Erase attributes/active text: TextAttribute::SetStandardErase, TextBuffer ctor:
+https://github.com/microsoft/terminal/blob/6676c6f938f7e98ad680f0cecedd3bafb6529734/src/buffer/out/TextAttribute.cpp
+https://github.com/microsoft/terminal/blob/6676c6f938f7e98ad680f0cecedd3bafb6529734/src/buffer/out/textBuffer.cpp
 """
 import codecs
 from typing import NamedTuple
@@ -66,8 +77,8 @@ class Cell(NamedTuple):
 
 
 class _Buffer:
-    def __init__(self, columns, rows, ready=True):
-        self.grid = [[Cell(" ", Style()) for _ in range(columns)] for _ in range(rows)]
+    def __init__(self, columns, rows, ready=True, style=Style()):
+        self.grid = [[Cell(" ", style) for _ in range(columns)] for _ in range(rows)]
         self.x = self.y = self.top = 0
         self.bottom = rows - 1
         self.saved = None
@@ -274,6 +285,7 @@ class Screen:
         self._state, self._sequence = "ground", ""
 
     def _put(self, char):
+        self._require_position()
         b = self._buffer
         if b.wrap_pending:
             b.x = 0
@@ -297,6 +309,7 @@ class Screen:
         self._buffer.grid[top:bottom + 1] = old[n:] + blank if count > 0 else blank + old[:height - n]
 
     def _index(self, direction):
+        self._require_position()
         b = self._buffer
         b.wrap_pending = False
         if direction > 0 and b.y == b.bottom:
@@ -305,6 +318,10 @@ class Screen:
             self._scroll(b.top, b.bottom, -1)
         else:
             b.y = max(0, min(self.rows - 1, b.y + direction))
+
+    def _require_position(self):
+        if not self._buffer.positioned:
+            self._fail("screen_not_ready")
 
     def _save_restore(self, save):
         b = self._buffer
@@ -383,6 +400,8 @@ class Screen:
         elif final in "JK":
             if value not in (0, 1, 2) and not (final == "J" and value == 3):
                 self._fail("sequence_invalid")
+            if not (final == "J" and value in (2, 3)):
+                self._require_position()
             if value == 3:
                 return  # No scrollback is retained.
             if final == "J":
@@ -399,9 +418,11 @@ class Screen:
         elif final in "ST":
             self._scroll(b.top, b.bottom, n if final == "S" else -n)
         elif final in "LM":
+            self._require_position()
             if b.top <= b.y <= b.bottom:
                 self._scroll(b.y, b.bottom, -n if final == "L" else n)
         elif final in "@PX":
+            self._require_position()
             n = min(n, self.columns - b.x)
             self._charge(self.columns - b.x)
             row = b.grid[b.y]
@@ -421,7 +442,12 @@ class Screen:
             if enabled and not self.alternate:
                 self._charge(self.columns * self.rows)
                 self._save_restore(True)
-                self._alternate = _Buffer(self.columns, self.rows, ready=False)
+                erase_style = Style(frozenset(), self._style.foreground,
+                                    self._style.background, self._style.underline)
+                self._alternate = _Buffer(self.columns, self.rows, ready=False, style=erase_style)
+                # DEC1049 clears on entry; cursor position still needs proof.
+                self._alternate.erased = True
+                self._style = erase_style
                 self._buffer = self._alternate
             elif not enabled and self.alternate:
                 self._buffer, self._alternate = self._primary, None
