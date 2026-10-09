@@ -321,6 +321,14 @@ jobs:
       - name: Check hosted Windows helper readiness and cleanup
         if: runner.os == 'Windows'
         run: python -B ../scripts/application-lab/run_windows_http.py --bridge-probe
+      - name: Check hosted Windows source folder ownership and cleanup
+        if: runner.os == 'Windows'
+        timeout-minutes: 2
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & ../scripts/application-lab/probe_source_directory.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: rclone-triage -> target

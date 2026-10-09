@@ -75,6 +75,7 @@ namespace TriageApplicationLab {
         Thread reader,writer,closer,resizer;
         Timer watchdog;
         string caseRoot;
+        HostedSourceDirectory sourceDirectory;
         int deadlineMs,maxOutput,maxRuntimeProcesses;
         int? runtimeProcessCount;
         long outputBytes;
@@ -214,13 +215,17 @@ namespace TriageApplicationLab {
         public static bool RuntimeCountAllowed(int maximum,int count) { return maximum>=1 && maximum<=4 && count>=1 && count<=maximum; }
         public static bool SameRuntimeImage(string first,string next) { return !String.IsNullOrEmpty(next) && (first==null || String.Equals(first,next,StringComparison.OrdinalIgnoreCase)); }
         public static HostedConPtySession Start(string appPath,string appSha256,string[] arguments,string root,IDictionary<string,string> environment,string transcriptPath,int maxOutputBytes,int deadlineMilliseconds,int maxRuntimeProcesses) {
-            return StartCore(appPath,appSha256,arguments,root,environment,transcriptPath,maxOutputBytes,deadlineMilliseconds,maxRuntimeProcesses,false);
+            return StartCore(appPath,appSha256,arguments,root,environment,transcriptPath,maxOutputBytes,deadlineMilliseconds,maxRuntimeProcesses,false,false);
+        }
+        public static HostedConPtySession StartSource(string appPath,string appSha256,string[] arguments,string root,IDictionary<string,string> environment,string transcriptPath,int maxOutputBytes,int deadlineMilliseconds,int maxRuntimeProcesses) {
+            return StartCore(appPath,appSha256,arguments,root,environment,transcriptPath,maxOutputBytes,deadlineMilliseconds,maxRuntimeProcesses,false,true);
         }
         public static HostedConPtySession StartTui(string appPath,string appSha256,string[] arguments,string root,IDictionary<string,string> environment,string transcriptPath,int maxOutputBytes,int deadlineMilliseconds,int maxRuntimeProcesses) {
-            return StartCore(appPath,appSha256,arguments,root,environment,transcriptPath,maxOutputBytes,deadlineMilliseconds,maxRuntimeProcesses,true);
+            return StartCore(appPath,appSha256,arguments,root,environment,transcriptPath,maxOutputBytes,deadlineMilliseconds,maxRuntimeProcesses,true,false);
         }
-        static HostedConPtySession StartCore(string appPath,string appSha256,string[] arguments,string root,IDictionary<string,string> environment,string transcriptPath,int maxOutputBytes,int deadlineMilliseconds,int maxRuntimeProcesses,bool tui) {
+        static HostedConPtySession StartCore(string appPath,string appSha256,string[] arguments,string root,IDictionary<string,string> environment,string transcriptPath,int maxOutputBytes,int deadlineMilliseconds,int maxRuntimeProcesses,bool tui,bool sourceCwd) {
             Require(Sha(appSha256) && arguments!=null && arguments.Length<=64 && maxOutputBytes>=1024 && maxOutputBytes<=8388608 && deadlineMilliseconds>=1000 && deadlineMilliseconds<=180000 && RuntimeCountAllowed(maxRuntimeProcesses,1));
+            if(sourceCwd) HostedSourceDirectory.SourcePath(root);
             root=FullPath(root); PrivateRoot(root); appPath=FullPath(appPath); PlainExisting(appPath,false);
             transcriptPath=FullPath(transcriptPath); Require(Inside(root,transcriptPath) && !File.Exists(transcriptPath) && !Directory.Exists(transcriptPath));
             PlainExisting(Path.GetDirectoryName(transcriptPath),true);
@@ -232,6 +237,7 @@ namespace TriageApplicationLab {
             ProcessInfo pi=new ProcessInfo(); bool initialized=false;
             FileStream appLock=null;
             try {
+                if(sourceCwd) s.sourceDirectory=HostedSourceDirectory.Acquire(root);
                 // Retain a non-delete/non-write sharing lock from hash verification
                 // through creation of the suspended image and its identity check.
                 appLock=new FileStream(appPath,FileMode.Open,FileAccess.Read,FileShare.Read);
@@ -250,8 +256,9 @@ namespace TriageApplicationLab {
                 Require(UpdateProcThreadAttribute(attrs,0,new IntPtr(0x00020016),s.console,new IntPtr(IntPtr.Size),IntPtr.Zero,IntPtr.Zero));
                 var startup=new StartupEx(); startup.startup.cb=Marshal.SizeOf(typeof(StartupEx)); startup.startup.flags=0x100; startup.attributes=attrs;
                 env=Marshal.StringToHGlobalUni(block);
+                if(s.sourceDirectory!=null) s.sourceDirectory.Verify();
                 // EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED.
-                Require(CreateProcessW(appPath,command,IntPtr.Zero,IntPtr.Zero,false,0x80404,env,root,ref startup,out pi));
+                Require(CreateProcessW(appPath,command,IntPtr.Zero,IntPtr.Zero,false,0x80404,env,s.sourceDirectory==null?root:s.sourceDirectory.Path,ref startup,out pi));
                 s.process=pi.process;
                 if(!AssignProcessToJobObject(s.job,s.process)) {
                     s.forced=true; s.Error("job_assignment_failed");
@@ -259,10 +266,12 @@ namespace TriageApplicationLab {
                     throw new InvalidOperationException("start_failed");
                 }
                 Require(String.Equals(Image(s.process),appPath,StringComparison.OrdinalIgnoreCase));
+                if(s.sourceDirectory!=null) s.sourceDirectory.Verify();
                 Require(!s.Deadline && ResumeThread(pi.thread)!=0xffffffff);
                 s.watchdog=new Timer(delegate { if(s.Deadline && !s.finished) { s.Error("deadline_exceeded"); s.Finish(0); } },null,100,100);
                 return s;
-            } catch {
+            } catch(Exception e) {
+                foreach(string code in HostedSourceDirectory.FailureCodes(e)) s.Error(code);
                 s.Error("start_failed");
                 // Release parent copies before waiting for ConPTY/reader EOF.
                 if(inRead!=IntPtr.Zero) { CloseHandle(inRead); inRead=IntPtr.Zero; }
@@ -437,6 +446,7 @@ namespace TriageApplicationLab {
                 if(graceMilliseconds<0 || graceMilliseconds>15000) { Error("protocol_invalid"); graceMilliseconds=0; }
                 if(Deadline) Error("deadline_exceeded");
                 closing=true;
+                bool noProcess=process==IntPtr.Zero;
                 if(watchdog!=null) watchdog.Dispose();
                 long end=Math.Min((long)deadlineMs,elapsed.ElapsedMilliseconds+graceMilliseconds);
                 try {
@@ -472,9 +482,24 @@ namespace TriageApplicationLab {
                         if(output!=null) output.Dispose(); if(transcript!=null) transcript.Dispose();
                     } catch { Error("console_cleanup_failed"); }
                 }); closer.IsBackground=true; closer.Start();
-                if(!closer.Join(10000)) Error("console_cleanup_timeout");
+                bool closerJoined=closer.Join(10000);
+                if(!closerJoined) Error("console_cleanup_timeout");
                 foreach(Child child in children) CloseHandle(child.handle);
                 if(process!=IntPtr.Zero) { CloseHandle(process); process=IntPtr.Zero; }
+                if(sourceDirectory!=null) {
+                    // A failed launch may own pins before it owns a process/job.
+                    // Uncertain process or reader/console lifetime retains the pins.
+                    bool quiet=(noProcess || (appExited && childrenExited && jobZero)) &&
+                        closerJoined && consoleClosed && readerJoined &&
+                        (writer==null || !writer.IsAlive) && (resizer==null || !resizer.IsAlive);
+                    if(quiet) {
+                        try { sourceDirectory.Verify(); } catch(Exception e) {
+                            foreach(string code in HostedSourceDirectory.FailureCodes(e)) Error(code);
+                            Error("source_directory_invalid");
+                        }
+                        try { sourceDirectory.Dispose(); sourceDirectory=null; } catch { Error("source_directory_cleanup_failed"); }
+                    } else Error("source_directory_cleanup_failed");
+                }
                 finished=true; return Snapshot();
             }
         }
@@ -497,6 +522,125 @@ namespace TriageApplicationLab {
             }
         }
         public void Dispose() { Finish(0); }
+    }
+
+    // Fixed source cwd, not a filesystem sandbox. Pins prevent path replacement;
+    // the producer must independently recheck source bytes and its full inventory.
+    // Loading this class is inert. Acquire/Verify/Dispose are hosted-only probes.
+    public sealed class HostedSourceDirectory : IDisposable {
+        [StructLayout(LayoutKind.Sequential)] struct Time { public uint low,high; }
+        [StructLayout(LayoutKind.Sequential)] struct Info {
+            public uint attributes; public Time created,accessed,written;
+            public uint volume,sizeHigh,sizeLow,links,indexHigh,indexLow;
+        }
+        sealed class Pin { public IntPtr handle; public string path; public Info info; public bool owned; }
+        [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern IntPtr CreateFileW(string name,uint access,uint share,IntPtr security,uint disposition,uint flags,IntPtr template);
+        [DllImport("kernel32.dll",SetLastError=true)] static extern bool GetFileInformationByHandle(IntPtr file,out Info info);
+        [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern uint GetFinalPathNameByHandleW(IntPtr file,StringBuilder path,uint length,uint flags);
+        [DllImport("kernel32.dll",SetLastError=true)] static extern bool CloseHandle(IntPtr handle);
+        [DllImport("kernel32.dll")] static extern IntPtr LocalFree(IntPtr memory);
+        [DllImport("advapi32.dll")] static extern uint GetSecurityDescriptorLength(IntPtr descriptor);
+        [DllImport("advapi32.dll")] static extern uint GetSecurityInfo(IntPtr handle,int kind,uint information,out IntPtr owner,out IntPtr group,out IntPtr dacl,out IntPtr sacl,out IntPtr descriptor);
+        readonly List<Pin> pins=new List<Pin>();
+        bool closed,invalid,closeFailed;
+        public string Path { get; private set; }
+        HostedSourceDirectory() { }
+        static void Need(bool value) { if(!value) throw new InvalidOperationException("source_directory_invalid"); }
+        // Preserve the primary failure privately; only fixed categories escape.
+        internal static Exception CleanupFailure(Exception primary) {
+            return new InvalidOperationException("source_directory_cleanup_failed",primary);
+        }
+        public static string[] FailureCodes(Exception error) {
+            var codes=new List<string>();
+            for(int depth=0; error!=null && depth<8; depth++,error=error.InnerException) {
+                string code=error.Message;
+                if((code=="source_directory_invalid" || code=="source_directory_cleanup_failed") && !codes.Contains(code)) codes.Add(code);
+            }
+            return codes.ToArray();
+        }
+        public static string SourcePath(string root) {
+            Need(root!=null && root.Length>3 && root.Length<=2000 &&
+                ((root[0]>='A' && root[0]<='Z') || (root[0]>='a' && root[0]<='z')) &&
+                root[1]==':' && (root[2]=='\\' || root[2]=='/') && root.IndexOf(':',2)<0);
+            foreach(char c in root) Need(!Char.IsControl(c) && !Char.IsSurrogate(c));
+            string full=System.IO.Path.GetFullPath(root).TrimEnd('\\');
+            Need(full.Length>3 && String.Equals(full,root.Replace('/','\\').TrimEnd('\\'),StringComparison.OrdinalIgnoreCase));
+            return System.IO.Path.Combine(full,"source");
+        }
+        static Info Check(Pin pin) {
+            Info info; Need(GetFileInformationByHandle(pin.handle,out info));
+            Need((info.attributes&((uint)FileAttributes.Directory|(uint)FileAttributes.ReparsePoint))==(uint)FileAttributes.Directory);
+            var path=new StringBuilder(4096); uint length=GetFinalPathNameByHandleW(pin.handle,path,4096,0);
+            Need(length>0 && length<4096); string actual=path.ToString();
+            if(actual.StartsWith(@"\\?\")) actual=actual.Substring(4);
+            Need(String.Equals(actual.TrimEnd('\\'),pin.path.TrimEnd('\\'),StringComparison.OrdinalIgnoreCase));
+            if(pin.owned) CheckAcl(pin.handle);
+            return info;
+        }
+        static void CheckAcl(IntPtr handle) {
+            IntPtr owner,group,dacl,sacl,descriptor;
+            Need(GetSecurityInfo(handle,1,5,out owner,out group,out dacl,out sacl,out descriptor)==0);
+            Exception primary=null;
+            try {
+                Need(descriptor!=IntPtr.Zero && owner!=IntPtr.Zero && dacl!=IntPtr.Zero);
+                uint length=GetSecurityDescriptorLength(descriptor); Need(length>0 && length<=65536);
+                byte[] bytes=new byte[length]; Marshal.Copy(descriptor,bytes,0,(int)length);
+                var acl=new DirectorySecurity(); acl.SetSecurityDescriptorBinaryForm(bytes,AccessControlSections.Access|AccessControlSections.Owner);
+                string sid; using(var identity=WindowsIdentity.GetCurrent()) sid=identity.User.Value;
+                Need(acl.AreAccessRulesProtected && acl.GetOwner(typeof(SecurityIdentifier)).Value==sid);
+                bool user=false,system=false;
+                foreach(FileSystemAccessRule rule in acl.GetAccessRules(true,true,typeof(SecurityIdentifier))) {
+                    string who=rule.IdentityReference.Value;
+                    Need(rule.AccessControlType==AccessControlType.Allow && (who==sid || who=="S-1-5-18") &&
+                        (rule.FileSystemRights&FileSystemRights.FullControl)==FileSystemRights.FullControl &&
+                        (rule.InheritanceFlags&(InheritanceFlags.ContainerInherit|InheritanceFlags.ObjectInherit))==(InheritanceFlags.ContainerInherit|InheritanceFlags.ObjectInherit) &&
+                        (rule.PropagationFlags&PropagationFlags.InheritOnly)==0);
+                    if(who==sid) user=true; else system=true;
+                }
+                Need(user && system);
+            } catch(Exception e) { primary=e; throw; }
+            finally { if(descriptor!=IntPtr.Zero && LocalFree(descriptor)!=IntPtr.Zero) throw CleanupFailure(primary); }
+        }
+        public static HostedSourceDirectory Acquire(string root) {
+            string source=SourcePath(root); root=System.IO.Path.GetDirectoryName(source);
+            var chain=new List<string>();
+            for(string path=source; !String.IsNullOrEmpty(path); path=System.IO.Path.GetDirectoryName(path)) {
+                Need(chain.Count<64); chain.Add(path);
+            }
+            chain.Reverse(); var lease=new HostedSourceDirectory {Path=source};
+            try {
+                foreach(string path in chain) {
+                    bool owned=String.Equals(path,root,StringComparison.OrdinalIgnoreCase) || String.Equals(path,source,StringComparison.OrdinalIgnoreCase);
+                    // LIST_DIRECTORY participates in sharing checks; metadata-only
+                    // access does not. Add READ_ATTRIBUTES and owned READ_CONTROL.
+                    // MS-FSA 2.1.5.1.2.2: omit DELETE sharing to hold each name.
+                    IntPtr handle=CreateFileW(path,owned?0x20081u:0x81u,3,IntPtr.Zero,3,0x02200000,IntPtr.Zero);
+                    Need(handle!=IntPtr.Zero && handle!=new IntPtr(-1));
+                    var pin=new Pin {handle=handle,path=path,owned=owned}; lease.pins.Add(pin);
+                    pin.info=Check(pin);
+                }
+                lease.Verify(); return lease;
+            } catch(Exception primary) {
+                try { lease.Dispose(); } catch { throw CleanupFailure(primary); }
+                throw;
+            }
+        }
+        public void Verify() {
+            Need(!closed && !invalid && pins.Count>0);
+            try {
+                foreach(Pin pin in pins) {
+                    Info info=Check(pin);
+                    Need(info.volume==pin.info.volume && info.indexHigh==pin.info.indexHigh && info.indexLow==pin.info.indexLow);
+                }
+            } catch { invalid=true; throw; }
+        }
+        public void Dispose() {
+            if(!closed) {
+                for(int index=pins.Count-1; index>=0; index--) if(!CloseHandle(pins[index].handle)) closeFailed=true;
+                closed=true;
+            }
+            if(closeFailed) throw new InvalidOperationException("source_directory_cleanup_failed");
+        }
     }
 
     // Pure state/encoding helpers used by the separate TUI bridge. None calls
