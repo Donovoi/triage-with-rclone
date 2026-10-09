@@ -32,24 +32,27 @@ PREFIX = "scripts/provider-lab/pcloud-oauth/"
 SOURCE_FILES = tuple(sorted([PREFIX + p for p in ("Dockerfile", "build-lock.json", "run_container.py", "probe.py", "fixture_oauth.py")]
     + ["scripts/provider-lab/fixture_tls.py", "scripts/provider-lab/fixture_pcloud.py",
        "scripts/provider-lab/requirements-fixture.txt", "rclone-version.env"]))
-PROBE_CHECKS = {"environment", "version_binding", "initial_config_question", "callback_ownership", "authorize",
+PROBE_CHECKS = {"environment", "tls_authority_bound", "authority_preserved", "version_binding", "initial_config_question", "callback_ownership", "authorize",
                 "token_exchange", "config_persisted", "fresh_child_read", "source_preserved",
                 "post_auth_config_preserved", "request_sequence"}
 PROBE_CLEANUP = {"children_stopped", "listeners_closed", "temporary_removed"}
 OBSERVATIONS = {"native_commands": 4, "http_transactions": 8, "callback_requests": 2, "https_requests": 6}
 AUTH_MODE = "pcloud_oauth_authentication_v1"
-AUTH_CASES = ("positive", "wrong_state", "consent_denied", "invalid_code", "wrong_client_secret", "cancelled")
-NEGATIVE_CHECKS = {"environment", "version_binding", "initial_config_question", "callback_ownership",
+AUTH_CASES = ("positive", "wrong_state", "blank_state", "invalid_hostname", "consent_denied", "invalid_code", "wrong_client_secret", "cancelled")
+CALLBACK_DENIALS = ("wrong_state", "blank_state", "consent_denied")
+TOKEN_DENIALS = ("invalid_code", "wrong_client_secret")
+NEGATIVE_CHECKS = {"environment", "tls_authority_bound", "authority_preserved", "version_binding", "initial_config_question", "callback_ownership",
                    "no_token_persisted", "config_preserved", "no_read", "source_preserved", "request_sequence"}
 CASE_CHECKS = {"positive": PROBE_CHECKS,
-               **{name: NEGATIVE_CHECKS | {"authorize", "callback_denial"} for name in AUTH_CASES[1:3]},
-               **{name: NEGATIVE_CHECKS | {"authorize", "token_denial"} for name in AUTH_CASES[3:5]},
+               **{name: NEGATIVE_CHECKS | {"authorize", "callback_denial"} for name in CALLBACK_DENIALS},
+               **{name: NEGATIVE_CHECKS | {"authorize", "token_denial"} for name in TOKEN_DENIALS},
+               "invalid_hostname": NEGATIVE_CHECKS | {"authorize", "hostname_denial"},
                "cancelled": NEGATIVE_CHECKS | {"owned_process_cancel"}}
 CASE_OBSERVATIONS = {"positive": OBSERVATIONS,
     **{name: {"native_commands": 3, "http_transactions": 3, "callback_requests": 2, "https_requests": 1}
-       for name in AUTH_CASES[1:3]},
+       for name in (*CALLBACK_DENIALS, "invalid_hostname")},
     **{name: {"native_commands": 3, "http_transactions": 5, "callback_requests": 2, "https_requests": 3}
-       for name in AUTH_CASES[3:5]},
+       for name in TOKEN_DENIALS},
     "cancelled": {"native_commands": 3, "http_transactions": 0, "callback_requests": 0, "https_requests": 0}}
 FIXTURE_SHA256 = "c990bbd4909b227aae4c70d26f9da5534740a2eb10337ced47977f915fa617be"
 ENTRYPOINT = ["/opt/fixture/venv/bin/python"]
@@ -208,7 +211,7 @@ def validate_suite(suite, identity, sources, lock, started, finished):
     check(parse_time(started) <= first <= last <= parse_time(finished)
           and (last - first).total_seconds() <= 240, "suite_time_unbound")
     cases = suite["cases"]
-    check(type(cases) is list and 1 <= len(cases) <= 6, "suite_cases_invalid")
+    check(type(cases) is list and 1 <= len(cases) <= len(AUTH_CASES), "suite_cases_invalid")
     previous = first
     for index, row in enumerate(cases):
         check(type(row) is dict and set(row) == {"name", "report"} and row["name"] == AUTH_CASES[index], "suite_cases_invalid")
@@ -217,7 +220,7 @@ def validate_suite(suite, identity, sources, lock, started, finished):
         previous = parse_time(report["finished_utc"])
         check(index == len(cases) - 1 or report["success"], "suite_continued_after_failure")
     check(canonical_hash(suite["runtime"]) == canonical_hash(cases[0]["report"]["runtime"]), "suite_runtime_mismatch")
-    complete = len(cases) == 6 and all(row["report"]["success"] for row in cases)
+    complete = len(cases) == len(AUTH_CASES) and all(row["report"]["success"] for row in cases)
     check(suite["success"] == complete and suite["errors"] == ([] if complete else ["authentication_case_failed"]), "suite_success_contradiction")
     check(complete or cases[-1]["report"]["success"] is False, "suite_unexplained_partial_run")
     return suite
@@ -227,7 +230,7 @@ def create_args(name, image, run_id, authentication=False):
     check(re.fullmatch(r"triage-pcloud-oauth-[a-f0-9]{32}", name) and re.fullmatch(r"sha256:[a-f0-9]{64}", image)
           and re.fullmatch(r"[a-f0-9]{32}", run_id), "invalid_owned_identity")
     return ["create", "--name", name, "--label", LABEL + "=" + run_id, "--label", KIND + "=pcloud-oauth-probe",
-            "--network", "none", "--read-only", "--user", "10001:10001", "--cap-drop", "ALL",
+            "--network", "none", "--add-host", "fixture.pcloud.com:127.0.0.1", "--read-only", "--user", "10001:10001", "--cap-drop", "ALL",
             "--security-opt", "no-new-privileges", "--pids-limit", "64", "--memory", "512m", "--cpus", "1",
             "--cgroupns", "private", "--ipc", "private", "--init", "--hostname", "synthetic-oauth",
             "--tmpfs", "/work:" + TMPFS, "--entrypoint", ENTRYPOINT[0], image, *COMMAND,
@@ -255,7 +258,8 @@ def validate_container(info, image, run_id, expected_env, authentication=False):
           and host.get("Init") is True, "container_isolation_mismatch")
     check(host.get("Memory") == 536870912 and host.get("NanoCpus") == 1000000000 and host.get("PidsLimit") == 64
           and host.get("Tmpfs") == {"/work": TMPFS}, "container_budget_mismatch")
-    check(not any(host.get(k) for k in ("Binds", "Mounts", "VolumesFrom", "Devices", "DeviceRequests", "PortBindings", "ExtraHosts", "Links"))
+    check(host.get("ExtraHosts") == ["fixture.pcloud.com:127.0.0.1"], "container_hosts_mismatch")
+    check(not any(host.get(k) for k in ("Binds", "Mounts", "VolumesFrom", "Devices", "DeviceRequests", "PortBindings", "Links", "Sysctls", "Dns", "DnsSearch", "DnsOptions"))
           and not config.get("Volumes") and not config.get("ExposedPorts") and not config.get("Healthcheck"), "container_extra_resource")
     mounts = info.get("Mounts", [])
     check(type(mounts) is list and len(mounts) <= 1 and all(type(m) is dict and m.get("Type") == "tmpfs"
@@ -605,7 +609,7 @@ def main():
     parser.add_argument("--rclone", required=True, type=Path)
     parser.add_argument("--report", required=True, type=Path)
     parser.add_argument("--authentication-evidence", action="store_true",
-                        help="Run the fresh six-case suite and emit closed schema-5 local authentication evidence")
+                        help="Run the fresh eight-case suite and emit closed schema-5 local authentication evidence")
     args = parser.parse_args()
     def interrupted(_signum, _frame):
         raise KeyboardInterrupt
