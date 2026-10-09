@@ -35,6 +35,18 @@ pub fn runtime_cleanup_diagnostic(error: &anyhow::Error) -> private_fs::CleanupD
         .unwrap_or_else(private_fs::CleanupDiagnostic::ownership_unavailable)
 }
 
+/// Write only the existing finite records. Diagnostic I/O errors are best effort;
+/// the caller retains the original cleanup error and never retries cleanup here.
+pub fn write_runtime_cleanup_diagnostic(
+    writer: &mut impl Write,
+    diagnostic: private_fs::CleanupDiagnostic,
+) {
+    let _ = writeln!(writer, "runtime_cleanup_diagnostic={diagnostic}");
+    if let Some(residue) = diagnostic.residue() {
+        let _ = writeln!(writer, "runtime_cleanup_residue={residue}");
+    }
+}
+
 /// Manages the extracted rclone binary
 pub struct ExtractedBinary {
     /// Path to the extracted executable
@@ -519,6 +531,18 @@ while :; do :; done
         let residue = diagnostic.residue().unwrap().to_string();
         assert!(residue.contains("\"executable\":\"regular_file\""));
         assert!(!residue.contains("canary"));
+        let mut written = Vec::new();
+        write_runtime_cleanup_diagnostic(&mut written, diagnostic);
+        let written = String::from_utf8(written).unwrap();
+        let records: Vec<_> = written.lines().collect();
+        assert_eq!(records.len(), 2);
+        assert_eq!(
+            records[0],
+            format!("runtime_cleanup_diagnostic={diagnostic}")
+        );
+        assert_eq!(records[1], format!("runtime_cleanup_residue={residue}"));
+        assert!(records[0].len() <= 112 && records[1].len() <= 320);
+        assert!(!written.contains("canary"));
         drop(blocking);
         assert!(binary.cleanup().is_err());
         drop(binary);

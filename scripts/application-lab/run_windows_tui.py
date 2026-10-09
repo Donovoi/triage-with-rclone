@@ -348,7 +348,9 @@ def run_case(name, suite, application, application_sha, runtime):
                 H.need(H.identity(case) == lease and H.sha(H.read(case / "application.exe", 512 * 1024 * 1024)) == application_sha,
                        "preservation_failed")
                 H.post_helper_preserved(alias, case, private_leases, baseline)
+                checks["process_cleanup"] = False
                 H.prepare(suite, alias, "Verify")
+                checks["process_cleanup"] = True
                 H.remove_owned(case, lease)
                 checks["temp_cleanup"] = True
             except BaseException:
