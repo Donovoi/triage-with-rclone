@@ -1,7 +1,8 @@
 # GCS OAuth lifecycle experiment
 
-This is an **unqualified experiment** for pinned rclone 1.75.1. Both hosted
-native runs failed; it has not earned coverage. Every receipt remains `ledger_eligible: false`; existing
+This is an **unqualified experiment** for pinned rclone 1.75.1. All ten hosted
+native cases passed at `d55b124`. It has not earned ledger coverage.
+Every receipt remains `ledger_eligible: false`; existing
 GCS coverage policy and static-token evidence are unchanged.
 
 The ten fresh-config cases are: positive callback/code exchange and README read;
@@ -90,11 +91,17 @@ all reported cleanup checks passed, and refresh cancellation did not run.
 Pinned loopback RC errors contain exactly `error`, `path` and `status`; this
 probe had incorrectly required the HTTP RC server's `input` field. This revision
 corrects that envelope and independently binds the actual child arguments to the
-exact owned copy request. The correction still requires a hosted native check.
+exact owned copy request.
 
-Remaining gates are passing checks on this revision, then one bounded hosted
-native run covering request shapes, config serialization, error causes, timing
-and cleanup. Before ledger integration, define a separate strict lifecycle
+The [complete run](https://github.com/Donovoi/triage-with-rclone/actions/runs/37904440577)
+at `d55b124b0a1ea1867729140c91a094f2a6f68dc5` passed all ten cases, including
+denied refresh and cancellation during refresh. Independent report validation
+confirmed 115 case checks, 30 inner cleanup checks and four outer cleanup checks,
+bound to the tested source and runtime. The run made 34 native commands,
+18 callback requests and 31 HTTPS requests. This is a synthetic protocol test;
+it does not establish real Google consent or application acceptance.
+
+Before ledger integration, define a separate strict lifecycle
 receipt mode and importer tests. Do not convert historical static-token receipts
 into OAuth evidence.
 
