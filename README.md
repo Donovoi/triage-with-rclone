@@ -7,7 +7,7 @@ View files in cloud storage, choose what to collect, and save copies with a reco
 ## Get started
 
 1. Open [Downloads](https://github.com/Donovoi/triage-with-rclone/releases) and choose the newest **nightly**.
-2. Download the ZIP for your PC: **x64**, **x86** (32-bit), or **ARM64**. Check **Settings â†’ System â†’ About â†’ System type** if unsure. Older nightlies may offer only an x64 `.exe`; run that file directly.
+2. Download the ZIP for your PC: **x64**, **x86** (32-bit), or **ARM64**. Check **Settings > System > About > System type** if unsure. Older nightlies may offer only an x64 `.exe`; run that file directly.
 3. Extract the ZIP. Open PowerShell in that folder and run:
 
 ```powershell
@@ -28,7 +28,7 @@ A new nightly is published after each merged PR passes the required checks. Buil
 
 See [test status and known gaps](rclone-triage/tests/provider_testing.md) for the detailed results.
 
-Current work: finish Windows cancellation and cleanup tests, then provider sign-in tests.
+Current work: test provider sign-ins and expired logins, and finish menu-mode cleanup checks.
 
 ## What comes next
 

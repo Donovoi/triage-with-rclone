@@ -54,8 +54,8 @@ class WorkflowObligationTests(unittest.TestCase):
         # decision here; it must not silently escape the workflow's fixed list.
         unresolved = {
             "ci.yml": [
-                {"hdfs", "smb", "pcloud"},  # Cross-platform matrix; latter two run in separate Linux jobs.
-                {"hdfs", "smb", "pcloud"},  # Windows application ledger reuses that protocol evidence.
+                {"hdfs", "smb", "pcloud", "gcs"},  # GCS lifecycle is separate; static GCS is gated below.
+                {"hdfs", "smb", "pcloud", "gcs"},  # Windows keeps static GCS; no borrowed lifecycle.
                 {"hdfs"},                  # Combined Linux evidence; secure HDFS is still unverified.
             ],
             "provider-smoke.yml": [{"hdfs"}],
@@ -63,6 +63,8 @@ class WorkflowObligationTests(unittest.TestCase):
         self.assertTrue(required)
         for filename, exceptions in unresolved.items():
             text = (ROOT / ".github" / "workflows" / filename).read_text(encoding="utf-8")
+            gates = [step for step in re.split(r"(?m)^      - ", text) if "--require-fixtures" in step]
+            self.assertEqual(text.count("--require-gcs-static-token"), 2 if filename == "ci.yml" else 0)
             values = re.findall(r"--require-fixtures\s+([a-z0-9_,]+)(?=\s|$)", text)
             self.assertEqual(len(values), text.count("--require-fixtures"), filename)
             self.assertEqual(len(values), len(exceptions), filename)
@@ -71,6 +73,14 @@ class WorkflowObligationTests(unittest.TestCase):
                     names = value.split(",")
                     gated = set(names)
                     self.assertEqual(len(names), len(gated), "Duplicate fixture gate")
+                    if filename == "ci.yml" and index < 2:
+                        self.assertEqual(len(gated), 18)
+                        self.assertEqual(gates[index].count("--require-gcs-static-token"), 1)
+                        self.assertNotIn("gcs-oauth-lifecycle.json", gates[index])
+                    else:
+                        self.assertEqual(len(gated), 21)
+                        self.assertNotIn("--require-gcs-static-token", gates[index])
+                        self.assertIn("gcs-oauth-lifecycle.json", gates[index])
                     self.assertFalse(gated & missing, "Resolved exceptions must be removed")
                     self.assertEqual(gated | missing, required,
                                      "Every local obligation needs a gate or an explicit unresolved entry")
