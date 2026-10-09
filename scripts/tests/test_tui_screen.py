@@ -1,5 +1,7 @@
 """Pure byte/grid contracts; no terminal, native process, socket or host mutation."""
 from pathlib import Path
+from contextlib import redirect_stderr, redirect_stdout
+import io
 import random
 from types import ModuleType
 import unittest
@@ -297,6 +299,125 @@ class ScreenTests(unittest.TestCase):
         self.assertEqual(screen.lines()[0][0], "X")
         self.assertTrue(screen.cursor_visible)
         self.assert_code("sequence_invalid", lambda: T.Screen().feed(ESC + b"[7 q"))
+
+    def test_conpty_startup_vectors_at_every_split_emit_no_response(self):
+        # Source-derived compatibility vectors, not a captured hosted transcript.
+        # VtIo StartIfNeeded currently emits DA1, focus mode, then Win32 input.
+        vectors = (b"\x1b[c\x1b[?1004h\x1b[?9001h",
+                   b"\x1b[0c\x1b[?9001h\x1b[?1004h")
+        for vector in vectors:
+            data = vector + self.frame() + b"\x1b[?1004l\x1b[?9001l"
+            for split in range(len(data) + 1):
+                with self.subTest(vector=vector, split=split):
+                    screen = T.Screen()
+                    with redirect_stdout(io.StringIO()) as stdout, redirect_stderr(io.StringIO()) as stderr:
+                        self.assertIsNone(screen.feed(data[:split]))
+                        self.assertIsNone(screen.feed(data[split:]))
+                    self.assertEqual((stdout.getvalue(), stderr.getvalue()), ("", ""))
+                    self.assert_frame(screen)
+                    self.assertEqual(screen.total_bytes, len(data))
+            screen = T.Screen()
+            for byte in data:
+                screen.feed(bytes([byte]))
+            screen.finish()
+            self.assert_frame(screen)
+
+    def test_input_modes_and_da1_preserve_primary_style_cursor_and_pending_wrap(self):
+        controls = (b"\x1b[?1004h", b"\x1b[?1004l", b"\x1b[?9001h", b"\x1b[?9001l",
+                    b"\x1b[c", b"\x1b[0c")
+        for control in controls:
+            with self.subTest(control=control):
+                screen = T.Screen(80, 24)
+                screen.feed(b"\x1b[1;38;2;1;2;3;48;5;200m\x1b[?25l\x1b[1;80HX")
+                before = screen.cells(), screen.cursor, screen.cursor_visible, screen.alternate, screen.ready
+                count = screen.total_bytes
+                screen.feed(control)
+                self.assertEqual((screen.cells(), screen.cursor, screen.cursor_visible, screen.alternate,
+                                  screen.ready), before)
+                self.assertEqual(screen.total_bytes, count + len(control))
+                screen.feed(b"Y")
+                self.assertEqual(screen.cursor, (1, 1))
+                self.assertEqual(screen.lines()[0], " " * 79 + "X")
+                self.assertEqual(screen.lines()[1], "Y" + " " * 79)
+                self.assertEqual(screen.cells()[1][0].style.flags, frozenset({1}))
+                self.assertEqual(screen.cells()[1][0].style.foreground, ("rgb", 1, 2, 3))
+                self.assertEqual(screen.cells()[1][0].style.background, ("index", 200))
+
+    def test_input_controls_preserve_scroll_region_and_saved_cursor(self):
+        screen = T.Screen(80, 24)
+        screen.feed(b"TOP\x1b[2;4r\x1b[2;1HA\x1b[3;1HB\x1b[4;1HC\x1b[4;1H\x1b7")
+        screen.feed(b"\x1b[?1004;9001h\x1b[0c\x1b[?9001;1004l")
+        screen.feed(b"\n\x1b8D")
+        self.assertEqual(screen.lines()[:4], tuple(text.ljust(80) for text in ("TOP", "B", "C", "D")))
+        self.assertEqual(screen.cursor, (1, 3))
+        self.assertTrue(all(not line.strip() for line in screen.lines()[4:]))
+
+    def test_input_controls_do_not_make_alternate_or_resized_buffers_ready(self):
+        control = b"\x1b[?1004h\x1b[?9001h\x1b[c\x1b[?1004l\x1b[?9001l\x1b[0c"
+        screen = T.Screen()
+        screen.feed(b"MAIN\x1b[?1049h" + control)
+        self.assertFalse(screen.ready)
+        self.assert_code("screen_not_ready", screen.lines)
+        screen.feed(b"\x1b[2J" + control)
+        self.assertFalse(screen.ready)  # Absolute position is still missing.
+        screen.feed(b"\x1b[HUI")
+        before = screen.cells(), screen.cursor, screen.alternate
+        screen.feed(control)
+        self.assertEqual((screen.cells(), screen.cursor, screen.alternate), before)
+        screen.resize(80, 24)
+        screen.feed(control)
+        self.assertFalse(screen.ready)
+        self.assert_code("screen_not_ready", screen.lines)
+        screen.feed(b"\x1b[2J\x1b[HNEW\x1b[?1049l" + control)
+        self.assertFalse(screen.ready)  # Resized primary buffer is also invalid.
+        self.assert_code("screen_not_ready", screen.lines)
+        screen.feed(b"\x1b[2J\x1b[HMAIN")
+        self.assertEqual(screen.lines()[0], "MAIN".ljust(80))
+
+    def test_input_controls_cannot_end_synchronized_output_or_disable_wrap_mode(self):
+        control = b"\x1b[?1004;9001h\x1b[c\x1b[?9001;1004l"
+        screen = T.Screen(80, 24)
+        screen.feed(b"\x1b[?7l\x1b[1;80HX\x1b[?2026h" + control)
+        self.assertTrue(screen.pending)
+        self.assertFalse(screen.ready)
+        self.assert_code("incomplete", screen.lines)
+        screen.feed(b"Y\x1b[?2026l")
+        self.assertEqual(screen.lines()[0], " " * 79 + "Y")
+        self.assertEqual(screen.lines()[1], " " * 80)
+        self.assertEqual(screen.cursor, (79, 0))
+
+    def test_nearby_queries_replies_modes_and_malformed_controls_stay_sticky(self):
+        refusals = {
+            "sequence_unsupported": (b"\x1b[1c", b"\x1b[00c",
+                b"\x1b[?c", b"\x1b[?0c", b"\x1b[?1;0c", b"\x1bZ",
+                b"\x1b[?3h", b"\x1b[?1000h", b"\x1b[?9002h", b"\x1b[?1004;9001;3h",
+                b"\x1b[?9001;9002l", b"\x1b[?1004p", b"\x1b[I", b"\x1b[O"),
+            "sequence_invalid": (b"\x1b[>c", b"\x1b[>0c", b"\x1b[=c", b"\x1b[0:c",
+                b"\x1b[0;0c", b"\x1b[;c", b"\x1b[?1004$p"),
+            "sequence_limit": (b"\x1b[?090001h", b"\x1b[?32768h"),
+        }
+        for code, vectors in refusals.items():
+            for vector in vectors:
+                with self.subTest(vector=vector):
+                    screen = T.Screen()
+                    screen.feed(b"PRIVATE_CANARY")
+                    self.assert_code(code, lambda: screen.feed(vector))
+                    self.assert_code(code, lambda: screen.feed(b"\x1b[c\x1b[2J\x1b[H"))
+                    self.assert_code(code, screen.lines)
+
+    def test_ignored_controls_still_consume_byte_budget_and_truncated_eof_fails(self):
+        screen = T.Screen()
+        with patch.object(T, "MAX_BYTES", 8):
+            screen.feed(b"\x1b[?1004h")
+            self.assertEqual(screen.total_bytes, 8)
+            self.assert_code("byte_limit", lambda: screen.feed(b"\x1b[c"))
+            self.assert_code("byte_limit", screen.lines)
+        for prefix in (b"\x1b[?1004", b"\x1b[?9001", b"\x1b[0"):
+            screen = T.Screen()
+            screen.feed(prefix)
+            self.assertTrue(screen.pending)
+            self.assert_code("incomplete", screen.finish)
+            self.assert_code("incomplete", screen.lines)
 
 
 if __name__ == "__main__":
