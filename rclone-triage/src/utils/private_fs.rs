@@ -14,6 +14,110 @@ fn refused(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::PermissionDenied, message)
 }
 
+#[derive(Clone, Copy, Debug)]
+enum CleanupStage {
+    Target,
+    OpenRoot,
+    Identity,
+    Security,
+    RemoveTree,
+}
+
+impl CleanupStage {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Target => "target",
+            Self::OpenRoot => "open_root",
+            Self::Identity => "identity",
+            Self::Security => "security",
+            Self::RemoveTree => "remove_tree",
+        }
+    }
+}
+
+/// Closed, path-free runtime cleanup observation. Display is compact ASCII JSON.
+#[derive(Clone, Copy, Debug)]
+pub struct CleanupDiagnostic {
+    stage: CleanupStage,
+    kind: &'static str,
+    os_code: Option<i32>,
+}
+
+impl CleanupDiagnostic {
+    /// Ownership was already lost/refused; there is no safe cleanup retry.
+    pub fn ownership_unavailable() -> Self {
+        Self {
+            stage: CleanupStage::Identity,
+            kind: "other",
+            os_code: None,
+        }
+    }
+}
+
+impl std::fmt::Display for CleanupDiagnostic {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{{\"stage\":\"{}\",\"kind\":\"{}\",\"os_code\":",
+            self.stage.name(),
+            self.kind
+        )?;
+        match self.os_code {
+            Some(code) => write!(f, "{code}"),
+            None => f.write_str("null"),
+        }?;
+        f.write_str("}")
+    }
+}
+
+#[derive(Debug)]
+struct CleanupFailure {
+    stage: CleanupStage,
+    source: io::Error,
+}
+
+impl std::fmt::Display for CleanupFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Private directory cleanup failed at {}",
+            self.stage.name()
+        )
+    }
+}
+
+impl std::error::Error for CleanupFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.source)
+    }
+}
+
+fn cleanup_failure(stage: CleanupStage, source: io::Error) -> io::Error {
+    io::Error::new(source.kind(), CleanupFailure { stage, source })
+}
+
+/// Classify only errors produced by the identity-checked cleanup path.
+pub fn cleanup_diagnostic(error: &io::Error) -> Option<CleanupDiagnostic> {
+    let failure = error.get_ref()?.downcast_ref::<CleanupFailure>()?;
+    let kind = match failure.source.kind() {
+        io::ErrorKind::NotFound => "not_found",
+        io::ErrorKind::PermissionDenied => "permission_denied",
+        io::ErrorKind::AlreadyExists => "already_exists",
+        io::ErrorKind::InvalidInput => "invalid_input",
+        io::ErrorKind::Unsupported => "unsupported",
+        io::ErrorKind::Interrupted => "interrupted",
+        _ => "other",
+    };
+    Some(CleanupDiagnostic {
+        stage: failure.stage,
+        kind,
+        os_code: failure
+            .source
+            .raw_os_error()
+            .filter(|code| (0..=65535).contains(code)),
+    })
+}
+
 fn absolute(path: &Path) -> io::Result<PathBuf> {
     // Check the original spelling before Windows absolute-path normalization
     // can discard a trailing dot/space or resolve a drive-relative path.
@@ -245,16 +349,25 @@ impl PrivateTempDir {
     }
 
     fn remove(&self, path: &Path) -> io::Result<()> {
-        let (canonical, _parents) = target(path)?;
-        let pin = platform::open_directory(&canonical)?;
-        if platform::identity(&pin)? != self.identity {
-            return Err(refused("Temporary directory identity changed; retained"));
+        let (canonical, _parents) =
+            target(path).map_err(|error| cleanup_failure(CleanupStage::Target, error))?;
+        let pin = platform::open_directory(&canonical)
+            .map_err(|error| cleanup_failure(CleanupStage::OpenRoot, error))?;
+        let identity = platform::identity(&pin)
+            .map_err(|error| cleanup_failure(CleanupStage::Identity, error))?;
+        if identity != self.identity {
+            return Err(cleanup_failure(
+                CleanupStage::Identity,
+                refused("Temporary directory identity changed; retained"),
+            ));
         }
-        platform::verify_private(&pin, true)?;
+        platform::verify_private(&pin, true)
+            .map_err(|error| cleanup_failure(CleanupStage::Security, error))?;
         // The directory's protected DACL excludes other users. Release its
         // delete-denying handle only for std's non-following recursive removal.
         drop(pin);
         fs::remove_dir_all(canonical)
+            .map_err(|error| cleanup_failure(CleanupStage::RemoveTree, error))
     }
 }
 
@@ -804,6 +917,55 @@ mod platform {
 mod tests {
     use super::*;
     use std::io::{Read, Seek, SeekFrom};
+
+    #[test]
+    fn cleanup_diagnostic_is_closed_bounded_and_never_formats_source_text() {
+        for stage in [
+            CleanupStage::Target,
+            CleanupStage::OpenRoot,
+            CleanupStage::Identity,
+            CleanupStage::Security,
+            CleanupStage::RemoveTree,
+        ] {
+            for (kind, expected) in [
+                (io::ErrorKind::NotFound, "not_found"),
+                (io::ErrorKind::PermissionDenied, "permission_denied"),
+                (io::ErrorKind::AlreadyExists, "already_exists"),
+                (io::ErrorKind::InvalidInput, "invalid_input"),
+                (io::ErrorKind::Unsupported, "unsupported"),
+                (io::ErrorKind::Interrupted, "interrupted"),
+                (io::ErrorKind::TimedOut, "other"),
+            ] {
+                let error = cleanup_failure(
+                    stage,
+                    io::Error::new(kind, "private-canary/path\nraw-error"),
+                );
+                let diagnostic = cleanup_diagnostic(&error).unwrap().to_string();
+                assert_eq!(
+                    diagnostic,
+                    format!(
+                        "{{\"stage\":\"{}\",\"kind\":\"{expected}\",\"os_code\":null}}",
+                        stage.name()
+                    )
+                );
+                assert!(diagnostic.is_ascii());
+                assert!("runtime_cleanup_diagnostic=".len() + diagnostic.len() <= 112);
+                assert!(!diagnostic.contains("canary"));
+                assert!(!diagnostic.contains('\n'));
+            }
+        }
+        for code in [0, 5, 32, 65535, 65536, -1] {
+            let error =
+                cleanup_failure(CleanupStage::RemoveTree, io::Error::from_raw_os_error(code));
+            let diagnostic = cleanup_diagnostic(&error).unwrap();
+            assert_eq!(
+                diagnostic.os_code,
+                (0..=65535).contains(&code).then_some(code)
+            );
+            assert!("runtime_cleanup_diagnostic=".len() + diagnostic.to_string().len() <= 112);
+        }
+        assert!(cleanup_diagnostic(&io::Error::other("unclassified-canary")).is_none());
+    }
 
     #[test]
     fn creation_collision_and_replacement_preserve_owned_bytes() {

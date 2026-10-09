@@ -59,7 +59,7 @@ Existing non-private exports and logs are not repaired or overwritten. Use a fre
 
 Use one application instance per case folder. Replacing a saved report or manifest assumes no competing writer in that folder; the file checks do not make concurrent replacement by the same Windows user transactional.
 
-Command-line runtime cleanup uses the original directory identity and refuses a replacement. It has no later path-only fallback. Menu mode still has legacy cleanup registrations; mount processes also need a retained runtime owner and a confirmed exit before cleanup. Those paths need separate fixes and acceptance tests. The HTTP CLI test does not verify them.
+Command-line runtime cleanup uses the original directory identity and refuses a replacement. It has no later path-only fallback. A runtime cleanup error makes the command fail, even if the transfer succeeded; an earlier operation error is preserved too. A short cleanup diagnostic contains only a fixed stage, error category and numeric system code. Menu mode still has legacy cleanup registrations; mount processes also need a retained runtime owner and a confirmed exit before cleanup. Those paths need separate fixes and acceptance tests. The HTTP CLI test does not verify them.
 
 SQLite browser stores are opened read-only and snapshotted through SQLite's backup API into memory, including committed WAL contents; locked or inaccessible stores produce errors instead of a stale raw-file copy. OneDrive vault handling does not decrypt BitLocker volumes. System-state collection and browser access have not been validated against every endpoint protection product.
 
