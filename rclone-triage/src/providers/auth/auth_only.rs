@@ -48,12 +48,13 @@ pub fn authenticate_only(
                     // This path deliberately owns its listener instead of invoking
                     // rclone authorize or trying browser/profile SSO discovery.
                     let oauth = OAuthFlow::new().with_timeout(INTERACTIVE_AUTH_TIMEOUT);
-                    authorize_browser_with_opener(
+                    authorize_browser_with_grant_policy(
                         provider_config,
                         &settings.client_id,
                         settings.client_secret.as_deref(),
                         &oauth,
                         cancel,
+                        auth_only_grant_policy(provider),
                         |url| {
                             if matches!(flow, AuthOnlyFlow::ManualBrowser) {
                                 // Bind precedes this output. The URL includes one-time
@@ -79,8 +80,39 @@ fn auth_only_provider_config(provider: CloudProvider) -> ProviderConfig {
         // discovery permissions. Keep refresh requests at the same scope too.
         config.oauth.scopes = &["Files.Read", "offline_access"];
         config.rclone_options = &[("access_scopes", "Files.Read offline_access")];
+    } else if provider == CloudProvider::Dropbox {
+        // App Folder is an independently configured registration property, not
+        // established by these scopes. Do not request prior grants or identity.
+        config.oauth.scopes = &["files.metadata.read", "files.content.read"];
     }
     config
+}
+
+fn auth_only_grant_policy(provider: CloudProvider) -> CodeGrantPolicy {
+    if provider == CloudProvider::Dropbox {
+        CodeGrantPolicy::DropboxReadOnlyOffline
+    } else {
+        CodeGrantPolicy::Existing
+    }
+}
+
+fn require_dropbox_custom_client(custom: Option<&OAuthCredentials>) -> Result<()> {
+    // The application default and pinned rclone v1.75.2 default are different
+    // registrations; neither is an operator-owned App Folder registration.
+    const BUNDLED_IDS: [&str; 2] = ["eqxpiW7xg9A757Rz", "5jcck7diasz0rqy"];
+    if !custom.is_some_and(|credentials| {
+        !credentials.client_id.is_empty()
+            && !credentials
+                .client_id
+                .chars()
+                .any(|ch| ch.is_whitespace() || ch.is_control())
+            && !BUNDLED_IDS
+                .iter()
+                .any(|bundled| credentials.client_id.eq_ignore_ascii_case(bundled))
+    }) {
+        bail!("Auth-only Dropbox requires your own OAuth client registration in RCLONE_TRIAGE_OAUTH_CONFIG; App Folder access must be configured and verified separately");
+    }
+    Ok(())
 }
 
 fn auth_only_device_config(
@@ -131,12 +163,15 @@ where
     check_cancel(cancel)?;
     if !matches!(
         provider,
-        CloudProvider::GoogleDrive | CloudProvider::OneDrive
+        CloudProvider::GoogleDrive | CloudProvider::OneDrive | CloudProvider::Dropbox
     ) {
-        bail!("--auth-only currently supports Google Drive and OneDrive");
+        bail!("--auth-only currently supports Google Drive, OneDrive and Dropbox");
     }
     ensure_new_auth_credentials_with_custom(provider, custom)?;
     let provider_config = auth_only_provider_config(provider);
+    if provider == CloudProvider::Dropbox {
+        require_dropbox_custom_client(custom)?;
+    }
     if provider == CloudProvider::OneDrive
         && !custom.is_some_and(|credentials| {
             !credentials.client_id.trim().is_empty()
@@ -187,6 +222,329 @@ fn check_cancel(cancel: &AtomicBool) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const DROPBOX_GRANT: &str = r#"{"access_token":"synthetic-access","refresh_token":"synthetic-refresh","token_type":"bearer","expires_in":14400,"scope":"files.metadata.read files.content.read","account_id":"SYNTHETIC_PRIVATE_ACCOUNT","uid":"SYNTHETIC_PRIVATE_UID"}"#;
+
+    #[test]
+    fn dropbox_auth_only_callback_exchange_enforces_grant_before_persistence() {
+        let bad_scope = DROPBOX_GRANT.replace("files.content.read", "files.content.write");
+        let duplicate = DROPBOX_GRANT.replace(
+            "\"expires_in\":14400",
+            "\"expires_in\":14400,\"expires_in\":1",
+        );
+        let no_refresh = DROPBOX_GRANT.replace("\"synthetic-refresh\"", "null");
+        let no_expiry = DROPBOX_GRANT.replace("\"expires_in\":14400,", "");
+        for secret in [None, Some("synthetic-owned-secret")] {
+            let custom = OAuthCredentials {
+                client_id: "synthetic-owned-dropbox".into(),
+                client_secret: secret.map(str::to_owned),
+            };
+            for (status, response, succeeds) in [
+                (200, DROPBOX_GRANT, true),
+                (200, bad_scope.as_str(), false),
+                (200, duplicate.as_str(), false),
+                (200, no_refresh.as_str(), false),
+                (200, no_expiry.as_str(), false),
+                (400, r#"{"error":"SYNTHETIC_PRIVATE_ERROR"}"#, false),
+            ] {
+                let dir = tempfile::tempdir().unwrap();
+                let config = RcloneConfig::new(dir.path().join("rclone.conf")).unwrap();
+                let baseline = b"[preserved]\ntype = local\n\n";
+                std::fs::write(config.path(), baseline).unwrap();
+                let result = authenticate_only_with(
+                    CloudProvider::Dropbox,
+                    &config,
+                    "dropbox-test",
+                    Some(&custom),
+                    &AtomicBool::new(false),
+                    |settings, provider| {
+                        assert_eq!(
+                            provider.oauth.token_url,
+                            "https://api.dropboxapi.com/oauth2/token"
+                        );
+                        assert_eq!(settings.client_id, custom.client_id);
+                        assert_eq!(settings.client_secret, custom.client_secret);
+                        super::super::protocol_tests::exchange_through_loopback_with_policy(
+                            provider,
+                            &settings.client_id,
+                            settings.client_secret.as_deref(),
+                            response,
+                            status,
+                            auth_only_grant_policy(provider.provider),
+                        )
+                    },
+                );
+                assert_eq!(result.is_ok(), succeeds);
+                let saved = std::fs::read(config.path()).unwrap();
+                if succeeds {
+                    assert!(saved.starts_with(baseline));
+                    let result = result.unwrap();
+                    assert!(result.user_info.is_none() && result.browser.is_none());
+                    let token: serde_json::Value = serde_json::from_str(
+                        &config
+                            .get_remote_option("dropbox-test", "token")
+                            .unwrap()
+                            .unwrap(),
+                    )
+                    .unwrap();
+                    assert_eq!(token["refresh_token"], "synthetic-refresh");
+                    assert_eq!(token.as_object().unwrap().len(), 4);
+                    let text = String::from_utf8(saved).unwrap();
+                    assert!(!text.contains("PRIVATE"));
+                    assert!(!text.contains("scope"));
+                    assert!(!text.contains("root_nsid"));
+                    assert!(!text.contains("impersonate"));
+                    assert_eq!(
+                        config
+                            .get_remote_option("dropbox-test", "client_secret")
+                            .unwrap(),
+                        custom.client_secret
+                    );
+                } else {
+                    assert_eq!(saved, baseline);
+                    assert!(!format!("{:#}", result.unwrap_err()).contains("PRIVATE"));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn dropbox_auth_only_rejects_bundled_or_invalid_clients_before_effects() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = RcloneConfig::new(dir.path().join("rclone.conf")).unwrap();
+        let baseline = std::fs::read(config.path()).unwrap();
+        for id in [
+            None,
+            Some(""),
+            Some("eqxpiW7xg9A757Rz"),
+            Some("5jcck7diasz0rqy"),
+            Some("5JCCK7DIASZ0RQY"),
+            Some(" app"),
+            Some("app\nkey"),
+            Some("app\u{0085}key"),
+        ] {
+            let custom = id.map(|id| OAuthCredentials {
+                client_id: id.into(),
+                client_secret: None,
+            });
+            let result = authenticate_only_with(
+                CloudProvider::Dropbox,
+                &config,
+                "test",
+                custom.as_ref(),
+                &AtomicBool::new(false),
+                |_, _| panic!("invalid registration must not start authorization"),
+            );
+            assert!(result.is_err());
+            assert_eq!(std::fs::read(config.path()).unwrap(), baseline);
+        }
+        let error = authenticate_only(
+            CloudProvider::Dropbox,
+            AuthOnlyFlow::DeviceCode,
+            &config,
+            "test",
+            &AtomicBool::new(false),
+        )
+        .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("Device code flow is not supported"));
+        assert_eq!(std::fs::read(config.path()).unwrap(), baseline);
+    }
+
+    #[test]
+    fn dropbox_auth_only_keeps_other_profiles_and_grant_policies_unchanged() {
+        let ordinary = ProviderConfig::for_provider(CloudProvider::Dropbox);
+        assert!(ordinary.oauth.scopes.is_empty());
+        assert_eq!(
+            auth_only_provider_config(CloudProvider::Dropbox)
+                .oauth
+                .scopes,
+            ["files.metadata.read", "files.content.read"]
+        );
+        for provider in [CloudProvider::GoogleDrive, CloudProvider::OneDrive] {
+            assert_eq!(auth_only_grant_policy(provider), CodeGrantPolicy::Existing);
+        }
+        assert_eq!(
+            auth_only_grant_policy(CloudProvider::Dropbox),
+            CodeGrantPolicy::DropboxReadOnlyOffline
+        );
+        assert_eq!(
+            auth_only_provider_config(CloudProvider::GoogleDrive)
+                .oauth
+                .scopes,
+            ProviderConfig::for_provider(CloudProvider::GoogleDrive)
+                .oauth
+                .scopes
+        );
+        assert_eq!(
+            auth_only_provider_config(CloudProvider::OneDrive)
+                .oauth
+                .scopes,
+            ["Files.Read", "offline_access"]
+        );
+    }
+
+    #[test]
+    fn dropbox_auth_only_late_cancel_preserves_existing_config_after_real_exchange() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = RcloneConfig::new(dir.path().join("rclone.conf")).unwrap();
+        std::fs::write(config.path(), b"[test]\ntype = local\n").unwrap();
+        let baseline = std::fs::read(config.path()).unwrap();
+        let custom = OAuthCredentials {
+            client_id: "synthetic-owned-dropbox".into(),
+            client_secret: None,
+        };
+        let cancel = AtomicBool::new(false);
+        let error = authenticate_only_with(
+            CloudProvider::Dropbox,
+            &config,
+            "test",
+            Some(&custom),
+            &cancel,
+            |settings, provider| {
+                let token = super::super::protocol_tests::exchange_through_loopback_with_policy(
+                    provider,
+                    &settings.client_id,
+                    None,
+                    DROPBOX_GRANT,
+                    200,
+                    auth_only_grant_policy(provider.provider),
+                )?;
+                cancel.store(true, Ordering::Relaxed);
+                Ok(token)
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.to_string(), "Authorization cancelled");
+        assert_eq!(std::fs::read(config.path()).unwrap(), baseline);
+        assert!(authenticate_only_with(
+            CloudProvider::Dropbox,
+            &config,
+            "test",
+            Some(&custom),
+            &cancel,
+            |_, _| panic!("early cancellation must not authorize"),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn dropbox_auth_only_denial_and_callback_cancel_do_not_exchange_or_persist() {
+        for deny in [true, false] {
+            let dir = tempfile::tempdir().unwrap();
+            let config = RcloneConfig::new(dir.path().join("rclone.conf")).unwrap();
+            let baseline = std::fs::read(config.path()).unwrap();
+            let custom = OAuthCredentials {
+                client_id: "synthetic-owned-dropbox".into(),
+                client_secret: None,
+            };
+            let cancel = AtomicBool::new(false);
+            let token_server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+            let socket = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = socket.local_addr().unwrap().port();
+            drop(socket);
+            let mut callback_worker = None;
+            let error = authenticate_only_with(
+                CloudProvider::Dropbox,
+                &config,
+                "test",
+                Some(&custom),
+                &cancel,
+                |settings, provider| {
+                    let mut fixture = provider.clone();
+                    fixture.oauth.token_url = Box::leak(
+                        format!("http://{}/token", token_server.server_addr()).into_boxed_str(),
+                    );
+                    authorize_browser_with_grant_policy(
+                        &fixture,
+                        &settings.client_id,
+                        None,
+                        &OAuthFlow::new()
+                            .with_port(port)
+                            .with_timeout(Duration::from_secs(5)),
+                        &cancel,
+                        auth_only_grant_policy(provider.provider),
+                        |url| {
+                            if deny {
+                                let fields = super::super::protocol_tests::fields(
+                                    url.split_once('?').unwrap().1,
+                                );
+                                let callback =
+                                    fields["redirect_uri"].replace("localhost", "127.0.0.1");
+                                let state = fields["state"].clone();
+                                callback_worker = Some(std::thread::spawn(move || {
+                                    let response = ureq::AgentBuilder::new()
+                                        .timeout(Duration::from_secs(5))
+                                        .build()
+                                        .get(&format!(
+                                            "{callback}?error=access_denied&state={state}"
+                                        ))
+                                        .call();
+                                    assert!(matches!(
+                                        response,
+                                        Ok(_) | Err(ureq::Error::Status(_, _))
+                                    ));
+                                }));
+                            } else {
+                                cancel.store(true, Ordering::Relaxed);
+                            }
+                            Ok(())
+                        },
+                    )
+                },
+            )
+            .unwrap_err();
+            if let Some(worker) = callback_worker {
+                worker.join().unwrap();
+            }
+            assert!(error
+                .to_string()
+                .contains(if deny { "access_denied" } else { "cancelled" }));
+            assert!(token_server
+                .recv_timeout(Duration::from_millis(30))
+                .unwrap()
+                .is_none());
+            assert_eq!(std::fs::read(config.path()).unwrap(), baseline);
+        }
+    }
+
+    #[test]
+    fn dropbox_auth_only_persistence_failure_is_not_success() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = RcloneConfig::new(dir.path().join("rclone.conf")).unwrap();
+        let custom = OAuthCredentials {
+            client_id: "synthetic-owned-dropbox".into(),
+            client_secret: None,
+        };
+        let error = authenticate_only_with(
+            CloudProvider::Dropbox,
+            &config,
+            "test",
+            Some(&custom),
+            &AtomicBool::new(false),
+            |settings, provider| {
+                let token = super::super::protocol_tests::exchange_through_loopback_with_policy(
+                    provider,
+                    &settings.client_id,
+                    None,
+                    DROPBOX_GRANT,
+                    200,
+                    auth_only_grant_policy(provider.provider),
+                )?;
+                // A path-type change must fail the read before persistence;
+                // it does not establish rollback for arbitrary partial writes.
+                std::fs::remove_file(config.path()).unwrap();
+                std::fs::create_dir(config.path()).unwrap();
+                Ok(token)
+            },
+        )
+        .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("Failed to read config before updating a remote"));
+        assert!(config.path().is_dir());
+    }
 
     #[test]
     fn auth_only_real_callback_exchange_persists_only_successful_tokens() {

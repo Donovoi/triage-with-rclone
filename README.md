@@ -28,7 +28,9 @@ A new nightly is published after each merged PR passes the required checks. Buil
 
 See [test status and known gaps](rclone-triage/tests/provider_testing.md) for the detailed results.
 
-Local-file and ZIP command tests have passed, including cancellation and cleanup. Current work: record those results in the test status and finish cloud login tests.
+Local-file and ZIP command tests have passed, including cancellation and cleanup.
+
+Current work: test stopping a Dropbox download while it is running, then continue testing the other providers.
 
 ## What comes next
 
@@ -38,6 +40,8 @@ Local-file and ZIP command tests have passed, including cancellation and cleanup
 
 ## More information
 
+- [Project homepage and Google Drive OAuth information](https://donovoi.github.io/triage-with-rclone/)
+- [Privacy policy](https://donovoi.github.io/triage-with-rclone/privacy.html)
 - [Build instructions and technical guide](docs/technical-guide.md)
 - [Changes and remaining work](HARDENING.md)
 - [Apache-2.0 licence](LICENSE)

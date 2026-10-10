@@ -1,0 +1,12 @@
+:root { color-scheme: light dark; font-family: system-ui, sans-serif; line-height: 1.6; }
+body { max-width: 48rem; margin: 3rem auto; padding: 0 1.5rem; }
+nav, footer { display: flex; flex-wrap: wrap; gap: 1rem; }
+nav { padding-bottom: 1.5rem; border-bottom: 1px solid #888; }
+main { margin: 2rem 0 3rem; }
+h1 { line-height: 1.15; font-size: 2.5rem; }
+h2 { line-height: 1.25; margin-top: 2rem; }
+a { color: #2563b9; text-underline-offset: .18em; }
+code { overflow-wrap: anywhere; }
+.note { padding: 1rem 1.25rem; border-left: 4px solid #4981ca; background: #4981ca15; }
+footer { padding-top: 1rem; border-top: 1px solid #888; font-size: .9rem; }
+@media (prefers-color-scheme: dark) { a { color: #9bc4ff; } }

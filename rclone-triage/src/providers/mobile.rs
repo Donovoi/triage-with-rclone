@@ -57,6 +57,94 @@ struct TokenResponse {
     id_token: Option<String>,
 }
 
+/// Applied only to the explicit auth-only code exchange, never to refresh or
+/// ordinary provider authorization. Existing callers retain their old parser.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum CodeGrantPolicy {
+    Existing,
+    DropboxReadOnlyOffline,
+}
+
+#[derive(Deserialize)]
+struct DropboxCodeGrant {
+    access_token: String,
+    refresh_token: String,
+    token_type: String,
+    expires_in: u64,
+    scope: String,
+}
+
+// Retain forward-compatible unknown fields without allowing duplicate decoded
+// top-level keys to be hidden by serde_json::Value's last-value behavior.
+struct DropboxGrantObject(Map<String, Value>);
+
+impl<'de> Deserialize<'de> for DropboxGrantObject {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        struct GrantVisitor;
+        impl<'de> serde::de::Visitor<'de> for GrantVisitor {
+            type Value = DropboxGrantObject;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("an OAuth grant object")
+            }
+
+            fn visit_map<M: serde::de::MapAccess<'de>>(
+                self,
+                mut access: M,
+            ) -> std::result::Result<Self::Value, M::Error> {
+                let mut fields = Map::new();
+                while let Some(key) = access.next_key::<String>()? {
+                    if fields.contains_key(&key) {
+                        return Err(serde::de::Error::custom("Duplicate OAuth grant field"));
+                    }
+                    fields.insert(key, access.next_value::<Value>()?);
+                }
+                Ok(DropboxGrantObject(fields))
+            }
+        }
+        deserializer.deserialize_map(GrantVisitor)
+    }
+}
+
+fn dropbox_grant_to_token(grant: DropboxGrantObject) -> Result<TokenResponse> {
+    if ["error", "error_description", "error_uri"]
+        .iter()
+        .any(|field| grant.0.contains_key(*field))
+    {
+        bail!("Invalid Dropbox authorization grant");
+    }
+    let grant: DropboxCodeGrant = serde_json::from_value(Value::Object(grant.0))
+        .map_err(|_| anyhow::anyhow!("Invalid Dropbox authorization grant"))?;
+    let scopes: Vec<_> = grant.scope.split(' ').collect();
+    if scopes.len() != 2
+        || !scopes.contains(&"files.metadata.read")
+        || !scopes.contains(&"files.content.read")
+    {
+        bail!("Dropbox authorization did not grant exactly the required read scopes");
+    }
+    if grant.access_token.trim().is_empty()
+        || grant.refresh_token.trim().is_empty()
+        || !grant.token_type.eq_ignore_ascii_case("bearer")
+    {
+        bail!("Dropbox authorization did not return an offline bearer grant");
+    }
+    // Match the pinned runtime's representable wire lifetime, not an assumed
+    // vendor TTL: golang/oauth2 v0.36.0 internal/token.go expirationTime is i32.
+    // https://github.com/golang/oauth2/blob/v0.36.0/internal/token.go#L79-L98
+    if !(1..=i32::MAX as u64).contains(&grant.expires_in) {
+        bail!("Invalid Dropbox authorization expiry");
+    }
+    Ok(TokenResponse {
+        access_token: grant.access_token,
+        refresh_token: Some(grant.refresh_token),
+        token_type: Some(grant.token_type),
+        expires_in: Some(grant.expires_in),
+        id_token: None,
+    })
+}
+
 #[derive(Debug, Deserialize)]
 struct DeviceCodeResponse {
     device_code: String,
@@ -169,6 +257,26 @@ pub fn exchange_code_for_token_with_pkce(
     client_secret: Option<&str>,
     verifier: Option<&str>,
 ) -> Result<Value> {
+    exchange_code_for_token_with_policy(
+        token_url,
+        code,
+        redirect_uri,
+        client_id,
+        client_secret,
+        verifier,
+        CodeGrantPolicy::Existing,
+    )
+}
+
+pub(super) fn exchange_code_for_token_with_policy(
+    token_url: &str,
+    code: &str,
+    redirect_uri: &str,
+    client_id: &str,
+    client_secret: Option<&str>,
+    verifier: Option<&str>,
+    policy: CodeGrantPolicy,
+) -> Result<Value> {
     let body = token_body_with_pkce(code, redirect_uri, client_id, client_secret, verifier);
 
     let response = oauth_agent()
@@ -186,7 +294,13 @@ pub fn exchange_code_for_token_with_pkce(
     if !(200..300).contains(&response.status()) {
         bail!("Token exchange failed (HTTP {})", response.status());
     }
-    token_response_to_rclone_json(read_oauth_response(response)?)
+    let token = match policy {
+        CodeGrantPolicy::Existing => read_oauth_response(response)?,
+        CodeGrantPolicy::DropboxReadOnlyOffline => {
+            dropbox_grant_to_token(read_oauth_response(response)?)?
+        }
+    };
+    token_response_to_rclone_json(token)
 }
 
 /// Return device code config for providers that support it.
@@ -466,6 +580,118 @@ fn urlencoded(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn dropbox_response(body: &str) -> Result<Value> {
+        let response = ureq::Response::new(200, "OK", body).unwrap();
+        token_response_to_rclone_json(dropbox_grant_to_token(read_oauth_response(response)?)?)
+    }
+
+    #[test]
+    fn dropbox_grant_requires_exact_read_scopes_and_offline_fields() {
+        let good = json!({
+            "access_token": "synthetic-access",
+            "refresh_token": "synthetic-refresh",
+            "token_type": "bearer",
+            "expires_in": 14400,
+            "scope": "files.content.read files.metadata.read",
+            "account_id": "SYNTHETIC_PRIVATE_ACCOUNT",
+            "uid": "SYNTHETIC_PRIVATE_UID",
+            "future": {"ignored": true}
+        });
+        let before = Utc::now();
+        let token = dropbox_response(&good.to_string()).unwrap();
+        assert_eq!(token["access_token"], "synthetic-access");
+        assert_eq!(token["refresh_token"], "synthetic-refresh");
+        assert_eq!(token["token_type"], "bearer");
+        assert_eq!(token.as_object().unwrap().len(), 4);
+        assert!(!token.to_string().contains("PRIVATE"));
+        let expiry =
+            chrono::DateTime::parse_from_rfc3339(token["expiry"].as_str().unwrap()).unwrap();
+        assert!(expiry >= before + Duration::seconds(14400));
+        assert!(expiry <= Utc::now() + Duration::seconds(14400));
+        for (field, value) in [
+            ("scope", json!("files.metadata.read")),
+            ("scope", json!("files.metadata.read files.metadata.read")),
+            (
+                "scope",
+                json!("files.metadata.read files.content.read account_info.read"),
+            ),
+            ("scope", json!("files.metadata.read files.content.write")),
+            ("scope", json!("files.metadata.read\tfiles.content.read")),
+            ("scope", json!("files.metadata.read  files.content.read")),
+            (
+                "scope",
+                json!(["files.metadata.read", "files.content.read"]),
+            ),
+            ("access_token", json!(" \t")),
+            ("refresh_token", json!("")),
+            ("refresh_token", Value::Null),
+            ("token_type", json!("mac")),
+            ("token_type", json!(" bearer")),
+            ("expires_in", json!(0)),
+            ("expires_in", json!(-1)),
+            ("expires_in", json!(1.5)),
+            ("expires_in", json!("14400")),
+            ("expires_in", json!(i32::MAX as u64 + 1)),
+            ("expires_in", json!(u64::MAX)),
+            ("error", json!("SYNTHETIC_PRIVATE_ERROR")),
+        ] {
+            let mut candidate = good.clone();
+            candidate[field] = value;
+            let error = dropbox_response(&candidate.to_string()).unwrap_err();
+            assert!(!format!("{error:#}").contains("PRIVATE"));
+        }
+        for field in [
+            "access_token",
+            "refresh_token",
+            "token_type",
+            "expires_in",
+            "scope",
+        ] {
+            let mut candidate = good.clone();
+            candidate.as_object_mut().unwrap().remove(field);
+            assert!(dropbox_response(&candidate.to_string()).is_err());
+        }
+        for seconds in [1, i32::MAX as u64] {
+            let mut candidate = good.clone();
+            candidate["expires_in"] = json!(seconds);
+            assert!(dropbox_response(&candidate.to_string()).is_ok());
+        }
+    }
+
+    #[test]
+    fn dropbox_grant_rejects_duplicate_decoded_fields_without_leaking_values() {
+        let prefix = r#"{"access_token":"synthetic-access","refresh_token":"synthetic-refresh","token_type":"bearer","expires_in":14400,"scope":"files.metadata.read files.content.read""#;
+        for extra in [
+            r#", "access_token":"SYNTHETIC_PRIVATE_DUPLICATE"}"#,
+            r#", "refresh_token":"SYNTHETIC_PRIVATE_DUPLICATE"}"#,
+            r#", "token_type":"bearer"}"#,
+            r#", "expires_in":1}"#,
+            r#", "sc\u006fpe":"files.metadata.read files.content.read"}"#,
+            r#", "SYNTHETIC_PRIVATE_KEY":1,"SYNTHETIC_PRIVATE_KEY":2}"#,
+            r#", "future":1,"f\u0075ture":2}"#,
+        ] {
+            let error = dropbox_response(&format!("{prefix}{extra}")).unwrap_err();
+            assert_eq!(error.to_string(), "Invalid OAuth response JSON");
+            assert!(!format!("{error:#}").contains("PRIVATE"));
+        }
+        assert!(dropbox_response(&"x".repeat(MAX_OAUTH_RESPONSE_BYTES as usize + 1)).is_err());
+    }
+
+    #[test]
+    fn ordinary_grants_keep_ignoring_unrelated_scope_shapes() {
+        for scope in [json!(["legacy"]), json!({"legacy": true}), Value::Null] {
+            let response = ureq::Response::new(
+                200,
+                "OK",
+                &json!({"access_token":"synthetic", "scope":scope}).to_string(),
+            )
+            .unwrap();
+            let token =
+                token_response_to_rclone_json(read_oauth_response(response).unwrap()).unwrap();
+            assert_eq!(token, json!({"access_token":"synthetic"}));
+        }
+    }
 
     #[test]
     fn token_http_failures_are_bounded_redacted_and_do_not_follow_redirects() {

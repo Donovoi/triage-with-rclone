@@ -27,6 +27,24 @@ pub(super) fn exchange_through_loopback(
     response_body: &str,
     response_status: u16,
 ) -> Result<String> {
+    exchange_through_loopback_with_policy(
+        provider,
+        client_id,
+        client_secret,
+        response_body,
+        response_status,
+        CodeGrantPolicy::Existing,
+    )
+}
+
+pub(super) fn exchange_through_loopback_with_policy(
+    provider: &ProviderConfig,
+    client_id: &str,
+    client_secret: Option<&str>,
+    response_body: &str,
+    response_status: u16,
+    policy: CodeGrantPolicy,
+) -> Result<String> {
     let token_server = tiny_http::Server::http("127.0.0.1:0").unwrap();
     let token_url = format!("http://{}/token", token_server.server_addr());
     let mut provider = provider.clone();
@@ -73,17 +91,28 @@ pub(super) fn exchange_through_loopback(
     });
     let callback_worker = Arc::new(Mutex::new(None));
     let worker_slot = callback_worker.clone();
-    let result = authorize_browser_with_opener(
+    let result = authorize_browser_with_grant_policy(
         &provider,
         client_id,
         client_secret,
         &oauth,
         &AtomicBool::new(false),
+        policy,
         |url| {
             let query = fields(url.split_once('?').unwrap().1);
             assert_eq!(query["client_id"], client_id);
             if !provider.oauth.scopes.is_empty() {
                 assert_eq!(query["scope"], provider.oauth.scopes.join(" "));
+            }
+            if policy == CodeGrantPolicy::DropboxReadOnlyOffline {
+                assert!(url.starts_with("https://www.dropbox.com/oauth2/authorize?"));
+                assert_eq!(query["response_type"], "code");
+                assert_eq!(query["scope"], "files.metadata.read files.content.read");
+                assert_eq!(query["token_access_type"], "offline");
+                assert!(!query.contains_key("include_granted_scopes"));
+                assert!(!query.contains_key("client_secret"));
+                assert!(!query.contains_key("code_verifier"));
+                assert_eq!(query.len(), 8);
             }
             let callback = query["redirect_uri"].replace("localhost", "127.0.0.1");
             let state = query["state"].clone();
@@ -92,6 +121,12 @@ pub(super) fn exchange_through_loopback(
                 let agent = ureq::AgentBuilder::new()
                     .timeout(Duration::from_secs(5))
                     .build();
+                if policy == CodeGrantPolicy::DropboxReadOnlyOffline {
+                    assert!(matches!(
+                        agent.get(&format!("{callback}?code=wrong")).call(),
+                        Err(ureq::Error::Status(400, _))
+                    ));
+                }
                 let wrong = agent
                     .get(&format!("{callback}?code=wrong&state=wrong-state"))
                     .call();

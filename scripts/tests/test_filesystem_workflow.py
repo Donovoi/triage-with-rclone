@@ -40,6 +40,35 @@ class FilesystemWorkflowTests(unittest.TestCase):
             self.assertIn(text, verification)
         self.assertNotRegex(self.job, r"--require-application(?:\s|$)")
 
+    def assert_complete_job_budget(self, job):
+        job_limits = re.findall(r"^    timeout-minutes: ([1-9][0-9]*)$", job, re.MULTILINE)
+        step_limits = re.findall(r"^        timeout-minutes: ([1-9][0-9]*)$", job, re.MULTILINE)
+        self.assertEqual(len(job_limits), 1)
+        self.assertGreaterEqual(len(step_limits), 4)
+        # Leave ten minutes beyond the declared step limits for checkout,
+        # setup, artifact download and both evidence uploads.
+        self.assertGreaterEqual(int(job_limits[0]), sum(map(int, step_limits)) + 10)
+
+    def test_job_budget_covers_bounded_steps_and_artifact_overhead(self):
+        self.assert_complete_job_budget(self.job)
+        for name, minutes in (
+            ("Check real Windows application with local files or ZIP", 30),
+            ("Independently validate staged filesystem evidence", 3),
+            ("Prepare verified runtime for the filesystem coverage ledger", 3),
+            ("Require the same-build filesystem mode evidence", 3),
+        ):
+            step = self.job.split(f"      - name: {name}\n", 1)[1].split("      - name:", 1)[0]
+            self.assertIn(f"        timeout-minutes: {minutes}\n", step)
+
+    def test_insufficient_total_or_added_step_budget_is_rejected(self):
+        former_budget = re.sub(r"^    timeout-minutes: [1-9][0-9]*$",
+                               "    timeout-minutes: 35", self.job, flags=re.MULTILINE)
+        with self.assertRaises(AssertionError):
+            self.assert_complete_job_budget(former_budget)
+        added_step = self.job + "      - name: Additional bounded work\n        timeout-minutes: 12\n"
+        with self.assertRaises(AssertionError):
+            self.assert_complete_job_budget(added_step)
+
     def test_ledger_requires_validated_receipt_and_verified_runtime_for_exact_mode(self):
         preparation = self.job.split("      - name: Prepare verified runtime for the filesystem coverage ledger\n", 1)[1]
         preparation = preparation.split("      - name: Require the same-build filesystem mode evidence\n", 1)[0]
