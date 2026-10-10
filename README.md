@@ -28,7 +28,7 @@ A new nightly is published after each merged PR passes the required checks. Buil
 
 See [test status and known gaps](rclone-triage/tests/provider_testing.md) for the detailed results.
 
-Current work: test Dropbox sign-in and downloads, and check that temporary files are removed.
+Current work: check that Dropbox stays signed in and stops cleanly when cancelled. Then continue testing the other providers.
 
 ## What comes next
 
