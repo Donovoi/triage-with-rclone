@@ -27,6 +27,7 @@ use rclone_triage::rclone::authorize::{
 };
 use rclone_triage::rclone::{start_web_gui, RcloneConfig, RcloneRunner};
 use rclone_triage::ui::App as TuiApp;
+use std::num::NonZeroU32;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -286,6 +287,7 @@ fn run_cli(
             queue_path_str,
             args.remote.as_deref(),
             args.rclone_config_path.as_deref(),
+            args.download_bytes_per_second,
             app_guard,
         );
     }
@@ -715,6 +717,7 @@ fn cli_download_from_queue(
     queue_path_str: &str,
     remote_override: Option<&str>,
     config_override: Option<&str>,
+    bytes_per_second: Option<NonZeroU32>,
     app_guard: &AppGuard,
 ) -> Result<()> {
     use rclone_triage::case::directory::{create_case_directories, snapshot_config};
@@ -766,7 +769,16 @@ fn cli_download_from_queue(
         source_config.display()
     ))?;
     let mut queue = DownloadQueue::new();
+    queue.bytes_per_second = bytes_per_second;
     queue.requests = plan.files.iter().map(|file| file.request.clone()).collect();
+    if let Some(rate) = bytes_per_second {
+        log.info(format!(
+            "Per-file streamed acquisition limit: {rate} bytes/s"
+        ))?;
+        println!(
+            "Per-file streamed acquisition limit: {rate} bytes/s (parallel files add their rates)"
+        );
+    }
     println!(
         "Downloading {} files to {:?}...",
         plan.files.len(),
@@ -1177,6 +1189,16 @@ struct Cli {
     #[arg(long)]
     download: Option<String>,
 
+    /// Limit each streamed file acquisition to this many bytes/s (1..4294967295); parallel files add their rates
+    #[arg(long, value_name = "BYTES_PER_SECOND", requires = "download", conflicts_with_all = [
+        "provider", "auth_only", "no_browser", "tui", "mobile_auth", "mobile_auth_port", "device_code",
+        "list_remote", "ps_csv", "output_listing", "set_oauth_creds", "show_oauth_creds", "oauth_config_path",
+        "web_gui", "web_gui_port", "web_gui_user", "web_gui_pass", "forensic_ap_start", "forensic_ap_stop",
+        "forensic_ap_status", "forensic_ap_ssid", "forensic_ap_password", "forensic_ap_timeout_minutes",
+        "onedrive_vault", "onedrive_vault_mount", "onedrive_vault_dest", "onedrive_vault_no_wait", "collect_logs"
+    ])]
+    download_bytes_per_second: Option<NonZeroU32>,
+
     /// Recursively list one exact section from an imported config into a fresh case CSV
     #[arg(long, requires = "rclone_config_path", value_parser = parse_list_remote,
         conflicts_with_all = [
@@ -1311,6 +1333,99 @@ fn default_vault_destination() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn download_rate_accepts_only_bounded_positive_integer_bytes() {
+        let base = ["triage", "--download", "queue.csv"];
+        assert!(Cli::try_parse_from(base)
+            .unwrap()
+            .download_bytes_per_second
+            .is_none());
+        for (text, expected) in [("1", 1), ("65536", 65536), ("4294967295", u32::MAX)] {
+            let mut args = base.to_vec();
+            args.extend(["--download-bytes-per-second", text]);
+            let parsed = Cli::try_parse_from(args).unwrap();
+            assert_eq!(parsed.download_bytes_per_second.unwrap().get(), expected);
+            assert!(!should_run_tui(&parsed));
+        }
+        for invalid in [
+            "",
+            "0",
+            "-1",
+            "4294967296",
+            "1.5",
+            "64K",
+            "off",
+            "65536B",
+            "1 --dry-run",
+            " 1",
+        ] {
+            let mut args = base.to_vec();
+            args.extend(["--download-bytes-per-second", invalid]);
+            assert!(Cli::try_parse_from(args).is_err(), "accepted {invalid:?}");
+        }
+    }
+
+    #[test]
+    fn download_rate_requires_download_and_rejects_other_actions_before_startup() {
+        assert!(Cli::try_parse_from(["triage", "--download-bytes-per-second", "65536"]).is_err());
+        let base = [
+            "triage",
+            "--download",
+            "queue.csv",
+            "--download-bytes-per-second",
+            "65536",
+        ];
+        let conflicts: &[&[&str]] = &[
+            &["--provider", "local"],
+            &["--auth-only"],
+            &["--no-browser"],
+            &["--tui"],
+            &["--mobile-auth"],
+            &["--mobile-auth-port", "53682"],
+            &["--device-code"],
+            &["--list-remote", "Synthetic"],
+            &["--ps-csv"],
+            &["--output-listing", "out.csv"],
+            &["--set-oauth-creds", "http"],
+            &["--show-oauth-creds", "Synthetic"],
+            &["--oauth-config-path", "other.conf"],
+            &["--web-gui"],
+            &["--web-gui-port", "5572"],
+            &["--web-gui-user", "synthetic"],
+            &["--web-gui-pass", "synthetic"],
+            &["--forensic-ap-start"],
+            &["--forensic-ap-stop"],
+            &["--forensic-ap-status"],
+            &["--forensic-ap-ssid", "synthetic"],
+            &["--forensic-ap-password", "synthetic"],
+            &["--forensic-ap-timeout-minutes", "1"],
+            &["--onedrive-vault"],
+            &["--onedrive-vault-mount", "synthetic"],
+            &["--onedrive-vault-dest", "synthetic"],
+            &["--onedrive-vault-no-wait"],
+            &["--collect-logs"],
+        ];
+        for conflict in conflicts {
+            let mut args = base.to_vec();
+            args.extend_from_slice(conflict);
+            assert!(Cli::try_parse_from(args).is_err(), "accepted {conflict:?}");
+        }
+        let mut accepted = base.to_vec();
+        accepted.extend([
+            "--remote",
+            "Synthetic",
+            "--rclone-config-path",
+            "source.conf",
+            "--name",
+            "case",
+            "--output-dir",
+            "out",
+        ]);
+        let parsed = Cli::try_parse_from(accepted).unwrap();
+        assert_eq!(parsed.remote.as_deref(), Some("Synthetic"));
+        assert_eq!(parsed.rclone_config_path.as_deref(), Some("source.conf"));
+    }
 
     #[test]
     fn cli_finalization_never_promotes_cleanup_failure_or_loses_operation_error() {
@@ -1510,6 +1625,7 @@ mod tests {
             mobile_auth_port: 53682,
             device_code: false,
             download: None,
+            download_bytes_per_second: None,
             list_remote: None,
             remote: None,
             ps_csv: false,

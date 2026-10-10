@@ -20,6 +20,7 @@ $acceptedNames = @('listing','acquisition','mismatch','missing','denial','cancel
     'webdav-credential-setup','webdav-credentials','webdav-listing','webdav-acquisition','webdav-mismatch','webdav-missing',
     'webdav-wrong-credentials','webdav-accepted-a','webdav-revoked-a','webdav-replacement-b',
     'webdav-permission-denied','webdav-truncated-transfer','webdav-cancellation',
+    'fs-archive-corrupt-member','fs-archive-truncated-archive',
     ('app-http-' + ('a' * 32)), ('app-webdav-' + ('b' * 32)))
 foreach ($name in $acceptedNames) {
     if (-not (Test-SetupName $name)) { throw 'prepare_name_rejected' }
@@ -30,7 +31,9 @@ foreach ($name in $acceptedNames) {
 }
 foreach ($invalid in @('', 'webdav', 'webdav-unknown', 'webdav_wrong_credentials', 'accepted_a',
     'webdav-suite', 'app-webdav-', ('app-webdav-' + ('a' * 31)), ('app-webdav-' + ('a' * 33)),
-    ('app-webdav-' + ('g' * 32)), 'app-http-private-canary')) {
+    ('app-webdav-' + ('g' * 32)), 'app-http-private-canary',
+    ('fs-archive-corrupt-member' + [char]0 + 'private-canary'),
+    ('fs-archive-truncated-archive' + [char]0 + 'private-canary'))) {
     if (Test-SetupName $invalid) { throw 'prepare_name_unknown_accepted' }
 }
 [Console]::Out.WriteLine('prepare_names_pure_passed:' + $acceptedNames.Count)
