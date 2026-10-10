@@ -532,15 +532,17 @@ mod tests {
                     200,
                     auth_only_grant_policy(provider.provider),
                 )?;
-                // A controlled path-type failure exercises persistence without
-                // claiming rollback for arbitrary partial writes by set_remote.
+                // A path-type change must fail the read before persistence;
+                // it does not establish rollback for arbitrary partial writes.
                 std::fs::remove_file(config.path()).unwrap();
                 std::fs::create_dir(config.path()).unwrap();
                 Ok(token)
             },
         )
         .unwrap_err();
-        assert!(error.to_string().contains("Failed to write config"));
+        assert!(error
+            .to_string()
+            .contains("Failed to read config before updating a remote"));
         assert!(config.path().is_dir());
     }
 
