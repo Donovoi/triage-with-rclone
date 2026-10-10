@@ -12,7 +12,7 @@ def forbidden(*args, **kwargs):
 
 
 def fixture():
-    return dict(schema=4, scope="synthetic_open_only", status="observed", reason="none",
+    return dict(schema=5, scope="synthetic_open_only", status="observed", reason="none",
                 api="CreateFileW_DELETE_OPEN_EXISTING", holder_access="READ_DATA|DELETE_without_delete_share",
                 queried_session_settings=dict(REQUESTED_SESSION_SETTINGS), schema_rejection=None, **dict.fromkeys(BOOLS, True))
 
@@ -22,7 +22,7 @@ def rejection_fixture(**fields):
     value.update(status="unavailable", reason="schema_unavailable", create_opend_pair=False)
     value["schema_rejection"] = dict(
         attribution="unattributed_fileio", stage="version", property=None,
-        opcode=64, version=3, header_flags=0x40, tdh_status=None, size=None,
+        opcode=64, version=4, header_flags=0x40, tdh_status=None, size=None,
     )
     value["schema_rejection"].update(fields)
     return value
@@ -89,7 +89,7 @@ class BoundaryTests(unittest.TestCase):
             self.assertEqual(validate(raw(value), 2), value)
 
     def test_holder_contract_and_old_schema_rejected(self):
-        for field, wrong in (("holder_access", "READ_DATA"), ("schema", 1), ("schema", 2), ("schema", 3)):
+        for field, wrong in (("holder_access", "READ_DATA"), ("schema", 1), ("schema", 2), ("schema", 3), ("schema", 4)):
             value = fixture(); value[field] = wrong
             with self.assertRaises(ValueError): validate(raw(value), 0)
 
@@ -175,11 +175,70 @@ class BoundaryTests(unittest.TestCase):
                 dict(base, stage="path_encoding" if prop == "OpenPath" else "numeric_width", tdh_status=0, size=1),
             ])
         examples.extend(dict(stage="correlation_shape", version=2, property=prop) for prop in ("IrpPtr", "ShareAccess"))
+        examples += [dict(fields, version=3) for fields in examples if fields.get("version") == 2]
         for fields in examples:
             with self.subTest(fields=fields):
                 value = rejection_fixture(**fields)
                 self.assertEqual(validate(raw(value), 2), value)
                 self.assertLessEqual(len(raw(value)), 2048)
+
+    def test_only_versions_two_and_three_reach_property_queries(self):
+        for opcode in (64, 76):
+            for version in range(256):
+                with self.subTest(opcode=opcode, version=version):
+                    rejected = rejection_fixture(opcode=opcode, version=version)
+                    query = rejection_fixture(opcode=opcode, version=version, stage="tdh_size",
+                                              property="IrpPtr", tdh_status=1168)
+                    if version in (2, 3):
+                        with self.assertRaises(ValueError): validate(raw(rejected), 2)
+                        self.assertEqual(validate(raw(query), 2), query)
+                    else:
+                        self.assertEqual(validate(raw(rejected), 2), rejected)
+                        with self.assertRaises(ValueError): validate(raw(query), 2)
+                    rejected.update(status="observed", reason="none", create_opend_pair=True)
+                    with self.assertRaises(ValueError): validate(raw(rejected), 0)
+
+    def test_ttid_width_is_version_specific_and_never_certifies_success(self):
+        for version, expected_width in ((2, 8), (3, 4)):
+            for width in range(1, 9):
+                with self.subTest(version=version, width=width):
+                    value = rejection_fixture(stage="numeric_width", version=version,
+                                              property="TTID", tdh_status=0, size=width)
+                    if width == expected_width:
+                        # Correct width cannot explain a numeric-width rejection.
+                        with self.assertRaises(ValueError): validate(raw(value), 2)
+                    else:
+                        self.assertEqual(validate(raw(value), 2), value)
+                    value.update(status="observed", reason="none", create_opend_pair=True)
+                    with self.assertRaises(ValueError): validate(raw(value), 0)
+
+    def test_other_numeric_widths_stay_fixed_for_both_versions(self):
+        for version in (2, 3):
+            for opcode, prop, width in ((64, "IrpPtr", 8), (64, "ShareAccess", 4),
+                                       (76, "IrpPtr", 8), (76, "NtStatus", 4)):
+                with self.subTest(version=version, opcode=opcode, prop=prop):
+                    value = rejection_fixture(stage="numeric_width", opcode=opcode, version=version,
+                                              property=prop, tdh_status=0, size=width)
+                    with self.assertRaises(ValueError): validate(raw(value), 2)
+                    value["schema_rejection"]["size"] = 4 if width == 8 else 8
+                    self.assertEqual(validate(raw(value), 2), value)
+
+    def test_both_versions_preserve_header_bitness_gate(self):
+        for version in (2, 3):
+            for opcode in (64, 76):
+                for flags in (0, 0x20, 0x60, 0x360, 0xFFFF):
+                    with self.subTest(version=version, opcode=opcode, flags=flags):
+                        value = rejection_fixture(stage="header_flags", version=version,
+                                                  opcode=opcode, header_flags=flags)
+                        self.assertEqual(validate(raw(value), 2), value)
+                        value["schema_rejection"].update(stage="tdh_size", property="IrpPtr", tdh_status=1168)
+                        with self.assertRaises(ValueError): validate(raw(value), 2)
+                for flags in (0x40, 0x340):
+                    value = rejection_fixture(stage="header_flags", version=version,
+                                              opcode=opcode, header_flags=flags)
+                    with self.assertRaises(ValueError): validate(raw(value), 2)
+                    value["schema_rejection"].update(stage="tdh_size", property="IrpPtr", tdh_status=1168)
+                    self.assertEqual(validate(raw(value), 2), value)
 
     def test_rejection_exact_shape_and_duplicate_fields(self):
         for malformed in (False, 0, "schema", [], {}):
@@ -215,7 +274,7 @@ class BoundaryTests(unittest.TestCase):
         malformed = [
             dict(attribution="owned_file"), dict(attribution=None), dict(stage="unknown"), dict(stage=[]),
             dict(opcode=0), dict(opcode=65), dict(version=2), dict(property="TTID"), dict(tdh_status=0), dict(size=0),
-            dict(stage="header_flags", version=3, header_flags=0),
+            dict(stage="header_flags", version=4, header_flags=0),
             dict(stage="header_flags", version=2, header_flags=0x40),
             dict(stage="tdh_size", version=2, property="unknown", tdh_status=1),
             dict(stage="tdh_size", version=2, property=[], tdh_status=1),

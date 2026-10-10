@@ -52,12 +52,12 @@ def validate_rejection(value):
     if stage in ("version", "header_flags"):
         if any(item is not None for item in (prop, status, size)):
             raise ValueError("header rejection has no property query")
-        if (stage == "version" and value["version"] == 2) or (
-            stage == "header_flags" and (value["version"] != 2 or header_ok)
+        if (stage == "version" and value["version"] in (2, 3)) or (
+            stage == "header_flags" and (value["version"] not in (2, 3) or header_ok)
         ):
             raise ValueError("header rejection gate")
         return
-    if value["version"] != 2 or not header_ok or type(prop) is not str or prop not in PROPERTIES[value["opcode"]]:
+    if value["version"] not in (2, 3) or not header_ok or type(prop) is not str or prop not in PROPERTIES[value["opcode"]]:
         raise ValueError("property before header gate or unknown selector")
     if stage == "correlation_shape":
         if value["opcode"] != 64 or prop not in ("IrpPtr", "ShareAccess") or status is not None or size is not None:
@@ -83,7 +83,7 @@ def validate_rejection(value):
     if status != 0:
         raise ValueError("successful property read required")
     if stage == "numeric_width":
-        expected = 8 if prop in ("TTID", "IrpPtr") else 4
+        expected = 8 if prop == "IrpPtr" or (prop == "TTID" and value["version"] == 2) else 4
         if prop == "OpenPath" or size == expected:
             raise ValueError("numeric width gate")
     elif stage == "path_encoding" and prop != "OpenPath":
@@ -105,7 +105,7 @@ def validate(raw, exit_code):
     obj = json.loads(raw.decode("utf-8"), object_pairs_hook=unique_pairs)
     if type(obj) is not dict or obj.keys() != KEYS:
         raise ValueError("exact keys required")
-    if type(obj["schema"]) is not int or obj["schema"] != 4:
+    if type(obj["schema"]) is not int or obj["schema"] != 5:
         raise ValueError("schema")
     if obj["scope"] != "synthetic_open_only" or obj["api"] != "CreateFileW_DELETE_OPEN_EXISTING":
         raise ValueError("scope")
