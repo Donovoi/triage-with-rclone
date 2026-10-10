@@ -110,7 +110,7 @@ def provider(backend="drive", *, count=3, dynamic=True, marker=">", style=FOCUS,
 
 def prompt(title, value="", *, hint=None):
     hints = {"Remote Name": "Enter remote name.", "Required Option": "Required option: url", "Backend Option Key": "Enter an option key (blank to finish).", "Find file": "Path or remote name (n finds next match)"}
-    # Literal application hints, including the real clipped HTTP URL prompt.
+    # Literal application hints and the complete 60%-height prompt layout.
     content = {
         "Remote Name": [hints[title], "", "Default: http", "", "Enter submit | Esc cancel"],
         "Required Option": [hints[title], "", "URL of HTTP host to connect to.", "", 'E.g. "https://example.com", or "https://user:pass@example.com" to use a username and password.', "", "Blank is not allowed for required options.", "", "Enter submit | Esc cancel"],
@@ -119,11 +119,13 @@ def prompt(title, value="", *, hint=None):
     }[title]
     if hint is not None:
         content[0] = hint
-    content += ["", "> " + (value or "<empty>"), "", f"Len: {len(value)} char(s)", "", "Enter submit | Esc cancel | Backspace delete | Ctrl+U clear | Ctrl+W delete word"]
+    content += ["", "Ctrl+V / Shift+Insert paste | Ctrl+U clear | Ctrl+W delete word",
+                "> " + (value or "<empty>"), f"Len: {len(value)} char(s)",
+                "Enter submit | Esc cancel | Backspace delete"]
     # Real Paragraph has no List marker/indent and clips at the inner height.
-    frame = Frame().panel(title, [], left=12, top=10, width=96, height=14)
-    for index, text in enumerate(content[:12]):
-        frame.put(11+index, 13, text)
+    frame = Frame().panel(title, [], left=12, top=7, width=96, height=20)
+    for index, text in enumerate(content[:18]):
+        frame.put(8+index, 13, text)
     return frame
 
 
@@ -491,20 +493,24 @@ class NavigationTests(unittest.TestCase):
             self.assertEqual(len(c.inputs), index+1)
             self.assertFalse(n.configured)
 
-    def test_source_shaped_url_prompt_has_visible_echo_but_no_len_footer(self):
+    def test_source_shaped_url_prompt_requires_full_echo_length_and_controls(self):
         observed = prompt("Required Option", URL_A)
-        self.assertFalse(any("Len:" in line for line in observed.lines()))
+        self.assertTrue(any(f"Len: {len(URL_A)} char(s)" in line for line in observed.lines()))
+        self.assertTrue(any("Ctrl+V / Shift+Insert paste" in line for line in observed.lines()))
         n, c = self.navigation(setup_steps())
         self.setup(n)
         self.assertEqual(n.state, "files")
-        # Removing the actual echo cannot be replaced by a hint-only proof.
-        missing = prompt("Required Option").put(21, 13, " " * 94)
-        steps = setup_steps()
-        steps[6] = ("key", "enter", missing)
-        n, c = self.navigation(steps)
-        n.wait_main(); n.open_manual_http()
-        self.rejected(lambda: n.configure_http("TuiHttpA", URL_A))
-        self.assertEqual(len(c.inputs), 7)
+        # Missing or mismatched evidence must stop before any URL is submitted.
+        for row, replacement in ((18, ""), (19, ""), (20, ""),
+                                 (20, "Len: 1 char(s)"), (21, "")):
+            with self.subTest(row=row, replacement=replacement):
+                missing = prompt("Required Option").put(row, 13, replacement.ljust(94))
+                steps = setup_steps()
+                steps[6] = ("key", "enter", missing)
+                n, c = self.navigation(steps)
+                n.wait_main(); n.open_manual_http()
+                self.rejected(lambda: n.configure_http("TuiHttpA", URL_A))
+                self.assertEqual(len(c.inputs), 7)
 
     def test_listing_requires_exact_source_inventory_and_zero_selected(self):
         malformed = [files("TuiHttpB"), files(selected=MEMBERS[0]), files().put(8, 3, "[ ] extra.txt"), files().put(31, 0, "5 of 6 entries \u2022 0 selected \u2022 Source: TuiHttpA".ljust(120))]
