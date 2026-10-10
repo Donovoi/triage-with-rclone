@@ -104,7 +104,8 @@ pub(crate) fn prompt_text_in_tui<
             render_state(f, app);
 
             let area = f.area();
-            let overlay = centered_rect(80, 40, area);
+            // Keep the paste help and input visible in a standard 24-row console.
+            let overlay = centered_rect(80, 60, area);
             let max_display_chars = 512usize;
             let total_chars = input.chars().count();
             let display = if input.is_empty() {
