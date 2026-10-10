@@ -4,7 +4,7 @@ import socket
 import subprocess
 import unittest
 from unittest.mock import patch
-from validate_result import BOOLS, validate
+from validate_result import BOOLS, REQUESTED_SESSION_SETTINGS, validate
 
 
 def forbidden(*args, **kwargs):
@@ -12,8 +12,17 @@ def forbidden(*args, **kwargs):
 
 
 def fixture():
-    return dict(schema=2, scope="synthetic_open_only", status="observed", reason="none",
-                api="CreateFileW_DELETE_OPEN_EXISTING", holder_access="READ_DATA|DELETE_without_delete_share", **dict.fromkeys(BOOLS, True))
+    return dict(schema=3, scope="synthetic_open_only", status="observed", reason="none",
+                api="CreateFileW_DELETE_OPEN_EXISTING", holder_access="READ_DATA|DELETE_without_delete_share",
+                queried_session_settings=dict(REQUESTED_SESSION_SETTINGS), **dict.fromkeys(BOOLS, True))
+
+
+def mismatch_fixture():
+    value = fixture()
+    value.update(status="unavailable", reason="session_configuration_mismatch",
+                 consumer_completed=False, create_opend_pair=False, win32_sharing_violation=False)
+    value["queried_session_settings"]["clock_selector"] = 0
+    return value
 
 
 def raw(obj):
@@ -57,7 +66,7 @@ class BoundaryTests(unittest.TestCase):
         self.assertEqual(validate(raw(value), 2), value)
 
     def test_preflight_unavailable(self):
-        value = fixture(); value.update(dict.fromkeys(BOOLS, False)); value.update(status="unavailable", reason="unsupported_environment")
+        value = fixture(); value.update(dict.fromkeys(BOOLS, False)); value.update(status="unavailable", reason="unsupported_environment", queried_session_settings=None)
         self.assertEqual(validate(raw(value), 2), value)
 
     def test_cleanup_requires_both_original_identities(self):
@@ -69,9 +78,63 @@ class BoundaryTests(unittest.TestCase):
             self.assertEqual(validate(raw(value), 2), value)
 
     def test_holder_contract_and_old_schema_rejected(self):
-        for field, wrong in (("holder_access", "READ_DATA"), ("schema", 1)):
+        for field, wrong in (("holder_access", "READ_DATA"), ("schema", 1), ("schema", 2)):
             value = fixture(); value[field] = wrong
             with self.assertRaises(ValueError): validate(raw(value), 0)
+
+    def test_each_setting_mismatch_and_u32_endpoints(self):
+        for field in REQUESTED_SESSION_SETTINGS:
+            for number in (0, 0xFFFFFFFF):
+                with self.subTest(field=field, number=number):
+                    value = mismatch_fixture()
+                    value["queried_session_settings"] = dict(REQUESTED_SESSION_SETTINGS)
+                    value["queried_session_settings"][field] = number
+                    self.assertEqual(validate(raw(value), 2), value)
+                    value.update(status="observed", reason="none", **dict.fromkeys(BOOLS, True))
+                    with self.assertRaises(ValueError): validate(raw(value), 0)
+
+    def test_session_settings_shape_and_missing_field(self):
+        for malformed in (False, 0, "settings", [], {}, {**REQUESTED_SESSION_SETTINGS, "path": "PRIVATE"}):
+            value = mismatch_fixture(); value["queried_session_settings"] = malformed
+            with self.assertRaises(ValueError): validate(raw(value), 2)
+        for field in REQUESTED_SESSION_SETTINGS:
+            value = mismatch_fixture(); del value["queried_session_settings"][field]
+            with self.assertRaises(ValueError): validate(raw(value), 2)
+        value = fixture(); del value["queried_session_settings"]
+        with self.assertRaises(ValueError): validate(raw(value), 0)
+
+    def test_session_settings_strict_u32_types(self):
+        for field in REQUESTED_SESSION_SETTINGS:
+            for malformed in (True, False, -1, 0x100000000, 1.0, "1", None, [], {}):
+                with self.subTest(field=field, malformed=malformed):
+                    value = mismatch_fixture(); value["queried_session_settings"][field] = malformed
+                    with self.assertRaises(ValueError): validate(raw(value), 2)
+
+    def test_null_settings_mean_no_successful_query(self):
+        value = mismatch_fixture()
+        value.update(reason="session_unavailable", queried_session_settings=None, effective_buffers_within_budget=False)
+        self.assertEqual(validate(raw(value), 2), value)
+        value.update(reason="session_configuration_mismatch")
+        with self.assertRaises(ValueError): validate(raw(value), 2)
+        value = fixture(); value["queried_session_settings"] = None
+        with self.assertRaises(ValueError): validate(raw(value), 0)
+        value = mismatch_fixture(); value.update(session_started=False, session_stop_verified=False)
+        with self.assertRaises(ValueError): validate(raw(value), 2)
+
+    def test_mismatch_does_not_claim_consumer_or_probe(self):
+        for field in ("consumer_completed", "create_opend_pair", "win32_sharing_violation"):
+            value = mismatch_fixture(); value[field] = True
+            with self.assertRaises(ValueError): validate(raw(value), 2)
+        value = mismatch_fixture(); value["queried_session_settings"] = dict(REQUESTED_SESSION_SETTINGS)
+        with self.assertRaises(ValueError): validate(raw(value), 2)
+        value = mismatch_fixture(); value["reason"] = "session_unavailable"
+        with self.assertRaises(ValueError): validate(raw(value), 2)
+        value = mismatch_fixture(); value.update(reason="cleanup_uncertain", session_stop_verified=False)
+        self.assertEqual(validate(raw(value), 2), value)
+
+    def test_nested_duplicate_session_field_rejected(self):
+        data = raw(mismatch_fixture()).replace(b'"clock_selector": 0', b'"clock_selector": 0, "clock_selector": 0')
+        with self.assertRaises(ValueError): validate(data, 2)
 
 
 if __name__ == "__main__":

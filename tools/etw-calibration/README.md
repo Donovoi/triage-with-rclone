@@ -34,9 +34,31 @@ Trace buffers are capped at 16 of 64 KiB. Event storage and callback counts are
 bounded. Other paths are discarded; raw events, paths, process IDs and stderr are
 not published. The output validator accepts only the finite result schema.
 
+Schema 3 includes `queried_session_settings`: null until the owned session query
+succeeds, otherwise exactly three unsigned 32-bit values: `enable_flags`,
+`log_mode`, and `clock_selector`. Requested values remain `0x16000000`,
+`0x12000100`, and `1` respectively. At the existing equality gate, a difference
+still stops before the consumer or probe with `session_configuration_mismatch`.
+Cleanup uncertainty can still override that reason. The settings only explain
+the gate; they do not establish usable event delivery.
+
 Windows trace control calls have no caller-supplied timeout. The workflow's time
 limit is an outer bound, not evidence that tracing or cleanup finished. A missing
 result, lost events, unsupported schema or uncertain cleanup cannot pass.
+
+## First hosted result
+
+[PR80 calibration run 38025537018, job 114135484634](https://github.com/Donovoi/triage-with-rclone/actions/runs/38025537018/job/114135484634)
+tested merge `c18dd9213bd677b6794ef66dc8280d074a66a0f5` from head
+`6ece1115154bb172410088299048aaedff095c26`; helper SHA-256 was
+`c139193bcc4f88ce6eb6344a27e669af043203d489237bbb968deeeff53abf1a`.
+Its schema-2 result was unavailable before the consumer or probe: the session
+started within budget, recorded zero loss, stopped with verified absence, and
+the owned file and directory were cleaned. Source and the result identify the
+returned-session-settings equality gate, but that schema did not record which
+setting differed. This was one cleanly stopped unavailable calibration, with no
+operation-pair or provider evidence. Schema 3 exposes only those missing settings;
+the strict gate, permissions, single probe and cleanup contract are unchanged.
 
 ## Checks during development
 

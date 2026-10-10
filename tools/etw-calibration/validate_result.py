@@ -8,14 +8,19 @@ REASONS = frozenset((
     "budget_exceeded", "schema_unavailable", "clock_unavailable",
     "correlation_missing_or_ambiguous", "unexpected_status", "event_loss",
     "session_collision", "access_denied", "session_unavailable", "consumer_unavailable",
-    "cleanup_uncertain",
+    "cleanup_uncertain", "session_configuration_mismatch",
 ))
 BOOLS = frozenset((
     "win32_sharing_violation", "create_opend_pair", "same_owned_file", "same_owned_directory", "session_started",
     "session_stop_verified", "consumer_completed", "zero_loss",
     "effective_buffers_within_budget", "owned_file_cleaned",
 ))
-KEYS = BOOLS | {"schema", "scope", "status", "reason", "api", "holder_access"}
+KEYS = BOOLS | {"schema", "scope", "status", "reason", "api", "holder_access", "queried_session_settings"}
+REQUESTED_SESSION_SETTINGS = {
+    "enable_flags": 0x16000000,  # FILE_IO_INIT | FILE_IO | NO_SYSCONFIG
+    "log_mode": 0x12000100,  # REAL_TIME | SYSTEM_LOGGER | NO_PER_PROCESSOR_BUFFERING
+    "clock_selector": 1,  # QPC
+}
 
 
 def unique_pairs(pairs):
@@ -33,7 +38,7 @@ def validate(raw, exit_code):
     obj = json.loads(raw.decode("utf-8"), object_pairs_hook=unique_pairs)
     if type(obj) is not dict or obj.keys() != KEYS:
         raise ValueError("exact keys required")
-    if type(obj["schema"]) is not int or obj["schema"] != 2:
+    if type(obj["schema"]) is not int or obj["schema"] != 3:
         raise ValueError("schema")
     if obj["scope"] != "synthetic_open_only" or obj["api"] != "CreateFileW_DELETE_OPEN_EXISTING":
         raise ValueError("scope")
@@ -43,6 +48,25 @@ def validate(raw, exit_code):
         raise ValueError("boolean facts required")
     if obj["reason"] not in REASONS or obj["status"] not in ("observed", "unavailable"):
         raise ValueError("closed enum")
+    settings = obj["queried_session_settings"]
+    if settings is not None:
+        if type(settings) is not dict or settings.keys() != REQUESTED_SESSION_SETTINGS.keys():
+            raise ValueError("session settings shape")
+        if any(type(value) is not int or not 0 <= value <= 0xFFFFFFFF for value in settings.values()):
+            raise ValueError("session settings u32 values")
+        if not obj["session_started"]:
+            raise ValueError("query without owned session")
+    settings_match = settings == REQUESTED_SESSION_SETTINGS
+    if not settings_match and any(obj[key] for key in (
+        "consumer_completed", "create_opend_pair", "win32_sharing_violation",
+    )):
+        raise ValueError("operation before session configuration gate")
+    if obj["reason"] == "session_configuration_mismatch" and (settings is None or settings_match):
+        raise ValueError("configuration mismatch requires differing queried settings")
+    if settings is not None and not settings_match and obj["reason"] not in (
+        "session_configuration_mismatch", "budget_exceeded", "event_loss", "cleanup_uncertain",
+    ):
+        raise ValueError("configuration mismatch outcome")
     if obj["session_stop_verified"] and not obj["session_started"]:
         raise ValueError("stop ownership")
     if obj["owned_file_cleaned"] and not (obj["same_owned_file"] and obj["same_owned_directory"]):
@@ -53,7 +77,7 @@ def validate(raw, exit_code):
     )):
         raise ValueError("incomplete correlation")
     if obj["status"] == "observed":
-        if type(exit_code) is not int or exit_code != 0 or obj["reason"] != "none" or not all(obj[key] for key in BOOLS):
+        if type(exit_code) is not int or exit_code != 0 or obj["reason"] != "none" or not all(obj[key] for key in BOOLS) or not settings_match:
             raise ValueError("incomplete success")
     elif type(exit_code) is not int or exit_code != 2 or obj["reason"] == "none":
         raise ValueError("unavailable contract")
