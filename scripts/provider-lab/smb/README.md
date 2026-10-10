@@ -54,10 +54,13 @@ credential, or privilege fallback. The public report includes only fixed stage
 markers and diagnostic codes for failures.
 
 CI combines the new SMB receipt only with the same run's Linux baseline,
-FileFabric renewal and IA LOW receipts, and requires nineteen complete local
-protocol profiles. The Windows gate requires eighteen and leaves SMB unverified.
-Internet Archive requires both its anonymous and protected LOW modes; pCloud
-still lacks fresh OAuth authentication. A profile qualifies only when its current receipts pass. The scheduled Linux provider workflow also requires the SMB contract.
+FileFabric renewal, IA LOW, pCloud authentication and GCS OAuth lifecycle receipts,
+and requires twenty-one complete local protocol profiles. The Windows gate
+requires eighteen complete profiles plus the GCS static-token mode; SMB, pCloud
+authentication and GCS OAuth lifecycle remain unverified on Windows. Internet
+Archive requires both its anonymous and protected LOW modes. A profile qualifies
+only when its current receipts pass. The scheduled Linux provider workflow
+requires the same complete profiles.
 
 The Python tests use mocks and local temporary files and do not start Docker,
 Samba, rclone, or a service. Native execution requires the isolated CI job.
