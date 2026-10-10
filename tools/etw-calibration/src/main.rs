@@ -285,8 +285,15 @@ impl Consumer {
     }
 }
 
+struct SessionSettings {
+    enable_flags: u32,
+    log_mode: u32,
+    clock_selector: u32,
+}
+
 #[derive(Default)]
 struct Proof {
+    queried_session_settings: Option<SessionSettings>,
     started: bool,
     stop_attempted: bool,
     stopped: bool,
@@ -379,6 +386,11 @@ unsafe fn trace(path: &[u16], holder: HANDLE, proof: &mut Proof) -> Outcome {
         {
             return Err("session_unavailable");
         }
+        proof.queried_session_settings = Some(SessionSettings {
+            enable_flags: actual.value.EnableFlags,
+            log_mode: actual.value.LogFileMode,
+            clock_selector: actual.value.Wnode.ClientContext,
+        });
         proof.bounded = actual.bounded();
         if !proof.bounded {
             return Err("budget_exceeded");
@@ -390,7 +402,7 @@ unsafe fn trace(path: &[u16], holder: HANDLE, proof: &mut Proof) -> Outcome {
             || actual.value.LogFileMode != MODE
             || actual.value.Wnode.ClientContext != 1
         {
-            return Err("session_unavailable");
+            return Err("session_configuration_mismatch");
         }
         let consumer = Consumer::open(state)?;
         let reader = consumer.handle;
@@ -653,8 +665,15 @@ fn main() {
     } else {
         outcome.err().unwrap_or("cleanup_uncertain")
     };
-    println!("{{\"schema\":2,\"scope\":\"synthetic_open_only\",\"status\":\"{}\",\"reason\":\"{}\",\"api\":\"CreateFileW_DELETE_OPEN_EXISTING\",\"holder_access\":\"READ_DATA|DELETE_without_delete_share\",\"win32_sharing_violation\":{},\"create_opend_pair\":{},\"same_owned_file\":{},\"same_owned_directory\":{},\"session_started\":{},\"session_stop_verified\":{},\"consumer_completed\":{},\"zero_loss\":{},\"effective_buffers_within_budget\":{},\"owned_file_cleaned\":{}}}",
-        if observed { "observed" } else { "unavailable" }, reason, p.probe, p.paired, p.identity, p.directory, p.started, p.stopped, p.consumer, p.lossless, p.bounded, p.cleaned);
+    let settings = match p.queried_session_settings {
+        Some(s) => format!(
+            "{{\"enable_flags\":{},\"log_mode\":{},\"clock_selector\":{}}}",
+            s.enable_flags, s.log_mode, s.clock_selector
+        ),
+        None => "null".into(),
+    };
+    println!("{{\"schema\":3,\"scope\":\"synthetic_open_only\",\"status\":\"{}\",\"reason\":\"{}\",\"api\":\"CreateFileW_DELETE_OPEN_EXISTING\",\"holder_access\":\"READ_DATA|DELETE_without_delete_share\",\"queried_session_settings\":{},\"win32_sharing_violation\":{},\"create_opend_pair\":{},\"same_owned_file\":{},\"same_owned_directory\":{},\"session_started\":{},\"session_stop_verified\":{},\"consumer_completed\":{},\"zero_loss\":{},\"effective_buffers_within_budget\":{},\"owned_file_cleaned\":{}}}",
+        if observed { "observed" } else { "unavailable" }, reason, settings, p.probe, p.paired, p.identity, p.directory, p.started, p.stopped, p.consumer, p.lossless, p.bounded, p.cleaned);
     std::process::exit(if observed { 0 } else { 2 });
 }
 
