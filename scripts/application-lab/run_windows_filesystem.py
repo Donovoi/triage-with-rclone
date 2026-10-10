@@ -59,6 +59,31 @@ SOURCE_DIRECTORIES = frozenset({"source", *("source/" + name for name in DIRECTO
 SOURCE_FILES = frozenset({"source/fixture.zip", *("source/" + row[0] for row in ROWS)})
 PROGRESS_BLOCK = 65536
 PROGRESS_MAX = 1048576
+OPERATION_STAGES = frozenset(("prepare", "private_roots", "application_copy", "source_create", "queue_create",
+    "bridge_start", "bridge_ready", "prestart", "start_source", "wait_partial", "partial_inventory",
+    "initial_runtime", "content_poll", "content_sample", "content_progress", "final_runtime", "witness_close",
+    "pre_ctrl_c_poll", "ctrl_c", "wait_exit", "finish", "runtime_final", "exit_result", "configuration", "artifacts"))
+CLEANUP_STAGES = frozenset(("bridge_close", "helper_snapshot", "witness_close", "case_identity", "source_snapshot",
+    "input_preservation", "configuration", "application_roots", "helper_baseline", "case_inventory", "verify",
+    "final_source", "remove"))
+CLEANUP_UNCERTAINTY = frozenset(("termination_failed", "process_cleanup_failed", "input_cleanup_failed",
+    "reader_cleanup_failed", "console_cleanup_failed", "console_cleanup_timeout", "source_directory_cleanup_failed",
+    "debug_cleanup_failed", "source_directory_invalid"))
+
+
+def failure_diagnostic(backend, name, phase, stage, code):
+    """Failure-only finite provenance; diagnostics never change the verdict."""
+    try:
+        need(type(backend) is str and backend in E.CASE_ORDER and type(name) is str and
+             name in E.CASE_ORDER[backend] and type(phase) is str and phase in {"operation", "cleanup"} and
+             type(stage) is str and stage in (OPERATION_STAGES if phase == "operation" else CLEANUP_STAGES) and
+             type(code) is str and code in E.FAILURE_CODES, "unexpected_failure")
+        payload = E.compact(dict(backend=backend, case=name, phase=phase, stage=stage, code=code))
+        line = "application_filesystem_case_failure=" + payload.decode("ascii")
+        need(len(line) + 1 <= 1024, "unexpected_failure")
+        print(line, flush=True)
+    except BaseException:
+        pass  # No error text, paths, transcript, or fallback on diagnostic failure.
 
 
 def loaded_sources_preserved():
@@ -358,8 +383,9 @@ class ContentWitness:
         after = self.verify()
         # Raw FileIO.read may return short even before EOF. Only an actual extent
         # no larger than the bytes read can prove the later block absent. Growth
-        # during a short read is uncertain and cannot earn a content witness.
-        need(len(data) >= min(max(before, after), PROGRESS_MAX + PROGRESS_BLOCK), "cancellation_failed")
+        # during a short read is uncertain: discard it without earning progress.
+        if len(data) < min(max(before, after), PROGRESS_MAX + PROGRESS_BLOCK):
+            return None
         # A zero-filled preallocation, wrong bytes, or a completed image does not
         # qualify. The next whole block is absent/incomplete or differs from the
         # literal pattern; the next sample must incorporate it fully and exactly.
@@ -420,24 +446,36 @@ def observe_live(bridge, case, runtime):
          value["runtime_process_count"] == 1, "runtime_unobserved")
 
 
-def cancel_active_transfer(bridge, case, lease, runtime, deadline, cleanup=None):
+def cancel_active_transfer(bridge, case, lease, runtime, deadline, cleanup=None, progress=None):
     witness = None
     first = last = 0
     primary_failure = False
+    def stage(value):
+        if progress is not None:
+            progress["operation"] = value
     try:
         while witness is None:
+            stage("wait_partial")
             need(time.monotonic() < deadline, "deadline_exceeded")
             live_running(bridge.command("poll"), "poll")
+            stage("partial_inventory")
             witness = cancellation_witness(case, lease, cleanup)
             if witness is None:
                 time.sleep(0.05)
+        stage("initial_runtime")
         observe_live(bridge, case, runtime)
         need(time.monotonic() < deadline, "deadline_exceeded")
         while not first or last <= first:
+            stage("content_poll")
             need(time.monotonic() < deadline, "deadline_exceeded")
             live_running(bridge.command("poll"), "poll")
+            stage("content_sample")
             matched = witness.sample()
             need(time.monotonic() < deadline, "deadline_exceeded")
+            if matched is None:
+                time.sleep(0.05)
+                continue
+            stage("content_progress")
             if first:
                 need(matched >= first, "cancellation_failed")
                 last = matched
@@ -445,6 +483,7 @@ def cancel_active_transfer(bridge, case, lease, runtime, deadline, cleanup=None)
                 first = matched
             if last <= first:
                 time.sleep(0.05)
+        stage("final_runtime")
         observe_live(bridge, case, runtime)
         need(time.monotonic() < deadline, "deadline_exceeded")
         need(PROGRESS_BLOCK <= first < last <= PROGRESS_MAX and
@@ -455,13 +494,17 @@ def cancel_active_transfer(bridge, case, lease, runtime, deadline, cleanup=None)
     finally:
         if witness is not None:
             try:
+                if not primary_failure:
+                    stage("witness_close")
                 witness.close()  # Never obstruct rclone's staging removal after Ctrl+C.
             except BaseException:
                 if not primary_failure:
                     raise
+    stage("pre_ctrl_c_poll")
     need(time.monotonic() < deadline, "deadline_exceeded")
     live_running(bridge.command("poll"), "poll")
     need(time.monotonic() < deadline, "deadline_exceeded")
+    stage("ctrl_c")
     value = bridge.command("ctrl_c")
     need(time.monotonic() < deadline, "deadline_exceeded")
     C.validate_snapshot(value, "ctrl_c")
@@ -476,6 +519,21 @@ def final_live_observation(value, runtime):
          all(value[key] for key in H.SESSION_CLEANUP) and value["runtime_image_observed"] and
          value["runtime_sha256"] == runtime["sha256"] and value["runtime_process_count"] == 1,
          "session_failed")
+
+
+def confirmed_helper_cleanup(value, backend, name, runtime):
+    """Transport exit alone does not prove the owned job or source pins closed."""
+    need(type(value) is dict, "cleanup_failed")
+    action = value.get("action")
+    if name == "cancellation":
+        C.validate_snapshot(value, action)
+        fields = H.SESSION_CLEANUP
+    else:
+        C.validate_observed_snapshot(value, action, runtime["sha256"], 1, E.EXPECTED_LAUNCHES[backend][name])
+        fields = (*H.SESSION_CLEANUP, *C.OBSERVED_CLEANUP)
+    need(value["state"] == "finished" and all(value[key] is True for key in fields) and
+         not CLEANUP_UNCERTAINTY.intersection(value["errors"]), "cleanup_failed")
+    return True
 
 
 def case_inventory(case, name, helper_current):
@@ -506,24 +564,39 @@ def run_case(backend, name, suite, application, application_sha, runtime, sessio
     lease = bridge = roots = helper_before = baseline = config_bytes = None
     attempted = False
     witness_cleanup = {"closed": True, "failed": False}
+    progress = {"operation": "prepare"}
+    cleanup_reported = False
     def fail(code):
         if record["failure_code"] is None:
             record["failure_code"] = code if code in E.FAILURE_CODES else "unexpected_failure"
+    def cleanup_failed(stage):
+        nonlocal cleanup_reported
+        fail("cleanup_failed")
+        if not cleanup_reported:
+            failure_diagnostic(backend, name, "cleanup", stage, "cleanup_failed")
+            cleanup_reported = True
     try:
         H.prepare(suite, case_name)
         lease = H.identity(case)
+        progress["operation"] = "private_roots"
         roots = H.create_private_roots(case)
         H.private_directory(case, "output")
+        progress["operation"] = "application_copy"
         H.private_write(case, "application.exe", H.read(application, 512 * 1024 * 1024, allow_hardlinks=True))
         need(H.sha(H.read(case / "application.exe", 512 * 1024 * 1024)) == application_sha, "binding_failed")
+        progress["operation"] = "source_create"
         config_bytes, baseline = create_source(case, backend, name)
         checks["fixture_valid"] = True
         H.private_write(case, "source.conf", config_bytes)
+        progress["operation"] = "queue_create"
         if name != "listing":
             H.private_write(case, "queue.csv", queue_bytes(backend, name))
         attempted = True
+        progress["operation"] = "bridge_start"
         bridge = (session_factory or (C.SourceBridge if name == "cancellation" else C.ObservedSourceBridge))(case)
+        progress["operation"] = "bridge_ready"
         H.validate_ready(bridge.command("ready"))
+        progress["operation"] = "prestart"
         helper_before = H.helper_baseline(case, roots)
         H.application_roots_empty(case, roots)
         deadline = time.monotonic() + H.CASE_SECONDS
@@ -531,74 +604,96 @@ def run_case(backend, name, suite, application, application_sha, runtime, sessio
             args=app_args(name, case), case_root=str(case), environment=H.environment(case),
             transcript_path=str(case / "transcript.private"), max_output_bytes=8 * 1024 * 1024, deadline_ms=150000,
             max_runtime_processes=1)
+        progress["operation"] = "start_source"
         if name == "cancellation":
             response = bridge.command("start_source", **start)
             live_running(response, "start_source")
-            observation, response = cancel_active_transfer(bridge, case, lease, runtime, deadline, witness_cleanup)
+            observation, response = cancel_active_transfer(bridge, case, lease, runtime, deadline, witness_cleanup, progress)
             record["observation"], record["runtime_sha256"] = observation, runtime["sha256"]
             checks["runtime_observed"] = checks["transfer_active"] = checks["content_progress_exact"] = checks["ctrl_c_sent"] = True
         else:
             start.update(expected_runtime_sha256=runtime["sha256"], max_runtime_launches=E.EXPECTED_LAUNCHES[backend][name])
             response = bridge.command("start_source_observed", **start)
         while not response["app_exited"]:
+            progress["operation"] = "wait_exit"
             need(response["ok"] and time.monotonic() < deadline, "session_failed")
             response = bridge.command("poll")
             time.sleep(0.05)
+        progress["operation"] = "finish"
         response = bridge.command("finish", grace_ms=10000)
         bridge.last = response
         record["exit_code"] = response["app_exit_code"]
+        progress["operation"] = "runtime_final"
         if name == "cancellation":
             final_live_observation(response, runtime)
         else:
             record["observation"] = final_observation(response, backend, name, runtime)
         record["runtime_sha256"] = runtime["sha256"]
         checks["runtime_observed"] = checks["orderly_exit"] = True
+        progress["operation"] = "exit_result"
         positive = name == "listing" or name in ACQUISITIONS
         need((record["exit_code"] == 0) is positive, "session_failed")
         checks["exit_success" if positive else "exit_failure"] = True
+        progress["operation"] = "configuration"
         config = H.configuration_preserved(case, config_bytes)
         checks["configuration_preserved"] = True
+        progress["operation"] = "artifacts"
         checks.update(check_listing(case, backend, baseline) if name == "listing" else check_manifest(case, backend, name, config, runtime))
     except H.ProducerError as error:
         fail(str(error))
+        failure_diagnostic(backend, name, "operation", progress["operation"], record["failure_code"])
     except BaseException:
         fail("unexpected_failure")
+        failure_diagnostic(backend, name, "operation", progress["operation"], record["failure_code"])
     finally:
         if bridge is not None:
+            cleanup_stage = "bridge_close"
             try:
-                checks["process_cleanup"] = bridge.close()
+                need(bridge.close() is True, "cleanup_failed")
+                cleanup_stage = "helper_snapshot"
+                checks["process_cleanup"] = confirmed_helper_cleanup(bridge.last, backend, name, runtime)
             except BaseException:
-                fail("cleanup_failed")
+                cleanup_failed(cleanup_stage)
         else:
             checks["process_cleanup"] = not attempted
         # There is no server. Fixture closure means all source users are reaped;
         # exact bytes/identity and the source-CWD lease are separately checked.
         checks["fixture_cleanup"] = checks["process_cleanup"] and witness_cleanup["closed"] and not witness_cleanup["failed"]
         if not witness_cleanup["closed"] or witness_cleanup["failed"]:
-            fail("cleanup_failed")
+            cleanup_failed("witness_close")
         if lease is not None and checks["process_cleanup"] and checks["fixture_cleanup"]:
+            cleanup_stage = "case_identity"
             try:
                 need(H.identity(case) == lease, "preservation_failed")
+                cleanup_stage = "source_snapshot"
                 need(baseline is not None and source_snapshot(case, backend, name) == baseline, "preservation_failed")
                 checks["source_preserved"] = True
+                cleanup_stage = "input_preservation"
                 need(config_bytes is not None and H.read(case / "source.conf", 8192) == config_bytes and
                      H.sha(H.read(case / "application.exe", 512 * 1024 * 1024)) == application_sha, "preservation_failed")
                 if name != "listing":
                     need(H.read(case / "queue.csv", 65536) == queue_bytes(backend, name), "preservation_failed")
                 if checks["configuration_preserved"]:
+                    cleanup_stage = "configuration"
                     H.configuration_preserved(case, config_bytes)
+                cleanup_stage = "application_roots"
                 H.application_roots_empty(case, roots)
+                cleanup_stage = "helper_baseline"
                 helper_current = H.helper_baseline(case, roots)
                 H.helper_cleanup_preserved(helper_current, helper_before)
+                cleanup_stage = "case_inventory"
                 case_inventory(case, name, helper_current)
                 checks["process_cleanup"] = checks["fixture_cleanup"] = False
+                cleanup_stage = "verify"
                 H.prepare(suite, case_name, "Verify")
                 checks["process_cleanup"] = checks["fixture_cleanup"] = True
+                cleanup_stage = "final_source"
                 need(source_snapshot(case, backend, name) == baseline, "preservation_failed")
+                cleanup_stage = "remove"
                 H.remove_owned(case, lease)
                 checks["temp_cleanup"] = True
             except BaseException:
-                fail("cleanup_failed")
+                cleanup_failed(cleanup_stage)
     if not all(checks.values()):
         fail("session_failed")
     if record["failure_code"] is None and all(checks.values()):
