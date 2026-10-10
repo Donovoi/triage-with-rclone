@@ -1,5 +1,5 @@
 """Pure filesystem/mocked process tests; never start a native helper or app."""
-from contextlib import ExitStack
+from contextlib import ExitStack, redirect_stdout
 import copy
 import csv
 from datetime import datetime, timezone
@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import socket
 import subprocess
 import tempfile
 import types
@@ -143,6 +144,21 @@ class FakeBridge:
         return value
     def close(self):
         self.calls.append(("close", {}))
+        # The real close path finishes a still-running session before closing its
+        # transport. Never repair an already-final malformed/uncertain snapshot.
+        if self.close_ok and type(self.last) is dict and self.last.get("state") == "running":
+            value = copy.deepcopy(self.last)
+            forced = not value["app_exited"]
+            value.update(action="finish", state="finished", app_exited=True,
+                         app_exit_code=value["app_exit_code"] if value["app_exit_code"] is not None else 1)
+            for key in P.H.SESSION_CLEANUP:
+                value[key] = True
+            if value["schema_version"] == 3:
+                for key in P.C.OBSERVED_CLEANUP:
+                    value[key] = True
+            if forced:
+                value.update(ok=False, errors=["forced_termination"], forced_termination=True)
+            self.last = value
         return self.close_ok
 
 
@@ -221,6 +237,8 @@ class FilesystemProducerTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.addCleanup(self.stack.close)
         self.stack.enter_context(patch.object(subprocess, "Popen", side_effect=AssertionError("native_forbidden")))
+        self.stack.enter_context(patch.object(socket, "socket", side_effect=AssertionError("socket_forbidden")))
+        self.stack.enter_context(patch.object(socket, "create_connection", side_effect=AssertionError("socket_forbidden")))
         self.stack.enter_context(patch.object(P.H, "hosted_guard"))
         # These fake launches must not depend on Windows host variables on Linux.
         # The real scrubbed environment builder and hosted guard stay unchanged.
@@ -285,6 +303,8 @@ class FilesystemProducerTests(unittest.TestCase):
             ("system_helper_image_observed", False), ("runtime_image_observed", True),
             ("debug_handles_closed", False), ("forced_termination", True), ("app_exit_code", 1)):
             with self.subTest(key=key):
+                self.suite = self.root / ("runtime-mutation-" + key)
+                self.suite.mkdir()
                 value, _ = self.run_case(mutate=lambda v, _p: v.update({key: replacement}))
                 self.assertEqual(value["status"], "failed")
                 self.assertFalse(value["checks"]["runtime_observed"] if key != "app_exit_code" else value["checks"]["exit_success"])
@@ -325,6 +345,103 @@ class FilesystemProducerTests(unittest.TestCase):
         self.assertFalse(value["checks"]["process_cleanup"])
         self.assertFalse(value["checks"]["temp_cleanup"])
         self.assertNotIn("PRIVATE", json.dumps(value))
+
+    def test_transport_exit_cannot_replace_every_helper_cleanup_proof(self):
+        common = ("app_exited", "observed_children_exited", "job_zero_confirmed", "reader_joined", "conpty_closed")
+        observed = ("debug_events_drained", "debug_pump_joined", "debug_handles_closed", "system_helper_reference_closed")
+        for name, fields in (("listing", common + observed), ("cancellation", common)):
+            for key in fields:
+                with self.subTest(name=name, key=key):
+                    self.suite = self.root / ("cleanup-flag-" + name + "-" + key)
+                    self.suite.mkdir()
+                    def mutate(value, _case):
+                        value.update(ok=False, errors=["forced_termination"], forced_termination=True)
+                        value[key] = False
+                    with patch.object(P.H, "remove_owned") as remove:
+                        result, calls = self.run_case(name=name, mutate=mutate)
+                    self.assertEqual(result["status"], "failed")
+                    for field in ("process_cleanup", "fixture_cleanup", "temp_cleanup"):
+                        self.assertFalse(result["checks"][field], field)
+                    self.assertEqual([action for action, _ in calls].count("close"), 1)
+                    remove.assert_not_called()
+                    self.assertTrue((self.suite / ("fs-local-" + name)).is_dir())
+
+    def test_explicit_cleanup_uncertainty_cannot_be_cleared_by_all_true_flags(self):
+        codes = ("termination_failed", "process_cleanup_failed", "input_cleanup_failed", "reader_cleanup_failed",
+                 "console_cleanup_failed", "console_cleanup_timeout", "source_directory_cleanup_failed",
+                 "debug_cleanup_failed", "source_directory_invalid")
+        for code in codes:
+            with self.subTest(code=code):
+                self.suite = self.root / ("cleanup-code-" + code)
+                self.suite.mkdir()
+                with patch.object(P.H, "remove_owned") as remove:
+                    value, calls = self.run_case(mutate=lambda v, _case: v.update(ok=False, errors=[code]))
+                self.assertEqual(value["status"], "failed")
+                self.assertFalse(value["checks"]["process_cleanup"])
+                self.assertFalse(value["checks"]["fixture_cleanup"])
+                self.assertFalse(value["checks"]["temp_cleanup"])
+                self.assertEqual([action for action, _ in calls].count("close"), 1)
+                remove.assert_not_called()
+        # Live mode has no debug error category; each of its known uncertainty
+        # codes still refuses cleanup, and the foreign category is also invalid.
+        for code in codes:
+            value = live_snapshot("finish", finished=True, cancelled=True)
+            value.update(ok=False, errors=[code])
+            with self.subTest(live_code=code), self.assertRaises(P.H.ProducerError):
+                P.confirmed_helper_cleanup(value, "local", "cancellation", RUNTIME)
+
+    def test_unknown_or_malformed_final_transport_snapshot_retains_tree(self):
+        changes = (None, {"schema_version": 1, "action": "close_ready", "ok": True, "state": "finished"},
+                   {"action": "unknown"}, {"private-canary": True}, {"reader_joined": 1},
+                   {"app_exit_code": False}, {"schema_version": True})
+        for name in ("listing", "cancellation"):
+            for index, change in enumerate(changes):
+                self.suite = self.root / ("bad-final-" + name + str(index))
+                self.suite.mkdir()
+                class Bridge(FakeLiveBridge if name == "cancellation" else FakeBridge):
+                    calls = []
+                    def close(self):
+                        super().close()
+                        if change is None or change.get("action") == "close_ready":
+                            self.last = change
+                        else:
+                            self.last.update(change)
+                        return True
+                with patch.object(P.H, "remove_owned") as remove:
+                    result = P.run_case("local", name, self.suite, self.app, self.sha, RUNTIME, Bridge)
+                self.assertEqual(result["failure_code"], "cleanup_failed", (name, change, result))
+                for field in ("process_cleanup", "fixture_cleanup", "temp_cleanup"):
+                    self.assertFalse(result["checks"][field])
+                remove.assert_not_called()
+                self.assertEqual([action for action, _ in Bridge.calls].count("close"), 1)
+                self.assertNotIn("private-canary", json.dumps(result))
+
+    def test_forced_operation_failure_may_be_reaped_but_never_passes(self):
+        for name in ("listing", "cancellation"):
+            value, calls = self.run_case(name=name, mutate=lambda v, _case: v.update(
+                ok=False, errors=["forced_termination"], forced_termination=True))
+            self.assertEqual(value["status"], "failed")
+            self.assertEqual(value["failure_code"], "session_failed")
+            self.assertFalse(value["checks"]["orderly_exit"])
+            self.assertTrue(value["checks"]["process_cleanup"])
+            self.assertTrue(value["checks"]["fixture_cleanup"])
+            self.assertTrue(value["checks"]["temp_cleanup"])
+            self.assertEqual([action for action, _ in calls].count("close"), 1)
+
+    def test_verify_failure_revokes_process_and_fixture_cleanup_before_removal(self):
+        def prepare(parent, name, action="Create"):
+            if action == "Verify":
+                raise OSError("private verify error")
+            return self.prepare(parent, name, action)
+        output = io.StringIO()
+        with patch.object(P.H, "prepare", side_effect=prepare), patch.object(P.H, "remove_owned") as remove, redirect_stdout(output):
+            value, _ = self.run_case()
+        self.assertEqual(value["failure_code"], "cleanup_failed")
+        self.assertFalse(value["checks"]["process_cleanup"])
+        self.assertFalse(value["checks"]["fixture_cleanup"])
+        remove.assert_not_called()
+        self.assertEqual(json.loads(output.getvalue().split("=", 1)[1]), dict(
+            backend="local", case="listing", phase="cleanup", stage="verify", code="cleanup_failed"))
     def test_source_creation_rejects_unknown_escape_and_existing_paths(self):
         for member in ("../other", "source/../outside", "source/unexpected.txt", "C:/outside"):
             with self.assertRaises(P.H.ProducerError):
@@ -531,7 +648,7 @@ class FilesystemProducerTests(unittest.TestCase):
         original = witness.stream
         class ShortReader:
             def __init__(self):
-                self.lengths = iter((65536, 131072))
+                self.lengths = iter((65536, 131072, 1114112))
             def fileno(self):
                 return original.fileno()
             def seek(self, offset):
@@ -542,8 +659,137 @@ class FilesystemProducerTests(unittest.TestCase):
                 original.close()
         witness.stream = ShortReader()
         for _ in range(2):
-            with self.assertRaisesRegex(P.H.ProducerError, "^cancellation_failed$"):
-                witness.sample()
+            self.assertIsNone(witness.sample())
+        with self.assertRaisesRegex(P.H.ProducerError, "^cancellation_failed$"):
+            witness.sample()  # A complete bounded read proves it has no headroom.
+
+    def test_growth_between_read_and_extent_check_is_pending_then_requires_stable_content(self):
+        path = self.partial(BODY["large/cancel.bin"][:65536])
+        witness = P.cancellation_witness(self.suite, P.H.identity(self.suite))
+        self.addCleanup(witness.close)
+        original = witness.stream
+        class GrowingReader:
+            def fileno(self):
+                return original.fileno()
+            def seek(self, offset):
+                return original.seek(offset)
+            def read(self, limit):
+                data = original.read(limit)
+                with path.open("ab") as writer:
+                    writer.write(BODY["large/cancel.bin"][65536:131072])
+                return data
+            def close(self):
+                original.close()
+        witness.stream = GrowingReader()
+        self.assertIsNone(witness.sample())
+        witness.stream = original
+        self.assertEqual(witness.sample(), 131072)
+
+    def test_pending_samples_preserve_first_proof_and_never_reset_deadline(self):
+        for permanent in (False, True):
+            clock, calls, stages = [0.0], [], {}
+            class Witness:
+                values = iter((65536, None, 131072))
+                closed = 0
+                def sample(self):
+                    return None if permanent else next(self.values)
+                def close(self):
+                    self.closed += 1
+            class Bridge:
+                def command(self, action, **_fields):
+                    calls.append(action)
+                    return live_snapshot(action, cancelled=action == "ctrl_c")
+            witness = Witness()
+            def advance(_delay):
+                clock[0] += 1.0
+            with patch.object(P, "cancellation_witness", return_value=witness), \
+                 patch.object(P.time, "monotonic", side_effect=lambda: clock[0]), \
+                 patch.object(P.time, "sleep", side_effect=advance):
+                if permanent:
+                    with self.assertRaisesRegex(P.H.ProducerError, "^deadline_exceeded$"):
+                        P.cancel_active_transfer(Bridge(), self.suite, (1, 2), RUNTIME, 3.0, progress=stages)
+                    self.assertEqual(clock[0], 3.0)
+                    self.assertEqual(calls.count("observe_runtime"), 1)
+                    self.assertNotIn("ctrl_c", calls)
+                    self.assertEqual(stages, {"operation": "content_poll"})
+                else:
+                    observation, _ = P.cancel_active_transfer(Bridge(), self.suite, (1, 2), RUNTIME, 3.0)
+                    self.assertEqual(observation, dict(kind="live_image", runtime_process_count=1,
+                        first_verified_bytes=65536, last_verified_bytes=131072))
+                    self.assertEqual(calls.count("observe_runtime"), 2)
+                    self.assertEqual(calls.count("ctrl_c"), 1)
+            self.assertEqual(witness.closed, 1)
+
+    def test_failure_diagnostics_preserve_original_stage_before_forced_cleanup(self):
+        output = io.StringIO()
+        boundaries = []
+        class Bridge(FakeLiveBridge):
+            calls = []
+            def close(self):
+                boundaries.append(output.getvalue())
+                return super().close()
+        roots = P.H.application_roots_empty
+        root_calls = []
+        def check_roots(*args):
+            root_calls.append(1)
+            if len(root_calls) > 1:
+                raise OSError("PRIVATE_CLEANUP_CANARY")
+            return roots(*args)
+        with patch.object(P.ContentWitness, "sample", side_effect=P.H.ProducerError("cancellation_failed")), \
+             patch.object(P.H, "application_roots_empty", side_effect=check_roots), redirect_stdout(output):
+            value = P.run_case("archive", "cancellation", self.suite, self.app, self.sha, RUNTIME,
+                              type("ArchiveBridge", (Bridge,), {"backend": "archive"}))
+        prefix = "application_filesystem_case_failure="
+        lines = output.getvalue().splitlines()
+        self.assertEqual(len(lines), 2)
+        self.assertTrue(all(line.startswith(prefix) and len(line.encode("ascii")) + 1 <= 1024 for line in lines))
+        records = [json.loads(line[len(prefix):]) for line in lines]
+        self.assertEqual(records, [dict(backend="archive", case="cancellation", phase="operation",
+            stage="content_sample", code="cancellation_failed"), dict(backend="archive", case="cancellation",
+            phase="cleanup", stage="application_roots", code="cleanup_failed")])
+        self.assertEqual(boundaries, [lines[0] + "\n"])
+        self.assertEqual(value["failure_code"], "cancellation_failed")
+        self.assertTrue(value["checks"]["process_cleanup"])
+        self.assertFalse(value["checks"]["temp_cleanup"])
+        self.assertEqual([action for action, _ in Bridge.calls].count("close"), 1)
+        self.assertNotIn("PRIVATE_CLEANUP_CANARY", output.getvalue() + json.dumps(value))
+
+    def test_diagnostic_printer_failure_or_private_exception_never_replaces_primary(self):
+        for broken_print in (False, True):
+            self.suite = self.root / ("diagnostic-failure-" + str(broken_print))
+            self.suite.mkdir()
+            output = io.StringIO()
+            with ExitStack() as stack:
+                stack.enter_context(redirect_stdout(output))
+                stack.enter_context(patch.object(P.ContentWitness, "sample", side_effect=ValueError("PRIVATE_EXCEPTION_CANARY")))
+                if broken_print:
+                    stack.enter_context(patch("builtins.print", side_effect=OSError("PRIVATE_PRINTER_CANARY")))
+                value, calls = self.run_case(name="cancellation")
+            self.assertEqual(value["failure_code"], "unexpected_failure")
+            self.assertEqual([action for action, _ in calls].count("close"), 1)
+            self.assertNotIn("PRIVATE_", output.getvalue() + json.dumps(value))
+            if broken_print:
+                self.assertEqual(output.getvalue(), "")
+            else:
+                first = json.loads(output.getvalue().splitlines()[0].split("=", 1)[1])
+                self.assertEqual(first, dict(backend="local", case="cancellation", phase="operation",
+                    stage="content_sample", code="unexpected_failure"))
+
+    def test_diagnostic_rejects_forged_fields_and_success_emits_nothing(self):
+        class PrivateValue:
+            def __str__(self):
+                raise AssertionError("private value must never be stringified")
+        valid = ("local", "cancellation", "operation", "content_sample", "cancellation_failed")
+        output = io.StringIO()
+        with redirect_stdout(output):
+            for index in range(5):
+                for forged in ("PRIVATE_FIELD_CANARY", PrivateValue()):
+                    values = list(valid)
+                    values[index] = forged
+                    P.failure_diagnostic(*values)
+            result, _ = self.run_case(name="cancellation")
+        self.assertEqual(result["status"], "passed")
+        self.assertEqual(output.getvalue(), "")
 
     def test_every_late_cancellation_boundary_fails_before_credit(self):
         for phase in ("first_observe", "first_sample", "last_sample", "second_observe", "close", "final_poll", "ctrl_c"):
