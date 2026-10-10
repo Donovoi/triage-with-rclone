@@ -1,5 +1,13 @@
 # Provider testing
 
+## Local-file and ZIP application tests in progress
+
+The staged Windows tests use the checked x64 application from the same CI run. They cover local files and a local ZIP: exact file lists, six separate downloads with independent hashes, wrong hashes, missing members, and directory requests. The ZIP cases also check CRC32, corrupt content and truncated metadata. Each case owns its source and output folders and must prove source preservation and cleanup.
+
+Short operations use launch-time executable observations, with the Windows console helper recorded separately. Cancellation uses a live executable observation and two reads that prove file content is advancing while bytes remain uncollected, followed by Ctrl+C. File length or an elapsed timer alone cannot pass this check. These are application tests, separate from the existing rclone protocol fixtures. Their sanitized receipts are bound to the application, embedded runtime, source and test code. Raw transcripts are not published.
+
+These new cases still need hosted qualification. Passing only the short-operation cases reports partial coverage and fails the complete-mode CI gate. A passed receipt requires cancellation and cleanup too; it does not mark a provider or its full application lifecycle complete. The coverage ledger remains unverified for these modes until qualification and evidence review are complete.
+
 ## Coverage enforced in CI
 
 The pinned runtime supplies the complete backend catalog. The curated provider enum and `CloudProvider::all()` are generated together; adding a variant also requires an exhaustive, independently asserted schema contract in `tests/provider_matrix.rs`.

@@ -6,6 +6,7 @@ use sha2::{Digest, Sha256};
 use std::collections::VecDeque;
 use std::fs::File;
 use std::io::{BufReader, Read};
+use std::num::NonZeroU32;
 use std::path::Path;
 use std::sync::atomic::AtomicBool;
 use std::sync::{mpsc, Arc, Mutex};
@@ -254,6 +255,8 @@ pub struct DownloadQueue {
     pub dry_run: bool,
     /// Whether to verify hashes after download
     pub verify_hashes: bool,
+    /// Optional rate for each streamed single-file acquisition; not a queue-wide limit.
+    pub bytes_per_second: Option<NonZeroU32>,
 }
 
 impl DownloadQueue {
@@ -264,6 +267,7 @@ impl DownloadQueue {
             timeout: None,
             dry_run: false,
             verify_hashes: true,
+            bytes_per_second: None,
         }
     }
 
@@ -278,6 +282,17 @@ impl DownloadQueue {
 
     pub fn set_verify_hashes(&mut self, verify: bool) {
         self.verify_hashes = verify;
+    }
+
+    fn worker(&self) -> Self {
+        Self {
+            requests: Vec::new(),
+            parallel: 1,
+            timeout: self.timeout,
+            dry_run: self.dry_run,
+            verify_hashes: self.verify_hashes,
+            bytes_per_second: self.bytes_per_second,
+        }
     }
 
     /// Build rclone args for a request
@@ -306,6 +321,15 @@ impl DownloadQueue {
                 ]
             }
         };
+
+        if request.mode == DownloadMode::CopyTo {
+            if let Some(rate) = self.bytes_per_second {
+                // Pinned rclone's bare numeric size means KiB. Use an explicit
+                // byte suffix and only throttle this single-file transfer.
+                args.push("--bwlimit-file".into());
+                args.push(format!("{rate}B"));
+            }
+        }
 
         // Transfer statistics are streamed to the TUI.
         args.push("--progress".to_string());
@@ -358,13 +382,7 @@ impl DownloadQueue {
             let pending = pending.clone();
             let tx = tx.clone();
             let runner = rclone.clone().with_cancel_flag(cancel.clone());
-            let worker = Self {
-                requests: Vec::new(),
-                parallel: 1,
-                timeout: self.timeout,
-                dry_run: self.dry_run,
-                verify_hashes: self.verify_hashes,
-            };
+            let worker = self.worker();
             handles.push(thread::spawn(move || loop {
                 let Some((index, request)) =
                     pending.lock().expect("download queue lock").pop_front()
@@ -1496,6 +1514,61 @@ mod tests {
         assert_eq!(&args[..3], ["rc", "--loopback", "operations/copyfile"]);
         assert!(args.contains(&"srcRemote=src".into()));
         assert!(args.contains(&"dstRemote=dest".into()));
+    }
+
+    #[test]
+    fn per_file_rate_adds_only_exact_byte_limit_to_single_object_copy() {
+        let request = DownloadRequest::new_copyto("Remote:file", "dest");
+        let default_args = vec![
+            "rc",
+            "--loopback",
+            "operations/copyfile",
+            "srcFs=Remote:",
+            "srcRemote=file",
+            "dstFs=.",
+            "dstRemote=dest",
+            "--progress",
+            "--stats",
+            "1s",
+        ];
+        assert_eq!(DownloadQueue::new().build_args(&request), default_args);
+        for rate in [1, 65536, u32::MAX] {
+            let mut queue = DownloadQueue::new();
+            queue.bytes_per_second = NonZeroU32::new(rate);
+            let mut expected: Vec<String> =
+                default_args.iter().map(|value| value.to_string()).collect();
+            expected.splice(7..7, ["--bwlimit-file".into(), format!("{rate}B")]);
+            assert_eq!(queue.build_args(&request), expected);
+            let copy = DownloadRequest::new_copy("src", "dest");
+            assert_eq!(
+                queue.build_args(&copy),
+                DownloadQueue::new().build_args(&copy)
+            );
+        }
+    }
+
+    #[test]
+    fn acquisition_worker_preserves_rate_without_sharing_requests_or_changing_controls() {
+        let mut queue = DownloadQueue::new();
+        queue.add(DownloadRequest::new_copyto("Remote:file", "dest"));
+        queue.parallel = 4;
+        queue.timeout = Some(Duration::from_secs(45));
+        queue.verify_hashes = false;
+        queue.dry_run = true;
+        queue.bytes_per_second = NonZeroU32::new(65536);
+        let worker = queue.worker();
+        assert!(worker.requests.is_empty());
+        assert_eq!(worker.parallel, 1);
+        assert_eq!(worker.timeout, queue.timeout);
+        assert_eq!(worker.verify_hashes, queue.verify_hashes);
+        assert_eq!(worker.dry_run, queue.dry_run);
+        assert_eq!(worker.bytes_per_second, queue.bytes_per_second);
+        assert_eq!(
+            worker.build_args(&queue.requests[0]),
+            queue.build_args(&queue.requests[0])
+        );
+        assert_eq!(queue.requests.len(), 1);
+        assert_eq!(queue.parallel, 4);
     }
 
     #[test]
