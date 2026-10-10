@@ -7,8 +7,8 @@
 use super::browser::{Browser, BrowserAuthSession, BrowserDetector};
 use super::credentials::{custom_oauth_credentials_for, OAuthCredentials};
 use super::mobile::{
-    device_code_config, exchange_code_for_token_with_pkce, poll_device_code_for_token,
-    render_qr_code, request_device_code,
+    device_code_config, exchange_code_for_token_with_pkce, exchange_code_for_token_with_policy,
+    poll_device_code_for_token, render_qr_code, request_device_code, CodeGrantPolicy,
 };
 use super::session::{browsers_with_sessions, BrowserSession};
 use super::{config::ProviderConfig, CloudProvider};
@@ -1129,6 +1129,29 @@ fn authorize_browser_with_opener<F>(
 where
     F: FnOnce(&str) -> Result<()>,
 {
+    authorize_browser_with_grant_policy(
+        provider_config,
+        client_id,
+        client_secret,
+        oauth,
+        cancel,
+        CodeGrantPolicy::Existing,
+        opener,
+    )
+}
+
+fn authorize_browser_with_grant_policy<F>(
+    provider_config: &ProviderConfig,
+    client_id: &str,
+    client_secret: Option<&str>,
+    oauth: &OAuthFlow,
+    cancel: &std::sync::atomic::AtomicBool,
+    policy: CodeGrantPolicy,
+    opener: F,
+) -> Result<String>
+where
+    F: FnOnce(&str) -> Result<()>,
+{
     let redirect_uri = oauth.redirect_uri();
     let state = OAuthFlow::generate_state();
     let pkce = Pkce::new();
@@ -1143,13 +1166,14 @@ where
         bail!("Authorization cancelled");
     }
 
-    let token_json = exchange_code_for_token_with_pkce(
+    let token_json = exchange_code_for_token_with_policy(
         provider_config.oauth.token_url,
         &result.code,
         &redirect_uri,
         client_id,
         client_secret,
         Some(pkce.verifier()),
+        policy,
     )?;
     serde_json::to_string(&token_json).context("Failed to serialize token")
 }
