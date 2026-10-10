@@ -6,8 +6,10 @@ param([Parameter(Mandatory=$true)][ValidateSet('Create','Verify')][string]$Actio
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 function Test-SetupName([string]$Value) {
-    if ($Value -cmatch '\Aapp-(http|webdav)-[a-f0-9]{32}\z') { return $true }
+    if ($Value -cmatch '\Aapp-(http|webdav|filesystem)-[a-f0-9]{32}\z') { return $true }
+    if ($Value -cmatch '\Afs-(local|archive)-(listing|acquisition-(readme|empty|large|binary|unicode|spaced)|mismatch|missing|directory-as-file|cancellation)\z') { return $true }
     foreach ($literal in @(
+        'fs-archive-corrupt-member','fs-archive-truncated-archive',
         'listing','acquisition','mismatch','missing','denial','cancellation',
         'webdav-credential-setup','webdav-credentials','webdav-listing','webdav-acquisition','webdav-mismatch','webdav-missing',
         'webdav-wrong-credentials','webdav-accepted-a','webdav-revoked-a','webdav-replacement-b',

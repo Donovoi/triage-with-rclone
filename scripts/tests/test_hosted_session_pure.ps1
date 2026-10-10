@@ -185,6 +185,61 @@ $sourceKeys = @($sourceClauses[0].Item2.FindAll({ param($node)
     $node -is [System.Management.Automation.Language.InvokeMemberExpressionAst] -and $node.Member.Value -ceq 'Keys'
 }, $true))
 Check ($sourceKeys.Count -eq 1 -and $sourceKeys[0].Arguments[1].Value -ceq 'action,app_path,app_sha256,args,case_root,environment,transcript_path,max_output_bytes,deadline_ms,max_runtime_processes')
+# Compile only the two pure response adapters, never the bridge or native session.
+foreach ($functionName in @('Get-SessionResponse','Add-ObservedFailureFields')) {
+    $functions = @($bridgeAst.FindAll({ param($node)
+        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq $functionName
+    }, $true))
+    Check ($functions.Count -eq 1)
+    . ([scriptblock]::Create($functions[0].Extent.Text))
+}
+$fake = [pscustomobject]@{ Calls=[Collections.Generic.List[string]]::new() }
+$fake | Add-Member ScriptMethod Poll { $this.Calls.Add('poll'); return @{schema_version=1; operation='poll'} }
+$fake | Add-Member ScriptMethod Finish { param([int]$Grace) $this.Calls.Add("finish:$Grace"); return @{schema_version=1; operation='finish'} }
+$fake | Add-Member ScriptMethod Abort { $this.Calls.Add('abort'); return @{schema_version=1; operation='abort'} }
+$fake | Add-Member ScriptMethod LaunchSnapshot { $this.Calls.Add('launch'); return @{schema_version=3; operation='launch'} }
+foreach ($operation in @('poll','finish','abort')) {
+    foreach ($observedMode in @($false,$true)) {
+        $fake.Calls.Clear()
+        $response = Get-SessionResponse $fake $observedMode $operation 123
+        $first = if ($operation -ceq 'finish') { 'finish:123' } else { $operation }
+        if ($observedMode) {
+            Check ($response.schema_version -eq 3 -and $response.operation -ceq 'launch')
+            Check (($fake.Calls -join ',') -ceq "$first,launch")
+        } else {
+            Check ($response.schema_version -eq 1 -and $response.operation -ceq $operation)
+            Check (($fake.Calls -join ',') -ceq $first)
+        }
+    }
+}
+Reject { Get-SessionResponse $fake $true 'unknown' }
+$failure = [TriageApplicationLab.HostedProtocol]::Failure()
+$failedObserved = Add-ObservedFailureFields $failure
+Check ($failedObserved.Count -eq 31 -and $failedObserved.schema_version -eq 3 -and -not $failedObserved.ok)
+Check ($failedObserved.observation_kind -ceq 'launch_image' -and $failedObserved.runtime_launch_count -eq 0 -and
+       $null -eq $failedObserved.launch_sha256 -and $null -eq $failedObserved.system_helper_sha256)
+foreach ($name in @('launch_image_observed','system_helper_image_observed','debug_events_drained','debug_pump_joined',
+                   'debug_handles_closed','system_helper_reference_closed')) { Check ($failedObserved[$name] -is [bool] -and -not $failedObserved[$name]) }
+$observedClauses = @($switches[0].Clauses | Where-Object { $_.Item1.Extent.Text -ceq "'start_source_observed'" })
+Check ($observedClauses.Count -eq 1)
+$observedCalls = @($observedClauses[0].Item2.FindAll({ param($node)
+    $node -is [System.Management.Automation.Language.InvokeMemberExpressionAst] -and $node.Member.Value -ceq 'StartSourceObserved'
+}, $true))
+Check ($observedCalls.Count -eq 1 -and $observedCalls[0].Arguments.Count -eq 11)
+$observedKeys = @($observedClauses[0].Item2.FindAll({ param($node)
+    $node -is [System.Management.Automation.Language.InvokeMemberExpressionAst] -and $node.Member.Value -ceq 'Keys'
+}, $true))
+Check ($observedKeys.Count -eq 1 -and $observedKeys[0].Arguments[1].Value -ceq 'action,app_path,app_sha256,args,case_root,environment,transcript_path,max_output_bytes,deadline_ms,max_runtime_processes,expected_runtime_sha256,max_runtime_launches')
+foreach ($actionName in @('observe_runtime','ctrl_c')) {
+    $clause = @($switches[0].Clauses | Where-Object { $_.Item1.Value -ceq $actionName })
+    Check ($clause.Count -eq 1 -and $clause[0].Item2.Extent.Text.Contains('$null -eq $session -or $observed'))
+}
+# The same adapter must cover explicit poll/finish and both EOF/error abort paths.
+$adapterCalls = @($bridgeAst.FindAll({ param($node)
+    $node -is [System.Management.Automation.Language.CommandAst] -and $node.GetCommandName() -ceq 'Get-SessionResponse'
+}, $true))
+Check ($adapterCalls.Count -eq 5)
+Check (@($adapterCalls | Where-Object { $_.Extent.Text -ceq "Get-SessionResponse `$session `$observed 'abort'" }).Count -eq 2)
 # The standalone bridge must refuse non-hosted callers before compiling or reading commands.
 $outerTry = @($bridgeAst.FindAll({ param($node) $node -is [System.Management.Automation.Language.TryStatementAst] }, $true))[0]
 $guard = $outerTry.Body.Statements[0]

@@ -28,7 +28,7 @@ A new nightly is published after each merged PR passes the required checks. Buil
 
 See [test status and known gaps](rclone-triage/tests/provider_testing.md) for the detailed results.
 
-Current work: add local-file and ZIP tests, including short transfers and cleanup.
+Current work: test local files and ZIP files, including cancellation and cleanup.
 
 ## What comes next
 
