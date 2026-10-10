@@ -124,6 +124,7 @@ class FakeBridge:
         if action == "ready":
             return dict(schema_version=1, action="ready", state="ready", ok=True)
         if action == "start_source_observed":
+            assert fields["environment"] == {"SYNTHETIC_CASE": str(self.case)}
             assert fields["max_runtime_processes"] == 1
             assert fields["expected_runtime_sha256"] == "a" * 64
             assert fields["args"][0:2] == ["--name", "synthetic-case"]
@@ -167,6 +168,7 @@ class FakeLiveBridge(FakeBridge):
         if action == "ready":
             return dict(schema_version=1, action="ready", state="ready", ok=True)
         if action == "start_source":
+            assert fields["environment"] == {"SYNTHETIC_CASE": str(self.case)}
             assert "max_runtime_launches" not in fields and "expected_runtime_sha256" not in fields
             assert fields["max_runtime_processes"] == 1
             assert fields["args"][-2:] == ["--download-bytes-per-second", "65536"]
@@ -219,6 +221,10 @@ class FilesystemProducerTests(unittest.TestCase):
         self.addCleanup(self.stack.close)
         self.stack.enter_context(patch.object(subprocess, "Popen", side_effect=AssertionError("native_forbidden")))
         self.stack.enter_context(patch.object(P.H, "hosted_guard"))
+        # These fake launches must not depend on Windows host variables on Linux.
+        # The real scrubbed environment builder and hosted guard stay unchanged.
+        self.environment = self.stack.enter_context(patch.object(P.H, "environment",
+            side_effect=lambda case: {"SYNTHETIC_CASE": str(case)}))
         self.stack.enter_context(patch.object(P.time, "sleep"))
         self.stack.enter_context(patch.object(P.H, "prepare", side_effect=self.prepare))
         self.stack.enter_context(patch.object(P.H, "_native_private_create", side_effect=self.create))
@@ -260,6 +266,18 @@ class FilesystemProducerTests(unittest.TestCase):
                     self.assertEqual(list(self.suite.iterdir()), [])
                 ran += 1
             self.assertEqual(ran, counts[backend])
+
+    def test_fake_launch_environment_does_not_require_systemroot(self):
+        with patch.dict(os.environ):
+            os.environ.pop("SYSTEMROOT", None)
+            for name in ("listing", "cancellation"):
+                result, calls = self.run_case(name=name)
+                self.assertEqual(result["status"], "passed", result)
+                case = self.suite / ("fs-local-" + name)
+                start = next(fields for action, fields in calls if action in {"start_source", "start_source_observed"})
+                self.assertEqual(start["environment"], {"SYNTHETIC_CASE": str(case)})
+                self.assertEqual(self.environment.call_args.args, (case,))
+            self.assertEqual(self.environment.call_count, 2)
     def test_runtime_hash_count_helper_reference_and_legacy_mutations_fail(self):
         for key, replacement in (("launch_sha256", "c" * 64), ("runtime_launch_count", 0),
             ("peak_runtime_processes", 2), ("system_helper_reference_closed", False),
