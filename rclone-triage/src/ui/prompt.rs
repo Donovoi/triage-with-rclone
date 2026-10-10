@@ -60,10 +60,8 @@ fn handle_prompt_event(
                         input.pop();
                     }
                 }
-                KeyCode::Char(c)
-                    if ((!control && !alt) || (control && alt && !c.is_ascii()))
-                        && !c.is_control() =>
-                {
+                // Windows reports AltGr as Ctrl+Alt, including ASCII characters like @.
+                KeyCode::Char(c) if ((!control && !alt) || (control && alt)) && !c.is_control() => {
                     input.push(c)
                 }
                 _ => return Ok(PromptAction::Ignored),
@@ -242,11 +240,16 @@ mod tests {
             (KeyCode::Char('w'), KeyModifiers::CONTROL, "first "),
             (KeyCode::Char('v'), KeyModifiers::NONE, "first v"),
             (
+                KeyCode::Char('@'),
+                KeyModifiers::CONTROL | KeyModifiers::ALT,
+                "first v@",
+            ),
+            (
                 KeyCode::Char('é'),
                 KeyModifiers::CONTROL | KeyModifiers::ALT,
-                "first vé",
+                "first v@é",
             ),
-            (KeyCode::Backspace, KeyModifiers::NONE, "first v"),
+            (KeyCode::Backspace, KeyModifiers::NONE, "first v@"),
             (KeyCode::Char('u'), KeyModifiers::CONTROL, ""),
             (KeyCode::Char('a'), KeyModifiers::CONTROL, ""),
         ] {
