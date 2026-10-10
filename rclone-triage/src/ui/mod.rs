@@ -20,6 +20,7 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Instant;
 
+mod clipboard;
 pub mod flows;
 pub mod layout;
 pub mod prompt;
