@@ -37,6 +37,8 @@ The UI supports authentication, existing-config selection, listing, CSV/XLSX que
   --rclone-config-path C:/Configs/rclone.conf --download queue.csv
 ```
 
+To limit each file's transfer speed, add `--download-bytes-per-second 65536` for 64 KiB/s per file. Use a whole number from 1 to 4294967295. Files downloaded at the same time each have this limit, so their rates add together. Leave the option out for the normal transfer speed. This option applies to command-line queue downloads.
+
 ```csv
 Path,Remote,Size,Hash,HashType,IsDir
 Documents/report.pdf,DriveA,1024,,,false
