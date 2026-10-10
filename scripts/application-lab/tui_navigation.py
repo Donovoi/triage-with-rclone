@@ -7,8 +7,8 @@ obligations. A displayed dynamic-load status is not independent proof that the
 observed executable performed discovery. No resize gate is cleared here.
 
 Source: ui/render.rs, runner.rs, prompt.rs, flows/manual_config.rs,
-flows/download.rs, widgets/{menu_list,provider_list,file_tree}.rs and theme.rs at
-main 994970f plus ProviderSelect's explicit Checked aggregate. Enter confirms
+flows/download.rs, widgets/{menu_list,provider_list,file_tree}.rs and theme.rs.
+ProviderSelect exposes an explicit Checked aggregate. Enter confirms
 checked providers, not the highlighted row; Remote Name cancellation retains
 that checkbox until the navigator explicitly clears and observes it.
 """
@@ -276,13 +276,16 @@ def _prompt(screen, title, value=""):
              "Backend Option Key": "Enter an option key (blank to finish).",
              "Find file": "Path or remote name (n finds next match)"}
     if title == "Required Option":
-        # The pinned HTTP schema's nine-line hint puts Len below the 40%-height
-        # modal at 120x34. Require that exact visible source layout and the full
-        # short URL echo instead; never infer an offscreen value or resize.
-        visible = [*REQUIRED_URL_HINT, "", "> " + (value or "<empty>")]
+        # The taller prompt exposes the entire pinned hint, paste guidance,
+        # exact input, length and controls. Never infer an offscreen value or
+        # accept a partial echo from the former clipped layout.
+        visible = [*REQUIRED_URL_HINT, "",
+                   "Ctrl+V / Shift+Insert paste | Ctrl+U clear | Ctrl+W delete word",
+                   "> " + (value or "<empty>"), f"Len: {len(value)} char(s)",
+                   "Enter submit | Esc cancel | Backspace delete"]
         return (screen.columns == 120 and screen.rows == 34 and
-                len(lines) in (11, 12) and lines[:11] == visible and
-                all(not line for line in lines[11:]))
+                len(lines) >= len(visible) and lines[:len(visible)] == visible and
+                all(not line for line in lines[len(visible):]))
     return (title in hints and hints[title] in lines and
             lines.count("> " + (value or "<empty>")) == 1 and
             lines.count(f"Len: {len(value)} char(s)") == 1)

@@ -53,6 +53,10 @@ Every run writes a plan before transfers and final outcomes afterward. A failed 
 
 ## Evidence and privacy
 
+See the [privacy policy](https://donovoi.github.io/triage-with-rclone/privacy.html) for the Google Drive OAuth integration's data access, local storage and revocation details.
+
+In menu text prompts on Windows, use **Ctrl+V** or **Shift+Insert** to paste copied text, including client credentials copied from a password manager. The application reads the clipboard only on that shortcut and does not change it. Terminal-provided paste remains supported. A paste does not submit the prompt; press Enter to submit, or Esc to cancel. If a password manager has already cleared the clipboard, copy the value again before pasting.
+
 Case directories contain listings, downloads, config snapshots with source SHA256 provenance, acquisition manifests, reports, and hash-chained logs. JSON-line log records safely encode newlines; checkpoints record the final hash and entry count. Keep checkpoints separately to detect truncation: a hash chain without a trusted external checkpoint cannot detect removal of its tail or wholesale replacement. These are integrity aids, not digital signatures or a claim of legal admissibility.
 
 **Case configs contain credentials.** Restrict access to the case directory and storage. New application-created Windows case artifacts use an explicit current-user owner and a protected user/SYSTEM ACL. Download publication copies the child-created bytes through held file handles into a secured file, verifies the copy, preserves timestamps and publishes without replacing existing evidence. Keep original evidence separately.
