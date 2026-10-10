@@ -34,13 +34,40 @@ Trace buffers are capped at 16 of 64 KiB. Event storage and callback counts are
 bounded. Other paths are discarded; raw events, paths, process IDs and stderr are
 not published. The output validator accepts only the finite result schema.
 
-Schema 3 includes `queried_session_settings`: null until the owned session query
+Schema 4 includes `queried_session_settings`: null until the owned session query
 succeeds, otherwise exactly three unsigned 32-bit values: `enable_flags`,
 `log_mode`, and `clock_selector`. Requested values are `0x16000000`,
 `0x12400100`, and `1` respectively. At the existing equality gate, a difference
 still stops before the consumer or probe with `session_configuration_mismatch`.
 Cleanup uncertainty can still override that reason. The settings only explain
 the gate; they do not establish usable event delivery.
+
+`schema_rejection` is null unless the consumer returns a first schema rejection.
+The single latched record contains only `attribution: "unattributed_fileio"`, a
+closed `stage` and `property` selector, opcode (64 or 76), version (u8), header
+flags (u16), and nullable TDH status/size (u32). The header gate precedes thread
+and path filtering: even a sharing violation from the probe does not bind this
+diagnostic to the owned file. It can describe unrelated FileIo traffic.
+
+| Stage | Recorded query information |
+| --- | --- |
+| `version`, `header_flags` | No property, TDH status or size |
+| `tdh_size` | Known property and failed size-query status; size is null |
+| `property_bound` | Known property, successful query status and rejected size |
+| `tdh_read` | Known property, failed read status and successfully queried size |
+| `numeric_width`, `path_encoding` | Known property, successful read status and queried size |
+| `correlation_shape` | `IrpPtr` or `ShareAccess`; no TDH status or size |
+
+Property selectors are limited to `TTID`, `IrpPtr`, `NtStatus`, `OpenPath` and
+`ShareAccess`, constrained by opcode and stage. No property values, paths, IDs,
+IRP values, payloads or arbitrary property names enter the record. The final
+shape check retains only the already inspected Create header alongside its
+existing correlation state. A rejection stops decoding as before; no additional
+TDH calls are made. Loss and cleanup errors retain their existing precedence.
+An incomplete consumer cannot certify that no rejection occurred. The validator
+requires a diagnostic for `schema_unavailable`, rejects a diagnostic with any
+success/pair claim, and retains the 2 KiB output limit. Version 2, 64-bit header,
+property-width, correlation, session, budget and cleanup gates are unchanged.
 
 Windows trace control calls have no caller-supplied timeout. The workflow's time
 limit is an outer bound, not evidence that tracing or cleanup finished. A missing
@@ -72,6 +99,16 @@ The helper now requests the stop-on-shutdown mode explicitly and still requires 
 exact returned match. It does not accept unknown mode bits or request persistence.
 This second unavailable run also verified session stop and owned-file cleanup
 before any consumer or probe. It provides no operation-pair or provider evidence.
+
+The [run 38026166705, job 114137351565](https://github.com/Donovoi/triage-with-rclone/actions/runs/38026166705/job/114137351565)
+at head `b9d1c88d68f2b0779cf7e7cb5ae407959bd2eb32` reached the single probe and
+reported a sharing violation. Queried settings matched, the consumer completed,
+buffers remained bounded and lossless, and session stop, identities and cleanup
+were verified. It remained unavailable with `schema_unavailable` and no pair.
+Schema 3 did not expose the rejected record's version, flags, property or TDH
+status, so none is established by that run. Schema 4 supplies only that missing
+diagnostic; it does not accept additional event versions or property widths.
+This unavailable calibration provides no provider or cleanup-cause evidence.
 
 ## Checks during development
 
