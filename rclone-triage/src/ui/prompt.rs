@@ -132,7 +132,7 @@ pub(crate) fn prompt_text_in_tui<
                 "Use terminal Paste | Ctrl+U clear | Ctrl+W delete word"
             };
             let content = format!(
-                "{}\n\n{}\n> {}\nLen: {} char(s)",
+                "{}\n\n{}\n> {}\nLen: {} char(s)\nEnter submit | Esc cancel | Backspace delete",
                 hint, paste_help, display, total_chars
             );
             render_prompt_overlay(f, overlay, title, &content);
