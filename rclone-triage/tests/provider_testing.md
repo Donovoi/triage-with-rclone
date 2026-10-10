@@ -1,5 +1,20 @@
 # Provider testing
 
+## Dropbox App Folder progress
+
+On 10 October 2026, the checked Windows x64 app passed these tests against a dedicated, read-only Dropbox App Folder in the isolated lab:
+
+- File list: all 10 uploaded files and 9 folders matched the expected paths and sizes.
+- Downloads: all 9 selected files matched independently calculated SHA256 hashes.
+- Wrong hash: the app reported a mismatch and returned failure; the retained file still matched the original test data.
+- Missing file: the app returned failure and saved no download.
+
+The tests preserved the imported settings and left no app or rclone processes running. The listing test also verified that its separate app and helper temporary folders were empty after exit. The lab was shut down and disconnected. Private case settings were retained; this is not a claim that all credentials were erased.
+
+These results apply to executable SHA256 `7554b7b3405a9f6496d75b6c91032867fb4e53b35ed18631014306ee52724235`, from the checked [PR #81](https://github.com/Donovoi/triage-with-rclone/pull/81) build, with rclone 1.75.2. They do not qualify another nightly or the full provider lifecycle. The listing returned no content hashes. Refresh, cancellation, denial/revocation, remote-source preservation, empty-file acquisition and acquisition temporary-file cleanup remain unverified in this batch. The web uploader rejected the empty test file; it was not counted as a pass. Two earlier test-runner failures remain recorded privately.
+
+The coverage ledger is unchanged: these partial lab results have not been imported as complete application or vendor acceptance. Account details, credentials and raw logs remain private.
+
 ## Local-file and ZIP application tests in progress
 
 The staged Windows tests use the checked x64 application from the same CI run. They cover local files and a local ZIP: exact file lists, six separate downloads with independent hashes, wrong hashes, missing members, and directory requests. The ZIP cases also check CRC32, corrupt content and truncated metadata. Each case owns its source and output folders and must prove source preservation and cleanup.
