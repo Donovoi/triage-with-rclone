@@ -564,7 +564,7 @@ jobs:
       matrix:
         backend: [local, archive]
     runs-on: windows-latest
-    timeout-minutes: 35
+    timeout-minutes: 50
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -614,12 +614,50 @@ jobs:
             --backend $env:FILESYSTEM_BACKEND --receipt "$env:RUNNER_TEMP/filesystem.private.json" `
             --application $application --build-commit $buildCommit --report "$env:RUNNER_TEMP/filesystem-validation.json"
           if ($LASTEXITCODE -ne 0) { throw 'filesystem_evidence_failed' }
+      - name: Prepare verified runtime for the filesystem coverage ledger
+        id: filesystem_runtime
+        if: ${{ !cancelled() && steps.filesystem_validation.outcome == 'success' }}
+        timeout-minutes: 3
+        shell: bash
+        run: bash scripts/download-rclone.sh
+      - name: Require the same-build filesystem mode evidence
+        id: filesystem_coverage
+        if: ${{ !cancelled() && steps.filesystem_validation.outcome == 'success' && steps.filesystem_runtime.outcome == 'success' }}
+        timeout-minutes: 3
+        shell: pwsh
+        env:
+          FILESYSTEM_BACKEND: ${{ matrix.backend }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $mode = switch -CaseSensitive ($env:FILESYSTEM_BACKEND) {
+            'local' { 'local:local_filesystem_cli_v1:windows' }
+            'archive' { 'archive:archive_zip_local_cli_v1:windows' }
+            default { throw 'filesystem_mode_unsupported' }
+          }
+          $application = (Resolve-Path "$env:RUNNER_TEMP/filesystem-build/rclone-triage/target/release/rclone-triage.exe").Path
+          $runtime = (Resolve-Path rclone-triage/assets/rclone.exe).Path
+          $buildCommit = (& git rev-parse --verify HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $buildCommit -notmatch '^[0-9a-f]{40}$' -or $env:GITHUB_SHA -cne $buildCommit) { throw 'filesystem_build_binding_failed' }
+          python -B scripts/provider_coverage.py --rclone $runtime `
+            --report "$env:RUNNER_TEMP/provider-evidence-windows-filesystem.json" `
+            --application-receipt "$env:RUNNER_TEMP/filesystem.private.json" `
+            --application $application --application-build-commit $buildCommit `
+            --require-plans --require-application-mode $mode
+          if ($LASTEXITCODE -ne 0) { throw 'filesystem_coverage_failed' }
       - name: Retain only validated filesystem evidence
         if: ${{ !cancelled() && (steps.filesystem_validation.outcome == 'success' || steps.filesystem_validation.outcome == 'failure') }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: filesystem-evidence-Windows-${{ matrix.backend }}
           path: ${{ runner.temp }}/filesystem-validation.json
+          if-no-files-found: error
+          retention-days: 14
+      - name: Retain sanitized filesystem coverage ledger
+        if: ${{ !cancelled() && (steps.filesystem_coverage.outcome == 'success' || steps.filesystem_coverage.outcome == 'failure') }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: provider-evidence-Windows-filesystem-${{ matrix.backend }}
+          path: ${{ runner.temp }}/provider-evidence-windows-filesystem.json
           if-no-files-found: error
           retention-days: 14
   windows-architectures:
