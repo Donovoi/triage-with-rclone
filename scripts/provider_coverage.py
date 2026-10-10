@@ -32,6 +32,8 @@ WRAPPERS = {"alias", "cache", "chunker", "combine", "compress", "crypt", "hasher
 TIERS = ("local_protocol", "application", "vendor")
 HTTP_APPLICATION_KEY = ("http", "http_anonymous_cli_v1", "windows")
 WEBDAV_APPLICATION_KEY = ("webdav", "webdav_basic_loopback_cli_v1", "windows")
+LOCAL_APPLICATION_KEY = ("local", "local_filesystem_cli_v1", "windows")
+ARCHIVE_APPLICATION_KEY = ("archive", "archive_zip_local_cli_v1", "windows")
 APPLICATION_BASE_CAPABILITIES = frozenset({"listing", "download_hash", "manifest_integrity",
                                          "source_preservation", "cancellation", "cleanup"})
 # Receipt fields select only a closed repository entry, never an import path,
@@ -41,6 +43,10 @@ APPLICATION_REGISTRY = MappingProxyType({
         "producer": "application-lab/run_windows_http.py", "can_complete_application": True}),
     WEBDAV_APPLICATION_KEY: MappingProxyType({"module": "webdav_application_evidence.py",
         "producer": "application-lab/run_windows_webdav.py", "can_complete_application": False}),
+    LOCAL_APPLICATION_KEY: MappingProxyType({"module": "filesystem_application_evidence.py",
+        "producer": "application-lab/run_windows_filesystem.py", "can_complete_application": False}),
+    ARCHIVE_APPLICATION_KEY: MappingProxyType({"module": "filesystem_application_evidence.py",
+        "producer": "application-lab/run_windows_filesystem.py", "can_complete_application": False}),
 })
 PLATFORMS = frozenset(("windows", "linux"))
 AUTH_APPLICABILITY = frozenset(("none", "credentials", "oauth", "provider_specific"))
