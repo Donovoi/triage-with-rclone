@@ -310,6 +310,9 @@ jobs:
             $phase = 'tui_protocol_pure_validation'
             $clock.Restart()
             & ../scripts/tests/test_hosted_tui_session_pure.ps1
+            $phase = 'launch_observer_pure_validation'
+            $clock.Restart()
+            & ../scripts/tests/test_hosted_launch_observer_pure.ps1
           } catch {
             [pscustomobject]@{ phase=$phase; result='failed'; elapsed_ms=$clock.ElapsedMilliseconds } | ConvertTo-Json -Compress
             [Console]::Error.WriteLine('windows_harness_validation_failed')
@@ -328,6 +331,14 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           & ../scripts/application-lab/probe_source_directory.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Check hosted Windows short runtime launch observation
+        if: runner.os == 'Windows'
+        timeout-minutes: 3
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & ../scripts/application-lab/probe_launch_observer.ps1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
