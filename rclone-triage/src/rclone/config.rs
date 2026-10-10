@@ -416,7 +416,8 @@ impl RcloneConfig {
         remote_type: &str,
         options: &[(&str, &str)],
     ) -> Result<()> {
-        let mut content = fs::read_to_string(&self.config_path).unwrap_or_default();
+        let mut content = fs::read_to_string(&self.config_path)
+            .context("Failed to read config before updating a remote")?;
 
         // Remove existing section if present
         let section_start = format!("[{}]", name);
@@ -615,6 +616,39 @@ mod tests {
 
         let client_id = config.get_remote_option("test", "client_id").unwrap();
         assert_eq!(client_id, Some("test_id".to_string()));
+    }
+
+    #[test]
+    fn test_set_remote_preserves_unreadable_config_bytes() {
+        let dir = tempdir().unwrap();
+        let config_path = dir.path().join("rclone.conf");
+        let config = RcloneConfig::new(&config_path).unwrap();
+        let baseline = b"[preserved]\ntype = local\ninvalid = \xff\n";
+        fs::write(&config_path, baseline).unwrap();
+
+        let error = config.set_remote("new", "drive", &[]).unwrap_err();
+
+        assert_eq!(
+            error.downcast_ref::<std::io::Error>().unwrap().kind(),
+            std::io::ErrorKind::InvalidData
+        );
+        assert_eq!(fs::read(&config_path).unwrap(), baseline);
+    }
+
+    #[test]
+    fn test_set_remote_does_not_recreate_a_missing_config() {
+        let dir = tempdir().unwrap();
+        let config_path = dir.path().join("rclone.conf");
+        let config = RcloneConfig::new(&config_path).unwrap();
+        fs::remove_file(&config_path).unwrap();
+
+        let error = config.set_remote("new", "drive", &[]).unwrap_err();
+
+        assert_eq!(
+            error.downcast_ref::<std::io::Error>().unwrap().kind(),
+            std::io::ErrorKind::NotFound
+        );
+        assert!(!config_path.exists());
     }
 
     #[test]
