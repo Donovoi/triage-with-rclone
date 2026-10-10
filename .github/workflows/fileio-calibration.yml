@@ -1,0 +1,74 @@
+name: Windows FileIo calibration
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/fileio-calibration.yml'
+      - 'tools/etw-calibration/**'
+  workflow_dispatch:
+    inputs:
+      expected_sha:
+        description: Exact reviewed commit to test
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  synthetic-open:
+    name: ARM64 synthetic sharing-violation calibration
+    runs-on: windows-11-arm
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Verify the tested revision
+        shell: pwsh
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $actual = (git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $actual -cne $env:GITHUB_SHA) { throw 'Checkout mismatch' }
+          if ($env:EVENT_NAME -eq 'workflow_dispatch' -and ($env:EXPECTED_SHA -cnotmatch '^[0-9a-f]{40}$' -or $env:EXPECTED_SHA -cne $actual)) { throw 'Requested revision mismatch' }
+          Write-Output "tested_commit=$actual"
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067
+        with:
+          toolchain: 1.95.0
+          targets: aarch64-pc-windows-msvc
+          components: rustfmt, clippy
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - name: Check the helper and test its correlation and output rules
+        shell: pwsh
+        working-directory: tools/etw-calibration
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -B test_pure.py
+          if ($LASTEXITCODE -ne 0) { throw 'Output boundary tests failed' }
+          cargo fmt --check
+          if ($LASTEXITCODE -ne 0) { throw 'Formatting failed' }
+          cargo clippy --locked --all-targets --target aarch64-pc-windows-msvc -- -D warnings
+          if ($LASTEXITCODE -ne 0) { throw 'Helper lint failed' }
+          cargo test --locked --target aarch64-pc-windows-msvc
+          if ($LASTEXITCODE -ne 0) { throw 'Correlation tests failed' }
+          cargo build --locked --release --target aarch64-pc-windows-msvc
+          if ($LASTEXITCODE -ne 0) { throw 'Helper build failed' }
+          $digest = (Get-FileHash -LiteralPath target/aarch64-pc-windows-msvc/release/triage-etw-calibration.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          Write-Output "helper_sha256=$digest"
+      - name: Calibrate once and publish only the validated result
+        timeout-minutes: 2
+        shell: pwsh
+        working-directory: tools/etw-calibration
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $raw = Join-Path $env:RUNNER_TEMP 'triage-etw-calibration-stdout.private'
+          $err = Join-Path $env:RUNNER_TEMP 'triage-etw-calibration-stderr.private'
+          & ./target/aarch64-pc-windows-msvc/release/triage-etw-calibration.exe > $raw 2> $err
+          $calibrationExit = $LASTEXITCODE
+          python -B validate_result.py $raw $calibrationExit
+          exit $LASTEXITCODE
+      # No raw artifact upload, retry, existing-session control or privilege change.
+      # A timeout is unavailable with uncertain cleanup, never a stop certificate.
