@@ -136,6 +136,14 @@ class BoundaryTests(unittest.TestCase):
         data = raw(mismatch_fixture()).replace(b'"clock_selector": 0', b'"clock_selector": 0, "clock_selector": 0')
         with self.assertRaises(ValueError): validate(data, 2)
 
+    def test_shutdown_mode_is_explicit_and_other_modes_cannot_pass(self):
+        for mode in (0x12000100, 0x12800100, 0x12C00100, 0x12400101):
+            value = fixture(); value["queried_session_settings"]["log_mode"] = mode
+            with self.assertRaises(ValueError): validate(raw(value), 0)
+            value.update(status="unavailable", reason="session_configuration_mismatch",
+                         consumer_completed=False, create_opend_pair=False, win32_sharing_violation=False)
+            self.assertEqual(validate(raw(value), 2), value)
+
 
 if __name__ == "__main__":
     with patch.object(subprocess, "Popen", forbidden), patch.object(socket, "socket", forbidden), patch.object(socket, "create_connection", forbidden):

@@ -18,7 +18,7 @@ BOOLS = frozenset((
 KEYS = BOOLS | {"schema", "scope", "status", "reason", "api", "holder_access", "queried_session_settings"}
 REQUESTED_SESSION_SETTINGS = {
     "enable_flags": 0x16000000,  # FILE_IO_INIT | FILE_IO | NO_SYSCONFIG
-    "log_mode": 0x12000100,  # REAL_TIME | SYSTEM_LOGGER | NO_PER_PROCESSOR_BUFFERING
+    "log_mode": 0x12400100,  # REAL_TIME | SYSTEM_LOGGER | NO_PER_PROCESSOR_BUFFERING | STOP_ON_HYBRID_SHUTDOWN
     "clock_selector": 1,  # QPC
 }
 

@@ -24,7 +24,9 @@ const FLAGS: u32 =
     EVENT_TRACE_FLAG_FILE_IO_INIT | EVENT_TRACE_FLAG_FILE_IO | EVENT_TRACE_FLAG_NO_SYSCONFIG;
 const MODE: u32 = EVENT_TRACE_REAL_TIME_MODE
     | EVENT_TRACE_SYSTEM_LOGGER_MODE
-    | EVENT_TRACE_NO_PER_PROCESSOR_BUFFERING;
+    | EVENT_TRACE_NO_PER_PROCESSOR_BUFFERING
+    // Otherwise ETW supplies a session-dependent shutdown default on query.
+    | EVENT_TRACE_STOP_ON_HYBRID_SHUTDOWN;
 const MAX_ENDS: usize = 8192;
 const MAX_CALLBACKS: u32 = 50_000;
 type Outcome = Result<(), &'static str>;

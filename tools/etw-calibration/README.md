@@ -36,8 +36,8 @@ not published. The output validator accepts only the finite result schema.
 
 Schema 3 includes `queried_session_settings`: null until the owned session query
 succeeds, otherwise exactly three unsigned 32-bit values: `enable_flags`,
-`log_mode`, and `clock_selector`. Requested values remain `0x16000000`,
-`0x12000100`, and `1` respectively. At the existing equality gate, a difference
+`log_mode`, and `clock_selector`. Requested values are `0x16000000`,
+`0x12400100`, and `1` respectively. At the existing equality gate, a difference
 still stops before the consumer or probe with `session_configuration_mismatch`.
 Cleanup uncertainty can still override that reason. The settings only explain
 the gate; they do not establish usable event delivery.
@@ -60,12 +60,28 @@ setting differed. This was one cleanly stopped unavailable calibration, with no
 operation-pair or provider evidence. Schema 3 exposes only those missing settings;
 the strict gate, permissions, single probe and cleanup contract are unchanged.
 
+The next [run 38025957517](https://github.com/Donovoi/triage-with-rclone/actions/runs/38025957517)
+at head `0fb4893e9abddcd73b05a97fb52b20e1aab2ef2e`, tested merge
+`b0f7e966194d4d1651c4be9766a831799160f2c8`, reported only one difference:
+mode `0x12400100` instead of `0x12000100`. Its helper SHA-256 was
+`ea02ba468fa55179e8e334c9cd88ec9feebaef45a644a2a619586214d763ef80`.
+The added bit is `EVENT_TRACE_STOP_ON_HYBRID_SHUTDOWN`. Microsoft's
+[logging-mode contract](https://learn.microsoft.com/en-us/windows/win32/etw/logging-mode-constants)
+states that ETW chooses a shutdown default when neither shutdown mode is requested.
+The helper now requests the stop-on-shutdown mode explicitly and still requires an
+exact returned match. It does not accept unknown mode bits or request persistence.
+This second unavailable run also verified session stop and owned-file cleanup
+before any consumer or probe. It provides no operation-pair or provider evidence.
+
 ## Checks during development
 
 `python -B test_pure.py` checks the output contract without native or network calls.
-`cargo check --locked --all-targets` and `cargo clippy --locked --all-targets -- -D warnings`
-compile the Windows code and tests without running them. Native tests and the
-helper itself belong in the isolated hosted workflow.
+The compile-only commands `cargo check --locked --all-targets` and
+`cargo clippy --locked --all-targets -- -D warnings` require a Windows Rust target.
+On other build hosts, install that target's standard library and add
+`--target aarch64-pc-windows-msvc` to match the workflow. These commands compile
+without running the helper or tests. Native tests and the helper itself belong
+in the isolated hosted workflow.
 
 API references: [StartTraceW](https://learn.microsoft.com/en-us/windows/win32/api/evntrace/nf-evntrace-starttracew),
 [ControlTraceW](https://learn.microsoft.com/en-us/windows/win32/api/evntrace/nf-evntrace-controltracew),
