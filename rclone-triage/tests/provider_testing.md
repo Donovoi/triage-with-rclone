@@ -1,12 +1,14 @@
 # Provider testing
 
-## Local-file and ZIP application tests in progress
+## Local-file and ZIP application tests
 
-The staged Windows tests use the checked x64 application from the same CI run. They cover local files and a local ZIP: exact file lists, six separate downloads with independent hashes, wrong hashes, missing members, and directory requests. The ZIP cases also check CRC32, corrupt content and truncated metadata. Each case owns its source and output folders and must prove source preservation and cleanup.
+The Windows tests use the checked x64 application from the same CI run. They cover local files and a local ZIP: exact file lists, six separate downloads with independent hashes, wrong hashes, missing members, and directory requests. The ZIP cases also check CRC32, corrupt content and truncated metadata. Each case owns its source and output folders and must prove source preservation and cleanup.
 
 Short operations use launch-time executable observations, with the Windows console helper recorded separately. Cancellation uses a live executable observation and two reads that prove file content is advancing while bytes remain uncollected, followed by Ctrl+C. File length or an elapsed timer alone cannot pass this check. These are application tests, separate from the existing rclone protocol fixtures. Their sanitized receipts are bound to the application, embedded runtime, source and test code. Raw transcripts are not published.
 
-These new cases still need hosted qualification. Passing only the short-operation cases reports partial coverage and fails the complete-mode CI gate. A passed receipt requires cancellation and cleanup too; it does not mark a provider or its full application lifecycle complete. The coverage ledger remains unverified for these modes until qualification and evidence review are complete.
+[PR #76's Windows run](https://github.com/Donovoi/triage-with-rclone/actions/runs/38017693713) passed 24 cases and 314 checks: 11 local-file cases and 13 ZIP cases, including cancellation and cleanup. Independent review checked the receipts against the tested application bytes, source and embedded rclone 1.75.2. That result applies to the tested PR build; each later build must pass its own checks. Passing only the short-operation cases reports partial coverage and fails the complete-mode CI gate. A passed receipt does not mark a provider or its full application lifecycle complete.
+
+The ledger keeps local files (`local_filesystem_cli_v1`) and local ZIP files (`archive_zip_local_cli_v1`) as separate Windows test modes. CI checks each receipt independently, then reads the private receipt into the ledger using the same application build and a separately verified rclone runtime. Both checks must pass. The public ledger is a separate sanitized report; it does not contain the private input or raw logs. These modes cannot mark the full application or provider complete, even if the coverage policy is weakened. They do not test interactive setup, cloud login, token refresh, remote ZIP files or other archive formats. Missing-file and directory errors are not tests of denied account access.
 
 ## Coverage enforced in CI
 
