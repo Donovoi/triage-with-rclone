@@ -116,7 +116,7 @@ def source_snapshot(case, backend, name):
             data = H.read(path, F.MAX_ARCHIVE_BYTES)
             digest = H.sha(data)
             need((len(data), digest) == expected[member], "preservation_failed")
-        snapshot[member] = (info[0], node.st_dev, node.st_ino, node.st_size if not info[0] else None,
+        snapshot[member] = (info[0], node.st_dev, node.st_ino, node.st_size,
                             node.st_mtime_ns, digest)
     return snapshot
 
@@ -174,7 +174,7 @@ def timestamp_ns(value):
     return seconds * 1_000_000_000 + int((match[2] or "").ljust(9, "0"))
 
 
-def check_listing(case, backend):
+def check_listing(case, backend, baseline):
     path = case / "output" / CASE_NAME / "listings/inventory.csv"
     data = H.read(path, 65536)
     need(data.startswith(b"\xef\xbb\xbf"), "listing_invalid")
@@ -183,12 +183,21 @@ def check_listing(case, backend):
     except (UnicodeError, csv.Error):
         raise H.ProducerError("listing_invalid") from None
     expected = {p: ["excel-safe-v1", REMOTE, p, str(s), "false", "", ""] for p, s, _, _ in ROWS}
-    expected.update({p: ["excel-safe-v1", REMOTE, p, "", "true", "", ""] for p in DIRECTORIES})
+    # Local Directory embeds Object and preserves FileInfo.Size; unlike ZIP
+    # directories, its nonnegative native size survives the app's CSV export.
+    # https://github.com/rclone/rclone/blob/v1.75.2/backend/local/local.go
+    expected.update({p: ["excel-safe-v1", REMOTE, p,
+        str(baseline[p][3]) if backend == "local" else "", "true", "", ""] for p in DIRECTORIES})
     need(rows and rows[0] == H.HEADERS and len(rows) == len(expected) + 1, "listing_invalid")
     for row in rows[1:]:
         need(len(row) == 8 and row[2] in expected, "listing_invalid")
-        expected_time = (H.plain(case / "source" / row[2], row[2] in DIRECTORIES).st_mtime_ns
-                         if backend == "local" else MODIFIED_NS)
+        expected_time = MODIFIED_NS
+        if backend == "local":
+            directory = row[2] in DIRECTORIES
+            node = H.plain(case / "source" / row[2], directory)
+            need((directory, node.st_dev, node.st_ino, node.st_size, node.st_mtime_ns) ==
+                 baseline[row[2]][:5], "preservation_failed")
+            expected_time = baseline[row[2]][4]
         need(timestamp_ns(row[4]) == expected_time and row[:4] + row[5:] == expected.pop(row[2]), "listing_invalid")
     need(not expected, "listing_invalid")
     need(not H.inventory(case / "output" / CASE_NAME / "downloads"), "outputs_invalid")
@@ -549,7 +558,7 @@ def run_case(backend, name, suite, application, application_sha, runtime, sessio
         checks["exit_success" if positive else "exit_failure"] = True
         config = H.configuration_preserved(case, config_bytes)
         checks["configuration_preserved"] = True
-        checks.update(check_listing(case, backend) if name == "listing" else check_manifest(case, backend, name, config, runtime))
+        checks.update(check_listing(case, backend, baseline) if name == "listing" else check_manifest(case, backend, name, config, runtime))
     except H.ProducerError as error:
         fail(str(error))
     except BaseException:

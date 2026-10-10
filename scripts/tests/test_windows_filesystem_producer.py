@@ -69,7 +69,8 @@ def artifacts(case, backend, name):
         for member, body in BODY.items():
             writer.writerow(["excel-safe-v1", "Synthetic", member, len(body), modified(member), "false", "", ""])
         for directory in ("empty-dir", "large", "nested"):
-            writer.writerow(["excel-safe-v1", "Synthetic", directory, "", modified(directory), "true", "", ""])
+            size = (case / "source" / directory).stat().st_size if backend == "local" else ""
+            writer.writerow(["excel-safe-v1", "Synthetic", directory, size, modified(directory), "true", "", ""])
         write(base / "listings/inventory.csv", b"\xef\xbb\xbf" + text.getvalue().encode())
         return
     rows = list(csv.DictReader(io.StringIO((case / "queue.csv").read_text(encoding="utf-8"))))
@@ -352,6 +353,62 @@ class FilesystemProducerTests(unittest.TestCase):
             value, _ = self.run_case(mutate=change)
             self.assertFalse(value["checks"]["inventory_exact"])
             self.assertEqual(value["status"], "failed")
+    def test_listing_directory_size_matches_native_local_and_unknown_archive_size(self):
+        for backend in ("local", "archive"):
+            def inspect(_value, case):
+                path = case / "output/synthetic-case/listings/inventory.csv"
+                rows = list(csv.DictReader(io.StringIO(path.read_text(encoding="utf-8-sig"))))
+                directories = {row["path"]: row["size"] for row in rows if row["is_dir"] == "true"}
+                self.assertEqual(set(directories), {"empty-dir", "large", "nested"})
+                for member, size in directories.items():
+                    expected = str((case / "source" / member).stat().st_size) if backend == "local" else ""
+                    self.assertEqual(size, expected)
+            value, _ = self.run_case(backend=backend, mutate=inspect)
+            self.assertEqual(value["status"], "passed", value)
+            self.assertTrue(value["checks"]["inventory_exact"])
+            self.assertTrue(value["checks"]["source_preserved"])
+
+    def test_listing_rejects_blank_malformed_and_wrong_local_directory_sizes(self):
+        for backend, replacement in (("local", ""), ("local", "-1"), ("local", "00"),
+            ("local", "+0"), ("local", "0.0"), ("local", "wrong"), ("local", None), ("archive", "0")):
+            with self.subTest(backend=backend, replacement=replacement):
+                def change(_value, case):
+                    path = case / "output/synthetic-case/listings/inventory.csv"
+                    rows = list(csv.reader(io.StringIO(path.read_text(encoding="utf-8-sig"))))
+                    row = next(row for row in rows[1:] if row[2] == "empty-dir")
+                    row[3] = replacement if replacement is not None else str((case / "source/empty-dir").stat().st_size + 1)
+                    out = io.StringIO(newline="")
+                    csv.writer(out).writerows(rows)
+                    path.write_bytes(b"\xef\xbb\xbf" + out.getvalue().encode())
+                value, _ = self.run_case(backend=backend, mutate=change)
+                self.assertEqual(value["failure_code"], "listing_invalid", value)
+                self.assertFalse(value["checks"]["inventory_exact"])
+                self.assertFalse(value["checks"]["listing_complete"])
+                self.assertTrue(value["checks"]["source_preserved"])
+                self.assertTrue(value["checks"]["temp_cleanup"])
+
+    def test_changed_local_directory_size_or_identity_cannot_supply_listing_expectation(self):
+        original = P.H.plain
+        for field in ("st_size", "st_ino"):
+            with self.subTest(field=field):
+                changed = False
+                def metadata(path, *args, **kwargs):
+                    info = original(path, *args, **kwargs)
+                    if changed and Path(path) == self.suite / "fs-local-listing/source/empty-dir":
+                        fields = {key: getattr(info, key) for key in dir(info) if key.startswith("st_")}
+                        fields[field] += 1
+                        return types.SimpleNamespace(**fields)
+                    return info
+                def change(_value, _case):
+                    nonlocal changed
+                    changed = True
+                with patch.object(P.H, "plain", side_effect=metadata):
+                    value, _ = self.run_case(mutate=change)
+                self.assertEqual(value["failure_code"], "preservation_failed", value)
+                self.assertFalse(value["checks"]["source_preserved"])
+                self.assertFalse(value["checks"]["temp_cleanup"])
+                self.assertTrue((self.suite / "fs-local-listing/source").is_dir())
+                shutil.rmtree(self.suite / "fs-local-listing")  # Only the test-owned retained fixture.
     def test_full_run_requires_both_live_cancellations_and_keeps_other_claims_false(self):
         bindings = {key: "d" * 64 for key in P.E.A.BINDING_KEYS}
         bindings.update(application_sha256=self.sha, build_commit="e" * 40, build_target="x86_64-pc-windows-msvc", build_profile="release")
