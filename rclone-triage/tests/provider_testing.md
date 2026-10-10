@@ -16,7 +16,7 @@ Every Windows and Linux CI run checks:
 
 - Contracts for all 58 curated providers: backend identity, required options, authentication classification, OAuth parameters, configuration and hashes.
 - The verified native rclone executable's actual `config providers` output: currently 69 schemas and 61 selectable backends. Eight wrapper backends are intentionally excluded. Newly discovered backends use manual configuration until their authentication route is explicitly supported.
-- Local synthetic login protocols, credential parsing, callback state validation, PKCE and token exchange. All nine generic OAuth routes use the actual callback and exchange code against local fixtures. Drive/OneDrive auth-only tests also verify persistence and failure rollback. These tests do not establish vendor acceptance of a login or refresh grant.
+- Local synthetic login protocols, credential parsing, callback state validation, PKCE and token exchange. All nine generic OAuth routes use the actual callback and exchange code against local fixtures. Drive/OneDrive/Dropbox auth-only tests cover persistence, denial and cancellation. Dropbox also checks exact read scopes, offline grant fields and rejection before saving. These tests do not prove arbitrary disk-write rollback or vendor acceptance of a login or refresh grant.
 - Existing integration tests for inventory parsing, queues, downloads, reporting, config isolation and integrity checks, plus updater regression tests.
 - Twenty baseline real-backend protocol fixtures, a separate Linux/amd64 Samba NTLM fixture and a current-runtime coverage plan for every selectable backend. New backends, removed backends and changed option contracts require an explicit policy review.
 

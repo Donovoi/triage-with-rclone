@@ -318,7 +318,7 @@ fn run_cli(
         }
         if args.auth_only {
             let provider = known.ok_or_else(|| {
-                anyhow::anyhow!("--auth-only currently supports Google Drive and OneDrive")
+                anyhow::anyhow!("--auth-only currently supports Google Drive, OneDrive and Dropbox")
             })?;
             let flow = if args.device_code {
                 AuthOnlyFlow::DeviceCode
@@ -1157,7 +1157,7 @@ struct Cli {
     #[arg(long)]
     provider: Option<String>,
 
-    /// Save Drive/OneDrive authentication without listing (requires your own OAuth client)
+    /// Save Drive/OneDrive/Dropbox authentication without listing (requires your own OAuth client)
     #[arg(long, requires = "provider", conflicts_with_all = [
         "tui", "mobile_auth", "download", "ps_csv", "output_listing", "remote",
         "rclone_config_path", "set_oauth_creds", "show_oauth_creds", "oauth_config_path", "web_gui",
