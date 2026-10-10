@@ -66,10 +66,90 @@ fn same_guid(a: GUID, b: GUID) -> bool {
 }
 
 #[derive(Clone, Copy)]
+enum SchemaStage {
+    Version,
+    HeaderFlags,
+    TdhSize,
+    PropertyBound,
+    TdhRead,
+    NumericWidth,
+    PathEncoding,
+    CorrelationShape,
+}
+impl SchemaStage {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Version => "version",
+            Self::HeaderFlags => "header_flags",
+            Self::TdhSize => "tdh_size",
+            Self::PropertyBound => "property_bound",
+            Self::TdhRead => "tdh_read",
+            Self::NumericWidth => "numeric_width",
+            Self::PathEncoding => "path_encoding",
+            Self::CorrelationShape => "correlation_shape",
+        }
+    }
+}
+#[derive(Clone, Copy)]
+enum KnownProperty {
+    Ttid,
+    IrpPtr,
+    NtStatus,
+    OpenPath,
+    ShareAccess,
+}
+impl KnownProperty {
+    fn name(self) -> PCWSTR {
+        match self {
+            Self::Ttid => w!("TTID"),
+            Self::IrpPtr => w!("IrpPtr"),
+            Self::NtStatus => w!("NtStatus"),
+            Self::OpenPath => w!("OpenPath"),
+            Self::ShareAccess => w!("ShareAccess"),
+        }
+    }
+    fn json(self) -> &'static str {
+        match self {
+            Self::Ttid => "\"TTID\"",
+            Self::IrpPtr => "\"IrpPtr\"",
+            Self::NtStatus => "\"NtStatus\"",
+            Self::OpenPath => "\"OpenPath\"",
+            Self::ShareAccess => "\"ShareAccess\"",
+        }
+    }
+}
+#[derive(Clone, Copy)]
+struct SchemaHeader {
+    opcode: u8,
+    version: u8,
+    flags: u16,
+}
+#[derive(Clone, Copy)]
+struct SchemaRejection {
+    header: SchemaHeader,
+    stage: SchemaStage,
+    property: Option<KnownProperty>,
+    tdh_status: Option<u32>,
+    size: Option<u32>,
+}
+impl SchemaRejection {
+    fn json(self) -> String {
+        let number = |x: Option<u32>| x.map_or_else(|| "null".into(), |n| n.to_string());
+        format!(
+            "{{\"attribution\":\"unattributed_fileio\",\"stage\":\"{}\",\"property\":{},\"opcode\":{},\"version\":{},\"header_flags\":{},\"tdh_status\":{},\"size\":{}}}",
+            self.stage.label(), self.property.map_or("null", KnownProperty::json),
+            self.header.opcode, self.header.version, self.header.flags,
+            number(self.tdh_status), number(self.size)
+        )
+    }
+}
+
+#[derive(Clone, Copy)]
 struct Start {
     qpc: i64,
     irp: u64,
     share: u32,
+    header: SchemaHeader,
 }
 #[derive(Clone, Copy)]
 struct End {
@@ -84,6 +164,7 @@ struct Collector {
     ends: Vec<End>,
     callbacks: u32,
     error: Option<&'static str>,
+    schema_rejection: Option<SchemaRejection>,
     ready: Option<mpsc::SyncSender<()>>,
 }
 impl Collector {
@@ -95,6 +176,7 @@ impl Collector {
             ends: Vec::new(),
             callbacks: 0,
             error: None,
+            schema_rejection: None,
             ready: None,
         };
         x.starts
@@ -105,7 +187,26 @@ impl Collector {
             .map_err(|_| "budget_exceeded")?;
         Ok(x)
     }
-    fn correlate(&self, before: i64, after: i64) -> Outcome {
+    fn reject(
+        &mut self,
+        header: SchemaHeader,
+        stage: SchemaStage,
+        property: Option<KnownProperty>,
+        tdh_status: Option<u32>,
+        size: Option<u32>,
+    ) -> &'static str {
+        // Header rejection precedes thread/path filtering. Never attribute this
+        // record to the owned file, or retain any property value in the diagnostic.
+        self.schema_rejection.get_or_insert(SchemaRejection {
+            header,
+            stage,
+            property,
+            tdh_status,
+            size,
+        });
+        "schema_unavailable"
+    }
+    fn correlate(&mut self, before: i64, after: i64) -> Outcome {
         if let Some(e) = self.error {
             return Err(e);
         }
@@ -120,9 +221,19 @@ impl Collector {
         if starts.len() != 1 {
             return Err("correlation_missing_or_ambiguous");
         }
-        let s = starts[0];
+        let s = *starts[0];
         if s.irp == 0 || s.share != FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE {
-            return Err("schema_unavailable");
+            return Err(self.reject(
+                s.header,
+                SchemaStage::CorrelationShape,
+                Some(if s.irp == 0 {
+                    KnownProperty::IrpPtr
+                } else {
+                    KnownProperty::ShareAccess
+                }),
+                None,
+                None,
+            ));
         }
         let ends: Vec<_> = self
             .ends
@@ -142,31 +253,59 @@ impl Collector {
 // TDH supplies property sizes, including pointer-width qualifiers. No payload offsets.
 unsafe fn property(
     e: *const EVENT_RECORD,
-    name: PCWSTR,
+    s: &mut Collector,
+    header: SchemaHeader,
+    name: KnownProperty,
     out: &mut [u8],
 ) -> Result<usize, &'static str> {
     let p = PROPERTY_DATA_DESCRIPTOR {
-        PropertyName: name as u64,
+        PropertyName: name.name() as u64,
         ArrayIndex: u32::MAX,
         Reserved: 0,
     };
     let mut len = 0;
-    if TdhGetPropertySize(e, 0, ptr::null(), 1, &p, &mut len) != 0
-        || len == 0
-        || len as usize > out.len()
-    {
-        return Err("schema_unavailable");
+    let status = TdhGetPropertySize(e, 0, ptr::null(), 1, &p, &mut len);
+    if status != 0 {
+        return Err(s.reject(header, SchemaStage::TdhSize, Some(name), Some(status), None));
     }
-    if TdhGetProperty(e, 0, ptr::null(), 1, &p, len, out.as_mut_ptr()) != 0 {
-        return Err("schema_unavailable");
+    if len == 0 || len as usize > out.len() {
+        return Err(s.reject(
+            header,
+            SchemaStage::PropertyBound,
+            Some(name),
+            Some(status),
+            Some(len),
+        ));
+    }
+    let status = TdhGetProperty(e, 0, ptr::null(), 1, &p, len, out.as_mut_ptr());
+    if status != 0 {
+        return Err(s.reject(
+            header,
+            SchemaStage::TdhRead,
+            Some(name),
+            Some(status),
+            Some(len),
+        ));
     }
     Ok(len as usize)
 }
-unsafe fn number(e: *const EVENT_RECORD, name: PCWSTR, pointer: bool) -> Result<u64, &'static str> {
+unsafe fn number(
+    e: *const EVENT_RECORD,
+    s: &mut Collector,
+    header: SchemaHeader,
+    name: KnownProperty,
+    pointer: bool,
+) -> Result<u64, &'static str> {
     let mut out = [0; 8];
-    let n = property(e, name, &mut out)?;
+    let n = property(e, s, header, name, &mut out)?;
     if (pointer && n != 8) || (!pointer && n != 4) {
-        return Err("schema_unavailable");
+        return Err(s.reject(
+            header,
+            SchemaStage::NumericWidth,
+            Some(name),
+            Some(ERROR_SUCCESS),
+            Some(n as u32),
+        ));
     }
     Ok(u64::from_le_bytes(out))
 }
@@ -175,30 +314,44 @@ unsafe fn consume(e: *const EVENT_RECORD, s: &mut Collector) -> Outcome {
     if !same_guid(h.ProviderId, FileIoGuid) || !matches!(h.EventDescriptor.Opcode, 64 | 76) {
         return Ok(());
     }
-    if h.EventDescriptor.Version != 2
-        || h.Flags as u32 & EVENT_HEADER_FLAG_64_BIT_HEADER == 0
+    let header = SchemaHeader {
+        opcode: h.EventDescriptor.Opcode,
+        version: h.EventDescriptor.Version,
+        flags: h.Flags,
+    };
+    if h.EventDescriptor.Version != 2 {
+        return Err(s.reject(header, SchemaStage::Version, None, None, None));
+    }
+    if h.Flags as u32 & EVENT_HEADER_FLAG_64_BIT_HEADER == 0
         || h.Flags as u32 & EVENT_HEADER_FLAG_32_BIT_HEADER != 0
     {
-        return Err("schema_unavailable");
+        return Err(s.reject(header, SchemaStage::HeaderFlags, None, None, None));
     }
     if h.EventDescriptor.Opcode == 76 {
         if s.ends.len() == MAX_ENDS {
             return Err("budget_exceeded");
         }
-        s.ends.push(End {
+        let end = End {
             qpc: h.TimeStamp,
-            irp: number(e, w!("IrpPtr"), true)?,
-            status: number(e, w!("NtStatus"), false)? as u32,
-        });
+            irp: number(e, s, header, KnownProperty::IrpPtr, true)?,
+            status: number(e, s, header, KnownProperty::NtStatus, false)? as u32,
+        };
+        s.ends.push(end);
     } else {
         // TTID is Pointer-qualified in the documented version-2 MOF, not a guessed u32 offset.
-        if number(e, w!("TTID"), true)? != s.tid {
+        if number(e, s, header, KnownProperty::Ttid, true)? != s.tid {
             return Ok(());
         }
         let mut path = [0u8; 2048];
-        let n = property(e, w!("OpenPath"), &mut path)?;
+        let n = property(e, s, header, KnownProperty::OpenPath, &mut path)?;
         if n % 2 != 0 || n < 2 || path[n - 2..n] != [0, 0] {
-            return Err("schema_unavailable");
+            return Err(s.reject(
+                header,
+                SchemaStage::PathEncoding,
+                Some(KnownProperty::OpenPath),
+                Some(ERROR_SUCCESS),
+                Some(n as u32),
+            ));
         }
         if n / 2 != s.path.len() + 1
             || !path[..n - 2]
@@ -211,11 +364,13 @@ unsafe fn consume(e: *const EVENT_RECORD, s: &mut Collector) -> Outcome {
         if s.starts.len() == 2 {
             return Err("budget_exceeded");
         }
-        s.starts.push(Start {
+        let start = Start {
             qpc: h.TimeStamp,
-            irp: number(e, w!("IrpPtr"), true)?,
-            share: number(e, w!("ShareAccess"), false)? as u32,
-        });
+            irp: number(e, s, header, KnownProperty::IrpPtr, true)?,
+            share: number(e, s, header, KnownProperty::ShareAccess, false)? as u32,
+            header,
+        };
+        s.starts.push(start);
     }
     Ok(())
 }
@@ -296,6 +451,7 @@ struct SessionSettings {
 #[derive(Default)]
 struct Proof {
     queried_session_settings: Option<SessionSettings>,
+    schema_rejection: Option<SchemaRejection>,
     started: bool,
     stop_attempted: bool,
     stopped: bool,
@@ -478,6 +634,7 @@ unsafe fn trace(path: &[u16], holder: HANDLE, proof: &mut Proof) -> Outcome {
             Ok(x) => Some(x),
             Err(_) => {
                 if let Ok(late) = rx.recv_timeout(Duration::from_secs(5)) {
+                    proof.schema_rejection = late.1.state.schema_rejection;
                     // ProcessTrace has returned; pending close is now drained.
                     if closed != ERROR_SUCCESS && closed != ERROR_CTX_CLOSE_PENDING {
                         std::mem::forget(late);
@@ -486,7 +643,8 @@ unsafe fn trace(path: &[u16], holder: HANDLE, proof: &mut Proof) -> Outcome {
                 None
             }
         };
-        if let Some((code, consumer)) = complete {
+        if let Some((code, mut consumer)) = complete {
+            proof.schema_rejection = consumer.state.schema_rejection;
             if closed != ERROR_SUCCESS {
                 std::mem::forget(consumer);
                 return Err("cleanup_uncertain");
@@ -506,7 +664,9 @@ unsafe fn trace(path: &[u16], holder: HANDLE, proof: &mut Proof) -> Outcome {
                 return Err("budget_exceeded");
             }
             let (before, after) = observation?;
-            consumer.state.correlate(before, after)?;
+            let correlated = consumer.state.correlate(before, after);
+            proof.schema_rejection = consumer.state.schema_rejection;
+            correlated?;
             proof.paired = true;
             Ok(())
         } else {
@@ -674,8 +834,11 @@ fn main() {
         ),
         None => "null".into(),
     };
-    println!("{{\"schema\":3,\"scope\":\"synthetic_open_only\",\"status\":\"{}\",\"reason\":\"{}\",\"api\":\"CreateFileW_DELETE_OPEN_EXISTING\",\"holder_access\":\"READ_DATA|DELETE_without_delete_share\",\"queried_session_settings\":{},\"win32_sharing_violation\":{},\"create_opend_pair\":{},\"same_owned_file\":{},\"same_owned_directory\":{},\"session_started\":{},\"session_stop_verified\":{},\"consumer_completed\":{},\"zero_loss\":{},\"effective_buffers_within_budget\":{},\"owned_file_cleaned\":{}}}",
-        if observed { "observed" } else { "unavailable" }, reason, settings, p.probe, p.paired, p.identity, p.directory, p.started, p.stopped, p.consumer, p.lossless, p.bounded, p.cleaned);
+    let rejection = p
+        .schema_rejection
+        .map_or_else(|| "null".into(), SchemaRejection::json);
+    println!("{{\"schema\":4,\"scope\":\"synthetic_open_only\",\"status\":\"{}\",\"reason\":\"{}\",\"api\":\"CreateFileW_DELETE_OPEN_EXISTING\",\"holder_access\":\"READ_DATA|DELETE_without_delete_share\",\"queried_session_settings\":{},\"schema_rejection\":{},\"win32_sharing_violation\":{},\"create_opend_pair\":{},\"same_owned_file\":{},\"same_owned_directory\":{},\"session_started\":{},\"session_stop_verified\":{},\"consumer_completed\":{},\"zero_loss\":{},\"effective_buffers_within_budget\":{},\"owned_file_cleaned\":{}}}",
+        if observed { "observed" } else { "unavailable" }, reason, settings, rejection, p.probe, p.paired, p.identity, p.directory, p.started, p.stopped, p.consumer, p.lossless, p.bounded, p.cleaned);
     std::process::exit(if observed { 0 } else { 2 });
 }
 
@@ -688,6 +851,11 @@ mod tests {
             qpc: 101,
             irp: 7,
             share: 7,
+            header: SchemaHeader {
+                opcode: 64,
+                version: 2,
+                flags: EVENT_HEADER_FLAG_64_BIT_HEADER as u16,
+            },
         });
         c.ends.push(End {
             qpc: 102,
