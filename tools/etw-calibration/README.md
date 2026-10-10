@@ -34,7 +34,7 @@ Trace buffers are capped at 16 of 64 KiB. Event storage and callback counts are
 bounded. Other paths are discarded; raw events, paths, process IDs and stderr are
 not published. The output validator accepts only the finite result schema.
 
-Schema 4 includes `queried_session_settings`: null until the owned session query
+Schema 5 includes `queried_session_settings`: null until the owned session query
 succeeds, otherwise exactly three unsigned 32-bit values: `enable_flags`,
 `log_mode`, and `clock_selector`. Requested values are `0x16000000`,
 `0x12400100`, and `1` respectively. At the existing equality gate, a difference
@@ -66,8 +66,30 @@ existing correlation state. A rejection stops decoding as before; no additional
 TDH calls are made. Loss and cleanup errors retain their existing precedence.
 An incomplete consumer cannot certify that no rejection occurred. The validator
 requires a diagnostic for `schema_unavailable`, rejects a diagnostic with any
-success/pair claim, and retains the 2 KiB output limit. Version 2, 64-bit header,
-property-width, correlation, session, budget and cleanup gates are unchanged.
+success/pair claim, and retains the 2 KiB output limit.
+
+Schema 5 supports exactly classic FileIo versions 2 and 3 under the existing
+64-bit-header requirement. Named TDH lookups must return these exact widths:
+
+| Event/property selector | Version 2 | Version 3 |
+| --- | --- | --- |
+| Create `TTID` | Pointer, 8 bytes | u32, 4 bytes |
+| Create/OpEnd `IrpPtr` | Pointer, 8 bytes | Pointer, 8 bytes |
+| Create `ShareAccess` / OpEnd `NtStatus` | u32, 4 bytes | u32, 4 bytes |
+| Create `OpenPath` | Bounded, null-terminated UTF-16 | Same encoding and bound |
+
+The [Microsoft v2 MOF](https://learn.microsoft.com/en-us/windows/win32/etw/fileio-create)
+qualifies TTID as a pointer. Microsoft's
+[TraceEvent Create parser](https://github.com/microsoft/perfview/blob/main/src/TraceEvent/Parsers/KernelTraceEventParser.cs#L5605-L5742)
+distinguishes classic v2/v3 layouts and reads v3 TTID as u32; its
+[OpEnd parser](https://github.com/microsoft/perfview/blob/main/src/TraceEvent/Parsers/KernelTraceEventParser.cs#L6221-L6242)
+retains pointer IRP and u32 status fields beyond v2. These implementations support
+the expected widths, but do not establish which property names the hosted TDH
+metadata will resolve. The helper still requires the existing named lookups to
+succeed, then validates sizes and encoding; missing metadata or any mismatch is
+unavailable. It uses no payload offsets, fallback names, extra property queries,
+unknown versions or additional bitness. All correlation, loss, budget, session
+and cleanup gates remain unchanged.
 
 Windows trace control calls have no caller-supplied timeout. The workflow's time
 limit is an outer bound, not evidence that tracing or cleanup finished. A missing
@@ -109,6 +131,19 @@ Schema 3 did not expose the rejected record's version, flags, property or TDH
 status, so none is established by that run. Schema 4 supplies only that missing
 diagnostic; it does not accept additional event versions or property widths.
 This unavailable calibration provides no provider or cleanup-cause evidence.
+
+The schema-4 [run 38027091425, attempt 1, job 114140125431](https://github.com/Donovoi/triage-with-rclone/actions/runs/38027091425/job/114140125431)
+tested merge `60b1e4fe992500e394a2167935f3edd9f941d04d`; helper SHA-256 was
+`b7a417e95f51ff059ba657efdced7e67d31d9e1308d83d1096d40ed62d10cfee`.
+Its 22 Python and four Rust tests passed. The single probe returned sharing
+violation 32; the consumer completed, buffers were bounded and lossless, and
+session stop, original identities and owned cleanup were verified. The result
+remained `schema_unavailable`, with no pair: its first rejection was Create
+opcode 64, version 3, flags 832 (`0x340`), at the version gate before any property
+query. It was explicitly `unattributed_fileio`; it establishes neither an owned
+Create record nor an OpEnd version or TDH property metadata. Schema 5 permits the
+narrow v2/v3 decoding attempt described above. This observation supplies no
+operation-pair, provider or cleanup-cause acceptance.
 
 ## Checks during development
 

@@ -319,7 +319,7 @@ unsafe fn consume(e: *const EVENT_RECORD, s: &mut Collector) -> Outcome {
         version: h.EventDescriptor.Version,
         flags: h.Flags,
     };
-    if h.EventDescriptor.Version != 2 {
+    if !matches!(h.EventDescriptor.Version, 2 | 3) {
         return Err(s.reject(header, SchemaStage::Version, None, None, None));
     }
     if h.Flags as u32 & EVENT_HEADER_FLAG_64_BIT_HEADER == 0
@@ -338,8 +338,9 @@ unsafe fn consume(e: *const EVENT_RECORD, s: &mut Collector) -> Outcome {
         };
         s.ends.push(end);
     } else {
-        // TTID is Pointer-qualified in the documented version-2 MOF, not a guessed u32 offset.
-        if number(e, s, header, KnownProperty::Ttid, true)? != s.tid {
+        // Classic v2 TTID is Pointer-qualified; v3 uses u32 (Microsoft TraceEvent).
+        // TDH must resolve the same named property and return the exact versioned width.
+        if number(e, s, header, KnownProperty::Ttid, header.version == 2)? != s.tid {
             return Ok(());
         }
         let mut path = [0u8; 2048];
@@ -837,7 +838,7 @@ fn main() {
     let rejection = p
         .schema_rejection
         .map_or_else(|| "null".into(), SchemaRejection::json);
-    println!("{{\"schema\":4,\"scope\":\"synthetic_open_only\",\"status\":\"{}\",\"reason\":\"{}\",\"api\":\"CreateFileW_DELETE_OPEN_EXISTING\",\"holder_access\":\"READ_DATA|DELETE_without_delete_share\",\"queried_session_settings\":{},\"schema_rejection\":{},\"win32_sharing_violation\":{},\"create_opend_pair\":{},\"same_owned_file\":{},\"same_owned_directory\":{},\"session_started\":{},\"session_stop_verified\":{},\"consumer_completed\":{},\"zero_loss\":{},\"effective_buffers_within_budget\":{},\"owned_file_cleaned\":{}}}",
+    println!("{{\"schema\":5,\"scope\":\"synthetic_open_only\",\"status\":\"{}\",\"reason\":\"{}\",\"api\":\"CreateFileW_DELETE_OPEN_EXISTING\",\"holder_access\":\"READ_DATA|DELETE_without_delete_share\",\"queried_session_settings\":{},\"schema_rejection\":{},\"win32_sharing_violation\":{},\"create_opend_pair\":{},\"same_owned_file\":{},\"same_owned_directory\":{},\"session_started\":{},\"session_stop_verified\":{},\"consumer_completed\":{},\"zero_loss\":{},\"effective_buffers_within_budget\":{},\"owned_file_cleaned\":{}}}",
         if observed { "observed" } else { "unavailable" }, reason, settings, rejection, p.probe, p.paired, p.identity, p.directory, p.started, p.stopped, p.consumer, p.lossless, p.bounded, p.cleaned);
     std::process::exit(if observed { 0 } else { 2 });
 }
