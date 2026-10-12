@@ -79,7 +79,7 @@ class SourceBridge(H.Bridge):
 
 DEBUG_ERRORS = frozenset({"debug_start_failed", "debug_event_failed", "debug_image_invalid",
     "debug_launch_limit", "debug_exception_failed", "debug_event_limit", "debug_cleanup_failed"})
-OBSERVED_ACTIONS = frozenset({"start_source_observed", "poll", "finish", "invalid", "eof"})
+OBSERVED_ACTIONS = frozenset({"start_source_observed", "poll", "finish", "observe_continuity", "invalid", "eof"})
 OBSERVED_KEYS = H.SESSION_KEYS | frozenset({"observation_kind", "launch_image_observed", "launch_sha256",
     "runtime_launch_count", "peak_runtime_processes", "debug_event_count", "debug_events_drained",
     "debug_pump_joined", "debug_handles_closed", "system_helper_image_observed", "system_helper_sha256",
@@ -93,6 +93,20 @@ OBSERVED_CLEANUP = ("debug_events_drained", "debug_pump_joined", "debug_handles_
 
 def _hash(value):
     return type(value) is str and re.fullmatch(r"[a-f0-9]{64}", value) is not None
+
+
+CONTINUITY_KEYS = frozenset({"phase", "runtime_ordinal", "runtime_sha256", "application_live",
+                            "runtime_live", "same_process", "reference_closed"})
+
+
+def validate_continuity(value, phase, expected_runtime_sha256):
+    H.need(type(phase) is str and phase in {"arm", "verify"} and _hash(expected_runtime_sha256) and
+           type(value) is dict and set(value) == CONTINUITY_KEYS and value["phase"] == phase and
+           type(value["runtime_ordinal"]) is int and value["runtime_ordinal"] == 2 and
+           value["runtime_sha256"] == expected_runtime_sha256 and value["application_live"] is True and
+           value["runtime_live"] is True and value["same_process"] is (phase == "verify") and
+           value["reference_closed"] is (phase == "verify"), "session_failed")
+    return value
 
 
 def validate_observed_snapshot(value, action, expected_runtime_sha256, max_runtime_processes, max_runtime_launches):
@@ -154,7 +168,7 @@ def validate_observed_snapshot(value, action, expected_runtime_sha256, max_runti
 
 class ObservedSourceBridge(SourceBridge):
     """Prearmed launch-image mode. No live-image or Ctrl+C substitution."""
-    actions = frozenset({"invalid", "ready", "close_ready", "start_source_observed", "poll", "finish", "close"})
+    actions = frozenset({"invalid", "ready", "close_ready", "start_source_observed", "poll", "finish", "observe_continuity", "close"})
 
     def __init__(self, case):
         self.observer_started = False
@@ -162,6 +176,8 @@ class ObservedSourceBridge(SourceBridge):
         self.max_runtime_processes = self.max_runtime_launches = 0
         self.observer_previous = None
         self.observer_helper_hash = None
+        self.continuity_phase = None
+        self.continuity_requested = None
         super().__init__(case)  # The unchanged SourceBridge guard precedes native work.
 
     def command(self, action, **fields):
@@ -187,6 +203,11 @@ class ObservedSourceBridge(SourceBridge):
                 self.expected_runtime_sha256 = fields["expected_runtime_sha256"]
                 self.max_runtime_processes = fields["max_runtime_processes"]
                 self.max_runtime_launches = fields["max_runtime_launches"]
+            elif action == "observe_continuity":
+                H.need(self.observer_started and set(fields) == {"phase"} and type(fields["phase"]) is str and
+                       fields["phase"] == ("arm" if self.continuity_phase is None else "verify") and
+                       self.continuity_phase != "verify" and self.continuity_requested is None, "session_failed")
+                self.continuity_requested = fields["phase"]
             elif action in {"poll", "finish"}:
                 H.need(self.observer_started and set(fields) == ({"grace_ms"} if action == "finish" else set()), "session_failed")
                 if action == "finish":
@@ -199,6 +220,19 @@ class ObservedSourceBridge(SourceBridge):
         return super().command(action, **fields)
 
     def validate_session(self, value, action):
+        proof = None
+        if action == "observe_continuity":
+            H.need(type(value) is dict and set(value) == OBSERVED_KEYS | {"continuity"}, "session_failed")
+            proof = value["continuity"]
+            value = {key: value[key] for key in OBSERVED_KEYS}
+            if value["ok"] is True:
+                validate_continuity(proof, self.continuity_requested, self.expected_runtime_sha256)
+                H.need(value["state"] == "running" and value["app_exited"] is False and
+                       value["runtime_launch_count"] == 2 and value["launch_image_observed"] is True, "session_failed")
+                self.continuity_phase = self.continuity_requested
+            else:
+                H.need(proof is None and value["state"] == "finished", "session_failed")
+            self.continuity_requested = None
         value = validate_observed_snapshot(value, action, self.expected_runtime_sha256,
                                           self.max_runtime_processes, self.max_runtime_launches)
         previous = self.observer_previous
@@ -215,9 +249,12 @@ class ObservedSourceBridge(SourceBridge):
             H.need(self.observer_helper_hash in (None, value["system_helper_sha256"]), "session_failed")
             self.observer_helper_hash = value["system_helper_sha256"]
         self.observer_previous = dict(value, errors=list(value["errors"]))
-        return value
+        return dict(value, continuity=proof) if action == "observe_continuity" else value
 
     def failure_diagnostic(self, value, action):
+        if action == "observe_continuity":
+            H.need(type(value) is dict and set(value) == OBSERVED_KEYS | {"continuity"} and value["continuity"] is None, "session_failed")
+            value = {key: value[key] for key in OBSERVED_KEYS}
         value = validate_observed_snapshot(value, action, self.expected_runtime_sha256,
                                           self.max_runtime_processes, self.max_runtime_launches)
         H.need(not value["ok"], "session_failed")

@@ -567,6 +567,17 @@ namespace TriageApplicationLab {
         public Dictionary<string,object> LaunchFailureDiagnostic() {
             lock(api) { Require(launch!=null); return launch.FailureDiagnostic(); }
         }
+        public Dictionary<string,object> ObserveLaunchContinuity(string phase) {
+            lock(api) {
+                Require(launch!=null);
+                Dictionary<string,object> proof=null;
+                try {
+                    Require(!closing && !finished && !Deadline);
+                    proof=launch.Continuity(phase);
+                } catch { Error("runtime_observation_failed"); Finish(0); }
+                var result=LaunchSnapshot(); result.Add("continuity",proof); return result;
+            }
+        }
         // DEBUG_PROCESS is opt-in. All debug APIs run on the creator thread.
         // That thread never takes api or calls Finish: Finish may be joining it.
         sealed class LaunchObserver {
@@ -591,9 +602,10 @@ namespace TriageApplicationLab {
             [StructLayout(LayoutKind.Sequential)] internal struct DebugEvent { public uint code,pid,tid; public EventInfo info; }
             [DllImport("kernel32.dll",SetLastError=true)] static extern bool WaitForDebugEvent(out DebugEvent value,uint milliseconds);
             [DllImport("kernel32.dll",SetLastError=true)] static extern bool ContinueDebugEvent(uint pid,uint tid,uint status);
+            [DllImport("kernel32.dll",SetLastError=true)] static extern uint GetProcessId(IntPtr process);
             [DllImport("kernel32.dll",SetLastError=true)] static extern bool DuplicateHandle(IntPtr sourceProcess,IntPtr source,IntPtr targetProcess,out IntPtr target,uint access,bool inherit,uint options);
             [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern IntPtr CreateFileW(string name,uint access,uint share,IntPtr security,uint disposition,uint flags,IntPtr template);
-            sealed class OwnedProcess { public IntPtr handle; public ulong created; }
+            sealed class OwnedProcess { public IntPtr handle; public ulong created; public HostedLaunchRole role; public bool verified; public int ordinal; }
             readonly HostedConPtySession session;
             readonly string appPath,appSha,expected;
             readonly string systemDirectory=Environment.SystemDirectory;
@@ -602,6 +614,10 @@ namespace TriageApplicationLab {
             readonly Dictionary<uint,OwnedProcess> processes=new Dictionary<uint,OwnedProcess>();
             readonly List<IntPtr> uncertainHandles=new List<IntPtr>();
             Dictionary<string,object> failedCreate;
+            IntPtr continuityHandle;
+            ulong continuityCreated;
+            int continuityOrdinal;
+            bool continuityArmed,continuityVerified;
             readonly object startSignal=new object();
             bool startSignaled;
             Thread pump;
@@ -695,6 +711,9 @@ namespace TriageApplicationLab {
                 Interlocked.Exchange(ref finishAt,Math.Min((long)session.deadlineMs,session.elapsed.ElapsedMilliseconds+grace));
                 joined=pump==null || pump.Join(grace+6000);
                 if(!joined) Fail("debug_cleanup_failed");
+                // No more pump-owned process mutation after a successful join.
+                // Even an abandoned arm owns a duplicate that must close once.
+                if(joined) lock(sync) CloseOwned(ref continuityHandle);
                 return joined && EventResourcesClosed;
             }
             void CloseOwned(ref IntPtr handle) {
@@ -789,6 +808,7 @@ namespace TriageApplicationLab {
                     HostedLaunchState.RuntimeImagePathAllowed(session.caseRoot,image)?HostedLaunchRole.Runtime:
                     String.Equals(image,systemPath,StringComparison.OrdinalIgnoreCase)?HostedLaunchRole.ConsoleHelper:HostedLaunchRole.Rejected;
                 lock(sync) state.Create(role);
+                owned.role=role; owned.ordinal=role==HostedLaunchRole.Runtime?state.Launches:0;
                 if(role==HostedLaunchRole.Runtime) {
                     VerifyTemp();
                     // These descendant pins are transient. Keeping them after
@@ -812,6 +832,47 @@ namespace TriageApplicationLab {
                 }
                 Require(IsProcessInJob(owned.handle,session.job,out belongs) && belongs && Created(owned.handle)==owned.created);
                 lock(sync) state.Verified();
+                owned.verified=true;
+            }
+            void LiveOwned(IntPtr handle,ulong created) {
+                bool belongs;
+                Require(handle!=IntPtr.Zero && !Exited(handle) && Created(handle)==created &&
+                        IsProcessInJob(handle,session.job,out belongs) && belongs);
+            }
+            public Dictionary<string,object> Continuity(string phase) {
+                lock(sync) {
+                    Require((phase=="arm" || phase=="verify") && !startupFailed && !handlesFailed && state.Failure==null);
+                    OwnedProcess root; Require(processes.TryGetValue(initialPid,out root) && root.verified);
+                    LiveOwned(root.handle,root.created);
+                    OwnedProcess runtime=null;
+                    foreach(OwnedProcess candidate in processes.Values) {
+                        if(candidate.role!=HostedLaunchRole.Runtime || candidate.handle==IntPtr.Zero || Exited(candidate.handle)) continue;
+                        Require(runtime==null && candidate.verified); runtime=candidate;
+                    }
+                    Require(runtime!=null && runtime.ordinal==2 && state.Launches==2 && state.VerifiedLaunches==2);
+                    LiveOwned(runtime.handle,runtime.created);
+                    if(phase=="arm") {
+                        Require(!continuityArmed && continuityHandle==IntPtr.Zero);
+                        continuityArmed=true; continuityCreated=runtime.created; continuityOrdinal=runtime.ordinal;
+                        // This duplicate refers to the actual verified process object,
+                        // retained across both held transfers, not a PID lookup.
+                        continuityHandle=Duplicate(runtime.handle,false);
+                        LiveOwned(continuityHandle,continuityCreated);
+                    } else {
+                        Require(continuityArmed && !continuityVerified && continuityOrdinal==runtime.ordinal && continuityCreated==runtime.created);
+                        LiveOwned(continuityHandle,continuityCreated);
+                        // Both retained live handles must identify the same object.
+                        uint retainedId=GetProcessId(continuityHandle);
+                        Require(retainedId!=0 && retainedId==GetProcessId(runtime.handle));
+                        CloseOwned(ref continuityHandle); Require(!handlesFailed);
+                        continuityVerified=true;
+                    }
+                    return new Dictionary<string,object> {
+                        {"phase",phase},{"runtime_ordinal",continuityOrdinal},{"runtime_sha256",expected},
+                        {"application_live",true},{"runtime_live",true},{"same_process",continuityVerified},
+                        {"reference_closed",continuityVerified}
+                    };
+                }
             }
             void CaptureFailedCreate(DebugEvent value) {
                 // Diagnostic only, before the failing CREATE's hFile is closed.
@@ -859,7 +920,7 @@ namespace TriageApplicationLab {
                         Require(image!=new IntPtr(-1));
                         lock(sync) state.Begin(value.code,value.pid,value.tid);
                         if(value.code==3) {
-                            try { Create(value); }
+                            try { lock(sync) Create(value); }
                             catch { try { CaptureFailedCreate(value); } catch { } throw; }
                         }
                         else if(value.code==1) lock(sync) disposition=state.ExceptionDisposition(value.info.exception.record.code,value.info.exception.first);
@@ -872,13 +933,13 @@ namespace TriageApplicationLab {
                     } finally {
                         // CREATE and LOAD_DLL hFile are debugger-owned. No DLL
                         // bytes, target strings or target memory are read.
-                        if(image!=IntPtr.Zero && image!=new IntPtr(-1)) CloseOwned(ref image);
+                        if(image!=IntPtr.Zero && image!=new IntPtr(-1)) lock(sync) CloseOwned(ref image);
                     }
                     if(startupFailed || handlesFailed) { startupFailed=true; Terminate(); if(drainEnd==Int64.MaxValue) drainEnd=session.elapsed.ElapsedMilliseconds+5000; }
                     if(!ContinueDebugEvent(value.pid,value.tid,disposition)) { Fail("debug_event_failed"); Terminate(); return; }
                     try {
                         lock(sync) state.Continued();
-                        if(value.code==5) {
+                        if(value.code==5) lock(sync) {
                             OwnedProcess owned=processes[value.pid];
                             Require(WaitForSingleObject(owned.handle,1000)==0 && Created(owned.handle)==owned.created);
                             CloseOwned(ref owned.handle);
@@ -889,7 +950,7 @@ namespace TriageApplicationLab {
                 }
             }
             bool EventResourcesClosed { get {
-                if(!joined || handlesFailed || imageParent!=null || initialProcess!=IntPtr.Zero || initialThread!=IntPtr.Zero || uncertainHandles.Count!=0) return false;
+                if(!joined || handlesFailed || continuityHandle!=IntPtr.Zero || imageParent!=null || initialProcess!=IntPtr.Zero || initialThread!=IntPtr.Zero || uncertainHandles.Count!=0) return false;
                 foreach(OwnedProcess owned in processes.Values) if(owned.handle!=IntPtr.Zero) return false;
                 lock(sync) return initialPid==0 || state.Drained;
             } }
