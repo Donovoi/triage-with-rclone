@@ -467,7 +467,8 @@ FILESYSTEM_CASE_NAMES = frozenset("fs-" + backend + "-" + name for backend in ("
     for name in ("listing", "acquisition-readme", "acquisition-empty", "acquisition-large", "acquisition-binary",
                  "acquisition-unicode", "acquisition-spaced", "mismatch", "missing", "directory-as-file", "cancellation")) | {
                      "fs-archive-corrupt-member", "fs-archive-truncated-archive"}
-SETUP_SCOPES = frozenset({"suite", "webdav_suite", "filesystem_suite", "webdav_credentials", "webdav_credential_setup", *E.CASE_ORDER,
+FTP_CASE_NAMES = frozenset({"ftp-accepted-a", "ftp-revoked-a", "ftp-replacement-b"})
+SETUP_SCOPES = frozenset({"suite", "ftp_suite", "ftp_credentials", "ftp_credential_setup", "webdav_suite", "filesystem_suite", "webdav_credentials", "webdav_credential_setup", *E.CASE_ORDER, *FTP_CASE_NAMES,
                           *WEBDAV_CASE_NAMES.values(), *FILESYSTEM_CASE_NAMES})
 
 
@@ -479,11 +480,15 @@ def setup_scope(name):
         return "webdav_suite"
     if re.fullmatch(r"app-filesystem-[a-f0-9]{32}", name):
         return "filesystem_suite"
+    if re.fullmatch(r"app-ftp-[a-f0-9]{32}", name):
+        return "ftp_suite"
+    if name in {"ftp-credentials", "ftp-credential-setup"}:
+        return name.replace("-", "_")
     if name == "webdav-credentials":
         return "webdav_credentials"
     if name == "webdav-credential-setup":
         return "webdav_credential_setup"
-    need(name in E.CASE_ORDER or name in WEBDAV_CASE_NAMES.values() or name in FILESYSTEM_CASE_NAMES, "case_setup_failed")
+    need(name in E.CASE_ORDER or name in WEBDAV_CASE_NAMES.values() or name in FILESYSTEM_CASE_NAMES or name in FTP_CASE_NAMES, "case_setup_failed")
     return name
 
 

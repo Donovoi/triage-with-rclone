@@ -44,12 +44,13 @@ EVENT_KINDS = frozenset({"session_open", "session_closed", "user", "login_a", "l
                          "denied_a", "denied_b", "denied_other", "metadata", "missing",
                          "passive", "data_open", "transfer_start", "listing_sent",
                          "content_sent", "drop_prefix_sent", "drop_fin", "restart_served",
-                         "epoch"})
+                         "epoch", "gate_pre_drop", "gate_restart", "gate_released"})
 ERROR_CODES = frozenset({"input_invalid", "state_reused", "deadline", "io_failed",
                          "line_invalid", "command_unsupported", "command_invalid",
                          "path_invalid", "passive_required", "passive_busy", "peer_invalid",
                          "limit_exceeded", "thread_start_failed", "cleanup_failed",
-                         "epoch_invalid", "epoch_busy", "epoch_unproved", "source_changed"})
+                         "epoch_invalid", "epoch_busy", "epoch_unproved", "source_changed", "gate_invalid"})
+GATES = ("pre_prefix_drop", "post_relogin_transfer")
 
 
 class FixtureError(RuntimeError):
@@ -69,8 +70,10 @@ def _credential(value):
 
 
 class AppFtpState:
-    def __init__(self, user, password_a, *, password_b):
+    def __init__(self, user, password_a, *, password_b, continuity_gates=False):
         if not all(_credential(x) for x in (user, password_a, password_b)) or password_a == password_b:
+            raise FixtureError("input_invalid")
+        if type(continuity_gates) is not bool:
             raise FixtureError("input_invalid")
         self.files = MappingProxyType(corpus())
         self._credentials = tuple(x.encode("ascii") for x in (user, password_a, password_b))
@@ -84,6 +87,48 @@ class AppFtpState:
         self._served = False
         self._transport = None
         self._transport_attempted = False
+        self._gates = ({name: {"entered": None, "released": False, "event": threading.Event()}
+                        for name in GATES} if continuity_gates else None)
+
+    def gate_snapshot(self):
+        """Closed server observations; no process/TCP birth or acquisition proof."""
+        with self.lock:
+            return None if self._gates is None else {
+                name: {"entered": None if item["entered"] is None else dict(item["entered"]),
+                       "released": item["released"]} for name, item in self._gates.items()}
+
+    def release_gate(self, name):
+        with self.lock:
+            if (type(name) is not str or name not in GATES or self._gates is None or
+                    self._transport is None or self.errors):
+                raise self.fail("gate_invalid")
+            self._transport.live()
+            item = self._gates[name]
+            if item["entered"] is None or item["released"]:
+                raise self.fail("gate_invalid")
+            item["released"] = True
+            self._event("gate_released", **item["entered"])
+            item["event"].set()
+
+    def _hold(self, name, session, transfer, member):
+        if self._gates is None:
+            return
+        with self.lock:
+            item = self._gates[name]
+            if item["entered"] is not None or self.errors or self.epoch != 1:
+                raise self.fail("gate_invalid")
+            if name == GATES[1] and not self._gates[GATES[0]]["released"]:
+                raise self.fail("gate_invalid")
+            item["entered"] = dict(session=session.number, transfer=transfer, member=member)
+            self._event("gate_pre_drop" if name == GATES[0] else "gate_restart", **item["entered"])
+        # Original absolute deadline applies; shutdown wakes the wait but never
+        # marks the gate released or grants continuity credit.
+        while not item["event"].wait(min(0.1, max(0.0, self._transport.deadline - time.monotonic()))):
+            self._transport.live()
+        self._transport.live()
+        with self.lock:
+            if not item["released"] or self.errors:
+                raise self.fail("gate_invalid")
 
     def fail(self, code):
         code = code if type(code) is str and code in ERROR_CODES else "io_failed"
@@ -390,6 +435,16 @@ class _Server:
             body = b"".join(self._fact(p, basename=True) for p in paths)
         else:
             body = self.state.files[path]
+        if inject:
+            self.state._hold(GATES[0], session, transfer, member)
+        else:
+            with self.state.lock:
+                drop = self.state._drop
+                restarting = (verb == "RETR" and path == RECONNECT_MEMBER and drop is not None and
+                              session.epoch == drop[0] and session.number != drop[1] and
+                              session.opened > drop[2] and session.auth_event > drop[2] and session.auth == drop[3])
+            if restarting:
+                self.state._hold(GATES[1], session, transfer, member)
         self._send(data, body[:DROP_BYTES] if inject else body)
         if inject:
             self.state._event("drop_prefix_sent", session.number, transfer, member, DROP_BYTES)
@@ -529,6 +584,9 @@ class _Server:
             return
         self._close_attempted = True
         self.stopping.set()
+        if self.state._gates is not None:
+            for item in self.state._gates.values():
+                item["event"].set()
         with self.state.lock:
             resources = list(self.resources)
         for resource in resources:

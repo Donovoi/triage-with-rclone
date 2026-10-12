@@ -4,6 +4,8 @@ from contextlib import redirect_stdout
 import io
 import json
 from pathlib import Path
+import socket
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
@@ -240,6 +242,145 @@ class WaitDiagnosticTests(unittest.TestCase):
             self.assertEqual(output.getvalue(), "")
         with patch("builtins.print", side_effect=OSError("private-canary")):
             T.wait_failure_diagnostic(ValueError(), "poll", T.S.Screen(), False)
+
+
+class ControllerFailureDiagnosticTests(unittest.TestCase):
+    def setUp(self):
+        for module, name in ((subprocess, "Popen"), (socket, "socket")):
+            guard = patch.object(module, name, side_effect=AssertionError("native or network execution forbidden"))
+            guard.start()
+            self.addCleanup(guard.stop)
+        clock = patch.object(T.time, "monotonic", return_value=0)
+        clock.start()
+        self.addCleanup(clock.stop)
+        # Only in-memory fake transport/reader. No session constructor or files.
+        self.controller = object.__new__(T.Controller)
+        self.controller.deadline = 100
+        self.controller.resize_unproven = False
+        self.controller.bridge = Mock()
+        self.controller.transcript = Mock()
+        self.controller.screen = Mock()
+
+    def projected(self, output):
+        line = output.getvalue()
+        self.assertLessEqual(len(line.encode("ascii")), 512)
+        self.assertNotIn("private-canary", line)
+        self.assertTrue(line.startswith("application_tui_controller_failure="))
+        value = json.loads(line.split("=", 1)[1])
+        self.assertEqual(set(value), {"stage", "state", "ok", "app_exited", "app_exit_code", "forced_termination"})
+        return value
+
+    def test_running_predicate_failure_keeps_original_error_and_never_drains(self):
+        cases = (
+            dict(snapshot("poll"), app_exited=True, app_exit_code=1),
+            dict(snapshot("poll"), state="finished"),
+            dict(snapshot("poll"), ok=False, errors=["reader_failed"], forced_termination=True),
+        )
+        original_need = T.H.need
+        for value in cases:
+            T.validate_snapshot(value, "poll")
+            self.controller.bridge.command.reset_mock()
+            self.controller.bridge.command.return_value = value
+            error = T.H.ProducerError("session_failed")
+            def need(condition, code):
+                if not condition:
+                    self.assertEqual(code, "session_failed")
+                    raise error
+                return original_need(condition, code)
+            with patch.object(T.H, "need", side_effect=need), redirect_stdout(io.StringIO()) as output:
+                with self.assertRaises(T.H.ProducerError) as caught:
+                    self.controller.poll()
+            self.assertIs(caught.exception, error)
+            self.assertEqual(self.projected(output), dict(stage="running_predicate", **{
+                key: value[key] for key in ("state", "ok", "app_exited", "app_exit_code", "forced_termination")}))
+            self.controller.bridge.command.assert_called_once_with("poll")
+            self.controller.transcript.available.assert_not_called()
+
+    def test_original_drain_bound_has_129_reads_and_null_reply(self):
+        value = snapshot("poll")
+        events = []
+        self.controller.bridge.command.side_effect = lambda action: events.append(action) or value
+        self.controller.transcript.available.side_effect = lambda: events.append("read") or b"x"
+        with redirect_stdout(io.StringIO()) as output, self.assertRaisesRegex(T.H.ProducerError, "^session_failed$"):
+            self.controller.poll()
+        self.assertEqual(events, ["poll"] + ["read"] * 129)
+        self.assertEqual(self.controller.screen.feed.call_count, 129)
+        self.assertEqual(self.projected(output), dict(stage="drain_bound", state=None, ok=None,
+            app_exited=None, app_exit_code=None, forced_termination=None))
+
+    def test_wait_preserves_drain_exception_and_existing_poll_stage(self):
+        self.controller.bridge.command.return_value = snapshot("poll")
+        self.controller.transcript.available.return_value = b"x"
+        with patch.object(T, "wait_failure_diagnostic") as diagnostic, redirect_stdout(io.StringIO()) as output:
+            with self.assertRaisesRegex(T.H.ProducerError, "^session_failed$") as caught:
+                self.controller.wait(lambda _: True)
+        self.assertIs(diagnostic.call_args.args[0], caught.exception)
+        self.assertEqual(diagnostic.call_args.args[1], "poll")
+        self.assertEqual(self.projected(output)["stage"], "drain_bound")
+
+    def test_success_at_last_permitted_read_is_silent(self):
+        value = snapshot("poll")
+        self.controller.bridge.command.return_value = value
+        self.controller.transcript.available.side_effect = [b"x"] * 128 + [b""]
+        with redirect_stdout(io.StringIO()) as output:
+            self.assertIs(self.controller.poll(), value)
+        self.assertEqual(output.getvalue(), "")
+        self.assertEqual(self.controller.transcript.available.call_count, 129)
+        self.assertEqual(self.controller.screen.feed.call_count, 128)
+        self.controller.bridge.command.assert_called_once_with("poll")
+
+    def test_bridge_error_and_deadline_do_not_invent_a_poll_predicate_or_drain_bound(self):
+        error = T.H.ProducerError("session_failed")
+        self.controller.bridge.command.side_effect = error
+        with redirect_stdout(io.StringIO()) as output, self.assertRaises(T.H.ProducerError) as caught:
+            self.controller.poll()
+        self.assertIs(caught.exception, error)
+        self.assertEqual(output.getvalue(), "")
+        self.controller.transcript.available.assert_not_called()
+        self.controller.bridge.command.side_effect = None
+        self.controller.bridge.command.return_value = snapshot("poll")
+        self.controller.deadline = 0
+        with redirect_stdout(io.StringIO()) as output, self.assertRaisesRegex(T.H.ProducerError, "^deadline_exceeded$"):
+            self.controller.poll()
+        self.assertEqual(output.getvalue(), "")
+        self.controller.transcript.available.assert_not_called()
+
+    def test_broken_diagnostic_output_keeps_both_original_failures(self):
+        for drain in (False, True):
+            value = snapshot("poll") if drain else dict(snapshot("poll"), app_exited=True, app_exit_code=1)
+            self.controller.bridge.command.return_value = value
+            self.controller.transcript.available.return_value = b"x"
+            with patch("builtins.print", side_effect=OSError("private-canary")), \
+                    self.assertRaisesRegex(T.H.ProducerError, "^session_failed$"):
+                self.controller.poll()
+        self.assertEqual(self.controller.transcript.available.call_count, 129)
+
+    def test_only_closed_validated_failed_reply_is_projected(self):
+        valid = dict(snapshot("poll"), app_exited=True, app_exit_code=2**32 - 1)
+        variants = [None, "private-canary", [], dict(valid, private="private-canary"),
+                    dict(valid, action="start"), dict(valid, state="private-canary"),
+                    dict(valid, app_exited=1), dict(valid, app_exit_code=True),
+                    dict(valid, app_exit_code=-1), dict(valid, app_exit_code=2**32),
+                    dict(valid, errors=["private-canary"]), dict(valid, forced_termination=1),
+                    dict(valid, schema_version=True), dict(valid, ok=1), snapshot("poll")]
+        for value in variants:
+            with redirect_stdout(io.StringIO()) as output:
+                T.controller_failure_diagnostic("running_predicate", value)
+            self.assertEqual(output.getvalue(), "")
+        for stage, value in (("private-canary", valid), ([], valid), (None, valid),
+                             ("running_predicate\0", valid), ("drain_bound", valid)):
+            with redirect_stdout(io.StringIO()) as output:
+                T.controller_failure_diagnostic(stage, value)
+            self.assertEqual(output.getvalue(), "")
+        with patch.object(T.TuiBridge, "validate_session", side_effect=AssertionError("counter replay forbidden")), \
+                redirect_stdout(io.StringIO()) as output:
+            T.controller_failure_diagnostic("running_predicate", valid)
+        self.assertEqual(self.projected(output)["app_exit_code"], 2**32 - 1)
+        self.controller.bridge.command.return_value = dict(valid, private="private-canary")
+        with redirect_stdout(io.StringIO()) as output, self.assertRaisesRegex(T.H.ProducerError, "^session_failed$"):
+            self.controller.poll()
+        self.assertEqual(output.getvalue(), "")
+        self.controller.transcript.available.assert_not_called()
 
 
 class ObservationTests(unittest.TestCase):
