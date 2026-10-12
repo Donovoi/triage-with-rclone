@@ -2080,6 +2080,7 @@ dependencies = [
  "tiny_http",
  "tracing",
  "tracing-subscriber",
+ "triage-cleanup-trace",
  "unicode-width",
  "ureq",
  "windows",
@@ -2799,6 +2800,13 @@ dependencies = [
  "tracing",
  "tracing-core",
  "tracing-log",
+]
+
+[[package]]
+name = "triage-cleanup-trace"
+version = "0.0.0"
+dependencies = [
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
