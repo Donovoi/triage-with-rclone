@@ -115,6 +115,61 @@ class FixtureTests(unittest.TestCase):
         state._transport, state._transport_attempted = server, True
         return state, server
 
+    def test_opt_in_gates_hold_before_prefix_and_authenticated_restart(self):
+        state = F.AppFtpState(USER, A, password_b=B, continuity_gates=True)
+        server = F._Server(state)
+        state._transport = server
+        observations = []
+        for gate in F.GATES:
+            def release(timeout, selected=gate):
+                snap = state.gate_snapshot()
+                self.assertIsNotNone(snap[selected]["entered"])
+                self.assertFalse(snap[selected]["released"])
+                self.assertFalse(any(e["kind"] == ("drop_prefix_sent" if selected == F.GATES[0] else "content_sent") for e in state.events))
+                observations.append(selected)
+                state.release_gate(selected)
+                return True
+            state._gates[gate]["event"].wait = release
+        self.reconnect(server)
+        self.assertEqual(observations, list(F.GATES))
+        self.assertEqual([e["kind"] for e in state.events if e["kind"].startswith("gate_")],
+                         ["gate_pre_drop", "gate_released", "gate_restart", "gate_released"])
+        self.assertTrue(state.snapshot()["reauthenticated_restart_served"])
+        with self.assertRaisesRegex(F.FixtureError, "gate_invalid"):
+            state.release_gate(F.GATES[1])
+        server.close()
+
+    def test_gate_deadline_and_teardown_never_release_or_transfer(self):
+        for teardown in (False, True):
+            state = F.AppFtpState(USER, A, password_b=B, continuity_gates=True)
+            server = F._Server(state); state._transport = server
+            def stop(_timeout):
+                if teardown:
+                    server.stopping.set()
+                else:
+                    server.deadline = 0
+                return True
+            state._gates[F.GATES[0]]["event"].wait = stop
+            _, _, data, _ = self.run_session(server, LOGIN + b"EPSV\r\nRETR large/cancel.bin\r\n")
+            self.assertEqual(data.output, b"")
+            self.assertIsNone(state._drop)
+            self.assertFalse(state.gate_snapshot()[F.GATES[0]]["released"])
+            server.close()
+
+    def test_gate_disabled_invalid_release_and_out_of_order_are_sticky(self):
+        state, server = self.server()
+        self.assertIsNone(state.gate_snapshot())
+        with self.assertRaisesRegex(F.FixtureError, "gate_invalid"):
+            state.release_gate(F.GATES[0])
+        for gate in (*F.GATES, "private-canary"):
+            state = F.AppFtpState(USER, A, password_b=B, continuity_gates=True)
+            server = F._Server(state); state._transport = server
+            with self.assertRaisesRegex(F.FixtureError, "gate_invalid"):
+                state.release_gate(gate)
+            self.assertEqual(state.errors, ["gate_invalid"])
+        with self.assertRaisesRegex(F.FixtureError, "input_invalid"):
+            F.AppFtpState(USER, A, password_b=B, continuity_gates=1)
+
     def session(self, server, commands=b""):
         control = FakeSocket(commands)
         return server._admit(control, ("127.0.0.1", 49101)), control

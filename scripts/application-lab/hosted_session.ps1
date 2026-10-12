@@ -118,6 +118,13 @@ try {
                     [TriageApplicationLab.HostedProtocol]::Text($request, 'extraction_root'),
                     [TriageApplicationLab.HostedProtocol]::Text($request, 'expected_sha256'))
             }
+            'observe_continuity' {
+                [TriageApplicationLab.HostedProtocol]::Keys($request, 'action,phase')
+                if ($null -eq $session -or -not $observed) { throw 'protocol_invalid' }
+                $phase = [TriageApplicationLab.HostedProtocol]::Text($request, 'phase')
+                if (-not [string]::Equals($phase, 'arm', [StringComparison]::Ordinal) -and -not [string]::Equals($phase, 'verify', [StringComparison]::Ordinal)) { throw 'protocol_invalid' }
+                $result = $session.ObserveLaunchContinuity($phase)
+            }
             'ctrl_c' {
                 [TriageApplicationLab.HostedProtocol]::Keys($request, 'action')
                 if ($null -eq $session -or $observed) { throw 'protocol_invalid' }
