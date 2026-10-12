@@ -7,6 +7,7 @@ from pathlib import Path
 import socket
 import subprocess
 import tempfile
+import threading
 import types
 import unittest
 from unittest.mock import Mock, patch
@@ -64,7 +65,7 @@ class FakeBridge:
 class ProducerTests(unittest.TestCase):
     def setUp(self):
         self.stack = ExitStack(); self.addCleanup(self.stack.close)
-        for obj, name in ((subprocess, "Popen"), (socket, "socket"), (socket, "create_connection")):
+        for obj, name in ((subprocess, "Popen"), (socket, "socket"), (socket, "create_connection"), (threading.Thread, "start")):
             self.stack.enter_context(patch.object(obj, name, side_effect=AssertionError("native_forbidden")))
 
     def test_hosted_guard_precedes_any_binding_or_path_creation(self):
@@ -239,11 +240,13 @@ class ProducerTests(unittest.TestCase):
                     (P.H, "inventory", lambda p: {})):
                     m.enter_context(patch.object(obj, key, value))
                 remove = m.enter_context(patch.object(P.H, "remove_owned"))
+                output = m.enter_context(patch("builtins.print"))
                 errors = []
                 items, group, actual_closed = P.exercise(Path("synthetic-suite"), Path("app"), "0"*64, RUNTIME,
                     ("a"*64, "b"*64, "c"*64, "d"*107, "e"*107), errors)
             expected = list(P.E.CASES) if fail_name is None else list(P.E.CASES[:P.E.CASES.index(fail_name)+1])
             self.assertEqual(calls, expected)
+            output.assert_not_called()
             self.assertEqual(actual_closed, closed)
             self.assertEqual(group["status"], "passed" if fail_name is None and closed else "failed")
             self.assertEqual(state.advance_epoch.call_count, 2 if fail_name is None else P.E.CASES.index(fail_name))
@@ -277,19 +280,25 @@ class DenialDiagnosticTests(unittest.TestCase):
         good = self.projected(P.denial_error_diagnostic, self.value, self.cause)
         self.assertEqual(good, dict(schema_version=1, case="revoked_a", stage="manifest_denial",
             error_is_string=True, error_within_bound=True, error_text_valid=True, cannot_stat_prefix=True,
-            line_limit_ok=True, notice_count=1, final_notice_grammar=True, expected_cause_equal=True))
+            line_limit_ok=True, notice_count=1, final_notice_grammar=True, expected_cause_equal=True,
+            expected_connection_prefix_equal=True, terminal_category="login_incorrect"))
         for value, changed in (
-            (self.value.replace(":2121", ":2122"), {"expected_cause_equal": False}),
-            (self.value.replace("530 Login", "531 Login"), {"expected_cause_equal": False}),
+            (self.value.replace(":2121", ":2122"), {"expected_cause_equal": False,
+                                                   "expected_connection_prefix_equal": False, "terminal_category": None}),
+            (self.value.replace("530 Login", "531 Login"), {"expected_cause_equal": False, "terminal_category": "other"}),
             ("Cannot stat source: " + self.notice + "PRIVATE_CANARY\n" + self.notice + self.cause,
              {"notice_count": 2}),
             (self.value.replace("2026/10/12", "PRIVATE_CANARY"),
-             {"final_notice_grammar": False, "expected_cause_equal": None}),
-            ("Cannot stat source: PRIVATE_CANARY", {"notice_count": 0, "final_notice_grammar": False, "expected_cause_equal": None}),
+             {"final_notice_grammar": False, "expected_cause_equal": None,
+              "expected_connection_prefix_equal": None, "terminal_category": None}),
+            ("Cannot stat source: PRIVATE_CANARY", {"notice_count": 0, "final_notice_grammar": False, "expected_cause_equal": None,
+                                                   "expected_connection_prefix_equal": None, "terminal_category": None}),
             (self.notice + self.cause, {"cannot_stat_prefix": False, "notice_count": None,
-                                      "line_limit_ok": None, "final_notice_grammar": None, "expected_cause_equal": None}),
+                                      "line_limit_ok": None, "final_notice_grammar": None, "expected_cause_equal": None,
+                                      "expected_connection_prefix_equal": None, "terminal_category": None}),
             ("Cannot stat source: " + "PRIVATE_CANARY\n" * 128 + self.notice + self.cause,
-             {"line_limit_ok": False, "notice_count": None, "final_notice_grammar": None, "expected_cause_equal": None}),
+             {"line_limit_ok": False, "notice_count": None, "final_notice_grammar": None, "expected_cause_equal": None,
+              "expected_connection_prefix_equal": None, "terminal_category": None}),
         ):
             with self.subTest(changed=changed):
                 expected = dict(good, **changed)
@@ -309,6 +318,31 @@ class DenialDiagnosticTests(unittest.TestCase):
                 self.assertIsNone(record["cannot_stat_prefix"])
                 self.assertIsNone(record["notice_count"])
                 self.assertIsNone(record["expected_cause_equal"])
+                self.assertIsNone(record["expected_connection_prefix_equal"])
+                self.assertIsNone(record["terminal_category"])
+
+    def test_exact_prefix_and_whole_terminal_categories_do_not_relax_denial(self):
+        for terminal, category in (("530 Login incorrect", "login_incorrect"), ("530 Login required", "login_required"),
+                                   ("530 Login incorrect ", "other"), ("530 Login incorrect PRIVATE_CANARY", "other"),
+                                   ("530 login incorrect", "other"), ("PRIVATE_CANARY", "other"),
+                                   ("530 Login incorrect\t", "other")):
+            value = self.value.replace("530 Login incorrect", terminal)
+            record = self.projected(P.denial_error_diagnostic, value, self.cause)
+            self.assertIs(record["expected_connection_prefix_equal"], True)
+            self.assertEqual(record["terminal_category"], category)
+            if terminal != "530 Login incorrect":
+                self.assertFalse(P.W.exact_rc_error(value, self.cause, stat=True))
+        for old, new in (("127.0.0.1", "127.0.0.2"), (":2121", ":2122"), ("NewFs", "newfs"),
+                         ('"127.0.0.1:2121"', '"PRIVATE_CANARY"')):
+            record = self.projected(P.denial_error_diagnostic, self.value.replace(old, new), self.cause)
+            self.assertIs(record["expected_connection_prefix_equal"], False)
+            self.assertIsNone(record["terminal_category"])
+        for cause in (None, {}, "PRIVATE_CANARY", self.cause.replace(":2121", ":0"),
+                      self.cause.replace(":2121", ":65536"), self.cause.replace(":2121", ":02121"),
+                      self.cause + "\n", self.cause + "\x00"):
+            record = self.projected(P.denial_error_diagnostic, self.value, cause)
+            self.assertIsNone(record["expected_connection_prefix_equal"])
+            self.assertIsNone(record["terminal_category"])
 
     def negative_manifest(self, case, error):
         f = P.E.fixture_manifest()
@@ -370,11 +404,18 @@ class DenialDiagnosticTests(unittest.TestCase):
 
     def state(self):
         state = P.F.AppFtpState("PRIVATE_CANARY_USER", "PRIVATE_CANARY_A", password_b="PRIVATE_CANARY_B")
-        state._event("login_a", 1)
+        for kind, session, transfer, count in (("session_open", 1, 0, 0), ("user", 1, 0, 0), ("login_a", 1, 0, 0),
+                ("transfer_start", 1, 1, 0), ("gate_pre_drop", 1, 1, 0), ("gate_released", 1, 1, 0),
+                ("drop_prefix_sent", 1, 1, 65536), ("drop_fin", 1, 1, 65536), ("session_open", 2, 0, 0),
+                ("user", 2, 0, 0), ("login_a", 2, 0, 0), ("transfer_start", 2, 2, 0),
+                ("gate_restart", 2, 2, 0), ("gate_released", 2, 2, 0), ("content_sent", 2, 2, 2097152),
+                ("restart_served", 2, 2, 2097152)):
+            state._event(kind, session, transfer, 2 if transfer else 0, count)
         state.epoch = 2
-        state._event("session_open", 2)
-        state._event("user", 2)
-        state._event("denied_a", 2)
+        state._event("epoch")
+        state._event("session_open", 3)
+        state._event("user", 3)
+        state._event("denied_a", 3)
         return state
 
     def test_fixture_projection_has_only_epoch_two_counts_and_allowlisted_errors(self):
@@ -382,8 +423,11 @@ class DenialDiagnosticTests(unittest.TestCase):
         state.errors = sorted(P.F.ERROR_CODES)
         with patch.object(state, "snapshot", side_effect=AssertionError("snapshot_forbidden")), \
              patch.object(state, "unchanged", side_effect=AssertionError("rehash_forbidden")):
-            record = self.projected(P.denial_fixture_diagnostic, state)
+            record = self.projected(P.denial_fixture_diagnostic, state, True)
         self.assertTrue(record["snapshot_available"])
+        self.assertEqual(record["availability_reason"], "available")
+        self.assertEqual(record["timing"], "after_fixture_teardown_attempt")
+        self.assertIs(record["fixture_cleanup_complete"], True)
         self.assertEqual(record["epoch"], 2)
         self.assertEqual(record["errors"], sorted(P.F.ERROR_CODES))
         self.assertEqual(record["counts"], dict(session_open=1, user=1, login_a=0, login_b=0,
@@ -391,32 +435,55 @@ class DenialDiagnosticTests(unittest.TestCase):
 
     def test_fixture_busy_or_malformed_state_has_no_invented_counters(self):
         unavailable = dict(schema_version=1, case="revoked_a", stage="manifest_denial", epoch=2,
-                           snapshot_available=False, counts=None, errors=None)
-        for mutate in (lambda s: setattr(s, "epoch", True), lambda s: setattr(s, "epoch", 3),
-                       lambda s: setattr(s, "errors", ["PRIVATE_CANARY"]), lambda s: setattr(s, "errors", ["deadline", "deadline"]),
-                       lambda s: s.events[0].update(private="PRIVATE_CANARY"), lambda s: s.events[0].update(ordinal=True),
-                       lambda s: s.events[0].update(epoch=True), lambda s: s.events[0].update(bytes=-1),
-                       lambda s: s.events[0].update(kind="PRIVATE_CANARY"), lambda s: setattr(s, "events", [{}] * (P.F.MAX_EVENTS + 1))):
+                           timing="after_fixture_teardown_attempt", fixture_cleanup_complete=False,
+                           snapshot_available=False, availability_reason=None, counts=None, errors=None)
+        for reason, mutate in (
+                ("epoch_invalid", lambda s: setattr(s, "epoch", True)), ("epoch_invalid", lambda s: setattr(s, "epoch", 3)),
+                ("events_shape", lambda s: setattr(s, "events", ())),
+                ("events_shape", lambda s: setattr(s, "events", [{}] * (P.F.MAX_EVENTS + 1))),
+                ("errors_shape", lambda s: setattr(s, "errors", ())),
+                ("errors_shape", lambda s: setattr(s, "errors", ["PRIVATE_CANARY"])),
+                ("errors_shape", lambda s: setattr(s, "errors", ["deadline", "deadline"])),
+                ("errors_shape", lambda s: setattr(s, "errors", ["deadline"] * (len(P.F.ERROR_CODES) + 1))),
+                ("event_invalid", lambda s: s.events[0].update(private="PRIVATE_CANARY")),
+                ("event_invalid", lambda s: s.events[0].update(ordinal=True)),
+                ("event_invalid", lambda s: s.events[0].update(epoch=True)),
+                ("event_invalid", lambda s: s.events[0].update(bytes=-1)),
+                ("event_invalid", lambda s: s.events[0].update(kind="PRIVATE_CANARY"))):
             state = self.state(); mutate(state)
-            self.assertEqual(self.projected(P.denial_fixture_diagnostic, state), unavailable)
-        self.assertEqual(self.projected(P.denial_fixture_diagnostic, None), unavailable)
+            self.assertEqual(self.projected(P.denial_fixture_diagnostic, state, False), dict(unavailable, availability_reason=reason))
+        self.assertEqual(self.projected(P.denial_fixture_diagnostic, None, False), dict(unavailable, availability_reason="state_type"))
         state = self.state(); state.lock = Mock()
         state.lock.acquire.return_value = False
-        self.assertEqual(self.projected(P.denial_fixture_diagnostic, state), unavailable)
+        self.assertEqual(self.projected(P.denial_fixture_diagnostic, state, False), dict(unavailable, availability_reason="lock_busy"))
         state.lock.acquire.assert_called_once_with(blocking=False)
         state.lock.release.assert_not_called()
+
+    def test_unavailable_reason_order_and_cleanup_boolean_are_closed(self):
+        state = self.state(); state.epoch = 3; state.events = None; state.errors = None
+        self.assertEqual(self.projected(P.denial_fixture_diagnostic, state, True)["availability_reason"], "epoch_invalid")
+        state.epoch = 2
+        self.assertEqual(self.projected(P.denial_fixture_diagnostic, state, True)["availability_reason"], "events_shape")
+        state.events = [{}]
+        self.assertEqual(self.projected(P.denial_fixture_diagnostic, state, True)["availability_reason"], "errors_shape")
+        state.errors = []
+        self.assertEqual(self.projected(P.denial_fixture_diagnostic, state, True)["availability_reason"], "event_invalid")
+        for closed in (None, 0, 1, "PRIVATE_CANARY", [], {}):
+            with patch("builtins.print") as output:
+                P.denial_fixture_diagnostic(self.state(), closed)
+            output.assert_not_called()
 
     def test_fixture_diagnostic_failures_release_lock_and_do_not_escape(self):
         state = self.state(); state.lock = Mock()
         state.lock.acquire.return_value = True
         with patch("builtins.print", side_effect=OSError("PRIVATE_CANARY")):
-            P.denial_fixture_diagnostic(state)
+            P.denial_fixture_diagnostic(state, True)
         state.lock.release.assert_called_once_with()
         with patch.object(P.E, "compact", side_effect=RuntimeError("PRIVATE_CANARY")):
-            P.denial_fixture_diagnostic(state)
+            P.denial_fixture_diagnostic(state, True)
         self.assertEqual(state.lock.release.call_count, 2)
 
-    def test_execute_emits_failure_snapshot_before_same_single_cleanup(self):
+    def test_execute_defers_fixture_snapshot_and_keeps_same_single_bridge_cleanup(self):
         with tempfile.TemporaryDirectory() as directory:
             owner = Path(directory); app = owner / "input.bin"; app.write_bytes(b"inert-no-execution")
             app_sha = hashlib.sha256(app.read_bytes()).hexdigest()
@@ -428,7 +495,7 @@ class DenialDiagnosticTests(unittest.TestCase):
                 item.close = traced_close
                 return item
             def source(case): (case / "source").mkdir(); return P.H.identity(case / "source")
-            def diagnostic(state): order.append("diagnostic")
+            def diagnostic(*args): order.append("diagnostic")
             with ExitStack() as mocks:
                 for obj, key, value in ((P.H, "prepare", lambda parent, name: (parent / name).mkdir()),
                     (P.H, "create_private_roots", lambda case: {}), (P.H, "private_directory", lambda case, child: (case / child).mkdir()),
@@ -441,13 +508,87 @@ class DenialDiagnosticTests(unittest.TestCase):
                 errors = []
                 item = P.execute("revoked_a", owner, app, app_sha, RUNTIME,
                     types.SimpleNamespace(deadline=P.time.monotonic()+120, endpoint=("127.0.0.1", 2121)), self.state(), b"synthetic", errors)
-            self.assertEqual(order, ["diagnostic", "close"])
+            self.assertEqual(order, ["close"])
             self.assertEqual(errors, ["denial_failed"])
             self.assertEqual(item["record"]["failure_code"], "denial_failed")
             self.assertTrue(item["record"]["checks"]["process_cleanup"])
             self.assertFalse(item["record"]["checks"]["manifest_exact"])
             self.assertEqual(bridges[0].close_calls, 1)
             self.assertEqual([a for a, _ in bridges[0].commands].count("start_source_observed"), 1)
+
+    def test_group_projects_once_after_existing_teardown_and_preserves_failure(self):
+        diagnostic = P.denial_fixture_diagnostic
+        for closed, fault in ((True, None), (False, None), (True, "exit"),
+                              (True, "closed"), (True, "printer"), (True, "formatter")):
+            with self.subTest(closed=closed, fault=fault):
+                order, calls = [], []
+                server = Mock(deadline=P.time.monotonic()+180, endpoint=("127.0.0.1", 2121))
+                server.quiescent.return_value = True
+                context = Mock(); context.__enter__ = Mock(return_value=server)
+                def exit_context(*args):
+                    order.append("teardown")
+                    if fault == "exit": raise OSError("PRIVATE_CANARY")
+                context.__exit__ = Mock(side_effect=exit_context)
+                def fixture_closed(actual):
+                    self.assertIs(actual, server); order.append("closed")
+                    if fault == "closed": raise OSError("PRIVATE_CANARY")
+                    return closed
+                def advance(state, *args, **kwargs):
+                    state.epoch = 2; state._event("epoch")
+                def execute(name, owner, app, app_sha, runtime, actual_server, state, config, errors):
+                    calls.append(name)
+                    if name == "accepted_a":
+                        state.events = self.state().events[:-4]
+                    else:
+                        state._event("session_open", 3); state._event("user", 3); state._event("denied_a", 3)
+                    row = dict(status="failed", failure_code=None, checks=dict.fromkeys(P.E.CHECKS[name], True))
+                    row["checks"].update(group_finalized=False, fixture_cleanup=False, temp_cleanup=False)
+                    if name == "revoked_a": P.mark(row, "denial_failed", errors)
+                    return dict(name=name, case=owner/name, record=row, lease=(1,2), config=config,
+                                artifact="a"*64, roots={}, baseline={})
+                def projected(state, actual_closed):
+                    order.append("diagnostic")
+                    diagnostic(state, actual_closed)
+                with ExitStack() as mocks:
+                    for obj, key, value in ((P.H, "prepare", Mock()), (P.H, "identity", lambda p: (1,2)),
+                        (P.F.AppFtpState, "advance_epoch", advance), (P.F, "serve_ftp", Mock(return_value=context)),
+                        (P, "execute", execute), (P, "fixture_checks", lambda *a: {}), (P, "preserved", Mock()),
+                        (P, "fixture_closed", fixture_closed), (P.H, "application_roots_empty", Mock()),
+                        (P.H, "helper_baseline", lambda *a: {}), (P.H, "helper_cleanup_preserved", Mock()),
+                        (P.H, "inventory", lambda p: {})):
+                        mocks.enter_context(patch.object(obj, key, value))
+                    remove = mocks.enter_context(patch.object(P.H, "remove_owned"))
+                    projected_call = mocks.enter_context(patch.object(P, "denial_fixture_diagnostic", side_effect=projected))
+                    output = mocks.enter_context(patch("builtins.print", side_effect=OSError("PRIVATE_CANARY") if fault == "printer" else None))
+                    if fault == "formatter":
+                        mocks.enter_context(patch.object(P.E, "compact", side_effect=RuntimeError("PRIVATE_CANARY")))
+                    errors = []
+                    items, group, actual_closed = P.exercise(Path("synthetic-suite"), Path("app"), "0"*64, RUNTIME,
+                        ("a"*64, "b"*64, "c"*64, "d"*107, "e"*107), errors)
+                self.assertEqual(calls, ["accepted_a", "revoked_a"])
+                self.assertEqual(order, ["teardown", "diagnostic"] if fault == "exit" else ["teardown", "closed", "diagnostic"])
+                context.__exit__.assert_called_once_with(None, None, None)
+                projected_call.assert_called_once()
+                expected_closed = closed and fault not in {"exit", "closed"}
+                self.assertIs(actual_closed, expected_closed)
+                self.assertIs(projected_call.call_args.args[1], expected_closed)
+                self.assertEqual(group["status"], "failed")
+                self.assertEqual(group["failure_code"], "denial_failed")
+                self.assertEqual(items[1]["record"]["failure_code"], "denial_failed")
+                self.assertTrue(all(item["record"]["status"] == "failed" for item in items))
+                self.assertEqual(errors, ["denial_failed", "group_failed"] if expected_closed else
+                                 ["denial_failed", "cleanup_failed", "cleanup_failed"])
+                if not expected_closed: remove.assert_not_called()
+                if fault not in {"formatter", "printer"}:
+                    output.assert_called_once()
+                    line = output.call_args.args[0]
+                    self.assertLessEqual(len(line.encode("ascii")) + 1, 1024)
+                    self.assertNotIn("PRIVATE_CANARY", line)
+                    record = json.loads(line.split("=", 1)[1])
+                    self.assertEqual(record["timing"], "after_fixture_teardown_attempt")
+                    self.assertIs(record["fixture_cleanup_complete"], expected_closed)
+                    self.assertEqual(record["availability_reason"], "available")
+                    self.assertEqual(record["counts"]["denied_a"], 1)
 
 
 if __name__ == "__main__":

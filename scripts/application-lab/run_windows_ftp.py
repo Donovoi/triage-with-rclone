@@ -69,7 +69,8 @@ def denial_error_diagnostic(value, cause):
             error_is_string=type(value) is str,
             error_within_bound=type(value) is str and 0 < len(value) <= 65536,
             error_text_valid=False, cannot_stat_prefix=None, line_limit_ok=None,
-            notice_count=None, final_notice_grammar=None, expected_cause_equal=None)
+            notice_count=None, final_notice_grammar=None, expected_cause_equal=None,
+            expected_connection_prefix_equal=None, terminal_category=None)
         if record["error_within_bound"]:
             record["error_text_valid"] = "\x00" not in value and "\r" not in value
             if record["error_text_valid"]:
@@ -84,6 +85,15 @@ def denial_error_diagnostic(value, cause):
                         record["final_notice_grammar"] = match is not None
                         if match is not None and type(cause) is str and 0 < len(cause) <= 512:
                             record["expected_cause_equal"] = match[1] == cause
+                            connection = re.fullmatch(
+                                r'(NewFs: failed to make FTP connection to "127\.0\.0\.1:([1-9][0-9]{0,4})": )530 Login incorrect', cause)
+                            if connection is not None and int(connection[2]) <= 65535:
+                                record["expected_connection_prefix_equal"] = match[1].startswith(connection[1])
+                                if record["expected_connection_prefix_equal"]:
+                                    # Exact replies emitted by the fixed fixture, not a generic status-code matcher.
+                                    terminal = match[1][len(connection[1]):]
+                                    record["terminal_category"] = {"530 Login incorrect": "login_incorrect",
+                                        "530 Login required": "login_required"}.get(terminal, "other")
         line = "application_ftp_denial_error=" + E.compact(record).decode("ascii")
         if len(line.encode("ascii")) + 1 <= 1024:
             print(line, flush=True)
@@ -91,28 +101,38 @@ def denial_error_diagnostic(value, cause):
         pass
 
 
-def denial_fixture_diagnostic(state):
-    """Nonblocking copy of owned epoch-2 facts; no transport/source reread."""
+def denial_fixture_diagnostic(state, closed):
+    """One post-teardown nonblocking copy of owned epoch-2 facts; no reread."""
     try:
+        if type(closed) is not bool:
+            return
         record = dict(schema_version=1, case="revoked_a", stage="manifest_denial",
-                      epoch=2, snapshot_available=False, counts=None, errors=None)
+                      timing="after_fixture_teardown_attempt", fixture_cleanup_complete=closed,
+                      epoch=2, snapshot_available=False, availability_reason="state_type", counts=None, errors=None)
+        if type(state) is F.AppFtpState:
+            record["availability_reason"] = "lock_busy"
         if type(state) is F.AppFtpState and state.lock.acquire(blocking=False):
             try:
                 events, errors = state.events, state.errors
                 fields = {"ordinal", "kind", "epoch", "session", "transfer", "member", "bytes"}
                 limits = {"epoch": (1, 3), "session": (0, F.MAX_SESSIONS), "transfer": (0, F.MAX_TRANSFERS),
                           "member": (0, len(F.MANIFEST)), "bytes": (0, F.MAX_WIRE_BYTES)}
-                valid = (type(state.epoch) is int and state.epoch == 2 and type(events) is list and
-                    len(events) <= F.MAX_EVENTS and type(errors) is list and len(errors) <= len(F.ERROR_CODES) and
-                    all(type(e) is str and e in F.ERROR_CODES for e in errors) and len(set(errors)) == len(errors) and
-                    all(type(e) is dict and set(e) == fields and type(e["ordinal"]) is int and e["ordinal"] == index and
+                if type(state.epoch) is not int or state.epoch != 2:
+                    record["availability_reason"] = "epoch_invalid"
+                elif type(events) is not list or len(events) > F.MAX_EVENTS:
+                    record["availability_reason"] = "events_shape"
+                elif (type(errors) is not list or len(errors) > len(F.ERROR_CODES) or
+                      not all(type(e) is str and e in F.ERROR_CODES for e in errors) or len(set(errors)) != len(errors)):
+                    record["availability_reason"] = "errors_shape"
+                elif not all(type(e) is dict and set(e) == fields and type(e["ordinal"]) is int and e["ordinal"] == index and
                         type(e["kind"]) is str and e["kind"] in F.EVENT_KINDS and
                         all(type(e[k]) is int and lo <= e[k] <= hi for k, (lo, hi) in limits.items())
-                        for index, e in enumerate(events, 1)))
-                if valid:
+                        for index, e in enumerate(events, 1)):
+                    record["availability_reason"] = "event_invalid"
+                else:
                     kinds = ("session_open", "user", "login_a", "login_b", "denied_a", "denied_b",
                              "denied_other", "transfer_start", "content_sent")
-                    record.update(snapshot_available=True, errors=sorted(errors),
+                    record.update(snapshot_available=True, availability_reason="available", errors=sorted(errors),
                         counts={kind: sum(e["epoch"] == 2 and e["kind"] == kind for e in events) for kind in kinds})
             finally:
                 state.lock.release()
@@ -384,8 +404,6 @@ def execute(name, owner, application, app_sha, runtime, server, state, config, e
         item["artifact"] = W.fingerprint(case)
     except BaseException as error:
         mark(record, failure(error), errors)
-        if name == "revoked_a" and record["failure_code"] == "denial_failed":
-            denial_fixture_diagnostic(state)
     finally:
         if bridge is not None:
             try:
@@ -456,6 +474,8 @@ def exercise(suite, application, app_sha, runtime, secret, errors):
                 closed = False
         elif attempted:
             closed = state is not None and fixture_closed(state._transport)
+        if any(item["name"] == "revoked_a" and item["record"]["failure_code"] == "denial_failed" for item in items):
+            denial_fixture_diagnostic(state, closed)
         group["checks"]["fixture_cleanup"] = closed
         group["checks"]["all_processes_reaped"] = owner_id is not None and len(items) > 0 and all(i["record"]["checks"]["process_cleanup"] for i in items)
         preserved_all = True
