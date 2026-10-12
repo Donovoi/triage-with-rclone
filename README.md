@@ -28,7 +28,7 @@ A new nightly is published after each merged PR passes the required checks. Buil
 
 See [test status and known gaps](rclone-triage/tests/provider_testing.md) for the detailed results.
 
-Current work: test FTP downloads after a lost connection, finish Dropbox cancellation checks, and investigate a Windows cleanup error. Then continue testing the other providers.
+Current work: test FTP reconnects and B2 sign-in renewal, finish Dropbox checks, and fix Windows test startup and cleanup failures. The B2 tests use a local test server; real-account testing is still pending.
 
 ## What comes next
 
