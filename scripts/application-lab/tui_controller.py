@@ -80,6 +80,29 @@ def wait_failure_diagnostic(error, stage, screen, predicate_invoked):
         pass
 
 
+def controller_failure_diagnostic(stage, value=None):
+    """Distinguish two existing failures without another poll or transcript read."""
+    try:
+        if type(stage) is not str or stage not in {"running_predicate", "drain_bound"}:
+            return
+        fields = {key: None for key in ("state", "ok", "app_exited", "app_exit_code", "forced_termination")}
+        if stage == "running_predicate":
+            # Pure schema validation only; never replay bridge counter transitions.
+            validate_snapshot(value, "poll")
+            if type(value["state"]) is not str or (value["ok"] and not value["app_exited"] and value["state"] == "running"):
+                return
+            fields = {key: value[key] for key in fields}
+        elif value is not None:
+            return
+        # drain() also serves non-poll callers. Its bound has no supplied reply;
+        # null means unavailable, not a second observation or an inferred exit.
+        line = b"application_tui_controller_failure=" + H.E.compact(dict(stage=stage, **fields))
+        if len(line) + 1 <= 512:
+            print(line.decode("ascii"), flush=True)
+    except Exception:
+        pass  # Diagnostics cannot replace the original controller failure.
+
+
 def validate_snapshot(value, action):
     """Validate closed fields without replaying a session's counter transition."""
     H.need(type(action) is str and action in SESSION_ACTIONS and
@@ -217,11 +240,16 @@ class Controller:
                 return
             self.screen.feed(data)
             H.need(time.monotonic() < self.deadline, "deadline_exceeded")
+        controller_failure_diagnostic("drain_bound")
         raise H.ProducerError("session_failed")
 
     def poll(self):
         value = self.bridge.command("poll")
-        H.need(value["ok"] and not value["app_exited"] and value["state"] == "running", "session_failed")
+        try:
+            H.need(value["ok"] and not value["app_exited"] and value["state"] == "running", "session_failed")
+        except H.ProducerError:
+            controller_failure_diagnostic("running_predicate", value)
+            raise
         self.drain()
         return value
 
