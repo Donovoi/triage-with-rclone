@@ -510,17 +510,79 @@ def preserved(item, app_sha):
         need(fingerprint(case) == item["artifact"], "preservation_failed")
 
 
+CLEANUP_DIAGNOSTIC_STAGES = frozenset({"eligibility", "preservation", "private_identity", "private_inventory",
+    "private_empty", "helper_identity", "helper_inventory", "helper_limit", "helper_directories",
+    "helper_layout", "helper_comparison", "acl_verify", "owned_removal"})
+CLEANUP_COUNT_STAGES = frozenset({"private_empty", "helper_limit", "helper_directories", "helper_layout",
+                                 "helper_comparison"})
+
+
+def cleanup_failure_diagnostic(name, observation, error):
+    """Closed observations only; never stringify an exception or authorize removal."""
+    need(type(name) is str and name in E.INVOCATION_CHECKS and type(observation) is dict and
+         set(observation) == {"stage", "location", "summary"}, "cleanup_failed")
+    stage, location, summary = (observation[key] for key in ("stage", "location", "summary"))
+    need(type(stage) is str and stage in CLEANUP_DIAGNOSTIC_STAGES, "cleanup_failed")
+    need((type(location) is str and location == "helper_env" if stage.startswith("helper_") else
+          type(location) is str and location in H.PRIVATE_LOCATIONS if stage.startswith("private_") else
+          location is None), "cleanup_failed")
+    need(summary is None or stage in CLEANUP_COUNT_STAGES, "cleanup_failed")
+    code = getattr(error, "winerror", None) if isinstance(error, OSError) else None
+    code = code if type(code) is int and 0 <= code <= 65535 else None
+    value = dict(backend="webdav", scope=name, failure_code="cleanup_failed", stage=stage, location=location,
+                 **H.diagnostic_counts(summary), os_code=code)
+    encoded = E.compact(value)
+    prefix = "application_webdav_cleanup_diagnostic="
+    need(len(prefix) + len(encoded) <= 1024, "cleanup_failed")
+    print(prefix + encoded.decode("ascii"), flush=True)
+
+
+def report_cleanup_failure(item, observation, error):
+    # Each independent diagnostic is best effort. Neither reads secrets into public
+    # output nor replaces the primary failure when reading/printing is unavailable.
+    try:
+        cleanup_failure_diagnostic(item["name"], observation, error)
+    except BaseException:
+        pass
+    try:
+        name = item["name"]
+        need(type(name) is str and name in E.INVOCATION_CHECKS, "cleanup_failed")
+        diagnostic = H.read_runtime_cleanup_diagnostic(item["case"], item["lease"])
+        if diagnostic is None:
+            return
+        diagnostic = H.runtime_cleanup_value(diagnostic)
+        residue = H.read_runtime_cleanup_residue(item["case"], item["lease"], diagnostic)
+    except BaseException:
+        return
+    for prefix, value, validate in (("diagnostic", diagnostic, H.runtime_cleanup_value),
+                                     ("residue", residue, H.runtime_residue_value)):
+        if value is not None:
+            try:
+                encoded = E.compact(dict(backend="webdav", scope=name, **validate(value)))
+                label = "application_webdav_runtime_cleanup_" + prefix + "="
+                need(len(label) + len(encoded) <= 1024, "cleanup_failed")
+                print(label + encoded.decode("ascii"), flush=True)
+            except BaseException:
+                pass
+
+
 def remove_case(item, app_sha, errors, *, group=None):
     record, checks = item["record"], item["record"]["checks"]
+    observation = dict(stage="eligibility", location=None, summary=None)
     if item["lease"] is None or not checks["process_cleanup"] or not checks["fixture_cleanup"]:
         mark(record, "cleanup_failed", errors)
+        report_cleanup_failure(item, observation, None)
         return
     try:
+        observation.update(stage="preservation")
         preserved(item, app_sha)
-        H.application_roots_empty(item["case"], item["roots"])
-        H.helper_cleanup_preserved(H.helper_baseline(item["case"], item["roots"]), item["baseline"])
+        H.application_roots_empty(item["case"], item["roots"], observation=observation)
+        current = H.helper_baseline(item["case"], item["roots"], observation=observation)
+        observation.update(stage="helper_comparison")
+        H.helper_cleanup_preserved(current, item["baseline"])
         # The verifier is another owned helper invocation; a thrown/partial
         # invocation cannot leave the earlier application reap as global proof.
+        observation.update(stage="acl_verify", location=None, summary=None)
         item["final_helper_reaped"] = False
         prior_group_reaped = group["checks"]["all_processes_reaped"] if group is not None else None
         if group is None:
@@ -533,10 +595,12 @@ def remove_case(item, app_sha, errors, *, group=None):
             checks["process_cleanup"] = True
         else:
             group["checks"]["all_processes_reaped"] = prior_group_reaped
+        observation.update(stage="owned_removal")
         H.remove_owned(item["case"], item["lease"])
         checks["temp_cleanup"] = True
-    except BaseException:
+    except BaseException as error:
         mark(record, "cleanup_failed", errors)
+        report_cleanup_failure(item, observation, error)
 
 
 def finish_record(record, errors):
