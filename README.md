@@ -28,7 +28,9 @@ A new nightly is published after each merged PR passes the required checks. Buil
 
 See [test status and known gaps](rclone-triage/tests/provider_testing.md) for the detailed results.
 
-Current work: test FTP downloads after a lost connection, finish Dropbox cancellation checks, and investigate a Windows cleanup error. Then continue testing the other providers.
+Local-file and ZIP command tests have passed, including cancellation and cleanup.
+
+Dropbox download cancellation passed on the tested Windows build. Current work: test FTP downloads after a lost connection, investigate Windows cleanup errors, then continue testing the other providers.
 
 ## What comes next
 
