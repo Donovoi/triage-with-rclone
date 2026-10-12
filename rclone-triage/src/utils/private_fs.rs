@@ -403,6 +403,21 @@ impl PrivateTempDir {
         self.remove_with(&path, Some(expected_leaf), |path| fs::remove_dir_all(path))
     }
 
+    #[cfg(all(windows, feature = "runtime-cleanup-trace"))]
+    pub(crate) fn close_with_residue_traced(
+        mut self,
+        expected_leaf: &OsStr,
+        trace: &mut triage_cleanup_trace::Trace,
+    ) -> io::Result<()> {
+        let path = self.path.take().unwrap();
+        // remove_with retains all original identity/DACL gates and drops its root
+        // pin before invoking this sole original removal. Residue inspection still
+        // follows the original error; tracing cannot replace or retry that result.
+        self.remove_with(&path, Some(expected_leaf), |path| {
+            trace.measure(|| fs::remove_dir_all(path))
+        })
+    }
+
     fn remove(&self, path: &Path) -> io::Result<()> {
         self.remove_with(path, None, |path| fs::remove_dir_all(path))
     }

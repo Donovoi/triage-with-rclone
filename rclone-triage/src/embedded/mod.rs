@@ -59,6 +59,8 @@ pub struct ExtractedBinary {
     owns_file: bool,
     cleanup_failed: bool,
     tracker: Arc<RuntimeTracker>,
+    #[cfg(all(windows, feature = "runtime-cleanup-trace"))]
+    cleanup_trace: Option<triage_cleanup_trace::Trace>,
 }
 
 impl ExtractedBinary {
@@ -103,6 +105,9 @@ impl ExtractedBinary {
         file.sync_all()
             .with_context(|| format!("Failed to sync {:?}", exe_path))?;
 
+        #[cfg(all(windows, feature = "runtime-cleanup-trace"))]
+        let cleanup_trace = triage_cleanup_trace::Trace::arm(&file, RCLONE_EXE_SHA256);
+
         // Make executable on Unix (no-op on Windows)
         #[cfg(unix)]
         {
@@ -118,6 +123,8 @@ impl ExtractedBinary {
             owns_file: true,
             cleanup_failed: false,
             tracker: RuntimeTracker::new(),
+            #[cfg(all(windows, feature = "runtime-cleanup-trace"))]
+            cleanup_trace,
         })
     }
 
@@ -169,7 +176,15 @@ impl ExtractedBinary {
             self.owns_file = false;
             let closed = match self.path.file_name() {
                 Some(leaf) if self.path.parent() == Some(dir_path.as_path()) => {
-                    temp_dir.close_with_residue(leaf)
+                    #[cfg(all(windows, feature = "runtime-cleanup-trace"))]
+                    let closed = if let Some(mut trace) = self.cleanup_trace.take() {
+                        temp_dir.close_with_residue_traced(leaf, &mut trace)
+                    } else {
+                        temp_dir.close_with_residue(leaf)
+                    };
+                    #[cfg(not(all(windows, feature = "runtime-cleanup-trace")))]
+                    let closed = temp_dir.close_with_residue(leaf);
+                    closed
                 }
                 _ => temp_dir.close(),
             };
@@ -234,6 +249,8 @@ mod tests {
             owns_file: true,
             cleanup_failed: false,
             tracker: RuntimeTracker::new(),
+            #[cfg(all(windows, feature = "runtime-cleanup-trace"))]
+            cleanup_trace: None,
         }
     }
 
@@ -316,6 +333,8 @@ while :; do :; done
             owns_file: true,
             cleanup_failed: false,
             tracker: RuntimeTracker::new(),
+            #[cfg(all(windows, feature = "runtime-cleanup-trace"))]
+            cleanup_trace: None,
         }
     }
 
@@ -448,6 +467,8 @@ while :; do :; done
             owns_file: true,
             cleanup_failed: false,
             tracker: tracker.clone(),
+            #[cfg(all(windows, feature = "runtime-cleanup-trace"))]
+            cleanup_trace: None,
         };
         let runner = crate::rclone::RcloneRunner::from_extracted(&binary);
         assert!(binary.cleanup().is_err());
@@ -474,6 +495,8 @@ while :; do :; done
             owns_file: true,
             cleanup_failed: false,
             tracker: RuntimeTracker::new(),
+            #[cfg(all(windows, feature = "runtime-cleanup-trace"))]
+            cleanup_trace: None,
         };
         assert!(binary.cleanup().is_err());
         assert!(binary.cleanup().is_err());
@@ -524,6 +547,8 @@ while :; do :; done
             owns_file: true,
             cleanup_failed: false,
             tracker: RuntimeTracker::new(),
+            #[cfg(all(windows, feature = "runtime-cleanup-trace"))]
+            cleanup_trace: None,
         };
         let error = binary.cleanup().unwrap_err();
         let diagnostic = runtime_cleanup_diagnostic(&error);
