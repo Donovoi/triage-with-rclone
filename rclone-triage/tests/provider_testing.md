@@ -15,6 +15,16 @@ These results apply to executable SHA256 `7554b7b3405a9f6496d75b6c91032867fb4e53
 
 The coverage ledger is unchanged: these partial lab results have not been imported as complete application or vendor acceptance. Account details, credentials and raw logs remain private.
 
+### Download cancellation: 12 October 2026
+
+The dedicated, read-only Dropbox App Folder passed a download-cancellation test with executable SHA256 `7554b7b3405a9f6496d75b6c91032867fb4e53b35ed18631014306ee52724235` and rclone 1.75.2:
+
+- Independently checked content grew from 65,536 to 131,072 bytes while the transfer was still incomplete. Both observations retained the same file and parent identities and verified the live, owned runtime.
+- The observer released its file and directory handles before one Ctrl+C. The app exited with code 1 and an exact `Cancelled` manifest; the worker, controller and launcher exited with code 0. No timeout or forced termination occurred.
+- After worker exit, no app or rclone processes, staging files or partial downloads remained, and both app and helper temporary folders were empty. App/helper sources, imported settings, the local fixture and queue were preserved. The session closed, and the lab was shut down and disconnected.
+
+The app-created working configuration was intentionally retained. This result does not prove credential erasure or remote-content immutability, qualify another build, or grant full provider or vendor acceptance. Earlier failed attempts remain recorded separately.
+
 ## Local-file and ZIP application tests in progress
 
 The staged Windows tests use the checked x64 application from the same CI run. They cover local files and a local ZIP: exact file lists, six separate downloads with independent hashes, wrong hashes, missing members, and directory requests. The ZIP cases also check CRC32, corrupt content and truncated metadata. Each case owns its source and output folders and must prove source preservation and cleanup.
