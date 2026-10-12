@@ -537,6 +537,180 @@ class ProducerTests(unittest.TestCase):
                         P.manifest("truncated_transfer", case, config, RUNTIME)
 
 
+class CleanupDiagnosticTests(unittest.TestCase):
+    def item(self, harness, name="cancellation"):
+        case = harness.root / ("diagnostic-" + name)
+        case.mkdir()
+        roots = P.H.create_private_roots(case)
+        record = P.active_record(name)
+        record["checks"].update(process_cleanup=True, fixture_cleanup=True)
+        return dict(name=name, case=case, lease=P.H.identity(case), roots=roots,
+                    baseline=P.H.helper_baseline(case, roots), record=record)
+
+    def records(self, output):
+        records = []
+        for line in output.getvalue().splitlines():
+            self.assertLessEqual(len(line.encode("ascii")), 1024)
+            prefix, value = line.split("=", 1)
+            self.assertIn(prefix, {"application_webdav_cleanup_diagnostic",
+                "application_webdav_runtime_cleanup_diagnostic", "application_webdav_runtime_cleanup_residue"})
+            records.append((prefix, json.loads(value)))
+        self.assertNotIn("PRIVATE-CANARY", output.getvalue())
+        return records
+
+    def test_each_finalization_failure_retains_primary_and_single_attempt(self):
+        for owner, method, stage in ((P, "preserved", "preservation"),
+            (P.H, "helper_cleanup_preserved", "helper_comparison"),
+            (P.H, "prepare", "acl_verify"), (P.H, "remove_owned", "owned_removal")):
+            with self.subTest(stage=stage), Harness(self) as h:
+                item = self.item(h)
+                item["record"]["failure_code"] = "cancellation_failed"
+                errors = ["cancellation_failed"]
+                error = OSError("PRIVATE-CANARY")
+                error.winerror = 32
+                with ExitStack() as stack:
+                    if method != "preserved":
+                        stack.enter_context(mock.patch.object(P, "preserved"))
+                    verify = stack.enter_context(mock.patch.object(P.H, "prepare", wraps=P.H.prepare))
+                    remove = stack.enter_context(mock.patch.object(P.H, "remove_owned", wraps=P.H.remove_owned))
+                    failed = stack.enter_context(mock.patch.object(owner, method, side_effect=error))
+                    output = stack.enter_context(mock.patch("sys.stdout", new_callable=io.StringIO))
+                    P.remove_case(item, h.app_sha, errors)
+                    failed.assert_called_once()
+                    self.assertLessEqual(verify.call_count, 1)
+                    self.assertLessEqual(remove.call_count, 1)
+                self.assertEqual(errors, ["cancellation_failed", "cleanup_failed"])
+                self.assertEqual(item["record"]["failure_code"], "cancellation_failed")
+                self.assertFalse(item["record"]["checks"]["temp_cleanup"])
+                self.assertEqual(item["record"]["checks"]["process_cleanup"], stage != "acl_verify")
+                self.assertTrue(item["case"].is_dir())
+                records = self.records(output)
+                self.assertEqual(len(records), 1)
+                self.assertEqual(records[0][1]["stage"], stage)
+                self.assertEqual(records[0][1]["os_code"], 32)
+
+    def test_private_residue_and_inventory_uncertainty_have_distinct_counts(self):
+        for mode in ("residue", "inventory", "identity"):
+            with self.subTest(mode=mode), Harness(self) as h:
+                item = self.item(h)
+                if mode == "residue":
+                    (item["case"] / "temp/PRIVATE-CANARY").write_bytes(b"secret")
+                with ExitStack() as stack:
+                    stack.enter_context(mock.patch.object(P, "preserved"))
+                    if mode == "inventory":
+                        stack.enter_context(mock.patch.object(P.H, "inventory", side_effect=OSError("PRIVATE-CANARY")))
+                    elif mode == "identity":
+                        item["roots"]["application"]["temp"] = (-1, -1)
+                    remove = stack.enter_context(mock.patch.object(P.H, "remove_owned"))
+                    output = stack.enter_context(mock.patch("sys.stdout", new_callable=io.StringIO))
+                    P.remove_case(item, h.app_sha, [])
+                    remove.assert_not_called()
+                record = self.records(output)[0][1]
+                self.assertEqual(record["stage"], {"residue": "private_empty", "inventory": "private_inventory",
+                                                   "identity": "private_identity"}[mode])
+                self.assertEqual(record["location"], "temp")
+                self.assertEqual(record["entries"], 1 if mode == "residue" else None)
+                self.assertEqual(record["total_bytes"], 6 if mode == "residue" else None)
+                self.assertTrue(item["case"].exists())
+
+    def test_helper_files_and_unknown_eligibility_are_retained(self):
+        for mode in ("helper", "eligibility"):
+            with self.subTest(mode=mode), Harness(self) as h:
+                item = self.item(h, "revoked_a")
+                if mode == "helper":
+                    (item["case"] / "helper-env/temp/PRIVATE-CANARY").write_bytes(b"secret")
+                else:
+                    item["record"]["checks"]["process_cleanup"] = False
+                with mock.patch.object(P, "preserved") as preserved, \
+                        mock.patch.object(P.H, "remove_owned") as remove, \
+                        mock.patch("sys.stdout", new_callable=io.StringIO) as output:
+                    P.remove_case(item, h.app_sha, [])
+                    remove.assert_not_called()
+                    if mode == "eligibility":
+                        preserved.assert_not_called()
+                record = self.records(output)[0][1]
+                self.assertEqual(record["scope"], "revoked_a")
+                self.assertEqual(record["stage"], "helper_directories" if mode == "helper" else "eligibility")
+                self.assertEqual(record["files"], 1 if mode == "helper" else None)
+
+    def test_only_closed_adjacent_runtime_records_are_forwarded_for_webdav_scopes(self):
+        diagnostic = b'runtime_cleanup_diagnostic={"stage":"remove_tree","kind":"other","os_code":32}\r\n'
+        residue = (b'runtime_cleanup_residue={"root":"same_private_directory","executable":"regular_file",'
+                   b'"other_files":0,"other_directories":0,"other_reparse_points":0,"other_entries":0,"complete":true}\r\n')
+        for mode in ("valid", "duplicate", "extra_key", "nonadjacent", "identity", "missing"):
+            with self.subTest(mode=mode), Harness(self) as h:
+                item = self.item(h, "accepted_a")
+                data = b"PRIVATE-CANARY\r\n" + diagnostic + residue
+                if mode == "duplicate":
+                    data += diagnostic
+                elif mode == "extra_key":
+                    data = data.replace(b'"os_code":32}', b'"os_code":32,"secret":"PRIVATE-CANARY"}')
+                elif mode == "nonadjacent":
+                    data = diagnostic + b"PRIVATE-CANARY\r\n" + residue
+                if mode != "missing":
+                    (item["case"] / "transcript.private").write_bytes(data)
+                if mode == "identity":
+                    item["lease"] = (-1, -1)
+                with mock.patch("sys.stdout", new_callable=io.StringIO) as output:
+                    P.report_cleanup_failure(item, dict(stage="owned_removal", location=None, summary=None), None)
+                records = self.records(output)
+                self.assertEqual(len(records), 3 if mode == "valid" else 2 if mode == "nonadjacent" else 1)
+                self.assertTrue(all(v["scope"] == "accepted_a" and v["backend"] == "webdav" for _, v in records))
+                if mode == "valid":
+                    self.assertEqual(records[1][1]["os_code"], 32)
+                    self.assertEqual(records[2][1]["executable"], "regular_file")
+
+    def test_closed_projection_rejects_forged_fields_and_never_stringifies_errors(self):
+        class PrivateError(OSError):
+            def __str__(self):
+                raise AssertionError("exception must not be stringified")
+        valid = dict(stage="private_empty", location="temp", summary=dict(entries=1, directories=0, files=1, total_bytes=7))
+        for field, value in (("stage", "private_empty\0PRIVATE-CANARY"), ("location", "PRIVATE-CANARY"),
+                             ("summary", dict(entries=True, directories=0, files=1, total_bytes=7))):
+            with self.subTest(field=field), mock.patch("sys.stdout", new_callable=io.StringIO) as output:
+                observation = dict(valid, **{field: value})
+                with self.assertRaises(P.ProducerError):
+                    P.cleanup_failure_diagnostic("cancellation", observation, PrivateError())
+                self.assertEqual(output.getvalue(), "")
+        for value in (True, -1, 65536, "PRIVATE-CANARY", 32):
+            error = PrivateError()
+            error.winerror = value
+            with mock.patch("sys.stdout", new_callable=io.StringIO) as output:
+                P.cleanup_failure_diagnostic("cancellation", valid, error)
+            self.assertEqual(self.records(output)[0][1]["os_code"], 32 if type(value) is int and value == 32 else None)
+
+    def test_diagnostic_reader_or_printer_failure_does_not_change_cleanup(self):
+        for boundary in ("read_runtime_cleanup_diagnostic", "print"):
+            with self.subTest(boundary=boundary), Harness(self) as h:
+                item = self.item(h)
+                item["record"]["failure_code"] = "cancellation_failed"
+                errors = ["cancellation_failed"]
+                target = mock.patch("builtins.print", side_effect=OSError("PRIVATE-CANARY")) if boundary == "print" else \
+                    mock.patch.object(P.H, boundary, side_effect=OSError("PRIVATE-CANARY"))
+                with mock.patch.object(P, "preserved"), \
+                        mock.patch.object(P.H, "remove_owned", side_effect=OSError("PRIVATE-CANARY")) as remove, \
+                        mock.patch("sys.stdout", new_callable=io.StringIO), target:
+                    P.remove_case(item, h.app_sha, errors)
+                    remove.assert_called_once()
+                self.assertEqual(errors, ["cancellation_failed", "cleanup_failed"])
+                self.assertEqual(item["record"]["failure_code"], "cancellation_failed")
+                self.assertFalse(item["record"]["checks"]["temp_cleanup"])
+                self.assertTrue(item["case"].exists())
+
+    def test_success_emits_no_diagnostic_and_preserves_existing_removal(self):
+        with Harness(self) as h:
+            item = self.item(h)
+            errors = []
+            with mock.patch.object(P, "preserved"), mock.patch("sys.stdout", new_callable=io.StringIO) as output, \
+                    mock.patch.object(P.H, "read_runtime_cleanup_diagnostic") as read:
+                P.remove_case(item, h.app_sha, errors)
+                read.assert_not_called()
+            self.assertEqual(output.getvalue(), "")
+            self.assertEqual(errors, [])
+            self.assertTrue(item["record"]["checks"]["temp_cleanup"])
+            self.assertFalse(item["case"].exists())
+
+
 class ObscureTests(unittest.TestCase):
     def test_private_stdin_argv_caps_and_exact_obscured_output(self):
         with tempfile.TemporaryDirectory() as tmp:
