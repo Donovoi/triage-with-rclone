@@ -30,7 +30,7 @@ See [test status and known gaps](rclone-triage/tests/provider_testing.md) for th
 
 Local-file and ZIP command tests have passed, including cancellation and cleanup.
 
-Current work: test stopping a Dropbox download while it is running, then continue testing the other providers.
+Dropbox download cancellation passed on the tested Windows build. Current work: test FTP downloads after a lost connection, investigate Windows cleanup errors, then continue testing the other providers.
 
 ## What comes next
 

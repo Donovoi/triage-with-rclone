@@ -16,13 +16,23 @@ These results apply to executable SHA256 `7554b7b3405a9f6496d75b6c91032867fb4e53
 
 The Dropbox coverage ledger is unchanged: these partial lab results have not been imported as complete application or vendor acceptance. Account details, credentials and raw logs remain private.
 
+### Download cancellation: 12 October 2026
+
+The dedicated, read-only Dropbox App Folder passed a download-cancellation test with executable SHA256 `7554b7b3405a9f6496d75b6c91032867fb4e53b35ed18631014306ee52724235` and rclone 1.75.2:
+
+- Independently checked content grew from 65,536 to 131,072 bytes while the transfer was still incomplete. Both observations retained the same file and parent identities and verified the live, owned runtime.
+- The observer released its file and directory handles before one Ctrl+C. The app exited with code 1 and an exact `Cancelled` manifest; the worker, controller and launcher exited with code 0. No timeout or forced termination occurred.
+- After worker exit, no app or rclone processes, staging files or partial downloads remained, and both app and helper temporary folders were empty. App/helper sources, imported settings, the local fixture and queue were preserved. The session closed, and the lab was shut down and disconnected.
+
+The app-created working configuration was intentionally retained. This result does not prove credential erasure or remote-content immutability, qualify another build, or grant full provider or vendor acceptance. Earlier failed attempts remain recorded separately.
+
 ## Local-file and ZIP application tests
 
 The Windows tests use the checked x64 application from the same CI run. They cover local files and a local ZIP: exact file lists, six separate downloads with independent hashes, wrong hashes, missing members, and directory requests. The ZIP cases also check CRC32, corrupt content and truncated metadata. Each case owns its source and output folders and must prove source preservation and cleanup.
 
 Short operations use launch-time executable observations, with the Windows console helper recorded separately. Cancellation uses a live executable observation and two reads that prove file content is advancing while bytes remain uncollected, followed by Ctrl+C. File length or an elapsed timer alone cannot pass this check. These are application tests, separate from the existing rclone protocol fixtures. Their sanitized receipts are bound to the application, embedded runtime, source and test code. Raw transcripts are not published.
 
-[PR #76's Windows run](https://github.com/Donovoi/triage-with-rclone/actions/runs/38017693713) passed 24 cases and 314 checks: 11 local-file cases and 13 ZIP cases, including cancellation and cleanup. Independent review checked the receipts against the tested application bytes, source and embedded rclone 1.75.2. That result applies to the tested PR build; each later build must pass its own checks. Passing only the short-operation cases reports partial coverage and fails the complete-mode CI gate. A passed receipt does not mark a provider or its full application lifecycle complete.
+The Windows x64 build from commit [`8a2b365`](https://github.com/Donovoi/triage-with-rclone/commit/8a2b3651746f9cc4ca99dbbb2cd29075e0f61d5e), published as [nightly38232703966-1](https://github.com/Donovoi/triage-with-rclone/releases/tag/nightly-38232703966-1), passed all 11 local-file cases and 13 ZIP cases in [CI](https://github.com/Donovoi/triage-with-rclone/actions/runs/38232703966): 314 checks, including cancellation, source preservation and cleanup. Independent review matched the receipts to that nightly's executable, SHA256 `4af266437422ea3e86d904d7b7ab0afee430d64d293113760d4142f9019115e9`, source and rclone 1.75.2. Each later build must pass its own checks. Passing only the short-operation cases still fails the complete-mode gate; these results do not mark a provider or its full application lifecycle complete.
 
 The ledger keeps local files (`local_filesystem_cli_v1`) and local ZIP files (`archive_zip_local_cli_v1`) as separate Windows test modes. CI checks each receipt independently, then reads the private receipt into the ledger using the same application build and a separately verified rclone runtime. Both checks must pass. The public ledger is a separate sanitized report; it does not contain the private input or raw logs. These modes cannot mark the full application or provider complete, even if the coverage policy is weakened. They do not test interactive setup, cloud login, token refresh, remote ZIP files or other archive formats. Missing-file and directory errors are not tests of denied account access.
 
