@@ -29,6 +29,17 @@ is permitted; overlap, orphaned/reordered/duplicate ends, foreign-thread reuse,
 loss, overflow and unsupported metadata are unavailable. These are collection
 bounds, not a Windows attempt-count guarantee.
 
+Correlation failure reports only the first rejected model gate: no selected
+start, start ordering, defensive start/end overlap, missing or multiple matching
+ends, end callback ordering, an end before its start, an unowned end, or
+foreign-thread IRP reuse. These are closed reasons in the existing `reason`
+field; no identifiers, paths, timestamps or raw events are exposed. They remain
+`unavailable` with null counts and cannot qualify attribution. Predicates and
+their order are unchanged. The old `correlation_missing_or_ambiguous` reason is
+still accepted for historical records; it cannot be refined retroactively.
+Absence of a selected start does not identify a decoder, path, thread or timing
+cause. Native collection, session cleanup, bounds and retry behavior are unchanged.
+
 Only a failed original OS32 removal together with a bound sharing-violation open
 can produce `observed`. A successful open followed by OS32 remains unattributed:
 this implementation does not decode disposition events or discover the holder.
