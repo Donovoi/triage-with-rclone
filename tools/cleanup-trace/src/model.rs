@@ -86,12 +86,12 @@ pub fn correlate(
         .filter(|s| s.tid == tid && before <= s.qpc && s.qpc <= after)
         .collect();
     if chosen.is_empty() {
-        return Err("correlation_missing_or_ambiguous");
+        return Err("correlation_no_selected_start");
     }
     // Do not sort away callback ordering anomalies. Sequential IRP reuse is allowed
     // only after the previous matching end and before the next matching start.
     if chosen.windows(2).any(|x| x[0].qpc >= x[1].qpc) {
-        return Err("correlation_missing_or_ambiguous");
+        return Err("correlation_start_order");
     }
     let mut count = Counts::default();
     let mut last_end = None;
@@ -101,7 +101,7 @@ pub fn correlate(
             return Err("schema_unavailable");
         }
         if last_end.is_some_and(|end| start.qpc <= end) {
-            return Err("correlation_missing_or_ambiguous");
+            return Err("correlation_start_end_overlap");
         }
         let next = chosen.get(i + 1).map_or(after.saturating_add(1), |s| s.qpc);
         let matches: Vec<_> = ends
@@ -112,11 +112,15 @@ pub fn correlate(
             })
             .collect();
         if matches.len() != 1 {
-            return Err("correlation_missing_or_ambiguous");
+            return Err(if matches.is_empty() {
+                "correlation_end_missing"
+            } else {
+                "correlation_end_multiple"
+            });
         }
         let (index, end) = matches[0];
         if used.last().is_some_and(|previous| index <= *previous) {
-            return Err("correlation_missing_or_ambiguous");
+            return Err("correlation_end_order");
         }
         used.push(index);
         // Any end for this IRP inside the operation must belong to exactly one
@@ -129,7 +133,7 @@ pub fn correlate(
                     .iter()
                     .any(|prior| prior.irp == e.irp && prior.qpc <= e.qpc)
         }) {
-            return Err("correlation_missing_or_ambiguous");
+            return Err("correlation_end_before_start");
         }
         last_end = Some(end.qpc);
         count.attempts += 1;
@@ -146,13 +150,16 @@ pub fn correlate(
             && e.qpc <= after
             && chosen.iter().any(|s| s.irp == e.irp)
             && !used.contains(&i)
-    }) || starts.iter().any(|s| {
+    }) {
+        return Err("correlation_end_unowned");
+    }
+    if starts.iter().any(|s| {
         before <= s.qpc
             && s.qpc <= after
             && s.tid != tid
             && chosen.iter().any(|selected| selected.irp == s.irp)
     }) {
-        return Err("correlation_missing_or_ambiguous");
+        return Err("correlation_cross_thread_reuse");
     }
     Ok(count)
 }
@@ -262,6 +269,77 @@ mod tests {
         ] {
             assert!(correlate(&ss, &ee, 1, 8, 3).is_err());
         }
+    }
+    #[test]
+    fn exact_closed_correlation_rejections() {
+        let mut foreign = s(6, 7);
+        foreign.tid = 4;
+        for (ss, ee, reason) in [
+            (vec![], vec![], "correlation_no_selected_start"),
+            (
+                vec![s(4, 7), s(2, 8)],
+                vec![e(5, 7, 0), e(3, 8, 0)],
+                "correlation_start_order",
+            ),
+            (vec![s(2, 7)], vec![], "correlation_end_missing"),
+            (
+                vec![s(2, 7)],
+                vec![e(3, 7, 0), e(4, 7, 0)],
+                "correlation_end_multiple",
+            ),
+            (
+                vec![s(2, 7), s(4, 8)],
+                vec![e(5, 8, 0), e(3, 7, 0)],
+                "correlation_end_order",
+            ),
+            (
+                vec![s(3, 7)],
+                vec![e(2, 7, 0), e(4, 7, 0)],
+                "correlation_end_before_start",
+            ),
+            (
+                vec![s(2, 7), s(4, 8)],
+                vec![e(3, 7, 0), e(5, 8, 0), e(6, 7, 0)],
+                "correlation_end_unowned",
+            ),
+            (
+                vec![s(2, 7), foreign],
+                vec![e(3, 7, 0)],
+                "correlation_cross_thread_reuse",
+            ),
+            // The final left-hand predicate still wins over foreign-thread reuse.
+            (
+                vec![s(2, 7), s(4, 8), foreign],
+                vec![e(3, 7, 0), e(5, 8, 0), e(6, 7, 0)],
+                "correlation_end_unowned",
+            ),
+        ] {
+            assert_eq!(correlate(&ss, &ee, 1, 8, 3), Err(reason));
+        }
+        // The retained start/end-overlap guard is defensive: an accepted
+        // preceding end is already strictly before the next selected start.
+        // Do not weaken the matching interval to manufacture coverage for it.
+        assert_eq!(
+            correlate(&[s(2, 7), s(3, 8)], &[e(3, 7, 0), e(4, 8, 0)], 1, 8, 3),
+            Err("correlation_end_missing")
+        );
+        assert_eq!(
+            correlate(&[s(2, 7), s(2, 8)], &[], 1, 8, 3),
+            Err("correlation_start_order")
+        );
+        assert_eq!(correlate(&[], &[], 0, 8, 3), Err("clock_unavailable"));
+        assert_eq!(
+            correlate(&[s(2, 7)], &[e(3, 7, 0)], 1, 8, 4),
+            Err("correlation_no_selected_start")
+        );
+        assert_eq!(
+            correlate(&[s(0, 7)], &[e(3, 7, 0)], 1, 8, 3),
+            Err("correlation_no_selected_start")
+        );
+        assert_eq!(
+            correlate(&vec![s(2, 7); MAX_STARTS + 1], &[], 1, 8, 3),
+            Err("budget_exceeded")
+        );
     }
     #[test]
     fn thread_window_schema_and_capacity_are_strict() {

@@ -5,7 +5,13 @@ import json
 import re
 from pathlib import Path
 
-REASONS = frozenset(("none", "unsupported_environment", "identity_unavailable", "budget_exceeded", "schema_unavailable", "clock_unavailable", "correlation_missing_or_ambiguous", "event_loss", "session_collision", "access_denied", "session_unavailable", "consumer_unavailable", "cleanup_uncertain", "session_configuration_mismatch", "operation_not_observed", "status_not_attributed"))
+CORRELATION_REASONS = frozenset((
+    "correlation_no_selected_start", "correlation_start_order", "correlation_start_end_overlap",
+    "correlation_end_missing", "correlation_end_multiple", "correlation_end_order",
+    "correlation_end_before_start", "correlation_end_unowned", "correlation_cross_thread_reuse",
+))
+# Keep the old common reason readable for preserved historical records.
+REASONS = CORRELATION_REASONS | frozenset(("none", "unsupported_environment", "identity_unavailable", "budget_exceeded", "schema_unavailable", "clock_unavailable", "correlation_missing_or_ambiguous", "event_loss", "session_collision", "access_denied", "session_unavailable", "consumer_unavailable", "cleanup_uncertain", "session_configuration_mismatch", "operation_not_observed", "status_not_attributed"))
 BOOLS = frozenset(("target_identity_verified", "session_started", "settings_verified", "bounded", "zero_loss", "stop_succeeded", "session_absent", "consumer_completed", "consumer_closed", "worker_joined"))
 KEYS = BOOLS | {"schema", "scope", "status", "reason", "original_ok", "os_code", "operation_us", "runtime_sha256", "counts", "schema_rejection"}
 REJECTION_KEYS = frozenset((
@@ -122,6 +128,8 @@ def validate(raw, test_exit, expected_runtime):
         validate_rejection(value["schema_rejection"])
         if value["status"] != "unavailable":
             raise ValueError("rejection_cannot_qualify")
+    if value["reason"] in CORRELATION_REASONS and (counts is not None or value["schema_rejection"] is not None):
+        raise ValueError("correlation rejection has no completed counts or decoder rejection")
     if value["status"] == "unavailable":
         if value["reason"] == "none":
             raise ValueError("unavailable_reason")
