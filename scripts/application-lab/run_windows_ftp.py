@@ -62,6 +62,67 @@ def mark(record, code, errors):
         errors.append(code)
 
 
+def denial_error_diagnostic(value, cause):
+    """Failure-only shape observations; never publish the error or endpoint."""
+    try:
+        record = dict(schema_version=1, case="revoked_a", stage="manifest_denial",
+            error_is_string=type(value) is str,
+            error_within_bound=type(value) is str and 0 < len(value) <= 65536,
+            error_text_valid=False, cannot_stat_prefix=None, line_limit_ok=None,
+            notice_count=None, final_notice_grammar=None, expected_cause_equal=None)
+        if record["error_within_bound"]:
+            record["error_text_valid"] = "\x00" not in value and "\r" not in value
+            if record["error_text_valid"]:
+                prefix = "Cannot stat source: "
+                record["cannot_stat_prefix"] = value.startswith(prefix)
+                if record["cannot_stat_prefix"]:
+                    lines = value[len(prefix):].rstrip("\n").split("\n")
+                    record["line_limit_ok"] = len(lines) <= 128
+                    if record["line_limit_ok"]:
+                        record["notice_count"] = sum("NOTICE: Failed to rc:" in line for line in lines)
+                        match = re.fullmatch(W.NOTICE + r"loopback: call failed: (.+)", lines[-1])
+                        record["final_notice_grammar"] = match is not None
+                        if match is not None and type(cause) is str and 0 < len(cause) <= 512:
+                            record["expected_cause_equal"] = match[1] == cause
+        line = "application_ftp_denial_error=" + E.compact(record).decode("ascii")
+        if len(line.encode("ascii")) + 1 <= 1024:
+            print(line, flush=True)
+    except BaseException:
+        pass
+
+
+def denial_fixture_diagnostic(state):
+    """Nonblocking copy of owned epoch-2 facts; no transport/source reread."""
+    try:
+        record = dict(schema_version=1, case="revoked_a", stage="manifest_denial",
+                      epoch=2, snapshot_available=False, counts=None, errors=None)
+        if type(state) is F.AppFtpState and state.lock.acquire(blocking=False):
+            try:
+                events, errors = state.events, state.errors
+                fields = {"ordinal", "kind", "epoch", "session", "transfer", "member", "bytes"}
+                limits = {"epoch": (1, 3), "session": (0, F.MAX_SESSIONS), "transfer": (0, F.MAX_TRANSFERS),
+                          "member": (0, len(F.MANIFEST)), "bytes": (0, F.MAX_WIRE_BYTES)}
+                valid = (type(state.epoch) is int and state.epoch == 2 and type(events) is list and
+                    len(events) <= F.MAX_EVENTS and type(errors) is list and len(errors) <= len(F.ERROR_CODES) and
+                    all(type(e) is str and e in F.ERROR_CODES for e in errors) and len(set(errors)) == len(errors) and
+                    all(type(e) is dict and set(e) == fields and type(e["ordinal"]) is int and e["ordinal"] == index and
+                        type(e["kind"]) is str and e["kind"] in F.EVENT_KINDS and
+                        all(type(e[k]) is int and lo <= e[k] <= hi for k, (lo, hi) in limits.items())
+                        for index, e in enumerate(events, 1)))
+                if valid:
+                    kinds = ("session_open", "user", "login_a", "login_b", "denied_a", "denied_b",
+                             "denied_other", "transfer_start", "content_sent")
+                    record.update(snapshot_available=True, errors=sorted(errors),
+                        counts={kind: sum(e["epoch"] == 2 and e["kind"] == kind for e in events) for kind in kinds})
+            finally:
+                state.lock.release()
+        line = "application_ftp_denial_fixture=" + E.compact(record).decode("ascii")
+        if len(line.encode("ascii")) + 1 <= 1024:
+            print(line, flush=True)
+    except BaseException:
+        pass
+
+
 def queue_bytes():
     f = E.fixture_manifest()
     stream = io.StringIO(newline="")
@@ -210,7 +271,11 @@ def manifest(name, case, working, runtime, endpoint):
         need(result["success"] is False and result["integrity"] == "Failed" and
              all(result[k] is None for k in ("local_sha256", "size", "hash", "hash_type", "hash_verified", "hash_error")), "manifest_invalid")
         cause = f'NewFs: failed to make FTP connection to "127.0.0.1:{endpoint[1]}": 530 Login incorrect'
-        need(W.exact_rc_error(result["error"], cause, stat=True), "denial_failed")
+        try:
+            need(W.exact_rc_error(result["error"], cause, stat=True), "denial_failed")
+        except ProducerError:
+            denial_error_diagnostic(result["error"], cause)
+            raise
     wanted = {"Synthetic/" + f["member"]} if positive else set()
     need(set(H.output_files(base / "downloads")) == wanted, "outputs_invalid")
     files = {p for p, row in inventory.items() if not row[0]}
@@ -319,6 +384,8 @@ def execute(name, owner, application, app_sha, runtime, server, state, config, e
         item["artifact"] = W.fingerprint(case)
     except BaseException as error:
         mark(record, failure(error), errors)
+        if name == "revoked_a" and record["failure_code"] == "denial_failed":
+            denial_fixture_diagnostic(state)
     finally:
         if bridge is not None:
             try:
