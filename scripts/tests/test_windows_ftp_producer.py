@@ -255,5 +255,200 @@ class ProducerTests(unittest.TestCase):
                 remove.assert_not_called()
 
 
+class DenialDiagnosticTests(unittest.TestCase):
+    def setUp(self):
+        ProducerTests.setUp(self)
+        self.cause = 'NewFs: failed to make FTP connection to "127.0.0.1:2121": 530 Login incorrect'
+        self.notice = "2026/10/12 10:55:00 NOTICE: Failed to rc: loopback: call failed: "
+        self.value = "Cannot stat source: " + self.notice + self.cause + "\n"
+
+    def projected(self, function, *args):
+        with patch("builtins.print") as output:
+            function(*args)
+        output.assert_called_once()
+        line = output.call_args.args[0]
+        self.assertLessEqual(len(line.encode("ascii")) + 1, 1024)
+        self.assertEqual(output.call_args.kwargs, {"flush": True})
+        self.assertNotIn("PRIVATE_CANARY", line)
+        self.assertNotIn("127.0.0.1", line)
+        return json.loads(line.split("=", 1)[1])
+
+    def test_error_projection_distinguishes_exact_cause_notices_and_shape(self):
+        good = self.projected(P.denial_error_diagnostic, self.value, self.cause)
+        self.assertEqual(good, dict(schema_version=1, case="revoked_a", stage="manifest_denial",
+            error_is_string=True, error_within_bound=True, error_text_valid=True, cannot_stat_prefix=True,
+            line_limit_ok=True, notice_count=1, final_notice_grammar=True, expected_cause_equal=True))
+        for value, changed in (
+            (self.value.replace(":2121", ":2122"), {"expected_cause_equal": False}),
+            (self.value.replace("530 Login", "531 Login"), {"expected_cause_equal": False}),
+            ("Cannot stat source: " + self.notice + "PRIVATE_CANARY\n" + self.notice + self.cause,
+             {"notice_count": 2}),
+            (self.value.replace("2026/10/12", "PRIVATE_CANARY"),
+             {"final_notice_grammar": False, "expected_cause_equal": None}),
+            ("Cannot stat source: PRIVATE_CANARY", {"notice_count": 0, "final_notice_grammar": False, "expected_cause_equal": None}),
+            (self.notice + self.cause, {"cannot_stat_prefix": False, "notice_count": None,
+                                      "line_limit_ok": None, "final_notice_grammar": None, "expected_cause_equal": None}),
+            ("Cannot stat source: " + "PRIVATE_CANARY\n" * 128 + self.notice + self.cause,
+             {"line_limit_ok": False, "notice_count": None, "final_notice_grammar": None, "expected_cause_equal": None}),
+        ):
+            with self.subTest(changed=changed):
+                expected = dict(good, **changed)
+                self.assertEqual(self.projected(P.denial_error_diagnostic, value, self.cause), expected)
+
+    def test_error_type_bounds_and_private_objects_are_not_stringified(self):
+        class Private:
+            def __str__(self):
+                raise AssertionError("PRIVATE_CANARY")
+        for value in (None, False, 3, [], {"PRIVATE_CANARY": "secret"}, Private(), "", "x" * 65537,
+                      self.value + "\x00PRIVATE_CANARY", self.value + "\rPRIVATE_CANARY"):
+            with self.subTest(kind=type(value).__name__):
+                record = self.projected(P.denial_error_diagnostic, value, self.cause)
+                self.assertEqual(record["error_is_string"], type(value) is str)
+                self.assertEqual(record["error_within_bound"], type(value) is str and 0 < len(value) <= 65536)
+                self.assertFalse(record["error_text_valid"])
+                self.assertIsNone(record["cannot_stat_prefix"])
+                self.assertIsNone(record["notice_count"])
+                self.assertIsNone(record["expected_cause_equal"])
+
+    def negative_manifest(self, case, error):
+        f = P.E.fixture_manifest()
+        base = case / "output" / P.H.CASE_NAME
+        for name in ("config", "logs", "listings", "downloads"):
+            (base / name).mkdir(parents=True, exist_ok=True)
+        working = base / "config/working.conf"
+        working.write_bytes(b"synthetic")
+        (base / "config/working.source.json").write_bytes(b"{}")
+        destination = base / "downloads/Synthetic/large/cancel.bin"
+        request = dict(source="Synthetic:large/cancel.bin", destination=str(destination), mode="CopyTo",
+                       expected_hash=f["sha256"], expected_hash_type="sha256", expected_size=f["size"])
+        result = dict(local_sha256=None, integrity="Failed", source=request["source"], destination=str(destination),
+                      success=False, error=error, size=None, hash=None, hash_type=None, hash_verified=None, hash_error=None)
+        value = dict(schema_version=1, written_at="2026-10-12T10:55:00Z", rclone_version="1.75.2", config_path=str(working),
+            plan=dict(files=[dict(remote_name="Synthetic", path=f["member"], request=request)], skipped_directories=0),
+            results=[result], complete=False)
+        stem = "acquisition-20261012T105500"
+        (base / (stem + ".json")).write_text(json.dumps(value), encoding="utf-8")
+        for path in (base / (stem + ".txt"), base / "logs" / (stem + ".log"), base / "logs" / (stem + ".checkpoint.json")):
+            path.write_bytes(b"synthetic")
+        return working
+
+    def test_real_manifest_matcher_is_called_once_and_success_is_silent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            case = Path(directory)
+            working = self.negative_manifest(case, self.value)
+            with patch.object(P.W, "exact_rc_error", wraps=P.W.exact_rc_error) as matcher, patch("builtins.print") as output:
+                self.assertEqual(P.manifest("revoked_a", case, working, RUNTIME, ("127.0.0.1", 2121)),
+                                 {"manifest_exact": True, "no_download_outputs": True})
+            matcher.assert_called_once_with(self.value, self.cause, stat=True)
+            output.assert_not_called()
+            for error in (self.value.replace(":2121", ":2122"), self.value.replace("530", "531"),
+                          "Cannot stat source: " + self.notice + "PRIVATE_CANARY\n" + self.notice + self.cause,
+                          self.value.replace("NOTICE", "PRIVATE_CANARY"), self.value + "\r", None):
+                self.negative_manifest(case, error)
+                with patch.object(P.W, "exact_rc_error", wraps=P.W.exact_rc_error) as matcher, patch("builtins.print") as output:
+                    with self.assertRaisesRegex(P.ProducerError, "^denial_failed$"):
+                        P.manifest("revoked_a", case, working, RUNTIME, ("127.0.0.1", 2121))
+                matcher.assert_called_once_with(error, self.cause, stat=True)
+                output.assert_called_once()
+                self.assertNotIn("PRIVATE_CANARY", output.call_args.args[0])
+
+    def test_formatter_or_printer_failure_preserves_original_exception(self):
+        original = P.ProducerError("denial_failed")
+        with tempfile.TemporaryDirectory() as directory:
+            case = Path(directory)
+            working = self.negative_manifest(case, self.value)
+            for target in ("printer", "formatter"):
+                with ExitStack() as mocks:
+                    mocks.enter_context(patch.object(P.W, "exact_rc_error", side_effect=original))
+                    if target == "printer":
+                        mocks.enter_context(patch("builtins.print", side_effect=OSError("PRIVATE_CANARY")))
+                    else:
+                        mocks.enter_context(patch.object(P.E, "compact", side_effect=RuntimeError("PRIVATE_CANARY")))
+                    with self.assertRaises(P.ProducerError) as caught:
+                        P.manifest("revoked_a", case, working, RUNTIME, ("127.0.0.1", 2121))
+                    self.assertIs(caught.exception, original)
+
+    def state(self):
+        state = P.F.AppFtpState("PRIVATE_CANARY_USER", "PRIVATE_CANARY_A", password_b="PRIVATE_CANARY_B")
+        state._event("login_a", 1)
+        state.epoch = 2
+        state._event("session_open", 2)
+        state._event("user", 2)
+        state._event("denied_a", 2)
+        return state
+
+    def test_fixture_projection_has_only_epoch_two_counts_and_allowlisted_errors(self):
+        state = self.state()
+        state.errors = sorted(P.F.ERROR_CODES)
+        with patch.object(state, "snapshot", side_effect=AssertionError("snapshot_forbidden")), \
+             patch.object(state, "unchanged", side_effect=AssertionError("rehash_forbidden")):
+            record = self.projected(P.denial_fixture_diagnostic, state)
+        self.assertTrue(record["snapshot_available"])
+        self.assertEqual(record["epoch"], 2)
+        self.assertEqual(record["errors"], sorted(P.F.ERROR_CODES))
+        self.assertEqual(record["counts"], dict(session_open=1, user=1, login_a=0, login_b=0,
+            denied_a=1, denied_b=0, denied_other=0, transfer_start=0, content_sent=0))
+
+    def test_fixture_busy_or_malformed_state_has_no_invented_counters(self):
+        unavailable = dict(schema_version=1, case="revoked_a", stage="manifest_denial", epoch=2,
+                           snapshot_available=False, counts=None, errors=None)
+        for mutate in (lambda s: setattr(s, "epoch", True), lambda s: setattr(s, "epoch", 3),
+                       lambda s: setattr(s, "errors", ["PRIVATE_CANARY"]), lambda s: setattr(s, "errors", ["deadline", "deadline"]),
+                       lambda s: s.events[0].update(private="PRIVATE_CANARY"), lambda s: s.events[0].update(ordinal=True),
+                       lambda s: s.events[0].update(epoch=True), lambda s: s.events[0].update(bytes=-1),
+                       lambda s: s.events[0].update(kind="PRIVATE_CANARY"), lambda s: setattr(s, "events", [{}] * (P.F.MAX_EVENTS + 1))):
+            state = self.state(); mutate(state)
+            self.assertEqual(self.projected(P.denial_fixture_diagnostic, state), unavailable)
+        self.assertEqual(self.projected(P.denial_fixture_diagnostic, None), unavailable)
+        state = self.state(); state.lock = Mock()
+        state.lock.acquire.return_value = False
+        self.assertEqual(self.projected(P.denial_fixture_diagnostic, state), unavailable)
+        state.lock.acquire.assert_called_once_with(blocking=False)
+        state.lock.release.assert_not_called()
+
+    def test_fixture_diagnostic_failures_release_lock_and_do_not_escape(self):
+        state = self.state(); state.lock = Mock()
+        state.lock.acquire.return_value = True
+        with patch("builtins.print", side_effect=OSError("PRIVATE_CANARY")):
+            P.denial_fixture_diagnostic(state)
+        state.lock.release.assert_called_once_with()
+        with patch.object(P.E, "compact", side_effect=RuntimeError("PRIVATE_CANARY")):
+            P.denial_fixture_diagnostic(state)
+        self.assertEqual(state.lock.release.call_count, 2)
+
+    def test_execute_emits_failure_snapshot_before_same_single_cleanup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            owner = Path(directory); app = owner / "input.bin"; app.write_bytes(b"inert-no-execution")
+            app_sha = hashlib.sha256(app.read_bytes()).hexdigest()
+            order, bridges = [], []
+            def bridge(case):
+                item = FakeBridge(case); bridges.append(item)
+                close = item.close
+                def traced_close(): order.append("close"); return close()
+                item.close = traced_close
+                return item
+            def source(case): (case / "source").mkdir(); return P.H.identity(case / "source")
+            def diagnostic(state): order.append("diagnostic")
+            with ExitStack() as mocks:
+                for obj, key, value in ((P.H, "prepare", lambda parent, name: (parent / name).mkdir()),
+                    (P.H, "create_private_roots", lambda case: {}), (P.H, "private_directory", lambda case, child: (case / child).mkdir()),
+                    (P.H, "private_write", lambda case, child, body: (case / child).write_bytes(body)),
+                    (P.H, "environment", lambda case: {"SYNTHETIC": "1"}), (P, "create_source", source),
+                    (P.C, "ObservedSourceBridge", bridge), (P.H, "application_roots_empty", lambda *args: None),
+                    (P.H, "helper_baseline", lambda *args: {}), (P.H, "configuration_preserved", lambda case, cfg: case / "working.conf"),
+                    (P, "manifest", Mock(side_effect=P.ProducerError("denial_failed"))), (P, "denial_fixture_diagnostic", diagnostic)):
+                    mocks.enter_context(patch.object(obj, key, value))
+                errors = []
+                item = P.execute("revoked_a", owner, app, app_sha, RUNTIME,
+                    types.SimpleNamespace(deadline=P.time.monotonic()+120, endpoint=("127.0.0.1", 2121)), self.state(), b"synthetic", errors)
+            self.assertEqual(order, ["diagnostic", "close"])
+            self.assertEqual(errors, ["denial_failed"])
+            self.assertEqual(item["record"]["failure_code"], "denial_failed")
+            self.assertTrue(item["record"]["checks"]["process_cleanup"])
+            self.assertFalse(item["record"]["checks"]["manifest_exact"])
+            self.assertEqual(bridges[0].close_calls, 1)
+            self.assertEqual([a for a, _ in bridges[0].commands].count("start_source_observed"), 1)
+
+
 if __name__ == "__main__":
     unittest.main()
