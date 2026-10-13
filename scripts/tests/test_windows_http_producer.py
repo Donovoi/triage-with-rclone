@@ -2332,7 +2332,7 @@ class ProducerTests(unittest.TestCase):
                 records[-1]["failure"] = failure
         return b"".join(json.dumps(value, separators=(",", ":")).encode() + b"\r\n" for value in records)
 
-    def prepare_result(self, result=None, error=None, identity_effect=None, action="Create", failure=None):
+    def prepare_result(self, result=None, error=None, identity_effect=None, action="Create", failure=None, progress_rejection=None):
         output = io.StringIO()
         with mock.patch.dict(os.environ, {"GITHUB_ACTIONS": "true", "RUNNER_OS": "Windows", "RUNNER_ENVIRONMENT": "github-hosted"}), \
              mock.patch.object(P, "hosted_guard"), mock.patch.object(P, "powershell", return_value="fixed-system-powershell"), \
@@ -2349,14 +2349,20 @@ class ProducerTests(unittest.TestCase):
         self.assertEqual(len(lines), 1)
         self.assertTrue(lines[0].startswith("application_setup_diagnostic="))
         value = json.loads(lines[0].split("=", 1)[1])
-        self.assertEqual(set(value), {"outcome", "action", "scope", "exit_code", "last_stage"} | ({"failure"} if failure is not None else set()))
+        self.assertEqual(set(value), {"outcome", "action", "scope", "exit_code", "last_stage"} |
+                         ({"failure"} if failure is not None else set()) |
+                         ({"progress_rejection"} if progress_rejection is not None else set()))
         if failure is not None:
             self.assertEqual(value["failure"], failure)
+        if progress_rejection is not None:
+            self.assertEqual(value["progress_rejection"], progress_rejection)
         self.assertEqual(value["scope"], "suite")
         self.assertEqual(value["action"], action)
         self.assertNotIn("private-canary", output.getvalue())
         self.assertNotIn(str(self.root), output.getvalue())
         self.assertNotIn("c" * 32, output.getvalue())
+        self.assertLess(len(output.getvalue().encode("ascii")), 1024)
+        child.assert_called_once()
         self.assertEqual(child.call_args.kwargs["timeout"], 20)
         self.assertEqual(child.call_args.kwargs["env"]["RUNNER_ENVIRONMENT"], "github-hosted")
         return value
@@ -2375,14 +2381,125 @@ class ProducerTests(unittest.TestCase):
 
     def test_prepare_timeout_retains_only_validated_finite_prefix(self):
         prefix = self.setup_stream(stages=["input", "parent", "identity", "acl", "compile"], final=None)
-        for raw, expected in ((prefix, "compile"), (prefix + b'private-canary', None),
-                              (prefix + b'{"schema_version":1,"stage":"create"', None), (None, None)):
+        for raw, expected, rejection in ((prefix, "compile", None), (prefix + b'private-canary', None, "incomplete"),
+                              (prefix + b'{"schema_version":1,"stage":"create"', None, "incomplete"), (None, None, "absent")):
             with self.subTest(expected=expected, raw_present=raw is not None):
                 error = P.subprocess.TimeoutExpired(["private-canary"], 20, output=raw, stderr=b"private-canary")
-                value = self.prepare_result(error=error)
+                value = self.prepare_result(error=error, progress_rejection=rejection)
                 self.assertEqual(value["outcome"], "timeout")
                 self.assertIsNone(value["exit_code"])
                 self.assertEqual(value["last_stage"], expected)
+
+    def test_setup_progress_rejection_is_closed_and_cannot_recover_partial_stages(self):
+        prefix = self.setup_stream(stages=["input", "parent", "identity", "acl", "compile"], final=None)
+        failure = self.acl_failure()
+        malformed_failure = dict(failure, reason="private-canary")
+        cases = [
+            (None, "absent"), ("private-canary", "type"), (bytearray(b"x"), "type"), (b"", "empty"),
+            (b"x" * 4097, "bound"), (b"x" * 4096, "incomplete"),
+            (self.setup_stream(stages=["input"] * 10, final=None), "bound"),
+            (b" " * 257 + b"\n", "bound"), (prefix + b"private-canary", "incomplete"),
+            (prefix + b'{"schema_version":1,"stage":"create"', "incomplete"),
+            (b"\r\n\r\n\r", "incomplete"), (b"bad\rdata\n", "malformed"),
+            (b"\xff\n", "malformed"), (b"{\n", "malformed"),
+            (b'{"schema_version":1,"schema_version":1,"stage":"input"}\n', "malformed"),
+            (b'{"schema_version":NaN,"stage":"input"}\n', "malformed"),
+            (b'{"schema_version":true,"stage":"input"}\n', "malformed"), (b"[]\n", "malformed"),
+            (b'{"schema_version":1,"ok":1}\n', "malformed"),
+            (b'{"schema_version":1,"stage":"input","private-canary":0}\n', "malformed"),
+            (self.setup_stream(stages=["private-canary"], final=None), "order"),
+            (self.setup_stream(stages=["input", "input"], final=None), "order"),
+            (self.setup_stream(stages=["parent"], final=None), "order"),
+            (self.setup_stream(stages=[], final=False), "order"),
+            (self.setup_stream(stages=["input"], final=True), "order"),
+            (self.setup_stream(stages=["input"], final=False) + prefix, "order"),
+            (self.setup_stream(stages=["input"], final=False, failure=failure), "order"),
+            (self.setup_stream(stages=["input", "parent", "identity", "acl", "compile", "create", "verify"],
+                               final=False, failure=malformed_failure), "malformed"),
+        ]
+        for raw, expected in cases:
+            with self.subTest(expected=expected):
+                with self.assertRaises((P.ProducerError, TypeError, ValueError)):
+                    P.setup_progress(raw, "Create")
+                self.assertEqual(P.setup_progress_rejection(raw, "Create"), expected)
+                value = self.prepare_result(error=P.subprocess.TimeoutExpired("private-canary", 20, output=raw),
+                                            progress_rejection=expected)
+                self.assertIsNone(value["last_stage"])
+                self.assertIsNone(value["exit_code"])
+                self.assertEqual(value["outcome"], "timeout")
+
+    def test_setup_progress_rejection_follows_first_parser_failure(self):
+        cases = [(b"bad\n" * 10, "bound"), (b"{}\n" + b"x" * 257 + b"\n", "malformed"),
+                 (b"x" * 257, "incomplete"), (b"bad\rdata\n" + b"x" * 257 + b"\n", "malformed"),
+                 (self.setup_stream(stages=["parent"], final=None) + b"{\n", "order")]
+        for raw, expected in cases:
+            with self.subTest(expected=expected):
+                with self.assertRaises(P.ProducerError):
+                    P.setup_progress(raw, "Create")
+                self.assertEqual(P.setup_progress_rejection(raw, "Create"), expected)
+
+    def test_setup_progress_rejection_valid_controls_and_type_canary(self):
+        class Canary:
+            def __len__(self): raise AssertionError("canary inspected")
+            def __str__(self): raise AssertionError("canary inspected")
+            def __repr__(self): raise AssertionError("canary inspected")
+            def __eq__(self, other): raise AssertionError("canary inspected")
+        self.assertEqual(P.setup_progress_rejection(Canary(), "Create"), "type")
+        self.assertEqual(P.setup_progress_rejection(b"", Canary()), "unclassified")
+        self.assertEqual(P.setup_progress_rejection(b"", "private-canary"), "unclassified")
+        for action in ("Create", "Verify"):
+            for raw in (self.setup_stream(action), self.setup_stream(action, ["input"], None),
+                        self.setup_stream(action, ["input"], False)):
+                for value in (raw, raw.replace(b"\r\n", b"\n")):
+                    P.setup_progress(value, action)
+                    self.assertEqual(P.setup_progress_rejection(value, action), "unclassified")
+        line = b'{"schema_version":1,"stage":"input"}'.ljust(256, b" ")
+        self.assertEqual(P.setup_progress(line + b"\n", "Create"), ("input", None, None))
+        self.assertEqual(P.setup_progress_rejection(line + b"\n", "Create"), "unclassified")
+        self.assertEqual(P.setup_progress_rejection(line + b" \n", "Create"), "bound")
+        with mock.patch.object(P, "strict_json", side_effect=RuntimeError("private-canary")):
+            self.assertEqual(P.setup_progress_rejection(line + b"\n", "Create"), "unclassified")
+
+    def test_setup_progress_rejection_projection_requires_rejected_timeout(self):
+        expected = {"absent", "type", "empty", "bound", "incomplete", "malformed", "order", "unclassified"}
+        self.assertEqual(P.SETUP_PROGRESS_REJECTIONS, expected)
+        for reason in expected:
+            with redirect_stdout(io.StringIO()) as output:
+                P.setup_diagnostic("timeout", "Create", "suite", None, None, progress_rejection=reason)
+            value = json.loads(output.getvalue().split("=", 1)[1])
+            self.assertEqual(value["progress_rejection"], reason)
+            self.assertLess(len(output.getvalue().encode("ascii")), 1024)
+        for outcome, code, stage, failure, reason in (
+            ("protocol_failed", 0, None, None, "malformed"), ("timeout", 1, None, None, "absent"),
+            ("timeout", None, "input", None, "incomplete"), ("timeout", None, None, self.acl_failure(), "absent"),
+            ("timeout", None, None, None, "private-canary"), ("timeout", None, None, None, True),
+            ("timeout", None, None, None, {})):
+            with redirect_stdout(io.StringIO()) as output, self.assertRaises(P.ProducerError):
+                P.setup_diagnostic(outcome, "Create", "suite", code, stage, failure, progress_rejection=reason)
+            self.assertEqual(output.getvalue(), "")
+
+    def test_prepare_timeout_classifier_failure_retains_original_error(self):
+        with mock.patch.object(P, "setup_progress_rejection", side_effect=RuntimeError("private-canary")):
+            value = self.prepare_result(error=P.subprocess.TimeoutExpired("private-canary", 20, output=None),
+                                        progress_rejection="unclassified")
+        self.assertEqual(value["outcome"], "timeout")
+
+    def test_prepare_timeout_diagnostic_failure_keeps_error_and_retained_tree(self):
+        retained = self.root / "private-canary"
+        retained.write_bytes(b"private-canary")
+        for raw in (None, self.setup_stream(stages=["input"], final=None)):
+            timeout = P.subprocess.TimeoutExpired("private-canary", 20, output=raw)
+            with mock.patch.object(P, "hosted_guard"), mock.patch.object(P, "powershell", return_value="fixed-system-powershell"), \
+                 mock.patch.object(P, "hidden", return_value={}), mock.patch.object(P.subprocess, "run", side_effect=timeout) as child, \
+                 mock.patch.object(P, "setup_diagnostic", side_effect=RuntimeError("private-canary")), redirect_stdout(io.StringIO()) as output:
+                with self.assertRaisesRegex(P.ProducerError, "^case_setup_failed$"):
+                    P.prepare(self.root, "listing")
+            child.assert_called_once()
+            self.assertEqual(child.call_args.kwargs["timeout"], 20)
+            self.assertEqual(child.call_args.kwargs["stdout"], P.subprocess.PIPE)
+            self.assertEqual(child.call_args.kwargs["stderr"], P.subprocess.DEVNULL)
+            self.assertEqual(output.getvalue(), "")
+            self.assertEqual(retained.read_bytes(), b"private-canary")
 
     def test_prepare_exit_launch_protocol_and_parent_drift_are_distinct(self):
         failed = self.setup_stream(stages=["input", "parent", "identity", "acl", "compile", "create"], final=False)
