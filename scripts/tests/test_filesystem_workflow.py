@@ -1,6 +1,7 @@
 """Keep staged filesystem execution bound to checked artifacts and publication."""
 from pathlib import Path
 import re
+import shlex
 import unittest
 
 
@@ -38,7 +39,6 @@ class FilesystemWorkflowTests(unittest.TestCase):
                      "python -B scripts/filesystem_application_evidence.py", "--application $application",
                      "--build-commit $buildCommit", "--receipt", "--report"):
             self.assertIn(text, verification)
-        self.assertNotRegex(self.job, r"--require-application(?:\s|$)")
 
     def assert_complete_job_budget(self, job):
         job_limits = re.findall(r"^    timeout-minutes: ([1-9][0-9]*)$", job, re.MULTILINE)
@@ -97,6 +97,63 @@ class FilesystemWorkflowTests(unittest.TestCase):
         self.assertNotIn("private.json", artifact)
         self.assertNotIn("*", artifact)
         self.assertIn("if-no-files-found: error", artifact)
+
+    def assert_combined_boundary(self, job):
+        step = job.split("      - name: Require the same-build filesystem mode evidence\n", 1)[1]
+        step = step.split("      - name:", 1)[0]
+        commands = [shlex.split(line.strip()) for line in step.replace("`\n", " ").splitlines()
+                    if line.strip().startswith("python -B ")]
+        self.assertEqual(len(commands), 2)
+        protocol, ledger = commands
+        self.assertEqual(protocol[:3], ["python", "-B", "scripts/provider-lab/run_lab.py"])
+        self.assertEqual(ledger[:3], ["python", "-B", "scripts/provider_coverage.py"])
+
+        def option(command, name):
+            self.assertEqual(command.count(name), 1)
+            return command[command.index(name) + 1]
+
+        self.assertEqual(option(protocol, "--rclone"), "$runtime")
+        self.assertEqual(option(ledger, "--rclone"), "$runtime")
+        self.assertEqual(option(protocol, "--backends"), "$env:FILESYSTEM_BACKEND")
+        self.assertEqual(option(protocol, "--report"), "$protocolReceipt")
+        self.assertEqual(option(ledger, "--fixture-receipt"), "$protocolReceipt")
+        self.assertEqual(option(ledger, "--application-receipt"), "$env:RUNNER_TEMP/filesystem.private.json")
+        self.assertEqual(option(ledger, "--application"), "$application")
+        self.assertEqual(option(ledger, "--application-build-commit"), "$buildCommit")
+        self.assertEqual(option(ledger, "--require-application-mode"), "$mode")
+        for gate in ("--require-application", "--require-fixtures"):
+            self.assertEqual(option(ledger, gate), "$env:FILESYSTEM_BACKEND")
+        self.assertIn("--require-plans", ledger)
+        self.assertIn('$protocolReceipt = "$env:RUNNER_TEMP/filesystem-protocol.private.json"', step)
+        self.assertIn("$runtime = (Resolve-Path rclone-triage/assets/rclone.exe).Path", step)
+        guard = "if (Test-Path -LiteralPath $protocolReceipt) { throw 'filesystem_protocol_receipt_already_exists' }"
+        failure = "if ($LASTEXITCODE -ne 0) { throw 'filesystem_protocol_failed' }"
+        self.assertLess(step.index(guard), step.index("python -B scripts/provider-lab/run_lab.py"))
+        between = step.split("--backends $env:FILESYSTEM_BACKEND --report $protocolReceipt", 1)[1]
+        between = between.split("python -B scripts/provider_coverage.py", 1)[0]
+        self.assertEqual(between.strip(), failure)
+        for condition in ("!cancelled()", "steps.filesystem_validation.outcome == 'success'",
+                          "steps.filesystem_runtime.outcome == 'success'"):
+            self.assertIn(condition, step)
+
+    def test_matching_fresh_protocol_and_application_must_pass_together(self):
+        self.assert_combined_boundary(self.job)
+
+    def test_weakened_combined_boundaries_are_rejected(self):
+        for original, weakened in (
+            ("--fixture-receipt $protocolReceipt", "--fixture-receipt previous.json"),
+            ("--backends $env:FILESYSTEM_BACKEND", "--backends http"),
+            ("run_lab.py --rclone $runtime", "run_lab.py --rclone other.exe"),
+            ("--require-application $env:FILESYSTEM_BACKEND", ""),
+            ("--require-fixtures $env:FILESYSTEM_BACKEND", ""),
+            ("--require-application-mode $mode", ""),
+            ("Test-Path -LiteralPath $protocolReceipt", "$false"),
+            ("if ($LASTEXITCODE -ne 0) { throw 'filesystem_protocol_failed' }", ""),
+            ("steps.filesystem_runtime.outcome == 'success'", "steps.filesystem_runtime.outcome != 'cancelled'"),
+            ("--application-build-commit $buildCommit", "--application-build-commit old"),
+        ):
+            with self.subTest(mutation=original), self.assertRaises((AssertionError, ValueError)):
+                self.assert_combined_boundary(self.job.replace(original, weakened))
 
     def test_both_modes_gate_nightly_without_changing_architecture_builds(self):
         publication = self.workflow.split("    name: Publish Windows nightly\n", 1)[1]
