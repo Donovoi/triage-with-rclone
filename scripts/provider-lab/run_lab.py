@@ -1864,9 +1864,9 @@ def pcloud_dependencies():
     # lock. This is not an attestation of wheel contents or an ambient install.
     import importlib
     import importlib.metadata
-    expected = {"cffi": "2.1.1", "cryptography": "50.0.2", "pycparser": "3.0"}
-    # The pycparser 3.0 wheel reports the literal module version "3.00".
-    loaded_versions = dict(expected, pycparser="3.00")
+    expected = {"cffi": "2.1.1", "cryptography": "50.0.2", "pycparser": "3.1"}
+    # The pycparser 3.1 wheel reports the literal module version "3.01".
+    loaded_versions = dict(expected, pycparser="3.01")
     lock = (Path(__file__).parent / "requirements-fixture.txt").read_text(encoding="utf-8")
     declared = re.findall(r"^([a-z][a-z0-9_-]*)==([0-9.]+) \\", lock, re.MULTILINE)
     check(len(declared) == len(expected) and dict(declared) == expected, "pcloud_dependency_lock_mismatch")

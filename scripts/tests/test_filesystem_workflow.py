@@ -1,6 +1,7 @@
 """Keep staged filesystem execution bound to checked artifacts and publication."""
 from pathlib import Path
 import re
+import shlex
 import unittest
 
 
@@ -21,8 +22,8 @@ class FilesystemWorkflowTests(unittest.TestCase):
         self.assertNotIn("run-id:", self.job)
         self.assertNotIn("repository:", self.job)
         self.assertIn("name: rclone-triage-windows\n", self.job)
-        self.assertEqual(self.job.count("filesystem-build/rclone-triage/target/release/rclone-triage.exe"), 2)
-        self.assertEqual(self.job.count("$env:GITHUB_SHA -cne $buildCommit"), 2)
+        self.assertEqual(self.job.count("filesystem-build/rclone-triage/target/release/rclone-triage.exe"), 3)
+        self.assertEqual(self.job.count("$env:GITHUB_SHA -cne $buildCommit"), 3)
         self.assertIn("$expectedPins -cne $artifactPins", self.job)
 
     def test_raw_receipt_never_enters_public_artifact(self):
@@ -38,7 +39,121 @@ class FilesystemWorkflowTests(unittest.TestCase):
                      "python -B scripts/filesystem_application_evidence.py", "--application $application",
                      "--build-commit $buildCommit", "--receipt", "--report"):
             self.assertIn(text, verification)
-        self.assertNotIn("--require-application", self.job)
+
+    def assert_complete_job_budget(self, job):
+        job_limits = re.findall(r"^    timeout-minutes: ([1-9][0-9]*)$", job, re.MULTILINE)
+        step_limits = re.findall(r"^        timeout-minutes: ([1-9][0-9]*)$", job, re.MULTILINE)
+        self.assertEqual(len(job_limits), 1)
+        self.assertGreaterEqual(len(step_limits), 4)
+        # Leave ten minutes beyond the declared step limits for checkout,
+        # setup, artifact download and both evidence uploads.
+        self.assertGreaterEqual(int(job_limits[0]), sum(map(int, step_limits)) + 10)
+
+    def test_job_budget_covers_bounded_steps_and_artifact_overhead(self):
+        self.assert_complete_job_budget(self.job)
+        for name, minutes in (
+            ("Check real Windows application with local files or ZIP", 30),
+            ("Independently validate staged filesystem evidence", 3),
+            ("Prepare verified runtime for the filesystem coverage ledger", 3),
+            ("Require the same-build filesystem mode evidence", 3),
+        ):
+            step = self.job.split(f"      - name: {name}\n", 1)[1].split("      - name:", 1)[0]
+            self.assertIn(f"        timeout-minutes: {minutes}\n", step)
+
+    def test_insufficient_total_or_added_step_budget_is_rejected(self):
+        former_budget = re.sub(r"^    timeout-minutes: [1-9][0-9]*$",
+                               "    timeout-minutes: 35", self.job, flags=re.MULTILINE)
+        with self.assertRaises(AssertionError):
+            self.assert_complete_job_budget(former_budget)
+        added_step = self.job + "      - name: Additional bounded work\n        timeout-minutes: 12\n"
+        with self.assertRaises(AssertionError):
+            self.assert_complete_job_budget(added_step)
+
+    def test_ledger_requires_validated_receipt_and_verified_runtime_for_exact_mode(self):
+        preparation = self.job.split("      - name: Prepare verified runtime for the filesystem coverage ledger\n", 1)[1]
+        preparation = preparation.split("      - name: Require the same-build filesystem mode evidence\n", 1)[0]
+        self.assertIn("steps.filesystem_validation.outcome == 'success'", preparation)
+        self.assertIn("run: bash scripts/download-rclone.sh", preparation)
+        ledger = self.job.split("      - name: Require the same-build filesystem mode evidence\n", 1)[1]
+        ledger = ledger.split("      - name: Retain only validated filesystem evidence\n", 1)[0]
+        for text in ("!cancelled()", "steps.filesystem_validation.outcome == 'success'",
+                     "steps.filesystem_runtime.outcome == 'success'", "switch -CaseSensitive ($env:FILESYSTEM_BACKEND)",
+                     "'local' { 'local:local_filesystem_cli_v1:windows' }",
+                     "'archive' { 'archive:archive_zip_local_cli_v1:windows' }",
+                     "default { throw 'filesystem_mode_unsupported' }", "--rclone $runtime",
+                     "--application-receipt \"$env:RUNNER_TEMP/filesystem.private.json\"",
+                     "--application $application --application-build-commit $buildCommit",
+                     "--require-plans --require-application-mode $mode", "throw 'filesystem_coverage_failed'"):
+            self.assertIn(text, ledger)
+        self.assertNotIn("--require-complete", ledger)
+        self.assertNotIn("continue-on-error", ledger)
+
+    def test_ledger_artifact_is_separate_and_contains_only_the_sanitized_report(self):
+        artifact = self.job.split("      - name: Retain sanitized filesystem coverage ledger\n", 1)[1]
+        self.assertIn("steps.filesystem_coverage.outcome == 'success'", artifact)
+        self.assertIn("steps.filesystem_coverage.outcome == 'failure'", artifact)
+        self.assertIn("name: provider-evidence-Windows-filesystem-${{ matrix.backend }}", artifact)
+        self.assertIn("path: ${{ runner.temp }}/provider-evidence-windows-filesystem.json", artifact)
+        self.assertNotIn("private.json", artifact)
+        self.assertNotIn("*", artifact)
+        self.assertIn("if-no-files-found: error", artifact)
+
+    def assert_combined_boundary(self, job):
+        step = job.split("      - name: Require the same-build filesystem mode evidence\n", 1)[1]
+        step = step.split("      - name:", 1)[0]
+        commands = [shlex.split(line.strip()) for line in step.replace("`\n", " ").splitlines()
+                    if line.strip().startswith("python -B ")]
+        self.assertEqual(len(commands), 2)
+        protocol, ledger = commands
+        self.assertEqual(protocol[:3], ["python", "-B", "scripts/provider-lab/run_lab.py"])
+        self.assertEqual(ledger[:3], ["python", "-B", "scripts/provider_coverage.py"])
+
+        def option(command, name):
+            self.assertEqual(command.count(name), 1)
+            return command[command.index(name) + 1]
+
+        self.assertEqual(option(protocol, "--rclone"), "$runtime")
+        self.assertEqual(option(ledger, "--rclone"), "$runtime")
+        self.assertEqual(option(protocol, "--backends"), "$env:FILESYSTEM_BACKEND")
+        self.assertEqual(option(protocol, "--report"), "$protocolReceipt")
+        self.assertEqual(option(ledger, "--fixture-receipt"), "$protocolReceipt")
+        self.assertEqual(option(ledger, "--application-receipt"), "$env:RUNNER_TEMP/filesystem.private.json")
+        self.assertEqual(option(ledger, "--application"), "$application")
+        self.assertEqual(option(ledger, "--application-build-commit"), "$buildCommit")
+        self.assertEqual(option(ledger, "--require-application-mode"), "$mode")
+        for gate in ("--require-application", "--require-fixtures"):
+            self.assertEqual(option(ledger, gate), "$env:FILESYSTEM_BACKEND")
+        self.assertIn("--require-plans", ledger)
+        self.assertIn('$protocolReceipt = "$env:RUNNER_TEMP/filesystem-protocol.private.json"', step)
+        self.assertIn("$runtime = (Resolve-Path rclone-triage/assets/rclone.exe).Path", step)
+        guard = "if (Test-Path -LiteralPath $protocolReceipt) { throw 'filesystem_protocol_receipt_already_exists' }"
+        failure = "if ($LASTEXITCODE -ne 0) { throw 'filesystem_protocol_failed' }"
+        self.assertLess(step.index(guard), step.index("python -B scripts/provider-lab/run_lab.py"))
+        between = step.split("--backends $env:FILESYSTEM_BACKEND --report $protocolReceipt", 1)[1]
+        between = between.split("python -B scripts/provider_coverage.py", 1)[0]
+        self.assertEqual(between.strip(), failure)
+        for condition in ("!cancelled()", "steps.filesystem_validation.outcome == 'success'",
+                          "steps.filesystem_runtime.outcome == 'success'"):
+            self.assertIn(condition, step)
+
+    def test_matching_fresh_protocol_and_application_must_pass_together(self):
+        self.assert_combined_boundary(self.job)
+
+    def test_weakened_combined_boundaries_are_rejected(self):
+        for original, weakened in (
+            ("--fixture-receipt $protocolReceipt", "--fixture-receipt previous.json"),
+            ("--backends $env:FILESYSTEM_BACKEND", "--backends http"),
+            ("run_lab.py --rclone $runtime", "run_lab.py --rclone other.exe"),
+            ("--require-application $env:FILESYSTEM_BACKEND", ""),
+            ("--require-fixtures $env:FILESYSTEM_BACKEND", ""),
+            ("--require-application-mode $mode", ""),
+            ("Test-Path -LiteralPath $protocolReceipt", "$false"),
+            ("if ($LASTEXITCODE -ne 0) { throw 'filesystem_protocol_failed' }", ""),
+            ("steps.filesystem_runtime.outcome == 'success'", "steps.filesystem_runtime.outcome != 'cancelled'"),
+            ("--application-build-commit $buildCommit", "--application-build-commit old"),
+        ):
+            with self.subTest(mutation=original), self.assertRaises((AssertionError, ValueError)):
+                self.assert_combined_boundary(self.job.replace(original, weakened))
 
     def test_both_modes_gate_nightly_without_changing_architecture_builds(self):
         publication = self.workflow.split("    name: Publish Windows nightly\n", 1)[1]

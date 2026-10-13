@@ -32,6 +32,8 @@ WRAPPERS = {"alias", "cache", "chunker", "combine", "compress", "crypt", "hasher
 TIERS = ("local_protocol", "application", "vendor")
 HTTP_APPLICATION_KEY = ("http", "http_anonymous_cli_v1", "windows")
 WEBDAV_APPLICATION_KEY = ("webdav", "webdav_basic_loopback_cli_v1", "windows")
+LOCAL_APPLICATION_KEY = ("local", "local_filesystem_cli_v1", "windows")
+ARCHIVE_APPLICATION_KEY = ("archive", "archive_zip_local_cli_v1", "windows")
 APPLICATION_BASE_CAPABILITIES = frozenset({"listing", "download_hash", "manifest_integrity",
                                          "source_preservation", "cancellation", "cleanup"})
 # Receipt fields select only a closed repository entry, never an import path,
@@ -41,6 +43,12 @@ APPLICATION_REGISTRY = MappingProxyType({
         "producer": "application-lab/run_windows_http.py", "can_complete_application": True}),
     WEBDAV_APPLICATION_KEY: MappingProxyType({"module": "webdav_application_evidence.py",
         "producer": "application-lab/run_windows_webdav.py", "can_complete_application": False}),
+    # Only these reviewed Windows baseline modes are eligible. Provider
+    # completion still requires independent, current protocol evidence.
+    LOCAL_APPLICATION_KEY: MappingProxyType({"module": "filesystem_application_evidence.py",
+        "producer": "application-lab/run_windows_filesystem.py", "can_complete_application": True}),
+    ARCHIVE_APPLICATION_KEY: MappingProxyType({"module": "filesystem_application_evidence.py",
+        "producer": "application-lab/run_windows_filesystem.py", "can_complete_application": True}),
 })
 PLATFORMS = frozenset(("windows", "linux"))
 AUTH_APPLICABILITY = frozenset(("none", "credentials", "oauth", "provider_specific"))
@@ -253,6 +261,93 @@ def metadata_diagnostic(stage, error):
     else:
         raise ValueError("invalid_metadata_exception")
     return f"metadata_{stage}_{category}"
+
+
+METADATA_CLEANUP_PREFIX = "provider_metadata_cleanup_diagnostic="
+METADATA_CLEANUP_KEYS = frozenset({
+    "schema_version", "stage", "attempt", "errno", "winerror", "target",
+    "suboperation", "elapsed_ms", "version_probe_completed",
+    "providers_probe_completed", "catalog_parsed",
+})
+METADATA_CLEANUP_TARGETS = ("runtime_copy", "empty_config", "temporary_root")
+
+
+def _metadata_cleanup_clock():
+    try:
+        value = time.monotonic_ns()
+        return value if type(value) is int and value >= 0 else None
+    except Exception:
+        return None
+
+
+def metadata_cleanup_record(error, targets, started, completed):
+    """Project existing exception attributes only; never probe a failed path."""
+    def attribute(name):
+        try:
+            return getattr(error, name, None) if isinstance(error, OSError) else None
+        except Exception:
+            return None
+
+    def number(name, maximum):
+        value = attribute(name)
+        return value if type(value) is int and 0 <= value <= maximum else None
+
+    target = "unavailable"
+    filename = attribute("filename")
+    if type(filename) is str and len(filename) <= 4096:
+        for name in METADATA_CLEANUP_TARGETS:
+            expected = targets.get(name)
+            if type(expected) is str and filename == expected:
+                target = name
+                break
+    ended = _metadata_cleanup_clock()
+    elapsed = None
+    if (type(started) is int and started >= 0 and type(ended) is int
+            and ended >= started):
+        milliseconds = (ended - started) // 1_000_000
+        if milliseconds <= 2_147_483_647:
+            elapsed = milliseconds
+    return {
+        "schema_version": 1, "stage": "temporary_cleanup", "attempt": 1,
+        "errno": number("errno", 2_147_483_647),
+        "winerror": number("winerror", 4_294_967_295),
+        "target": target, "suboperation": None, "elapsed_ms": elapsed,
+        "version_probe_completed": completed[0],
+        "providers_probe_completed": completed[1], "catalog_parsed": completed[2],
+    }
+
+
+def format_metadata_cleanup_diagnostic(record):
+    if (type(record) is not dict or set(record) != METADATA_CLEANUP_KEYS
+            or type(record["schema_version"]) is not int or record["schema_version"] != 1
+            or type(record["attempt"]) is not int or record["attempt"] != 1
+            or type(record["stage"]) is not str or record["stage"] != "temporary_cleanup"
+            or type(record["target"]) is not str
+            or record["target"] not in (*METADATA_CLEANUP_TARGETS, "unavailable")
+            or record["suboperation"] is not None):
+        raise ValueError("invalid_metadata_cleanup_diagnostic")
+    for name, maximum in (("errno", 2_147_483_647), ("winerror", 4_294_967_295),
+                          ("elapsed_ms", 2_147_483_647)):
+        value = record[name]
+        if value is not None and (type(value) is not int or not 0 <= value <= maximum):
+            raise ValueError("invalid_metadata_cleanup_diagnostic")
+    for name in ("version_probe_completed", "providers_probe_completed", "catalog_parsed"):
+        if type(record[name]) is not bool:
+            raise ValueError("invalid_metadata_cleanup_diagnostic")
+    line = METADATA_CLEANUP_PREFIX + json.dumps(record, sort_keys=True, separators=(",", ":"))
+    if len((line + "\n").encode("utf-8")) > 768:
+        raise ValueError("invalid_metadata_cleanup_diagnostic")
+    return line
+
+
+def emit_metadata_cleanup_diagnostic(error, targets, started, completed):
+    # A diagnostic failure must never replace the original cleanup failure.
+    # attempt=1 counts this explicit cleanup() call, not CPython's internal deletes.
+    try:
+        record = metadata_cleanup_record(error, targets, started, completed)
+        print(format_metadata_cleanup_diagnostic(record), file=sys.stderr)
+    except Exception:
+        pass
 
 
 def fail(code):
@@ -1244,6 +1339,8 @@ def run_metadata(binary, arguments, config, environment):
 
 def query_runtime(binary, manifest_path):
     temporary = None
+    cleanup_targets = {}
+    version_probe_completed = providers_probe_completed = catalog_parsed = False
     primary_code, diagnostics = None, []
     stage = "runtime_preflight"
     try:
@@ -1278,11 +1375,13 @@ def query_runtime(binary, manifest_path):
         stage = "temporary_create"
         temporary = tempfile.TemporaryDirectory(prefix="triage-catalog-")
         root = Path(temporary.name)
+        cleanup_targets["temporary_root"] = str(root)
         stage = "temporary_permissions"
         root.chmod(0o700)
         # Run an independently rehashed owned copy, preventing replacement of
         # the supplied executable between verification and the metadata calls.
         executable = root / ("rclone.exe" if system == "windows" else "rclone")
+        cleanup_targets["runtime_copy"] = str(executable)
         stage = "runtime_copy"
         shutil.copyfile(binary, executable)
         stage = "runtime_permissions"
@@ -1293,6 +1392,7 @@ def query_runtime(binary, manifest_path):
                 fail("runtime_copy_hash_mismatch")
         stage = "config_create"
         config = root / "empty.conf"
+        cleanup_targets["empty_config"] = str(config)
         fd = os.open(config, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         os.close(fd)
         environment = isolated_environment(root)
@@ -1300,11 +1400,14 @@ def query_runtime(binary, manifest_path):
         reported = run_metadata(executable, ["version"], config, environment)
         if reported.splitlines()[:1] != [f"rclone v{version}".encode("ascii")]:
             fail("runtime_version_mismatch")
+        version_probe_completed = True
         stage = "providers_probe"
         raw = run_metadata(executable, ["config", "providers"], config, environment)
+        providers_probe_completed = True
         stage = "catalog_parse"
         try:
             catalog = catalog_from_schemas(json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_object))
+            catalog_parsed = True
         except (ValueError, UnicodeError):
             fail("invalid_catalog")
     except CoverageError as error:
@@ -1314,10 +1417,14 @@ def query_runtime(binary, manifest_path):
         diagnostics.append(metadata_diagnostic(stage, error))
     finally:
         if temporary is not None:
+            cleanup_started = _metadata_cleanup_clock()
             try:
                 temporary.cleanup()
             except METADATA_EXCEPTIONS as error:
                 diagnostics.append(metadata_diagnostic("temporary_cleanup", error))
+                emit_metadata_cleanup_diagnostic(error, cleanup_targets, cleanup_started,
+                                                (version_probe_completed,
+                                                 providers_probe_completed, catalog_parsed))
     if diagnostics:
         raise MetadataDiagnosticError(primary_code, diagnostics)
     if primary_code is not None:

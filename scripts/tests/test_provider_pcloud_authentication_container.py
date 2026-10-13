@@ -48,7 +48,7 @@ def native():
             "started_utc": "2026-10-04T12:00:00Z", "finished_utc": "2026-10-04T12:00:45Z", "success": True,
             "runtime": dict(IDENTITY), "platform": "linux/amd64", "source_sha256": dict(SOURCES),
             "source_digest": BINDINGS["harness_sha256"], "dependency_lock_sha256": LOCK["requirements"]["sha256"],
-            "dependency_versions": {"cryptography": "50.0.2", "cffi": "2.1.1", "pycparser": "3.0"},
+            "dependency_versions": {"cryptography": "50.0.2", "cffi": "2.1.1", "pycparser": "3.1"},
             "python_version": "3.12.15", "base_image": LOCK["base_image"], "base_config_digest": LOCK["base_config_digest"],
             "image_id": baseline.IMAGE, "container_isolation_verified": True, "probe": suite(), "errors": [],
             "cleanup": {"container_removed": True, "image_removed": True, "temporary_removed": True},

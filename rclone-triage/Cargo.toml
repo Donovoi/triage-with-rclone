@@ -6,6 +6,10 @@ description = "Forensic cloud triage tool with embedded rclone"
 authors = ["Forensic Team"]
 license = "Apache-2.0"
 
+[features]
+default = []
+runtime-cleanup-trace = ["dep:triage-cleanup-trace"]
+
 [dependencies]
 # TUI
 ratatui = { version = "0.30.2", default-features = false, features = ["crossterm_0_28", "layout-cache", "underline-color"] }
@@ -30,8 +34,8 @@ rand = "0.8"
 
 # Cryptography & Hashing
 sha2 = "0.10"
-sha1 = "0.10"
-md5 = "0.7"
+sha1 = "0.11"
+md5 = "0.8"
 hex = "0.4"
 base64 = "0.22"
 aes-gcm = "0.11"
@@ -67,6 +71,7 @@ flate2 = "1.1.9"
 tar = "0.4.46"
 
 [target.'cfg(windows)'.dependencies]
+triage-cleanup-trace = { path = "../tools/cleanup-trace", optional = true }
 winreg = "0.52"
 windows = { version = "0.62", features = [
     "Win32_Foundation",
