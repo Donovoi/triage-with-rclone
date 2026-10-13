@@ -67,6 +67,121 @@ try {
     $script:clock.Restart()
     CompileObservation 'started'
     Add-Type -Path (Join-Path $root 'application-lab/HostedConPtySession.cs') -ErrorAction Stop -WarningAction SilentlyContinue 2>$null
+
+    # BEGIN PURE POLL OBSERVATION TESTS: uses only the isolated diagnostic enum/struct.
+    $observation = [TriageApplicationLab.HostedProcessObservation]::new()
+    Check ($null -eq $observation.Code)
+    $observation.At([TriageApplicationLab.HostedProcessObservationStage]::ChildOpen)
+    $observation.Capture()
+    Check ($null -eq $observation.Code)
+    $stageCases = [ordered]@{
+        Unknown='unknown'; PidBufferAllocate='pid_buffer_allocate'; PidListQuery='pid_list_query'
+        PidListShape='pid_list_shape'; PidValue='pid_value'; RetainedChildWait='retained_child_wait'
+        ChildOpen='child_open'; ChildMembership='child_membership'; ChildExitWait='child_exit_wait'
+        ChildCapacity='child_capacity'; ChildCreated='child_created'; ChildHandleClose='child_handle_close'
+        PidBufferFree='pid_buffer_free'; JobAccounting='job_accounting'; AppExitWait='app_exit_wait'; AppExitCode='app_exit_code'
+    }
+    foreach ($entry in $stageCases.GetEnumerator()) {
+        $stage = [TriageApplicationLab.HostedProcessObservationStage]([Enum]::Parse([TriageApplicationLab.HostedProcessObservationStage], $entry.Key))
+        $observation.Begin(); $observation.At($stage)
+        Check ($null -eq $observation.Code)
+        $observation.Capture()
+        Check ($observation.Code -ceq ('process_observation_stage_' + $entry.Value))
+        $observation.At([TriageApplicationLab.HostedProcessObservationStage]::PidBufferFree)
+        $observation.Capture(); $observation.End()
+        $observation.At([TriageApplicationLab.HostedProcessObservationStage]::ChildOpen); $observation.Capture()
+        Check ($observation.Code -ceq ('process_observation_stage_' + $entry.Value))
+        $observation.Begin(); $observation.At($stage); $observation.End(); $observation.Capture()
+        Check ($null -eq $observation.Code)
+    }
+    $observation.Begin(); $observation.At([Enum]::ToObject([TriageApplicationLab.HostedProcessObservationStage], 2147483647)); $observation.Capture()
+    Check ($observation.Code -ceq 'process_observation_stage_unknown')
+
+    $originalErrors = [string[]]@('process_observation_failed','forced_termination','console_cleanup_failed')
+    $projected = $observation.Project($originalErrors)
+    Check (($originalErrors -join ',') -ceq 'process_observation_failed,forced_termination,console_cleanup_failed')
+    Check (($projected -join ',') -ceq 'process_observation_failed,forced_termination,console_cleanup_failed,process_observation_stage_unknown')
+    Check (-not [Object]::ReferenceEquals($projected,$originalErrors))
+    Check ([Object]::ReferenceEquals($observation.Project($projected),$projected))
+    Check ($null -eq $observation.Project($null))
+    foreach ($unchanged in @([string[]]@(),[string[]]@('forced_termination'),
+            [string[]]@('PROCESS_OBSERVATION_FAILED'),
+            [string[]]@('process_observation_failed','process_observation_stage_private-canary'))) {
+        Check ([Object]::ReferenceEquals($observation.Project($unchanged),$unchanged))
+    }
+    foreach ($count in @(23,24,25)) {
+        $buffer = [Collections.Generic.List[string]]::new()
+        $buffer.Add('process_observation_failed')
+        for ($i=1;$i -lt $count-1;$i++) { $buffer.Add(('original_{0:d2}' -f $i)) }
+        $buffer.Add('console_cleanup_failed')
+        $before = $buffer.ToArray()
+        $after = $observation.Project($before)
+        Check (($before -join ',') -ceq ($buffer.ToArray() -join ','))
+        Check (($after[0..($count-1)] -join ',') -ceq ($before -join ','))
+        Check ($after[$count-1] -ceq 'console_cleanup_failed')
+        if ($count -eq 23) {
+            Check ($after.Length -eq 24 -and $after[23] -ceq 'process_observation_stage_unknown')
+        } else { Check ([Object]::ReferenceEquals($after,$before)) }
+    }
+    # A projected earlier copy cannot consume a slot subsequently needed by the
+    # original list's cleanup outcome, even when the next snapshot reaches 24.
+    $buffer = [Collections.Generic.List[string]]::new()
+    $buffer.Add('process_observation_failed')
+    for ($i=1;$i -lt 23;$i++) { $buffer.Add(('original_{0:d2}' -f $i)) }
+    $early = $observation.Project($buffer.ToArray())
+    Check ($early.Length -eq 24 -and $buffer.Count -eq 23)
+    $buffer.Add('reader_cleanup_failed')
+    $late = $observation.Project($buffer.ToArray())
+    Check ($late.Length -eq 24 -and $late[23] -ceq 'reader_cleanup_failed')
+    Check (@($late | Where-Object { $_.StartsWith('process_observation_stage_', [StringComparison]::Ordinal) }).Count -eq 0)
+    $observation.Begin(); $observation.End()
+    Check ([Object]::ReferenceEquals($observation.Project($originalErrors),$originalErrors))
+
+    function Invoke-PureObservationFlow([bool]$Instrument, [bool]$PrimaryFailure, [bool]$CleanupFailure, [bool]$DiagnosticFailure) {
+        $state = [TriageApplicationLab.HostedProcessObservation]::new()
+        $events = [Collections.Generic.List[string]]::new()
+        $codes = [Collections.Generic.List[string]]::new()
+        $finishCount = 0
+        if ($Instrument) { $state.Begin() }
+        try {
+            try {
+                if ($Instrument) { $state.At([TriageApplicationLab.HostedProcessObservationStage]::ChildMembership) }
+                $events.Add('membership')
+                if ($PrimaryFailure) { throw 'private-primary-canary' }
+            } catch { if ($Instrument) { $state.Capture() }; throw }
+            finally {
+                if ($Instrument) { $state.At([TriageApplicationLab.HostedProcessObservationStage]::ChildHandleClose) }
+                $events.Add('close')
+                if ($CleanupFailure) { throw 'private-cleanup-canary' }
+            }
+        } catch {
+            if ($Instrument) { $state.Capture(); $state.End() }
+            $codes.Add('process_observation_failed')
+            $events.Add('finish:0'); $finishCount++
+            $codes.Add('forced_termination')
+        }
+        if ($Instrument) { $state.End() }
+        $current = $codes.ToArray()
+        if ($Instrument) { try { if ($DiagnosticFailure) { throw 'private-diagnostic-canary' }; $current=$state.Project($current) } catch { } }
+        return @{Events=($events -join ','); Codes=$current; OriginalCodes=$codes.ToArray(); FinishCount=$finishCount}
+    }
+    foreach ($primary in @($false,$true)) {
+        foreach ($cleanup in @($false,$true)) {
+            foreach ($diagnostic in @($false,$true)) {
+                $original = Invoke-PureObservationFlow $false $primary $cleanup $diagnostic
+                $tracked = Invoke-PureObservationFlow $true $primary $cleanup $diagnostic
+                Check ($tracked.Events -ceq $original.Events -and $tracked.FinishCount -eq $original.FinishCount)
+                Check (($tracked.OriginalCodes -join ',') -ceq ($original.OriginalCodes -join ','))
+                Check ((@($tracked.Codes | Where-Object { -not $_.StartsWith('process_observation_stage_', [StringComparison]::Ordinal) }) -join ',') -ceq ($original.Codes -join ','))
+                $diagnostics = @($tracked.Codes | Where-Object { $_.StartsWith('process_observation_stage_', [StringComparison]::Ordinal) })
+                if (($primary -or $cleanup) -and -not $diagnostic) {
+                    $expected = if ($primary) { 'child_membership' } else { 'child_handle_close' }
+                    Check ($diagnostics.Count -eq 1 -and $diagnostics[0] -ceq ('process_observation_stage_' + $expected))
+                } else { Check ($diagnostics.Count -eq 0) }
+            }
+        }
+    }
+    # END PURE POLL OBSERVATION TESTS
     CompileObservation 'passed'
     $script:phase = 'pure_checks'
     $script:clock.Restart()
