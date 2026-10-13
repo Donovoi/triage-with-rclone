@@ -54,7 +54,11 @@ jobs:
         working-directory: rclone-triage
         run: |
           $ErrorActionPreference = 'Stop'
-          cargo test --locked --release --target aarch64-pc-windows-msvc --features runtime-cleanup-trace --test cli_acquisition --no-run
+          $PSNativeCommandUseErrorActionPreference = $false
+          $cargoJson = Join-Path $env:RUNNER_TEMP 'original-cleanup-build.private.jsonl'
+          $cargoErr = Join-Path $env:RUNNER_TEMP 'original-cleanup-build-stderr.private'
+          if ([IO.File]::Exists($cargoJson) -or [IO.File]::Exists($cargoErr)) { throw 'Private build log already exists' }
+          cargo test --locked --release --target aarch64-pc-windows-msvc --features runtime-cleanup-trace --test cli_acquisition --no-run --message-format=json > $cargoJson 2> $cargoErr
           if ($LASTEXITCODE -ne 0) { throw 'Diagnostic build failed' }
       - name: Observe the original cleanup once
         timeout-minutes: 3
@@ -64,7 +68,15 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $false
-          $application = Join-Path $PWD 'target/aarch64-pc-windows-msvc/release/rclone-triage.exe'
+          $cargoJson = Join-Path $env:RUNNER_TEMP 'original-cleanup-build.private.jsonl'
+          $selectedJson = python -B ../tools/cleanup-trace/select_artifacts.py --cargo-json $cargoJson --project $PWD.Path
+          if ($LASTEXITCODE -ne 0) { throw 'Diagnostic artifact selection failed' }
+          $selected = $selectedJson | ConvertFrom-Json
+          $application = $selected.application
+          $harness = $selected.test_harness
+          $harnessHash = (Get-FileHash -LiteralPath $harness -Algorithm SHA256).Hash.ToLowerInvariant()
+          $cargoJsonHash = (Get-FileHash -LiteralPath $cargoJson -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($cargoJsonHash -cne $selected.cargo_json_sha256) { throw 'Build record changed' }
           $runtime = Join-Path $PWD 'assets/rclone.exe'
           $applicationHash = (Get-FileHash -LiteralPath $application -Algorithm SHA256).Hash.ToLowerInvariant()
           $runtimeHash = (Get-FileHash -LiteralPath $runtime -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -73,10 +85,11 @@ jobs:
           $privateOut = Join-Path $env:RUNNER_TEMP 'original-cleanup-stdout.private'
           $privateErr = Join-Path $env:RUNNER_TEMP 'original-cleanup-stderr.private'
           if ([IO.File]::Exists($privateOut) -or [IO.File]::Exists($privateErr)) { throw 'Private log already exists' }
-          cargo test --offline --locked --release --target aarch64-pc-windows-msvc --features runtime-cleanup-trace --test cli_acquisition cli_imported_listing_is_complete_recursive_and_preserves_exact_provenance -- --exact --nocapture --test-threads=1 > $privateOut 2> $privateErr
+          & $harness cli_imported_listing_empty_remote_publishes_explicit_empty_csv_schema --exact --nocapture --test-threads=1 > $privateOut 2> $privateErr
           $originalExit = $LASTEXITCODE
-          if ((Get-FileHash -LiteralPath $application -Algorithm SHA256).Hash.ToLowerInvariant() -cne $applicationHash -or (Get-FileHash -LiteralPath $runtime -Algorithm SHA256).Hash.ToLowerInvariant() -cne $runtimeHash) { throw 'Tested bytes changed' }
-          python -B ../tools/cleanup-trace/validate_result.py --log $privateErr --test-exit $originalExit --runtime-sha256 $runtimeHash --application-sha256 $applicationHash --commit $env:GITHUB_SHA
+          Write-Output "test_native_exit=$originalExit"
+          if ((Get-FileHash -LiteralPath $harness -Algorithm SHA256).Hash.ToLowerInvariant() -cne $harnessHash -or (Get-FileHash -LiteralPath $cargoJson -Algorithm SHA256).Hash.ToLowerInvariant() -cne $cargoJsonHash -or (Get-FileHash -LiteralPath $application -Algorithm SHA256).Hash.ToLowerInvariant() -cne $applicationHash -or (Get-FileHash -LiteralPath $runtime -Algorithm SHA256).Hash.ToLowerInvariant() -cne $runtimeHash) { throw 'Tested bytes changed' }
+          python -B ../tools/cleanup-trace/validate_result.py --log $privateErr --test-exit $originalExit --runtime-sha256 $runtimeHash --application-sha256 $applicationHash --commit $env:GITHUB_SHA --test-stdout $privateOut --test-harness-sha256 $harnessHash --cargo-json-sha256 $cargoJsonHash
           $validationExit = $LASTEXITCODE
           if ($originalExit -ne 0) { exit $originalExit }
           exit $validationExit
