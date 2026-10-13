@@ -28,11 +28,11 @@ A new nightly is published after each merged PR passes the required checks. Buil
 
 See [test status and known gaps](rclone-triage/tests/provider_testing.md) for the detailed results.
 
-Local-file and ZIP command tests have passed, including cancellation and cleanup. Combined coverage checks are pending.
+Local-file and ZIP checks have passed, including cancellation and cleanup.
 
-Dropbox download cancellation and the B2 and Swift download checks have passed on their tested Windows builds. The B2 and Swift checks used local test servers.
+Dropbox download cancellation tests have passed. B2 and Swift download checks have passed using local test servers. These results apply to the tested Windows builds; tests with real Swift accounts are still pending.
 
-Current work: fix Windows test startup and cleanup failures, check FTP recovery after a lost connection, and finish the combined local-file and ZIP checks.
+Current work: fix Windows test startup and cleanup failures, check FTP recovery after a lost connection, and check how WebDAV handles a rejected download.
 
 ## What comes next
 
