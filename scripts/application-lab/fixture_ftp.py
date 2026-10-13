@@ -13,6 +13,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 import hashlib
 import hmac
+import select
 import socket
 import threading
 import time
@@ -291,7 +292,7 @@ class _Server:
         self.listener = self._allocate("control_listener")
         self.listener.raw.bind(("127.0.0.1", 0))
         self.listener.raw.listen(MAX_ACTIVE)
-        self.listener.raw.settimeout(0.1)
+        self.listener.raw.settimeout(0.0)
         address = self.listener.raw.getsockname()
         if (type(address) is not tuple or len(address) != 2 or address[0] != "127.0.0.1" or
                 type(address[1]) is not int or not 1 <= address[1] <= 65535):
@@ -318,14 +319,21 @@ class _Server:
         try:
             while not self.stopping.is_set():
                 self.live()
+                # Wait outside the shared state lock so an idle listener cannot
+                # repeatedly delay replies, transfers or the committed FIN.
+                readable, _, _ = select.select([self.listener.raw], [], [],
+                    min(0.1, max(0.0, self.deadline - time.monotonic())))
+                if not readable:
+                    continue
                 try:
-                    # The listener has the fixed 100ms timeout. Serialize actual
-                    # accept AND registration with the committed FIN boundary;
-                    # delayed registration cannot make a pre-drop socket fresh.
+                    # The actual nonblocking accept AND registration still share
+                    # the committed FIN boundary. Readiness itself grants no
+                    # freshness; delayed registration cannot grant it either.
                     with self.state.lock:
+                        self.live()
                         raw, peer = self.listener.raw.accept()
                         session = self._admit(raw, peer)
-                except socket.timeout:
+                except BlockingIOError:
                     continue
                 thread = self._spawn(self._worker, session)
                 with self.state.lock:
