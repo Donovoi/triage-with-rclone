@@ -1919,6 +1919,7 @@ class ProducerTests(unittest.TestCase):
         bridge.last, bridge.forced, bridge.ready = None, False, False
         bridge.closed_ready = False
         bridge.stage_bytes, bridge.stage_invalid = bytearray(), False
+        bridge.transport = {}
         bridge.failed, bridge.done = threading.Event(), threading.Event()
         bridge.response_lock = threading.Lock()
         bridge.responses = bridge.calls = 0
@@ -2099,6 +2100,209 @@ class ProducerTests(unittest.TestCase):
             with redirect_stdout(io.StringIO()) as output, self.assertRaises(P.ProducerError):
                 P.session_diagnostic(*fields)
             self.assertEqual(output.getvalue(), "")
+
+    def transport_bridge(self, name):
+        bridge = self.bare_bridge(name)
+        bridge.last = session("finish", final=True)
+        bridge.process.poll.return_value = 0
+        bridge.threads = [mock.Mock(), mock.Mock()]
+        for thread in bridge.threads:
+            thread.is_alive.return_value = False
+        return bridge
+
+    def transport_record(self, output):
+        lines = [line for line in output.getvalue().splitlines()
+                 if line.startswith("application_transport_diagnostic=")]
+        self.assertEqual(len(lines), 1)
+        self.assertNotIn("private-canary", output.getvalue())
+        return json.loads(lines[0].split("=", 1)[1])
+
+    def test_transport_ready_timeout_then_zero_exit_remains_failed(self):
+        bridge = self.transport_bridge("transport-ready-timeout")
+        bridge.last = None
+        bridge.process.poll.return_value = None
+        bridge.messages.get = mock.Mock(side_effect=P.queue.Empty)
+        bridge.stage_bytes.extend(b"application_bridge_stage=compile\n")
+        with redirect_stdout(io.StringIO()) as output:
+            with self.assertRaisesRegex(P.ProducerError, "^session_failed$"):
+                bridge.command("ready")
+            with mock.patch.object(bridge, "command", wraps=bridge.command) as command:
+                self.assertFalse(bridge.close())
+        command.assert_called_once_with("finish", grace_ms=0)
+        bridge.process.wait.assert_called_once_with(timeout=10)
+        bridge.process.kill.assert_not_called()
+        bridge.watchdog.is_alive.assert_not_called()
+        for thread in bridge.threads:
+            thread.is_alive.assert_called_once_with()
+        value = self.transport_record(output)
+        self.assertEqual((value["last_stage"], value["close_wait"], value["return_code"]), ("compile", "returned", 0))
+        self.assertEqual((value["ready"], value["calls"], value["responses"]), (False, 1, 0))
+        self.assertTrue(all(value[key] is True for key in ("failed", "forced", "done", "watchdog_join_returned",
+            "stdout_join_returned", "stderr_join_returned", "stdin_close_returned", "stdout_close_returned", "stderr_close_returned")))
+        self.assertIsNone(value["watchdog_alive"])
+        self.assertIsNone(value["close_kill_attempted"])
+        self.assertIsNone(value["kill_wait"])
+
+    def test_transport_wait_timeout_and_kill_timeout_preserve_original_exception(self):
+        bridge = self.transport_bridge("transport-kill-timeout")
+        bridge.process.returncode = None
+        error = P.subprocess.TimeoutExpired("private-canary", 5)
+        bridge.process.wait.side_effect = [P.subprocess.TimeoutExpired("private-canary", 10), error]
+        with redirect_stdout(io.StringIO()) as output, self.assertRaises(P.subprocess.TimeoutExpired) as caught:
+            bridge.close()
+        self.assertIs(caught.exception, error)
+        self.assertEqual(bridge.process.wait.call_args_list, [mock.call(timeout=10), mock.call(timeout=5)])
+        bridge.process.kill.assert_called_once_with()
+        value = self.transport_record(output)
+        self.assertEqual((value["close_wait"], value["kill_wait"]), ("timeout", "timeout"))
+        self.assertIsNone(value["return_code"])
+        self.assertTrue(value["close_kill_attempted"])
+        self.assertTrue(value["close_kill_returned"])
+        self.assertTrue(value["done"])
+        self.assertIsNone(value["watchdog_alive"])
+
+    def test_transport_wait_and_kill_errors_stay_unknown_where_unobserved(self):
+        for at in ("wait", "kill", "kill_wait"):
+            with self.subTest(at=at):
+                bridge = self.transport_bridge("transport-error-" + at)
+                bridge.process.returncode = None
+                error = OSError("private-canary")
+                timeout = P.subprocess.TimeoutExpired("private-canary", 10)
+                bridge.process.wait.side_effect = error if at == "wait" else [timeout, error if at == "kill_wait" else 0]
+                if at == "kill":
+                    bridge.process.kill.side_effect = error
+                with redirect_stdout(io.StringIO()) as output, self.assertRaises(OSError) as caught:
+                    bridge.close()
+                self.assertIs(caught.exception, error)
+                value = self.transport_record(output)
+                self.assertEqual(value["close_wait"], "failed" if at == "wait" else "timeout")
+                self.assertEqual(value["kill_wait"], "failed" if at == "kill_wait" else None)
+                self.assertEqual(value["close_kill_attempted"], None if at == "wait" else True)
+                self.assertEqual(value["close_kill_returned"], True if at == "kill_wait" else None)
+                self.assertIsNone(value["return_code"])
+
+    def test_transport_late_stage_and_reply_do_not_acknowledge_ready(self):
+        bridge = self.transport_bridge("transport-late")
+        bridge.failed.set()
+        bridge.calls = bridge.responses = 1
+        bridge.messages.put(b"private-canary")
+        bridge.stage_bytes.extend(b"application_bridge_stage=compile\napplication_bridge_stage=compiled\n")
+        with redirect_stdout(io.StringIO()) as output:
+            self.assertFalse(bridge.close())
+        value = self.transport_record(output)
+        self.assertEqual((value["last_stage"], value["calls"], value["responses"]), ("compiled", 1, 1))
+        self.assertFalse(value["ready"])
+        self.assertTrue(value["failed"])
+        self.assertIsNone(value["watchdog_alive"])
+
+    def test_transport_reader_and_join_uncertainty_never_claims_termination(self):
+        for stage in ("live_reader", "join_error", "stream_error"):
+            with self.subTest(stage=stage):
+                bridge = self.transport_bridge("transport-uncertain-" + stage)
+                bridge.failed.set()
+                error = OSError("private-canary")
+                if stage == "live_reader":
+                    bridge.threads[0].is_alive.return_value = True
+                elif stage == "join_error":
+                    bridge.watchdog.join.side_effect = error
+                else:
+                    bridge.process.stdout.close.side_effect = error
+                with redirect_stdout(io.StringIO()) as output:
+                    if stage == "live_reader":
+                        self.assertFalse(bridge.close())
+                    else:
+                        with self.assertRaises(OSError) as caught:
+                            bridge.close()
+                        self.assertIs(caught.exception, error)
+                value = self.transport_record(output)
+                self.assertIsNone(value["watchdog_alive"])
+                if stage == "live_reader":
+                    self.assertTrue(value["stdout_join_returned"])
+                    self.assertTrue(value["stdout_reader_alive"])
+                    self.assertIsNone(value["stdout_close_attempted"])
+                    bridge.process.stdout.close.assert_not_called()
+                elif stage == "join_error":
+                    self.assertIsNone(value["watchdog_join_returned"])
+                    self.assertIsNone(value["stdout_reader_alive"])
+                    self.assertIsNone(value["stdout_close_returned"])
+                else:
+                    self.assertFalse(value["stdout_reader_alive"])
+                    self.assertTrue(value["stdout_close_attempted"])
+                    self.assertIsNone(value["stdout_close_returned"])
+                    self.assertIsNone(value["stderr_reader_alive"])
+
+    def test_transport_watchdog_records_existing_kill_without_extra_poll(self):
+        bridge = self.transport_bridge("transport-watchdog")
+        bridge.failed.set()
+        bridge.done.wait = mock.Mock(return_value=False)
+        bridge.process.poll.side_effect = [None, 0]
+        bridge._watch()
+        with redirect_stdout(io.StringIO()) as output:
+            self.assertFalse(bridge.close())
+        value = self.transport_record(output)
+        self.assertTrue(value["watchdog_kill_attempted"])
+        self.assertTrue(value["watchdog_kill_returned"])
+        self.assertIsNone(value["close_kill_attempted"])
+        bridge.done.wait.assert_called_once_with(0.05)
+        self.assertEqual(bridge.process.poll.call_count, 2)
+        bridge.process.kill.assert_called_once_with()
+
+    def test_transport_schema_rejects_nonfinite_wrong_types_and_private_fields(self):
+        original = dict.fromkeys(P.TRANSPORT_KEYS)
+        original["schema_version"] = 1
+        invalid = [("calls", v) for v in (True, -1, 1025, 1.5, float("nan"), "private-canary")]
+        invalid += [("responses", v) for v in (True, -1, 1025)]
+        invalid += [("return_code", v) for v in (True, -(2**31)-1, 2**32, float("inf"), "private-canary")]
+        invalid += [(key, "private-canary") for key in P.TRANSPORT_FLAGS | P.TRANSPORT_WAITS]
+        invalid += [("last_stage", []), ("last_stage", "private-canary"), ("schema_version", True), ("private-canary", 1)]
+        for key, value in invalid:
+            with self.subTest(key=key, value=type(value).__name__), redirect_stdout(io.StringIO()) as output:
+                with self.assertRaises(P.ProducerError):
+                    P.transport_diagnostic(dict(original, **{key: value}))
+                self.assertEqual(output.getvalue(), "")
+        for code in (None, -(2**31), 0, 2**32-1):
+            with redirect_stdout(io.StringIO()) as output:
+                P.transport_diagnostic(dict(original, return_code=code))
+            self.assertEqual(self.transport_record(output)["return_code"], code)
+
+    def test_transport_printer_and_snapshot_failures_cannot_mask_original_failure(self):
+        bridge = self.transport_bridge("transport-printer")
+        bridge.failed.set()
+        with mock.patch("builtins.print", side_effect=OSError("private-canary")):
+            self.assertFalse(bridge.close())
+        bridge = self.transport_bridge("transport-printer-exception")
+        error = OSError("original-private-canary")
+        bridge.process.wait.side_effect = error
+        with mock.patch("builtins.print", side_effect=RuntimeError("printer-private-canary")):
+            with self.assertRaises(OSError) as caught:
+                bridge.close()
+        self.assertIs(caught.exception, error)
+        bridge = self.transport_bridge("transport-invalid-snapshot")
+        bridge.failed.set()
+        bridge.calls = "private-canary"
+        with redirect_stdout(io.StringIO()) as output:
+            self.assertFalse(bridge.close())
+        self.assertNotIn("application_transport_diagnostic", output.getvalue())
+        self.assertNotIn("private-canary", output.getvalue())
+
+    def test_transport_success_is_silent_and_existing_close_order_is_unchanged(self):
+        bridge = self.transport_bridge("transport-success")
+        calls = mock.Mock()
+        for name, method in (("poll", bridge.process.poll), ("stdin_close", bridge.process.stdin.close),
+                ("wait", bridge.process.wait), ("watchdog_join", bridge.watchdog.join),
+                ("stdout_join", bridge.threads[0].join), ("stderr_join", bridge.threads[1].join),
+                ("stdout_alive", bridge.threads[0].is_alive), ("stderr_alive", bridge.threads[1].is_alive),
+                ("stdout_close", bridge.process.stdout.close), ("stderr_close", bridge.process.stderr.close),
+                ("watchdog_alive", bridge.watchdog.is_alive)):
+            calls.attach_mock(method, name)
+        with redirect_stdout(io.StringIO()) as output:
+            self.assertTrue(bridge.close())
+        self.assertEqual(output.getvalue(), "")
+        self.assertEqual(calls.mock_calls, [mock.call.poll(), mock.call.stdin_close(), mock.call.wait(timeout=10),
+            mock.call.watchdog_join(1), mock.call.stdout_join(2), mock.call.stderr_join(2),
+            mock.call.stdout_alive(), mock.call.stdout_close(), mock.call.stderr_alive(), mock.call.stderr_close(),
+            mock.call.watchdog_alive(), mock.call.stdout_alive(), mock.call.stderr_alive()])
+        bridge.process.kill.assert_not_called()
 
     def test_hosted_guard_rejects_self_hosted_before_setup(self):
         with mock.patch.object(P.os, "name", "nt"), mock.patch.dict(os.environ, {
