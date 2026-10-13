@@ -156,6 +156,35 @@ def select(raw):
     return found[0]
 
 
+EMPTY_TEST = "cli_imported_listing_empty_remote_publishes_explicit_empty_csv_schema"
+
+
+def validate_harness(raw, test_exit, harness_sha256, cargo_json_sha256):
+    """Bind one completed, non-ignored exact test; never publish libtest text."""
+    if type(raw) is not bytes or not 0 < len(raw) <= 4*1024*1024:
+        raise ValueError("stdout_bound")
+    if type(test_exit) is not int or test_exit not in (0, 101):
+        raise ValueError("harness_exit")
+    if any(type(value) is not str or not re.fullmatch("[a-f0-9]{64}", value)
+           for value in (harness_sha256, cargo_json_sha256)):
+        raise ValueError("harness_binding")
+    lines = raw.decode("utf-8", errors="strict").splitlines()
+    running = [line for line in lines if line.startswith("running ")]
+    cases = [line for line in lines if line.startswith("test ") and not line.startswith("test result:")]
+    summaries = [line for line in lines if line.startswith("test result:")]
+    outcome, passed, failed = ("ok", 1, 0) if test_exit == 0 else ("FAILED", 0, 1)
+    summary = (rf"test result: {outcome}\. {passed} passed; {failed} failed; 0 ignored; "
+               r"0 measured; ([0-9]{1,6}) filtered out; finished in [0-9]+(?:\.[0-9]+)?s")
+    if (running != ["running 1 test"] or cases != [f"test {EMPTY_TEST} ... {outcome}"]
+            or len(summaries) != 1 or re.fullmatch(summary, summaries[0]) is None):
+        raise ValueError("exact_test_execution")
+    return {"test": EMPTY_TEST, "selected_tests": 1, "test_exit": test_exit,
+            "test_harness_sha256": harness_sha256, "cargo_json_sha256": cargo_json_sha256,
+            "private_stdout_sha256": hashlib.sha256(raw).hexdigest(),
+            "target": "aarch64-pc-windows-msvc", "profile": "release",
+            "feature": "runtime-cleanup-trace"}
+
+
 def main():
     parser=argparse.ArgumentParser()
     parser.add_argument("--log", required=True, type=Path)
@@ -163,13 +192,22 @@ def main():
     parser.add_argument("--runtime-sha256", required=True)
     parser.add_argument("--application-sha256", required=True)
     parser.add_argument("--commit", required=True)
+    parser.add_argument("--test-stdout", type=Path)
+    parser.add_argument("--test-harness-sha256")
+    parser.add_argument("--cargo-json-sha256")
     args=parser.parse_args()
     try:
         if not re.fullmatch("[a-f0-9]{64}",args.application_sha256) or not re.fullmatch("[a-f0-9]{40}",args.commit):
             raise ValueError("binding")
         with args.log.open("rb") as stream: raw=stream.read(4*1024*1024+1)
         record=validate(select(raw),args.test_exit,args.runtime_sha256)
-        print(json.dumps({"schema":1,"scope":"original_cleanup_diagnostic_only","commit":args.commit,"application_sha256":args.application_sha256,"private_log_sha256":hashlib.sha256(raw).hexdigest(),"trace":record,"provider_accepted":False,"cleanup_fixed":False},sort_keys=True,separators=(",",":")))
+        result={"schema":1,"scope":"original_cleanup_diagnostic_only","commit":args.commit,"application_sha256":args.application_sha256,"private_log_sha256":hashlib.sha256(raw).hexdigest(),"trace":record,"provider_accepted":False,"cleanup_fixed":False}
+        binding=(args.test_stdout,args.test_harness_sha256,args.cargo_json_sha256)
+        if any(value is not None for value in binding):
+            if any(value is None for value in binding): raise ValueError("partial_harness_binding")
+            with args.test_stdout.open("rb") as stream: stdout=stream.read(4*1024*1024+1)
+            result["execution"]=validate_harness(stdout,args.test_exit,args.test_harness_sha256,args.cargo_json_sha256)
+        print(json.dumps(result,sort_keys=True,separators=(",",":")))
         return 1 if record["status"]=="unavailable" else 0
     except (OSError,ValueError,TypeError,KeyError,UnicodeError):
         print('{"schema":1,"scope":"original_cleanup_diagnostic_only","status":"invalid","reason":"validation_failed","provider_accepted":false,"cleanup_fixed":false}')
