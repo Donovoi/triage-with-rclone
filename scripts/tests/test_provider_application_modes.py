@@ -62,7 +62,9 @@ class ApplicationModeLedgerTests(unittest.TestCase):
         return self.row(report, backend)["evidence"]["application"]
 
     def test_registry_is_exact_finite_read_only_and_has_distinct_completion_rights(self):
-        self.assertEqual(set(C.APPLICATION_REGISTRY), {HTTP, DAV})
+        self.assertEqual(set(C.APPLICATION_REGISTRY), {HTTP, DAV,
+            ("local", "local_filesystem_cli_v1", "windows"),
+            ("archive", "archive_zip_local_cli_v1", "windows")})
         self.assertEqual(dict(C.APPLICATION_REGISTRY[HTTP]), {"module": "application_evidence.py",
             "producer": "application-lab/run_windows_http.py", "can_complete_application": True})
         self.assertEqual(dict(C.APPLICATION_REGISTRY[DAV]), {"module": "webdav_application_evidence.py",

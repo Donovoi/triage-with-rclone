@@ -56,6 +56,7 @@ def bare_bridge():
     bridge.expected_runtime_sha256 = None
     bridge.max_runtime_processes = bridge.max_runtime_launches = 0
     bridge.observer_previous = bridge.observer_helper_hash = None
+    bridge.continuity_phase = bridge.continuity_requested = None
     bridge.last = None
     bridge.failed = threading.Event()
     bridge._diagnostic = Mock()
@@ -71,6 +72,39 @@ def armed_bridge():
 
 
 class ObservedControllerTests(unittest.TestCase):
+    def test_continuity_strict_two_phase_protocol_and_no_counter_fallback(self):
+        def proof(phase):
+            return dict(phase=phase, runtime_ordinal=2, runtime_sha256=RUNTIME, application_live=True,
+                        runtime_live=True, same_process=phase == "verify", reference_closed=phase == "verify")
+        bridge = armed_bridge()
+        for phase in ("arm", "verify"):
+            bridge.continuity_requested = phase
+            value = snapshot("observe_continuity")
+            value.update(launch_image_observed=True, launch_sha256=RUNTIME, runtime_launch_count=2,
+                         peak_runtime_processes=1, debug_event_count=10, continuity=proof(phase))
+            self.assertEqual(bridge.validate_session(value, "observe_continuity")["continuity"], proof(phase))
+        self.assertEqual(bridge.continuity_phase, "verify")
+        for phase in ("arm", "verify"):
+            for changes in (dict(runtime_ordinal=True), dict(runtime_ordinal=1), dict(runtime_sha256="f" * 64),
+                            dict(application_live=False), dict(runtime_live=False), dict(private="canary"),
+                            dict(same_process=phase != "verify"), dict(reference_closed=phase != "verify")):
+                with self.subTest(phase=phase, changes=changes), self.assertRaises(F.H.ProducerError):
+                    F.validate_continuity(dict(proof(phase), **changes), phase, RUNTIME)
+        for phase in ("verify", "arm\0", None, 1):
+            b = armed_bridge()
+            with patch.object(F.SourceBridge, "command") as parent, self.assertRaises(F.H.ProducerError):
+                b.command("observe_continuity", phase=phase)
+            parent.assert_not_called()
+
+    def test_continuity_failure_requires_closed_null_proof(self):
+        b = armed_bridge(); b.continuity_requested = "arm"
+        value = snapshot("observe_continuity", True)
+        value.update(ok=False, errors=["runtime_observation_failed"], continuity=None)
+        self.assertIsNone(b.validate_session(value, "observe_continuity")["continuity"])
+        for changes in (dict(continuity={}), dict(state="running"), dict(extra="canary")):
+            b = armed_bridge(); b.continuity_requested = "arm"
+            with self.assertRaises(F.H.ProducerError):
+                b.validate_session(dict(value, **changes), "observe_continuity")
     def setUp(self):
         self.no_process = patch.object(subprocess, "Popen", side_effect=AssertionError("no process"))
         self.no_socket = patch.object(socket, "socket", side_effect=AssertionError("no socket"))

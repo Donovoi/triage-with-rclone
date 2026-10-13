@@ -467,7 +467,8 @@ FILESYSTEM_CASE_NAMES = frozenset("fs-" + backend + "-" + name for backend in ("
     for name in ("listing", "acquisition-readme", "acquisition-empty", "acquisition-large", "acquisition-binary",
                  "acquisition-unicode", "acquisition-spaced", "mismatch", "missing", "directory-as-file", "cancellation")) | {
                      "fs-archive-corrupt-member", "fs-archive-truncated-archive"}
-SETUP_SCOPES = frozenset({"suite", "webdav_suite", "filesystem_suite", "webdav_credentials", "webdav_credential_setup", *E.CASE_ORDER,
+FTP_CASE_NAMES = frozenset({"ftp-accepted-a", "ftp-revoked-a", "ftp-replacement-b"})
+SETUP_SCOPES = frozenset({"suite", "ftp_suite", "ftp_credentials", "ftp_credential_setup", "webdav_suite", "filesystem_suite", "webdav_credentials", "webdav_credential_setup", *E.CASE_ORDER, *FTP_CASE_NAMES,
                           *WEBDAV_CASE_NAMES.values(), *FILESYSTEM_CASE_NAMES})
 
 
@@ -479,11 +480,15 @@ def setup_scope(name):
         return "webdav_suite"
     if re.fullmatch(r"app-filesystem-[a-f0-9]{32}", name):
         return "filesystem_suite"
+    if re.fullmatch(r"app-ftp-[a-f0-9]{32}", name):
+        return "ftp_suite"
+    if name in {"ftp-credentials", "ftp-credential-setup"}:
+        return name.replace("-", "_")
     if name == "webdav-credentials":
         return "webdav_credentials"
     if name == "webdav-credential-setup":
         return "webdav_credential_setup"
-    need(name in E.CASE_ORDER or name in WEBDAV_CASE_NAMES.values() or name in FILESYSTEM_CASE_NAMES, "case_setup_failed")
+    need(name in E.CASE_ORDER or name in WEBDAV_CASE_NAMES.values() or name in FILESYSTEM_CASE_NAMES or name in FTP_CASE_NAMES, "case_setup_failed")
     return name
 
 
@@ -691,6 +696,30 @@ def session_diagnostic(action, phase, outcome, last_stage=None):
           last_stage=last_stage)).decode("ascii"), flush=True)
 
 
+TRANSPORT_FLAGS = frozenset({"ready", "failed", "forced", "done", "close_kill_attempted", "close_kill_returned",
+    "watchdog_kill_attempted", "watchdog_kill_returned", "watchdog_join_returned", "watchdog_alive",
+    "stdout_join_returned", "stderr_join_returned", "stdout_reader_alive", "stderr_reader_alive",
+    "stdin_close_attempted", "stdin_close_returned", "stdout_close_attempted", "stdout_close_returned",
+    "stderr_close_attempted", "stderr_close_returned"})
+TRANSPORT_WAITS = frozenset({"close_wait", "kill_wait"})
+TRANSPORT_KEYS = TRANSPORT_FLAGS | TRANSPORT_WAITS | {"schema_version", "last_stage", "return_code", "calls", "responses"}
+
+
+def transport_diagnostic(value):
+    """Closed failure-only facts; missing observations never imply cleanup."""
+    need(type(value) is dict and set(value) == TRANSPORT_KEYS and type(value["schema_version"]) is int and
+         value["schema_version"] == 1 and (value["last_stage"] is None or
+         type(value["last_stage"]) is str and value["last_stage"] in {"compile", "compiled"}), "session_failed")
+    need(all(value[key] is None or type(value[key]) is bool for key in TRANSPORT_FLAGS) and
+         all(value[key] is None or type(value[key]) is str and value[key] in {"returned", "timeout", "failed"}
+             for key in TRANSPORT_WAITS), "session_failed")
+    need(value["return_code"] is None or type(value["return_code"]) is int and
+         -(2**31) <= value["return_code"] < 2**32, "session_failed")
+    need(all(value[key] is None or type(value[key]) is int and 0 <= value[key] <= 1024
+             for key in ("calls", "responses")), "session_failed")
+    print("application_transport_diagnostic=" + E.compact(value).decode("ascii"), flush=True)
+
+
 class Bridge:
     """One owned hidden PS5 process; fixed JSON protocol and bounded pipe readers."""
     script_name = "hosted_session.ps1"
@@ -712,6 +741,7 @@ class Bridge:
         self.closed_ready = False
         self.stage_bytes = bytearray()
         self.stage_invalid = False
+        self.transport = {}
         self.deadline = time.monotonic() + 165
         env = environment(case / "helper-env")
         env.update(GITHUB_ACTIONS="true", RUNNER_OS="Windows", RUNNER_ENVIRONMENT="github-hosted")
@@ -805,8 +835,29 @@ class Bridge:
             if self.failed.is_set() or time.monotonic() >= self.deadline:
                 self.forced = True
                 if self.process.poll() is None:
+                    self._transport_seen("watchdog_kill_attempted", True)
                     self.process.kill()
+                    self._transport_seen("watchdog_kill_returned", True)
                 return
+
+    def _transport_seen(self, key, value):
+        try:
+            self.transport[key] = value
+        except BaseException:
+            pass
+        return value  # Preserve the original observation and short-circuit gate.
+
+    def _transport_diagnostic(self):
+        try:
+            # Best-effort cached snapshot: no poll, wait, lock or liveness query.
+            value = {key: self.transport.get(key) for key in TRANSPORT_KEYS}
+            value.update(schema_version=1, return_code=self.process.returncode,
+                ready=self.ready, calls=self.calls, responses=self.responses,
+                failed=self.failed.is_set(), forced=self.forced, done=self.done.is_set(),
+                last_stage=None if self.stage_invalid else bridge_stage(bytes(self.stage_bytes)))
+            transport_diagnostic(value)
+        except BaseException:
+            pass  # Transport diagnostics cannot replace a failure or cleanup result.
 
     def command(self, action, **fields):
         phase = "preflight"
@@ -851,37 +902,62 @@ class Bridge:
             raise ProducerError("session_failed") from None
 
     def close(self):
+        clean, waiting = None, None
         try:
-            if self.process.poll() is None and (self.last is None or self.last["state"] not in {"finished", "closed"}):
-                try:
-                    self.command("finish", grace_ms=0)
-                except Exception:
-                    self.forced = True
-            self.process.stdin.close()
             try:
-                self.process.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                self.forced = True
-                self.process.kill()
-                self.process.wait(timeout=5)
-        except BaseException:
-            self._diagnostic("close", "cleanup", "cleanup_failed")
-            raise
+                if self.process.poll() is None and (self.last is None or self.last["state"] not in {"finished", "closed"}):
+                    try:
+                        self.command("finish", grace_ms=0)
+                    except Exception:
+                        self.forced = True
+                self._transport_seen("stdin_close_attempted", True)
+                self.process.stdin.close()
+                self._transport_seen("stdin_close_returned", True)
+                try:
+                    waiting = "close_wait"
+                    self.process.wait(timeout=10)
+                    self._transport_seen(waiting, "returned")
+                    waiting = None
+                except subprocess.TimeoutExpired:
+                    self._transport_seen(waiting, "timeout")
+                    waiting = None
+                    self.forced = True
+                    self._transport_seen("close_kill_attempted", True)
+                    self.process.kill()
+                    self._transport_seen("close_kill_returned", True)
+                    waiting = "kill_wait"
+                    self.process.wait(timeout=5)
+                    self._transport_seen(waiting, "returned")
+                    waiting = None
+            except BaseException as error:
+                if waiting is not None:
+                    self._transport_seen(waiting, "timeout" if isinstance(error, subprocess.TimeoutExpired) else "failed")
+                self._diagnostic("close", "cleanup", "cleanup_failed")
+                raise
+            finally:
+                self.done.set()
+                self.watchdog.join(1)
+                self._transport_seen("watchdog_join_returned", True)
+                for index, thread in enumerate(self.threads):
+                    thread.join(2)
+                    if index < 2:
+                        self._transport_seen(("stdout_join_returned", "stderr_join_returned")[index], True)
+                # A blocked BufferedReader owns its lock. Closing it from this thread
+                # could block past every deadline; retain uncertain handles instead.
+                for name, (thread, stream) in zip(("stdout", "stderr"), zip(self.threads, (self.process.stdout, self.process.stderr))):
+                    if not self._transport_seen(name + "_reader_alive", thread.is_alive()):
+                        self._transport_seen(name + "_close_attempted", True)
+                        stream.close()
+                        self._transport_seen(name + "_close_returned", True)
+            clean = (self.process.returncode == 0 and not self.forced and not self.failed.is_set() and
+                     self.messages.empty() and not self._transport_seen("watchdog_alive", self.watchdog.is_alive()) and
+                     all(not t.is_alive() for t in self.threads))
+            if not clean:
+                self._diagnostic("close", "cleanup", "cleanup_failed")
+            return clean
         finally:
-            self.done.set()
-            self.watchdog.join(1)
-            for thread in self.threads:
-                thread.join(2)
-            # A blocked BufferedReader owns its lock. Closing it from this thread
-            # could block past every deadline; retain uncertain handles instead.
-            for thread, stream in zip(self.threads, (self.process.stdout, self.process.stderr)):
-                if not thread.is_alive():
-                    stream.close()
-        clean = (self.process.returncode == 0 and not self.forced and not self.failed.is_set() and
-                 self.messages.empty() and not self.watchdog.is_alive() and all(not t.is_alive() for t in self.threads))
-        if not clean:
-            self._diagnostic("close", "cleanup", "cleanup_failed")
-        return clean
+            if clean is not True:
+                self._transport_diagnostic()
 
 
 def queue_rows(name):
