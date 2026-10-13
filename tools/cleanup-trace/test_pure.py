@@ -36,6 +36,31 @@ class Tests(unittest.TestCase):
     def test_unavailable_preserves_failure_without_qualification(self):
         x=record();x.update(status="unavailable",reason="cleanup_uncertain",consumer_closed=False)
         self.assertEqual(self.check(x)["status"],"unavailable")
+    def test_closed_correlation_reasons_cannot_qualify(self):
+        expected = {
+            "correlation_no_selected_start", "correlation_start_order", "correlation_start_end_overlap",
+            "correlation_end_missing", "correlation_end_multiple", "correlation_end_order",
+            "correlation_end_before_start", "correlation_end_unowned", "correlation_cross_thread_reuse",
+        }
+        self.assertEqual(V.CORRELATION_REASONS, expected)
+        for reason in expected:
+            with self.subTest(reason=reason):
+                x=record();x.update(status="unavailable",reason=reason,counts=None)
+                self.assertEqual(self.check(x)["reason"],reason)
+                x.update(original_ok=True,os_code=None,target_identity_verified=False)
+                self.assertEqual(self.check(x,0)["status"],"unavailable")
+                for status in ("observed","not_reproduced"):
+                    x["status"]=status
+                    with self.assertRaises(ValueError):self.check(x,0)
+                x.update(status="unavailable",counts=record()["counts"])
+                with self.assertRaises(ValueError):self.check(x,0)
+                x.update(counts=None,schema_rejection=dict(attribution="unattributed_fileio",stage="version",property=None,opcode=64,version=1,header_flags=64,tdh_status=None,size=None))
+                with self.assertRaises(ValueError):self.check(x,0)
+        x=record();x.update(status="unavailable",reason="correlation_missing_or_ambiguous",counts=None)
+        self.assertEqual(self.check(x)["reason"],"correlation_missing_or_ambiguous")
+        for reason in ("correlation_unknown", "CORRELATION_END_MISSING", "correlation_end_missing\0", "correlation_end_missing ", "private-canary/path/id", None, 1, []):
+            x=record();x.update(status="unavailable",reason=reason,counts=None)
+            with self.assertRaises(ValueError):self.check(x)
     def test_duplicate_extra_canary_and_records_refused(self):
         raw=json.dumps(record()).encode()
         with self.assertRaises(ValueError):V.validate(raw[:-1]+b',"schema":1}',101,SHA)
