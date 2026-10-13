@@ -176,7 +176,7 @@ class HarnessTests(unittest.TestCase):
     def test_workflow_fixed_single_call_and_matching_forwarding(self):
         root=Path(__file__).resolve().parents[2]
         workflow=(root/'.github/workflows/original-cleanup-trace.yml').read_text()
-        invocation=f'& $harness {V.EMPTY_TEST} --exact --nocapture --test-threads=1 > $privateOut 2> $privateErr'
+        invocation=f'& $harness {V.LIBRARY_TEST} --exact --nocapture --test-threads=1 > $privateOut 2> $privateErr'
         self.assertEqual(workflow.count(invocation),1)
         self.assertEqual(workflow.count('cargo test --locked --release'),1)
         self.assertIn('--no-run --message-format=json',workflow)
@@ -184,13 +184,15 @@ class HarnessTests(unittest.TestCase):
         self.assertIn('--test-stdout $privateOut --test-harness-sha256 $harnessHash --cargo-json-sha256 $cargoJsonHash',workflow)
         self.assertIn('if ($originalExit -ne 0) { exit $originalExit }',workflow)
         self.assertEqual(workflow.count('Get-FileHash -LiteralPath $harness'),2)
-        source=(root/'rclone-triage/tests/cli_acquisition.rs').read_text()
-        old=source[source.index('fn cli_imported_listing_is_complete_recursive'):]
-        new=source[source.index('fn '+V.EMPTY_TEST):]
-        def block(text):return text[text.index('    #[cfg(feature = "runtime-cleanup-trace")]'):text.index('    assert!(')]
-        self.assertEqual(block(old),block(new))
-        new=new[:new.index('\n#[test]')]
-        self.assertEqual(new.count('.output().unwrap()'),1)
+        self.assertIn('--lib --no-run --message-format=json',workflow)
+        self.assertIn("RCLONE_TRIAGE_DYNAMIC_PROVIDERS: '1'",workflow)
+        self.assertIn('--library-unit --dynamic-providers $env:RCLONE_TRIAGE_DYNAMIC_PROVIDERS',workflow)
+        self.assertNotIn('$selected.application',workflow)
+        source=(root/'rclone-triage/src/ui/runner.rs').read_text()
+        unit=source[source.index('    fn test_main_menu_enter_download_sets_status()'):]
+        unit=unit[:unit.index('    #[test]')]
+        self.assertEqual(unit.count('handle_main_menu_enter(&mut app)'),1)
+        self.assertIn('handle_main_menu_enter(&mut app).unwrap()',unit)
 
 class OwnershipTests(unittest.TestCase):
     def trace(self, ownership=None):
@@ -421,6 +423,187 @@ class OwnershipRejectionTests(unittest.TestCase):
             self.assertEqual(json.loads(out.getvalue())["trace"], value)
             with mock.patch('sys.argv', argv), mock.patch('builtins.print', side_effect=OSError('PRIVATE')):
                 with self.assertRaises(OSError): V.main()
+
+
+def library_artifacts():
+    executable=ROOT+r'\target\aarch64-pc-windows-msvc\release\deps\rclone_triage-0123456789abcdef.exe'
+    return [dict(reason='compiler-artifact',manifest_path=ROOT+r'\Cargo.toml',
+                 target=dict(name='rclone_triage',kind=['lib'],crate_types=['lib'],src_path=ROOT+r'\src\lib.rs'),
+                 profile=dict(test=True,opt_level='3',debug_assertions=False,overflow_checks=False),
+                 features=['default','runtime-cleanup-trace'],executable=executable,filenames=[executable]),
+            dict(reason='build-finished',success=True)]
+
+
+def schema_observation():
+    return dict(schema=1,scope='unsupported_fileio_schema',availability='available',reason='none',
+                runtime_sha256=SHA,call_count=1,
+                header=dict(id=0,version=3,channel=0,level=0,opcode=84,task=0,keyword=0,header_flags=832),
+                tdh_status=0,buffer_bytes=512,provider_matched=True,descriptor_matched=True,decoding_source=1,
+                properties=[dict(name='IrpPtr',flags=0,in_type=16,out_type=0,count=1,length=0)])
+
+
+class LibrarySelectionTests(unittest.TestCase):
+    def test_only_library_executable_is_selected(self):
+        rows=library_artifacts();value=A.select(cargo_bytes(rows),ROOT,True)
+        self.assertEqual(value['artifact_kind'],'library_test');self.assertNotIn('application',value)
+        self.assertEqual(value['test_harness'],rows[0]['executable'])
+        with self.assertRaises(ValueError):A.select(cargo_bytes(artifacts()),ROOT,True)
+        with self.assertRaises(ValueError):A.select(cargo_bytes(rows),ROOT)
+
+    def test_stale_wrong_profile_feature_and_ambiguous_selection_fail(self):
+        for field,value in [('features',['default']),('features',['default','runtime-cleanup-trace','other']),
+                            ('manifest_path',ROOT+r'\other\Cargo.toml'),('filenames',[]),
+                            ('executable',ROOT+r'\target\x86_64-pc-windows-msvc\release\deps\rclone_triage-0123456789abcdef.exe')]:
+            rows=library_artifacts();rows[0][field]=value
+            with self.subTest(field=field),self.assertRaises(ValueError):A.select(cargo_bytes(rows),ROOT,True)
+        for field,value in [('test',False),('test',1),('opt_level','0'),('debug_assertions',True),('overflow_checks',True)]:
+            rows=library_artifacts();rows[0]['profile'][field]=value
+            with self.subTest(field=field),self.assertRaises(ValueError):A.select(cargo_bytes(rows),ROOT,True)
+        rows=library_artifacts()
+        for bad in [rows[:1],rows[1:],rows[:1]+rows,rows+[rows[-1]],rows[::-1]]:
+            with self.assertRaises(ValueError):A.select(cargo_bytes(bad),ROOT,True)
+
+    def test_exact_unit_dynamic_refresh_actual_exit_required(self):
+        for code in (0,101):
+            raw=harness_stdout(code).replace(V.EMPTY_TEST.encode(),V.LIBRARY_TEST.encode())
+            result=V.validate_harness(raw,code,SHA,SHA,True,'1')
+            self.assertEqual(result['test'],V.LIBRARY_TEST);self.assertEqual(result['test_exit'],code)
+            self.assertEqual(result['dynamic_providers'],'1')
+            for flag in (None,'0','true',1):
+                with self.assertRaises(ValueError):V.validate_harness(raw,code,SHA,SHA,True,flag)
+            for bad in (raw.replace(b'running 1 test',b'running 0 tests'),harness_stdout(code),raw+raw):
+                with self.assertRaises(ValueError):V.validate_harness(bad,code,SHA,SHA,True,'1')
+
+
+class SchemaMetadataTests(unittest.TestCase):
+    def check(self,value,trace=None):
+        return V.validate_schema(json.dumps(value).encode(),trace or record())
+
+    def test_hosted_schema_checks_use_only_fixed_pure_filter(self):
+        source=(Path(__file__).resolve().parents[2]/'.github/workflows/original-cleanup-trace.yml').read_text()
+        command='          cargo test --manifest-path tools/cleanup-trace/Cargo.toml --locked --lib schema_metadata::tests'
+        check="          if ($LASTEXITCODE -ne 0) { throw 'Pure schema tests failed' }"
+        self.assertEqual(source.count(command),1)
+        self.assertIn(command+'\n'+check+'\n',source)
+        before=source.split('      - name: Prepare matching verified runtime')[0]
+        self.assertIn('      - name: Pure correlation and output checks',before)
+        self.assertIn(command,before)
+
+    def test_available_schema_does_not_change_original_result(self):
+        x=schema_observation();trace=record();trace.update(status='unavailable',reason='correlation_end_missing',counts=None)
+        self.assertEqual(self.check(x,trace),x)
+        self.assertEqual(trace['status'],'unavailable');self.assertIsNone(trace['counts'])
+        for n in (0,65536,2**32-1):
+            bad=schema_observation();bad.update(availability='unavailable',reason='tdh_failed',tdh_status=122,buffer_bytes=n,
+                                              provider_matched=None,descriptor_matched=None,decoding_source=None,properties=None)
+            self.assertEqual(self.check(bad),bad)
+
+    def test_no_call_and_native_failure_are_distinct(self):
+        for reason in ('not_observed','buffer_unavailable','collection_unavailable'):
+            x=schema_observation();x.update(availability='unavailable',reason=reason,call_count=0,
+                                          tdh_status=None,buffer_bytes=None,provider_matched=None,
+                                          descriptor_matched=None,decoding_source=None,properties=None)
+            t=record()
+            if reason!='buffer_unavailable':x['header']=None
+            if reason=='collection_unavailable':t['consumer_closed']=False;x['call_count']=None
+            self.assertEqual(self.check(x,t),x)
+            x['tdh_status']=0
+            with self.assertRaises(ValueError):self.check(x,t)
+
+    def test_each_original_collection_gate_overrides_schema(self):
+        for key in V.BOOLS-{'target_identity_verified'}:
+            t=record();t[key]=False
+            with self.subTest(key=key),self.assertRaises(ValueError):self.check(schema_observation(),t)
+        t=record();t['operation_us']=None
+        with self.assertRaises(ValueError):self.check(schema_observation(),t)
+
+    def test_not_observed_cannot_contradict_original_unsupported_header(self):
+        x=schema_observation()
+        for key in ('header','tdh_status','buffer_bytes','provider_matched','descriptor_matched','decoding_source','properties'):
+            x[key]=None
+        x.update(availability='unavailable',reason='not_observed',call_count=0)
+        self.assertEqual(self.check(x),x)
+        with self.assertRaisesRegex(ValueError,'schema_unobserved'):
+            self.check(x,OwnershipRejectionTests().trace())
+
+    def test_identity_status_shape_and_no_partial_descriptor_fail_closed(self):
+        mutations=[('provider_matched',False),('descriptor_matched',1),('call_count',2),('call_count',True),
+                   ('tdh_status',5),('buffer_bytes',65537),('buffer_bytes',0),('decoding_source',2),
+                   ('runtime_sha256','b'*64),('reason','private-canary'),('availability','private-canary'),
+                   ('properties',[]),('properties',schema_observation()['properties']*17)]
+        for key,value in mutations:
+            x=schema_observation();x[key]=value
+            with self.subTest(key=key),self.assertRaises(ValueError):self.check(x)
+        for key in ('filename','pid','raw_schema','message'):
+            x=schema_observation();x[key]='private-canary'
+            with self.assertRaises(ValueError):self.check(x)
+        for reason in ('identity_mismatch','metadata_bounds','metadata_flags','property_shape','property_name','property_bound','decoding_source'):
+            x=schema_observation();x.update(availability='unavailable',reason=reason)
+            with self.assertRaises(ValueError):self.check(x)
+
+    def test_names_flags_indices_and_duplicate_properties_are_closed(self):
+        for key,value in [('name','private/path'),('name','private-canary'),('name','1bad'),('name','x'*65),
+                          ('name','x\0'),('name','x"'),('flags',1),('flags',8),('flags',64),('flags',128),
+                          ('flags',18),('flags',36),('in_type',True),('out_type',65536),('count',-1)]:
+            x=schema_observation();x['properties'][0][key]=value
+            with self.subTest(key=key,value=value),self.assertRaises(ValueError):self.check(x)
+        for flags,key in ((2,'length'),(4,'count')):
+            x=schema_observation();x['properties'][0].update(flags=flags);x['properties'][0][key]=1
+            with self.assertRaises(ValueError):self.check(x)
+        x=schema_observation();x['properties']*=2
+        with self.assertRaises(ValueError):self.check(x)
+
+    def test_header_binding_duplicates_and_sizes(self):
+        for key,value in [('opcode',64),('version',4),('header_flags',32),('keyword',2**64),('id',True)]:
+            x=schema_observation();x['header'][key]=value
+            with self.assertRaises(ValueError):self.check(x)
+        t=OwnershipRejectionTests().trace()
+        with self.assertRaises(ValueError):self.check(schema_observation(),t)
+        for raw in (b'',b'{}',b'x'*8193,b'{"schema":1,"schema":1}'):
+            with self.assertRaises(ValueError):V.validate_schema(raw,record())
+
+    def test_separate_bounded_create_only_result_and_original_exit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            trace=Path(directory)/'stderr';stdout=Path(directory)/'stdout';schema=Path(directory)/'schema'
+            x=record();x.update(status='not_reproduced',original_ok=True,os_code=None,target_identity_verified=False)
+            trace.write_bytes(b'runtime_cleanup_trace='+json.dumps(x).encode()+b'\n'+
+                              b'runtime_cleanup_schema='+json.dumps(schema_observation()).encode()+b'\n')
+            stdout.write_bytes(harness_stdout().replace(V.EMPTY_TEST.encode(),V.LIBRARY_TEST.encode()))
+            argv=['validator','--log',str(trace),'--test-exit','0','--runtime-sha256',SHA,'--application-sha256',SHA,
+                  '--commit','b'*40,'--test-stdout',str(stdout),'--test-harness-sha256',SHA,'--cargo-json-sha256',SHA,
+                  '--library-unit','--dynamic-providers','1','--schema-result',str(schema)]
+            out=io.StringIO()
+            with mock.patch('sys.argv',argv),contextlib.redirect_stdout(out):self.assertEqual(V.main(),0)
+            lines=out.getvalue().splitlines();primary=json.loads(lines[0])
+            self.assertNotIn('application_sha256',primary)
+            self.assertEqual(primary['scope'],'original_cleanup_library_diagnostic_only')
+            self.assertEqual(primary['trace'],x);self.assertLessEqual(len(schema.read_bytes()),8192)
+            diagnostic=json.loads(schema.read_bytes());self.assertFalse(diagnostic['ownership_attributed'])
+            self.assertEqual(lines[1],'runtime_cleanup_schema_result='+schema.read_text().strip())
+            with mock.patch('sys.argv',argv),contextlib.redirect_stdout(io.StringIO()):self.assertEqual(V.main(),2)
+            for content in (trace.read_bytes().split(b'runtime_cleanup_schema=')[0],trace.read_bytes()+trace.read_bytes()):
+                with self.assertRaises(ValueError):V.schema_result(content,x,'b'*40,SHA,SHA,b'original')
+
+    def test_invalid_separate_schema_preserves_valid_original_and_stays_nonzero(self):
+        with tempfile.TemporaryDirectory() as directory:
+            trace=Path(directory)/'stderr';stdout=Path(directory)/'stdout';schema=Path(directory)/'schema'
+            x=record();x.update(status='not_reproduced',original_ok=True,os_code=None,target_identity_verified=False)
+            primary=b'runtime_cleanup_trace='+json.dumps(x).encode()+b'\n'
+            stdout.write_bytes(harness_stdout().replace(V.EMPTY_TEST.encode(),V.LIBRARY_TEST.encode()))
+            argv=['validator','--log',str(trace),'--test-exit','0','--runtime-sha256',SHA,'--application-sha256',SHA,
+                  '--commit','b'*40,'--test-stdout',str(stdout),'--test-harness-sha256',SHA,'--cargo-json-sha256',SHA,
+                  '--library-unit','--dynamic-providers','1','--schema-result',str(schema)]
+            for suffix in (b'',b'runtime_cleanup_schema=PRIVATE_CANARY\n',
+                           b'runtime_cleanup_schema={}\nruntime_cleanup_schema={}\n'):
+                trace.write_bytes(primary+suffix);out=io.StringIO()
+                with self.subTest(suffix=suffix),mock.patch('sys.argv',argv),contextlib.redirect_stdout(out):
+                    self.assertEqual(V.main(),2)
+                lines=out.getvalue().splitlines();self.assertEqual(len(lines),2)
+                self.assertEqual(json.loads(lines[0])['trace'],x)
+                failure=json.loads(lines[1].removeprefix('runtime_cleanup_schema_result='))
+                self.assertEqual(failure,dict(schema=1,scope='original_cleanup_schema_diagnostic_only',status='invalid',
+                    reason='schema_validation_failed',ownership_attributed=False,cleanup_fixed=False,provider_accepted=False))
+                self.assertNotIn('PRIVATE_CANARY',out.getvalue());self.assertFalse(schema.exists())
 
 
 if __name__=="__main__":unittest.main()

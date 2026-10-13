@@ -221,9 +221,116 @@ def select(raw):
 
 
 EMPTY_TEST = "cli_imported_listing_empty_remote_publishes_explicit_empty_csv_schema"
+LIBRARY_TEST = "ui::runner::tests::test_main_menu_enter_download_sets_status"
 
 
-def validate_harness(raw, test_exit, harness_sha256, cargo_json_sha256):
+def validate_schema(raw, trace):
+    """Separate schema metadata; cannot contribute correlation or cleanup credit."""
+    if type(raw) is not bytes or not 0 < len(raw) <= 8192:
+        raise ValueError("schema_bound")
+    x = json.loads(raw, object_pairs_hook=unique_pairs)
+    fields = {"schema", "scope", "availability", "reason", "runtime_sha256", "call_count", "header",
+              "tdh_status", "buffer_bytes", "provider_matched", "descriptor_matched", "decoding_source", "properties"}
+    if (type(x) is not dict or x.keys() != fields or type(x["schema"]) is not int or x["schema"] != 1
+            or x["scope"] != "unsupported_fileio_schema" or x["runtime_sha256"] != trace["runtime_sha256"]
+            or type(x["availability"]) is not str or type(x["reason"]) is not str):
+        raise ValueError("schema_shape")
+    gates = all(trace[k] for k in BOOLS - {"target_identity_verified"}) and trace["operation_us"] is not None
+    payload = fields - {"schema", "scope", "availability", "reason", "runtime_sha256"}
+    if not gates:
+        if (x["availability"] != "unavailable" or x["reason"] != "collection_unavailable"
+                or any(x[k] is not None for k in payload)):
+            raise ValueError("schema_collection_gates")
+        return x
+    if x["reason"] == "not_observed":
+        if (x["availability"] != "unavailable" or type(x["call_count"]) is not int or x["call_count"] != 0
+                or any(x[k] is not None for k in payload - {"call_count"})
+                or (trace.get("ownership") or {}).get("rejection") is not None):
+            raise ValueError("schema_unobserved")
+        return x
+    h = x["header"]
+    maxima = {"id":65535, "version":255, "channel":255, "level":255, "opcode":255,
+              "task":65535, "keyword":2**64-1, "header_flags":65535}
+    if (type(h) is not dict or h.keys() != maxima.keys() or any(not uint(h[k], n) for k,n in maxima.items())
+            or h["opcode"] in {0,32,35,36} or 64 <= h["opcode"] <= 77 or h["version"] not in (2,3)
+            or h["header_flags"] & 0x40 == 0 or h["header_flags"] & 0x20 != 0):
+        raise ValueError("schema_header")
+    rejection = (trace.get("ownership") or {}).get("rejection")
+    if rejection is not None and any(h[k] != rejection[k] for k in rejection):
+        raise ValueError("schema_first_header_binding")
+    if type(x["call_count"]) is not int or x["call_count"] not in (0,1):
+        raise ValueError("schema_call_bound")
+    if x["call_count"] == 0:
+        if (x["reason"] != "buffer_unavailable" or x["availability"] != "unavailable"
+                or any(x[k] is not None for k in payload - {"header", "call_count"})):
+            raise ValueError("schema_allocation")
+        return x
+    if not uint(x["tdh_status"], 2**32-1) or not uint(x["buffer_bytes"], 2**32-1):
+        raise ValueError("schema_native_status")
+    reasons = {"none", "tdh_failed", "metadata_bounds", "identity_mismatch", "decoding_source",
+               "property_bound", "metadata_flags", "property_shape", "property_name"}
+    if x["reason"] not in reasons or (x["availability"] == "available") != (x["reason"] == "none"):
+        raise ValueError("schema_reason")
+    if x["availability"] not in ("available", "unavailable"):
+        raise ValueError("schema_availability")
+    if x["tdh_status"] != 0:
+        if x["reason"] != "tdh_failed" or any(x[k] is not None for k in ("provider_matched", "descriptor_matched", "decoding_source", "properties")):
+            raise ValueError("schema_failed_lookup")
+        return x
+    if x["reason"] == "tdh_failed":
+        raise ValueError("schema_success_status")
+    matches = (x["provider_matched"], x["descriptor_matched"])
+    if x["reason"] == "metadata_bounds" and matches == (None,None):
+        pass
+    elif any(type(v) is not bool for v in matches):
+        raise ValueError("schema_identity_types")
+    elif x["reason"] == "identity_mismatch":
+        if all(matches): raise ValueError("schema_identity_failure")
+    elif not all(matches):
+        raise ValueError("schema_identity_required")
+    if x["reason"] != "metadata_bounds" and not 1 <= x["buffer_bytes"] <= 65536:
+        raise ValueError("schema_used_bound")
+    if x["reason"] != "none":
+        if x["decoding_source"] is not None or x["properties"] is not None:
+            raise ValueError("schema_no_partial_descriptors")
+        return x
+    if type(x["decoding_source"]) is not int or x["decoding_source"] not in (0,1):
+        raise ValueError("schema_decoding_source")
+    properties=x["properties"]
+    if type(properties) is not list or not 1 <= len(properties) <= 16:
+        raise ValueError("schema_property_count")
+    names=set()
+    for p in properties:
+        if (type(p) is not dict or p.keys() != {"name","flags","in_type","out_type","count","length"}
+                or type(p["name"]) is not str or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}",p["name"]) is None
+                or p["name"] in names or any(not uint(p[k],65535) for k in ("in_type","out_type","count","length"))
+                or not uint(p["flags"],54) or p["flags"] & ~54 != 0
+                or p["flags"] & 2 != 0 and p["flags"] & 16 != 0
+                or p["flags"] & 4 != 0 and p["flags"] & 32 != 0
+                or p["flags"] & 4 != 0 and p["count"] >= len(properties)
+                or p["flags"] & 2 != 0 and p["length"] >= len(properties)):
+            raise ValueError("schema_property")
+        names.add(p["name"])
+    return x
+
+
+def schema_result(raw, trace, commit, harness_hash, cargo_hash, original_raw):
+    prefix = b"runtime_cleanup_schema="
+    values = [line[len(prefix):] for line in raw.splitlines() if line.startswith(prefix)]
+    if len(values) != 1:
+        raise ValueError("schema_record_count")
+    observation = validate_schema(values[0], trace)
+    result = dict(schema=1, scope="original_cleanup_schema_diagnostic_only", commit=commit,
+                  test=LIBRARY_TEST, test_harness_sha256=harness_hash, cargo_json_sha256=cargo_hash,
+                  original_trace_sha256=hashlib.sha256(original_raw).hexdigest(),
+                  private_log_sha256=hashlib.sha256(raw).hexdigest(), observation=observation,
+                  ownership_attributed=False, cleanup_fixed=False, provider_accepted=False)
+    encoded=json.dumps(result,sort_keys=True,separators=(",",":")).encode("ascii")+b"\n"
+    if len(encoded) + len(b"runtime_cleanup_schema_result=") > 8192: raise ValueError("schema_result_bound")
+    return encoded
+
+
+def validate_harness(raw, test_exit, harness_sha256, cargo_json_sha256, library_unit=False, dynamic_providers=None):
     """Bind one completed, non-ignored exact test; never publish libtest text."""
     if type(raw) is not bytes or not 0 < len(raw) <= 4*1024*1024:
         raise ValueError("stdout_bound")
@@ -232,6 +339,9 @@ def validate_harness(raw, test_exit, harness_sha256, cargo_json_sha256):
     if any(type(value) is not str or not re.fullmatch("[a-f0-9]{64}", value)
            for value in (harness_sha256, cargo_json_sha256)):
         raise ValueError("harness_binding")
+    if library_unit and dynamic_providers != "1":
+        raise ValueError("dynamic_catalogue_required")
+    test = LIBRARY_TEST if library_unit else EMPTY_TEST
     lines = raw.decode("utf-8", errors="strict").splitlines()
     running = [line for line in lines if line.startswith("running ")]
     cases = [line for line in lines if line.startswith("test ") and not line.startswith("test result:")]
@@ -239,14 +349,17 @@ def validate_harness(raw, test_exit, harness_sha256, cargo_json_sha256):
     outcome, passed, failed = ("ok", 1, 0) if test_exit == 0 else ("FAILED", 0, 1)
     summary = (rf"test result: {outcome}\. {passed} passed; {failed} failed; 0 ignored; "
                r"0 measured; ([0-9]{1,6}) filtered out; finished in [0-9]+(?:\.[0-9]+)?s")
-    if (running != ["running 1 test"] or cases != [f"test {EMPTY_TEST} ... {outcome}"]
+    if (running != ["running 1 test"] or cases != [f"test {test} ... {outcome}"]
             or len(summaries) != 1 or re.fullmatch(summary, summaries[0]) is None):
         raise ValueError("exact_test_execution")
-    return {"test": EMPTY_TEST, "selected_tests": 1, "test_exit": test_exit,
+    result = {"test": test, "selected_tests": 1, "test_exit": test_exit,
             "test_harness_sha256": harness_sha256, "cargo_json_sha256": cargo_json_sha256,
             "private_stdout_sha256": hashlib.sha256(raw).hexdigest(),
             "target": "aarch64-pc-windows-msvc", "profile": "release",
             "feature": "runtime-cleanup-trace"}
+    if library_unit:
+        result.update(artifact_kind="library_test", dynamic_providers="1")
+    return result
 
 
 def main():
@@ -259,6 +372,9 @@ def main():
     parser.add_argument("--test-stdout", type=Path)
     parser.add_argument("--test-harness-sha256")
     parser.add_argument("--cargo-json-sha256")
+    parser.add_argument("--library-unit", action="store_true")
+    parser.add_argument("--dynamic-providers")
+    parser.add_argument("--schema-result", type=Path)
     args=parser.parse_args()
     try:
         if not re.fullmatch("[a-f0-9]{64}",args.application_sha256) or not re.fullmatch("[a-f0-9]{40}",args.commit):
@@ -267,11 +383,28 @@ def main():
         record=validate(select(raw),args.test_exit,args.runtime_sha256)
         result={"schema":1,"scope":"original_cleanup_diagnostic_only","commit":args.commit,"application_sha256":args.application_sha256,"private_log_sha256":hashlib.sha256(raw).hexdigest(),"trace":record,"provider_accepted":False,"cleanup_fixed":False}
         binding=(args.test_stdout,args.test_harness_sha256,args.cargo_json_sha256)
+        if args.library_unit and (any(v is None for v in binding) or args.schema_result is None
+                                  or args.application_sha256 != args.test_harness_sha256):
+            raise ValueError("library_binding_required")
+        if not args.library_unit and (args.dynamic_providers is not None or args.schema_result is not None):
+            raise ValueError("library_only_binding")
         if any(value is not None for value in binding):
             if any(value is None for value in binding): raise ValueError("partial_harness_binding")
             with args.test_stdout.open("rb") as stream: stdout=stream.read(4*1024*1024+1)
-            result["execution"]=validate_harness(stdout,args.test_exit,args.test_harness_sha256,args.cargo_json_sha256)
+            result["execution"]=validate_harness(stdout,args.test_exit,args.test_harness_sha256,args.cargo_json_sha256,args.library_unit,args.dynamic_providers)
+        if args.library_unit:
+            result["scope"]="original_cleanup_library_diagnostic_only"
+            result.pop("application_sha256")  # The tested executable is libtest, not the CLI.
         print(json.dumps(result,sort_keys=True,separators=(",",":")))
+        if args.library_unit:
+            try:
+                encoded=schema_result(raw,record,args.commit,args.test_harness_sha256,args.cargo_json_sha256,select(raw))
+                with args.schema_result.open("xb") as stream: stream.write(encoded)
+            except (OSError,ValueError,TypeError,KeyError,UnicodeError):
+                # Supplemental failure cannot erase a separately validated original trace.
+                print('runtime_cleanup_schema_result={"schema":1,"scope":"original_cleanup_schema_diagnostic_only","status":"invalid","reason":"schema_validation_failed","ownership_attributed":false,"cleanup_fixed":false,"provider_accepted":false}')
+                return 2
+            print("runtime_cleanup_schema_result=" + encoded.decode("ascii").rstrip("\n"))
         return 1 if record["status"]=="unavailable" else 0
     except (OSError,ValueError,TypeError,KeyError,UnicodeError):
         print('{"schema":1,"scope":"original_cleanup_diagnostic_only","status":"invalid","reason":"validation_failed","provider_accepted":false,"cleanup_fixed":false}')

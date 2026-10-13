@@ -1,18 +1,25 @@
 # Original runtime cleanup diagnostic
 
+The current manual target is the exact ARM64 library unit. Historical CLI
+artifact selection and validator modes remain readable. In library mode the
+legacy `--application-sha256` argument must equal the test-harness hash and is
+not emitted as a CLI application hash. No CLI executable is selected or invoked.
+
 This default-off developer feature observes the original runtime removal in one
-existing Windows ARM64 CLI regression. It does not fix cleanup, identify a holder,
+existing Windows ARM64 library regression. It does not fix cleanup, identify a holder,
 or count as application/provider acceptance. Normal CI and release features are
 unchanged. Do not run it on a working PC.
 
 The manual-only **Original Windows runtime cleanup trace** workflow requires the
 exact reviewed commit. It builds with `runtime-cleanup-trace`, binds the tested
-application/runtime SHA-256, and invokes only
-`cli_imported_listing_empty_remote_publishes_explicit_empty_csv_schema` once.
-Compile-only Cargo JSON selects exactly the CLI binary and `cli_acquisition`
+library-test/runtime SHA-256, and invokes only
+`ui::runner::tests::test_main_menu_enter_download_sets_status` once.
+Compile-only Cargo JSON selects exactly the `rclone_triage` library test
 harness from this package's ARM64 release output with the trace feature. The
 workflow invokes that harness directly with the fixed selector and `--exact`;
-it does not rebuild or enumerate tests before execution. CLI, runtime, harness
+it does not rebuild or enumerate tests before execution. Dynamic provider discovery
+is explicitly `RCLONE_TRIAGE_DYNAMIC_PROVIDERS=1`, never the disabled shortcut.
+Runtime, harness
 and build-record hashes must remain unchanged. The validator requires one
 completed, non-ignored named test with a result matching the actual native exit.
 The additional closed `execution` object binds the harness, build-record and
@@ -23,8 +30,8 @@ validation reads at most 4 MiB from each test stream. These are post-exit read
 bounds, not disk-growth limits or process-cleanup guarantees. Only the bounded,
 closed Python-validated JSON is printed. No raw log is uploaded.
 The original test exit still controls failure even when its trace is valid.
-The existing empty-listing test forwards only a bounded trace line on app success;
-on failure its unchanged assertion already reports stderr privately. There is
+The unchanged library test and removal hook already emit the trace on stderr;
+no application invocation, forwarding or test assertion is changed. There is
 no retry or artifact publication. A successful instrumented cleanup is
 `not_reproduced`, never evidence of a fix. An unavailable trace fails the job.
 
@@ -95,6 +102,55 @@ Unsupported events remain unavailable with null counts and pattern. The record
 bound, original correlation, removal and cleanup gates are unchanged. A future
 observed header can guide an official version-specific schema lookup; it cannot
 refine historical unavailable records or establish a lock holder.
+
+## Separate installed-schema observation
+
+On the first existing supplemental `UnsupportedOpcode` rejection, after retaining
+that original error, the same callback may call `TdhGetEventInformation` exactly
+once into an already allocated, aligned 64 KiB buffer. There is no size probe,
+resize, retry, second lookup, payload decoder or pointer retained after callback.
+Allocation failure is diagnostic-only and does not alter the original collector.
+Other original decoder failures are not broadened into a new capture route.
+
+The parser uses pinned windows-sys 0.61.2 SDK structures and `offset_of`, not
+handwritten payload offsets. It requires returned provider and full descriptor
+identity, documented XML/WBEM decoding source, at most 16 flat descriptors,
+bounded offsets/terminators and ASCII schema identifiers of at most 64 characters.
+Unknown flags, structures, maps, tags, custom schema, out-of-array count/length
+references, malformed names and identity disagreement remain unavailable.
+Descriptors contain only schema names and numeric types/flags/count/length
+metadata; these values are not interpreted as event data. No process/thread/IRP
+identity, path, raw schema, message template or event payload is retained or
+printed. An available schema does not tie this unattributed FileIo event to our
+runtime or a holder. Opcode acceptance and correlation remain unchanged.
+
+The existing `runtime_cleanup_trace` record and its 4,096-byte limit are unchanged.
+A separate `runtime_cleanup_schema` record is at most 8 KiB. After existing trace
+shutdown, loss, bounds, session configuration, stop/absence, consumer closure,
+join or operation-window uncertainty suppresses usable schema metadata. Missing
+or malformed metadata cannot become available. No unsupported event and
+allocation failure without a TDH call remain distinct from a failed TDH status.
+Original failure and cleanup precedence is unchanged when metadata succeeds.
+
+Library-mode validation writes a separate create-only private schema result,
+binding the exact original-trace SHA256, commit, harness, build record and runtime,
+then prints its bounded sanitized representation. It never merges schema fields
+into original counts or reasons. Existing test/step supervision is unchanged:
+TDH has no timeout parameter, so one-call and byte bounds are not an API latency
+guarantee. Callback overhead/resource lookup can perturb timing. Uncertain
+shutdown or missing output remains unavailable, never a cleanup certificate.
+
+Source preparation runs guarded Python contracts and compiles the three Rust
+schema-parser cases without executing them or the native collector. The manual
+hosted workflow separately runs only the fixed `schema_metadata::tests` filter
+with a strict exit check before its single diagnostic invocation. An isolated
+successful target is not reproduction or disproof of the earlier suite failure.
+Missing or malformed supplemental metadata preserves the independently validated
+original trace, emits a separate closed validation failure, and returns nonzero.
+Official references: [TDH lookup](https://learn.microsoft.com/en-us/windows/win32/api/tdh/nf-tdh-tdhgeteventinformation),
+[TRACE_EVENT_INFO](https://learn.microsoft.com/en-us/windows/win32/api/tdh/ns-tdh-trace_event_info),
+[EVENT_PROPERTY_INFO](https://learn.microsoft.com/en-us/windows/win32/api/tdh/ns-tdh-event_property_info),
+and [EVENT_HEADER](https://learn.microsoft.com/en-us/windows/win32/api/evntcons/ns-evntcons-event_header).
 
 Pure Rust checks can compile an entry point containing only `model.rs` and
 `ownership.rs`; neither imports or starts the native collector. The Python tests
