@@ -6,11 +6,11 @@
   "python_version": "3.12.15",
   "requirements": {
     "path": "scripts/provider-lab/requirements-fixture.txt",
-    "sha256": "191f8711629dbb8d88a45ce4c44a6ef9cac3aa61ba17e50cb490413ae6210035",
+    "sha256": "bce8d727eb6c9e6b04e34d32beb1a90a42d6184b50f2dd39a0fceb3b15674baf",
     "distributions": {
       "cryptography": "50.0.2",
       "cffi": "2.1.1",
-      "pycparser": "3.0"
+      "pycparser": "3.1"
     }
   },
   "provenance": {

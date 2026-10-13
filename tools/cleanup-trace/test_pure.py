@@ -192,4 +192,235 @@ class HarnessTests(unittest.TestCase):
         new=new[:new.index('\n#[test]')]
         self.assertEqual(new.count('.output().unwrap()'),1)
 
+class OwnershipTests(unittest.TestCase):
+    def trace(self, ownership=None):
+        value = record()
+        value.update(schema=2, status="unavailable", reason="correlation_end_multiple", counts=None,
+                     ownership=ownership or self.observed())
+        return value
+
+    def observed(self):
+        return dict(availability="available", reason="none", pattern="sequential_reuse",
+                    starts=2, ends=2, complete_pairs=2, nonselected_create_pairs=0, other_operation_pairs=1)
+
+    def unknown(self, reason="schema"):
+        return dict(availability="unavailable", reason=reason, pattern=None,
+                    **dict.fromkeys(V.OWNERSHIP_COUNTS))
+
+    def check(self, value):
+        return V.validate(json.dumps(value).encode(), 101, SHA)
+
+    def test_schema1_remains_readable_and_schema2_has_exact_keys(self):
+        self.assertEqual(V.validate(json.dumps(record()).encode(), 101, SHA), record())
+        for field in ("ownership", "PRIVATE"):
+            old = record(); old[field] = None
+            with self.assertRaises(ValueError): self.check(old)
+        for schema in (True, False, 0, 3, "2", 2.0, None):
+            value = self.trace(); value["schema"] = schema
+            with self.assertRaises(ValueError): self.check(value)
+        value = self.trace(); del value["ownership"]
+        with self.assertRaises(ValueError): self.check(value)
+        value = self.trace(); value["PRIVATE"] = None
+        with self.assertRaises(ValueError): self.check(value)
+
+    def test_ownership_cannot_qualify_or_fill_main_counts(self):
+        value = self.trace()
+        self.assertEqual(self.check(value)["status"], "unavailable")
+        for status in ("observed", "not_reproduced"):
+            value = self.trace(); value["status"] = status
+            with self.assertRaises(ValueError): self.check(value)
+        value = self.trace(); value["counts"] = record()["counts"]
+        with self.assertRaises(ValueError): self.check(value)
+        for reason in V.REASONS - {"correlation_end_multiple"}:
+            value = self.trace(); value["reason"] = reason
+            with self.assertRaises(ValueError): self.check(value)
+
+    def test_schema2_null_ownership_preserves_other_original_results(self):
+        for reason in V.REASONS - {"none", "correlation_end_multiple"}:
+            value = self.trace(); value.update(reason=reason, ownership=None)
+            self.assertEqual(self.check(value)["reason"], reason)
+        value = record(); value.update(schema=2, ownership=None)
+        self.assertEqual(self.check(value)["status"], "observed")
+        value.update(status="not_reproduced", original_ok=True, os_code=None)
+        self.assertEqual(V.validate(json.dumps(value).encode(), 0, SHA)["status"], "not_reproduced")
+        value = self.trace(); value["ownership"] = None
+        with self.assertRaises(ValueError): self.check(value)
+
+    def test_unavailable_witness_is_null_without_invented_counts(self):
+        for reason in V.OWNERSHIP_REASONS:
+            value = self.trace(self.unknown(reason)); self.check(value)
+            for key in V.OWNERSHIP_COUNTS | {"pattern"}:
+                broken = self.trace(self.unknown(reason)); broken["ownership"][key] = 0
+                with self.assertRaises(ValueError): self.check(broken)
+        for reason in ("none", "PRIVATE", None, True, [], {}):
+            with self.assertRaises(ValueError): self.check(self.trace(self.unknown(reason)))
+
+    def test_available_witness_requires_all_existing_collection_gates(self):
+        for field in V.BOOLS - {"target_identity_verified"}:
+            value = self.trace(); value[field] = False
+            with self.assertRaises(ValueError): self.check(value)
+            value["ownership"] = self.unknown("teardown")
+            self.check(value)
+        value = self.trace(); value["operation_us"] = None
+        with self.assertRaises(ValueError): self.check(value)
+        value = self.trace(); value["target_identity_verified"] = False
+        self.check(value)  # No new file identity or holder claim.
+
+    def test_numeric_privacy_shape_and_finite_enum_negatives(self):
+        for field in V.OWNERSHIP_COUNTS:
+            for bad in (True, False, -1, 8193, 1.0, float("nan"), float("inf"), "PRIVATE", None, [], {}):
+                value = self.trace(); value["ownership"][field] = bad
+                with self.assertRaises(ValueError): self.check(value)
+        for field in ("availability", "pattern", "reason"):
+            for bad in ("PRIVATE", True, None, [], {}):
+                value = self.trace(); value["ownership"][field] = bad
+                with self.assertRaises(ValueError): self.check(value)
+        for field in V.OWNERSHIP_KEYS:
+            value = self.trace(); del value["ownership"][field]
+            with self.assertRaises(ValueError): self.check(value)
+        value = self.trace(); value["ownership"]["PRIVATE"] = 1
+        with self.assertRaises(ValueError): self.check(value)
+
+    def test_anomalies_keep_pair_attribution_null(self):
+        for pattern, starts, ends in (("extra_end_without_observed_begin", 1, 2),
+                                     ("overlapping_begins", 2, 2), ("incomplete", 3, 2)):
+            witness = self.observed(); witness.update(pattern=pattern, starts=starts, ends=ends,
+                complete_pairs=None, nonselected_create_pairs=None, other_operation_pairs=None)
+            self.check(self.trace(witness))
+            for key in ("complete_pairs", "nonselected_create_pairs", "other_operation_pairs"):
+                broken = dict(witness); broken[key] = 0
+                with self.assertRaises(ValueError): self.check(self.trace(broken))
+        for change in (dict(starts=1, ends=1, complete_pairs=1, other_operation_pairs=0),
+                       dict(complete_pairs=1), dict(nonselected_create_pairs=2),
+                       dict(other_operation_pairs=0), dict(starts=4097, ends=4097, complete_pairs=4097)):
+            witness = self.observed(); witness.update(change)
+            with self.assertRaises(ValueError): self.check(self.trace(witness))
+
+    def test_maximal_record_fits_existing_line_and_printer_failure_is_not_success(self):
+        value = self.trace(); value["ownership"].update(starts=4096, ends=4096,
+            complete_pairs=4096, nonselected_create_pairs=4094, other_operation_pairs=1)
+        data = json.dumps(value, separators=(",", ":")).encode()
+        self.assertLessEqual(len(data), 4096)
+        self.check(value)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "private-log"
+            path.write_bytes(b"runtime_cleanup_trace=" + data)
+            argv = ['validator', '--log', str(path), '--test-exit', '101', '--runtime-sha256', SHA,
+                    '--application-sha256', SHA, '--commit', 'b'*40]
+            out = io.StringIO()
+            with mock.patch('sys.argv', argv), contextlib.redirect_stdout(out):
+                self.assertEqual(V.main(), 1)
+            self.assertEqual(json.loads(out.getvalue())["trace"]["status"], "unavailable")
+            self.assertNotIn("PRIVATE", out.getvalue())
+            with mock.patch('sys.argv', argv), mock.patch('builtins.print', side_effect=OSError('PRIVATE')):
+                with self.assertRaises(OSError): V.main()
+
+
+class OwnershipRejectionTests(unittest.TestCase):
+    def trace(self):
+        old = OwnershipTests()
+        value = old.trace(old.unknown("unsupported_opcode"))
+        value["schema"] = 3
+        value["ownership"]["rejection"] = dict(opcode=255, version=3, header_flags=64)
+        return value
+
+    def check(self, value):
+        return V.validate(json.dumps(value).encode(), 101, SHA)
+
+    def test_exact_header_table_roundtrips_without_qualification(self):
+        for version in (2, 3):
+            for opcode in range(256):
+                value = self.trace()
+                value["ownership"]["rejection"].update(opcode=opcode, version=version)
+                if opcode in (0, 32, 35, 36) or 64 <= opcode <= 77:
+                    with self.assertRaises(ValueError): self.check(value)
+                else:
+                    checked = self.check(value)
+                    self.assertEqual(checked, value)
+                    self.assertEqual(checked["status"], "unavailable")
+                    self.assertIsNone(checked["counts"])
+                    for key in V.OWNERSHIP_COUNTS | {"pattern"}:
+                        self.assertIsNone(checked["ownership"][key])
+        for flags in (64, 0x8040, 0xFFDF):
+            value = self.trace(); value["ownership"]["rejection"]["header_flags"] = flags
+            self.check(value)
+
+    def test_header_types_bounds_and_private_fields_are_rejected(self):
+        for field, maximum in (("opcode", 255), ("version", 255), ("header_flags", 65535)):
+            for bad in (None, True, False, -1, maximum + 1, 1.0, "PRIVATE_CANARY", [], {}):
+                value = self.trace(); value["ownership"]["rejection"][field] = bad
+                with self.assertRaises(ValueError) as error: self.check(value)
+                self.assertNotIn("PRIVATE_CANARY", str(error.exception))
+        for field, values in (("version", (0, 1, 4, 255)), ("header_flags", (0, 32, 96, 65535))):
+            for bad in values:
+                value = self.trace(); value["ownership"]["rejection"][field] = bad
+                with self.assertRaises(ValueError): self.check(value)
+        for missing in ("opcode", "version", "header_flags"):
+            value = self.trace(); del value["ownership"]["rejection"][missing]
+            with self.assertRaises(ValueError): self.check(value)
+        for bad in (None, [], True, "PRIVATE_CANARY", dict(opcode=255, version=3, header_flags=64, PRIVATE_CANARY=7)):
+            value = self.trace(); value["ownership"]["rejection"] = bad
+            with self.assertRaises(ValueError) as error: self.check(value)
+            self.assertNotIn("PRIVATE_CANARY", str(error.exception))
+        raw = json.dumps(self.trace()).replace('"opcode": 255', '"opcode": 255, "opcode": 254').encode()
+        with self.assertRaises(ValueError): V.validate(raw, 101, SHA)
+
+    def test_first_failure_overrides_keep_header_suppressed(self):
+        for field in V.BOOLS - {"target_identity_verified"}:
+            value = self.trace(); value[field] = False
+            with self.assertRaises(ValueError): self.check(value)
+            value["ownership"].update(reason="teardown", rejection=None)
+            self.check(value)
+        value = self.trace(); value["operation_us"] = None
+        with self.assertRaises(ValueError): self.check(value)
+        value["ownership"].update(reason="window", rejection=None)
+        self.check(value)
+        for reason in V.OWNERSHIP_REASONS - {"unsupported_opcode"}:
+            value = self.trace(); value["ownership"]["reason"] = reason
+            with self.assertRaises(ValueError): self.check(value)
+            value["ownership"]["rejection"] = None
+            self.check(value)
+        for field in V.OWNERSHIP_COUNTS | {"pattern"}:
+            value = self.trace(); value["ownership"][field] = 0
+            with self.assertRaises(ValueError): self.check(value)
+
+    def test_historical_shapes_and_new_nonrejection_results_remain_distinct(self):
+        old = OwnershipTests()
+        for value in (old.trace(old.unknown("unsupported_opcode")), old.trace(), record()):
+            self.assertEqual(self.check(value), value)
+        value = old.trace(); value["schema"] = 3
+        with self.assertRaises(ValueError): self.check(value)
+        value["ownership"]["rejection"] = None
+        self.check(value)
+        value["ownership"]["rejection"] = self.trace()["ownership"]["rejection"]
+        with self.assertRaises(ValueError): self.check(value)
+        for schema in (1, 2, 4):
+            value = self.trace(); value["schema"] = schema
+            with self.assertRaises(ValueError): self.check(value)
+        value = record(); value.update(schema=3, ownership=None)
+        self.check(value)
+        for change in (dict(status="observed"), dict(status="not_reproduced"),
+                       dict(counts=record()["counts"]), dict(reason="none")):
+            value = self.trace(); value.update(change)
+            with self.assertRaises(ValueError): self.check(value)
+
+    def test_schema3_cli_stays_nonzero_and_record_bound_is_unchanged(self):
+        value = self.trace()
+        data = json.dumps(value, separators=(",", ":")).encode()
+        self.assertLess(len(data), 4096)
+        with self.assertRaisesRegex(ValueError, "record_bound"):
+            V.validate(data + b" " * 4096, 101, SHA)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "private-log"
+            path.write_bytes(b"runtime_cleanup_trace=" + data)
+            argv = ['validator', '--log', str(path), '--test-exit', '101', '--runtime-sha256', SHA,
+                    '--application-sha256', SHA, '--commit', 'b'*40]
+            out = io.StringIO()
+            with mock.patch('sys.argv', argv), contextlib.redirect_stdout(out):
+                self.assertEqual(V.main(), 1)
+            self.assertEqual(json.loads(out.getvalue())["trace"], value)
+            with mock.patch('sys.argv', argv), mock.patch('builtins.print', side_effect=OSError('PRIVATE')):
+                with self.assertRaises(OSError): V.main()
+
+
 if __name__=="__main__":unittest.main()
