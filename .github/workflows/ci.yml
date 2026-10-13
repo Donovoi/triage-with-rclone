@@ -758,11 +758,18 @@ jobs:
           $runtime = (Resolve-Path rclone-triage/assets/rclone.exe).Path
           $buildCommit = (& git rev-parse --verify HEAD).Trim()
           if ($LASTEXITCODE -ne 0 -or $buildCommit -notmatch '^[0-9a-f]{40}$' -or $env:GITHUB_SHA -cne $buildCommit) { throw 'filesystem_build_binding_failed' }
+          $protocolReceipt = "$env:RUNNER_TEMP/filesystem-protocol.private.json"
+          if (Test-Path -LiteralPath $protocolReceipt) { throw 'filesystem_protocol_receipt_already_exists' }
+          python -B scripts/provider-lab/run_lab.py --rclone $runtime `
+            --backends $env:FILESYSTEM_BACKEND --report $protocolReceipt
+          if ($LASTEXITCODE -ne 0) { throw 'filesystem_protocol_failed' }
           python -B scripts/provider_coverage.py --rclone $runtime `
             --report "$env:RUNNER_TEMP/provider-evidence-windows-filesystem.json" `
+            --fixture-receipt $protocolReceipt `
             --application-receipt "$env:RUNNER_TEMP/filesystem.private.json" `
             --application $application --application-build-commit $buildCommit `
-            --require-plans --require-application-mode $mode
+            --require-plans --require-application-mode $mode `
+            --require-application $env:FILESYSTEM_BACKEND --require-fixtures $env:FILESYSTEM_BACKEND
           if ($LASTEXITCODE -ne 0) { throw 'filesystem_coverage_failed' }
       - name: Retain only validated filesystem evidence
         if: ${{ !cancelled() && (steps.filesystem_validation.outcome == 'success' || steps.filesystem_validation.outcome == 'failure') }}
