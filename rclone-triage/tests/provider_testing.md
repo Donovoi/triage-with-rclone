@@ -38,6 +38,8 @@ The ledger keeps local files (`local_filesystem_cli_v1`) and local ZIP files (`a
 
 ## Coverage enforced in CI
 
+An isolated hosted Windows FTP experiment uses the checked x64 app and pinned runtime from the same CI run. Three fresh app invocations test an interrupted download that reconnects with the same retained copy process, rejected revoked credentials, and replacement credentials. Independent checks require exact downloaded bytes, preserved settings and complete process, socket and temporary-file cleanup. Only the pure validator's closed, sanitized report is uploaded; failure blocks nightly publication. Native qualification is still pending. This plain loopback FTP experiment does not cover TLS, cancellation or a real vendor, and it grants no provider or full-application acceptance. Its receipt binds the app, build, source, runtime and test inputs, but has no policy digest and is not imported into the coverage ledger.
+
 The pinned runtime supplies the complete backend catalog. The curated provider enum and `CloudProvider::all()` are generated together; adding a variant also requires an exhaustive, independently asserted schema contract in `tests/provider_matrix.rs`.
 
 Every Windows and Linux CI run checks:
