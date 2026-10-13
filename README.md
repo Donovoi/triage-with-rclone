@@ -30,9 +30,9 @@ See [test status and known gaps](rclone-triage/tests/provider_testing.md) for th
 
 Local-file and ZIP checks have passed, including cancellation and cleanup.
 
-Dropbox download cancellation tests have passed. B2 and Swift download checks have passed using local test servers. These results apply to the tested Windows builds; tests with real Swift accounts are still pending.
+Dropbox download cancellation tests have passed. B2, Swift and WebDAV download checks have passed using local test servers. WebDAV also blocked a download after its access token was rejected. These results apply to the tested Windows builds; tests with real Swift accounts are still pending.
 
-Current work: fix Windows test startup and cleanup failures, check FTP recovery after a lost connection, and check how WebDAV handles a rejected download.
+Current work: fix Windows test startup and cleanup failures, check FTP recovery after a lost connection, and test WebDAV when it needs a new access token.
 
 ## What comes next
 
