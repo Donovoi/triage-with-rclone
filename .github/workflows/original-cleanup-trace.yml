@@ -29,7 +29,7 @@ jobs:
           $actual = (git rev-parse HEAD).Trim()
           if ($LASTEXITCODE -ne 0 -or $env:EXPECTED_SHA -cnotmatch '\A[0-9a-f]{40}\z' -or $actual -cne $env:GITHUB_SHA -or $actual -cne $env:EXPECTED_SHA) { throw 'Revision mismatch' }
           Write-Output "tested_commit=$actual"
-      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
         with:
           toolchain: 1.95.0
           targets: aarch64-pc-windows-msvc
