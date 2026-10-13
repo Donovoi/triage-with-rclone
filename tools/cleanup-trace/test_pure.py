@@ -316,4 +316,111 @@ class OwnershipTests(unittest.TestCase):
                 with self.assertRaises(OSError): V.main()
 
 
+class OwnershipRejectionTests(unittest.TestCase):
+    def trace(self):
+        old = OwnershipTests()
+        value = old.trace(old.unknown("unsupported_opcode"))
+        value["schema"] = 3
+        value["ownership"]["rejection"] = dict(opcode=255, version=3, header_flags=64)
+        return value
+
+    def check(self, value):
+        return V.validate(json.dumps(value).encode(), 101, SHA)
+
+    def test_exact_header_table_roundtrips_without_qualification(self):
+        for version in (2, 3):
+            for opcode in range(256):
+                value = self.trace()
+                value["ownership"]["rejection"].update(opcode=opcode, version=version)
+                if opcode in (0, 32, 35, 36) or 64 <= opcode <= 77:
+                    with self.assertRaises(ValueError): self.check(value)
+                else:
+                    checked = self.check(value)
+                    self.assertEqual(checked, value)
+                    self.assertEqual(checked["status"], "unavailable")
+                    self.assertIsNone(checked["counts"])
+                    for key in V.OWNERSHIP_COUNTS | {"pattern"}:
+                        self.assertIsNone(checked["ownership"][key])
+        for flags in (64, 0x8040, 0xFFDF):
+            value = self.trace(); value["ownership"]["rejection"]["header_flags"] = flags
+            self.check(value)
+
+    def test_header_types_bounds_and_private_fields_are_rejected(self):
+        for field, maximum in (("opcode", 255), ("version", 255), ("header_flags", 65535)):
+            for bad in (None, True, False, -1, maximum + 1, 1.0, "PRIVATE_CANARY", [], {}):
+                value = self.trace(); value["ownership"]["rejection"][field] = bad
+                with self.assertRaises(ValueError) as error: self.check(value)
+                self.assertNotIn("PRIVATE_CANARY", str(error.exception))
+        for field, values in (("version", (0, 1, 4, 255)), ("header_flags", (0, 32, 96, 65535))):
+            for bad in values:
+                value = self.trace(); value["ownership"]["rejection"][field] = bad
+                with self.assertRaises(ValueError): self.check(value)
+        for missing in ("opcode", "version", "header_flags"):
+            value = self.trace(); del value["ownership"]["rejection"][missing]
+            with self.assertRaises(ValueError): self.check(value)
+        for bad in (None, [], True, "PRIVATE_CANARY", dict(opcode=255, version=3, header_flags=64, PRIVATE_CANARY=7)):
+            value = self.trace(); value["ownership"]["rejection"] = bad
+            with self.assertRaises(ValueError) as error: self.check(value)
+            self.assertNotIn("PRIVATE_CANARY", str(error.exception))
+        raw = json.dumps(self.trace()).replace('"opcode": 255', '"opcode": 255, "opcode": 254').encode()
+        with self.assertRaises(ValueError): V.validate(raw, 101, SHA)
+
+    def test_first_failure_overrides_keep_header_suppressed(self):
+        for field in V.BOOLS - {"target_identity_verified"}:
+            value = self.trace(); value[field] = False
+            with self.assertRaises(ValueError): self.check(value)
+            value["ownership"].update(reason="teardown", rejection=None)
+            self.check(value)
+        value = self.trace(); value["operation_us"] = None
+        with self.assertRaises(ValueError): self.check(value)
+        value["ownership"].update(reason="window", rejection=None)
+        self.check(value)
+        for reason in V.OWNERSHIP_REASONS - {"unsupported_opcode"}:
+            value = self.trace(); value["ownership"]["reason"] = reason
+            with self.assertRaises(ValueError): self.check(value)
+            value["ownership"]["rejection"] = None
+            self.check(value)
+        for field in V.OWNERSHIP_COUNTS | {"pattern"}:
+            value = self.trace(); value["ownership"][field] = 0
+            with self.assertRaises(ValueError): self.check(value)
+
+    def test_historical_shapes_and_new_nonrejection_results_remain_distinct(self):
+        old = OwnershipTests()
+        for value in (old.trace(old.unknown("unsupported_opcode")), old.trace(), record()):
+            self.assertEqual(self.check(value), value)
+        value = old.trace(); value["schema"] = 3
+        with self.assertRaises(ValueError): self.check(value)
+        value["ownership"]["rejection"] = None
+        self.check(value)
+        value["ownership"]["rejection"] = self.trace()["ownership"]["rejection"]
+        with self.assertRaises(ValueError): self.check(value)
+        for schema in (1, 2, 4):
+            value = self.trace(); value["schema"] = schema
+            with self.assertRaises(ValueError): self.check(value)
+        value = record(); value.update(schema=3, ownership=None)
+        self.check(value)
+        for change in (dict(status="observed"), dict(status="not_reproduced"),
+                       dict(counts=record()["counts"]), dict(reason="none")):
+            value = self.trace(); value.update(change)
+            with self.assertRaises(ValueError): self.check(value)
+
+    def test_schema3_cli_stays_nonzero_and_record_bound_is_unchanged(self):
+        value = self.trace()
+        data = json.dumps(value, separators=(",", ":")).encode()
+        self.assertLess(len(data), 4096)
+        with self.assertRaisesRegex(ValueError, "record_bound"):
+            V.validate(data + b" " * 4096, 101, SHA)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "private-log"
+            path.write_bytes(b"runtime_cleanup_trace=" + data)
+            argv = ['validator', '--log', str(path), '--test-exit', '101', '--runtime-sha256', SHA,
+                    '--application-sha256', SHA, '--commit', 'b'*40]
+            out = io.StringIO()
+            with mock.patch('sys.argv', argv), contextlib.redirect_stdout(out):
+                self.assertEqual(V.main(), 1)
+            self.assertEqual(json.loads(out.getvalue())["trace"], value)
+            with mock.patch('sys.argv', argv), mock.patch('builtins.print', side_effect=OSError('PRIVATE')):
+                with self.assertRaises(OSError): V.main()
+
+
 if __name__=="__main__":unittest.main()

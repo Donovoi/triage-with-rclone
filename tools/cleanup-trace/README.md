@@ -56,7 +56,7 @@ Absence of a selected start does not identify a decoder, path, thread or timing
 cause. The original correlation gates, session cleanup and retry behavior are unchanged.
 
 Schema 2 adds a diagnostic-only `ownership` object for `correlation_end_multiple`;
-it is null for other reasons. Historical schema 1 remains readable. The original
+it is null for other reasons. Historical schemas 1 and 2 remain readable. The original
 model, main counts and status are unchanged: even an observed sequential reuse
 chain leaves the trace unavailable. No supplemental field can qualify attribution.
 
@@ -84,6 +84,17 @@ No identifiers, paths or raw events are emitted; the existing 4,096-byte record 
 and cleanup/time limits remain in force. File-object or holder attribution is not
 attempted. See Microsoft [FileIo classes](https://learn.microsoft.com/en-us/windows/win32/etw/fileio)
 and [OperationEnd](https://learn.microsoft.com/en-us/windows/win32/etw/fileio-opend).
+
+Schema 3 adds `ownership.rejection`: the first unsupported opcode's numeric
+`opcode`, `version` and `header_flags`, or null for other ownership results.
+These are unattributed FileIo header values already present at the rejection,
+not a file, process, thread or IRP identity. No property query or guessed schema
+support is added. The first error retains its own metadata; later events cannot
+replace it. Teardown, loss, budget and window overrides still suppress the header.
+Unsupported events remain unavailable with null counts and pattern. The record
+bound, original correlation, removal and cleanup gates are unchanged. A future
+observed header can guide an official version-specific schema lookup; it cannot
+refine historical unavailable records or establish a lock holder.
 
 Pure Rust checks can compile an entry point containing only `model.rs` and
 `ownership.rs`; neither imports or starts the native collector. The Python tests
