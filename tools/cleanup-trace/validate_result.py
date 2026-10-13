@@ -14,6 +14,10 @@ CORRELATION_REASONS = frozenset((
 REASONS = CORRELATION_REASONS | frozenset(("none", "unsupported_environment", "identity_unavailable", "budget_exceeded", "schema_unavailable", "clock_unavailable", "correlation_missing_or_ambiguous", "event_loss", "session_collision", "access_denied", "session_unavailable", "consumer_unavailable", "cleanup_uncertain", "session_configuration_mismatch", "operation_not_observed", "status_not_attributed"))
 BOOLS = frozenset(("target_identity_verified", "session_started", "settings_verified", "bounded", "zero_loss", "stop_succeeded", "session_absent", "consumer_completed", "consumer_closed", "worker_joined"))
 KEYS = BOOLS | {"schema", "scope", "status", "reason", "original_ok", "os_code", "operation_us", "runtime_sha256", "counts", "schema_rejection"}
+OWNERSHIP_COUNTS = frozenset(("starts", "ends", "complete_pairs", "nonselected_create_pairs", "other_operation_pairs"))
+OWNERSHIP_KEYS = OWNERSHIP_COUNTS | {"availability", "reason", "pattern"}
+OWNERSHIP_REASONS = frozenset(("schema", "unsupported_opcode", "event_loss", "budget", "order", "teardown", "window"))
+OWNERSHIP_PATTERNS = frozenset(("sequential_reuse", "extra_end_without_observed_begin", "overlapping_begins", "incomplete"))
 REJECTION_KEYS = frozenset((
     "attribution", "stage", "property", "opcode", "version", "header_flags", "tdh_status", "size",
 ))
@@ -27,6 +31,44 @@ PROPERTIES = {64: frozenset(("TTID", "IrpPtr", "OpenPath", "ShareAccess")),
 
 def uint(value, maximum):
     return type(value) is int and 0 <= value <= maximum
+
+
+def validate_ownership(value, trace):
+    """Supplemental observations cannot fill main counts or qualify any result."""
+    if trace["reason"] != "correlation_end_multiple":
+        if value is not None:
+            raise ValueError("ownership outside multiple-end failure")
+        return
+    if trace["status"] != "unavailable" or trace["counts"] is not None:
+        raise ValueError("ownership cannot qualify")
+    if type(value) is not dict or value.keys() != OWNERSHIP_KEYS:
+        raise ValueError("ownership shape")
+    availability, reason, pattern = (value[key] for key in ("availability", "reason", "pattern"))
+    if type(availability) is not str or type(reason) is not str:
+        raise ValueError("ownership enum type")
+    if availability == "unavailable":
+        if reason not in OWNERSHIP_REASONS or pattern is not None or any(value[k] is not None for k in OWNERSHIP_COUNTS):
+            raise ValueError("ownership uncertainty")
+        return
+    if (availability != "available" or reason != "none" or type(pattern) is not str
+            or pattern not in OWNERSHIP_PATTERNS):
+        raise ValueError("ownership observation enum")
+    if not all(trace[key] for key in BOOLS - {"target_identity_verified"}) or trace["operation_us"] is None:
+        raise ValueError("ownership collection gates")
+    if (not all(uint(value[k], 8192) for k in ("starts", "ends")) or value["starts"] < 1
+            or value["ends"] < 2 or value["starts"] + value["ends"] > 8192):
+        raise ValueError("ownership observed counts")
+    pairs = ("complete_pairs", "nonselected_create_pairs", "other_operation_pairs")
+    if pattern == "sequential_reuse":
+        if (not all(uint(value[k], 8192) for k in pairs)
+                or value["complete_pairs"] != value["starts"] or value["starts"] != value["ends"]
+                or not 1 <= value["nonselected_create_pairs"] + value["other_operation_pairs"] < value["complete_pairs"]):
+            raise ValueError("ownership complete chain")
+    elif any(value[k] is not None for k in pairs):
+        raise ValueError("ownership anomaly has no paired attribution")
+    elif (pattern == "overlapping_begins" and value["starts"] < 2) or (
+            pattern == "incomplete" and value["starts"] != value["ends"] + 1):
+        raise ValueError("ownership anomaly counts")
 
 
 def validate_rejection(value):
@@ -102,9 +144,14 @@ def validate(raw, test_exit, expected_runtime):
     if type(expected_runtime) is not str or not re.fullmatch("[a-f0-9]{64}", expected_runtime):
         raise ValueError("runtime_binding")
     value = json.loads(raw.decode("utf-8"), object_pairs_hook=unique_pairs)
-    if type(value) is not dict or value.keys() != KEYS:
+    if type(value) is not dict:
         raise ValueError("record_shape")
-    if type(value["schema"]) is not int or value["schema"] != 1 or value["scope"] != "original_runtime_remove_tree":
+    schema = value.get("schema")
+    if type(schema) is not int or schema not in (1, 2):
+        raise ValueError("scope")
+    if value.keys() != (KEYS if schema == 1 else KEYS | {"ownership"}):
+        raise ValueError("record_shape")
+    if value["scope"] != "original_runtime_remove_tree":
         raise ValueError("scope")
     if any(type(value[key]) is not bool for key in BOOLS):
         raise ValueError("boolean_type")
@@ -130,6 +177,8 @@ def validate(raw, test_exit, expected_runtime):
             raise ValueError("rejection_cannot_qualify")
     if value["reason"] in CORRELATION_REASONS and (counts is not None or value["schema_rejection"] is not None):
         raise ValueError("correlation rejection has no completed counts or decoder rejection")
+    if schema == 2:
+        validate_ownership(value["ownership"], value)
     if value["status"] == "unavailable":
         if value["reason"] == "none":
             raise ValueError("unavailable_reason")
