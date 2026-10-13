@@ -403,6 +403,7 @@ SETUP_STAGES = {
     "Verify": ("input", "parent", "identity", "verify", "complete"),
 }
 SETUP_OUTCOMES = frozenset({"timeout", "launch_failed", "environment_invalid", "exit_failed", "protocol_failed", "parent_changed"})
+SETUP_PROGRESS_REJECTIONS = frozenset({"absent", "type", "empty", "bound", "incomplete", "malformed", "order", "unclassified"})
 SETUP_FAILURE_REASONS = frozenset({"verification_failed", "entry_limit", "metadata_read_failed", "reparse",
                                    "owner_invalid", "root_unprotected", "acl_invalid", "acl_incomplete", "enumeration_failed"})
 SETUP_NODE_CATEGORIES = frozenset({"root", "application_root", "helper_root", "helper_private_root",
@@ -459,6 +460,61 @@ def setup_progress(data, action):
     return stages[-1], final, failure
 
 
+def setup_progress_rejection(data, action):
+    """Classify an already rejected stream; never recover a stage or accept it."""
+    try:
+        if type(action) is not str or action not in SETUP_STAGES:
+            return "unclassified"
+        if data is None:
+            return "absent"
+        if type(data) is not bytes:
+            return "type"
+        if not data:
+            return "empty"
+        if len(data) > 4096:
+            return "bound"
+        if not data.endswith(b"\n"):
+            return "incomplete"
+        data = data.replace(b"\r\n", b"\n")
+        if b"\r" in data:
+            return "malformed"
+        lines = data[:-1].split(b"\n")
+        expected, stages, final = SETUP_STAGES[action], [], None
+        if len(lines) > len(expected) + 1:
+            return "bound"
+        for index, line in enumerate(lines):
+            if len(line) > 256:
+                return "bound"
+            try:
+                value = strict_json(line, 256)
+            except (ProducerError, TypeError, ValueError):
+                return "malformed"
+            if type(value) is not dict or type(value.get("schema_version")) is not int or value["schema_version"] != 1:
+                return "malformed"
+            if set(value) == {"schema_version", "stage"}:
+                if final is not None or len(stages) >= len(expected) or value["stage"] != expected[len(stages)]:
+                    return "order"
+                stages.append(value["stage"])
+            else:
+                if set(value) not in ({"schema_version", "ok"}, {"schema_version", "ok", "failure"}) or type(value["ok"]) is not bool:
+                    return "malformed"
+                if index != len(lines) - 1 or not stages:
+                    return "order"
+                final = value["ok"]
+                if "failure" in value:
+                    if final is not False or stages[-1] != "verify":
+                        return "order"
+                    try:
+                        setup_failure(value["failure"])
+                    except (ProducerError, TypeError, ValueError):
+                        return "malformed"
+        if not stages or final is True and tuple(stages) != expected:
+            return "order"
+    except BaseException:
+        pass  # Classification cannot replace the original setup failure.
+    return "unclassified"
+
+
 WEBDAV_CASE_NAMES = {name: "webdav-" + name.replace("_", "-") for name in (
     "listing", "acquisition", "mismatch", "missing", "wrong_credentials", "accepted_a",
     "revoked_a", "replacement_b", "permission_denied", "truncated_transfer", "cancellation",
@@ -492,7 +548,7 @@ def setup_scope(name):
     return name
 
 
-def setup_diagnostic(outcome, action, scope, exit_code, stage, failure=None):
+def setup_diagnostic(outcome, action, scope, exit_code, stage, failure=None, *, progress_rejection=None):
     """The sole public setup diagnostic: finite labels, never child text."""
     need(outcome in SETUP_OUTCOMES and action in SETUP_STAGES and scope in SETUP_SCOPES and
          (exit_code is None or type(exit_code) is int and -(2**31) <= exit_code < 2**32) and
@@ -501,6 +557,10 @@ def setup_diagnostic(outcome, action, scope, exit_code, stage, failure=None):
     if failure is not None:
         need(outcome == "exit_failed" and exit_code not in (None, 0) and stage == "verify", "case_setup_failed")
         value["failure"] = setup_failure(failure)
+    if progress_rejection is not None:
+        need(outcome == "timeout" and exit_code is None and stage is None and failure is None and
+             type(progress_rejection) is str and progress_rejection in SETUP_PROGRESS_REJECTIONS, "case_setup_failed")
+        value["progress_rejection"] = progress_rejection
     print("application_setup_diagnostic=" + E.compact(value).decode("ascii"), flush=True)
 
 
@@ -552,11 +612,19 @@ def prepare(parent, name, action="Create"):
                                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                                 timeout=20, check=False, env=env, **hidden())
     except subprocess.TimeoutExpired as error:
+        progress_rejection = None
         try:
             stage, _, _ = setup_progress(error.stdout, action)
         except (ProducerError, TypeError, ValueError):
             stage = None
-        setup_diagnostic("timeout", action, scope, None, stage)
+            try:
+                progress_rejection = setup_progress_rejection(error.stdout, action)
+            except BaseException:
+                progress_rejection = "unclassified"
+        try:
+            setup_diagnostic("timeout", action, scope, None, stage, progress_rejection=progress_rejection)
+        except BaseException:
+            pass  # Preserve the original timeout failure even if output fails.
         raise ProducerError("case_setup_failed") from None
     except OSError:
         setup_diagnostic("launch_failed", action, scope, None, None)
