@@ -43,10 +43,12 @@ APPLICATION_REGISTRY = MappingProxyType({
         "producer": "application-lab/run_windows_http.py", "can_complete_application": True}),
     WEBDAV_APPLICATION_KEY: MappingProxyType({"module": "webdav_application_evidence.py",
         "producer": "application-lab/run_windows_webdav.py", "can_complete_application": False}),
+    # Only these reviewed Windows baseline modes are eligible. Provider
+    # completion still requires independent, current protocol evidence.
     LOCAL_APPLICATION_KEY: MappingProxyType({"module": "filesystem_application_evidence.py",
-        "producer": "application-lab/run_windows_filesystem.py", "can_complete_application": False}),
+        "producer": "application-lab/run_windows_filesystem.py", "can_complete_application": True}),
     ARCHIVE_APPLICATION_KEY: MappingProxyType({"module": "filesystem_application_evidence.py",
-        "producer": "application-lab/run_windows_filesystem.py", "can_complete_application": False}),
+        "producer": "application-lab/run_windows_filesystem.py", "can_complete_application": True}),
 })
 PLATFORMS = frozenset(("windows", "linux"))
 AUTH_APPLICABILITY = frozenset(("none", "credentials", "oauth", "provider_specific"))
