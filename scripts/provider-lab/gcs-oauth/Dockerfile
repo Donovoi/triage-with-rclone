@@ -12,7 +12,7 @@ python3 - <<'PY'
 import hashlib, json, pathlib, platform, re, stat
 root = pathlib.Path('/opt/fixture')
 lock_path = root / 'scripts/provider-lab/gcs-oauth/build-lock.json'
-assert hashlib.sha256(lock_path.read_bytes()).hexdigest() == 'bfd4adee8ecde798aec0ea28e033fe5fd869cc939b57b52ad4524ca60fc67dbd'
+assert hashlib.sha256(lock_path.read_bytes()).hexdigest() == '62f89a3ff2ec71059674eedb506c2482383f3e9f9dd0f7468bea51333f898227'
 lock = json.loads(lock_path.read_bytes())
 assert platform.python_version() == lock['python_version'] and platform.machine() == 'x86_64'
 expected = {'scripts/provider-lab/gcs-oauth/' + p for p in ('Dockerfile', 'build-lock.json', 'run_container.py', 'probe.py', 'fixture_oauth.py')}
@@ -61,7 +61,7 @@ root = pathlib.Path('/opt/fixture')
 lock = json.loads((root / 'scripts/provider-lab/gcs-oauth/build-lock.json').read_bytes())
 expected = lock['requirements']['distributions']
 assert {name: importlib.metadata.version(name) for name in expected} == expected
-assert cryptography.__version__ == expected['cryptography'] and cffi.__version__ == expected['cffi'] and pycparser.__version__ == '3.00'
+assert cryptography.__version__ == expected['cryptography'] and cffi.__version__ == expected['cffi'] and pycparser.__version__ == '3.01'
 assert platform.python_version() == lock['python_version']
 assert all(line.split(':', 1)[0] != 'synthetic-oauth' and line.split(':')[2] != '10001' for line in pathlib.Path('/etc/passwd').read_text().splitlines())
 assert all(line.split(':', 1)[0] != 'synthetic-oauth' and line.split(':')[2] != '10001' for line in pathlib.Path('/etc/group').read_text().splitlines())
