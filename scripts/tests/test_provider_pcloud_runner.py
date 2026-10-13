@@ -83,8 +83,8 @@ class PCloudRunnerTests(unittest.TestCase):
         LAB.pcloud_dependencies()
 
     def test_distribution_metadata_cannot_hide_a_different_loaded_module(self):
-        versions = {"cffi": "2.1.1", "cryptography": "50.0.2", "pycparser": "3.0"}
-        loaded_versions = dict(versions, pycparser="3.00")
+        versions = {"cffi": "2.1.1", "cryptography": "50.0.2", "pycparser": "3.1"}
+        loaded_versions = dict(versions, pycparser="3.01")
         for changed in versions:
             with self.subTest(changed=changed), mock.patch.object(importlib.metadata, "version", side_effect=versions.get), \
                     mock.patch.object(importlib, "import_module", side_effect=lambda name: SimpleNamespace(
