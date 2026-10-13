@@ -42,7 +42,7 @@ class FakeSocket:
         self.output.extend(data)
 
     def settimeout(self, timeout):
-        if not 0 < timeout <= 15:
+        if not 0 <= timeout <= 15:
             raise AssertionError("timeout_bound")
         self.timeouts.append(timeout)
 
@@ -101,7 +101,7 @@ class FakeThread:
 class FixtureTests(unittest.TestCase):
     def setUp(self):
         for target in ("socket.socket", "socket.create_connection", "subprocess.Popen",
-                       "threading.Thread.start"):
+                       "threading.Thread.start", "select.select"):
             patch = mock.patch(target, side_effect=AssertionError("native_boundary_forbidden"))
             patch.start()
             self.addCleanup(patch.stop)
@@ -491,11 +491,80 @@ class FixtureTests(unittest.TestCase):
         def spawned(*_args):
             server.stopping.set()
             return FakeThread()
-        with mock.patch.object(listener, "accept", side_effect=accept), \
+        with mock.patch.object(F.select, "select", return_value=([listener], [], [])), \
+                mock.patch.object(listener, "accept", side_effect=accept), \
                 mock.patch.object(server, "_admit", side_effect=admit), \
                 mock.patch.object(server, "_spawn", side_effect=spawned):
             server._accept()
         self.assertEqual(len(accepted), 1)
+        server.close()
+        self.assertTrue(server.cleanup_complete)
+
+    def test_idle_accept_wait_does_not_hold_state_lock_or_block_denial_reply(self):
+        state, server = self.server()
+        listener = FakeListener()
+        server.listener = server._own(listener, "control_listener")
+        session, control = self.session(server)
+        state.epoch = session.epoch = 2
+        session.user = USER.encode()
+        def idle(readers, writers, errors, timeout):
+            self.assertEqual((readers, writers, errors), ([listener], [], []))
+            self.assertEqual(timeout, 0.1)
+            self.assertFalse(state.lock._is_owned())
+            server._dispatch(session, "PASS", A.encode())
+            server.stopping.set()
+            return [], [], []
+        with mock.patch.object(F.select, "select", side_effect=idle) as wait, \
+                mock.patch.object(listener, "accept", side_effect=AssertionError("idle_accept")):
+            server._accept()
+        self.assertEqual(wait.call_count, 1)
+        self.assertEqual(control.output, b"530 Login incorrect\r\n")
+        self.assertEqual(state.errors, [])
+        server.close()
+        self.assertTrue(server.cleanup_complete)
+
+    def test_control_listener_is_nonblocking_before_acceptor_starts(self):
+        _, server = self.server()
+        listener = FakeListener()
+        def spawn(*_args):
+            self.assertEqual(listener.timeouts, [0.0])
+            return FakeThread()
+        with mock.patch.object(F.socket, "socket", return_value=listener), \
+                mock.patch.object(server, "_spawn", side_effect=spawn):
+            server.start()
+        server.close()
+        self.assertTrue(server.cleanup_complete)
+
+    def test_stale_readiness_does_not_admit_a_session_or_change_deadline(self):
+        state, server = self.server()
+        listener = FakeListener()
+        server.listener = server._own(listener, "control_listener")
+        original_deadline = server.deadline
+        def accept():
+            self.assertTrue(state.lock._is_owned())
+            server.stopping.set()
+            raise BlockingIOError()
+        with mock.patch.object(F.select, "select", return_value=([listener], [], [])), \
+                mock.patch.object(listener, "accept", side_effect=accept):
+            server._accept()
+        self.assertEqual(state._sessions, 0)
+        self.assertEqual(state.errors, [])
+        self.assertEqual(server.deadline, original_deadline)
+        server.close()
+        self.assertTrue(server.cleanup_complete)
+
+    def test_stop_after_readiness_refuses_admission(self):
+        state, server = self.server()
+        listener = FakeListener()
+        server.listener = server._own(listener, "control_listener")
+        def ready(*_args):
+            server.stopping.set()
+            return [listener], [], []
+        with mock.patch.object(F.select, "select", side_effect=ready), \
+                mock.patch.object(listener, "accept", side_effect=AssertionError("stopped_accept")):
+            server._accept()
+        self.assertEqual(state._sessions, 0)
+        self.assertEqual(state.errors, ["deadline"])
         server.close()
         self.assertTrue(server.cleanup_complete)
 
