@@ -358,6 +358,18 @@ fn cli_imported_listing_empty_remote_publishes_explicit_empty_csv_schema() {
     let fixture = Fixture::new();
     fs::remove_file(fixture.temp.path().join("a/same.txt")).unwrap();
     let output = listing_command(&fixture, "RemoteA").output().unwrap();
+    #[cfg(feature = "runtime-cleanup-trace")]
+    for line in output.stderr.split(|byte| *byte == b'\n') {
+        if output.status.success()
+            && line.starts_with(b"runtime_cleanup_trace=")
+            && line.len() <= 4140
+        {
+            use std::io::Write;
+            let _ = std::io::stderr().lock().write_all(line);
+            let _ = std::io::stderr().lock().write_all(b"\n");
+        }
+    }
+
     assert!(
         output.status.success(),
         "{}",

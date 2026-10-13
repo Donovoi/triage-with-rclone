@@ -7,10 +7,25 @@ unchanged. Do not run it on a working PC.
 
 The manual-only **Original Windows runtime cleanup trace** workflow requires the
 exact reviewed commit. It builds with `runtime-cleanup-trace`, binds the tested
-application/runtime SHA-256, and invokes the affected listing test once. Its raw
-output stays private. Only the bounded, closed Python-validated JSON is printed.
+application/runtime SHA-256, and invokes only
+`cli_imported_listing_empty_remote_publishes_explicit_empty_csv_schema` once.
+Compile-only Cargo JSON selects exactly the CLI binary and `cli_acquisition`
+harness from this package's ARM64 release output with the trace feature. The
+workflow invokes that harness directly with the fixed selector and `--exact`;
+it does not rebuild or enumerate tests before execution. CLI, runtime, harness
+and build-record hashes must remain unchanged. The validator requires one
+completed, non-ignored named test with a result matching the actual native exit.
+The additional closed `execution` object binds the harness, build-record and
+stdout hashes; the previous validator invocation and record remain readable.
+
+Raw build/test output stays private. Selection reads at most 16 MiB of Cargo JSON;
+validation reads at most 4 MiB from each test stream. These are post-exit read
+bounds, not disk-growth limits or process-cleanup guarantees. Only the bounded,
+closed Python-validated JSON is printed. No raw log is uploaded.
 The original test exit still controls failure even when its trace is valid.
-There is no retry or artifact publication. A successful instrumented cleanup is
+The existing empty-listing test forwards only a bounded trace line on app success;
+on failure its unchanged assertion already reports stderr privately. There is
+no retry or artifact publication. A successful instrumented cleanup is
 `not_reproduced`, never evidence of a fix. An unavailable trace fails the job.
 
 Registration uses the existing extraction file handle before child launch. The
