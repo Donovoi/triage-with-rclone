@@ -650,5 +650,72 @@ class FixtureTests(unittest.TestCase):
         self.assertFalse(state.snapshot()["source_preserved"])
 
 
+    def test_denial_send_cache_observes_actual_write_and_post_send_failure(self):
+        for stage in ("success", "pre_write", "send_raises", "post_write", "base_exception"):
+            with self.subTest(stage=stage):
+                state, server = self.server(); session, raw = self.session(server)
+                state.epoch = session.epoch = 2; session.user = USER.encode()
+                original = KeyboardInterrupt("PRIVATE_CANARY") if stage == "base_exception" else OSError("PRIVATE_CANARY")
+                with mock.patch.object(server, "_timeout", side_effect=original if stage == "pre_write" else None) as timeout, \
+                     mock.patch.object(raw, "sendall", side_effect=original if stage in {"send_raises", "base_exception"} else None) as send, \
+                     mock.patch.object(server, "live", side_effect=[None, original] if stage == "post_write" else None):
+                    if stage == "success":
+                        server._dispatch(session, "PASS", A.encode())
+                    else:
+                        with self.assertRaises(type(original)) as caught:
+                            server._dispatch(session, "PASS", A.encode())
+                        self.assertIs(caught.exception, original)
+                event = state.events[-1]
+                self.assertEqual(event["kind"], "denied_a")
+                self.assertEqual(state._denial_send[:3], (2, event["ordinal"], session.number))
+                expected = (None, None) if stage == "pre_write" else (True, False) if stage in {"send_raises", "base_exception"} else (True, True)
+                self.assertEqual(state._denial_send[3:], expected)
+                self.assertIsNone(session.control._denial_send)
+                self.assertEqual(send.call_count, 0 if stage == "pre_write" else 1)
+                timeout.assert_called_once_with(session.control)
+                self.assertEqual(state.errors, [])
+                self.assertEqual(state._wire_bytes, 0 if stage == "pre_write" else len(b"530 Login incorrect\r\n"))
+
+    def test_denial_cache_is_inert_for_other_epochs_credentials_and_reply_bytes(self):
+        for epoch, password in ((1, B), (2, B), (3, A)):
+            state, server = self.server(); session, raw = self.session(server)
+            state.epoch = session.epoch = epoch; session.user = USER.encode()
+            server._dispatch(session, "PASS", password.encode())
+            self.assertIsNone(state._denial_send)
+            self.assertIsNone(session.control._denial_send)
+            self.assertEqual(raw.output, b"530 Login incorrect\r\n")
+        state, server = self.server(); session, raw = self.session(server)
+        state.epoch = session.epoch = 2
+        ordinal = state._event("denied_a", session.number)
+        server._denial_begin(session, "a", ordinal)
+        before = state._denial_send
+        server._send(session.control, b"221 Goodbye\r\n")
+        self.assertIs(state._denial_send, before)
+        server._denial_seen(session.control, b"530 Login incorrect\r\n", "PRIVATE_CANARY")
+        self.assertIs(state._denial_send, before)
+
+    def test_cache_assignment_baseexceptions_do_not_replace_send_outcomes(self):
+        for failed_write in (False, True):
+            state, server = self.server(); session, raw = self.session(server)
+            state.epoch = session.epoch = 2; session.user = USER.encode()
+            original = SystemExit("PRIVATE-original")
+            actual_setattr = F._Socket.__setattr__
+            def broken_setattr(item, key, value):
+                if key == "_denial_send":
+                    raise KeyboardInterrupt("PRIVATE-cache")
+                return actual_setattr(item, key, value)
+            with mock.patch.object(F._Socket, "__setattr__", broken_setattr), \
+                 mock.patch.object(raw, "sendall", side_effect=original if failed_write else None) as send:
+                if failed_write:
+                    with self.assertRaises(SystemExit) as caught:
+                        server._dispatch(session, "PASS", A.encode())
+                    self.assertIs(caught.exception, original)
+                else:
+                    server._dispatch(session, "PASS", A.encode())
+                send.assert_called_once_with(b"530 Login incorrect\r\n")
+            self.assertIsNone(state._denial_send)
+            self.assertEqual(state.errors, [])
+
+
 if __name__ == "__main__":
     unittest.main()

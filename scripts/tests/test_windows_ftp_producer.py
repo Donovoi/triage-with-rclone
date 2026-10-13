@@ -281,11 +281,15 @@ class DenialDiagnosticTests(unittest.TestCase):
         self.assertEqual(good, dict(schema_version=1, case="revoked_a", stage="manifest_denial",
             error_is_string=True, error_within_bound=True, error_text_valid=True, cannot_stat_prefix=True,
             line_limit_ok=True, notice_count=1, final_notice_grammar=True, expected_cause_equal=True,
-            expected_connection_prefix_equal=True, terminal_category="login_incorrect"))
+            expected_connection_prefix_equal=True, terminal_category="login_incorrect",
+            terminal_reply_prefix=True, terminal_contains_reply=True, terminal_length_relation="equal",
+            terminal_detail="login_incorrect"))
         for value, changed in (
             (self.value.replace(":2121", ":2122"), {"expected_cause_equal": False,
                                                    "expected_connection_prefix_equal": False, "terminal_category": None}),
-            (self.value.replace("530 Login", "531 Login"), {"expected_cause_equal": False, "terminal_category": "other"}),
+            (self.value.replace("530 Login", "531 Login"), {"expected_cause_equal": False, "terminal_category": "other",
+                "terminal_reply_prefix": False, "terminal_contains_reply": False,
+                "terminal_length_relation": "equal", "terminal_detail": "other"}),
             ("Cannot stat source: " + self.notice + "PRIVATE_CANARY\n" + self.notice + self.cause,
              {"notice_count": 2}),
             (self.value.replace("2026/10/12", "PRIVATE_CANARY"),
@@ -301,7 +305,9 @@ class DenialDiagnosticTests(unittest.TestCase):
               "expected_connection_prefix_equal": None, "terminal_category": None}),
         ):
             with self.subTest(changed=changed):
-                expected = dict(good, **changed)
+                expected = dict(good, terminal_reply_prefix=None, terminal_contains_reply=None,
+                                terminal_length_relation=None, terminal_detail=None)
+                expected.update(changed)
                 self.assertEqual(self.projected(P.denial_error_diagnostic, value, self.cause), expected)
 
     def test_error_type_bounds_and_private_objects_are_not_stringified(self):
@@ -436,7 +442,9 @@ class DenialDiagnosticTests(unittest.TestCase):
     def test_fixture_busy_or_malformed_state_has_no_invented_counters(self):
         unavailable = dict(schema_version=1, case="revoked_a", stage="manifest_denial", epoch=2,
                            timing="after_fixture_teardown_attempt", fixture_cleanup_complete=False,
-                           snapshot_available=False, availability_reason=None, counts=None, errors=None)
+                           snapshot_available=False, availability_reason=None, counts=None, errors=None,
+                           denial_send_availability="snapshot_unavailable", denial_sendall_attempted=None,
+                           denial_sendall_returned=None)
         for reason, mutate in (
                 ("epoch_invalid", lambda s: setattr(s, "epoch", True)), ("epoch_invalid", lambda s: setattr(s, "epoch", 3)),
                 ("events_shape", lambda s: setattr(s, "events", ())),
@@ -589,6 +597,88 @@ class DenialDiagnosticTests(unittest.TestCase):
                     self.assertIs(record["fixture_cleanup_complete"], expected_closed)
                     self.assertEqual(record["availability_reason"], "available")
                     self.assertEqual(record["counts"]["denied_a"], 1)
+
+
+    def test_source_pinned_terminal_details_are_observations_never_accepted_causes(self):
+        cases = {
+            "530 Login incorrect": "login_incorrect", "530 Login required": "login_required",
+            "Login incorrect": "login_message_only", "EOF": "eof_text", "unexpected EOF": "unexpected_eof_text",
+            "i/o timeout": "io_timeout_text", "use of closed network connection": "closed_connection_text",
+            "context canceled": "context_canceled_text", "context deadline exceeded": "context_deadline_text",
+            "short response: PRIVATE_CANARY": "textproto_short_response",
+            "invalid response code: PRIVATE_CANARY": "textproto_invalid_code",
+            "PRIVATE_CANARY": "other", "531 Login incorrect": "other", "530 Login incorrect ": "other",
+            "context canceled PRIVATE_CANARY": "other", "x: context canceled": "other",
+            "PRIVATE_CANARY EOF": "other", "x: EOF PRIVATE_CANARY": "other", "x: i/o timeout ": "other",
+            "short response PRIVATE_CANARY": "other", "x short response: PRIVATE_CANARY": "other",
+        }
+        for text, detail in (("EOF", "eof_text"), ("unexpected EOF", "unexpected_eof_text"),
+                             ("i/o timeout", "io_timeout_text"), ("use of closed network connection", "closed_connection_text")):
+            cases["read tcp PRIVATE_CANARY: " + text] = detail
+        for terminal, detail in cases.items():
+            with self.subTest(detail=detail):
+                value = self.value.replace("530 Login incorrect", terminal)
+                record = self.projected(P.denial_error_diagnostic, value, self.cause)
+                self.assertEqual(record["terminal_detail"], detail)
+                self.assertIs(record["terminal_reply_prefix"], terminal.startswith("530 "))
+                self.assertIs(record["terminal_contains_reply"], "530 Login incorrect" in terminal)
+                self.assertEqual(record["terminal_length_relation"], "shorter" if len(terminal) < 19 else
+                                 "equal" if len(terminal) == 19 else "longer")
+                self.assertIs(P.W.exact_rc_error(value, self.cause, stat=True), terminal == "530 Login incorrect")
+
+    def test_new_terminal_fields_stay_unknown_without_unique_bound_notice(self):
+        for value in (self.notice + self.cause, self.value.replace(":2121", ":2122"),
+                      self.value + self.notice + self.cause, None, 3, True, float("nan"), float("inf"),
+                      self.value + "\r", self.value + "\0", self.value.replace("NOTICE", "PRIVATE_CANARY")):
+            record = self.projected(P.denial_error_diagnostic, value, self.cause)
+            for key in ("terminal_reply_prefix", "terminal_contains_reply", "terminal_length_relation", "terminal_detail"):
+                self.assertIsNone(record[key])
+
+    def test_send_cache_binding_unknown_failure_success_and_ambiguity(self):
+        state = self.state()
+        self.assertEqual(self.projected(P.denial_fixture_diagnostic, state, True)["denial_send_availability"], "cache_unavailable")
+        decision = state.events[-1]
+        for attempted, returned in ((None, None), (True, None), (True, False), (True, True)):
+            state._denial_send = (2, decision["ordinal"], decision["session"], attempted, returned)
+            record = self.projected(P.denial_fixture_diagnostic, state, True)
+            self.assertEqual(record["denial_send_availability"], "available")
+            self.assertIs(record["denial_sendall_attempted"], attempted)
+            self.assertIs(record["denial_sendall_returned"], returned)
+        for cache in (None, {}, [2, 20, 3, True, True], (True, 20, 3, True, True),
+                      (2, True, 3, True, True), (2, 20, True, True, True), (3, 20, 3, True, True),
+                      (2, 19, 3, True, True), (2, 20, 4, True, True), (2, 20, 3, False, False),
+                      (2, 20, 3, None, True), (2, 20, 3, 1, True), (2, 20, 3, True, 1),
+                      (2, 20, 3, True, "PRIVATE_CANARY"), (2, 20, 3, True, float("nan")),
+                      (2, 20, 3, True, float("inf")), (2, 20, 3, True, True, "PRIVATE_CANARY")):
+            state._denial_send = cache
+            record = self.projected(P.denial_fixture_diagnostic, state, True)
+            self.assertEqual(record["denial_send_availability"], "cache_unavailable")
+            self.assertIsNone(record["denial_sendall_attempted"])
+            self.assertIsNone(record["denial_sendall_returned"])
+        state._denial_send = (2, decision["ordinal"], decision["session"], True, True)
+        state._event("denied_a", 4)
+        record = self.projected(P.denial_fixture_diagnostic, state, True)
+        self.assertEqual(record["denial_send_availability"], "ambiguous")
+        self.assertIsNone(record["denial_sendall_returned"])
+        empty = P.F.AppFtpState("PRIVATE_CANARY", "A", password_b="B"); empty.epoch = 2
+        empty._denial_send = state._denial_send
+        self.assertEqual(self.projected(P.denial_fixture_diagnostic, empty, True)["denial_send_availability"], "not_observed")
+
+    def test_maximal_closed_records_and_baseexception_diagnostics_remain_bounded(self):
+        state = self.state(); state.errors = sorted(P.F.ERROR_CODES)
+        decision = state.events[-1]
+        state._denial_send = (2, decision["ordinal"], decision["session"], True, False)
+        self.projected(P.denial_fixture_diagnostic, state, False)
+        self.projected(P.denial_error_diagnostic, self.value.replace("530 Login incorrect", "invalid response code: PRIVATE_CANARY"), self.cause)
+        class BrokenState(P.F.AppFtpState):
+            pass
+        # Exact type checking rejects foreign state; invalid private cache never stringifies.
+        self.assertEqual(self.projected(P.denial_fixture_diagnostic, BrokenState("u", "a", password_b="b"), True)["availability_reason"], "state_type")
+        for function, args in ((P.denial_error_diagnostic, (self.value, self.cause)), (P.denial_fixture_diagnostic, (state, True))):
+            with patch("builtins.print", side_effect=KeyboardInterrupt("PRIVATE_CANARY")):
+                function(*args)
+            with patch.object(P.E, "compact", side_effect=SystemExit("PRIVATE_CANARY")):
+                function(*args)
 
 
 if __name__ == "__main__":
