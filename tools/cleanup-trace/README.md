@@ -53,7 +53,42 @@ field; no identifiers, paths, timestamps or raw events are exposed. They remain
 their order are unchanged. The old `correlation_missing_or_ambiguous` reason is
 still accepted for historical records; it cannot be refined retroactively.
 Absence of a selected start does not identify a decoder, path, thread or timing
-cause. Native collection, session cleanup, bounds and retry behavior are unchanged.
+cause. The original correlation gates, session cleanup and retry behavior are unchanged.
+
+Schema 2 adds a diagnostic-only `ownership` object for `correlation_end_multiple`;
+it is null for other reasons. Historical schema 1 remains readable. The original
+model, main counts and status are unchanged: even an observed sequential reuse
+chain leaves the trace unavailable. No supplemental field can qualify attribution.
+
+The supplemental collector reserves 8,192 combined begin/end entries, independently
+of the original caps. It observes named IrpPtr properties for documented classic
+FileIo Create, SimpleOp, ReadWrite, Info and DirEnum starts, plus the original
+OperationEnd values. Selected Creates reuse original decoded values; other paths
+are never retained. Version 2/3, 64-bit headers and exact eight-byte nonzero pointers
+are required. Known name-only events supply no beginnings. Unknown opcodes,
+unsupported metadata, allocation/entry limits, loss, uncertain order/window or
+teardown leave the witness unavailable with null observations. No extra provider,
+thread, lock, handle or wait is introduced; additional TDH decoding changes observer
+overhead and cannot be assumed timing-neutral.
+
+Analysis uses the selected IRP from the first multiple-end interval rejected by
+the original model. Every relevant end must remain in the observed stream. Strict
+callback/QPC order and a closed alternating begin/end chain can show sequential
+reuse across non-selected Creates or other operations. An extra end without an
+observed begin remains unexplained, not a proven duplicate. Overlapping beginnings
+or an incomplete chain retain observed start/end totals but null pair attribution.
+The entire observed pre-window prefix must also establish a closed boundary;
+an earlier orphan end, overlapping begin or remaining open begin leaves it unknown.
+An available supplemental collection does not mean available main correlation.
+No identifiers, paths or raw events are emitted; the existing 4,096-byte record cap
+and cleanup/time limits remain in force. File-object or holder attribution is not
+attempted. See Microsoft [FileIo classes](https://learn.microsoft.com/en-us/windows/win32/etw/fileio)
+and [OperationEnd](https://learn.microsoft.com/en-us/windows/win32/etw/fileio-opend).
+
+Pure Rust checks can compile an entry point containing only `model.rs` and
+`ownership.rs`; neither imports or starts the native collector. The Python tests
+also validate the closed supplemental schema and unchanged unavailable outcome.
+Compile-only Windows checks do not establish native event delivery or ownership.
 
 Only a failed original OS32 removal together with a bound sharing-violation open
 can produce `observed`. A successful open followed by OS32 remains unattributed:
