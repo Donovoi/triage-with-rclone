@@ -556,6 +556,66 @@ jobs:
             rclone-version.env
           if-no-files-found: error
           retention-days: 14
+  windows-b2:
+    name: Windows B2 token replacement experiment
+    needs: test
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        timeout-minutes: 2
+        with:
+          name: rclone-triage-windows
+          path: ${{ runner.temp }}/b2-build
+      - name: Check B2 token replacement and download-cap denial with the Windows application
+        id: b2_cases
+        timeout-minutes: 8
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:GITHUB_ACTIONS -cne 'true' -or $env:RUNNER_ENVIRONMENT -cne 'github-hosted') { throw 'b2_hosted_required' }
+          $application = (Resolve-Path "$env:RUNNER_TEMP/b2-build/rclone-triage/target/release/rclone-triage.exe").Path
+          $buildCommit = (& git rev-parse --verify HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $buildCommit -cnotmatch '^[0-9a-f]{40}$' -or $env:GITHUB_SHA -cne $buildCommit) { throw 'b2_build_binding_failed' }
+          $expectedPins = (Get-FileHash -LiteralPath rclone-version.env -Algorithm SHA256).Hash
+          if ((Get-FileHash -LiteralPath "$env:RUNNER_TEMP/b2-build/rclone-version.env" -Algorithm SHA256).Hash -cne $expectedPins) { throw 'b2_runtime_binding_failed' }
+          $applicationHash = (Get-FileHash -LiteralPath $application -Algorithm SHA256).Hash.ToLowerInvariant()
+          python -B scripts/application-lab/run_windows_b2.py `
+            --application $application --application-sha256 $applicationHash --build-commit $buildCommit `
+            --report "$env:RUNNER_TEMP/b2.private.json"
+          if ($LASTEXITCODE -ne 0) { throw 'b2_cases_failed' }
+      - name: Independently validate B2 experiment evidence
+        id: b2_validation
+        if: ${{ !cancelled() && (steps.b2_cases.outcome == 'success' || steps.b2_cases.outcome == 'failure') }}
+        timeout-minutes: 3
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:GITHUB_ACTIONS -cne 'true' -or $env:RUNNER_ENVIRONMENT -cne 'github-hosted') { throw 'b2_hosted_required' }
+          $application = (Resolve-Path "$env:RUNNER_TEMP/b2-build/rclone-triage/target/release/rclone-triage.exe").Path
+          $buildCommit = (& git rev-parse --verify HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $buildCommit -cnotmatch '^[0-9a-f]{40}$' -or $env:GITHUB_SHA -cne $buildCommit) { throw 'b2_build_binding_failed' }
+          $expectedPins = (Get-FileHash -LiteralPath rclone-version.env -Algorithm SHA256).Hash
+          if ((Get-FileHash -LiteralPath "$env:RUNNER_TEMP/b2-build/rclone-version.env" -Algorithm SHA256).Hash -cne $expectedPins) { throw 'b2_runtime_binding_failed' }
+          python -B scripts/b2_application_evidence.py `
+            --receipt "$env:RUNNER_TEMP/b2.private.json" --application $application `
+            --build-commit $buildCommit --report "$env:RUNNER_TEMP/b2-validation.json"
+          if ($LASTEXITCODE -ne 0) { throw 'b2_evidence_failed' }
+      - name: Retain only validated B2 experiment evidence
+        if: ${{ !cancelled() && (steps.b2_validation.outcome == 'success' || steps.b2_validation.outcome == 'failure') }}
+        timeout-minutes: 2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: b2-experiment-Windows
+          path: ${{ runner.temp }}/b2-validation.json
+          if-no-files-found: error
+          retention-days: 14
   windows-filesystem:
     name: Windows filesystem (${{ matrix.backend }})
     needs: test
@@ -564,7 +624,7 @@ jobs:
       matrix:
         backend: [local, archive]
     runs-on: windows-latest
-    timeout-minutes: 35
+    timeout-minutes: 50
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -614,12 +674,50 @@ jobs:
             --backend $env:FILESYSTEM_BACKEND --receipt "$env:RUNNER_TEMP/filesystem.private.json" `
             --application $application --build-commit $buildCommit --report "$env:RUNNER_TEMP/filesystem-validation.json"
           if ($LASTEXITCODE -ne 0) { throw 'filesystem_evidence_failed' }
+      - name: Prepare verified runtime for the filesystem coverage ledger
+        id: filesystem_runtime
+        if: ${{ !cancelled() && steps.filesystem_validation.outcome == 'success' }}
+        timeout-minutes: 3
+        shell: bash
+        run: bash scripts/download-rclone.sh
+      - name: Require the same-build filesystem mode evidence
+        id: filesystem_coverage
+        if: ${{ !cancelled() && steps.filesystem_validation.outcome == 'success' && steps.filesystem_runtime.outcome == 'success' }}
+        timeout-minutes: 3
+        shell: pwsh
+        env:
+          FILESYSTEM_BACKEND: ${{ matrix.backend }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $mode = switch -CaseSensitive ($env:FILESYSTEM_BACKEND) {
+            'local' { 'local:local_filesystem_cli_v1:windows' }
+            'archive' { 'archive:archive_zip_local_cli_v1:windows' }
+            default { throw 'filesystem_mode_unsupported' }
+          }
+          $application = (Resolve-Path "$env:RUNNER_TEMP/filesystem-build/rclone-triage/target/release/rclone-triage.exe").Path
+          $runtime = (Resolve-Path rclone-triage/assets/rclone.exe).Path
+          $buildCommit = (& git rev-parse --verify HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $buildCommit -notmatch '^[0-9a-f]{40}$' -or $env:GITHUB_SHA -cne $buildCommit) { throw 'filesystem_build_binding_failed' }
+          python -B scripts/provider_coverage.py --rclone $runtime `
+            --report "$env:RUNNER_TEMP/provider-evidence-windows-filesystem.json" `
+            --application-receipt "$env:RUNNER_TEMP/filesystem.private.json" `
+            --application $application --application-build-commit $buildCommit `
+            --require-plans --require-application-mode $mode
+          if ($LASTEXITCODE -ne 0) { throw 'filesystem_coverage_failed' }
       - name: Retain only validated filesystem evidence
         if: ${{ !cancelled() && (steps.filesystem_validation.outcome == 'success' || steps.filesystem_validation.outcome == 'failure') }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: filesystem-evidence-Windows-${{ matrix.backend }}
           path: ${{ runner.temp }}/filesystem-validation.json
+          if-no-files-found: error
+          retention-days: 14
+      - name: Retain sanitized filesystem coverage ledger
+        if: ${{ !cancelled() && (steps.filesystem_coverage.outcome == 'success' || steps.filesystem_coverage.outcome == 'failure') }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: provider-evidence-Windows-filesystem-${{ matrix.backend }}
+          path: ${{ runner.temp }}/provider-evidence-windows-filesystem.json
           if-no-files-found: error
           retention-days: 14
   windows-architectures:
@@ -749,7 +847,7 @@ jobs:
           retention-days: 14
   release:
     name: Publish Windows nightly
-    needs: [test, windows-filesystem, windows-architectures, audit, python-audit, smb-protocol, linux-provider-evidence, pcloud-oauth-feasibility, pcloud-oauth-authentication, gcs-oauth-lifecycle]
+    needs: [test, windows-filesystem, windows-b2, windows-architectures, audit, python-audit, smb-protocol, linux-provider-evidence, pcloud-oauth-feasibility, pcloud-oauth-authentication, gcs-oauth-lifecycle]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:

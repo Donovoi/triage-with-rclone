@@ -28,7 +28,11 @@ A new nightly is published after each merged PR passes the required checks. Buil
 
 See [test status and known gaps](rclone-triage/tests/provider_testing.md) for the detailed results.
 
-Current work: check that Dropbox stays signed in and stops cleanly when cancelled. Then continue testing the other providers.
+Local-file and ZIP command tests have passed, including cancellation and cleanup.
+
+Dropbox download cancellation and two B2 download checks have passed on their tested Windows builds. The B2 checks used a local test server.
+
+Current work: fix Windows test startup and cleanup failures, check FTP recovery after a lost connection, and finish Dropbox tests.
 
 ## What comes next
 
