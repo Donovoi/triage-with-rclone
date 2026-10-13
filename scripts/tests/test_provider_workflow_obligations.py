@@ -9,6 +9,45 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class WorkflowObligationTests(unittest.TestCase):
+    def full_profile_gates(self, text, filename):
+        gates = [step for step in re.split(r"(?m)^      - ", text) if "--require-fixtures" in step]
+        scoped_count = 0
+        if filename == "ci.yml":
+            job = text.split("  windows-filesystem:\n", 1)[1].split("  windows-architectures:\n", 1)[0]
+            scoped = [step for step in re.split(r"(?m)^      - ", job) if "--require-fixtures" in step]
+            self.assertEqual(len(scoped), 1, "Exactly one filesystem matrix gate is required")
+            self.assertEqual(scoped[0].splitlines()[0], "name: Require the same-build filesystem mode evidence")
+            self.assertEqual(re.findall(r"^        backend: (.+)$", job, re.MULTILINE), ["[local, archive]"])
+            self.assertEqual(re.findall(r"^          FILESYSTEM_BACKEND: (.+)$", scoped[0], re.MULTILINE),
+                             ["${{ matrix.backend }}"])
+            self.assertEqual(re.findall(r"--require-fixtures\s+(\S+)", scoped[0]), ["$env:FILESYSTEM_BACKEND"])
+            gates = [step for step in gates if step != scoped[0]]
+            scoped_count = 1
+        # The scoped matrix is additional coverage. It cannot replace any full
+        # profile list, and unrecognized variables or duplicate flags fail.
+        full_text = "\n".join(gates)
+        values = re.findall(r"--require-fixtures\s+([a-z0-9_,]+)(?=\s|$)", full_text)
+        self.assertEqual(len(values), full_text.count("--require-fixtures"), filename)
+        self.assertEqual(len(values) + scoped_count, text.count("--require-fixtures"), filename)
+        return gates, values
+
+    def test_unknown_or_changed_scoped_fixture_gates_are_rejected(self):
+        text = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        self.full_profile_gates(text, "ci.yml")
+        for original, changed in (
+            ("backend: [local, archive]", "backend: [local, archive, http]"),
+            ("FILESYSTEM_BACKEND: ${{ matrix.backend }}", "FILESYSTEM_BACKEND: local"),
+            ("--require-fixtures $env:FILESYSTEM_BACKEND", "--require-fixtures $env:OTHER_BACKEND"),
+            ("--require-fixtures $env:FILESYSTEM_BACKEND", ""),
+            ("--require-fixtures $env:FILESYSTEM_BACKEND", "--require-fixtures local,archive"),
+            ("--require-fixtures $env:FILESYSTEM_BACKEND", "--require-fixtures $env:FILESYSTEM_BACKEND --require-fixtures local"),
+            ("name: Require the same-build filesystem mode evidence", "name: Unrecognized scoped gate"),
+        ):
+            with self.subTest(mutation=original), self.assertRaises(AssertionError):
+                self.full_profile_gates(text.replace(original, changed), "ci.yml")
+        with self.assertRaises(AssertionError):
+            self.full_profile_gates(text + "\n      - run: importer --require-fixtures $env:UNREVIEWED\n", "ci.yml")
+
     def test_application_gate_uses_workspace_absolute_binary_paths(self):
         text = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
         steps = re.split(r"(?m)^      - ", text)
@@ -78,10 +117,8 @@ class WorkflowObligationTests(unittest.TestCase):
         self.assertTrue(required)
         for filename, exceptions in unresolved.items():
             text = (ROOT / ".github" / "workflows" / filename).read_text(encoding="utf-8")
-            gates = [step for step in re.split(r"(?m)^      - ", text) if "--require-fixtures" in step]
+            gates, values = self.full_profile_gates(text, filename)
             self.assertEqual(text.count("--require-gcs-static-token"), 2 if filename == "ci.yml" else 0)
-            values = re.findall(r"--require-fixtures\s+([a-z0-9_,]+)(?=\s|$)", text)
-            self.assertEqual(len(values), text.count("--require-fixtures"), filename)
             self.assertEqual(len(values), len(exceptions), filename)
             for index, (value, missing) in enumerate(zip(values, exceptions)):
                 with self.subTest(workflow=filename, gate=index):
