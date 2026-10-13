@@ -62,6 +62,26 @@ def mark(record, code, errors):
         errors.append(code)
 
 
+def denial_terminal_detail(terminal):
+    # Text observations only; never accepted causes. Pinned Go 1.26 io/context,
+    # internal/poll, net.OpError and textproto reader; jlaffaye/ftp 6602e981 Login.
+    exact = {"530 Login incorrect": "login_incorrect", "530 Login required": "login_required",
+             "Login incorrect": "login_message_only", "context canceled": "context_canceled_text",
+             "context deadline exceeded": "context_deadline_text"}
+    if terminal in exact:
+        return exact[terminal]
+    for text, category in (("EOF", "eof_text"), ("unexpected EOF", "unexpected_eof_text"),
+                           ("i/o timeout", "io_timeout_text"),
+                           ("use of closed network connection", "closed_connection_text")):
+        if terminal == text or terminal.endswith(": " + text):
+            return category
+    for prefix, category in (("short response: ", "textproto_short_response"),
+                             ("invalid response code: ", "textproto_invalid_code")):
+        if terminal.startswith(prefix):
+            return category
+    return "other"
+
+
 def denial_error_diagnostic(value, cause):
     """Failure-only shape observations; never publish the error or endpoint."""
     try:
@@ -70,7 +90,9 @@ def denial_error_diagnostic(value, cause):
             error_within_bound=type(value) is str and 0 < len(value) <= 65536,
             error_text_valid=False, cannot_stat_prefix=None, line_limit_ok=None,
             notice_count=None, final_notice_grammar=None, expected_cause_equal=None,
-            expected_connection_prefix_equal=None, terminal_category=None)
+            expected_connection_prefix_equal=None, terminal_category=None,
+            terminal_reply_prefix=None, terminal_contains_reply=None, terminal_length_relation=None,
+            terminal_detail=None)
         if record["error_within_bound"]:
             record["error_text_valid"] = "\x00" not in value and "\r" not in value
             if record["error_text_valid"]:
@@ -94,6 +116,13 @@ def denial_error_diagnostic(value, cause):
                                     terminal = match[1][len(connection[1]):]
                                     record["terminal_category"] = {"530 Login incorrect": "login_incorrect",
                                         "530 Login required": "login_required"}.get(terminal, "other")
+                                    if record["notice_count"] == 1:
+                                        reply = "530 Login incorrect"
+                                        record.update(terminal_reply_prefix=terminal.startswith("530 "),
+                                            terminal_contains_reply=reply in terminal,
+                                            terminal_length_relation=("shorter" if len(terminal) < len(reply) else
+                                                                      "equal" if len(terminal) == len(reply) else "longer"),
+                                            terminal_detail=denial_terminal_detail(terminal))
         line = "application_ftp_denial_error=" + E.compact(record).decode("ascii")
         if len(line.encode("ascii")) + 1 <= 1024:
             print(line, flush=True)
@@ -108,7 +137,9 @@ def denial_fixture_diagnostic(state, closed):
             return
         record = dict(schema_version=1, case="revoked_a", stage="manifest_denial",
                       timing="after_fixture_teardown_attempt", fixture_cleanup_complete=closed,
-                      epoch=2, snapshot_available=False, availability_reason="state_type", counts=None, errors=None)
+                      epoch=2, snapshot_available=False, availability_reason="state_type", counts=None, errors=None,
+                      denial_send_availability="snapshot_unavailable", denial_sendall_attempted=None,
+                      denial_sendall_returned=None)
         if type(state) is F.AppFtpState:
             record["availability_reason"] = "lock_busy"
         if type(state) is F.AppFtpState and state.lock.acquire(blocking=False):
@@ -134,6 +165,18 @@ def denial_fixture_diagnostic(state, closed):
                              "denied_other", "transfer_start", "content_sent")
                     record.update(snapshot_available=True, availability_reason="available", errors=sorted(errors),
                         counts={kind: sum(e["epoch"] == 2 and e["kind"] == kind for e in events) for kind in kinds})
+                    denied = [e for e in events if e["epoch"] == 2 and e["kind"] == "denied_a"]
+                    record["denial_send_availability"] = "not_observed" if not denied else "ambiguous"
+                    if len(denied) == 1:
+                        witness = getattr(state, "_denial_send", None)
+                        record["denial_send_availability"] = "cache_unavailable"
+                        if (type(witness) is tuple and len(witness) == 5 and
+                                all(type(v) is int for v in witness[:3]) and
+                                witness[:3] == (2, denied[0]["ordinal"], denied[0]["session"]) and
+                                ((witness[3] is None and witness[4] is None) or
+                                 (witness[3] is True and (witness[4] is None or type(witness[4]) is bool)))):
+                            record.update(denial_send_availability="available",
+                                          denial_sendall_attempted=witness[3], denial_sendall_returned=witness[4])
             finally:
                 state.lock.release()
         line = "application_ftp_denial_fixture=" + E.compact(record).decode("ascii")

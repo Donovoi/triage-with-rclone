@@ -88,6 +88,7 @@ class AppFtpState:
         self._served = False
         self._transport = None
         self._transport_attempted = False
+        self._denial_send = None  # Diagnostic-only immutable cache; not fixture evidence.
         self._gates = ({name: {"entered": None, "released": False, "event": threading.Event()}
                         for name in GATES} if continuity_gates else None)
 
@@ -190,6 +191,7 @@ class _Socket:
         self.server, self.raw, self.kind, self.session = server, raw, kind, session
         self.attempted = self.closed = self.uncertain = False
         self.lock = threading.Lock()
+        self._denial_send = None
 
     def close(self, *, fin=False):
         with self.lock:
@@ -266,13 +268,48 @@ class _Server:
         self.live()
         resource.raw.settimeout(min(IO_SECONDS, self.deadline - time.monotonic()))
 
+    def _denial_begin(self, session, role, ordinal):
+        try:
+            if self.state.epoch == session.epoch == 2 and role == "a":
+                witness = (2, ordinal, session.number, None, None)
+                session.control._denial_send = witness
+                self.state._denial_send = witness
+        except BaseException:
+            pass
+
+    def _denial_seen(self, resource, value, outcome):
+        try:
+            witness = resource._denial_send
+            if (type(witness) is tuple and len(witness) == 5 and witness is self.state._denial_send and
+                    self.state.epoch == 2 and value == b"530 Login incorrect\r\n" and
+                    outcome in {"attempted", "returned", "raised"}):
+                # Replace the immutable record; do not infer failure from a missing update.
+                updated = witness[:3] + (True, None if outcome == "attempted" else outcome == "returned")
+                resource._denial_send = updated
+                self.state._denial_send = updated
+        except BaseException:
+            pass
+
+    def _denial_end(self, resource):
+        try:
+            resource._denial_send = None
+        except BaseException:
+            pass
+
     def _send(self, resource, value):
         self._timeout(resource)
         with self.state.lock:
             if self.state._wire_bytes + len(value) > MAX_WIRE_BYTES:
                 raise self.state.fail("limit_exceeded")
             self.state._wire_bytes += len(value)
-        resource.raw.sendall(value)
+        self._denial_seen(resource, value, "attempted")
+        try:
+            resource.raw.sendall(value)
+        except BaseException:
+            self._denial_seen(resource, value, "raised")
+            raise
+        else:
+            self._denial_seen(resource, value, "returned")
         self.live()
 
     def _reply(self, session, value):
@@ -506,8 +543,12 @@ class _Server:
                 session.auth_event = self.state._event("login_" + role, session.number)
                 self._reply(session, b"230 Logged in\r\n")
             else:
-                self.state._event("denied_" + role, session.number)
-                self._reply(session, b"530 Login incorrect\r\n")
+                ordinal = self.state._event("denied_" + role, session.number)
+                self._denial_begin(session, role, ordinal)
+                try:
+                    self._reply(session, b"530 Login incorrect\r\n")
+                finally:
+                    self._denial_end(session.control)
             return
         if verb == "QUIT" and not argument:
             self._reply(session, b"221 Goodbye\r\n")
