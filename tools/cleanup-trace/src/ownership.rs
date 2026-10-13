@@ -5,7 +5,11 @@ pub const MAX_EVENTS: usize = 8192;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Reason {
     Schema,
-    UnsupportedOpcode,
+    UnsupportedOpcode {
+        opcode: u8,
+        version: u8,
+        header_flags: u16,
+    },
     EventLoss,
     Budget,
     Order,
@@ -16,7 +20,7 @@ impl Reason {
     fn label(self) -> &'static str {
         match self {
             Self::Schema => "schema",
-            Self::UnsupportedOpcode => "unsupported_opcode",
+            Self::UnsupportedOpcode { .. } => "unsupported_opcode",
             Self::EventLoss => "event_loss",
             Self::Budget => "budget",
             Self::Order => "order",
@@ -41,7 +45,11 @@ pub fn kind(opcode: u8, version: u8, flags: u16) -> Result<Option<Kind>, Reason>
         64 => Ok(Some(Kind::Create)),
         65 | 66 | 67 | 68 | 69 | 70 | 71 | 72 | 73 | 74 | 75 | 77 => Ok(Some(Kind::Other)),
         76 => Ok(Some(Kind::End)),
-        _ => Err(Reason::UnsupportedOpcode),
+        _ => Err(Reason::UnsupportedOpcode {
+            opcode,
+            version,
+            header_flags: flags,
+        }),
     }
 }
 /// Fakeable TDH boundary: one size query, exact pointer width, at most one read.
@@ -352,15 +360,60 @@ mod tests {
                         assert_eq!(result, Ok(Some(Kind::Other)))
                     }
                     76 => assert_eq!(result, Ok(Some(Kind::End))),
-                    _ => assert_eq!(result, Err(Reason::UnsupportedOpcode)),
+                    _ => assert_eq!(
+                        result,
+                        Err(Reason::UnsupportedOpcode {
+                            opcode,
+                            version,
+                            header_flags: 0x40,
+                        })
+                    ),
                 }
             }
         }
         for version in [0, 1, 4, 255] {
             assert_eq!(kind(64, version, 0x40), Err(Reason::Schema));
+            assert_eq!(kind(255, version, 0x40), Err(Reason::Schema));
         }
         for flags in [0, 0x20, 0x60] {
             assert_eq!(kind(64, 3, flags), Err(Reason::Schema));
+            assert_eq!(kind(255, 3, flags), Err(Reason::Schema));
+        }
+    }
+    #[test]
+    fn first_rejection_retains_only_its_own_header() {
+        let first = kind(255, 2, 0x8040).unwrap_err();
+        let later = kind(254, 3, 0x40).unwrap_err();
+        for initial in [first, Reason::Budget, Reason::Schema] {
+            let mut buffer = Buffer::default();
+            buffer.reject(initial);
+            buffer.reject(later);
+            buffer.reject(Reason::Order);
+            assert!(!buffer.active());
+            assert_eq!(buffer.error, Some(initial));
+            let report = buffer.report(&[], &[], Err("unobserved"), None);
+            assert_eq!(report, Report::Unavailable(initial));
+            if initial == first {
+                assert!(report.json().ends_with(
+                    "\"rejection\":{\"opcode\":255,\"version\":2,\"header_flags\":32832}}"
+                ));
+            } else {
+                assert!(report.json().ends_with("\"rejection\":null}"));
+            }
+        }
+    }
+    #[test]
+    fn overriding_uncertainty_cannot_reuse_unsupported_metadata() {
+        let unsupported = Report::Unavailable(kind(255, 3, 0x40).unwrap_err());
+        for reason in [
+            Reason::Teardown,
+            Reason::EventLoss,
+            Reason::Budget,
+            Reason::Window,
+        ] {
+            let overridden = Report::Unavailable(reason);
+            assert_ne!(overridden, unsupported);
+            assert!(overridden.json().ends_with("\"rejection\":null}"));
         }
     }
     #[test]
@@ -403,7 +456,7 @@ mod tests {
         use Kind::*;
         for reason in [
             Reason::Schema,
-            Reason::UnsupportedOpcode,
+            kind(255, 3, 0x40).unwrap_err(),
             Reason::EventLoss,
             Reason::Budget,
             Reason::Order,
@@ -423,7 +476,12 @@ mod tests {
             assert_eq!(buffer.events.len(), length);
             let report = report(&buffer, &starts, &ends, Ok((1, after, 3)));
             assert_eq!(report, Report::Unavailable(reason));
-            assert_eq!(report.json().matches("null").count(), 6);
+            let expected_nulls = if matches!(reason, Reason::UnsupportedOpcode { .. }) {
+                6
+            } else {
+                7
+            };
+            assert_eq!(report.json().matches("null").count(), expected_nulls);
         }
     }
     #[test]
@@ -640,11 +698,27 @@ pub enum Report {
 impl Report {
     pub fn json(self) -> String {
         match self {
-            Self::Unavailable(reason) => format!(
-                "{{\"availability\":\"unavailable\",\"reason\":\"{}\",\"pattern\":null,\"starts\":null,\"ends\":null,\"complete_pairs\":null,\"nonselected_create_pairs\":null,\"other_operation_pairs\":null}}", reason.label()),
-            Self::Observed { pattern, starts, ends, pairs } => {
-                let count = |value: Option<u32>| value.map_or_else(|| "null".into(), |v| v.to_string());
-                format!("{{\"availability\":\"available\",\"reason\":\"none\",\"pattern\":\"{}\",\"starts\":{},\"ends\":{},\"complete_pairs\":{},\"nonselected_create_pairs\":{},\"other_operation_pairs\":{}}}",
+            Self::Unavailable(reason) => {
+                // The first reason owns this header atomically. These primitive
+                // values are unattributed FileIo metadata, never an event identity.
+                let rejection = match reason {
+                    Reason::UnsupportedOpcode { opcode, version, header_flags } => format!(
+                        "{{\"opcode\":{opcode},\"version\":{version},\"header_flags\":{header_flags}}}"
+                    ),
+                    _ => "null".into(),
+                };
+                format!(
+                    "{{\"availability\":\"unavailable\",\"reason\":\"{}\",\"pattern\":null,\"starts\":null,\"ends\":null,\"complete_pairs\":null,\"nonselected_create_pairs\":null,\"other_operation_pairs\":null,\"rejection\":{rejection}}}", reason.label())
+            }
+            Self::Observed {
+                pattern,
+                starts,
+                ends,
+                pairs,
+            } => {
+                let count =
+                    |value: Option<u32>| value.map_or_else(|| "null".into(), |v| v.to_string());
+                format!("{{\"availability\":\"available\",\"reason\":\"none\",\"pattern\":\"{}\",\"starts\":{},\"ends\":{},\"complete_pairs\":{},\"nonselected_create_pairs\":{},\"other_operation_pairs\":{},\"rejection\":null}}",
                     pattern.label(), starts, ends, count(pairs.map(|p| p.complete)),
                     count(pairs.map(|p| p.nonselected_create)), count(pairs.map(|p| p.other)))
             }

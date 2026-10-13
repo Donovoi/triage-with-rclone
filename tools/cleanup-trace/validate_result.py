@@ -41,11 +41,26 @@ def validate_ownership(value, trace):
         return
     if trace["status"] != "unavailable" or trace["counts"] is not None:
         raise ValueError("ownership cannot qualify")
-    if type(value) is not dict or value.keys() != OWNERSHIP_KEYS:
+    keys = OWNERSHIP_KEYS | {"rejection"} if trace["schema"] == 3 else OWNERSHIP_KEYS
+    if type(value) is not dict or value.keys() != keys:
         raise ValueError("ownership shape")
     availability, reason, pattern = (value[key] for key in ("availability", "reason", "pattern"))
     if type(availability) is not str or type(reason) is not str:
         raise ValueError("ownership enum type")
+    if trace["schema"] == 3:
+        rejection = value["rejection"]
+        if availability == "unavailable" and reason == "unsupported_opcode":
+            if type(rejection) is not dict or rejection.keys() != {"opcode", "version", "header_flags"}:
+                raise ValueError("ownership rejection shape")
+            opcode, version, flags = (rejection[k] for k in ("opcode", "version", "header_flags"))
+            if (not uint(opcode, 0xFF) or opcode in {0, 32, 35, 36} or 64 <= opcode <= 77
+                    or not uint(version, 0xFF) or version not in (2, 3)
+                    or not uint(flags, 0xFFFF) or flags & 0x40 == 0 or flags & 0x20 != 0):
+                raise ValueError("ownership unsupported header")
+            if not all(trace[key] for key in BOOLS - {"target_identity_verified"}) or trace["operation_us"] is None:
+                raise ValueError("ownership rejection collection gates")
+        elif rejection is not None:
+            raise ValueError("ownership rejection outside unsupported opcode")
     if availability == "unavailable":
         if reason not in OWNERSHIP_REASONS or pattern is not None or any(value[k] is not None for k in OWNERSHIP_COUNTS):
             raise ValueError("ownership uncertainty")
@@ -147,7 +162,7 @@ def validate(raw, test_exit, expected_runtime):
     if type(value) is not dict:
         raise ValueError("record_shape")
     schema = value.get("schema")
-    if type(schema) is not int or schema not in (1, 2):
+    if type(schema) is not int or schema not in (1, 2, 3):
         raise ValueError("scope")
     if value.keys() != (KEYS if schema == 1 else KEYS | {"ownership"}):
         raise ValueError("record_shape")
@@ -177,7 +192,7 @@ def validate(raw, test_exit, expected_runtime):
             raise ValueError("rejection_cannot_qualify")
     if value["reason"] in CORRELATION_REASONS and (counts is not None or value["schema_rejection"] is not None):
         raise ValueError("correlation rejection has no completed counts or decoder rejection")
-    if schema == 2:
+    if schema >= 2:
         validate_ownership(value["ownership"], value)
     if value["status"] == "unavailable":
         if value["reason"] == "none":
