@@ -854,4 +854,155 @@ class AcquisitionWorkflowTests(unittest.TestCase):
         self.assertIn('fixture.original',unit)
 
 
+class WindowAdmissionTests(unittest.TestCase):
+    def trace(self):
+        return dict(record(), schema=4, ownership=None, capture_contract=V.CAPTURE_CONTRACT)
+
+    def check(self, value, code=101):
+        return V.validate(json.dumps(value).encode(), code, SHA)
+
+    def test_schema4_marker_and_historical_shapes_stay_distinct(self):
+        value = self.trace()
+        self.assertEqual(self.check(value), value)
+        value.update(status="not_reproduced", original_ok=True, os_code=None)
+        self.assertEqual(self.check(value, 0)["status"], "not_reproduced")
+        for schema in (1, 2, 3):
+            old = record()
+            old["schema"] = schema
+            if schema >= 2: old["ownership"] = None
+            self.assertEqual(self.check(old), old)
+            with self.assertRaises(ValueError):
+                self.check(dict(old, capture_contract=V.CAPTURE_CONTRACT))
+        for marker in (None, True, 1, [], {}, "all_lifetime", V.CAPTURE_CONTRACT + " "):
+            with self.subTest(marker=marker), self.assertRaises(ValueError):
+                self.check(dict(self.trace(), capture_contract=marker))
+        missing = self.trace(); del missing["capture_contract"]
+        with self.assertRaises(ValueError): self.check(missing)
+        raw = json.dumps(self.trace()).encode()
+        with self.assertRaises(ValueError):
+            V.validate(raw[:-1] + b',"capture_contract":"window_end_admission_v1"}', 101, SHA)
+
+    def test_closed_admission_reasons_never_qualify_or_leak_payload(self):
+        self.assertEqual(len(V.ADMISSION_REASONS), 11)
+        for reason in V.ADMISSION_REASONS:
+            value = dict(self.trace(), status="unavailable", reason=reason, counts=None)
+            self.assertEqual(self.check(value), value)
+            for field, change in (("counts", record()["counts"]), ("ownership", {}),
+                                  ("schema_rejection", {}), ("status", "observed"),
+                                  ("status", "not_reproduced"), ("private", "canary")):
+                with self.subTest(reason=reason, field=field), self.assertRaises(ValueError):
+                    self.check(dict(value, **{field: change}))
+            for schema in (1, 2, 3):
+                old = dict(value, schema=schema); del old["capture_contract"]
+                if schema == 1: del old["ownership"]
+                with self.assertRaises(ValueError): self.check(old)
+        for reason in ("end_unknown", "END_BOUNDS_INVALID", "end_bounds_invalid ", [], None):
+            with self.assertRaises(ValueError):
+                self.check(dict(self.trace(), status="unavailable", reason=reason, counts=None))
+
+    def test_finish_only_reasons_require_all_nine_capture_flags(self):
+        self.assertEqual(V.FINISH_ONLY_ADMISSION_REASONS, {
+            "end_bounds_unpublished", "end_bounds_mismatch", "end_omission_summary_unavailable",
+            "end_unpublished_omission_unproved", "end_pre_omission_unproved", "end_post_omission_unproved"})
+        self.assertEqual(len(V.BOOLS - {"target_identity_verified"}), 9)
+        for reason in V.FINISH_ONLY_ADMISSION_REASONS:
+            value = dict(self.trace(), status="unavailable", reason=reason, counts=None,
+                         target_identity_verified=False, operation_us=None)
+            self.check(value)
+            for flag in V.BOOLS - {"target_identity_verified"}:
+                with self.subTest(reason=reason, flag=flag), self.assertRaises(ValueError):
+                    self.check(dict(value, **{flag: False}))
+        for reason in V.ADMISSION_REASONS - V.FINISH_ONLY_ADMISSION_REASONS:
+            value = dict(self.trace(), status="unavailable", reason=reason, counts=None)
+            for flag in V.BOOLS: value[flag] = False
+            self.check(value)  # Mixed callback/publisher/final failures retain their wider domain.
+
+    def test_schema4_preserves_ownership_header_and_independent_uncertainty(self):
+        old = OwnershipRejectionTests().trace()
+        value = json.loads(json.dumps(old))
+        value.update(schema=4, capture_contract=V.CAPTURE_CONTRACT)
+        self.assertEqual(self.check(value), value)
+        del value["ownership"]["rejection"]
+        with self.assertRaises(ValueError): self.check(value)
+        self.check(old)
+        for reason, changes in (("event_loss", {"zero_loss": False}),
+                                ("final_bounds_proof_unverified", {"bounded": False}),
+                                ("cleanup_uncertain", {"worker_joined": False})):
+            value = dict(self.trace(), status="unavailable", reason=reason, counts=None, **changes)
+            self.assertEqual(self.check(value)["reason"], reason)
+
+    def test_schema4_keeps_native_exit_runtime_size_and_proof_gates(self):
+        value = self.trace()
+        for flag in V.BOOLS:
+            with self.assertRaises(ValueError): self.check(dict(value, **{flag: False}))
+        for code in (0, 1, True):
+            with self.assertRaises(ValueError): self.check(value, code)
+        with self.assertRaises(ValueError):
+            V.validate(json.dumps(value).encode(), 101, "b" * 64)
+        with self.assertRaises(ValueError):
+            V.validate(json.dumps(value).encode() + b" " * 4096, 101, SHA)
+
+    def test_publication_and_full_capture_source_contracts(self):
+        root = Path(__file__).resolve().parent
+        admission = (root / 'src/admission.rs').read_text()
+        snapshot = admission.split('pub fn snapshot(&self)', 1)[1].split('\n}', 1)[0]
+        self.assertLess(snapshot.index('self.after.load(Ordering::Acquire)'),
+                        snapshot.index('self.before.load(Ordering::Acquire)'))
+        self.assertEqual(admission.count('.compare_exchange(0, value, Ordering::Release, Ordering::Relaxed)'), 2)
+        self.assertIn('self.drained && self.started && self.settings && self.lossless && self.bounded', admission)
+        proof = admission.split('pub fn prove_if_complete(', 1)[1].split('\n}', 1)[0]
+        self.assertLess(proof.index('if !gate.complete()'), proof.index('owner.take()'))
+        native = (root / 'src/native.rs').read_text()
+        measure = native.split('pub fn measure(', 1)[1].split('unsafe fn verify_survivor', 1)[0]
+        self.assertEqual(measure.count('model::original_then(remove,'), 1)
+        self.assertEqual(measure.count('qpc()'), 2)
+        self.assertLess(measure.index('publish_before(value)'), measure.index('model::original_then(remove,'))
+        self.assertLess(measure.index('publish_after(value)'), measure.index('self.verify_survivor()'))
+        self.assertNotIn('return ', measure)
+        self.assertEqual(native.count('model::correlate('), 1)
+        self.assertIn('lossless: self.proof.lossless', native)
+        self.assertIn('bounded: self.proof.bounded', native)
+        self.assertIn('Arc::clone(&self.published)', native)
+
+    def test_native_handoff_and_final_assignment_order_source_contracts(self):
+        source = (Path(__file__).resolve().parent / 'src/native.rs').read_text()
+        callback = source.split('unsafe extern "system" fn on_event', 1)[1].split('unsafe extern "system" fn on_buffer', 1)[0]
+        self.assertLess(callback.index('s.callbacks > MAX_CALLBACKS'), callback.index('match consume(e, s)'))
+        self.assertIn('Ok(decoded_end) => consume_ownership(e, s, prior_starts, decoded_end)', callback)
+        self.assertNotIn('prior_ends', source)
+        self.assertIn('decoded_end.ok_or(OwnershipReason::Schema)?.irp', source)
+        final = source.split('fn finish(', 1)[1]
+        assignments = ['self.reason = Some("cleanup_uncertain")', 'self.reason = Some("event_loss")',
+                       'self.reason = Some("final_bounds_proof_unverified")',
+                       'self.reason = Some("identity_unavailable")', 'self.reason = Some("clock_unavailable")']
+        locations = [final.index(item) for item in assignments]
+        self.assertEqual(locations, sorted(locations))
+        self.assertIn('self.proof.lossless = false', final)
+        self.assertLess(final.index('self.proof.lossless = false'), final.index('lossless: self.proof.lossless'))
+
+    def check_admission_workflow(self, text):
+        command = 'cargo test --manifest-path tools/cleanup-trace/Cargo.toml --locked --lib admission::tests -- --test-threads=1 > $admissionLog 2>&1'
+        self.assertEqual(text.count(command), 1)
+        self.assertIn("if ($LASTEXITCODE -ne 0) { throw 'Pure admission tests failed' }", text)
+        self.assertIn('$admissionCases.Count -ne 24 -or $admissionSummary.Count -ne 1', text)
+        self.assertIn('24 passed; 0 failed; 0 ignored; 0 measured;', text)
+        self.assertIn('.Length -gt 262144', text)
+        self.assertLess(text.index(command), text.index('- name: Prepare matching verified runtime'))
+        self.assertNotIn('Write-Output $admissionOutput', text)
+
+    def test_workflow_runs_exact_authored_pure_count_before_native(self):
+        root = Path(__file__).resolve().parents[2]
+        text = (root / '.github/workflows/original-cleanup-trace.yml').read_text()
+        self.check_admission_workflow(text)
+        tests = (root / 'tools/cleanup-trace/src/admission_tests.rs').read_text()
+        self.assertEqual(tests.count('#[test]'), 24)
+        for old, new in (('--lib admission::tests', '--lib unrelated::tests'),
+                         ('$admissionCases.Count -ne 24', '$admissionCases.Count -ne 0'),
+                         ('24 passed; 0 failed;', '0 passed; 0 failed;'),
+                         ("if ($LASTEXITCODE -ne 0) { throw 'Pure admission tests failed' }", ''),
+                         ('.Length -gt 262144', '.Length -gt 99999999')):
+            with self.subTest(old=old), self.assertRaises(AssertionError):
+                self.check_admission_workflow(text.replace(old, new))
+
+
 if __name__=="__main__":unittest.main()

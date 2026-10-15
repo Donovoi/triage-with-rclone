@@ -21,6 +21,17 @@ BUDGET_BRANCH_REASONS = frozenset((
     "final_bounds_proof_unverified",
 ))
 REASONS = CORRELATION_REASONS | BUDGET_BRANCH_REASONS | frozenset(("none", "unsupported_environment", "identity_unavailable", "budget_exceeded", "schema_unavailable", "clock_unavailable", "correlation_missing_or_ambiguous", "event_loss", "session_collision", "access_denied", "session_unavailable", "consumer_unavailable", "cleanup_uncertain", "session_configuration_mismatch", "operation_not_observed", "status_not_attributed"))
+CAPTURE_CONTRACT = "window_end_admission_v1"
+ADMISSION_REASONS = frozenset((
+    "end_bounds_invalid", "end_bounds_regressed", "end_bounds_changed",
+    "end_bounds_unpublished", "end_bounds_mismatch", "end_timestamp_invalid",
+    "end_omission_summary_unavailable", "end_omission_accounting_unavailable",
+    "end_unpublished_omission_unproved", "end_pre_omission_unproved", "end_post_omission_unproved",
+))
+FINISH_ONLY_ADMISSION_REASONS = frozenset((
+    "end_bounds_unpublished", "end_bounds_mismatch", "end_omission_summary_unavailable",
+    "end_unpublished_omission_unproved", "end_pre_omission_unproved", "end_post_omission_unproved",
+))
 BOOLS = frozenset(("target_identity_verified", "session_started", "settings_verified", "bounded", "zero_loss", "stop_succeeded", "session_absent", "consumer_completed", "consumer_closed", "worker_joined"))
 KEYS = BOOLS | {"schema", "scope", "status", "reason", "original_ok", "os_code", "operation_us", "runtime_sha256", "counts", "schema_rejection"}
 OWNERSHIP_COUNTS = frozenset(("starts", "ends", "complete_pairs", "nonselected_create_pairs", "other_operation_pairs"))
@@ -50,13 +61,13 @@ def validate_ownership(value, trace):
         return
     if trace["status"] != "unavailable" or trace["counts"] is not None:
         raise ValueError("ownership cannot qualify")
-    keys = OWNERSHIP_KEYS | {"rejection"} if trace["schema"] == 3 else OWNERSHIP_KEYS
+    keys = OWNERSHIP_KEYS | {"rejection"} if trace["schema"] in (3, 4) else OWNERSHIP_KEYS
     if type(value) is not dict or value.keys() != keys:
         raise ValueError("ownership shape")
     availability, reason, pattern = (value[key] for key in ("availability", "reason", "pattern"))
     if type(availability) is not str or type(reason) is not str:
         raise ValueError("ownership enum type")
-    if trace["schema"] == 3:
+    if trace["schema"] in (3, 4):
         rejection = value["rejection"]
         if availability == "unavailable" and reason == "unsupported_opcode":
             if type(rejection) is not dict or rejection.keys() != {"opcode", "version", "header_flags"}:
@@ -171,18 +182,30 @@ def validate(raw, test_exit, expected_runtime):
     if type(value) is not dict:
         raise ValueError("record_shape")
     schema = value.get("schema")
-    if type(schema) is not int or schema not in (1, 2, 3):
+    if type(schema) is not int or schema not in (1, 2, 3, 4):
         raise ValueError("scope")
-    if value.keys() != (KEYS if schema == 1 else KEYS | {"ownership"}):
+    expected_keys = KEYS if schema == 1 else KEYS | {"ownership"}
+    if schema == 4:
+        expected_keys = expected_keys | {"capture_contract"}
+    if value.keys() != expected_keys:
         raise ValueError("record_shape")
+    if schema == 4 and (type(value["capture_contract"]) is not str or value["capture_contract"] != CAPTURE_CONTRACT):
+        raise ValueError("capture_contract")
     if value["scope"] != "original_runtime_remove_tree":
         raise ValueError("scope")
     if any(type(value[key]) is not bool for key in BOOLS):
         raise ValueError("boolean_type")
     if type(value["runtime_sha256"]) is not str or not re.fullmatch("[a-f0-9]{64}", expected_runtime) or value["runtime_sha256"] != expected_runtime:
         raise ValueError("runtime_binding")
-    if type(value["status"]) is not str or type(value["reason"]) is not str or value["status"] not in ("observed", "not_reproduced", "unavailable") or value["reason"] not in REASONS:
+    reasons = REASONS | ADMISSION_REASONS if schema == 4 else REASONS
+    if type(value["status"]) is not str or type(value["reason"]) is not str or value["status"] not in ("observed", "not_reproduced", "unavailable") or value["reason"] not in reasons:
         raise ValueError("enum")
+    if value["reason"] in ADMISSION_REASONS and (
+            value["status"] != "unavailable" or value["counts"] is not None
+            or value["ownership"] is not None or value["schema_rejection"] is not None):
+        raise ValueError("admission_uncertainty")
+    if value["reason"] in FINISH_ONLY_ADMISSION_REASONS and not all(value[key] for key in BOOLS - {"target_identity_verified"}):
+        raise ValueError("admission_finish_gate")
     if value["reason"] in {"initial_session_bounds_unverified", "final_bounds_proof_unverified"} and value["bounded"]:
         raise ValueError("budget_bounds_contradiction")
     if value["original_ok"] is not None and type(value["original_ok"]) is not bool:
