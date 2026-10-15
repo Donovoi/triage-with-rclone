@@ -16,6 +16,34 @@ exec(compile(Path(__file__).with_name("select_artifacts.py").read_bytes(), "sele
 
 SHA="a"*64
 
+
+def original_cleanup_job(workflow):
+    """Scope legacy assertions to the exact original job, not the sibling calibration.
+
+    This accepts the reviewed two-space job layout, not general YAML. Fail closed
+    on missing/duplicate/unknown jobs or an unindented tail outside that layout.
+    """
+    if type(workflow) is not str:
+        raise AssertionError('workflow_shape')
+    sections=re.split(r'^jobs:[ \t]*\r?$',workflow,flags=re.M)
+    if len(sections)!=2:
+        raise AssertionError('jobs_section')
+    body=sections[1]
+    # These fixed sibling names cannot hide as malformed nested/tail headers.
+    known=re.finditer(r'^([ \t]*)(?:original-cleanup|resource-use-calibration):[ \t]*\r?$',body,re.M)
+    if any(match[1]!='  ' for match in known):
+        raise AssertionError('job_indent')
+    headers=list(re.finditer(r'^  ([a-z][a-z0-9-]*):[ \t]*\r?$',body,re.M))
+    names=[match[1] for match in headers]
+    if (names.count('original-cleanup')!=1 or len(names)!=len(set(names)) or
+            not set(names)<={'original-cleanup','resource-use-calibration'} or
+            body[:headers[0].start()].strip() or
+            any(line.strip() and not line.startswith('  ') for line in body.splitlines())):
+        raise AssertionError('job_scope')
+    index=names.index('original-cleanup')
+    end=headers[index+1].start() if index+1<len(headers) else len(body)
+    return body[headers[index].start():end]
+
 def record():
     x={key:True for key in V.BOOLS}
     x.update(schema=1,scope="original_runtime_remove_tree",status="observed",reason="none",original_ok=False,os_code=32,operation_us=51000,runtime_sha256=SHA,counts=dict(attempts=2,successful=1,sharing=1,other=0),schema_rejection=None)
@@ -235,7 +263,7 @@ class HarnessTests(unittest.TestCase):
 
     def test_workflow_fixed_single_call_and_matching_forwarding(self):
         root=Path(__file__).resolve().parents[2]
-        workflow=(root/'.github/workflows/original-cleanup-trace.yml').read_text()
+        workflow=original_cleanup_job((root/'.github/workflows/original-cleanup-trace.yml').read_text())
         invocation=f'& $harness {V.ACQUISITION_TEST} --exact --nocapture --test-threads=1 > $privateOut 2> $privateErr'
         self.assertEqual(workflow.count(invocation),1)
         self.assertEqual(workflow.count('cargo test --locked --release'),1)
@@ -800,6 +828,7 @@ class AcquisitionTests(unittest.TestCase):
 
 class AcquisitionWorkflowTests(unittest.TestCase):
     def check_workflow(self, text):
+        text=original_cleanup_job(text)
         calls=re.findall(r'^\s*& \$harness (.*)$',text,re.M)
         self.assertEqual(calls,['cleanup_diagnostics::tests:: --test-threads=1 > $forwardOut 2> $forwardErr',
                                V.ACQUISITION_TEST+' --exact --nocapture --test-threads=1 > $privateOut 2> $privateErr'])
@@ -841,6 +870,32 @@ class AcquisitionWorkflowTests(unittest.TestCase):
             with self.subTest(before=before),self.assertRaises(AssertionError):
                 self.check_workflow(text.replace(before,after))
         with self.assertRaises(AssertionError):self.check_workflow(text+'\nuses: actions/upload-artifact@private\n')
+
+    def test_original_job_scope_rejects_missing_duplicate_or_unknown_jobs(self):
+        root=Path(__file__).resolve().parents[2]
+        workflow=(root/'.github/workflows/original-cleanup-trace.yml').read_text()
+        original=original_cleanup_job(workflow)
+        self.assertIn(V.ACQUISITION_TEST,original)
+        self.assertNotIn('hosted_held_file_then_closed',original)
+        # The same original-job assertions remain valid with or without the sibling.
+        self.check_workflow('jobs:\n'+original)
+        mutations=(
+            workflow.replace('  original-cleanup:', '  missing-original:'),
+            workflow+'\n  original-cleanup:\n    name: duplicate\n',
+            workflow.replace('  original-cleanup:', '   original-cleanup:'),
+            workflow.replace('  resource-use-calibration:', '  unknown-job:'),
+            workflow+'\n  resource-use-calibration:\n    name: duplicate\n',
+            workflow+'\n   resource-use-calibration:\n    name: duplicate\n',
+            workflow+'\n    resource-use-calibration:\n      name: nested\n',
+            workflow+'\n\tresource-use-calibration:\n    name: tabbed\n',
+            workflow+'\n   original-cleanup:\n    name: duplicate\n',
+            workflow.replace('jobs:', 'missing-jobs:',1),
+            workflow+'\njobs:\n  original-cleanup:\n',
+            workflow+'\nuses: actions/upload-artifact@private\n',
+        )
+        for value in mutations:
+            with self.subTest(value=value[-80:]),self.assertRaises(AssertionError):
+                original_cleanup_job(value)
 
     def test_success_only_forwarding_keeps_original_acquisition_assertions(self):
         root=Path(__file__).resolve().parents[2]
