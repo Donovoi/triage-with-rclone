@@ -640,7 +640,7 @@ class ListingProducerTests(unittest.TestCase):
             state = P.F.AppSwiftListingState("a" * 64, "b" * 64)
             token = None
             targets = [P.F.AUTH, P.F.ACCOUNT + "?format=json&limit=10000",
-                P.F.LIST_CONTAINER + "?delimiter=%2F&format=json&limit=1000"]
+                P.F.LIST_CONTAINER + "?format=json&limit=1000"]
             targets += [P.F.LIST_CONTAINER + "/" + name.replace(" ", "%20") for name, _ in P.F.LIST_FILES]
             for index, target in enumerate(targets):
                 request = state.begin("HEAD" if index >= 3 else "GET", target,
