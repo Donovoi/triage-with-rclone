@@ -6,4 +6,6 @@ mod native;
 #[cfg(any(windows, test))]
 mod ownership;
 #[cfg(windows)]
+mod schema_metadata;
+#[cfg(windows)]
 pub use native::Trace;
