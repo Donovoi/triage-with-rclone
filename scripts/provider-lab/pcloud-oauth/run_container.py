@@ -150,7 +150,7 @@ def read_lock(root=None):
     req = lock["requirements"]
     check(type(req) is dict and set(req) == {"path", "sha256", "distributions"}
           and req["path"] == "scripts/provider-lab/requirements-fixture.txt" and type(req["sha256"]) is str
-          and HASH.fullmatch(req["sha256"]) and req["distributions"] == {"cryptography": "50.0.2", "cffi": "2.1.1", "pycparser": "3.0"}, "dependency_lock_invalid")
+          and HASH.fullmatch(req["sha256"]) and req["distributions"] == {"cryptography": "50.0.2", "cffi": "2.1.1", "pycparser": "3.1"}, "dependency_lock_invalid")
     check(digest(repository / req["path"]) == req["sha256"], "dependency_lock_changed")
     # Docker's FROM and the in-build lock assertion must match the reviewed lock.
     recipe = (root / "Dockerfile").read_text(encoding="utf-8")

@@ -118,21 +118,35 @@ pub(super) fn exchange_through_loopback_with_policy(
             let state = query["state"].clone();
             *auth_fields.lock().unwrap() = query;
             *worker_slot.lock().unwrap() = Some(std::thread::spawn(move || {
-                let agent = ureq::AgentBuilder::new()
-                    .timeout(Duration::from_secs(5))
-                    .build();
+                let agent: ureq::Agent = ureq::Agent::config_builder()
+                    // ureq 2 did not read proxy settings from the environment.
+                    .proxy(None)
+                    .timeout_connect(Some(Duration::from_secs(30)))
+                    .timeout_global(Some(Duration::from_secs(5)))
+                    .max_redirects(5)
+                    .http_status_as_error(false)
+                    .build()
+                    .into();
                 if policy == CodeGrantPolicy::DropboxReadOnlyOffline {
-                    assert!(matches!(
-                        agent.get(&format!("{callback}?code=wrong")).call(),
-                        Err(ureq::Error::Status(400, _))
-                    ));
+                    assert_eq!(
+                        agent
+                            .get(&format!("{callback}?code=wrong"))
+                            .call()
+                            .unwrap()
+                            .status(),
+                        400
+                    );
                 }
                 let wrong = agent
                     .get(&format!("{callback}?code=wrong&state=wrong-state"))
                     .call();
                 match wrong {
-                    Err(ureq::Error::Status(400, response)) => {
-                        assert!(!response.into_string().unwrap().contains(&state));
+                    Ok(mut response) if response.status() == 400 => {
+                        assert!(!response
+                            .body_mut()
+                            .read_to_string()
+                            .unwrap()
+                            .contains(&state));
                     }
                     _ => panic!("wrong state must be rejected"),
                 }

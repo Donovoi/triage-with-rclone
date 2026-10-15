@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 import hashlib
+import json
 from pathlib import Path
 import time
 import types
@@ -45,6 +46,109 @@ WAIT_STAGES = frozenset({"precondition", "poll", "observe", "predicate", "deadli
 WAIT_ERRORS = frozenset({"deadline_exceeded", "session_failed", "preservation_failed"})
 
 
+class MainMenuFailure:
+    """Closed self-report from already-read bytes; never an acceptance oracle."""
+    PREFIX = b"ui_main_menu_failure="
+    MAX_RECORD = 512
+    OPERATIONS = frozenset({"flow_reset", "provider_refresh"})
+    STAGES = frozenset({"target", "open_root", "identity", "security", "remove_tree"})
+    KINDS = frozenset({"not_found", "permission_denied", "already_exists", "invalid_input",
+                       "unsupported", "interrupted", "other"})
+
+    def __init__(self):
+        self.buffer = b""
+        self.collecting = False
+        self.records = 0
+        self.invalid = False
+        self.value = None
+        self.emitted = False
+
+    @classmethod
+    def parse(cls, raw):
+        if type(raw) is not bytes or len(raw) > cls.MAX_RECORD:
+            raise ValueError("diagnostic_invalid")
+        def unique(pairs):
+            value = {}
+            for key, item in pairs:
+                if key in value:
+                    raise ValueError("diagnostic_invalid")
+                value[key] = item
+            return value
+        value = json.loads(raw.decode("ascii"), object_pairs_hook=unique,
+                           parse_constant=lambda _: (_ for _ in ()).throw(ValueError("diagnostic_invalid")))
+        if (type(value) is not dict or set(value) != {"operation", "category", "cleanup"} or
+                type(value["operation"]) is not str or value["operation"] not in cls.OPERATIONS or
+                type(value["category"]) is not str):
+            raise ValueError("diagnostic_invalid")
+        detail = value["cleanup"]
+        if value["category"] == "unknown":
+            if detail is not None:
+                raise ValueError("diagnostic_invalid")
+        elif value["category"] == "typed_runtime_cleanup":
+            if (type(detail) is not dict or set(detail) != {"stage", "kind", "os_code"} or
+                    type(detail["stage"]) is not str or detail["stage"] not in cls.STAGES or
+                    type(detail["kind"]) is not str or detail["kind"] not in cls.KINDS or
+                    not (detail["os_code"] is None or type(detail["os_code"]) is int and 0 <= detail["os_code"] <= 65535)):
+                raise ValueError("diagnostic_invalid")
+        else:
+            raise ValueError("diagnostic_invalid")
+        return value
+
+    def feed(self, data):
+        if self.invalid or self.records > 1:
+            return
+        try:
+            if type(data) is not bytes or len(data) > 65536:
+                raise ValueError("diagnostic_invalid")
+            self.buffer += data
+            while True:
+                if not self.collecting:
+                    index = self.buffer.find(self.PREFIX)
+                    if index < 0:
+                        self.buffer = self.buffer[-(len(self.PREFIX) - 1):]
+                        return
+                    self.records += 1
+                    if self.records > 1:
+                        self.buffer = b""
+                        return
+                    self.collecting = True
+                    self.buffer = self.buffer[index + len(self.PREFIX):]
+                end = self.buffer.find(b"\n")
+                if end < 0:
+                    if len(self.buffer) > self.MAX_RECORD:
+                        raise ValueError("diagnostic_invalid")
+                    return
+                raw = self.buffer[:end]
+                if raw.endswith(b"\r"):
+                    raw = raw[:-1]
+                self.value = self.parse(raw)
+                self.collecting = False
+                self.buffer = self.buffer[end + 1:]
+        except Exception:
+            self.invalid = True
+            self.buffer = b""
+
+    def projection(self):
+        status = ("invalid" if self.invalid or self.collecting else
+                  "ambiguous" if self.records > 1 else "observed" if self.value is not None else "not_observed")
+        fields = self.value if status == "observed" else dict(operation=None, category=None, cleanup=None)
+        return dict(status=status, **fields)
+
+    def emit(self):
+        try:
+            if self.emitted:
+                return
+            self.emitted = True
+            value = self.projection()
+            if value["status"] == "not_observed":
+                return
+            line = b"application_tui_main_menu_failure=" + H.E.compact(value)
+            if len(line) + 1 <= 1024:
+                print(line.decode("ascii"), flush=True)
+        except Exception:
+            pass
+
+
 def wait_failure_diagnostic(error, stage, screen, predicate_invoked):
     """Finite facts only; no exception formatting or private screen contents.
 
@@ -78,6 +182,29 @@ def wait_failure_diagnostic(error, stage, screen, predicate_invoked):
     except Exception:
         # Broken output must not hide the original failure or enable a retry.
         pass
+
+
+def controller_failure_diagnostic(stage, value=None):
+    """Distinguish two existing failures without another poll or transcript read."""
+    try:
+        if type(stage) is not str or stage not in {"running_predicate", "drain_bound"}:
+            return
+        fields = {key: None for key in ("state", "ok", "app_exited", "app_exit_code", "forced_termination")}
+        if stage == "running_predicate":
+            # Pure schema validation only; never replay bridge counter transitions.
+            validate_snapshot(value, "poll")
+            if type(value["state"]) is not str or (value["ok"] and not value["app_exited"] and value["state"] == "running"):
+                return
+            fields = {key: value[key] for key in fields}
+        elif value is not None:
+            return
+        # drain() also serves non-poll callers. Its bound has no supplied reply;
+        # null means unavailable, not a second observation or an inferred exit.
+        line = b"application_tui_controller_failure=" + H.E.compact(dict(stage=stage, **fields))
+        if len(line) + 1 <= 512:
+            print(line.decode("ascii"), flush=True)
+    except Exception:
+        pass  # Diagnostics cannot replace the original controller failure.
 
 
 def validate_snapshot(value, action):
@@ -204,6 +331,9 @@ class Controller:
         self.bridge = bridge
         self.transcript = Transcript(case)
         self.screen = S.Screen(columns=120, rows=34)
+        self.main_menu_failure = MainMenuFailure()
+        self.main_menu_tail_needed = False
+        self.main_menu_tail_attempted = False
         self.resize_unproven = False
         self.deadline = time.monotonic() + seconds
 
@@ -215,13 +345,23 @@ class Controller:
             H.need(time.monotonic() < self.deadline, "deadline_exceeded")
             if not data:
                 return
+            try:
+                self.main_menu_failure.feed(data)
+            except Exception:
+                pass
             self.screen.feed(data)
             H.need(time.monotonic() < self.deadline, "deadline_exceeded")
+        controller_failure_diagnostic("drain_bound")
         raise H.ProducerError("session_failed")
 
     def poll(self):
         value = self.bridge.command("poll")
-        H.need(value["ok"] and not value["app_exited"] and value["state"] == "running", "session_failed")
+        try:
+            H.need(value["ok"] and not value["app_exited"] and value["state"] == "running", "session_failed")
+        except H.ProducerError:
+            self.main_menu_tail_needed = True
+            controller_failure_diagnostic("running_predicate", value)
+            raise
         self.drain()
         return value
 
@@ -280,5 +420,38 @@ class Controller:
         self.resize_unproven = True
         self.screen.resize(columns, rows)
 
+    def capture_main_menu_tail(self):
+        # Called only at close, after the caller's original bridge close attempt.
+        # A finite diagnostic read is not a wait for a writer or an acceptance drain.
+        if not self.main_menu_tail_needed or self.main_menu_tail_attempted:
+            return
+        self.main_menu_tail_attempted = True
+        try:
+            for _ in range(129):
+                data = self.transcript.available()
+                if data == b"":
+                    return
+                self.main_menu_failure.feed(data)
+            raise ValueError("diagnostic_invalid")
+        except Exception:
+            self.main_menu_failure.invalid = True
+            self.main_menu_failure.buffer = b""
+            self.main_menu_failure.value = None
+
     def close(self):
-        self.transcript.close()
+        try:
+            self.capture_main_menu_tail()
+        except Exception:
+            # Diagnostic state failures must not bypass the original close.
+            try:
+                self.main_menu_failure.invalid = True
+                self.main_menu_failure.value = None
+            except Exception:
+                pass
+        try:
+            self.transcript.close()
+        finally:
+            try:
+                self.main_menu_failure.emit()
+            except Exception:
+                pass

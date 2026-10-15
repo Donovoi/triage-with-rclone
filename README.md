@@ -28,7 +28,11 @@ A new nightly is published after each merged PR passes the required checks. Buil
 
 See [test status and known gaps](rclone-triage/tests/provider_testing.md) for the detailed results.
 
-Current work: check that Dropbox stops cleanly when cancelled, and investigate a Windows cleanup error. Then continue testing the other providers.
+Local-file and ZIP checks have passed, including cancellation and cleanup.
+
+Dropbox and Swift download cancellation tests have passed. B2, Swift and WebDAV download checks have passed using local test servers. These results apply to the tested Windows builds; tests with real Swift accounts are still pending.
+
+Current work: investigate intermittent Windows test failures, check Azure Blob downloads, and finish the remaining provider tests.
 
 ## What comes next
 

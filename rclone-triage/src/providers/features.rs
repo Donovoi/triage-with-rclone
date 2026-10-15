@@ -5,6 +5,7 @@
 
 use anyhow::{anyhow, bail, Context, Result};
 use regex::Regex;
+use std::io::Read;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
@@ -107,26 +108,48 @@ fn fetch_features_page(url: &str) -> Result<Arc<String>> {
     Ok(Arc::new(fetch_features_page_uncached(url)?))
 }
 
+// Preserve ureq 2's 10 MiB limit and lossy UTF-8 decoding for every MIME type.
+fn read_response_text(response: ureq::http::Response<ureq::Body>) -> std::io::Result<String> {
+    const LIMIT: u64 = 10 * 1024 * 1024;
+    let mut bytes = Vec::new();
+    response
+        .into_body()
+        .into_reader()
+        .take(LIMIT + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > LIMIT {
+        return Err(std::io::Error::other("response too big for into_string"));
+    }
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
 fn fetch_features_page_uncached(url: &str) -> Result<String> {
     // Best-effort: keep this lookup fast so we don't stall the TUI when offline/restricted.
-    let agent = ureq::AgentBuilder::new()
-        .timeout_connect(Duration::from_secs(5))
-        .timeout_read(Duration::from_secs(10))
-        .timeout_write(Duration::from_secs(10))
-        .build();
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        // ureq 2 did not read proxy settings from the environment.
+        .proxy(None)
+        .timeout_connect(Some(Duration::from_secs(5)))
+        // ureq 3 bounds phases; body budgets do not reset for each I/O.
+        .timeout_send_request(Some(Duration::from_secs(10)))
+        .timeout_send_body(Some(Duration::from_secs(10)))
+        .timeout_recv_response(Some(Duration::from_secs(10)))
+        .timeout_recv_body(Some(Duration::from_secs(10)))
+        .max_redirects(5)
+        .http_status_as_error(false)
+        .build()
+        .into();
 
     let response = match agent.get(url).call() {
-        Ok(response) => response,
-        Err(ureq::Error::Status(code, response)) => {
-            let body = response.into_string().unwrap_or_default();
+        Ok(response) if response.status().as_u16() >= 400 => {
+            let code = response.status().as_u16();
+            let body = read_response_text(response).unwrap_or_default();
             bail!("Failed to fetch features page (HTTP {}): {}", code, body);
         }
+        Ok(response) => response,
         Err(err) => return Err(anyhow!(err)).context("Failed to fetch features page"),
     };
 
-    response
-        .into_string()
-        .context("Failed to read features page response body")
+    read_response_text(response).context("Failed to read features page response body")
 }
 
 fn parse_features_table(html: &str) -> Result<Vec<ProviderFeatureRow>> {
@@ -255,6 +278,48 @@ fn normalize_hash_value(row_name: &str, raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ureq3_text_reader_accepts_exact_limit_and_rejects_one_byte_over() {
+        const LIMIT: usize = 10 * 1024 * 1024;
+        let at_limit = ureq::http::Response::new(ureq::Body::builder().data(vec![b'x'; LIMIT]));
+        let text = read_response_text(at_limit).unwrap();
+        assert_eq!(text.len(), LIMIT);
+        assert!(text.bytes().all(|byte| byte == b'x'));
+
+        let over_limit =
+            ureq::http::Response::new(ureq::Body::builder().data(vec![b'x'; LIMIT + 1]));
+        let error = read_response_text(over_limit).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::Other);
+        assert_eq!(error.to_string(), "response too big for into_string");
+    }
+
+    #[test]
+    fn ureq3_text_reader_keeps_lossy_utf8_for_text_and_binary_mime() {
+        for mime in ["text/plain", "application/octet-stream"] {
+            let response = ureq::http::Response::new(
+                ureq::Body::builder()
+                    .mime_type(mime)
+                    .data(vec![b'a', 0xff, b'z']),
+            );
+            assert_eq!(read_response_text(response).unwrap(), "a\u{fffd}z");
+        }
+    }
+
+    #[test]
+    fn ureq3_text_reader_does_not_accept_an_incomplete_body_after_read_error() {
+        struct FailedBody;
+        impl std::io::Read for FailedBody {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "synthetic-read-error",
+                ))
+            }
+        }
+        let response = ureq::http::Response::new(ureq::Body::builder().reader(FailedBody));
+        assert!(read_response_text(response).is_err());
+    }
 
     #[test]
     fn test_parse_features_table_basic() {
