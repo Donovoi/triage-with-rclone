@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "platform": "linux/amd64",
+  "base_image": "docker.io/library/python@sha256:9901e0a8d75037d8242ed43155cbcb2d1f61be1356383d8054afb59fd50e39c4",
+  "base_config_digest": "sha256:3abf66fa95bf9285d35eac802319797d29d01fbcfef9c0cd560f73d97f4289e8",
+  "python_version": "3.12.15",
+  "python_path": "/usr/local/bin/python3.12",
+  "runtime_version": "1.75.2",
+  "runtime_sha256": "ed7ab1f17876bb006c3df3949a3044959671afd9112362dacaa5dd1647735bc1"
+}
