@@ -25,7 +25,9 @@ REGISTRATION = """      - name: Check hosted x64 helper descendant ownership
         run: python -B -I -S ../scripts/application-lab/qualify_helper_owner.py
 """
 REASONS = frozenset({'host', 'sources', 'image', 'setup', 'expected_failure', 'transfer', 'admission',
-    'release', 'child_exit', 'reader', 'handles', 'preservation', 'temp_cleanup', 'unexpected'})
+    'release', 'child_exit', 'reader', 'handles', 'preservation', 'temp_cleanup', 'unexpected',
+    'job_observation', 'job_quiescence'})
+CONTRACT = 'known_child_membership_job_quiescence_v2'
 
 
 class CalibrationError(ValueError):
@@ -35,6 +37,112 @@ class CalibrationError(ValueError):
 def need(value):
     if not value:
         raise CalibrationError('calibration_failed')
+
+
+def counts(value):
+    need(type(value) is tuple and len(value) == 2)
+    active, total = value
+    need(type(active) is int and type(total) is int and 0 <= active <= total < 2**32)
+    return value
+
+
+class JobObservation:
+    """Calibration-only exact-Job capability; never changes an owner verdict."""
+    def __init__(self, owner, api):
+        self.owner, self.api, self.cls = owner, api, owner._Win32
+        self.original = self.cls.accounting
+        self.job = self.native = self.before = self.after = None
+        self.calls, self.failed = 0, False
+        self.install_attempted = self.restore_attempted = self.restored = False
+        self.query_attempted = self.close_attempted = False
+        self.closed = self.member = None
+
+        def wrapper(native, handle):
+            # Always call the original once, even on a repeated/foreign call.
+            # No observation exception may replace its result or exception.
+            try:
+                result = self.original(native, handle)
+            except BaseException:
+                self.failed = True
+                raise
+            try:
+                self.calls += 1
+                need(not self.failed and self.calls == 1)
+                process = self.owner._active
+                need(type(process) is self.owner.HelperProcess and process.api is native)
+                cell = process.job
+                need(cell.owner is process and type(handle) is int and cell.value == handle and
+                     cell.closed is None and cell.attempted is False and
+                     type(cell.users) is int and cell.users > 0)
+                self.before, self.native = counts(result), native
+                # Unchanged fixture helper checks successful BOOL and valid output
+                # before returning. Failed/ambiguous out storage is never owned.
+                current = self.api.current()
+                self.job = self.api.duplicate(current, handle, current, 0x0004)
+                self.api.flags(self.job, 0)
+            except BaseException:
+                self.failed = True
+            return result
+        self.wrapper = wrapper
+
+    def install(self):
+        need(self.owner._native_factory is self.cls and self.cls.accounting is self.original)
+        self.install_attempted = True
+        setattr(self.cls, 'accounting', self.wrapper)
+        need(self.cls.accounting is self.wrapper)
+
+    def restore(self):
+        if not self.install_attempted or self.restore_attempted:
+            return
+        self.restore_attempted = True
+        try:
+            need(self.cls.accounting is self.wrapper or self.cls.accounting is self.original)
+            setattr(self.cls, 'accounting', self.original)
+            need(self.cls.accounting is self.original)
+            self.restored = True
+        except BaseException:
+            # In particular, preserve a pending TimeoutExpired object/traceback.
+            self.failed = True
+
+    def ready(self, process):
+        need(not self.failed and self.restored and self.calls == 1 and self.job is not None and
+             self.owner._active is process and process.api is self.native and
+             self.before == (process.active_count, process.total_count) and
+             self.cls.accounting is self.original and not self.close_attempted)
+
+    def membership(self, child):
+        try:
+            need(not self.failed and self.job is not None and self.member is None)
+            member = ctypes.c_int32()
+            need(self.native.k.IsProcessInJob(child, self.job, ctypes.byref(member)) != 0 and member.value == 1)
+            need(not self.api.wait(child, 0))
+            self.member = True
+        except BaseException:
+            self.failed = True
+            raise
+
+    def quiescence(self):
+        try:
+            need(not self.failed and self.restored and self.member is True and
+                 self.job is not None and not self.query_attempted and not self.close_attempted)
+            self.query_attempted = True
+            # A separate single observation, not a second owner finalization.
+            self.after = counts(self.original(self.native, self.job))
+            need(self.after[0] == 0 and self.after[1] >= self.before[1])
+        except BaseException:
+            self.failed = True
+            raise
+
+    def close(self):
+        if self.job is None or self.close_attempted:
+            return self.closed is True
+        self.close_attempted = True
+        try:
+            self.api.close(self.job)
+            self.closed = True
+        except BaseException:
+            self.failed = True  # Ambiguous close is never retried.
+        return self.closed is True
 
 
 def load(name, path, digest):
@@ -92,7 +200,7 @@ def expected_failure(owner, process, capture, error):
     need(process.created is True and process.creation_resolved is True and process.resumed is True)
     for handle in [process.process, process.primary_thread, process.job, *process.child]:
         need(handle.closed is True and type(handle.users) is int and handle.users == 0)
-    need(process.active_count == 1 and type(process.active_count) is int and process.total_count == 2 and type(process.total_count) is int)
+    counts((process.active_count, process.total_count))
     need(capture.returned is True and capture.claimed is True and capture.revoked is False)
     need(capture.eof is False and capture.failed is False and capture.overflow is False)
     need(capture.snapshot() == b'' and capture.thread.is_alive() is True and capture.pipe.closed is False)
@@ -191,20 +299,29 @@ def emit(value):
     try:
         need(set(value) == {'schema_version', 'scope', 'result', 'reason', 'expected_failure', 'owner_sticky_failed',
             'cleanup_complete', 'parent_exit', 'child_exit', 'forced', 'architecture', 'sources_sha256',
-            'controller_sha256', 'python_sha256', 'powershell_file_sha256'})
+            'controller_sha256', 'python_sha256', 'powershell_file_sha256', 'contract', 'child_in_job',
+            'before_active', 'before_total', 'final_active', 'final_total', 'query_job_closed', 'observation_complete'})
         need(value['reason'] is None or value['reason'] in REASONS)
-        need(type(value['schema_version']) is int and value['schema_version'] == 1)
+        need(type(value['schema_version']) is int and value['schema_version'] == 2 and value['contract'] == CONTRACT)
         need(value['scope'] == 'hosted_windows_x64_inert_descendant' and value['result'] in {'passed', 'failed'})
         need(value['architecture'] in {None, 'native_x64'})
-        for key in ('expected_failure', 'owner_sticky_failed', 'cleanup_complete'):
+        for key in ('expected_failure', 'owner_sticky_failed', 'cleanup_complete', 'observation_complete'):
             need(type(value[key]) is bool)
-        need(value['forced'] is None or type(value['forced']) is bool)
-        for key in ('parent_exit', 'child_exit'):
+        for key in ('forced', 'child_in_job', 'query_job_closed'):
+            need(value[key] is None or type(value[key]) is bool)
+        for key in ('parent_exit', 'child_exit', 'before_active', 'before_total', 'final_active', 'final_total'):
             need(value[key] is None or type(value[key]) is int and 0 <= value[key] < 2**32)
+        for prefix in ('before', 'final'):
+            pair = (value[prefix + '_active'], value[prefix + '_total'])
+            need(pair == (None, None) or all(v is not None for v in pair) and counts(pair) is pair)
+        if value['observation_complete']:
+            need(value['child_in_job'] is True and value['query_job_closed'] is True and value['final_active'] == 0)
+            need(value['before_total'] is not None and value['final_total'] >= value['before_total'])
         for key in ('sources_sha256', 'controller_sha256', 'python_sha256', 'powershell_file_sha256'):
             need(value[key] is None or type(value[key]) is str and re.fullmatch('[0-9a-f]{64}', value[key]))
         if value['result'] == 'passed':
             need(value['reason'] is None and value['expected_failure'] and value['owner_sticky_failed'] and value['cleanup_complete'])
+            need(value['observation_complete'] and value['before_active'] is not None)
             need(value['parent_exit'] == value['child_exit'] == 0 and value['architecture'] == 'native_x64')
             need(all(value[k] is not None for k in ('forced', 'sources_sha256', 'controller_sha256', 'python_sha256', 'powershell_file_sha256')))
         raw = json.dumps(value, separators=(',', ':'), ensure_ascii=True).encode('ascii')
@@ -216,13 +333,14 @@ def emit(value):
 
 
 def main():
-    value = dict(schema_version=1, scope='hosted_windows_x64_inert_descendant', result='failed', reason=None,
+    value = dict(schema_version=2, contract=CONTRACT, scope='hosted_windows_x64_inert_descendant', result='failed', reason=None,
         expected_failure=False, owner_sticky_failed=False, cleanup_complete=False, parent_exit=None, child_exit=None,
         forced=None, architecture=None, sources_sha256=None, controller_sha256=None, python_sha256=None,
-        powershell_file_sha256=None)
+        powershell_file_sha256=None, child_in_job=None, before_active=None, before_total=None,
+        final_active=None, final_total=None, query_job_closed=None, observation_complete=False)
     phase, F, H, api, directory, directory_identity = 'host', None, None, None, None, None
     release, ready, child, capture, process, primary = None, None, None, None, None, None
-    handles, hashes, normalized = [], {}, None
+    handles, hashes, normalized, observation = [], {}, None, None
     try:
         need(len(sys.argv) == 1 and os.name == 'nt' and ctypes.sizeof(ctypes.c_void_p) == 8)
         need(os.environ.get('GITHUB_ACTIONS') == 'true' and os.environ.get('RUNNER_OS') == 'Windows'
@@ -265,8 +383,13 @@ def main():
         environment = {key: os.environ[key] for key in ('SYSTEMROOT', 'WINDIR', 'TEMP', 'TMP') if key in os.environ}
         need(environment.get('SYSTEMROOT'))
         phase = 'setup'
+        observation = JobObservation(H.O, api)
         try:
-            H.O.run_setup(args, env=environment, timeout=20, failure_drain_seconds=5, capture_limit=4096, check=False)
+            try:
+                observation.install()
+                H.O.run_setup(args, env=environment, timeout=20, failure_drain_seconds=5, capture_limit=4096, check=False)
+            finally:
+                observation.restore()
         except BaseException as error:
             primary = error
             phase = 'expected_failure'
@@ -277,11 +400,15 @@ def main():
             value['parent_exit'], value['forced'] = process.returncode, process.forced
         else:
             raise CalibrationError('calibration_failed')
+        phase = 'job_observation'
+        observation.ready(process)
         phase = 'transfer'
         transfer_path = directory / 'transfer.json'
         transferred = F.record(transfer_path)
         child = accept_transfer(F, api, transferred, expected); handles.append(child)
         hashes['transfer.json'] = F.digest(transfer_path, 4096)
+        phase = 'job_observation'
+        observation.membership(child)
         need(api.wait(ready, 0))
         phase = 'admission'
         admission(H.O, process, args, environment)
@@ -307,8 +434,27 @@ def main():
             except BaseException:
                 closed = False
                 value['reason'] = value['reason'] or 'handles'
+        quiet = False
         try:
             need(normalized is not None and normalized['complete'] and closed)
+            phase = 'job_quiescence'
+            need(observation is not None)
+            observation.quiescence()
+            quiet = True
+        except BaseException:
+            value['reason'] = value['reason'] or (phase if phase in REASONS else 'unexpected')
+        finally:
+            if observation is not None:
+                observation.restore()  # No-op after the one protected restoration.
+                observation.close()
+                value['child_in_job'], value['query_job_closed'] = observation.member, observation.closed
+                if observation.before is not None:
+                    value['before_active'], value['before_total'] = observation.before
+                if observation.after is not None:
+                    value['final_active'], value['final_total'] = observation.after
+                value['observation_complete'] = bool(quiet and not observation.failed and observation.closed is True)
+        try:
+            need(value['observation_complete'])
             phase = 'preservation'
             need(verify_sources(F) == value['sources_sha256'])
             need(F.digest(Path(__file__), 512*1024) == value['controller_sha256'])

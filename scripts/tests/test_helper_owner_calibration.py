@@ -102,7 +102,20 @@ class FakeCapture:
 class FakeOwner:
     HelperProcess, _Capture = FakeProcess, FakeCapture
     class OwnershipError(OSError): pass
-    def __init__(self): self._active, self.calls, self.on_start = None, [], None
+    def __init__(self):
+        self._active, self.calls, self.on_start = None, [], None
+        self.before, self.after, self.native_calls = (2, 4), (0, 4), []
+        owner = self
+        class Native:
+            def __init__(self):
+                def member(child, job, output):
+                    owner.native_calls.append(('member', child, job)); output._obj.value = 1
+                    return 1
+                self.k = types.SimpleNamespace(IsProcessInJob=mock.Mock(side_effect=member))
+            def accounting(self, job):
+                owner.native_calls.append(('accounting', job))
+                return owner.before if job == 3 else owner.after
+        self._Win32 = self._native_factory = Native
     def run_setup(self, args, **kwargs):
         self.calls.append((list(args), dict(kwargs)))
         if self._active is not None:
@@ -110,8 +123,15 @@ class FakeOwner:
         process = FakeProcess()
         capture = FakeCapture(process)
         self._active, self.capture = process, capture
+        process.api = self._Win32()
+        process.job.owner, process.job.attempted = process, False
         if self.on_start:
             self.on_start(args)
+        process.job.closed, process.job.users = None, 1
+        try:
+            process.active_count, process.total_count = process.api.accounting(process.job.value)
+        finally:
+            process.job.closed, process.job.users, process.job.attempted = True, 0, True
         error = subprocess.TimeoutExpired(args, 20, output=b'')
         raise error
 
@@ -222,7 +242,7 @@ class Contracts(unittest.TestCase):
         owner, error = self.recover()
         process, capture = Q.recover(owner, error)
         Q.expected_failure(owner, process, capture, error)
-        for target, field, bad in [(process, 'returncode', 1), (process, 'active_count', 0), (process, 'total_count', 3),
+        for target, field, bad in [(process, 'returncode', 1), (process, 'active_count', True), (process, 'total_count', 1),
                                    (process, 'final_result', True), (process, 'uncertain', False),
                                    (capture, 'eof', True), (capture, 'claimed', False), (capture, 'returned', False)]:
             old = getattr(target, field); setattr(target, field, bad)
@@ -413,7 +433,7 @@ class Contracts(unittest.TestCase):
         self.assertEqual(kernel.CreateProcessW.call_count, 1)
         self.assertEqual(kernel.DeleteProcThreadAttributeList.call_count, 1)
 
-    def test_full_controller_fake_preserves_expected_failure_and_independent_cleanup(self):
+    def controller_case(self, fault=None):
         with tempfile.TemporaryDirectory() as directory:
             temp = Path(directory)
             source_view = temp / 'source'; windows_source_view(source_view)
@@ -424,6 +444,22 @@ class Contracts(unittest.TestCase):
             owner = FakeOwner()
             current = dict(pid=10, created=20, image=str(image))
             api = mock.Mock(); api.current.return_value = -1; api.event.side_effect = [101, 102]
+            api.duplicate.return_value = 901
+            def close(handle):
+                owner.native_calls.append(('close', handle))
+                if (fault, handle) in {('child_close', 900), ('job_close', 901)}:
+                    raise KeyboardInterrupt('close-canary')
+            api.close.side_effect = close
+            if fault == 'nonzero': owner.after = (1, 4)
+            if fault == 'decreasing_total': owner.after = (0, 1)
+            if fault == 'query':
+                original = owner._Win32.accounting
+                def accounting(native, handle):
+                    if handle == 901:
+                        owner.native_calls.append(('accounting', handle))
+                        raise KeyboardInterrupt('query-canary')
+                    return original(native, handle)
+                owner._Win32.accounting = accounting
             api.identify.side_effect = lambda h: current if h == -1 else dict(current, pid=11, created=21)
             api.wait.side_effect = lambda handle, ms: handle == 102 and owner._active is not None or handle == 900 and ms > 0
             api.exit_code.return_value = 0
@@ -431,6 +467,7 @@ class Contracts(unittest.TestCase):
                 request_path = Path(args[-1]); expected = F.record(request_path)
                 F.publish(request_path.with_name('transfer.json'), transfer(expected))
                 owner.capture.thread.join.side_effect = owner.capture.finish
+                if fault == 'membership': owner._active.api.k.IsProcessInJob.side_effect = lambda *args: 0
             owner.on_start = started
             H = types.SimpleNamespace(O=owner, loaded_sources_preserved=lambda: None, powershell=lambda: str(image),
                                       read=lambda p, limit, **kwargs: F.read(p, limit))
@@ -440,32 +477,288 @@ class Contracts(unittest.TestCase):
                  mock.patch.dict(os.environ, dict(GITHUB_ACTIONS='true', RUNNER_OS='Windows', RUNNER_ARCH='X64',
                     RUNNER_ENVIRONMENT='github-hosted', RUNNER_TEMP=str(temp), SYSTEMROOT='fixed', WINDIR='fixed')), \
                  redirect_stdout(io.StringIO()) as output:
-                self.assertEqual(Q.main(), 0)
+                code = Q.main()
             value = json.loads(output.getvalue().split('=', 1)[1])
-            self.assertEqual(value['result'], 'passed')
-            self.assertTrue(value['expected_failure'] and value['owner_sticky_failed'] and value['cleanup_complete'])
-            self.assertIs(owner._active.final_result, False)
-            self.assertEqual(len(owner.calls), 2)
-            self.assertEqual(owner.calls[0], owner.calls[1])
-            self.assertEqual(owner.calls[0][1]['timeout'], 20)
-            self.assertEqual(owner.calls[0][1]['failure_drain_seconds'], 5)
-            api.signal.assert_called_once_with(101)
-            self.assertEqual(api.close.call_args_list, [mock.call(900), mock.call(102), mock.call(101)])
-            self.assertEqual({p.name for p in temp.iterdir()}, {'python.exe', 'source'})
+            return code, value, owner, api, {p.name for p in temp.iterdir()}
+
+    def test_full_controller_fake_preserves_expected_failure_and_independent_cleanup(self):
+        code, value, owner, api, remaining = self.controller_case()
+        self.assertEqual(code, 0)
+        self.assertEqual(value['result'], 'passed')
+        self.assertTrue(value['expected_failure'] and value['owner_sticky_failed'] and value['cleanup_complete'])
+        self.assertEqual(value['schema_version'], 2)
+        self.assertEqual(value['contract'], Q.CONTRACT)
+        self.assertEqual((value['before_active'], value['before_total']), (2, 4))
+        self.assertEqual((value['final_active'], value['final_total']), (0, 4))
+        self.assertTrue(value['child_in_job'] and value['query_job_closed'] and value['observation_complete'])
+        self.assertIs(owner._active.final_result, False)
+        self.assertEqual(len(owner.calls), 2)
+        self.assertEqual(owner.calls[0], owner.calls[1])
+        self.assertEqual(owner.calls[0][1]['timeout'], 20)
+        self.assertEqual(owner.calls[0][1]['failure_drain_seconds'], 5)
+        api.signal.assert_called_once_with(101)
+        self.assertEqual(api.close.call_args_list, [mock.call(900), mock.call(102), mock.call(101), mock.call(901)])
+        api.duplicate.assert_called_once_with(-1, 3, -1, 0x0004)
+        self.assertEqual(owner.native_calls, [('accounting', 3), ('member', 900, 901),
+            ('close', 900), ('close', 102), ('close', 101), ('accounting', 901), ('close', 901)])
+        self.assertEqual(remaining, {'python.exe', 'source'})
+
+    def test_full_controller_query_membership_or_reference_close_failure_cannot_pass(self):
+        for fault in ('nonzero', 'query', 'child_close', 'job_close', 'membership'):
+            with self.subTest(fault=fault):
+                code, value, owner, api, remaining = self.controller_case(fault)
+                self.assertEqual(code, 1); self.assertEqual(value['result'], 'failed')
+                self.assertFalse(value['cleanup_complete'] or value['observation_complete'])
+                self.assertIs(owner._active.final_result, False)
+                self.assertTrue(owner._active.uncertain)
+                self.assertEqual(len(remaining - {'python.exe', 'source'}), 1)
+                self.assertEqual(api.close.call_args_list, [mock.call(900), mock.call(102), mock.call(101), mock.call(901)])
+                api.signal.assert_called_once_with(101)
+                final_calls = owner.native_calls.count(('accounting', 901))
+                self.assertEqual(final_calls, 0 if fault in {'child_close', 'membership'} else 1)
+                if fault == 'job_close': self.assertIsNone(value['query_job_closed'])
+                if fault == 'nonzero': self.assertEqual(value['final_active'], 1)
+                self.assertNotIn('canary', json.dumps(value))
+
+    def test_full_controller_decreasing_total_retains_failed_observations(self):
+        code, value, owner, api, remaining = self.controller_case('decreasing_total')
+        self.assertEqual(code, 1)
+        self.assertEqual((value['result'], value['reason']), ('failed', 'job_quiescence'))
+        self.assertEqual((value['before_active'], value['before_total']), (2, 4))
+        self.assertEqual((value['final_active'], value['final_total']), (0, 1))
+        self.assertFalse(value['observation_complete'] or value['cleanup_complete'])
+        self.assertTrue(value['expected_failure'] and value['owner_sticky_failed'])
+        self.assertTrue(value['child_in_job'] and value['query_job_closed'])
+        self.assertIs(owner._active.final_result, False)
+        self.assertTrue(owner._active.uncertain)
+        self.assertEqual(owner.native_calls.count(('accounting', 901)), 1)
+        api.signal.assert_called_once_with(101)
+        self.assertEqual(api.close.call_args_list, [mock.call(900), mock.call(102), mock.call(101), mock.call(901)])
+        self.assertEqual(len(remaining - {'python.exe', 'source'}), 1)
+
+    def observe(self, api=None, owner=None):
+        owner = FakeOwner() if owner is None else owner
+        if api is None:
+            api = mock.Mock(); api.current.return_value = -1
+            api.duplicate.return_value = 901; api.wait.return_value = False
+        observation = Q.JobObservation(owner, api)
+        try:
+            observation.install()
+            owner.run_setup(['fixed'])
+        except subprocess.TimeoutExpired as error:
+            pending = error
+            trace = error.__traceback__
+        finally:
+            observation.restore()
+        self.assertIs(pending.__traceback__, trace)
+        return owner, api, observation, pending
+
+    def test_job_wrapper_retains_exact_capability_and_original_accounting_tuple(self):
+        owner, api, observation, error = self.observe()
+        process, capture = Q.recover(owner, error)
+        Q.expected_failure(owner, process, capture, error)
+        observation.ready(process)
+        self.assertIs(observation.before, owner.before)
+        self.assertIs(owner._Win32.accounting, observation.original)
+        self.assertIs(owner._active.final_result, False)
+        self.assertEqual(owner.native_calls, [('accounting', 3)])
+        api.duplicate.assert_called_once_with(-1, 3, -1, 0x0004)
+        api.flags.assert_called_once_with(901, 0)
+        self.assertEqual(observation.calls, 1)
+        self.assertTrue(observation.close())
+        self.assertTrue(observation.close())
+        api.close.assert_called_once_with(901)
+
+    def test_duplicate_failed_bool_or_interruption_nonnull_is_never_close_authority(self):
+        for outcome in (0, KeyboardInterrupt('private-canary'), 1):
+            with self.subTest(outcome=type(outcome).__name__):
+                api = object.__new__(F.Native)
+                def duplicate(source, handle, target, output, access, inherit, options):
+                    self.assertEqual((source, handle, target, access, inherit, options), (-1, 3, -1, 4, 0, 0))
+                    output._obj.value = 901
+                    if isinstance(outcome, BaseException): raise outcome
+                    return outcome
+                api.k = types.SimpleNamespace(DuplicateHandle=mock.Mock(side_effect=duplicate))
+                api.current = lambda: -1; api.flags = mock.Mock(); api.close = mock.Mock()
+                owner, _, observation, error = self.observe(api)
+                self.assertIs(type(error), subprocess.TimeoutExpired)
+                if outcome == 1:
+                    self.assertEqual(observation.job, 901)
+                    observation.close(); api.close.assert_called_once_with(901)
+                else:
+                    self.assertIsNone(observation.job)
+                    self.assertTrue(observation.failed)
+                    self.assertFalse(observation.close())
+                    api.close.assert_not_called(); api.flags.assert_not_called()
+                api.k.DuplicateHandle.assert_called_once()
+
+    def test_successful_duplicate_invalid_output_or_later_failure_keeps_authority_precise(self):
+        for output_value in (None, 0, 2**64-1):
+            api = object.__new__(F.Native)
+            def duplicate(source, handle, target, output, *rest):
+                output._obj.value = output_value; return 1
+            api.k = types.SimpleNamespace(DuplicateHandle=mock.Mock(side_effect=duplicate))
+            api.current = lambda: -1; api.flags = mock.Mock(); api.close = mock.Mock()
+            _, _, observation, _ = self.observe(api)
+            self.assertIsNone(observation.job); observation.close(); api.close.assert_not_called()
+        api = mock.Mock(); api.current.return_value = -1; api.duplicate.return_value = 901
+        api.flags.side_effect = KeyboardInterrupt('private-canary')
+        _, _, observation, _ = self.observe(api)
+        self.assertEqual(observation.job, 901)
+        self.assertTrue(observation.failed)
+        observation.close(); observation.close(); api.close.assert_called_once_with(901)
+
+    def test_repeated_or_foreign_wrapper_never_repeats_or_suppresses_original_call(self):
+        owner, api, observation, _ = self.observe()
+        result = observation.wrapper(owner._active.api, 3)
+        self.assertIs(result, owner.before)
+        self.assertEqual(owner.native_calls, [('accounting', 3), ('accounting', 3)])
+        api.duplicate.assert_called_once(); self.assertTrue(observation.failed)
+        observation.close()
+        for mutation in ('active', 'api', 'closed', 'borrow', 'handle'):
+            owner = FakeOwner(); api = mock.Mock(); api.current.return_value = -1
+            observation = Q.JobObservation(owner, api)
+            process = FakeProcess(); process.api = owner._Win32(); owner._active = process
+            process.job.owner, process.job.attempted, process.job.closed, process.job.users = process, False, None, 1
+            native, handle = process.api, 3
+            if mutation == 'active': owner._active = object()
+            elif mutation == 'api': process.api = object()
+            elif mutation == 'closed': process.job.closed = True
+            elif mutation == 'borrow': process.job.users = 0
+            else: handle = 4
+            result = observation.wrapper(native, handle)
+            self.assertIs(result, owner.before if handle == 3 else owner.after)
+            self.assertEqual(owner.native_calls, [('accounting', handle)])
+            api.duplicate.assert_not_called(); self.assertTrue(observation.failed)
+
+    def test_original_accounting_baseexception_and_restore_preserve_pending_primary(self):
+        owner = FakeOwner(); primary = KeyboardInterrupt('private-canary')
+        def original(native, handle): raise primary
+        owner._Win32.accounting = original
+        api = mock.Mock(); observation = Q.JobObservation(owner, api)
+        with self.assertRaises(KeyboardInterrupt) as caught:
+            observation.wrapper(object(), 3)
+        self.assertIs(caught.exception, primary); api.duplicate.assert_not_called()
+        owner = FakeOwner(); api = mock.Mock(); api.current.return_value = -1; api.duplicate.return_value = 901
+        observation = Q.JobObservation(owner, api)
+        import builtins
+        sets = []
+        def set_attribute(target, name, value):
+            sets.append(value)
+            if value is observation.original: raise KeyboardInterrupt('restore-canary')
+            return builtins.setattr(target, name, value)
+        with mock.patch.object(Q, 'setattr', side_effect=set_attribute, create=True):
+            try:
+                try:
+                    observation.install()
+                    try: owner.run_setup(['fixed'])
+                    except subprocess.TimeoutExpired as error:
+                        primary, trace = error, error.__traceback__
+                        raise
+                finally: observation.restore()
+            except subprocess.TimeoutExpired as error:
+                self.assertIs(error, primary); self.assertIs(error.__traceback__, trace)
+                self.assertEqual(Q.recover(owner, error), (owner._active, owner.capture))
+            observation.restore()
+        self.assertEqual(sets, [observation.wrapper, observation.original])
+        self.assertTrue(observation.failed); self.assertFalse(observation.restored)
+        with self.assertRaises(Q.CalibrationError): observation.ready(owner._active)
+        observation.close(); api.close.assert_called_once_with(901)
+
+    def test_known_child_membership_and_live_state_required_without_pid_open(self):
+        for output, returned, exited in ((1, 1, False), (0, 1, False), (2, 1, False), (1, 0, False), (1, 1, True)):
+            owner, api, observation, _ = self.observe()
+            def member(child, job, value): value._obj.value = output; return returned
+            owner._active.api.k.IsProcessInJob.side_effect = member
+            api.wait.return_value = exited
+            if (output, returned, exited) == (1, 1, False):
+                observation.membership(900); self.assertIs(observation.member, True)
+            else:
+                with self.assertRaises(Q.CalibrationError): observation.membership(900)
+                self.assertTrue(observation.failed); self.assertIsNone(observation.member)
+            owner._active.api.k.IsProcessInJob.assert_called_once()
+            api.open_controller.assert_not_called()
+            observation.close()
+        self.assertNotIn('OpenProcess', (ROOT/'scripts/application-lab/qualify_helper_owner.py').read_text())
+
+    def test_single_final_query_requires_zero_and_successful_once_only_job_close(self):
+        for result in ((0, 4), (0, 5), (0, 1), (1, 4), (True, 4), (0, True), (4, 2)):
+            owner, api, observation, _ = self.observe(); owner.after = result
+            observation.membership(900)
+            if result in ((0, 4), (0, 5)): observation.quiescence()
+            else:
+                with self.assertRaises(Q.CalibrationError): observation.quiescence()
+            if result == (0, 1) and type(result[1]) is int:
+                self.assertEqual(observation.before, (2, 4))
+                self.assertEqual(observation.after, (0, 1))
+                self.assertTrue(observation.failed)
+            with self.assertRaises(Q.CalibrationError): observation.quiescence()
+            self.assertEqual(owner.native_calls.count(('accounting', 901)), 1)
+            observation.close(); observation.close(); api.close.assert_called_once_with(901)
+        owner, api, observation, _ = self.observe(); observation.membership(900)
+        api.close.side_effect = KeyboardInterrupt('close-canary')
+        observation.quiescence()
+        self.assertFalse(observation.close()); self.assertFalse(observation.close())
+        self.assertTrue(observation.failed); self.assertIsNone(observation.closed)
+        api.close.assert_called_once_with(901)
+
+    def test_final_query_error_or_missing_member_never_becomes_quiet(self):
+        owner, api, observation, _ = self.observe()
+        with self.assertRaises(Q.CalibrationError): observation.quiescence()
+        self.assertNotIn(('accounting', 901), owner.native_calls); observation.close()
+        owner, api, observation, _ = self.observe(); observation.membership(900)
+        primary = KeyboardInterrupt('query-canary')
+        original = observation.original
+        def query(native, handle):
+            if handle == 901: raise primary
+            return original(native, handle)
+        observation.original = query
+        with self.assertRaises(KeyboardInterrupt) as caught: observation.quiescence()
+        self.assertIs(caught.exception, primary)
+        self.assertIsNone(observation.after); self.assertTrue(observation.failed)
+        observation.close(); api.close.assert_called_once_with(901)
+
+    def test_emitter_monotonic_total_required_only_for_complete_observation(self):
+        value = dict(schema_version=2, contract=Q.CONTRACT, scope='hosted_windows_x64_inert_descendant',
+            result='passed', reason=None, expected_failure=True, owner_sticky_failed=True, cleanup_complete=True,
+            parent_exit=0, child_exit=0, forced=True, architecture='native_x64', sources_sha256='1'*64,
+            controller_sha256='2'*64, python_sha256='3'*64, powershell_file_sha256='4'*64,
+            child_in_job=True, query_job_closed=True, observation_complete=True,
+            before_active=2, before_total=4, final_active=0, final_total=4)
+        for total in (4, 5):
+            with redirect_stdout(io.StringIO()) as output:
+                self.assertTrue(Q.emit(dict(value, final_total=total)))
+            self.assertEqual(json.loads(output.getvalue().split('=', 1)[1])['final_total'], total)
+        for result in ('passed', 'failed'):
+            with redirect_stdout(io.StringIO()) as output:
+                self.assertFalse(Q.emit(dict(value, result=result, final_total=1)))
+            self.assertEqual(output.getvalue(), '')
+        failed = dict(value, result='failed', reason='job_quiescence', cleanup_complete=False,
+                      observation_complete=False, final_total=1)
+        with redirect_stdout(io.StringIO()) as output:
+            self.assertTrue(Q.emit(failed))
+        self.assertEqual(json.loads(output.getvalue().split('=', 1)[1]), failed)
 
     def test_closed_public_record_rejects_private_strings_and_printer_failure(self):
-        value = dict(schema_version=1, scope='hosted_windows_x64_inert_descendant', result='failed', reason='transfer',
+        value = dict(schema_version=2, contract=Q.CONTRACT, scope='hosted_windows_x64_inert_descendant', result='failed', reason='transfer',
             expected_failure=False, owner_sticky_failed=False, cleanup_complete=False, parent_exit=None, child_exit=None,
-            forced=None, architecture=None, sources_sha256=None, controller_sha256=None, python_sha256=None, powershell_file_sha256=None)
+            forced=None, architecture=None, sources_sha256=None, controller_sha256=None, python_sha256=None, powershell_file_sha256=None,
+            child_in_job=None, query_job_closed=None, observation_complete=False, before_active=None, before_total=None,
+            final_active=None, final_total=None)
         with redirect_stdout(io.StringIO()) as output:
             self.assertTrue(Q.emit(value))
         self.assertLess(len(output.getvalue().encode()), 2048)
-        for key in ('reason', 'sources_sha256', 'forced', 'child_exit'):
+        for key in ('reason', 'sources_sha256', 'forced', 'child_exit', 'contract', 'child_in_job', 'final_active', 'query_job_closed'):
             with redirect_stdout(io.StringIO()) as output:
                 self.assertFalse(Q.emit(dict(value, **{key:'private-canary'})))
             self.assertEqual(output.getvalue(), '')
         with mock.patch('builtins.print', side_effect=KeyboardInterrupt('private-canary')):
             self.assertFalse(Q.emit(value))
+        for mutation in ({'schema_version':1}, {'observation_complete':True}, {'final_active':0},
+                         {'final_active':1, 'final_total':0}, {'child_in_job':1}):
+            with redirect_stdout(io.StringIO()) as output:
+                self.assertFalse(Q.emit(dict(value, **mutation)))
+            self.assertEqual(output.getvalue(), '')
 
 
 if __name__ == '__main__':
