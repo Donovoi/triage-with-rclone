@@ -59,8 +59,12 @@ def owned_ready_bridge():
     bridge.response_lock = threading.RLock(); bridge.deadline = P.time.monotonic()+165
     bridge._diagnostic = Mock()
     bridge.process = Mock(returncode=0); bridge.process.poll.return_value = None
+    # The owner now supplies an explicit closed-handle/reservation result.
+    bridge.process.finalize.return_value = True
     bridge.watchdog = Mock(); bridge.watchdog.is_alive.return_value = False
-    bridge.threads = []
+    bridge.threads = [Mock(), Mock()]
+    for reader in bridge.threads:
+        reader.is_alive.return_value = False
     bridge.messages = Mock(); bridge.messages.empty.return_value = True
     bridge.packets = []
     bridge.process.stdin.write.side_effect = lambda wire: bridge.packets.append(json.loads(wire))
@@ -145,6 +149,59 @@ class ProducerTests(unittest.TestCase):
         self.assertFalse(fixed.forced or fixed.failed.is_set() or fixed.observer_started)
         fixed.process.stdin.close.assert_called_once(); fixed.process.wait.assert_called_once_with(timeout=10)
         fixed.watchdog.join.assert_called_once_with(1)
+        for reader in fixed.threads:
+            reader.join.assert_called_once_with(2)
+        fixed.process.finalize.assert_called_once_with()
+        fixed.process.mark_uncertain.assert_not_called()
+
+    def test_ready_close_requires_exact_owner_proof_after_original_teardown(self):
+        for outcome in (True, False, None, 1, Mock(), KeyboardInterrupt("private canary")):
+            with self.subTest(outcome_type=type(outcome).__name__):
+                bridge = owned_ready_bridge(); bridge.command("ready")
+                def finalize():
+                    bridge.process.stdin.close.assert_called_once_with()
+                    bridge.process.wait.assert_called_once_with(timeout=10)
+                    bridge.watchdog.join.assert_called_once_with(1)
+                    for reader in bridge.threads:
+                        reader.join.assert_called_once_with(2)
+                    bridge.process.stdout.close.assert_called_once_with()
+                    bridge.process.stderr.close.assert_called_once_with()
+                    if bridge.process.finalize.call_count == 1:
+                        bridge.process.mark_uncertain.assert_not_called()
+                    else:
+                        # None is outside the owner's bool contract; the existing
+                        # close finally makes one defensive, non-crediting call.
+                        self.assertIsNone(outcome)
+                        bridge.process.mark_uncertain.assert_called_once_with()
+                    if isinstance(outcome, BaseException):
+                        raise outcome
+                    return outcome
+                bridge.process.finalize.side_effect = finalize
+                self.assertIs(P.close_session(bridge, True, False, 'token_replacement', RUNTIME), outcome is True)
+                self.assertEqual(bridge.process.finalize.call_count, 2 if outcome is None else 1)
+                self.assertTrue(all(not c.args and not c.kwargs for c in bridge.process.finalize.call_args_list))
+                self.assertEqual([p["action"] for p in bridge.packets], ["ready", "close_ready"])
+                self.assertFalse(bridge.observer_started)
+
+        # Even a positive owner return cannot override an original cleanup failure.
+        for failure in ("forced", "failed", "exit", "messages", "watchdog", "reader"):
+            with self.subTest(failure=failure):
+                bridge = owned_ready_bridge(); bridge.command("ready")
+                bridge.command("close_ready")
+                if failure == "forced": bridge.forced = True
+                elif failure == "failed": bridge.failed.set()
+                elif failure == "exit": bridge.process.returncode = 1
+                elif failure == "messages": bridge.messages.empty.return_value = False
+                elif failure == "watchdog": bridge.watchdog.is_alive.return_value = True
+                else: bridge.threads[0].is_alive.return_value = True
+                def finalize_uncertain():
+                    bridge.process.mark_uncertain.assert_called_once_with()
+                    return True
+                bridge.process.finalize.side_effect = finalize_uncertain
+                self.assertFalse(bridge.close())
+                bridge.process.finalize.assert_called_once_with()
+                if failure == "reader":
+                    bridge.process.stdout.close.assert_not_called()
 
     def test_ready_proof_never_covers_possible_start_or_bad_close_reply(self):
         bridge = owned_ready_bridge(); bridge.command("ready")
