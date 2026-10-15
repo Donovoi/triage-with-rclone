@@ -102,6 +102,65 @@ def harness_stdout(code=0):
             f"test result: {outcome}. {passed} passed; {failed} failed; 0 ignored; 0 measured; 16 filtered out; finished in 0.12s\n").encode()
 
 
+class BudgetReasonTests(unittest.TestCase):
+    def test_legacy_and_closed_branch_reasons_remain_unavailable(self):
+        expected = {
+            "start_reservation_failed", "end_reservation_failed", "end_capacity_reached",
+            "target_start_capacity_reached", "callback_limit_exceeded",
+            "initial_session_bounds_unverified", "final_bounds_proof_unverified",
+        }
+        self.assertEqual(V.BUDGET_BRANCH_REASONS, expected)
+        for schema in (1, 2, 3):
+            for reason in expected | {"budget_exceeded"}:
+                for code in (0, 101):
+                    with self.subTest(schema=schema, reason=reason, code=code):
+                        x=record();x.update(schema=schema,status="unavailable",reason=reason,counts=None,
+                            original_ok=code==0,os_code=None if code==0 else 32)
+                        if schema >= 2:x["ownership"]=None
+                        if reason in {"initial_session_bounds_unverified","final_bounds_proof_unverified"}:
+                            x["bounded"]=False
+                        result=V.validate(json.dumps(x).encode(),code,SHA)
+                        self.assertEqual(result,x)
+                        if reason in {"initial_session_bounds_unverified","final_bounds_proof_unverified"}:
+                            with self.assertRaisesRegex(ValueError,"^budget_bounds_contradiction$"):
+                                V.validate(json.dumps(dict(x,bounded=True)).encode(),code,SHA)
+                        for status in ("observed","not_reproduced"):
+                            altered=dict(x,status=status)
+                            with self.assertRaises(ValueError):V.validate(json.dumps(altered).encode(),code,SHA)
+
+    def test_branch_reasons_do_not_infer_a_new_proof_or_allow_private_text(self):
+        # Capacity/reservation failure need not make the independent ETW buffer
+        # bounds false; no invented equality between those different quantities.
+        for reason in V.BUDGET_BRANCH_REASONS - {"initial_session_bounds_unverified","final_bounds_proof_unverified"}:
+            x=record();x.update(status="unavailable",reason=reason,counts=None,bounded=True)
+            self.assertIs(V.validate(json.dumps(x).encode(),101,SHA)["bounded"],True)
+        for reason in ("budget_duration_exceeded","END_CAPACITY_REACHED","end_capacity_reached ",
+                       "end_capacity_reached\0","private-canary/path/account",None,1,[],{}):
+            x=record();x.update(status="unavailable",reason=reason,counts=None)
+            with self.assertRaises(ValueError):V.validate(json.dumps(x).encode(),101,SHA)
+        x=record();x.update(status="unavailable",reason="end_capacity_reached",counts=None,budget_subcause="private-canary")
+        with self.assertRaises(ValueError):V.validate(json.dumps(x).encode(),101,SHA)
+
+    def test_normalized_unavailable_keeps_nonzero_exit_and_no_acceptance(self):
+        for reason in V.BUDGET_BRANCH_REASONS | {"budget_exceeded"}:
+            for code in (0,101):
+                with self.subTest(reason=reason,code=code),tempfile.TemporaryDirectory() as directory:
+                    x=record();x.update(schema=3,status="unavailable",reason=reason,counts=None,ownership=None,
+                        original_ok=code==0,os_code=None if code==0 else 32)
+                    if reason in {"initial_session_bounds_unverified","final_bounds_proof_unverified"}:x["bounded"]=False
+                    log=Path(directory)/"private.log"
+                    log.write_bytes(b"private-canary-unrelated-line\nruntime_cleanup_trace="+json.dumps(x).encode()+b"\n")
+                    argv=["validate_result.py","--log",str(log),"--test-exit",str(code),
+                          "--runtime-sha256",SHA,"--application-sha256","b"*64,"--commit","c"*40]
+                    output=io.StringIO()
+                    with mock.patch("sys.argv",argv),contextlib.redirect_stdout(output):self.assertEqual(V.main(),1)
+                    normalized=json.loads(output.getvalue())
+                    self.assertEqual(normalized["trace"],x)
+                    self.assertIs(normalized["provider_accepted"],False)
+                    self.assertIs(normalized["cleanup_fixed"],False)
+                    self.assertNotIn("private-canary",output.getvalue())
+
+
 class ArtifactTests(unittest.TestCase):
     def test_exact_pair_selected_with_mixed_cargo_separators(self):
         rows=artifacts();rows[0]['manifest_path']=rows[0]['manifest_path'].replace('\\','/')
