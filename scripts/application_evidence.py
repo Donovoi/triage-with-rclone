@@ -47,7 +47,7 @@ HARNESS_FILES = (
     "scripts/application-lab/HostedConPtySession.cs",
     "scripts/application-lab/hosted_session.ps1",
     "scripts/application-lab/prepare_case.ps1",
-    "scripts/application-lab/run_windows_http.py",
+    "scripts/application-lab/run_windows_http.py", "scripts/application-lab/owned_helper_process.py",
 )
 BINDING_KEYS = frozenset({"application_sha256", "application_source_sha256", "build_commit",
                          "build_target", "build_profile", "cargo_lock_sha256",

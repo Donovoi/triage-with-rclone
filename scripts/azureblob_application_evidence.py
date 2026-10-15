@@ -33,7 +33,7 @@ RECEIPT_KEYS = A.RECEIPT_KEYS | {"claims", "experiment", "authentication"}
 HARNESS_FILES = (
     "scripts/application_evidence.py", "scripts/webdav_application_evidence.py", "scripts/azureblob_application_evidence.py",
     "scripts/provider-lab/fixture_servers.py", "scripts/application-lab/fixture_http.py", "scripts/application-lab/fixture_webdav.py", "scripts/application-lab/fixture_azureblob.py",
-    "scripts/application-lab/run_windows_http.py", "scripts/application-lab/run_windows_webdav.py",
+    "scripts/application-lab/run_windows_http.py", "scripts/application-lab/owned_helper_process.py", "scripts/application-lab/run_windows_webdav.py",
     "scripts/application-lab/run_windows_azureblob.py", "scripts/application-lab/filesystem_controller.py",
     "scripts/application-lab/HostedConPtySession.cs", "scripts/application-lab/hosted_session.ps1", "scripts/application-lab/prepare_case.ps1")
 

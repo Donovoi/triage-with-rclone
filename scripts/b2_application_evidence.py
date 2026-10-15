@@ -34,7 +34,7 @@ RECEIPT_KEYS = A.RECEIPT_KEYS | {"claims", "experiment", "renewal_denial"}
 HARNESS_FILES = (
     "scripts/application_evidence.py", "scripts/webdav_application_evidence.py", "scripts/b2_application_evidence.py",
     "scripts/application-lab/fixture_http.py", "scripts/application-lab/fixture_webdav.py", "scripts/application-lab/fixture_b2.py",
-    "scripts/application-lab/run_windows_http.py", "scripts/application-lab/run_windows_webdav.py",
+    "scripts/application-lab/run_windows_http.py", "scripts/application-lab/owned_helper_process.py", "scripts/application-lab/run_windows_webdav.py",
     "scripts/application-lab/run_windows_b2.py", "scripts/application-lab/filesystem_controller.py",
     "scripts/application-lab/HostedConPtySession.cs", "scripts/application-lab/hosted_session.ps1", "scripts/application-lab/prepare_case.ps1")
 

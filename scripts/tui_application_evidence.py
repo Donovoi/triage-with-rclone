@@ -43,7 +43,7 @@ LIMITATIONS = ("no_vendor_acceptance", "no_oauth_or_refresh", "no_listing_cancel
 CLI_HARNESS_FILES = (
     "scripts/application_evidence.py", "scripts/application-lab/fixture_http.py",
     "scripts/application-lab/HostedConPtySession.cs", "scripts/application-lab/hosted_session.ps1",
-    "scripts/application-lab/prepare_case.ps1", "scripts/application-lab/run_windows_http.py",
+    "scripts/application-lab/prepare_case.ps1", "scripts/application-lab/run_windows_http.py", "scripts/application-lab/owned_helper_process.py",
 )
 HARNESS_FILES = tuple(sorted(CLI_HARNESS_FILES + (
     "scripts/tui_application_evidence.py", "scripts/application-lab/run_windows_tui.py",

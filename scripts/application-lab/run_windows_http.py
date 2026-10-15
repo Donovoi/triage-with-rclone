@@ -20,6 +20,7 @@ import shutil
 import signal
 import stat
 import subprocess
+import sys
 import threading
 import time
 import types
@@ -120,10 +121,59 @@ F = load("application_http_fixture", HERE / "fixture_http.py")
 SELF_SHA256 = sha(read(Path(__file__), 512 * 1024))
 
 
+def _load_owned_helper():
+    # All fresh H/W.H/C.H modules share this fixed unversioned sys slot.
+    need(threading.current_thread() is threading.main_thread(), "preservation_failed")
+    slot = "_triage_acceptance_helper_owner"
+    path = (HERE / "owned_helper_process.py").resolve()
+    data = read(path, 512 * 1024)
+    digest, loader_digest = sha(data), SELF_SHA256
+    keys = {"state", "api", "path", "bytes", "sha256", "loader_sha256", "module", "token", "preserved"}
+    envelope = getattr(sys, slot, None)
+    if envelope is None and slot not in vars(sys):
+        module = types.ModuleType("triage_registered_helper_owner")
+        module.__file__ = str(path)
+        token = object()
+        envelope = dict(state="initializing", api=1, path=str(path), bytes=len(data), sha256=digest,
+                        loader_sha256=loader_digest, module=module, token=token, preserved=None)
+        module._registration, module._registration_token, module._module_identity = envelope, token, module
+        def preserved():
+            need(getattr(sys, slot, None) is envelope and envelope["module"] is module and
+                 sha(read(path, 512 * 1024)) == digest and
+                 sha(read(Path(__file__), 512 * 1024)) == loader_digest, "preservation_failed")
+        envelope["preserved"] = preserved
+        setattr(sys, slot, envelope)  # No deletion/replacement on any failure.
+        try:
+            exec(compile(data, str(path), "exec"), module.__dict__)
+            module.loaded_source_sha256 = digest
+            need(module.API_VERSION == 1 and all(callable(getattr(module, name, None))
+                 for name in ("spawn", "run_setup", "_registered")), "preservation_failed")
+            envelope["state"] = "ready"
+        except BaseException:
+            envelope["state"] = "failed"
+            raise
+    need(type(envelope) is dict and set(envelope) == keys and envelope["state"] == "ready" and
+         type(envelope["api"]) is int and envelope["api"] == 1 and envelope["path"] == str(path) and
+         type(envelope["bytes"]) is int and envelope["bytes"] == len(data) and envelope["sha256"] == digest and
+         envelope["loader_sha256"] == loader_digest and type(envelope["module"]) is types.ModuleType,
+         "preservation_failed")
+    module = envelope["module"]
+    need(module.__file__ == str(path) and module.loaded_source_sha256 == digest and
+         module._registration is envelope and module._registration_token is envelope["token"] and
+         module._module_identity is module and type(module.API_VERSION) is int and module.API_VERSION == 1,
+         "preservation_failed")
+    module._registered()
+    return module
+
+
+O = _load_owned_helper()
+
+
 def loaded_sources_preserved():
-    need(all(sha(read(module.__file__, 512 * 1024)) == module.loaded_source_sha256 for module in (E, F)),
+    need(all(sha(read(module.__file__, 512 * 1024)) == module.loaded_source_sha256 for module in (E, F, O)),
          "preservation_failed")
     need(sha(read(Path(__file__), 512 * 1024)) == SELF_SHA256, "preservation_failed")
+    O._registered()
 
 
 def fixture_manifest():
@@ -402,7 +452,7 @@ SETUP_STAGES = {
     "Create": ("input", "parent", "identity", "acl", "compile", "create", "verify", "complete"),
     "Verify": ("input", "parent", "identity", "verify", "complete"),
 }
-SETUP_OUTCOMES = frozenset({"timeout", "launch_failed", "environment_invalid", "exit_failed", "protocol_failed", "parent_changed"})
+SETUP_OUTCOMES = frozenset({"ownership_failed", "timeout", "launch_failed", "environment_invalid", "exit_failed", "protocol_failed", "parent_changed"})
 SETUP_FAILURE_REASONS = frozenset({"verification_failed", "entry_limit", "metadata_read_failed", "reparse",
                                    "owner_invalid", "root_unprotected", "acl_invalid", "acl_incomplete", "enumeration_failed"})
 SETUP_NODE_CATEGORIES = frozenset({"root", "application_root", "helper_root", "helper_private_root",
@@ -546,7 +596,7 @@ def prepare(parent, name, action="Create"):
         setup_diagnostic("environment_invalid", action, scope, None, None)
         raise ProducerError("case_setup_failed") from None
     try:
-        result = subprocess.run([powershell(), "-NoProfile", "-NonInteractive", "-File",
+        result = O.run_setup([powershell(), "-NoProfile", "-NonInteractive", "-File",
                                  str(HERE / "prepare_case.ps1"), "-Action", action,
                                  "-Parent", str(parent), "-Name", name],
                                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
@@ -557,6 +607,9 @@ def prepare(parent, name, action="Create"):
         except (ProducerError, TypeError, ValueError):
             stage = None
         setup_diagnostic("timeout", action, scope, None, stage)
+        raise ProducerError("case_setup_failed") from None
+    except O.OwnershipError:
+        setup_diagnostic("ownership_failed", action, scope, None, None)
         raise ProducerError("case_setup_failed") from None
     except OSError:
         setup_diagnostic("launch_failed", action, scope, None, None)
@@ -720,6 +773,166 @@ def transport_diagnostic(value):
     print("application_transport_diagnostic=" + E.compact(value).decode("ascii"), flush=True)
 
 
+READY_TIMING_FIELDS = ("compile_seen_ms", "compiled_seen_ms", "write_returned_ms",
+                       "wait_started_ms", "wait_budget_ms", "failure_seen_ms")
+
+
+def ready_timing_projection(snapshot, phase, outcome):
+    """Closed parent-arrival facts, never helper duration or acceptance evidence."""
+    need(type(phase) is str and phase in BRIDGE_PHASES and type(outcome) is str and
+         outcome in BRIDGE_OUTCOMES, "session_failed")
+    value = dict(schema_version=1, clock="parent_monotonic", action="ready", phase=phase,
+                 outcome=outcome, status="unavailable", **dict.fromkeys(READY_TIMING_FIELDS))
+    if type(snapshot) is not tuple or len(snapshot) != 7:
+        return value
+    origin, first, second, written, waiting, budget, failed = snapshot
+    clocks = (origin, first, second, written, waiting, failed)
+    present = tuple(item for item in clocks if item is not None)
+    if origin is None or failed is None or not all(
+            type(item) in (int, float) and float("-inf") < item < float("inf") for item in present):
+        return value
+    if not (origin <= failed and all(origin <= item <= failed for item in present) and
+            (second is None or first is not None and first <= second) and
+            (waiting is None or written is not None and written <= waiting) and
+            ((waiting is None and budget is None) or waiting is not None and
+             type(budget) in (int, float) and 0.01 <= budget <= 60)):
+        return value
+    if (phase in {"wait", "reply"} and (written is None or waiting is None) or
+            phase not in {"wait", "reply"} and (written is not None or waiting is not None) or
+            not all(0 <= item - origin <= 2147483.647 for item in present)):
+        return value
+    offsets = tuple(None if item is None else int((item - origin) * 1000) for item in clocks[1:])
+    if not all(item is None or 0 <= item <= 2147483647 for item in offsets):
+        return value
+    milliseconds = (offsets[0], offsets[1], offsets[2], offsets[3],
+                    None if budget is None else int(budget * 1000), offsets[4])
+    value.update(status="observed", **dict(zip(READY_TIMING_FIELDS, milliseconds)))
+    return value
+
+
+class _ReadyTiming:
+    """Fixed cached observations; the first failure snapshot cannot be backfilled."""
+    def __init__(self, origin):
+        self.origin = origin
+        self.stage_value = (b"", None, None)
+        self.written = None
+        self.waiting = (None, None)
+        self.invalid = self.frozen = False
+        self.snapshot = None
+
+    def stage(self, raw, invalid):
+        # Called within the already-existing stderr lock. No new lock or I/O.
+        try:
+            if self.frozen:
+                return
+            data, first, second = self.stage_value
+            normalized = raw.replace(b"\r\n", b"\n")
+            prefix = b"application_bridge_stage=compile\n"
+            whole = prefix + b"application_bridge_stage=compiled\n"
+            # Permit a trailing split CRLF while accumulating; failure requires
+            # complete exact lines through bridge_stage, not this prefix test.
+            partial = normalized[:-1] if normalized.endswith(b"\r") else normalized
+            if invalid or not whole.startswith(partial) or not raw.startswith(data):
+                self.invalid = True
+            if not self.invalid:
+                count = normalized.count(b"\n")
+                if count and first is None or count == 2 and second is None:
+                    now = time.monotonic()
+                    if first is None:
+                        first = now
+                    if count == 2:
+                        second = now
+            self.stage_value = (raw, first, second)
+        except BaseException:
+            self.invalid = True
+
+    def write_returned(self):
+        try:
+            if self.written is None and not self.frozen:
+                self.written = time.monotonic()
+        except BaseException:
+            self.invalid = True
+
+    def wait_started(self, now, budget):
+        if self.waiting == (None, None) and not self.frozen:
+            self.waiting = (now, budget)
+
+    def failure(self, raw, invalid, phase, outcome):
+        if self.frozen:
+            return
+        self.frozen = True  # Also prevents another print after a writer failure.
+        stage, first, second = self.stage_value
+        failed = time.monotonic()
+        snapshot = (self.origin, first, second, self.written, *self.waiting, failed)
+        coherent_stage = (raw == b"" and first is None and second is None or
+                          bridge_stage(raw) == "compile" and first is not None and second is None or
+                          bridge_stage(raw) == "compiled" and first is not None and second is not None)
+        self.snapshot = snapshot if not self.invalid and not invalid and raw == stage and coherent_stage else None
+        payload = "application_helper_ready_timing=" + E.compact(
+            ready_timing_projection(self.snapshot, phase, outcome)).decode("ascii")
+        need(len(payload) < 1024, "session_failed")
+        print(payload, flush=True)
+
+
+class _BridgeWorker:
+    """Preregistered claim/revoke record; no resource inference from list position."""
+    def __init__(self, bridge, stream=None, name=None, log=None):
+        self.bridge, self.stream, self.name, self.log = bridge, stream, name, log
+        self.lock = threading.Lock()
+        self.attempted = self.returned = self.claimed = self.revoked = self.completed = False
+        self.thread = threading.Thread(target=self.run, daemon=True)
+
+    def start(self):
+        self.attempted = True
+        self.thread.start()
+        self.returned = True
+
+    def run(self):
+        claimed = False
+        try:
+            with self.lock:
+                if self.revoked:
+                    return
+                self.claimed = claimed = True
+            if self.log is None:
+                self.bridge._watch()
+            else:
+                with self.log:
+                    self.bridge._reader(self.stream, self.name, self.log)
+        except BaseException:
+            self.bridge.failed.set()
+            self.bridge._startup_best_effort(self.bridge.process.mark_uncertain)
+        finally:
+            if claimed:
+                with self.lock:
+                    self.completed = True
+
+    def failed_start_cleanup(self):
+        # Successful start-return retains normal drain, even before target claim.
+        with self.lock:
+            if not self.returned and not self.claimed:
+                self.revoked = True
+            revoked = self.revoked
+            join = self.returned or self.claimed
+        if self.log is None:
+            # There was no watchdog join in the original constructor-failure
+            # path. done is a request, not proof an entered watch branch ended.
+            return
+        joined = False
+        if join:
+            try:
+                self.thread.join(2)
+                joined = not self.thread.is_alive()
+            except BaseException:
+                pass
+        with self.lock:
+            completed = self.completed
+        if revoked or joined and completed:
+            self.bridge._startup_best_effort(self.stream.close)
+        if revoked:
+            self.bridge._startup_best_effort(self.log.close)
+
+
 class Bridge:
     """One owned hidden PS5 process; fixed JSON protocol and bounded pipe readers."""
     script_name = "hosted_session.ps1"
@@ -742,7 +955,9 @@ class Bridge:
         self.stage_bytes = bytearray()
         self.stage_invalid = False
         self.transport = {}
-        self.deadline = time.monotonic() + 165
+        origin = time.monotonic()
+        self.deadline = origin + 165
+        self._startup_best_effort(lambda: setattr(self, "ready_timing", _ReadyTiming(origin)))
         env = environment(case / "helper-env")
         env.update(GITHUB_ACTIONS="true", RUNNER_OS="Windows", RUNNER_ENVIRONMENT="github-hosted")
         # PS5.1 writes this optional cache asynchronously after module imports.
@@ -750,75 +965,94 @@ class Bridge:
         env["PSModuleAnalysisCachePath"] = "nul"
         # Both new, explicitly owned logs exist before any helper can start.
         # Unbuffered streams have no buffered-writer lock to strand on failure.
-        with ExitStack() as logs:
-            output = {name: logs.enter_context(private_file(case, "bridge-" + name + ".private"))
-                      for name in ("stdout", "stderr")}
+        output, self.workers = {}, []
+        launched = False
+        try:
+            for name in ("stdout", "stderr"):
+                output[name] = private_file(case, "bridge-" + name + ".private")
             try:
-                self.process = subprocess.Popen([powershell(), "-NoProfile", "-NonInteractive", "-File", str(HERE / self.script_name)],
+                self.process = O.spawn([powershell(), "-NoProfile", "-NonInteractive", "-File", str(HERE / self.script_name)],
                     cwd=case, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **hidden())
+                launched = True
             except BaseException:
-                self._diagnostic("invalid", "launch", "launch_failed")
+                self._startup_best_effort(lambda: self._diagnostic("invalid", "launch", "launch_failed"))
                 raise
             try:
+                # Every pipe/log and watchdog record exists before any start.
                 for stream, name in ((self.process.stdout, "stdout"), (self.process.stderr, "stderr")):
-                    thread = threading.Thread(target=self._reader, args=(stream, name, output[name]), daemon=True)
-                    thread.start()
-                    self.threads.append(thread)
-                self.watchdog = threading.Thread(target=self._watch, daemon=True)
-                self.watchdog.start()
+                    self.workers.append(_BridgeWorker(self, stream, name, output[name]))
+                self.workers.append(_BridgeWorker(self))
+                self.threads = [worker.thread for worker in self.workers[:2]]
+                self.watchdog = self.workers[2].thread
+                for worker in self.workers:
+                    worker.start()
             except BaseException:
-                self._diagnostic("invalid", "reader_start", "thread_failed")
+                self._startup_best_effort(lambda: self._diagnostic("invalid", "reader_start", "thread_failed"))
+                self._startup_best_effort(self.process.mark_uncertain)
                 self.forced = True
-                self.done.set()
-                try:
-                    self.process.kill()
-                    self.process.wait(timeout=5)
-                finally:
-                    try:
-                        for thread in self.threads:
-                            thread.join(2)
-                    finally:
-                        with ExitStack() as pipes:
-                            pipes.callback(self.process.stdin.close)
-                            for index, pipe in enumerate((self.process.stdout, self.process.stderr)):
-                                if index >= len(self.threads) or not self.threads[index].is_alive():
-                                    pipes.callback(pipe.close)
+                self._startup_best_effort(self.done.set)
+                self._startup_best_effort(self.process.kill)
+                self._startup_best_effort(lambda: self.process.wait(timeout=5))
+                for worker in self.workers:
+                    self._startup_best_effort(worker.failed_start_cleanup)
+                self._startup_best_effort(self.process.stdin.close)
+                # A constructor failure before all records exist has started
+                # no workers. Those unregistered streams are still parent-owned.
+                names = {worker.name for worker in self.workers}
+                for name in ("stdout", "stderr"):
+                    if name not in names:
+                        self._startup_best_effort(getattr(self.process, name).close)
+                self._startup_best_effort(self.process.finalize)
                 raise
-            logs.pop_all()  # Each started reader now owns exactly its log stream.
+        except BaseException:
+            # Registered records alone govern their logs. In particular, outer
+            # cleanup cannot close a claimed log or replace the first exception.
+            names = {worker.name for worker in self.workers}
+            for name, log in output.items():
+                if not launched or name not in names:
+                    self._startup_best_effort(log.close)
+            raise
+
+    @staticmethod
+    def _startup_best_effort(action):
+        try:
+            action()
+        except BaseException:
+            pass
 
     def _reader(self, stream, name, log):
         total, buffer = 0, bytearray()
         try:
-            with log:
-                while data := stream.read1(4096):
-                    total += len(data)
-                    if total > 1024 * 1024:
+            while data := stream.read1(4096):
+                total += len(data)
+                if total > 1024 * 1024:
+                    self.failed.set()
+                    return
+                need(log.write(data) == len(data), "session_failed")
+                if name == "stderr":
+                    with self.response_lock:
+                        if len(self.stage_bytes) + len(data) > 4096:
+                            self.stage_invalid = True
+                            self.stage_bytes.clear()
+                        elif not self.stage_invalid:
+                            self.stage_bytes.extend(data)
+                        self._startup_best_effort(lambda: self.ready_timing.stage(bytes(self.stage_bytes), self.stage_invalid))
+                if name == "stdout":
+                    buffer.extend(data)
+                    if len(buffer) > 65536:
                         self.failed.set()
                         return
-                    need(log.write(data) == len(data), "session_failed")
-                    if name == "stderr":
+                    while b"\n" in buffer:
+                        line, _, tail = buffer.partition(b"\n")
+                        buffer = bytearray(tail)
                         with self.response_lock:
-                            if len(self.stage_bytes) + len(data) > 4096:
-                                self.stage_invalid = True
-                                self.stage_bytes.clear()
-                            elif not self.stage_invalid:
-                                self.stage_bytes.extend(data)
-                    if name == "stdout":
-                        buffer.extend(data)
-                        if len(buffer) > 65536:
-                            self.failed.set()
-                            return
-                        while b"\n" in buffer:
-                            line, _, tail = buffer.partition(b"\n")
-                            buffer = bytearray(tail)
-                            with self.response_lock:
-                                if self.responses >= self.calls:
-                                    self.failed.set()
-                                    return
-                                self.responses += 1
-                            self.messages.put_nowait(bytes(line).rstrip(b"\r"))
-                if name == "stdout" and buffer:
-                    self.failed.set()
+                            if self.responses >= self.calls:
+                                self.failed.set()
+                                return
+                            self.responses += 1
+                        self.messages.put_nowait(bytes(line).rstrip(b"\r"))
+            if name == "stdout" and buffer:
+                self.failed.set()
         except Exception:
             self.failed.set()
 
@@ -874,11 +1108,17 @@ class Bridge:
             phase = "write"
             self.process.stdin.write(payload)
             self.process.stdin.flush()
+            if action == "ready":
+                self._startup_best_effort(lambda: self.ready_timing.write_returned())
             phase = "wait"
             # The first reply includes cold helper compilation. It consumes the
             # existing lifetime budget; later commands keep their shorter cap.
             response_seconds = 60 if action == "ready" else 35
-            data = self.messages.get(timeout=max(0.01, min(response_seconds, self.deadline - time.monotonic())))
+            wait_started = time.monotonic()
+            wait_seconds = max(0.01, min(response_seconds, self.deadline - wait_started))
+            if action == "ready":
+                self._startup_best_effort(lambda: self.ready_timing.wait_started(wait_started, wait_seconds))
+            data = self.messages.get(timeout=wait_seconds)
             phase = "reply"
             need(not self.failed.is_set(), "session_failed")
             value = strict_json(data, 65536)
@@ -898,11 +1138,14 @@ class Bridge:
             self.failed.set()
             outcome = ("timeout" if isinstance(error, queue.Empty) else "io_failed" if isinstance(error, OSError)
                        else "protocol_failed" if phase == "reply" else "rejected")
+            if type(action) is str and action == "ready":
+                self._startup_best_effort(lambda: self.ready_timing.failure(
+                    bytes(self.stage_bytes), self.stage_invalid, phase, outcome))
             self._diagnostic(action, phase, outcome)
             raise ProducerError("session_failed") from None
 
     def close(self):
-        clean, waiting = None, None
+        clean, waiting, owned = None, None, None
         try:
             try:
                 if self.process.poll() is None and (self.last is None or self.last["state"] not in {"finished", "closed"}):
@@ -953,9 +1196,22 @@ class Bridge:
                      self.messages.empty() and not self._transport_seen("watchdog_alive", self.watchdog.is_alive()) and
                      all(not t.is_alive() for t in self.threads))
             if not clean:
+                self._startup_best_effort(self.process.mark_uncertain)
+            try:
+                owned = self.process.finalize()
+            except BaseException:
+                owned = False
+            clean = clean and owned is True
+            if not clean:
                 self._diagnostic("close", "cleanup", "cleanup_failed")
             return clean
         finally:
+            if owned is None:
+                self._startup_best_effort(self.process.mark_uncertain)
+                try:
+                    self.process.finalize()
+                except BaseException:
+                    pass
             if clean is not True:
                 self._transport_diagnostic()
 
