@@ -1,5 +1,53 @@
 # Original runtime cleanup diagnostic
 
+The current capture contract is trace schema4,
+`capture_contract: "window_end_admission_v1"`. Schemas1–3 remain readable as
+historical all-lifetime end capture and cannot acquire this marker. No old
+unavailable trace is promoted or replayed under the new contract. This remains
+diagnostic evidence, not a cleanup fix, holder attribution or provider result.
+
+The original before/after QPC readings are published once through separately
+shared atomics (Release). The callback reads after then before (Acquire), once
+each; delayed visibility is uncertainty, not permission to wait or resample.
+Every successfully decoded end passes the existing schema/TDH checks. Ends
+strictly outside the visible window may be omitted with checked counts/extrema;
+every in-window end and every IRP/status remain in callback order. Before is
+unknown: omitted timestamps must later prove strictly below the actual before.
+After is unknown: retain conservatively, with no later eviction or overflow
+recovery. The end hard cap8192, actual reserved capacity, start cap128,
+callback cap50000 and independent ownership cap8192 remain unchanged.
+
+Successful omitted ends are handed to ownership directly, exactly once, using
+the same decode and original callback ordinal. The separate ownership stream
+also includes begins/creates and may remain unavailable for its own capacity,
+schema, ordering or prefix reason; it supplies no original counts. The new
+admission decodes before deciding retention, so schema failure can precede the
+capacity reason at a point where the historical vector was already full.
+
+The admission owner is consumed only after stopped/absent/completed/closed/
+joined, started/settings, lossless and bounded evidence is true. Uncertain
+shutdown retains the existing callback-storage lifetime behavior. Known loss
+or bounds uncertainty skips proof/correlation: final assignments retain their
+cleanup, loss, bounds, identity and clock order, but can now report STOP-only
+loss/bounds rather than an uncomputed historical correlation failure. Those
+records have no provisional counts. The original removal runs once and its
+original result is returned even if publication or proof fails.
+
+Schema4 requires the exact marker and closed admission reasons. Finish-only
+reasons additionally require all nine collection flags true; mixed callback/
+publication failures do not borrow that implication. No QPC value, IRP, raw
+event, ordinal, path or omitted record is exported. The trace remains bounded
+to4096 bytes and supplemental TDH output to8192 bytes.
+
+The isolated workflow first runs the24 named pure admission tests with an
+exact-count check, alongside the existing model/schema tests and output checks,
+before runtime preparation or the unchanged one native observation. Private
+source preparation has only compiled Rust tests, not executed them. Sequential
+pure tests cannot establish live atomic delivery, complete drain or a native
+fix. Arc adds one fixed setup allocation under Rust's existing allocation
+policy; only end reservation failure is explicitly fallible here, not every
+possible allocation in the diagnostic.
+
 The current manual target is the exact ARM64 CLI regression
 `cli_preserves_remote_identity_and_original_config`. Historical empty-listing
 and library artifact/validator modes remain readable. In library mode the
