@@ -61,11 +61,12 @@ def without_nightly_dependency(text, job_id):
     return text.replace(release, changed, 1)
 
 
-def validate(text, cancellation=False):
-    job_id = "windows-swift-cancellation" if cancellation else "windows-swift"
-    producer_id = "swift_cancel_cases" if cancellation else "swift_cases"
-    validator_id = "swift_cancel_validation" if cancellation else "swift_validation"
-    stem = "swift-cancellation" if cancellation else "swift"
+def validate(text, cancellation=False, listing=False):
+    require(not (cancellation and listing), "one_mode")
+    job_id = "windows-swift-listing" if listing else "windows-swift-cancellation" if cancellation else "windows-swift"
+    producer_id = "swift_listing_cases" if listing else "swift_cancel_cases" if cancellation else "swift_cases"
+    validator_id = "swift_listing_validation" if listing else "swift_cancel_validation" if cancellation else "swift_validation"
+    stem = "swift-listing" if listing else "swift-cancellation" if cancellation else "swift"
     definitions = jobs(text); job = definitions[job_id]; chain = steps(job)
     require(scalar(job, "needs", 4) == "test" and scalar(job, "runs-on", 4) == "windows-latest", "checked_hosted_build")
     require(not re.search(r"^    (?:if|services|permissions):", job, re.MULTILINE) and
@@ -86,6 +87,7 @@ def validate(text, cancellation=False):
     require(not re.search(r"^        if:", runs[0], re.MULTILINE), "producer_not_optional")
     producer, p = bound_command(runs[0]); _, v = bound_command(runs[1])
     require(p.count("--cancellation-only") == v.count("--cancellation-only") == int(cancellation), "explicit_matching_mode")
+    require(p.count("--listing-only") == v.count("--listing-only") == int(listing), "explicit_matching_mode")
     require(p[0] == "scripts/application-lab/run_windows_swift.py" and v[0] == "scripts/swift_application_evidence.py", "producer_then_independent_validator")
     require("Get-FileHash -LiteralPath $application -Algorithm SHA256" in producer and
         p[p.index("--application-sha256") + 1] == "$applicationHash", "application_hash_required")
@@ -215,6 +217,53 @@ class SwiftCancellationWorkflowTests(unittest.TestCase):
         self.assertNotEqual(changed, self.text)
         with self.assertRaises(ValueError):
             validate(changed, cancellation=True)
+
+
+class SwiftListingWorkflowTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls): cls.text = WORKFLOW.read_text(encoding="utf-8")
+
+    def reject(self, old, new, region=None):
+        region = region or jobs(self.text)["windows-swift-listing"]
+        self.assertIn(old, region)
+        changed = self.text.replace(region, region.replace(old, new, 1), 1)
+        self.assertNotEqual(changed, self.text)
+        with self.assertRaises((ValueError, KeyError, IndexError)):
+            validate(changed, listing=True)
+
+    def test_listing_and_existing_modes_remain_required(self):
+        validate(self.text)
+        validate(self.text, cancellation=True)
+        validate(self.text, listing=True)
+
+    def test_both_steps_enforce_the_exact_listing_mode_and_binding(self):
+        for region in (s for s in steps(jobs(self.text)["windows-swift-listing"]) if "        run:" in s):
+            for old, new in ((" --listing-only", ""), (" --listing-only", " --cancellation-only"),
+                    (" --listing-only", " --listing-only --listing-only"),
+                    ("$env:GITHUB_SHA -cne $buildCommit", "$false"),
+                    (".Hash -cne $expectedPins", ".Hash -eq $expectedPins"),
+                    ("$env:RUNNER_ENVIRONMENT -cne 'github-hosted'", "$false")):
+                with self.subTest(old=old, new=new): self.reject(old, new, region)
+            guard = re.findall(r"if \(\$LASTEXITCODE -ne 0\) \{ throw '[^']+' \}", region)[-1]
+            self.reject(guard, "Write-Output 'ignored'", region)
+
+    def test_listing_failure_cannot_skip_evidence_or_publish_private_input(self):
+        for old, new in (("steps.swift_listing_cases.outcome == 'failure'", "steps.swift_listing_cases.outcome == 'skipped'"),
+                ("steps.swift_listing_validation.outcome == 'failure'", "steps.swift_listing_validation.outcome == 'skipped'"),
+                ("path: ${{ runner.temp }}/swift-listing-validation.json", "path: ${{ runner.temp }}/swift-listing.private.json"),
+                ("name: swift-listing-experiment-Windows", "name: swift-experiment-Windows"),
+                ("    steps:", "    continue-on-error: true\n    steps:")):
+            with self.subTest(old=old): self.reject(old, new)
+
+    def test_listing_cannot_be_removed_from_nightly_requirements(self):
+        changed = without_nightly_dependency(self.text, "windows-swift-listing")
+        with self.assertRaises(ValueError): validate(changed, listing=True)
+
+    def test_existing_modes_cannot_silently_select_listing(self):
+        for job_id, cancellation in (("windows-swift", False), ("windows-swift-cancellation", True)):
+            region = jobs(self.text)[job_id]
+            changed = region.replace("run_windows_swift.py", "run_windows_swift.py --listing-only", 1)
+            with self.assertRaises(ValueError): validate(self.text.replace(region, changed, 1), cancellation=cancellation)
 
 
 if __name__ == "__main__": unittest.main()

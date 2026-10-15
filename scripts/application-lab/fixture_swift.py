@@ -553,3 +553,226 @@ def serve_swift_cancellation(state):
         yield server
     finally:
         server.close()
+
+# Separate account-root listing mode; acquisition and cancellation stay unchanged.
+LIST_CONTAINER = ACCOUNT + "/synthetic-bucket"
+LIST_FILES = (("README-synthetic.txt", BODY), ("empty.txt", b""),
+              ("space name.txt", b"Nested synthetic payload.\n"))
+LIST_IDS = ("readme", "empty", "space")
+LIST_TARGETS = {AUTH: ("grant", "listing"),
+    ACCOUNT + "?format=json&limit=10000": ("account", "account"),
+    LIST_CONTAINER + "?delimiter=%2F&format=json&limit=1000": ("container", "container"),
+    **{LIST_CONTAINER + "/" + name.replace(" ", "%20"): ("head", role)
+       for (name, _), role in zip(LIST_FILES, LIST_IDS)}}
+
+
+class AppSwiftListingState(AppSwiftState):
+    def __init__(self, user, key):
+        super().__init__("token_replacement", user, key)
+        self.case = "listing"
+        self._files = dict(LIST_FILES)
+        self.token = None
+        self.account_done = self.container_done = False
+        self.heads = set()
+        self.gates = {"listing_auth": dict(entered=False, released=False)}
+        self.wakes = {"listing_auth": threading.Event()}
+
+    def source_preserved(self):
+        return (type(self._files) is dict and set(self._files) == {n for n, _ in LIST_FILES} and
+                all(type(self._files[n]) is bytes and self._files[n] == body for n, body in LIST_FILES))
+
+    def begin(self, method, path, user=None, key=None, token=None):
+        with self.lock:
+            if self.errors or self._pending is not None or self.completed:
+                raise FixtureError("sequence_invalid")
+            if self.requests >= 128:
+                raise FixtureError("request_limit")
+            self.requests += 1
+            if not self.source_preserved():
+                raise FixtureError("source_changed")
+            if type(path) is not str or path not in LIST_TARGETS:
+                raise FixtureError("route_invalid")
+            kind, role = LIST_TARGETS[path]
+            if method != ("HEAD" if kind == "head" else "GET"):
+                raise FixtureError("method_rejected")
+            if kind == "grant":
+                if (self.token is not None or self.gates["listing_auth"]["entered"] or token is not None or
+                        type(user) is not str or type(key) is not str or
+                        not hmac.compare_digest(user, self._user) or not hmac.compare_digest(key, self._key)):
+                    raise FixtureError("credentials_invalid")
+                token = "synthetic-" + secrets.token_hex(24)
+                gate = "listing_auth"
+                self.gates[gate]["entered"] = True
+                self._event("auth_held", "listing")
+            else:
+                if (user is not None or key is not None or self.token is None or type(token) is not str or
+                        not hmac.compare_digest(token, self.token)):
+                    raise FixtureError("token_invalid")
+                if (kind == "account" and self.account_done or
+                        kind == "container" and (not self.account_done or self.container_done) or
+                        kind == "head" and (not self.container_done or role in self.heads)):
+                    raise FixtureError("sequence_invalid")
+                gate = None
+            self._pending = (kind, role, gate, token)
+            return self._pending
+
+    def release_gate(self, name):
+        with self.lock:
+            if (name != "listing_auth" or self.errors or self._pending is None or self._pending[2] != name or
+                    not self.gates[name]["entered"] or self.gates[name]["released"]):
+                raise FixtureError("gate_invalid")
+            self.gates[name]["released"] = True
+            self._event("gate_released", "listing")
+            self.wakes[name].set()
+
+    def response(self, request, origin):
+        import json
+        with self.lock:
+            if request is not self._pending or self.errors or self._reply is not None or not self.source_preserved():
+                raise FixtureError("sequence_invalid")
+            kind, role, gate, token = request
+            headers = {}
+            if kind == "grant":
+                if (not self.gates[gate]["released"] or type(origin) is not str or
+                        not re.fullmatch(r"http://127\.0\.0\.1:[1-9][0-9]{0,4}", origin)):
+                    raise FixtureError("gate_invalid")
+                body = b""
+                headers = {"X-Auth-Token": token, "X-Storage-Url": origin + ACCOUNT}
+            elif kind == "head":
+                name, body = LIST_FILES[LIST_IDS.index(role)]
+                headers = {"Content-Type": "application/octet-stream", "Etag": hashlib.md5(body).hexdigest(),
+                    "Last-Modified": "Mon, 01 Jan 2024 00:00:00 GMT", "Accept-Ranges": "bytes"}
+            else:
+                rows = ([dict(name="synthetic-bucket", count=3, bytes=88)] if kind == "account" else
+                    [dict(name=name, bytes=len(body), hash=hashlib.md5(body).hexdigest(),
+                          content_type="application/octet-stream", last_modified="2024-01-01T00:00:00.000000")
+                     for name, body in LIST_FILES])
+                body = json.dumps(rows, separators=(",", ":")).encode("ascii")
+                headers = {"Content-Type": "application/json"}
+            self._reply = (200, body, headers, 0)  # JSON metadata is not object content.
+            return self._reply
+
+    def commit(self, request, status, sent_bytes, payload):
+        with self.lock:
+            if (self.errors or not self.source_preserved() or request is not self._pending or self._reply is None or
+                    type(status) is not int or status != 200 or type(payload) is not int or payload != 0 or
+                    type(sent_bytes) is not int or not 1 <= sent_bytes <= 4096 or self.response_bytes + sent_bytes > 524288):
+                raise FixtureError("sequence_invalid")
+            kind, role, _, token = request
+            if kind == "grant":
+                self.token = token
+            elif kind == "account":
+                self.account_done = True
+            elif kind == "container":
+                self.container_done = True
+            else:
+                self.heads.add(role)
+                self.completed = len(self.heads) == 3
+            self._event(kind, role, 200)
+            self.response_bytes += sent_bytes
+            self._pending = self._reply = None
+
+
+class _ListingServer(_Server):
+    def _parse(self, stream):
+        line = stream.readline(4097)
+        if not re.fullmatch(rb"(?:GET|HEAD) /[^\x00-\x20\x7f-\xff]{1,2048} HTTP/1\.[01]\r\n", line):
+            raise FixtureError("request_invalid")
+        method, target, _ = line.decode("ascii").split(" ")
+        headers, total = {}, len(line)
+        for _ in range(_http.MAX_HEADER_LINES):
+            line = stream.readline(_http.MAX_HEADER_BYTES + 1)
+            total += len(line)
+            if total > _http.MAX_HEADER_BYTES or not line.endswith(b"\r\n"):
+                raise FixtureError("headers_invalid")
+            if line == b"\r\n":
+                break
+            name, colon, value = line[:-2].partition(b":")
+            if not colon or not _http.HEADER.fullmatch(name) or any(c < 32 or c > 126 for c in value):
+                raise FixtureError("headers_invalid")
+            name = name.decode("ascii").lower()
+            if name in headers:
+                raise FixtureError("headers_invalid")
+            headers[name] = value.decode("ascii").strip(" ")
+        else:
+            raise FixtureError("headers_invalid")
+        allowed = {"host", "user-agent", "accept", "accept-encoding", "connection", "content-length", "x-auth-user", "x-auth-key", "x-auth-token", "range"}
+        if (set(headers) - allowed or headers.get("host") != f"127.0.0.1:{self.port}" or
+                headers.get("content-length", "0") != "0" or target not in LIST_TARGETS or
+                headers.get("accept-encoding", "identity") not in {"identity", "gzip"} or
+                headers.get("connection", "close").lower() not in {"close", "keep-alive"} or
+                "range" in headers):
+            raise FixtureError("headers_invalid")
+        return method, target, headers.get("x-auth-user"), headers.get("x-auth-key"), headers.get("x-auth-token")
+
+    def _wait_gate(self, sock, gate):
+        with self.lock:
+            if sock not in self.sockets:
+                raise FixtureError("socket_unowned")
+        while not self.state.wakes[gate].is_set() and not self.stopping.is_set():
+            self._live(sock)
+            if select.select([sock], [], [], 0.05)[0]:
+                raise FixtureError("client_aborted")
+        if self.stopping.is_set() or not self.state.gates[gate]["released"]:
+            raise FixtureError("gate_invalid")
+        self._live(sock)
+
+    def _worker(self, sock):
+        dispatch_owned = False
+        try:
+            sock.settimeout(_http.REQUEST_SECONDS)
+            with sock.makefile("rb", buffering=0) as stream:
+                self._live(sock)
+                fields = self._parse(stream)
+                if select.select([sock], [], [], 0)[0] and sock.recv(1, socket.MSG_PEEK):
+                    raise FixtureError("request_body_rejected")
+                self._acquire_dispatch(sock)
+                dispatch_owned = True
+                self._live(sock)
+                request = self.state.begin(*fields)
+                if request[2] is not None:
+                    self._wait_gate(sock, request[2])
+                self._live(sock)
+                status, body, headers, payload = self.state.response(request, self.endpoint.rstrip("/"))
+                wire = (f"HTTP/1.1 {status} " + {200: "OK", 401: "Unauthorized", 403: "Forbidden"}[status] +
+                    f"\r\nContent-Length: {len(body)}\r\nConnection: close\r\n" +
+                    "".join(f"{k}: {v}\r\n" for k, v in headers.items()) + "\r\n").encode("ascii")
+                wire += body if fields[0] == "GET" else b""
+                if len(wire) > 4096:
+                    raise FixtureError("byte_limit")
+                # The peer can see all bytes before sendall returns or this
+                # worker resumes. Keep successors outside begin until commit,
+                # without holding the state lock across network I/O.
+                sock.sendall(wire)
+                self._live(sock)
+                self.state.commit(request, status, len(wire), payload)
+        except FixtureError as error:
+            self.state._error(str(error))
+        except (OSError, ValueError):
+            self.state._error("connection_failed")
+        except BaseException:
+            self.state._error("worker_failed")
+        finally:
+            if dispatch_owned:
+                self._dispatch_lock.release()
+            with self.lock:
+                try:
+                    self._close_socket(sock)
+                except OSError:
+                    self.state._error("cleanup_failed")
+                else:
+                    self.sockets.pop(sock, None)
+
+
+@contextmanager
+def serve_swift_listing(state):
+    if type(state) is not AppSwiftListingState or state._served:
+        raise ValueError("input_invalid")
+    state._served = True
+    server = _ListingServer(state)
+    state._transport = server
+    try:
+        server.start()
+        yield server
+    finally:
+        server.close()

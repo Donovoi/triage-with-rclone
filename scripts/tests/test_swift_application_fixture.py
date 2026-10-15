@@ -477,4 +477,147 @@ class CancellationFixtureTests(unittest.TestCase):
             sock.sendall.assert_not_called()
 
 
+
+def listing_state_ready():
+    state = F.AppSwiftListingState(USER, KEY)
+    token, _ = complete(state, "GET", F.AUTH)
+    complete(state, "GET", F.ACCOUNT + "?format=json&limit=10000", token)
+    complete(state, "GET", F.LIST_CONTAINER + "?delimiter=%2F&format=json&limit=1000", token)
+    return state, token
+
+
+def listing_worker(state, fields):
+    old, sock = worker_server(state, fields)
+    server = F._ListingServer.__new__(F._ListingServer)
+    server.__dict__.update(old.__dict__)
+    return server, sock
+
+
+class ListingFixtureTests(unittest.TestCase):
+    setUp = FixtureTests.setUp
+
+    def test_account_container_and_metadata_are_independent_of_head_order(self):
+        import itertools
+        expected = [("README-synthetic.txt", 62, "f9ac90560b9929242009ee0c24c9e5d8"),
+                    ("empty.txt", 0, "d41d8cd98f00b204e9800998ecf8427e"),
+                    ("space name.txt", 26, "371d24ba264bcaac3332a3ed564a93f8")]
+        for order in itertools.permutations(range(3)):
+            state = F.AppSwiftListingState(USER, KEY)
+            token, _ = complete(state, "GET", F.AUTH)
+            _, account = complete(state, "GET", F.ACCOUNT + "?format=json&limit=10000", token)
+            self.assertEqual(json.loads(account[1]), [dict(name="synthetic-bucket", count=3, bytes=88)])
+            _, objects = complete(state, "GET", F.LIST_CONTAINER + "?delimiter=%2F&format=json&limit=1000", token)
+            self.assertEqual([(r["name"], r["bytes"], r["hash"]) for r in json.loads(objects[1])], expected)
+            for index in order:
+                name, size, md5 = expected[index]
+                _, reply = complete(state, "HEAD", F.LIST_CONTAINER + "/" + name.replace(" ", "%20"), token)
+                self.assertEqual((len(reply[1]), reply[2]["Etag"], reply[3]), (size, md5, 0))
+            self.assertEqual((state.requests, state.payload_bytes, state.completed), (6, 0, True))
+            self.assertTrue(state.source_preserved())
+            for secret in (USER, KEY, token, ORIGIN): self.assertNotIn(secret, json.dumps(state.snapshot()))
+
+    def test_missing_account_root_repeated_metadata_and_content_never_qualify(self):
+        state = F.AppSwiftListingState(USER, KEY); token, _ = complete(state, "GET", F.AUTH)
+        with self.assertRaises(F.FixtureError): state.begin("GET", F.LIST_CONTAINER + "?delimiter=%2F&format=json&limit=1000", token=token)
+        for method in ("GET", "PUT", "DELETE", "POST", "COPY"):
+            state, token = listing_state_ready()
+            with self.assertRaises(F.FixtureError): state.begin(method, F.LIST_CONTAINER + "/empty.txt", token=token)
+        state, token = listing_state_ready(); complete(state, "HEAD", F.LIST_CONTAINER + "/empty.txt", token)
+        with self.assertRaises(F.FixtureError): state.begin("HEAD", F.LIST_CONTAINER + "/empty.txt", token=token)
+        with self.assertRaises(F.FixtureError): state.begin("HEAD", F.LIST_CONTAINER + "/README-synthetic.txt", token="other")
+
+    def test_parser_rejects_query_path_header_aliases_and_wrong_host(self):
+        server = F._ListingServer.__new__(F._ListingServer); server.port = 1234
+        target = F.ACCOUNT + "?format=json&limit=10000"
+        raw = f"GET {target} HTTP/1.1\r\nHost: 127.0.0.1:1234\r\nX-Auth-Token: synthetic-test\r\n\r\n".encode()
+        self.assertEqual(server._parse(io.BytesIO(raw))[:2], ("GET", target))
+        for data in (raw.replace(b"limit=10000", b"limit=1"), raw.replace(b"?format", b"/?format"),
+                raw.replace(b"format=json", b"format=json&format=json"), raw.replace(b"AUTH_synthetic", b"AUTH_other"),
+                raw.replace(b"1234", b"1235"), raw.replace(b"\r\n\r\n", b"\r\nRange: bytes=0-\r\n\r\n"),
+                raw.replace(b"\r\n\r\n", b"\r\nContent-Length: 1\r\n\r\n"), raw.replace(b"\r\n\r\n", b"\r\nX-Auth-Token: duplicate\r\n\r\n")):
+            with self.assertRaises(F.FixtureError): server._parse(io.BytesIO(data))
+        for alias in ("space+name.txt", "space%2520name.txt", "../space%20name.txt", "space name.txt"):
+            with self.assertRaises(F.FixtureError): server._parse(io.BytesIO(raw.replace(target.encode(), (F.LIST_CONTAINER + "/" + alias).encode())))
+
+    def test_teardown_release_and_uncommitted_auth_cannot_grant(self):
+        state = F.AppSwiftListingState(USER, KEY)
+        request = state.begin("GET", F.AUTH, USER, KEY)
+        state.release_observation()
+        self.assertFalse(state.gates["listing_auth"]["released"])
+        with self.assertRaises(F.FixtureError): state.response(request, ORIGIN)
+        state.release_gate("listing_auth"); reply = state.response(request, ORIGIN)
+        self.assertIsNone(state.token)
+        with self.assertRaises(F.FixtureError): state.begin("GET", F.ACCOUNT + "?format=json&limit=10000", token=request[3])
+        state.commit(request, reply[0], 200, 0)
+        self.assertEqual(state.token, request[3])
+        with self.assertRaises(F.FixtureError): state.release_gate("listing_auth")
+
+    def test_fake_successor_waits_for_visible_response_send_return_commit(self):
+        for already_returned in (False, True):
+            state = F.AppSwiftListingState(USER, KEY)
+            prior = state.begin("GET", F.AUTH, USER, KEY); state.release_gate("listing_auth")
+            reply = state.response(prior, ORIGIN)
+            server, sock = listing_worker(state, ("GET", F.ACCOUNT + "?format=json&limit=10000", None, None, prior[3]))
+            trace = ["visible"] + (["returned"] if already_returned else [])
+            def predecessor():
+                self.assertFalse(state.lock._is_owned()); self.assertFalse(server.lock._is_owned())
+                self.assertIsNone(state.token)
+                if not already_returned: trace.append("returned")
+                state.commit(prior, 200, 200, 0); trace.append("committed")
+                server._dispatch_lock.release()
+            server._dispatch_lock = FakeDispatchLock(held=True, on_wait=predecessor)
+            sock.sendall.side_effect = lambda wire: self.assertEqual(trace[-1], "committed")
+            with patch.object(F.time, "monotonic", return_value=0), patch.object(F.select, "select", return_value=([], [], [])):
+                server._worker(sock)
+            self.assertTrue(state.account_done); self.assertFalse(state.errors)
+            self.assertEqual(server._dispatch_lock.releases, 2); self.assertFalse(server.sockets)
+
+    def test_send_failure_and_post_send_expiry_never_commit_auth(self):
+        for phase in ("send", "after_send"):
+            state = F.AppSwiftListingState(USER, KEY)
+            server, sock = listing_worker(state, ("GET", F.AUTH, USER, KEY, None))
+            server._wait_gate = Mock(side_effect=lambda s,g: state.release_gate(g))
+            clock = [0]
+            def send(wire):
+                self.assertFalse(state.lock._is_owned())
+                if phase == "send": raise OSError("private canary")
+                clock[0] = 16
+            sock.sendall.side_effect = send
+            with patch.object(F.time, "monotonic", side_effect=lambda: clock[0]), patch.object(F.select, "select", return_value=([], [], [])):
+                server._worker(sock)
+            self.assertIsNone(state.token); self.assertFalse(state.account_done)
+            self.assertEqual(server._dispatch_lock.releases, 1); self.assertFalse(server.sockets)
+            self.assertNotIn("private canary", json.dumps(state.snapshot()))
+            self.assertEqual(state.response_bytes, 0)
+
+    def test_listing_gate_keeps_admission_deadline_and_stop_is_not_release(self):
+        for stop in (False, True):
+            state = F.AppSwiftListingState(USER, KEY); state.begin("GET", F.AUTH, USER, KEY)
+            server, sock = listing_worker(state, ())
+            def step(*args):
+                if stop: server.stopping.set()
+                else: state.release_gate("listing_auth")
+                return [], [], []
+            with patch.object(F.time, "monotonic", return_value=1), patch.object(F.select, "select", side_effect=step):
+                if stop:
+                    with self.assertRaises(F.FixtureError): server._wait_gate(sock, "listing_auth")
+                else: server._wait_gate(sock, "listing_auth")
+            self.assertEqual(server.sockets[sock], 15.0)
+        state = F.AppSwiftListingState(USER, KEY); state.begin("GET", F.AUTH, USER, KEY)
+        server, sock = listing_worker(state, ())
+        with patch.object(F.time, "monotonic", return_value=16):
+            with self.assertRaises(F.FixtureError): server._wait_gate(sock, "listing_auth")
+        self.assertFalse(state.gates["listing_auth"]["released"])
+
+    def test_source_and_response_bounds_fail_closed(self):
+        state = F.AppSwiftListingState(USER, KEY); state._files["empty.txt"] = b"x"
+        with self.assertRaises(F.FixtureError): state.begin("GET", F.AUTH, USER, KEY)
+        state = F.AppSwiftListingState(USER, KEY); state.requests = 128
+        with self.assertRaises(F.FixtureError): state.begin("GET", F.AUTH, USER, KEY)
+        state = F.AppSwiftListingState(USER, KEY); req = state.begin("GET", F.AUTH, USER, KEY)
+        state.release_gate("listing_auth"); state.response(req, ORIGIN); state.response_bytes = 524288
+        with self.assertRaises(F.FixtureError): state.commit(req, 200, 1, 0)
+        self.assertIsNone(state.token)
+
+
 if __name__ == "__main__": unittest.main()
