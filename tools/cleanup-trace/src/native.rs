@@ -2,6 +2,7 @@ use crate::model::{self, CallbackStorage, Counts, End, Start, MAX_ENDS, MAX_STAR
 use crate::ownership::{
     self, Buffer as OwnershipBuffer, Event as OwnershipEvent, Reason as OwnershipReason,
 };
+use crate::schema_metadata;
 use std::{
     env,
     fs::File,
@@ -155,6 +156,7 @@ struct Collector {
     schema_rejection: Option<SchemaRejection>,
     ready: Option<mpsc::SyncSender<()>>,
     ownership: OwnershipBuffer,
+    metadata: schema_metadata::Capture,
 }
 impl Collector {
     fn new(path: Vec<u16>) -> Result<Self, &'static str> {
@@ -167,6 +169,7 @@ impl Collector {
             schema_rejection: None,
             ready: None,
             ownership: OwnershipBuffer::default(),
+            metadata: schema_metadata::Capture::new(),
         };
         x.starts
             .try_reserve_exact(MAX_STARTS)
@@ -379,6 +382,9 @@ unsafe fn consume_ownership(
     })();
     if let Err(reason) = result {
         s.ownership.reject(reason);
+        if matches!(reason, OwnershipReason::UnsupportedOpcode { .. }) {
+            s.metadata.observe(e);
+        }
     }
 }
 unsafe extern "system" fn on_event(e: *mut EVENT_RECORD) {
@@ -765,8 +771,10 @@ impl Trace {
         let mut counts = None;
         let mut rejection = None;
         let mut ownership = None;
+        let mut metadata = None;
         if let Some(c) = consumer {
             rejection = c.state.schema_rejection.map(SchemaRejection::json);
+            metadata = c.state.metadata.observation;
             if c.state.error == Some("event_loss") {
                 self.proof.lossless = false;
             }
@@ -859,6 +867,20 @@ impl Trace {
         let record=format!("{{\"schema\":3,\"scope\":\"original_runtime_remove_tree\",\"status\":\"{}\",\"reason\":\"{}\",\"original_ok\":{},\"os_code\":{},\"operation_us\":{},\"runtime_sha256\":\"{}\",\"target_identity_verified\":{},\"session_started\":{},\"settings_verified\":{},\"bounded\":{},\"zero_loss\":{},\"stop_succeeded\":{},\"session_absent\":{},\"consumer_completed\":{},\"consumer_closed\":{},\"worker_joined\":{},\"counts\":{},\"schema_rejection\":{},\"ownership\":{}}}",status,self.reason.unwrap_or("none"),original.map_or_else(||"null".into(),|v|v.to_string()),nullable(os_code.map(u64::from)),nullable(duration),self.runtime_sha256,self.proof.identity,self.proof.started,self.proof.settings,self.proof.bounded,self.proof.lossless,self.proof.stopped,self.proof.absent,self.proof.completed,self.proof.closed,self.proof.joined,counted,rejection.unwrap_or_else(||"null".into()),ownership);
         if record.len() <= 4096 {
             let _ = writeln!(io::stderr().lock(), "runtime_cleanup_trace={record}");
+        }
+        // Separate metadata never supplies original counts/reasons or cleanup proof.
+        let schema = schema_metadata::json(
+            metadata,
+            cleanup
+                && self.proof.started
+                && self.proof.settings
+                && self.proof.bounded
+                && self.proof.lossless
+                && duration.is_some(),
+            &self.runtime_sha256,
+        );
+        if schema.len() <= 8192 {
+            let _ = writeln!(io::stderr().lock(), "runtime_cleanup_schema={schema}");
         }
     }
 }
