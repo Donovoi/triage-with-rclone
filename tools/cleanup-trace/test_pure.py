@@ -16,6 +16,34 @@ exec(compile(Path(__file__).with_name("select_artifacts.py").read_bytes(), "sele
 
 SHA="a"*64
 
+
+def original_cleanup_job(workflow):
+    """Scope legacy assertions to the exact original job, not the sibling calibration.
+
+    This accepts the reviewed two-space job layout, not general YAML. Fail closed
+    on missing/duplicate/unknown jobs or an unindented tail outside that layout.
+    """
+    if type(workflow) is not str:
+        raise AssertionError('workflow_shape')
+    sections=re.split(r'^jobs:[ \t]*\r?$',workflow,flags=re.M)
+    if len(sections)!=2:
+        raise AssertionError('jobs_section')
+    body=sections[1]
+    # These fixed sibling names cannot hide as malformed nested/tail headers.
+    known=re.finditer(r'^([ \t]*)(?:original-cleanup|resource-use-calibration):[ \t]*\r?$',body,re.M)
+    if any(match[1]!='  ' for match in known):
+        raise AssertionError('job_indent')
+    headers=list(re.finditer(r'^  ([a-z][a-z0-9-]*):[ \t]*\r?$',body,re.M))
+    names=[match[1] for match in headers]
+    if (names.count('original-cleanup')!=1 or len(names)!=len(set(names)) or
+            not set(names)<={'original-cleanup','resource-use-calibration'} or
+            body[:headers[0].start()].strip() or
+            any(line.strip() and not line.startswith('  ') for line in body.splitlines())):
+        raise AssertionError('job_scope')
+    index=names.index('original-cleanup')
+    end=headers[index+1].start() if index+1<len(headers) else len(body)
+    return body[headers[index].start():end]
+
 def record():
     x={key:True for key in V.BOOLS}
     x.update(schema=1,scope="original_runtime_remove_tree",status="observed",reason="none",original_ok=False,os_code=32,operation_us=51000,runtime_sha256=SHA,counts=dict(attempts=2,successful=1,sharing=1,other=0),schema_rejection=None)
@@ -235,7 +263,7 @@ class HarnessTests(unittest.TestCase):
 
     def test_workflow_fixed_single_call_and_matching_forwarding(self):
         root=Path(__file__).resolve().parents[2]
-        workflow=(root/'.github/workflows/original-cleanup-trace.yml').read_text()
+        workflow=original_cleanup_job((root/'.github/workflows/original-cleanup-trace.yml').read_text())
         invocation=f'& $harness {V.ACQUISITION_TEST} --exact --nocapture --test-threads=1 > $privateOut 2> $privateErr'
         self.assertEqual(workflow.count(invocation),1)
         self.assertEqual(workflow.count('cargo test --locked --release'),1)
@@ -800,6 +828,7 @@ class AcquisitionTests(unittest.TestCase):
 
 class AcquisitionWorkflowTests(unittest.TestCase):
     def check_workflow(self, text):
+        text=original_cleanup_job(text)
         calls=re.findall(r'^\s*& \$harness (.*)$',text,re.M)
         self.assertEqual(calls,['cleanup_diagnostics::tests:: --test-threads=1 > $forwardOut 2> $forwardErr',
                                V.ACQUISITION_TEST+' --exact --nocapture --test-threads=1 > $privateOut 2> $privateErr'])
@@ -842,6 +871,32 @@ class AcquisitionWorkflowTests(unittest.TestCase):
                 self.check_workflow(text.replace(before,after))
         with self.assertRaises(AssertionError):self.check_workflow(text+'\nuses: actions/upload-artifact@private\n')
 
+    def test_original_job_scope_rejects_missing_duplicate_or_unknown_jobs(self):
+        root=Path(__file__).resolve().parents[2]
+        workflow=(root/'.github/workflows/original-cleanup-trace.yml').read_text()
+        original=original_cleanup_job(workflow)
+        self.assertIn(V.ACQUISITION_TEST,original)
+        self.assertNotIn('hosted_held_file_then_closed',original)
+        # The same original-job assertions remain valid with or without the sibling.
+        self.check_workflow('jobs:\n'+original)
+        mutations=(
+            workflow.replace('  original-cleanup:', '  missing-original:'),
+            workflow+'\n  original-cleanup:\n    name: duplicate\n',
+            workflow.replace('  original-cleanup:', '   original-cleanup:'),
+            workflow.replace('  resource-use-calibration:', '  unknown-job:'),
+            workflow+'\n  resource-use-calibration:\n    name: duplicate\n',
+            workflow+'\n   resource-use-calibration:\n    name: duplicate\n',
+            workflow+'\n    resource-use-calibration:\n      name: nested\n',
+            workflow+'\n\tresource-use-calibration:\n    name: tabbed\n',
+            workflow+'\n   original-cleanup:\n    name: duplicate\n',
+            workflow.replace('jobs:', 'missing-jobs:',1),
+            workflow+'\njobs:\n  original-cleanup:\n',
+            workflow+'\nuses: actions/upload-artifact@private\n',
+        )
+        for value in mutations:
+            with self.subTest(value=value[-80:]),self.assertRaises(AssertionError):
+                original_cleanup_job(value)
+
     def test_success_only_forwarding_keeps_original_acquisition_assertions(self):
         root=Path(__file__).resolve().parents[2]
         source=(root/'rclone-triage/tests/cli_acquisition.rs').read_text()
@@ -852,6 +907,337 @@ class AcquisitionWorkflowTests(unittest.TestCase):
         self.assertIn('String::from_utf8_lossy(&output.stderr)',unit)
         self.assertIn('assert_eq!(manifest["complete"], true)',unit)
         self.assertIn('fixture.original',unit)
+
+
+class WindowAdmissionTests(unittest.TestCase):
+    def trace(self):
+        return dict(record(), schema=4, ownership=None, capture_contract=V.CAPTURE_CONTRACT)
+
+    def check(self, value, code=101):
+        return V.validate(json.dumps(value).encode(), code, SHA)
+
+    def test_schema4_marker_and_historical_shapes_stay_distinct(self):
+        value = self.trace()
+        self.assertEqual(self.check(value), value)
+        value.update(status="not_reproduced", original_ok=True, os_code=None)
+        self.assertEqual(self.check(value, 0)["status"], "not_reproduced")
+        for schema in (1, 2, 3):
+            old = record()
+            old["schema"] = schema
+            if schema >= 2: old["ownership"] = None
+            self.assertEqual(self.check(old), old)
+            with self.assertRaises(ValueError):
+                self.check(dict(old, capture_contract=V.CAPTURE_CONTRACT))
+        for marker in (None, True, 1, [], {}, "all_lifetime", V.CAPTURE_CONTRACT + " "):
+            with self.subTest(marker=marker), self.assertRaises(ValueError):
+                self.check(dict(self.trace(), capture_contract=marker))
+        missing = self.trace(); del missing["capture_contract"]
+        with self.assertRaises(ValueError): self.check(missing)
+        raw = json.dumps(self.trace()).encode()
+        with self.assertRaises(ValueError):
+            V.validate(raw[:-1] + b',"capture_contract":"window_end_admission_v1"}', 101, SHA)
+
+    def test_closed_admission_reasons_never_qualify_or_leak_payload(self):
+        self.assertEqual(len(V.ADMISSION_REASONS), 11)
+        for reason in V.ADMISSION_REASONS:
+            value = dict(self.trace(), status="unavailable", reason=reason, counts=None)
+            self.assertEqual(self.check(value), value)
+            for field, change in (("counts", record()["counts"]), ("ownership", {}),
+                                  ("schema_rejection", {}), ("status", "observed"),
+                                  ("status", "not_reproduced"), ("private", "canary")):
+                with self.subTest(reason=reason, field=field), self.assertRaises(ValueError):
+                    self.check(dict(value, **{field: change}))
+            for schema in (1, 2, 3):
+                old = dict(value, schema=schema); del old["capture_contract"]
+                if schema == 1: del old["ownership"]
+                with self.assertRaises(ValueError): self.check(old)
+        for reason in ("end_unknown", "END_BOUNDS_INVALID", "end_bounds_invalid ", [], None):
+            with self.assertRaises(ValueError):
+                self.check(dict(self.trace(), status="unavailable", reason=reason, counts=None))
+
+    def test_finish_only_reasons_require_all_nine_capture_flags(self):
+        self.assertEqual(V.FINISH_ONLY_ADMISSION_REASONS, {
+            "end_bounds_unpublished", "end_bounds_mismatch", "end_omission_summary_unavailable",
+            "end_unpublished_omission_unproved", "end_pre_omission_unproved", "end_post_omission_unproved"})
+        self.assertEqual(len(V.BOOLS - {"target_identity_verified"}), 9)
+        for reason in V.FINISH_ONLY_ADMISSION_REASONS:
+            value = dict(self.trace(), status="unavailable", reason=reason, counts=None,
+                         target_identity_verified=False, operation_us=None)
+            self.check(value)
+            for flag in V.BOOLS - {"target_identity_verified"}:
+                with self.subTest(reason=reason, flag=flag), self.assertRaises(ValueError):
+                    self.check(dict(value, **{flag: False}))
+        for reason in V.ADMISSION_REASONS - V.FINISH_ONLY_ADMISSION_REASONS:
+            value = dict(self.trace(), status="unavailable", reason=reason, counts=None)
+            for flag in V.BOOLS: value[flag] = False
+            self.check(value)  # Mixed callback/publisher/final failures retain their wider domain.
+
+    def test_schema4_preserves_ownership_header_and_independent_uncertainty(self):
+        old = OwnershipRejectionTests().trace()
+        value = json.loads(json.dumps(old))
+        value.update(schema=4, capture_contract=V.CAPTURE_CONTRACT)
+        self.assertEqual(self.check(value), value)
+        del value["ownership"]["rejection"]
+        with self.assertRaises(ValueError): self.check(value)
+        self.check(old)
+        for reason, changes in (("event_loss", {"zero_loss": False}),
+                                ("final_bounds_proof_unverified", {"bounded": False}),
+                                ("cleanup_uncertain", {"worker_joined": False})):
+            value = dict(self.trace(), status="unavailable", reason=reason, counts=None, **changes)
+            self.assertEqual(self.check(value)["reason"], reason)
+
+    def test_schema4_keeps_native_exit_runtime_size_and_proof_gates(self):
+        value = self.trace()
+        for flag in V.BOOLS:
+            with self.assertRaises(ValueError): self.check(dict(value, **{flag: False}))
+        for code in (0, 1, True):
+            with self.assertRaises(ValueError): self.check(value, code)
+        with self.assertRaises(ValueError):
+            V.validate(json.dumps(value).encode(), 101, "b" * 64)
+        with self.assertRaises(ValueError):
+            V.validate(json.dumps(value).encode() + b" " * 4096, 101, SHA)
+
+    def test_publication_and_full_capture_source_contracts(self):
+        root = Path(__file__).resolve().parent
+        admission = (root / 'src/admission.rs').read_text()
+        snapshot = admission.split('pub fn snapshot(&self)', 1)[1].split('\n}', 1)[0]
+        self.assertLess(snapshot.index('self.after.load(Ordering::Acquire)'),
+                        snapshot.index('self.before.load(Ordering::Acquire)'))
+        self.assertEqual(admission.count('.compare_exchange(0, value, Ordering::Release, Ordering::Relaxed)'), 2)
+        self.assertIn('self.drained && self.started && self.settings && self.lossless && self.bounded', admission)
+        proof = admission.split('pub fn prove_if_complete(', 1)[1].split('\n}', 1)[0]
+        self.assertLess(proof.index('if !gate.complete()'), proof.index('owner.take()'))
+        native = (root / 'src/native.rs').read_text()
+        measure = native.split('pub fn measure(', 1)[1].split('unsafe fn verify_survivor', 1)[0]
+        self.assertEqual(measure.count('model::original_then(remove,'), 1)
+        self.assertEqual(measure.count('qpc()'), 2)
+        self.assertLess(measure.index('publish_before(value)'), measure.index('model::original_then(remove,'))
+        self.assertLess(measure.index('publish_after(value)'), measure.index('self.verify_survivor()'))
+        self.assertNotIn('return ', measure)
+        self.assertEqual(native.count('model::correlate('), 1)
+        self.assertIn('lossless: self.proof.lossless', native)
+        self.assertIn('bounded: self.proof.bounded', native)
+        self.assertIn('Arc::clone(&self.published)', native)
+
+    def test_native_handoff_and_final_assignment_order_source_contracts(self):
+        source = (Path(__file__).resolve().parent / 'src/native.rs').read_text()
+        callback = source.split('unsafe extern "system" fn on_event', 1)[1].split('unsafe extern "system" fn on_buffer', 1)[0]
+        self.assertLess(callback.index('s.callbacks > MAX_CALLBACKS'), callback.index('match consume(e, s)'))
+        self.assertIn('Ok(decoded_end) => consume_ownership(e, s, prior_starts, decoded_end)', callback)
+        self.assertNotIn('prior_ends', source)
+        self.assertIn('decoded_end.ok_or(OwnershipReason::Schema)?.irp', source)
+        final = source.split('fn finish(', 1)[1]
+        assignments = ['self.reason = Some("cleanup_uncertain")', 'self.reason = Some("event_loss")',
+                       'self.reason = Some("final_bounds_proof_unverified")',
+                       'self.reason = Some("identity_unavailable")', 'self.reason = Some("clock_unavailable")']
+        locations = [final.index(item) for item in assignments]
+        self.assertEqual(locations, sorted(locations))
+        self.assertIn('self.proof.lossless = false', final)
+        self.assertLess(final.index('self.proof.lossless = false'), final.index('lossless: self.proof.lossless'))
+
+    def check_admission_workflow(self, text):
+        command = 'cargo test --manifest-path tools/cleanup-trace/Cargo.toml --locked --lib admission::tests -- --test-threads=1 > $admissionLog 2>&1'
+        self.assertEqual(text.count(command), 1)
+        self.assertIn("$admissionExit = $LASTEXITCODE\n          if ($admissionExit -ne 0) {", text)
+        self.assertIn("            throw 'Pure admission tests failed'\n          }", text)
+        self.assertIn('$admissionCases.Count -ne 24 -or $admissionSummary.Count -ne 1', text)
+        self.assertIn('24 passed; 0 failed; 0 ignored; 0 measured;', text)
+        self.assertIn('.Length -gt 262144', text)
+        self.assertLess(text.index(command), text.index('- name: Prepare matching verified runtime'))
+        self.assertNotIn('Write-Output $admissionOutput', text)
+
+    def test_workflow_runs_exact_authored_pure_count_before_native(self):
+        root = Path(__file__).resolve().parents[2]
+        text = (root / '.github/workflows/original-cleanup-trace.yml').read_text()
+        self.check_admission_workflow(text)
+        tests = (root / 'tools/cleanup-trace/src/admission_tests.rs').read_text()
+        self.assertEqual(tests.count('#[test]'), 24)
+        for old, new in (('--lib admission::tests', '--lib unrelated::tests'),
+                         ('$admissionCases.Count -ne 24', '$admissionCases.Count -ne 0'),
+                         ('24 passed; 0 failed;', '0 passed; 0 failed;'),
+                         ("            throw 'Pure admission tests failed'", ''),
+                         ('.Length -gt 262144', '.Length -gt 99999999')):
+            with self.subTest(old=old), self.assertRaises(AssertionError):
+                self.check_admission_workflow(text.replace(old, new))
+
+
+class AdmissionFailureSummaryTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.D = types.ModuleType("admission_failure_summary")
+        path = Path(__file__).with_name("summarize_admission.py")
+        exec(compile(path.read_bytes(), str(path), "exec"), cls.D.__dict__)
+
+    def log(self, failed=None):
+        names = sorted(self.D.NAMES)
+        failed = set(names[:1] if failed is None else failed)
+        lines = ["private compiler/assertion canary must never be printed", "running 24 tests"]
+        lines += [f"test admission::tests::{name} ... {'FAILED' if name in failed else 'ok'}" for name in names]
+        lines += ["failures:", "private panic path/token canary",
+                  f"test result: FAILED. {24-len(failed)} passed; {len(failed)} failed; 0 ignored; 0 measured; 23 filtered out; finished in 0.01s"]
+        return ("\n".join(lines)+"\n").encode()
+
+    def test_exact_authored_allowlist_and_failure_only_exit_domain(self):
+        text = Path(__file__).with_name("src").joinpath("admission_tests.rs").read_text()
+        names = set(re.findall(r"#\[test\]\s+fn ([a-z0-9_]+)\(", text))
+        self.assertEqual(names, self.D.NAMES)
+        self.assertEqual(len(names), 24)
+        for code in (0, True, None, 2**31, -(2**31)-1, "101"):
+            with self.subTest(code=code), self.assertRaises(ValueError): self.D.summarize(None, code)
+        for code in (1, 101, -(2**31), 2**31-1):
+            self.assertEqual(self.D.summarize(None, code)["cargo_exit"], code)
+
+    def test_complete_failure_outputs_only_closed_names_and_finite_fields(self):
+        for names in (sorted(self.D.NAMES)[:1], sorted(self.D.NAMES)):
+            value = self.D.summarize(self.log(names), 101)
+            self.assertEqual(value, dict(schema=1,scope="admission_tests_failure",cargo_exit=101,
+                                        status="complete_failure",reason="none",failed_tests=names))
+            text = json.dumps(value)
+            self.assertNotIn("canary", text)
+            self.assertLess(len(text)+24, self.D.MAX_OUTPUT)
+        self.assertEqual(self.D.summarize(b'\xef\xbb\xbf'+self.log().replace(b'\n',b'\r\n'),101)["status"],"complete_failure")
+
+    def test_unknown_duplicate_and_malformed_case_cannot_escape(self):
+        first = sorted(self.D.NAMES)[0]
+        record = f"test admission::tests::{first} ... FAILED\n".encode()
+        for raw in (self.log()+record,
+                    self.log().replace(first.encode(),b'PRIVATE_PATH_CANARY'),
+                    self.log().replace(record,record.replace(b'FAILED',b'ignored')),
+                    self.log()+b'test foreign::PRIVATE_TOKEN ... FAILED\n'):
+            with self.subTest(raw=raw[:0]):
+                value = self.D.summarize(raw,101)
+                self.assertEqual(value["reason"],"case_unrecognized_or_duplicate")
+                self.assertIsNone(value["failed_tests"])
+                self.assertNotIn("PRIVATE",json.dumps(value))
+
+    def test_incomplete_ambiguous_and_summary_mismatch_are_unavailable(self):
+        raw = self.log()
+        for changed,reason in ((raw.replace(b'running 24 tests\n',b''),'incomplete_or_ambiguous'),
+                               (raw+b'running 24 tests\n','incomplete_or_ambiguous'),
+                               (raw+raw.splitlines()[-1]+b'\n','incomplete_or_ambiguous'),
+                               (raw.replace(b'23 passed; 1 failed;',b'22 passed; 2 failed;'),'summary_inconsistent'),
+                               (self.log([]),'summary_inconsistent')):
+            with self.subTest(reason=reason):
+                value=self.D.summarize(changed,101)
+                self.assertEqual(value["reason"],reason)
+                self.assertIsNone(value["failed_tests"])
+
+    def test_read_encoding_and_size_failures_are_finite(self):
+        for raw,reason in ((None,'read_failed'),(b'','log_bound'),(b'x'*(self.D.MAX_LOG+1),'log_bound'),(b'\xff','log_encoding')):
+            value=self.D.summarize(raw,101)
+            self.assertEqual(value["reason"],reason)
+            self.assertIsNone(value["failed_tests"])
+        with self.assertRaises(ValueError):self.D.summarize('private text',101)
+
+    def test_main_bounds_read_and_suppresses_read_error_text(self):
+        stream=mock.MagicMock()
+        stream.__enter__.return_value=stream
+        stream.read.return_value=self.log()
+        output=io.StringIO()
+        with mock.patch.object(Path,'open',return_value=stream),contextlib.redirect_stdout(output):
+            self.assertEqual(self.D.main(['--log','owned.private','--cargo-exit','101']),0)
+        stream.read.assert_called_once_with(self.D.MAX_LOG+1)
+        self.assertLessEqual(len(output.getvalue().encode()),self.D.MAX_OUTPUT)
+        self.assertNotIn('private',output.getvalue())
+        output=io.StringIO()
+        with mock.patch.object(Path,'open',side_effect=OSError('SECRET_PATH_CANARY')),contextlib.redirect_stdout(output):
+            self.assertEqual(self.D.main(['--log','owned.private','--cargo-exit','101']),0)
+        self.assertNotIn('CANARY',output.getvalue())
+        self.assertIn('read_failed',output.getvalue())
+
+    def test_main_invalid_exit_and_diagnostic_failures_do_not_raise_or_read_success(self):
+        for args in ([],['--log','private','--cargo-exit','0'],['--log','private','--cargo-exit','9999999999']):
+            output=io.StringIO()
+            with mock.patch.object(Path,'open') as reader,contextlib.redirect_stdout(output):
+                self.assertEqual(self.D.main(args),2)
+            reader.assert_not_called()
+            self.assertEqual(output.getvalue(),'')
+        for target in ('summarize','print'):
+            owner=self.D if target=='summarize' else __import__('builtins')
+            with mock.patch.object(owner,target,side_effect=KeyboardInterrupt('SECRET')), \
+                 mock.patch.object(Path,'open',side_effect=OSError('SECRET_PATH')):
+                self.assertEqual(self.D.main(['--log','private','--cargo-exit','101']),2)
+
+    def test_failure_branch_preserves_exit_throw_success_gates_and_private_stderr(self):
+        text=(Path(__file__).resolve().parents[2]/'.github/workflows/original-cleanup-trace.yml').read_text()
+        start=text.index('$admissionExit = $LASTEXITCODE')
+        end=text.index('if ((Get-Item -LiteralPath $admissionLog).Length',start)
+        branch=text[start:end]
+        for required in ('if ($admissionExit -ne 0)', 'admission_cargo_exit=$admissionExit',
+                         '--cargo-exit $admissionExit 2> $admissionDiagnosticErr',
+                         "catch { Write-Output 'admission_test_diagnostic_unavailable' }",
+                         "throw 'Pure admission tests failed'"):
+            self.assertIn(required,branch)
+        self.assertEqual(branch.count('python -B'),1)
+        self.assertNotIn('exit $LASTEXITCODE',branch)
+        self.assertLess(branch.index('admission_cargo_exit='),branch.index('python -B'))
+        self.assertLess(branch.index('python -B'),branch.index("throw 'Pure admission tests failed'"))
+        self.assertNotIn('Get-Content',branch)
+        self.assertNotIn('Write-Output $admissionLog',text)
+
+
+class OrdinaryAdmissionWorkflowTests(unittest.TestCase):
+    def sources(self):
+        root=Path(__file__).resolve().parents[2]
+        return ((root/'.github/workflows/ci.yml').read_text(),
+                (root/'.github/workflows/original-cleanup-trace.yml').read_text())
+
+    def check_step(self, ci, manual):
+        jobs=re.findall(r'(?ms)^  test:\n(.*?)(?=^  [A-Za-z0-9_-]+:|\Z)',ci)
+        self.assertEqual(len(jobs),1)
+        job=jobs[0]
+        self.assertIn('    needs: revision\n',job)
+        self.assertIn('        os: [ubuntu-latest, windows-latest]\n',job)
+        self.assertIn('    runs-on: ${{ matrix.os }}\n',job)
+        self.assertIn('    timeout-minutes: 55\n',job)
+        marker='      - name: Cleanup trace admission regressions\n'
+        self.assertEqual(ci.count(marker),1)
+        blocks=re.findall(r'(?ms)^      - name: Cleanup trace admission regressions\n(.*?)(?=^      - |\Z)',job)
+        self.assertEqual(len(blocks),1)
+        prefix=("        if: runner.os == 'Windows'\n"
+                "        shell: pwsh\n"
+                "        working-directory: .\n"
+                "        run: |\n"
+                "          $ErrorActionPreference = 'Stop'\n"
+                "          $PSNativeCommandUseErrorActionPreference = $false\n")
+        start=manual.index('          $admissionLog = Join-Path')
+        end=manual.index('      - name: Prepare matching verified runtime',start)
+        self.assertEqual(blocks[0],prefix+manual[start:end])
+        WindowAdmissionTests().check_admission_workflow(manual)
+        command='cargo test --manifest-path tools/cleanup-trace/Cargo.toml --locked --lib admission::tests -- --test-threads=1'
+        self.assertEqual(ci.count(command),1)
+        self.assertLess(job.index('      - name: Cleanup trace report regressions\n'),job.index(marker))
+        self.assertLess(job.index(marker),job.index('      - name: All 20 isolated backend protocol fixtures\n'))
+        self.assertNotIn('continue-on-error',blocks[0])
+        self.assertNotIn('timeout-minutes',blocks[0])
+
+    def test_windows_existing_job_uses_identical_bounded_admission_gate(self):
+        self.check_step(*self.sources())
+
+    def test_condition_directory_runner_and_failure_bypasses_reject(self):
+        ci,manual=self.sources()
+        for before,after in (("        if: runner.os == 'Windows'\n",''),
+                             ('        working-directory: .\n','        working-directory: rclone-triage\n'),
+                             ('        shell: pwsh\n','        shell: bash\n'),
+                             ('    timeout-minutes: 55\n','    timeout-minutes: 60\n'),
+                             ('        run: |\n','        continue-on-error: true\n        run: |\n'),
+                             ('--cargo-exit $admissionExit 2> $admissionDiagnosticErr','--cargo-exit $LASTEXITCODE'),
+                             ("            throw 'Pure admission tests failed'",''),
+                             ('$admissionCases.Count -ne 24','$admissionCases.Count -ne 0'),
+                             ('24 passed; 0 failed;','0 passed; 0 failed;'),
+                             ('.Length -gt 262144','.Length -gt 99999999')):
+            with self.subTest(before=before),self.assertRaises(AssertionError):
+                self.check_step(ci.replace(before,after),manual)
+
+    def test_wrong_filter_in_both_copies_and_duplicate_step_reject(self):
+        ci,manual=self.sources()
+        with self.assertRaises(AssertionError):
+            self.check_step(ci.replace('--lib admission::tests','--lib unrelated::tests'),
+                            manual.replace('--lib admission::tests','--lib unrelated::tests'))
+        with self.assertRaises(AssertionError):
+            self.check_step(ci+'      - name: Cleanup trace admission regressions\n',manual)
+        with self.assertRaises(AssertionError):
+            self.check_step(ci.replace('  test:\n','  another_job:\n'),manual)
 
 
 if __name__=="__main__":unittest.main()

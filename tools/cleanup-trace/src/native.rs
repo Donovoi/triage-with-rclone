@@ -1,8 +1,10 @@
-use crate::model::{self, CallbackStorage, Counts, End, Start, MAX_ENDS, MAX_STARTS};
+use crate::admission::{self, Admission, CaptureGate, Decision, PublishedBounds};
+use crate::model::{self, CallbackStorage, Counts, End, Start, MAX_STARTS};
 use crate::ownership::{
     self, Buffer as OwnershipBuffer, Event as OwnershipEvent, Reason as OwnershipReason,
 };
 use crate::schema_metadata;
+use crate::{resource_use, resource_use_windows};
 use std::{
     env,
     fs::File,
@@ -11,7 +13,7 @@ use std::{
     mem::{offset_of, size_of},
     os::windows::io::AsRawHandle,
     ptr,
-    sync::mpsc,
+    sync::{mpsc, Arc},
     thread::JoinHandle,
     time::Duration,
 };
@@ -150,7 +152,8 @@ impl SchemaRejection {
 struct Collector {
     path: Vec<u16>,
     starts: Vec<Start>,
-    ends: Vec<End>,
+    admission: Option<Admission>,
+    published: Arc<PublishedBounds>,
     callbacks: u32,
     error: Option<&'static str>,
     schema_rejection: Option<SchemaRejection>,
@@ -159,11 +162,12 @@ struct Collector {
     metadata: schema_metadata::Capture,
 }
 impl Collector {
-    fn new(path: Vec<u16>) -> Result<Self, &'static str> {
+    fn new(path: Vec<u16>, published: Arc<PublishedBounds>) -> Result<Self, &'static str> {
         let mut x = Self {
             path,
             starts: Vec::new(),
-            ends: Vec::new(),
+            admission: None,
+            published,
             callbacks: 0,
             error: None,
             schema_rejection: None,
@@ -174,9 +178,7 @@ impl Collector {
         x.starts
             .try_reserve_exact(MAX_STARTS)
             .map_err(|_| "start_reservation_failed")?;
-        x.ends
-            .try_reserve_exact(MAX_ENDS)
-            .map_err(|_| "end_reservation_failed")?;
+        x.admission = Some(Admission::new().map_err(|reason| reason.label())?);
         x.ownership.reserve(); // Supplemental allocation failure cannot replace the original gate.
         Ok(x)
     }
@@ -257,10 +259,10 @@ unsafe fn number(
     }
     Ok(u64::from_le_bytes(out))
 }
-unsafe fn consume(e: *const EVENT_RECORD, s: &mut Collector) -> Outcome {
+unsafe fn consume(e: *const EVENT_RECORD, s: &mut Collector) -> Result<Option<End>, &'static str> {
     let h = &(*e).EventHeader;
     if !same_guid(h.ProviderId, FileIoGuid) || !matches!(h.EventDescriptor.Opcode, 64 | 76) {
-        return Ok(());
+        return Ok(None);
     }
     let header = SchemaHeader {
         opcode: h.EventDescriptor.Opcode,
@@ -276,15 +278,21 @@ unsafe fn consume(e: *const EVENT_RECORD, s: &mut Collector) -> Outcome {
         return Err(s.reject(header, SchemaStage::HeaderFlags, None, None, None));
     }
     if h.EventDescriptor.Opcode == 76 {
-        if s.ends.len() == MAX_ENDS {
-            return Err("end_capacity_reached");
-        }
         let end = End {
             qpc: h.TimeStamp,
             irp: number(e, s, header, KnownProperty::IrpPtr, true)?,
             status: number(e, s, header, KnownProperty::NtStatus, false)? as u32,
         };
-        s.ends.push(end);
+        let snapshot = s.published.snapshot();
+        let owner = s
+            .admission
+            .as_mut()
+            .ok_or("end_omission_accounting_unavailable")?;
+        let handoff = owner.decoded_end(end, snapshot);
+        if let Decision::Rejected(reason) = handoff.decision {
+            return Err(reason.label());
+        }
+        return Ok(Some(handoff.end));
     } else {
         // Classic v2 TTID is Pointer-qualified; v3 uses u32 (Microsoft TraceEvent).
         // TDH must resolve the same named property and return the exact versioned width.
@@ -306,7 +314,7 @@ unsafe fn consume(e: *const EVENT_RECORD, s: &mut Collector) -> Outcome {
                 .zip(&s.path)
                 .all(|(a, b)| u16::from_le_bytes([a[0], a[1]]) == *b)
         {
-            return Ok(()); // Other paths are discarded; never printed or retained.
+            return Ok(None); // Other paths are discarded; never printed or retained.
         }
         if s.starts.len() == MAX_STARTS {
             return Err("target_start_capacity_reached");
@@ -319,7 +327,7 @@ unsafe fn consume(e: *const EVENT_RECORD, s: &mut Collector) -> Outcome {
         };
         s.starts.push(start);
     }
-    Ok(())
+    Ok(None)
 }
 // Only additional begin events need TDH calls. Selected Creates and all Ends
 // reuse the original decoder's values. This error channel never calls s.reject.
@@ -351,7 +359,7 @@ unsafe fn consume_ownership(
     e: *const EVENT_RECORD,
     s: &mut Collector,
     prior_starts: usize,
-    prior_ends: usize,
+    decoded_end: Option<End>,
 ) {
     let h = &(*e).EventHeader;
     if !s.ownership.active() || !same_guid(h.ProviderId, FileIoGuid) {
@@ -365,10 +373,8 @@ unsafe fn consume_ownership(
         };
         let irp = if h.EventDescriptor.Opcode == 64 && s.starts.len() > prior_starts {
             s.starts[prior_starts].irp
-        } else if h.EventDescriptor.Opcode == 76 && s.ends.len() > prior_ends {
-            s.ends[prior_ends].irp
         } else if h.EventDescriptor.Opcode == 76 {
-            return Err(OwnershipReason::Schema);
+            decoded_end.ok_or(OwnershipReason::Schema)?.irp
         } else {
             ownership_irp(e)?
         };
@@ -404,11 +410,9 @@ unsafe extern "system" fn on_event(e: *mut EVENT_RECORD) {
         return;
     }
     let prior_starts = s.starts.len();
-    let prior_ends = s.ends.len();
-    if let Err(reason) = consume(e, s) {
-        s.error = Some(reason);
-    } else {
-        consume_ownership(e, s, prior_starts, prior_ends);
+    match consume(e, s) {
+        Err(reason) => s.error = Some(reason),
+        Ok(decoded_end) => consume_ownership(e, s, prior_starts, decoded_end),
     }
 }
 unsafe extern "system" fn on_buffer(log: *mut EVENT_TRACE_LOGFILEW) -> u32 {
@@ -481,6 +485,7 @@ struct Proof {
 }
 /// Owns only ETW resources. Never holds a runtime or directory handle.
 pub struct Trace {
+    published: Arc<PublishedBounds>,
     control: Option<CONTROLTRACE_HANDLE>,
     reader: Option<PROCESSTRACE_HANDLE>,
     worker: Option<JoinHandle<()>>,
@@ -492,6 +497,9 @@ pub struct Trace {
     runtime_sha256: String,
     frequency: i64,
     emitted: bool,
+    resource_probe: Option<Option<resource_use_windows::Probe>>,
+    prior_probe_closed: bool,
+    primary_written: bool,
 }
 impl Trace {
     pub fn arm(file: &File, runtime_sha256: &str) -> Option<Self> {
@@ -499,6 +507,7 @@ impl Trace {
             return None;
         }
         let mut x = Self {
+            published: Arc::new(PublishedBounds::default()),
             control: None,
             reader: None,
             worker: None,
@@ -518,6 +527,9 @@ impl Trace {
             },
             frequency: 0,
             emitted: false,
+            resource_probe: None,
+            prior_probe_closed: true,
+            primary_written: false,
         };
         // Environment authorization precedes any native identity or ETW call.
         let setup = if !cfg!(target_arch = "aarch64")
@@ -546,6 +558,10 @@ impl Trace {
     unsafe fn setup(&mut self, file: &File) -> Outcome {
         let handle = file.as_raw_handle();
         let id = identity(handle)?;
+        // Separate explicit opt-in, still behind original hosted ARM64 authorization.
+        if env::var("TRIAGE_RUNTIME_RESOURCE_USE").as_deref() == Ok("1") {
+            self.resource_probe = Some(resource_use_windows::Probe::capture(file, id));
+        }
         let mut path = [0u16; 1024];
         let n =
             GetFinalPathNameByHandleW(handle, path.as_mut_ptr(), path.len() as u32, VOLUME_NAME_NT);
@@ -557,7 +573,7 @@ impl Trace {
         }
         self.path = path[..n as usize].to_vec();
         self.identity = Some(id);
-        let mut state = Collector::new(self.path.clone())?;
+        let mut state = Collector::new(self.path.clone(), Arc::clone(&self.published))?;
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
         state.ready = Some(ready_tx);
         let mut props = Properties::new();
@@ -652,12 +668,22 @@ impl Trace {
         } else {
             (Err("operation_not_observed"), 0)
         };
+        if let Ok(value) = before {
+            if let Err(reason) = self.published.publish_before(value) {
+                self.reason.get_or_insert(reason.label());
+            }
+        }
         model::original_then(remove, |original| {
             let after = if before.is_ok() {
                 unsafe { qpc() }
             } else {
                 Err("operation_not_observed")
             };
+            if let Ok(value) = after {
+                if let Err(reason) = self.published.publish_after(value) {
+                    self.reason.get_or_insert(reason.label());
+                }
+            }
             let code = original
                 .as_ref()
                 .err()
@@ -673,6 +699,11 @@ impl Trace {
             }
             let window = before.and_then(|a| after.map(|b| (a, b, tid)));
             self.finish(Some(original.is_ok()), code, window);
+            // Failure-only; primary trace has already been attempted and ETW stopped.
+            // This runs before returning into private_fs residue inspection.
+            if code == Some(32) {
+                self.observe_resource_use();
+            }
         })
     }
     unsafe fn verify_survivor(&mut self) {
@@ -699,7 +730,34 @@ impl Trace {
             .is_some_and(|(a, b)| same_file(&a, b));
         if CloseHandle(h) == 0 {
             self.proof.identity = false;
+            self.prior_probe_closed = false;
             self.reason = Some("cleanup_uncertain");
+        }
+    }
+    fn observe_resource_use(&mut self) {
+        let Some(probe) = self.resource_probe.as_mut() else {
+            return;
+        };
+        // Resource closure, not correlation/schema/ownership interpretation, gates RM.
+        let closed = self.proof.started
+            && self.proof.stopped
+            && self.proof.absent
+            && self.proof.completed
+            && self.proof.closed
+            && self.proof.joined;
+        let report = if !closed {
+            resource_use::Report::unavailable(resource_use::Reason::TraceUnclosed)
+        } else if !self.prior_probe_closed {
+            resource_use::Report::unavailable(resource_use::Reason::PriorProbeUnclosed)
+        } else if !self.primary_written {
+            resource_use::Report::unavailable(resource_use::Reason::PrimaryUnwritten)
+        } else if let Some(probe) = probe {
+            resource_use::observe(probe)
+        } else {
+            resource_use::Report::unavailable(resource_use::Reason::RegistrationUnavailable)
+        };
+        if let Some(line) = report.line(&self.runtime_sha256, closed, self.prior_probe_closed) {
+            let _ = io::stderr().lock().write_all(line.as_bytes());
         }
     }
     fn shutdown(&mut self) -> Option<Consumer> {
@@ -768,11 +826,16 @@ impl Trace {
         }
         self.emitted = true;
         let consumer = self.shutdown();
+        let cleanup = self.proof.stopped
+            && self.proof.absent
+            && self.proof.completed
+            && self.proof.closed
+            && self.proof.joined;
         let mut counts = None;
         let mut rejection = None;
         let mut ownership = None;
         let mut metadata = None;
-        if let Some(c) = consumer {
+        if let Some(mut c) = consumer {
             rejection = c.state.schema_rejection.map(SchemaRejection::json);
             metadata = c.state.metadata.observation;
             if c.state.error == Some("event_loss") {
@@ -782,30 +845,55 @@ impl Trace {
                 self.reason = c.state.error;
             }
             if self.reason.is_none() {
-                match window.and_then(|(a, b, tid)| {
-                    model::correlate(&c.state.starts, &c.state.ends, a, b, tid)
-                }) {
-                    Ok(v) => counts = Some(v),
-                    Err(e) => self.reason = Some(e),
+                match window {
+                    Err(reason) => self.reason = Some(reason),
+                    Ok((a, b, tid)) => {
+                        let gate = CaptureGate {
+                            drained: cleanup,
+                            started: self.proof.started,
+                            settings: self.proof.settings,
+                            lossless: self.proof.lossless,
+                            bounded: self.proof.bounded,
+                        };
+                        let snapshot = c.state.published.snapshot();
+                        if let Some(proof) = admission::prove_if_complete(
+                            &mut c.state.admission,
+                            snapshot,
+                            a,
+                            b,
+                            gate,
+                        ) {
+                            match proof {
+                                Err(reason) => self.reason = Some(reason.label()),
+                                Ok(ends) => {
+                                    match model::correlate(
+                                        &c.state.starts,
+                                        ends.as_slice(),
+                                        a,
+                                        b,
+                                        tid,
+                                    ) {
+                                        Ok(v) => counts = Some(v),
+                                        Err(e) => self.reason = Some(e),
+                                    }
+                                    if self.reason == Some("correlation_end_multiple") {
+                                        ownership = Some(c.state.ownership.report(
+                                            &c.state.starts,
+                                            ends.as_slice(),
+                                            window,
+                                            self.reason,
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
-            }
-            if self.reason == Some("correlation_end_multiple") {
-                ownership = Some(c.state.ownership.report(
-                    &c.state.starts,
-                    &c.state.ends,
-                    window,
-                    self.reason,
-                ));
             }
             if !self.proof.closed {
                 std::mem::forget(c);
             }
         }
-        let cleanup = self.proof.stopped
-            && self.proof.absent
-            && self.proof.completed
-            && self.proof.closed
-            && self.proof.joined;
         if self.proof.started && !cleanup {
             self.reason = Some("cleanup_uncertain");
         }
@@ -864,9 +952,10 @@ impl Trace {
             };
             observed.json()
         };
-        let record=format!("{{\"schema\":3,\"scope\":\"original_runtime_remove_tree\",\"status\":\"{}\",\"reason\":\"{}\",\"original_ok\":{},\"os_code\":{},\"operation_us\":{},\"runtime_sha256\":\"{}\",\"target_identity_verified\":{},\"session_started\":{},\"settings_verified\":{},\"bounded\":{},\"zero_loss\":{},\"stop_succeeded\":{},\"session_absent\":{},\"consumer_completed\":{},\"consumer_closed\":{},\"worker_joined\":{},\"counts\":{},\"schema_rejection\":{},\"ownership\":{}}}",status,self.reason.unwrap_or("none"),original.map_or_else(||"null".into(),|v|v.to_string()),nullable(os_code.map(u64::from)),nullable(duration),self.runtime_sha256,self.proof.identity,self.proof.started,self.proof.settings,self.proof.bounded,self.proof.lossless,self.proof.stopped,self.proof.absent,self.proof.completed,self.proof.closed,self.proof.joined,counted,rejection.unwrap_or_else(||"null".into()),ownership);
+        let record=format!("{{\"schema\":4,\"capture_contract\":\"{}\",\"scope\":\"original_runtime_remove_tree\",\"status\":\"{}\",\"reason\":\"{}\",\"original_ok\":{},\"os_code\":{},\"operation_us\":{},\"runtime_sha256\":\"{}\",\"target_identity_verified\":{},\"session_started\":{},\"settings_verified\":{},\"bounded\":{},\"zero_loss\":{},\"stop_succeeded\":{},\"session_absent\":{},\"consumer_completed\":{},\"consumer_closed\":{},\"worker_joined\":{},\"counts\":{},\"schema_rejection\":{},\"ownership\":{}}}",admission::CAPTURE_CONTRACT,status,self.reason.unwrap_or("none"),original.map_or_else(||"null".into(),|v|v.to_string()),nullable(os_code.map(u64::from)),nullable(duration),self.runtime_sha256,self.proof.identity,self.proof.started,self.proof.settings,self.proof.bounded,self.proof.lossless,self.proof.stopped,self.proof.absent,self.proof.completed,self.proof.closed,self.proof.joined,counted,rejection.unwrap_or_else(||"null".into()),ownership);
         if record.len() <= 4096 {
-            let _ = writeln!(io::stderr().lock(), "runtime_cleanup_trace={record}");
+            self.primary_written =
+                writeln!(io::stderr().lock(), "runtime_cleanup_trace={record}").is_ok();
         }
         // Separate metadata never supplies original counts/reasons or cleanup proof.
         let schema = schema_metadata::json(
@@ -908,7 +997,7 @@ unsafe fn identity(handle: HANDLE) -> Result<BY_HANDLE_FILE_INFORMATION, &'stati
         Ok(x)
     }
 }
-fn same_file(a: &BY_HANDLE_FILE_INFORMATION, b: &BY_HANDLE_FILE_INFORMATION) -> bool {
+pub(crate) fn same_file(a: &BY_HANDLE_FILE_INFORMATION, b: &BY_HANDLE_FILE_INFORMATION) -> bool {
     a.dwVolumeSerialNumber == b.dwVolumeSerialNumber
         && a.nFileIndexHigh == b.nFileIndexHigh
         && a.nFileIndexLow == b.nFileIndexLow

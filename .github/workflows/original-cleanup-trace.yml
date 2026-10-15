@@ -2,6 +2,12 @@ name: Original Windows runtime cleanup trace
 on:
   workflow_dispatch:
     inputs:
+      mode:
+        description: Separate calibration or unchanged original cleanup diagnostic
+        required: true
+        default: original_cleanup
+        type: choice
+        options: [original_cleanup, resource_use_calibration]
       expected_sha:
         description: Exact reviewed diagnostic commit
         required: true
@@ -10,6 +16,7 @@ permissions:
   contents: read
 jobs:
   original-cleanup:
+    if: ${{ inputs.mode == 'original_cleanup' }}
     name: ARM64 CLI acquisition runtime removal diagnostic
     runs-on: windows-11-arm
     timeout-minutes: 40
@@ -17,6 +24,11 @@ jobs:
       run:
         shell: pwsh
     steps:
+      - name: Verify exact original mode
+        env:
+          DIAGNOSTIC_MODE: ${{ inputs.mode }}
+        run: |
+          if (-not [string]::Equals($env:DIAGNOSTIC_MODE, 'original_cleanup', [StringComparison]::Ordinal)) { throw 'Original mode mismatch' }
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -50,6 +62,24 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Pure correlation tests failed' }
           cargo test --manifest-path tools/cleanup-trace/Cargo.toml --locked --lib schema_metadata::tests
           if ($LASTEXITCODE -ne 0) { throw 'Pure schema tests failed' }
+          $admissionLog = Join-Path $env:RUNNER_TEMP 'original-cleanup-admission-tests.private.log'
+          if ([IO.File]::Exists($admissionLog)) { throw 'Pure admission log already exists' }
+          cargo test --manifest-path tools/cleanup-trace/Cargo.toml --locked --lib admission::tests -- --test-threads=1 > $admissionLog 2>&1
+          $admissionExit = $LASTEXITCODE
+          if ($admissionExit -ne 0) {
+            Write-Output "admission_cargo_exit=$admissionExit"
+            try {
+              $admissionDiagnosticErr = Join-Path $env:RUNNER_TEMP 'original-cleanup-admission-summary-stderr.private'
+              if ([IO.File]::Exists($admissionDiagnosticErr)) { throw 'Private diagnostic already exists' }
+              python -B tools/cleanup-trace/summarize_admission.py --log $admissionLog --cargo-exit $admissionExit 2> $admissionDiagnosticErr
+            } catch { Write-Output 'admission_test_diagnostic_unavailable' }
+            throw 'Pure admission tests failed'
+          }
+          if ((Get-Item -LiteralPath $admissionLog).Length -gt 262144) { throw 'Pure admission log exceeds bound' }
+          $admissionOutput = [IO.File]::ReadAllText($admissionLog)
+          $admissionCases = [regex]::Matches($admissionOutput, '(?m)^test admission::tests::[a-z0-9_]+ \.\.\. ok\r?$')
+          $admissionSummary = [regex]::Matches($admissionOutput, '(?m)^test result: ok\. 24 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out; finished in [^\r\n]+\r?$')
+          if ($admissionCases.Count -ne 24 -or $admissionSummary.Count -ne 1) { throw 'Pure admission selection mismatch' }
       - name: Prepare matching verified runtime
         run: ./scripts/download-rclone.ps1 -Architecture arm64
       - name: Compile the isolated diagnostic test
@@ -131,3 +161,144 @@ jobs:
           exit $validationExit
       # No raw log/ETL/binary artifacts, retries, privileges or provider evidence.
       # Missing output or timeout is unavailable, never a session-stop certificate.
+  resource-use-calibration:
+    if: ${{ inputs.mode == 'resource_use_calibration' }}
+    name: ARM64 synthetic Restart Manager calibration
+    runs-on: windows-11-arm
+    timeout-minutes: 40
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Verify exact calibration revision and mode
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          CALIBRATION_MODE: ${{ inputs.mode }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not [string]::Equals($env:CALIBRATION_MODE, 'resource_use_calibration', [StringComparison]::Ordinal)) { throw 'Calibration mode mismatch' }
+          if ($env:GITHUB_ACTIONS -cne 'true' -or $env:RUNNER_ENVIRONMENT -cne 'github-hosted' -or $env:RUNNER_OS -cne 'Windows' -or $env:RUNNER_ARCH -cne 'ARM64') { throw 'Unsupported calibration environment' }
+          $actual = (git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $env:EXPECTED_SHA -cnotmatch '\A[0-9a-f]{40}\z' -or -not [string]::Equals($actual, $env:GITHUB_SHA, [StringComparison]::Ordinal) -or -not [string]::Equals($actual, $env:EXPECTED_SHA, [StringComparison]::Ordinal)) { throw 'Revision mismatch' }
+          Write-Output "tested_commit=$actual"
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
+        with:
+          toolchain: 1.95.0
+          targets: aarch64-pc-windows-msvc
+          components: rustfmt, clippy
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - name: Pure calibration checks and compile exact library harness
+        working-directory: tools/cleanup-trace
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          python -B test_resource_use_calibration.py
+          if ($LASTEXITCODE -ne 0) { throw 'Calibration contract tests failed' }
+          cargo fmt --check
+          if ($LASTEXITCODE -ne 0) { throw 'Calibration format failed' }
+          cargo clippy --locked --all-targets -- -D warnings
+          if ($LASTEXITCODE -ne 0) { throw 'Calibration compile failed' }
+          cargo test --locked --lib resource_use_calibration::tests::pure_
+          if ($LASTEXITCODE -ne 0) { throw 'Calibration pure model failed' }
+          function Get-SourceBinding {
+            $paths = @(git ls-files -- . ../../.github/workflows/original-cleanup-trace.yml ../../rclone-version.env)
+            if ($LASTEXITCODE -ne 0 -or $paths.Count -lt 10 -or $paths.Count -gt 64) { throw 'Source inventory failed' }
+            $lines = @(); $bytes = 0
+            foreach ($path in ($paths | Sort-Object)) {
+              $length = (Get-Item -LiteralPath $path).Length
+              if ($length -gt 262144) { throw 'Source file bound' }; $bytes += $length
+              $lines += $path + ':' + (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+            }
+            if ($bytes -gt 2097152) { throw 'Source aggregate bound' }
+            return [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes(($lines -join "`n")))).ToLowerInvariant()
+          }
+          git diff --quiet HEAD --
+          if ($LASTEXITCODE -ne 0) { throw 'Source changed before build' }
+          $buildCommit = (git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $buildCommit -cne $env:GITHUB_SHA) { throw 'Build revision changed' }
+          $buildTree = (git rev-parse 'HEAD^{tree}').Trim()
+          if ($LASTEXITCODE -ne 0 -or $buildTree -cnotmatch '\A[0-9a-f]{40}\z') { throw 'Build tree unavailable' }
+          $buildSource = Join-Path $env:RUNNER_TEMP 'rm-calibration-source.private.json'
+          if ([IO.File]::Exists($buildSource)) { throw 'Build source record exists' }
+          [ordered]@{commit=$buildCommit;source_tree=$buildTree;source_sha256=(Get-SourceBinding)} | ConvertTo-Json -Compress | Set-Content -LiteralPath $buildSource -Encoding utf8
+          $json = Join-Path $env:RUNNER_TEMP 'rm-calibration-build.private.jsonl'
+          $err = Join-Path $env:RUNNER_TEMP 'rm-calibration-build-stderr.private'
+          if ([IO.File]::Exists($json) -or [IO.File]::Exists($err)) { throw 'Private build record exists' }
+          cargo test --locked --release --target aarch64-pc-windows-msvc --lib --no-run --message-format=json > $json 2> $err
+          if ($LASTEXITCODE -ne 0) { throw 'Calibration harness build failed' }
+      - name: Observe held and closed synthetic file once
+        timeout-minutes: 3
+        working-directory: tools/cleanup-trace
+        env:
+          TRIAGE_RM_CALIBRATION: '1'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          function Get-SourceBinding {
+            $paths = @(git ls-files -- . ../../.github/workflows/original-cleanup-trace.yml ../../rclone-version.env)
+            if ($LASTEXITCODE -ne 0 -or $paths.Count -lt 10 -or $paths.Count -gt 64) { throw 'Source inventory failed' }
+            $lines = @(); $bytes = 0
+            foreach ($path in ($paths | Sort-Object)) {
+              $length = (Get-Item -LiteralPath $path).Length
+              if ($length -gt 262144) { throw 'Source file bound' }; $bytes += $length
+              $lines += $path + ':' + (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+            }
+            if ($bytes -gt 2097152) { throw 'Source aggregate bound' }
+            return [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes(($lines -join "`n")))).ToLowerInvariant()
+          }
+          git diff --quiet HEAD --
+          if ($LASTEXITCODE -ne 0) { throw 'Source changed before calibration' }
+          $sourceHash = Get-SourceBinding
+          $tree = (git rev-parse 'HEAD^{tree}').Trim()
+          if ($LASTEXITCODE -ne 0 -or $tree -cnotmatch '\A[0-9a-f]{40}\z') { throw 'Source tree unavailable' }
+          $commit = (git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or -not [string]::Equals($commit, $env:GITHUB_SHA, [StringComparison]::Ordinal)) { throw 'Source revision changed' }
+          $buildSource = Join-Path $env:RUNNER_TEMP 'rm-calibration-source.private.json'
+          if ((Get-Item -LiteralPath $buildSource).Length -gt 1024) { throw 'Build source bound' }
+          $buildSourceHash = (Get-FileHash -LiteralPath $buildSource -Algorithm SHA256).Hash.ToLowerInvariant()
+          $built = Get-Content -LiteralPath $buildSource -Raw | ConvertFrom-Json
+          if ((@($built.PSObject.Properties.Name | Sort-Object) -join ',') -cne 'commit,source_sha256,source_tree' -or $built.commit -cne $commit -or $built.source_tree -cne $tree -or $built.source_sha256 -cne $sourceHash) { throw 'Build source binding changed' }
+          $manifest = '../../rclone-version.env'
+          $manifestHash = (Get-FileHash -LiteralPath $manifest -Algorithm SHA256).Hash.ToLowerInvariant()
+          $runtimePins = @(Get-Content -LiteralPath $manifest | Where-Object { $_ -cmatch '\ARCLONE_WINDOWS_ARM64_EXE_SHA256=[0-9a-f]{64}\z' })
+          if ($runtimePins.Count -ne 1) { throw 'Expected runtime pin unavailable' }
+          $runtimeHash = $runtimePins[0].Substring(32)
+          $json = Join-Path $env:RUNNER_TEMP 'rm-calibration-build.private.jsonl'
+          $selectedJson = python -B resource_use_calibration.py select --cargo-json $json --project $PWD.Path
+          if ($LASTEXITCODE -ne 0) { throw 'Calibration artifact selection failed' }
+          $selected = $selectedJson | ConvertFrom-Json
+          if ($selected.schema -ne 1 -or -not [string]::Equals($selected.artifact_kind, 'resource_use_calibration', [StringComparison]::Ordinal)) { throw 'Calibration artifact kind mismatch' }
+          $harness = $selected.test_harness
+          $harnessHash = (Get-FileHash -LiteralPath $harness -Algorithm SHA256).Hash.ToLowerInvariant()
+          $cargoHash = (Get-FileHash -LiteralPath $json -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($cargoHash -cne $selected.cargo_json_sha256) { throw 'Build record changed' }
+          $out = Join-Path $env:RUNNER_TEMP 'rm-calibration-stdout.private'
+          $err = Join-Path $env:RUNNER_TEMP 'rm-calibration-stderr.private'
+          $report = Join-Path $env:RUNNER_TEMP 'rm-calibration-validation.json'
+          if ([IO.File]::Exists($out) -or [IO.File]::Exists($err) -or [IO.File]::Exists($report)) { throw 'Private observation exists' }
+          $env:TRIAGE_RM_CALIBRATION_ROOT = Join-Path $env:RUNNER_TEMP ('rm-calibration-' + [Guid]::NewGuid().ToString('N'))
+          & $harness resource_use_calibration::tests::hosted_held_file_then_closed --ignored --exact --nocapture --test-threads=1 > $out 2> $err
+          $nativeExit = $LASTEXITCODE
+          Write-Output "calibration_native_exit=$nativeExit"
+          if ((Get-FileHash -LiteralPath $harness -Algorithm SHA256).Hash.ToLowerInvariant() -cne $harnessHash -or (Get-FileHash -LiteralPath $json -Algorithm SHA256).Hash.ToLowerInvariant() -cne $cargoHash -or (Get-FileHash -LiteralPath $manifest -Algorithm SHA256).Hash.ToLowerInvariant() -cne $manifestHash -or (Get-SourceBinding) -cne $sourceHash) { throw 'Calibration bytes changed' }
+          if ((Get-FileHash -LiteralPath $buildSource -Algorithm SHA256).Hash.ToLowerInvariant() -cne $buildSourceHash) { throw 'Build source record changed' }
+          git diff --quiet HEAD --
+          if ($LASTEXITCODE -ne 0 -or (git rev-parse HEAD).Trim() -cne $commit -or (git rev-parse 'HEAD^{tree}').Trim() -cne $tree) { throw 'Calibration source changed' }
+          python -B resource_use_calibration.py validate --stderr $err --stdout $out --report $report --test-exit $nativeExit --commit $commit --source-tree $tree --source-sha256 $sourceHash --harness-sha256 $harnessHash --cargo-json-sha256 $cargoHash --runtime-manifest-sha256 $manifestHash --expected-runtime-sha256 $runtimeHash
+          $validationExit = $LASTEXITCODE
+          if ($nativeExit -ne 0) { exit $nativeExit }
+          exit $validationExit
+      - name: Upload only finite calibration result
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rm-calibration-ARM64
+          path: ${{ runner.temp }}/rm-calibration-validation.json
+          if-no-files-found: ignore
+          retention-days: 14
+      # Synchronous API calls have no hard deadline; killed/uncertain teardown is unavailable.
