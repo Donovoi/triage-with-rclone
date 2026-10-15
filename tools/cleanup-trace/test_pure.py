@@ -983,7 +983,8 @@ class WindowAdmissionTests(unittest.TestCase):
     def check_admission_workflow(self, text):
         command = 'cargo test --manifest-path tools/cleanup-trace/Cargo.toml --locked --lib admission::tests -- --test-threads=1 > $admissionLog 2>&1'
         self.assertEqual(text.count(command), 1)
-        self.assertIn("if ($LASTEXITCODE -ne 0) { throw 'Pure admission tests failed' }", text)
+        self.assertIn("$admissionExit = $LASTEXITCODE\n          if ($admissionExit -ne 0) {", text)
+        self.assertIn("            throw 'Pure admission tests failed'\n          }", text)
         self.assertIn('$admissionCases.Count -ne 24 -or $admissionSummary.Count -ne 1', text)
         self.assertIn('24 passed; 0 failed; 0 ignored; 0 measured;', text)
         self.assertIn('.Length -gt 262144', text)
@@ -999,10 +1000,189 @@ class WindowAdmissionTests(unittest.TestCase):
         for old, new in (('--lib admission::tests', '--lib unrelated::tests'),
                          ('$admissionCases.Count -ne 24', '$admissionCases.Count -ne 0'),
                          ('24 passed; 0 failed;', '0 passed; 0 failed;'),
-                         ("if ($LASTEXITCODE -ne 0) { throw 'Pure admission tests failed' }", ''),
+                         ("            throw 'Pure admission tests failed'", ''),
                          ('.Length -gt 262144', '.Length -gt 99999999')):
             with self.subTest(old=old), self.assertRaises(AssertionError):
                 self.check_admission_workflow(text.replace(old, new))
+
+
+class AdmissionFailureSummaryTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.D = types.ModuleType("admission_failure_summary")
+        path = Path(__file__).with_name("summarize_admission.py")
+        exec(compile(path.read_bytes(), str(path), "exec"), cls.D.__dict__)
+
+    def log(self, failed=None):
+        names = sorted(self.D.NAMES)
+        failed = set(names[:1] if failed is None else failed)
+        lines = ["private compiler/assertion canary must never be printed", "running 24 tests"]
+        lines += [f"test admission::tests::{name} ... {'FAILED' if name in failed else 'ok'}" for name in names]
+        lines += ["failures:", "private panic path/token canary",
+                  f"test result: FAILED. {24-len(failed)} passed; {len(failed)} failed; 0 ignored; 0 measured; 23 filtered out; finished in 0.01s"]
+        return ("\n".join(lines)+"\n").encode()
+
+    def test_exact_authored_allowlist_and_failure_only_exit_domain(self):
+        text = Path(__file__).with_name("src").joinpath("admission_tests.rs").read_text()
+        names = set(re.findall(r"#\[test\]\s+fn ([a-z0-9_]+)\(", text))
+        self.assertEqual(names, self.D.NAMES)
+        self.assertEqual(len(names), 24)
+        for code in (0, True, None, 2**31, -(2**31)-1, "101"):
+            with self.subTest(code=code), self.assertRaises(ValueError): self.D.summarize(None, code)
+        for code in (1, 101, -(2**31), 2**31-1):
+            self.assertEqual(self.D.summarize(None, code)["cargo_exit"], code)
+
+    def test_complete_failure_outputs_only_closed_names_and_finite_fields(self):
+        for names in (sorted(self.D.NAMES)[:1], sorted(self.D.NAMES)):
+            value = self.D.summarize(self.log(names), 101)
+            self.assertEqual(value, dict(schema=1,scope="admission_tests_failure",cargo_exit=101,
+                                        status="complete_failure",reason="none",failed_tests=names))
+            text = json.dumps(value)
+            self.assertNotIn("canary", text)
+            self.assertLess(len(text)+24, self.D.MAX_OUTPUT)
+        self.assertEqual(self.D.summarize(b'\xef\xbb\xbf'+self.log().replace(b'\n',b'\r\n'),101)["status"],"complete_failure")
+
+    def test_unknown_duplicate_and_malformed_case_cannot_escape(self):
+        first = sorted(self.D.NAMES)[0]
+        record = f"test admission::tests::{first} ... FAILED\n".encode()
+        for raw in (self.log()+record,
+                    self.log().replace(first.encode(),b'PRIVATE_PATH_CANARY'),
+                    self.log().replace(record,record.replace(b'FAILED',b'ignored')),
+                    self.log()+b'test foreign::PRIVATE_TOKEN ... FAILED\n'):
+            with self.subTest(raw=raw[:0]):
+                value = self.D.summarize(raw,101)
+                self.assertEqual(value["reason"],"case_unrecognized_or_duplicate")
+                self.assertIsNone(value["failed_tests"])
+                self.assertNotIn("PRIVATE",json.dumps(value))
+
+    def test_incomplete_ambiguous_and_summary_mismatch_are_unavailable(self):
+        raw = self.log()
+        for changed,reason in ((raw.replace(b'running 24 tests\n',b''),'incomplete_or_ambiguous'),
+                               (raw+b'running 24 tests\n','incomplete_or_ambiguous'),
+                               (raw+raw.splitlines()[-1]+b'\n','incomplete_or_ambiguous'),
+                               (raw.replace(b'23 passed; 1 failed;',b'22 passed; 2 failed;'),'summary_inconsistent'),
+                               (self.log([]),'summary_inconsistent')):
+            with self.subTest(reason=reason):
+                value=self.D.summarize(changed,101)
+                self.assertEqual(value["reason"],reason)
+                self.assertIsNone(value["failed_tests"])
+
+    def test_read_encoding_and_size_failures_are_finite(self):
+        for raw,reason in ((None,'read_failed'),(b'','log_bound'),(b'x'*(self.D.MAX_LOG+1),'log_bound'),(b'\xff','log_encoding')):
+            value=self.D.summarize(raw,101)
+            self.assertEqual(value["reason"],reason)
+            self.assertIsNone(value["failed_tests"])
+        with self.assertRaises(ValueError):self.D.summarize('private text',101)
+
+    def test_main_bounds_read_and_suppresses_read_error_text(self):
+        stream=mock.MagicMock()
+        stream.__enter__.return_value=stream
+        stream.read.return_value=self.log()
+        output=io.StringIO()
+        with mock.patch.object(Path,'open',return_value=stream),contextlib.redirect_stdout(output):
+            self.assertEqual(self.D.main(['--log','owned.private','--cargo-exit','101']),0)
+        stream.read.assert_called_once_with(self.D.MAX_LOG+1)
+        self.assertLessEqual(len(output.getvalue().encode()),self.D.MAX_OUTPUT)
+        self.assertNotIn('private',output.getvalue())
+        output=io.StringIO()
+        with mock.patch.object(Path,'open',side_effect=OSError('SECRET_PATH_CANARY')),contextlib.redirect_stdout(output):
+            self.assertEqual(self.D.main(['--log','owned.private','--cargo-exit','101']),0)
+        self.assertNotIn('CANARY',output.getvalue())
+        self.assertIn('read_failed',output.getvalue())
+
+    def test_main_invalid_exit_and_diagnostic_failures_do_not_raise_or_read_success(self):
+        for args in ([],['--log','private','--cargo-exit','0'],['--log','private','--cargo-exit','9999999999']):
+            output=io.StringIO()
+            with mock.patch.object(Path,'open') as reader,contextlib.redirect_stdout(output):
+                self.assertEqual(self.D.main(args),2)
+            reader.assert_not_called()
+            self.assertEqual(output.getvalue(),'')
+        for target in ('summarize','print'):
+            owner=self.D if target=='summarize' else __import__('builtins')
+            with mock.patch.object(owner,target,side_effect=KeyboardInterrupt('SECRET')), \
+                 mock.patch.object(Path,'open',side_effect=OSError('SECRET_PATH')):
+                self.assertEqual(self.D.main(['--log','private','--cargo-exit','101']),2)
+
+    def test_failure_branch_preserves_exit_throw_success_gates_and_private_stderr(self):
+        text=(Path(__file__).resolve().parents[2]/'.github/workflows/original-cleanup-trace.yml').read_text()
+        start=text.index('$admissionExit = $LASTEXITCODE')
+        end=text.index('if ((Get-Item -LiteralPath $admissionLog).Length',start)
+        branch=text[start:end]
+        for required in ('if ($admissionExit -ne 0)', 'admission_cargo_exit=$admissionExit',
+                         '--cargo-exit $admissionExit 2> $admissionDiagnosticErr',
+                         "catch { Write-Output 'admission_test_diagnostic_unavailable' }",
+                         "throw 'Pure admission tests failed'"):
+            self.assertIn(required,branch)
+        self.assertEqual(branch.count('python -B'),1)
+        self.assertNotIn('exit $LASTEXITCODE',branch)
+        self.assertLess(branch.index('admission_cargo_exit='),branch.index('python -B'))
+        self.assertLess(branch.index('python -B'),branch.index("throw 'Pure admission tests failed'"))
+        self.assertNotIn('Get-Content',branch)
+        self.assertNotIn('Write-Output $admissionLog',text)
+
+
+class OrdinaryAdmissionWorkflowTests(unittest.TestCase):
+    def sources(self):
+        root=Path(__file__).resolve().parents[2]
+        return ((root/'.github/workflows/ci.yml').read_text(),
+                (root/'.github/workflows/original-cleanup-trace.yml').read_text())
+
+    def check_step(self, ci, manual):
+        jobs=re.findall(r'(?ms)^  test:\n(.*?)(?=^  [A-Za-z0-9_-]+:|\Z)',ci)
+        self.assertEqual(len(jobs),1)
+        job=jobs[0]
+        self.assertIn('    needs: revision\n',job)
+        self.assertIn('        os: [ubuntu-latest, windows-latest]\n',job)
+        self.assertIn('    runs-on: ${{ matrix.os }}\n',job)
+        self.assertIn('    timeout-minutes: 55\n',job)
+        marker='      - name: Cleanup trace admission regressions\n'
+        self.assertEqual(ci.count(marker),1)
+        blocks=re.findall(r'(?ms)^      - name: Cleanup trace admission regressions\n(.*?)(?=^      - |\Z)',job)
+        self.assertEqual(len(blocks),1)
+        prefix=("        if: runner.os == 'Windows'\n"
+                "        shell: pwsh\n"
+                "        working-directory: .\n"
+                "        run: |\n"
+                "          $ErrorActionPreference = 'Stop'\n"
+                "          $PSNativeCommandUseErrorActionPreference = $false\n")
+        start=manual.index('          $admissionLog = Join-Path')
+        end=manual.index('      - name: Prepare matching verified runtime',start)
+        self.assertEqual(blocks[0],prefix+manual[start:end])
+        WindowAdmissionTests().check_admission_workflow(manual)
+        command='cargo test --manifest-path tools/cleanup-trace/Cargo.toml --locked --lib admission::tests -- --test-threads=1'
+        self.assertEqual(ci.count(command),1)
+        self.assertLess(job.index('      - name: Cleanup trace report regressions\n'),job.index(marker))
+        self.assertLess(job.index(marker),job.index('      - name: All 20 isolated backend protocol fixtures\n'))
+        self.assertNotIn('continue-on-error',blocks[0])
+        self.assertNotIn('timeout-minutes',blocks[0])
+
+    def test_windows_existing_job_uses_identical_bounded_admission_gate(self):
+        self.check_step(*self.sources())
+
+    def test_condition_directory_runner_and_failure_bypasses_reject(self):
+        ci,manual=self.sources()
+        for before,after in (("        if: runner.os == 'Windows'\n",''),
+                             ('        working-directory: .\n','        working-directory: rclone-triage\n'),
+                             ('        shell: pwsh\n','        shell: bash\n'),
+                             ('    timeout-minutes: 55\n','    timeout-minutes: 60\n'),
+                             ('        run: |\n','        continue-on-error: true\n        run: |\n'),
+                             ('--cargo-exit $admissionExit 2> $admissionDiagnosticErr','--cargo-exit $LASTEXITCODE'),
+                             ("            throw 'Pure admission tests failed'",''),
+                             ('$admissionCases.Count -ne 24','$admissionCases.Count -ne 0'),
+                             ('24 passed; 0 failed;','0 passed; 0 failed;'),
+                             ('.Length -gt 262144','.Length -gt 99999999')):
+            with self.subTest(before=before),self.assertRaises(AssertionError):
+                self.check_step(ci.replace(before,after),manual)
+
+    def test_wrong_filter_in_both_copies_and_duplicate_step_reject(self):
+        ci,manual=self.sources()
+        with self.assertRaises(AssertionError):
+            self.check_step(ci.replace('--lib admission::tests','--lib unrelated::tests'),
+                            manual.replace('--lib admission::tests','--lib unrelated::tests'))
+        with self.assertRaises(AssertionError):
+            self.check_step(ci+'      - name: Cleanup trace admission regressions\n',manual)
+        with self.assertRaises(AssertionError):
+            self.check_step(ci.replace('  test:\n','  another_job:\n'),manual)
 
 
 if __name__=="__main__":unittest.main()
