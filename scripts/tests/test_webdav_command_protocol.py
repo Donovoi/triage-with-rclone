@@ -4,6 +4,7 @@ import copy
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
 import signal
 import stat
@@ -23,6 +24,8 @@ def load_source(name, path):
 # This hyphenated directory is not a Python package. Read the repository's exact
 # source bytes without cached bytecode or persistent generic module aliases.
 SOURCE = Path(__file__).resolve().parents[1] / "provider-lab" / "webdav-command"
+# Real temporary files retain the host user's ownership. Windows reports UID 0.
+HOST_UID = getattr(os, "getuid", lambda: 0)()
 with patch.dict(sys.modules):
     C = load_source("command_contract", SOURCE / "command_contract.py")
     H = load_source("token_helper", SOURCE / "token_helper.py")
@@ -237,6 +240,18 @@ class ChildTests(unittest.TestCase):
         self.assertEqual(self.signals,[(42,signal.SIGTERM)])
 
 
+class OwnershipTests(unittest.TestCase):
+    def test_regular_requires_matching_owner_including_nonzero_uid(self):
+        for uid in (0, 10001):
+            with self.subTest(uid=uid), patch.object(P.os, "getuid", lambda: uid, create=True):
+                info = types.SimpleNamespace(st_mode=stat.S_IFREG | 0o600, st_nlink=1, st_uid=uid, st_size=1)
+                path = types.SimpleNamespace(lstat=lambda: info)
+                self.assertIs(P.regular(path, 1), info)
+                info.st_uid = uid + 1
+                with self.assertRaises(C.Rejected):
+                    P.regular(path, 1)
+
+
 class WitnessTests(unittest.TestCase):
     def exercise(self, body, mutate=False, extra=False):
         position=[0];changed=[False];closed=[]
@@ -321,7 +336,7 @@ class OrchestrationTests(unittest.TestCase):
             polls.append(1)
             if len(polls)>10:raise AssertionError("fake_witness_did_not_progress")
         def digest(path):return "1"*64 if path==P.HELPER else C.RUNTIME_SHA if path==P.BINARY else real_digest(path)
-        with tempfile.TemporaryDirectory(prefix="command-pure-") as tmp,patch.object(P,"WORK",Path(tmp)),patch.object(P.os,"getuid",lambda:0,create=True),patch.object(P.os,"O_NOFOLLOW",0,create=True),patch.object(P.os,"open",binary_open),patch.object(P,"digest",digest):
+        with tempfile.TemporaryDirectory(prefix="command-pure-") as tmp,patch.object(P,"WORK",Path(tmp)),patch.object(P.os,"getuid",lambda:HOST_UID,create=True),patch.object(P.os,"O_NOFOLLOW",0,create=True),patch.object(P.os,"open",binary_open),patch.object(P,"digest",digest):
             for case in C.CASES:
                 row=P.case_run(case,"/usr/local/bin/python3",dict(runtime_sha256=C.RUNTIME_SHA,helper_sha256="1"*64),lambda:True,720,factory=FakeChild,fixture_factory=FakeServer,clock=lambda:0,sleep=bounded_fake_sleep)
                 self.assertEqual(row["status"],"passed",row)
@@ -332,7 +347,7 @@ class OrchestrationTests(unittest.TestCase):
     def test_forced_cleanup_is_failed_even_when_empty(self):
         real_digest=P.digest
         def digest(path):return "1"*64 if path==P.HELPER else C.RUNTIME_SHA if path==P.BINARY else real_digest(path)
-        with tempfile.TemporaryDirectory(prefix="command-pure-") as tmp,patch.object(P,"WORK",Path(tmp)),patch.object(P.os,"getuid",lambda:0,create=True),patch.object(P.os,"O_NOFOLLOW",0,create=True),patch.object(P,"digest",digest),patch.object(FakeChild,"forced",True):
+        with tempfile.TemporaryDirectory(prefix="command-pure-") as tmp,patch.object(P,"WORK",Path(tmp)),patch.object(P.os,"getuid",lambda:HOST_UID,create=True),patch.object(P.os,"O_NOFOLLOW",0,create=True),patch.object(P,"digest",digest),patch.object(FakeChild,"forced",True):
             row=P.case_run("renewal","/usr/local/bin/python3",dict(runtime_sha256=C.RUNTIME_SHA,helper_sha256="1"*64),lambda:True,720,factory=FakeChild,fixture_factory=FakeServer,clock=lambda:0)
             self.assertEqual(row["status"],"failed");self.assertEqual(row["error"],"cleanup")
             self.assertTrue(row["checks"]["temporary_removed"])
@@ -365,7 +380,7 @@ class CompletionOrderTests(unittest.TestCase):
         real_digest = module.digest
         def digest(path):
             return "1"*64 if path == module.HELPER else C.RUNTIME_SHA if path == module.BINARY else real_digest(path)
-        with tempfile.TemporaryDirectory(prefix="command-order-pure-") as tmp, patch.object(module, "WORK", Path(tmp)), patch.object(module.os, "getuid", lambda: 0, create=True), patch.object(module.os, "O_NOFOLLOW", 0, create=True), patch.object(module, "digest", digest), patch.object(DeferredFixture, "mode", mode):
+        with tempfile.TemporaryDirectory(prefix="command-order-pure-") as tmp, patch.object(module, "WORK", Path(tmp)), patch.object(module.os, "getuid", lambda: HOST_UID, create=True), patch.object(module.os, "O_NOFOLLOW", 0, create=True), patch.object(module, "digest", digest), patch.object(DeferredFixture, "mode", mode):
             row = module.case_run("renewal", "/usr/local/bin/python3", dict(runtime_sha256=C.RUNTIME_SHA, helper_sha256="1"*64), lambda: True, 720, factory=child_type, fixture_factory=DeferredFixture, clock=lambda: 0)
             if mode != "join_failed": self.assertEqual(list(Path(tmp).iterdir()), [])
         fixture = DeferredFixture.instances[0]
