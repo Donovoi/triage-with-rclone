@@ -56,7 +56,7 @@ def validate(ci, smoke):
     require(scalar(combined, "needs", 4) == "[test, smb-protocol, pcloud-oauth-authentication, gcs-oauth-lifecycle]", "same_run_dependency")
     downloaded = [part for part in steps(combined) if "name: gcs-oauth-lifecycle" in part]
     require(len(downloaded) == 1, "same_run_named_download")
-    require("actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c" in downloaded[0]
+    require("actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333" in downloaded[0]
             and scalar(downloaded[0], "path", 10) == "${{ runner.temp }}/provider-gcs"
             and re.findall(r"^          ([a-z-]+):", downloaded[0], re.MULTILINE) == ["name", "path"], "no_foreign_artifact_run")
     combined_gates = [part for part in steps(combined) if "--require-fixtures" in part]
