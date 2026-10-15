@@ -375,4 +375,252 @@ class ProducerTests(unittest.TestCase):
                     with self.assertRaises(P.ProducerError): P.preserved(item, P.H.sha(b"app"))
 
 
+
+def cancel_snapshot(action="poll", finished=False):
+    value=dict(schema_version=1,action=action,ok=True,state="finished" if finished else "running",
+        app_exit_code=1 if finished else None,runtime_image_observed=True,runtime_sha256=RUNTIME["sha256"],
+        runtime_process_count=1,ctrl_c_sent=action=="ctrl_c" or finished,output_bytes=0,output_limit_exceeded=False,
+        forced_termination=False,errors=[])
+    value.update(dict.fromkeys(P.H.SESSION_CLEANUP,finished))
+    return value
+
+
+class CancellationProducerTests(unittest.TestCase):
+    def setUp(self):
+        for obj,name in ((subprocess,"Popen"),(socket,"socket"),(socket,"create_connection"),(threading.Thread,"start")):
+            guard=patch.object(obj,name,side_effect=AssertionError("forbidden"));guard.start();self.addCleanup(guard.stop)
+
+    def test_queue_literal_and_no_retry_rate_or_buffer_options(self):
+        import csv,io
+        rows=list(csv.reader(io.StringIO(P.cancellation_queue_bytes().decode("utf-8-sig"))))
+        self.assertEqual(rows[1],["excel-safe-v1","Synthetic","synthetic-bucket/large/cancel.bin","262144",
+            "2024-01-01T00:00:00+00:00","false","2312394bd99545d9de131c24efb781e765ac1aec243f2ed9347597a793a415e9","sha256"])
+        self.assertEqual(len(rows),2)
+        args=P.H.app_args("acquisition",Path("synthetic"))
+        self.assertFalse(any(any(word in a for word in ("retry","buffer","bytes-per-second")) for a in args))
+
+    def test_partial_inventory_rejects_unknown_extra_staging_and_missing_ancestor(self):
+        case=Path("synthetic");stage="Synthetic/synthetic-bucket/large/.triage-transfer-"+"a"*32
+        dirs=["Synthetic","Synthetic/synthetic-bucket","Synthetic/synthetic-bucket/large",stage]
+        leaf=stage+"/payload.1234abcd.partial"
+        inv={n:(True,0,1,2) for n in dirs};inv[leaf]=(False,65536,3,4)
+        with patch.object(P.H,"identity",return_value=(1,2)),patch.object(Path,"exists",return_value=True):
+            for broken in (None,"extra_stage","missing","unknown","wrong_leaf","file_dir"):
+                value=dict(inv)
+                if broken=="extra_stage":value[stage[:-1]+"b"]=(True,0,1,2)
+                if broken=="missing":del value[dirs[1]]
+                if broken=="unknown":value["unknown"]=(True,0,1,2)
+                if broken=="wrong_leaf":value[leaf+"x"]=value.pop(leaf)
+                if broken=="file_dir":value[dirs[0]]=(False,0,1,2)
+                with patch.object(P.H,"inventory",return_value=value):
+                    if broken is None:self.assertEqual(P.cancellation_partial(case,(1,2)),(leaf,(3,4)))
+                    else:
+                        with self.assertRaises(P.ProducerError):P.cancellation_partial(case,(1,2))
+            for count in range(5):
+                with patch.object(P.H,"inventory",return_value={n:inv[n] for n in dirs[:count]}):self.assertIsNone(P.cancellation_partial(case,(1,2)))
+            no_leaf={n:inv[n] for n in dirs};no_leaf[stage[:-1]+"b"]=(True,0,1,2)
+            with patch.object(P.H,"inventory",return_value=no_leaf):
+                with self.assertRaises(P.ProducerError):P.cancellation_partial(case,(1,2))
+
+    def test_content_not_length_and_short_growth_pending(self):
+        import io
+        block=bytes(range(256))*256
+        for data,before,after,want in ((b"\0"*262144,262144,262144,0),(block,65536,65536,65536),
+                (block*2,131072,131072,131072),(block*2+b"\0"*65536,262144,262144,131072),
+                (block[:300],65536,65536,None),(block,65536,131072,None)):
+            w=P.CancellationWitness.__new__(P.CancellationWitness);w.stream=io.BytesIO(data);w.verify=Mock(side_effect=[before,after])
+            self.assertEqual(w.sample(),want)
+        w=P.CancellationWitness.__new__(P.CancellationWitness);w.stream=io.BytesIO(block*4);w.verify=Mock(return_value=262144)
+        with self.assertRaises(P.ProducerError):w.sample()
+
+    def test_retained_identity_parent_leaf_hardlink_and_sticky_close(self):
+        from types import SimpleNamespace
+        w=P.CancellationWitness.__new__(P.CancellationWitness);w.case=Path("case");w.lease=(1,2);w.parents=[Path("parent")]
+        w.identities=[(1,2)];w.selected=("leaf",(3,4));w.path=Path("leaf");w.stream=Mock()
+        for broken in (None,"parent","leaf","handle","links","reparse","size"):
+            info=SimpleNamespace(st_mode=0o100600,st_nlink=2 if broken=="links" else 1,
+                st_file_attributes=0x400 if broken=="reparse" else 0,st_dev=3,st_ino=5 if broken=="handle" else 4,
+                st_size=262145 if broken=="size" else 65536)
+            named=SimpleNamespace(st_dev=3,st_ino=5 if broken=="leaf" else 4,st_size=65536)
+            with patch.object(P.H,"identity",return_value=(9,9) if broken=="parent" else (1,2)), \
+                    patch.object(P,"cancellation_partial",return_value=w.selected),patch.object(P.H,"plain",return_value=named),patch.object(P.os,"fstat",return_value=info):
+                if broken is None:self.assertEqual(w.verify(),65536)
+                else:
+                    with self.assertRaises(P.ProducerError):w.verify()
+        w.close_attempted=False;w.cleanup=dict(closed=False,failed=False);w.stream.close.side_effect=OSError("private canary")
+        for _ in range(2):
+            with self.assertRaises(P.ProducerError):w.close()
+        self.assertEqual(w.stream.close.call_count,1);self.assertEqual(w.cleanup,dict(closed=False,failed=True))
+
+    def transfer(self, *, broken=None):
+        order=[];clock=[0.0];cleanup=dict(closed=False,failed=False);state=Mock();state.snapshot.return_value={"errors":[]}
+        state.cancel_snapshot.side_effect=[dict(chunks=0),dict(chunks=1),dict(chunks=2)]
+        state.release_prefix.side_effect=lambda:order.append("release_prefix")
+        state.arm_cancel.side_effect=lambda:order.append("arm_cancel")
+        witness=Mock();witness.sample.side_effect=[65536,65536,131072]
+        def sample():
+            order.append("sample")
+            if broken=="late_sample":clock[0]=101
+            return next(samples)
+        samples=iter([65536,65536,131072]);witness.sample.side_effect=sample
+        def close():
+            order.append("close")
+            if broken=="close":cleanup["failed"]=True;raise P.ProducerError("cleanup_failed")
+            cleanup["closed"]=True
+            if broken=="late_close":clock[0]=101
+        witness.close.side_effect=close
+        calls=[]
+        def command(action,**fields):
+            order.append(action);calls.append(action);value=cancel_snapshot(action)
+            if broken=="app_exit" and action=="poll":value.update(app_exited=True,app_exit_code=0)
+            if broken=="late_poll" and action=="poll":clock[0]=101
+            if broken=="late_live" and action=="observe_runtime":clock[0]=101
+            if broken=="wrong_live" and action=="observe_runtime":value["runtime_sha256"]="f"*64
+            if action=="ctrl_c":
+                if broken=="late_ctrl_c":clock[0]=101
+                if broken=="no_signal":value["ctrl_c_sent"]=False
+                if broken=="force":value["forced_termination"]=True
+            return value
+        bridge=Mock();bridge.command.side_effect=command
+        with patch.object(P,"cancellation_partial",return_value=("leaf",(3,4))),patch.object(P,"CancellationWitness",return_value=witness), \
+                patch.object(P.time,"monotonic",side_effect=lambda:clock[0]),patch.object(P.time,"sleep",side_effect=lambda _:None):
+            if broken:
+                with self.assertRaises(P.ProducerError):P.cancellation_transfer(bridge,Path("case"),(1,2),RUNTIME,state,100,cleanup)
+            else:
+                observation,_=P.cancellation_transfer(bridge,Path("case"),(1,2),RUNTIME,state,100,cleanup)
+                P.E.cancellation_observation(observation)
+                self.assertEqual(witness.sample.call_count,3) # Send-return commit lag did not reset or earn content credit.
+                self.assertLess(order.index("close"),order.index("arm_cancel"));self.assertLess(order.index("arm_cancel"),order.index("ctrl_c"))
+                self.assertEqual(calls.count("observe_runtime"),2);self.assertEqual(calls.count("ctrl_c"),1)
+            self.assertLessEqual(calls.count("ctrl_c"),1)
+            if broken in {"app_exit","late_poll","late_live","wrong_live","late_sample","close","late_close"}:self.assertNotIn("ctrl_c",calls)
+
+    def test_transfer_commit_race_content_and_signal_order(self):self.transfer()
+
+    def test_late_steps_wrong_image_exit_close_and_failed_signal_cannot_pass(self):
+        for broken in ("app_exit","late_poll","late_live","wrong_live","late_sample","close","late_close","late_ctrl_c","no_signal","force"):
+            with self.subTest(broken=broken):self.transfer(broken=broken)
+
+    def test_final_session_and_cleanup_require_actual_closed_proof(self):
+        good=cancel_snapshot("finish",True)
+        P.cancellation_final(good,RUNTIME)
+        for key in (*P.H.SESSION_CLEANUP,"ctrl_c_sent","runtime_image_observed"):
+            value=dict(good);value[key]=False
+            with self.assertRaises(P.ProducerError):P.cancellation_final(value,RUNTIME)
+        for value in (dict(good,forced_termination=True),dict(good,runtime_process_count=2),dict(good,output_limit_exceeded=True)):
+            with self.assertRaises(P.ProducerError):P.cancellation_final(value,RUNTIME)
+        for broken in (None,"close","reader","force_cleanup"):
+            b=Mock();b.close.return_value=broken!="close";b.last=dict(good)
+            if broken=="reader":b.last["reader_joined"]=False
+            if broken=="force_cleanup":b.last.update(ok=False,errors=["termination_failed"])
+            self.assertEqual(P.close_cancellation_session(b,True,True),broken is None)
+            b.close.assert_called_once()
+        b=Mock();b.command.return_value=dict(schema_version=1,action="close_ready",ok=True,state="closed");b.close.return_value=True
+        self.assertTrue(P.close_cancellation_session(b,True,False));b.command.assert_called_once_with("close_ready")
+
+    def test_manifest_requires_cancelled_null_fields_and_no_partial_or_final_output(self):
+        case=Path("synthetic");base=case/"output"/P.H.CASE_NAME;working=base/"config/working.conf";f=P.E.cancellation_manifest()
+        destination=base/"downloads/Synthetic"/f["member"];stem="acquisition-20261012T120000.000"
+        request=dict(source="Synthetic:"+f["member"],destination=str(destination),mode="CopyTo",expected_size=262144,expected_hash=f["sha256"],expected_hash_type="sha256")
+        result=dict(source=request["source"],destination=str(destination),success=False,integrity="Cancelled",error="Cancelled",
+            **dict.fromkeys(("local_sha256","size","hash","hash_type","hash_verified","hash_error")))
+        good=dict(schema_version=1,written_at="2026-10-12T12:00:00Z",rclone_version=RUNTIME["version"],config_path=str(working),complete=False,
+            plan=dict(files=[dict(remote_name="Synthetic",path=f["member"],request=request)],skipped_directories=0),results=[result])
+        inv={d:(True,) for d in ("logs","downloads","listings","config")}
+        inv.update({n:(False,) for n in (stem+".json",stem+".txt","logs/"+stem+".log","logs/"+stem+".checkpoint.json","config/working.conf","config/source.conf")})
+        for broken in (None,"success","integrity","hash","size","complete","partial","payload","source"):
+            value=deepcopy(good);entries=dict(inv);outputs={}
+            if broken=="success":value["results"][0]["success"]=True
+            if broken=="integrity":value["results"][0]["integrity"]="Failed"
+            if broken in {"hash","size"}:value["results"][0][broken]=1
+            if broken=="complete":value["complete"]=True
+            if broken=="partial":entries["downloads/Synthetic/.triage-transfer-x/payload.partial"]=(False,)
+            if broken=="payload":outputs={"Synthetic/"+f["member"]:()}
+            if broken=="source":value["plan"]["files"][0]["request"]["source"]="other"
+            outer={P.H.CASE_NAME:(True,),**{P.H.CASE_NAME+"/"+n:r for n,r in entries.items()}}
+            with patch.object(P.H,"inventory",side_effect=lambda path:entries if path==base else outer),patch.object(P.H,"read",return_value=json.dumps(value).encode()), \
+                    patch.object(P.H,"same_path",side_effect=lambda a,b:str(a)==str(b)),patch.object(P.H,"output_files",return_value=outputs):
+                if broken is None:self.assertTrue(all(P.cancellation_manifest(case,working,RUNTIME).values()))
+                else:
+                    with self.assertRaises(P.ProducerError):P.cancellation_manifest(case,working,RUNTIME)
+
+    def test_actual_execute_orchestration_ordinary_bridge_and_cleanup_failures(self):
+        for broken in (None, "helper_cleanup", "fixture_cleanup", "verify"):
+            with tempfile.TemporaryDirectory() as directory, ExitStack() as mocks:
+                suite=Path(directory);app=suite/"input.bin";app.write_bytes(b"inert")
+                sha=P.H.sha(b"inert");order=[];bridge=Mock();bridge.last=None;bridge.close.return_value=True
+                def command(action, **fields):
+                    order.append((action,fields))
+                    bridge.last=(dict(schema_version=1,action="ready",state="ready",ok=True) if action=="ready" else
+                        cancel_snapshot(action,action=="poll"))
+                    return bridge.last
+                bridge.command.side_effect=command
+                state=Mock();state.snapshot.return_value=TEST.cancellation_receipt()["cases"]["cancellation"]["fixture"]
+                server=Mock(endpoint="http://127.0.0.1:1234/",deadline=P.time.monotonic()+60)
+                context=Mock();context.__enter__=Mock(side_effect=lambda:(order.append(("fixture",{})),server)[1]);context.__exit__=Mock()
+                if broken=="fixture_cleanup":context.__exit__.side_effect=P.ProducerError("cleanup_failed")
+                def prepare(parent,child,action="Create"):
+                    if action=="Create":(parent/child).mkdir()
+                    elif broken=="verify":raise P.ProducerError("cleanup_failed")
+                def source(case):(case/"source").mkdir();return P.H.identity(case/"source")
+                def transfer(b,*args):return (dict(kind="live_image",runtime_process_count=1,first_verified_bytes=65536,last_verified_bytes=131072),b.command("ctrl_c"))
+                for obj,key,value in ((P.H,"prepare",prepare),(P.H,"create_private_roots",lambda c:{}),
+                        (P.H,"private_directory",lambda c,n:(c/n).mkdir()),(P.H,"private_write",lambda c,n,b:(c/n).write_bytes(b)),
+                        (P.H,"environment",lambda c:{}),(P,"create_source",source),(P.C,"SourceBridge",lambda c:bridge),
+                        (P.H,"application_roots_empty",Mock()),(P.H,"helper_baseline",lambda *a:{}),
+                        (P.H,"helper_cleanup_preserved",Mock(side_effect=P.ProducerError("cleanup_failed") if broken=="helper_cleanup" else None)),
+                        (P.H,"configuration_preserved",lambda c,v:c/"working.conf"),(P,"cancellation_transfer",transfer),
+                        (P,"cancellation_manifest",lambda *a:dict.fromkeys(("manifest_exact","cancelled_result_exact","manifest_incomplete","no_partial_outputs","no_download_outputs"),True)),
+                        (P.W,"fingerprint",lambda c:"a"*64),(P,"cancellation_preserved",Mock()),(P.H,"remove_owned",Mock()),
+                        (P,"fixture_closed",lambda s:broken!="fixture_cleanup"),(P.F,"AppSwiftCancellationState",lambda *a:state),
+                        (P.F,"serve_swift_cancellation",lambda s:context)):
+                    mocks.enter_context(patch.object(obj,key,value))
+                with patch.object(P.C,"ObservedSourceBridge",side_effect=AssertionError("wrong mode")):
+                    errors=[];item=P.execute_cancellation("cancellation",suite,app,sha,RUNTIME,errors)
+                self.assertEqual(item["record"]["exit_code"],1)
+                self.assertEqual(errors,[] if broken is None else ["cleanup_failed"])
+                self.assertEqual(item["record"]["checks"]["temp_cleanup"],broken is None)
+                starts=[fields for action,fields in order if action=="start_source"]
+                self.assertEqual(len(starts),1);self.assertNotIn("max_runtime_launches",starts[0]);self.assertNotIn("expected_runtime_sha256",starts[0])
+                self.assertLessEqual(starts[0]["deadline_ms"],60000)
+                self.assertLess([a for a,_ in order].index("ready"),[a for a,_ in order].index("fixture"))
+                context.__exit__.assert_called_once();bridge.close.assert_called_once()
+
+    def test_cancellation_input_and_saved_artifact_preservation(self):
+        case=Path("synthetic");config=b"inert config"
+        item=dict(case=case,lease=(1,2),source=(2,3),config=config,artifact="a"*64,record=dict(checks=dict(configuration_preserved=True)))
+        for broken in (None,"config","queue","app","artifact","source","identity"):
+            def read(path,*args):
+                if path.name=="application.exe":return b"changed" if broken=="app" else b"app"
+                if path.name=="source.conf":return b"changed" if broken=="config" else config
+                return b"changed" if broken=="queue" else P.cancellation_queue_bytes()
+            with patch.object(P.H,"identity",side_effect=lambda path:(0,0) if broken=="identity" else item["lease"] if path==case else item["source"]), \
+                    patch.object(P.H,"inventory",return_value={"extra":()} if broken=="source" else {}),patch.object(P.H,"read",side_effect=read), \
+                    patch.object(P.H,"configuration_preserved"),patch.object(P.W,"fingerprint",return_value="b"*64 if broken=="artifact" else "a"*64):
+                if broken is None:P.cancellation_preserved(item,P.H.sha(b"app"))
+                else:
+                    with self.assertRaises(P.ProducerError):P.cancellation_preserved(item,P.H.sha(b"app"))
+
+    def test_one_case_group_late_binding_failure_and_cleanup_cannot_grant_pass(self):
+        for broken in (None,"binding","fixture","process","temp"):
+            calls=[]
+            def execute(name,*args):
+                calls.append(name);row=deepcopy(TEST.cancellation_receipt()["cases"][name]);row["status"]="failed";row["checks"]["group_finalized"]=False
+                if broken in {"fixture","process","temp"}:
+                    row["checks"][broken+"_cleanup"]=False
+                    row["checks"]["temp_cleanup"]=False  # Actual execute never removes a tree without the other cleanup proofs.
+                    P.mark(row,"cleanup_failed",args[-1])
+                return dict(name=name,record=row,artifact="a"*64)
+            with ExitStack() as mocks:
+                for obj,key,value in ((P.H,"hosted_guard",Mock()),(P.E,"runtime_binding",lambda r:RUNTIME),
+                        (P.E,"compute_cancellation_bindings",lambda *a:TEST.BINDINGS),(P.H,"prepare",Mock()),(P.H,"identity",lambda p:(1,2)),
+                        (P.H,"inventory",lambda p:{}),(P.H,"remove_owned",Mock()),(P,"execute_cancellation",execute)):
+                    mocks.enter_context(patch.object(obj,key,value))
+                mocks.enter_context(patch.dict(P.os.environ,{"RUNNER_TEMP":str(Path.cwd()),"GITHUB_SHA":TEST.BINDINGS["build_commit"]}))
+                mocks.enter_context(patch.object(P,"cancellation_bindings",side_effect=[TEST.BINDINGS,P.ProducerError("preservation_failed") if broken=="binding" else TEST.BINDINGS]))
+                r=P.run_cancellation("not-read",TEST.BINDINGS["application_sha256"],TEST.BINDINGS["build_commit"])
+                self.assertEqual(calls,["cancellation"]);self.assertEqual(r["result"],"passed" if broken is None else "failed")
+                if broken:self.assertNotIn("passed",r["capabilities"].values())
+
+
 if __name__ == "__main__": unittest.main()

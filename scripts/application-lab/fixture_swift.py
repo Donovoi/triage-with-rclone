@@ -331,3 +331,225 @@ def serve_swift(state):
         yield server
     finally:
         server.close()
+
+
+# Separate opt-in cancellation fixture. Renewal/v1 above remains unchanged.
+CANCEL_BODY = bytes(range(256)) * 1024
+CANCEL_SHA256 = "2312394bd99545d9de131c24efb781e765ac1aec243f2ed9347597a793a415e9"
+CANCEL_MD5 = "d19215b1d714757e1fdb0060c52fd4c8"
+CANCEL_OBJECT = ACCOUNT + "/synthetic-bucket/large/cancel.bin"
+
+
+class AppSwiftCancellationState(AppSwiftState):
+    def __init__(self, user, key):
+        super().__init__("token_replacement", user, key)
+        self.case, self._body = "cancellation", CANCEL_BODY
+        self.chunks = 0
+        self.headers_committed = False
+        self.prefix_released = self.cancel_armed = self.disconnected = False
+
+    def source_preserved(self):
+        return (type(self._body) is bytes and self._body == CANCEL_BODY and len(self._body) == 262144 and
+                hashlib.sha256(self._body).hexdigest() == CANCEL_SHA256)
+
+    def begin(self, method, path, user=None, key=None, token=None):
+        if path not in {AUTH, CANCEL_OBJECT}:
+            raise FixtureError("route_invalid")
+        return super().begin(method, OBJECT if path == CANCEL_OBJECT else path, user, key, token)
+
+    def response(self, request, origin):
+        with self.lock:
+            if request[0] == "get":
+                if request is not self._pending or self.errors or self._reply is not None or request[1] != "copy_initial":
+                    raise FixtureError("sequence_invalid")
+                result = (200, self._body, {"Content-Type": "application/octet-stream", "Etag": CANCEL_MD5,
+                    "Last-Modified": "Mon, 01 Jan 2024 00:00:00 GMT", "Accept-Ranges": "bytes"}, 0)
+                self._reply = result
+                return result
+            result = super().response(request, origin)
+            if request[0] == "head":
+                result[2]["Etag"] = CANCEL_MD5
+            return result
+
+    def commit_headers(self, request, sent):
+        with self.lock:
+            if (request is not self._pending or request[0] != "get" or self._reply is None or
+                    self._reply[0] != 200 or self.headers_committed or type(sent) is not int or not 1 <= sent <= 4096 or self.response_bytes > 40960):
+                raise FixtureError("sequence_invalid")
+            self.headers_committed = True
+            self.response_bytes += sent
+            self._event("headers", "copy_initial", 200)
+
+    def commit_chunk(self, request, body):
+        with self.lock:
+            if (request is not self._pending or request[0] != "get" or self.errors or not self.headers_committed or self.chunks not in {0, 1} or
+                    self.chunks == 1 and not self.prefix_released or type(body) is not bytes or
+                    body != self._body[self.chunks * 65536:(self.chunks + 1) * 65536]):
+                raise FixtureError("sequence_invalid")
+            self.chunks += 1
+            self.payload_bytes += len(body)
+            self.response_bytes += len(body)
+            if self.response_bytes > 524288:
+                raise FixtureError("byte_limit")
+            self._event("chunk", "copy_initial", 200, len(body))
+
+    def release_prefix(self):
+        with self.lock:
+            if self.errors or self.chunks != 1 or self.prefix_released:
+                raise FixtureError("gate_invalid")
+            self.prefix_released = True
+            self._event("prefix_released", "copy_initial")
+
+    def arm_cancel(self):
+        with self.lock:
+            if self.errors or self.chunks != 2 or not self.prefix_released or self.cancel_armed:
+                raise FixtureError("gate_invalid")
+            self.cancel_armed = True
+            self._event("cancel_armed", "copy_initial")
+
+    def peer_closed(self):
+        with self.lock:
+            if self.errors or self.chunks != 2 or not self.cancel_armed or self.disconnected:
+                raise FixtureError("client_aborted")
+            self.disconnected = True
+            self._event("disconnected", "copy_initial")
+
+    def held_teardown(self):
+        with self.lock:
+            if self.errors or self.chunks != 2 or not self.cancel_armed or self.disconnected:
+                raise FixtureError("gate_invalid")
+            self.disconnected = True
+            self._event("held_teardown", "copy_initial")
+
+    def cancel_snapshot(self):
+        with self.lock:
+            return dict(chunks=self.chunks, prefix_released=self.prefix_released,
+                cancel_armed=self.cancel_armed, disconnected=self.disconnected)
+
+
+class _CancellationServer(_Server):
+    # Parser is the same closed grammar as renewal, with just the fixed object changed.
+    def _parse(self, stream):
+        line = stream.readline(4097)
+        if not re.fullmatch(rb"(?:GET|HEAD) /[^\x00-\x20\x7f-\xff]{1,2048} HTTP/1\.[01]\r\n", line):
+            raise FixtureError("request_invalid")
+        method, target, _ = line.decode("ascii").split(" ")
+        headers, total = {}, len(line)
+        for _ in range(_http.MAX_HEADER_LINES):
+            line = stream.readline(_http.MAX_HEADER_BYTES + 1)
+            total += len(line)
+            if total > _http.MAX_HEADER_BYTES or not line.endswith(b"\r\n"):
+                raise FixtureError("headers_invalid")
+            if line == b"\r\n":
+                break
+            name, colon, value = line[:-2].partition(b":")
+            if not colon or not _http.HEADER.fullmatch(name) or any(c < 32 or c > 126 for c in value):
+                raise FixtureError("headers_invalid")
+            name = name.decode("ascii").lower()
+            if name in headers:
+                raise FixtureError("headers_invalid")
+            headers[name] = value.decode("ascii").strip(" ")
+        else:
+            raise FixtureError("headers_invalid")
+        allowed = {"host", "user-agent", "accept", "accept-encoding", "connection", "content-length", "x-auth-user", "x-auth-key", "x-auth-token", "range"}
+        if (set(headers) - allowed or headers.get("host") != f"127.0.0.1:{self.port}" or
+                headers.get("content-length", "0") != "0" or target not in {AUTH, CANCEL_OBJECT} or
+                headers.get("accept-encoding", "identity") not in {"identity", "gzip"} or
+                headers.get("connection", "close").lower() not in {"close", "keep-alive"} or
+                "range" in headers and (method != "GET" or target != CANCEL_OBJECT or headers["range"] != "bytes=0-")):
+            raise FixtureError("headers_invalid")
+        return method, target, headers.get("x-auth-user"), headers.get("x-auth-key"), headers.get("x-auth-token")
+
+    def _cancel_wait(self, sock, *, tail):
+        while not self.stopping.is_set():
+            try:
+                self._live(sock)  # Original request/lifetime clocks; no deadline extension.
+            except FixtureError:
+                if self.stopping.is_set() and tail:
+                    break
+                raise
+            snapshot = self.state.cancel_snapshot()
+            if not tail and snapshot["prefix_released"]:
+                return True
+            try:
+                readable = select.select([sock], [], [], 0.05)[0]
+                if readable:
+                    if not tail:
+                        raise FixtureError("client_aborted")
+                    try:
+                        incoming = sock.recv(1, socket.MSG_PEEK)
+                    except ConnectionResetError:
+                        incoming = b""  # Same EOF treatment as the existing HTTP held-transfer path.
+                    if incoming:
+                        raise FixtureError("client_aborted")
+                    self.state.peer_closed()
+                    return False
+            except (OSError, ValueError):
+                if not self.stopping.is_set() or not tail:
+                    raise
+                break
+        if tail:
+            self.state.held_teardown()
+        return False  # Teardown never releases the remaining content.
+
+    def _worker(self, sock):
+        dispatch_owned = False
+        try:
+            sock.settimeout(_http.REQUEST_SECONDS)
+            with sock.makefile("rb", buffering=0) as stream:
+                fields = self._parse(stream)
+                if select.select([sock], [], [], 0)[0] and sock.recv(1, socket.MSG_PEEK):
+                    raise FixtureError("request_body_rejected")
+                self._acquire_dispatch(sock)
+                dispatch_owned = True
+                self._live(sock)
+                request = self.state.begin(*fields)
+                status, body, headers, payload = self.state.response(request, self.endpoint.rstrip("/"))
+                wire = (f"HTTP/1.1 {status} OK\r\nContent-Length: {len(body)}\r\nConnection: close\r\n" +
+                    "".join(f"{k}: {v}\r\n" for k, v in headers.items()) + "\r\n").encode("ascii")
+                if len(wire) > 4096:
+                    raise FixtureError("byte_limit")
+                sock.sendall(wire)
+                if request[0] != "get":
+                    self.state.commit(request, status, len(wire), payload)
+                else:
+                    self.state.commit_headers(request, len(wire))
+                    chunk = body[:65536]
+                    sock.sendall(chunk)
+                    self.state.commit_chunk(request, chunk)
+                    if self._cancel_wait(sock, tail=False):
+                        self._live(sock)
+                        chunk = body[65536:131072]
+                        sock.sendall(chunk)
+                        self.state.commit_chunk(request, chunk)
+                        self._cancel_wait(sock, tail=True)
+        except FixtureError as error:
+            self.state._error(str(error))
+        except (OSError, ValueError):
+            self.state._error("connection_failed")
+        except BaseException:
+            self.state._error("worker_failed")
+        finally:
+            if dispatch_owned:
+                self._dispatch_lock.release()
+            with self.lock:
+                try:
+                    self._close_socket(sock)
+                except OSError:
+                    self.state._error("cleanup_failed")
+                else:
+                    self.sockets.pop(sock, None)
+
+
+@contextmanager
+def serve_swift_cancellation(state):
+    if type(state) is not AppSwiftCancellationState or state._served:
+        raise ValueError("input_invalid")
+    state._served = True
+    server = _CancellationServer(state)
+    state._transport = server
+    try:
+        server.start()
+        yield server
+    finally:
+        server.close()
