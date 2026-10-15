@@ -127,6 +127,37 @@ bound, original correlation, removal and cleanup gates are unchanged. A future
 observed header can guide an official version-specific schema lookup; it cannot
 refine historical unavailable records or establish a lock holder.
 
+## Finite unavailable budget reasons
+
+The original rejecting branches now emit distinct fixed reasons. Historical
+`budget_exceeded` records remain readable and cannot be refined retrospectively.
+Every reason below still means `unavailable`; none identifies a lock holder,
+qualifies cleanup/provider coverage, changes a limit or permits another attempt.
+
+| Reason | What the existing branch establishes |
+|---|---|
+| `start_reservation_failed` | The existing fallible reservation for the target-start buffer failed. No allocator subcause is reported. |
+| `end_reservation_failed` | The existing fallible reservation for the end-record buffer failed. No allocator subcause is reported. |
+| `end_capacity_reached` | The end buffer was already at `MAX_ENDS` when the next opcode-76 event reached its capacity check, before its properties were decoded. This is not a target-file end count. |
+| `target_start_capacity_reached` | The start buffer was already at `MAX_STARTS` after the existing exact target-path check. |
+| `callback_limit_exceeded` | The existing callback counter exceeded 50,000, before the consume/filter call. This is not a relevant-event count. |
+| `initial_session_bounds_unverified` | After a successful initial session query and the unchanged settings check, its buffer-bounds predicate was false. The particular failed field is unknown. |
+| `final_bounds_proof_unverified` | The accumulated bounds proof was false at the existing final rejection, with no earlier retained reason. Its particular subcause remains unknown. |
+
+The bounds predicate checks `BufferSize` 4–64, minimum buffers 2–16, maximum
+buffers at least the minimum and at most 16, and allocated buffer count at most
+16. When the existing owned-session stop executes, the final proof combines the
+initial predicate with successful stop status and the stop-returned predicate;
+it is not a standalone observation of a final
+buffer excess. The validator rejects either of these two new bounds reasons
+when `bounded=true`; legacy and capacity/reservation reasons retain their
+previous bounds behavior. Existing cleanup and event-loss reasons retain their original
+precedence. Duration validation is separate (`clock_unavailable`), not a newly
+inferred budget category. First-error handling, allocation/callback/storage
+caps, decoding, filtering, TDH lookup, removal, teardown, schema fields and exact
+test invocation are unchanged. Separate TDH 1168 evidence cannot identify one
+of these reasons in an older generic record.
+
 ## Separate installed-schema observation
 
 On the first existing supplemental `UnsupportedOpcode` rejection, after retaining
