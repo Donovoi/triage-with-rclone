@@ -623,4 +623,221 @@ class CancellationProducerTests(unittest.TestCase):
                 if broken:self.assertNotIn("passed",r["capabilities"].values())
 
 
+
+def listing_snapshot(action="finish", running=False):
+    value = dict(schema_version=1, action=action, ok=True, state="running" if running else "finished",
+        app_exit_code=None if running else 0, runtime_image_observed=True, runtime_sha256=RUNTIME["sha256"],
+        runtime_process_count=1, ctrl_c_sent=False, output_bytes=0, output_limit_exceeded=False, forced_termination=False, errors=[])
+    value.update(dict.fromkeys(P.H.SESSION_CLEANUP, not running))
+    return value
+
+
+class ListingProducerTests(unittest.TestCase):
+    setUp = ProducerTests.setUp
+
+    def test_final_visible_head_waits_for_returned_send_commit(self):
+        for returned_before_wait in (False, True):
+            state = P.F.AppSwiftListingState("a" * 64, "b" * 64)
+            token = None
+            targets = [P.F.AUTH, P.F.ACCOUNT + "?format=json&limit=10000",
+                P.F.LIST_CONTAINER + "?delimiter=%2F&format=json&limit=1000"]
+            targets += [P.F.LIST_CONTAINER + "/" + name.replace(" ", "%20") for name, _ in P.F.LIST_FILES]
+            for index, target in enumerate(targets):
+                request = state.begin("HEAD" if index >= 3 else "GET", target,
+                    "a" * 64 if index == 0 else None, "b" * 64 if index == 0 else None, token)
+                if index == 0: state.release_gate("listing_auth")
+                reply = state.response(request, "http://127.0.0.1:1234")
+                if index < 5:
+                    state.commit(request, reply[0], 256, reply[3])
+                    if index == 0: token = request[3]
+            # Schedule: the peer has received the final HEAD and exited. Its
+            # worker resumes either in sendall or immediately after its return.
+            schedule = dict(peer_exited=True, send_returned=returned_before_wait, committed=False)
+            def resume_worker(seconds):
+                self.assertLessEqual(seconds, 0.02)
+                self.assertTrue(schedule["peer_exited"])
+                self.assertFalse(state.completed)
+                schedule["send_returned"] = True
+                state.commit(request, reply[0], 256, reply[3])
+                schedule["committed"] = True
+            with patch.object(P.time, "monotonic", return_value=1), patch.object(P.time, "sleep", side_effect=resume_worker) as sleep:
+                P.listing_committed(state, 10)
+            sleep.assert_called_once(); self.assertTrue(schedule["committed"])
+            self.assertTrue(state.completed); P.E.listing_fixture(state.snapshot(), successful=True)
+
+    def test_commit_wait_failed_send_source_error_and_expiry_never_succeed(self):
+        complete = TEST.listing_receipt()["cases"]["listing"]["fixture"]
+        partial = deepcopy(complete); partial["events"].pop()
+        for broken in ("send", "source", "malformed"):
+            value = deepcopy(partial)
+            if broken == "send": value["errors"] = ["connection_failed"]
+            elif broken == "source": value["source_preserved"] = False
+            else: value["events"][0]["kind"] = "private canary"
+            with patch.object(P.time, "monotonic", return_value=1), patch.object(P.time, "sleep") as sleep:
+                with self.assertRaises(Exception): P.listing_committed(Mock(snapshot=Mock(return_value=value)), 10)
+                sleep.assert_not_called()
+        now = [1.0]
+        def expire(seconds):
+            self.assertLessEqual(seconds, 0.02); now[0] = 10
+        state = Mock(snapshot=Mock(return_value=partial))
+        with patch.object(P.time, "monotonic", side_effect=lambda: now[0]), patch.object(P.time, "sleep", side_effect=expire):
+            with self.assertRaisesRegex(P.ProducerError, "deadline_exceeded"): P.listing_committed(state, 10)
+        state.snapshot.assert_called_once()
+        with patch.object(P.time, "monotonic", side_effect=[1, 10]), patch.object(P.time, "sleep") as sleep:
+            with self.assertRaisesRegex(P.ProducerError, "deadline_exceeded"):
+                P.listing_committed(Mock(snapshot=Mock(return_value=complete)), 10)
+            sleep.assert_not_called()
+
+    def test_export_parser_requires_exact_inventory_and_canonical_names(self):
+        import csv, io
+        def wire(rows):
+            stream=io.StringIO(newline=""); csv.writer(stream,lineterminator="\r\n").writerows(rows)
+            return b"\xef\xbb\xbf"+stream.getvalue().encode()
+        rows=[P.H.HEADERS]+P.E.listing_rows(); body=wire(rows)
+        self.assertTrue(P.listing_csv(body)); self.assertTrue(P.listing_csv(wire([rows[0]]+list(reversed(rows[1:])))))
+        mutations=[rows[:-1],rows+[rows[-1]],rows[1:],rows[:1]+rows[2:]]
+        for column,bad in ((0,"plain"),(1,"Other"),(2,"'synthetic-bucket/empty.txt"),(2,"synthetic-bucket/./empty.txt"),
+                           (3,"00"),(4,"2025-01-01T00:00:00+00:00"),(5,"true"),(6,"d41d8cd98f00b204e9800998ecf8427e"),(7,"MD5")):
+            changed=deepcopy(rows); changed[3][column]=bad; mutations.append(changed)
+        for changed in mutations:
+            with self.assertRaises(P.ProducerError): P.listing_csv(wire(changed))
+        for bad in (body[3:],b"\xef\xbb\xbf\xff",b"x"*16385):
+            with self.assertRaises(P.ProducerError): P.listing_csv(bad)
+
+    def test_live_runtime_observation_precedes_gate_release_and_expiry_rejects(self):
+        state=Mock(errors=[]); state.gate_snapshot.return_value={"listing_auth":dict(entered=1,released=False)}
+        bridge=Mock(); bridge.command.return_value=listing_snapshot("observe_runtime",True)
+        with patch.object(P.time,"monotonic",return_value=1):
+            self.assertEqual(P.listing_live(bridge,Path("case"),state,RUNTIME,10),dict(kind="live_image",runtime_process_count=1))
+        state.release_gate.assert_called_once_with("listing_auth")
+        changes=[dict(app_exited=True,app_exit_code=0),dict(runtime_sha256="f"*64),dict(runtime_process_count=2),
+                 dict(runtime_image_observed=False),dict(forced_termination=True),dict(output_limit_exceeded=True)]
+        for change in changes:
+            state.release_gate.reset_mock(); bridge.command.return_value=dict(listing_snapshot("observe_runtime",True),**change)
+            with patch.object(P.time,"monotonic",return_value=1),self.assertRaises(P.ProducerError):
+                P.listing_live(bridge,Path("case"),state,RUNTIME,10)
+            state.release_gate.assert_not_called()
+        state.release_gate.reset_mock(); bridge.command.return_value=listing_snapshot("observe_runtime",True)
+        with patch.object(P.time,"monotonic",side_effect=[1,11]),self.assertRaises(P.ProducerError):
+            P.listing_live(bridge,Path("case"),state,RUNTIME,10)
+        state.release_gate.assert_not_called()
+
+    def test_all_session_cleanup_flags_and_ready_start_ownership(self):
+        bridge=Mock(last=listing_snapshot()); bridge.close.return_value=True
+        self.assertTrue(P.listing_close_session(bridge,True,True)); bridge.close.assert_called_once()
+        for key in P.H.SESSION_CLEANUP:
+            bridge=Mock(last=dict(listing_snapshot(),**{key:False})); bridge.close.return_value=True
+            self.assertFalse(P.listing_close_session(bridge,True,True)); bridge.close.assert_called_once()
+        bridge=Mock(last=listing_snapshot()); bridge.close.return_value=False
+        self.assertFalse(P.listing_close_session(bridge,True,True))
+        bridge=Mock(); bridge.close.return_value=True
+        bridge.command.return_value=dict(schema_version=1,action="close_ready",ok=True,state="closed")
+        self.assertTrue(P.listing_close_session(bridge,True,False)); bridge.command.assert_called_once_with("close_ready")
+        bridge.command.side_effect=KeyboardInterrupt()
+        with self.assertRaises(KeyboardInterrupt): P.listing_close_session(bridge,True,False)
+        self.assertEqual(bridge.close.call_count,2)
+
+    def execute_fake(self, fault=None):
+        calls=[]; case=Path("synthetic-suite/listing"); state=Mock(errors=[])
+        state.snapshot.return_value=TEST.listing_receipt()["cases"]["listing"]["fixture"]
+        server=Mock(endpoint="http://127.0.0.1:1234/",deadline=170)
+        server.transport_snapshot.return_value=dict(accepted=6,active=0,workers_alive=0,watchdog_alive=False,acceptor_alive=False,cleanup_complete=True)
+        state._transport=server
+        context=Mock(); context.__enter__=Mock(return_value=server); context.__exit__=Mock()
+        if fault=="commit_delayed":
+            complete=deepcopy(state.snapshot.return_value); pending=deepcopy(complete); pending["events"].pop()
+            state.snapshot.return_value=pending
+            def resumed(seconds):
+                calls.append(("commit", "listing")); state.snapshot.return_value=complete
+            def close_fixture(*args):
+                self.assertIn(("commit", "listing"),calls); calls.append(("fixture_close", "listing"))
+            context.__exit__.side_effect=close_fixture
+        bridge=Mock(last=listing_snapshot())
+        def command(action,**fields):
+            calls.append((action,fields))
+            if action=="ready": return dict(schema_version=1,action="ready",ok=True,state="ready")
+            bridge.last=listing_snapshot(action, action=="start")
+            if fault=="exit" and action=="poll": bridge.last["app_exit_code"]=1
+            return bridge.last
+        bridge.command.side_effect=command; bridge.close.return_value=True
+        def prepare(parent,name,action="Create"):
+            calls.append((action,name))
+            if fault=="verify" and action=="Verify": raise P.ProducerError("cleanup_failed")
+        patches=[(P.time,"monotonic",lambda:1),(P.H,"prepare",prepare),(P.H,"identity",lambda p:(1,2)),
+            (P.H,"create_private_roots",lambda p:{}),(P.H,"private_directory",Mock()),(P,"create_source",lambda p:(1,3)),
+            (P.H,"read",lambda *a,**k:b"inert"),(P.H,"private_write",lambda p,n,b:calls.append(("write",n))),
+            (P.H,"Bridge",lambda c:bridge),(P.H,"application_roots_empty",Mock()),(P.H,"helper_baseline",lambda *a:{}),
+            (P.F,"AppSwiftListingState",lambda *a:state),(P.F,"serve_swift_listing",lambda s:context),
+            (P,"listing_live",Mock(return_value=dict(kind="live_image",runtime_process_count=1))),
+            (P.H,"configuration_preserved",Mock(return_value="working")),
+            (P,"listing_output",Mock(return_value=dict.fromkeys(("inventory_exact","listing_complete","outputs_exact","no_download_outputs"),True))),
+            (P.W,"fingerprint",Mock(return_value={"artifact":"inert"})),(P,"listing_preserved",Mock()),
+            (P.H,"helper_cleanup_preserved",Mock()),(P.H,"remove_owned",lambda *a:calls.append(("remove","listing")))]
+        if fault=="fixture_close": context.__exit__.side_effect=OSError("private canary")
+        if fault=="fixture_active": server.transport_snapshot.return_value["active"]=1
+        if fault=="session_close": bridge.close.return_value=False
+        if fault=="fixture_error": state.snapshot.return_value["errors"]=["request_timeout"]
+        with ExitStack() as mocks:
+            for obj,key,value in patches: mocks.enter_context(patch.object(obj,key,value))
+            if fault=="commit_delayed": mocks.enter_context(patch.object(P.time,"sleep",side_effect=resumed))
+            if fault in {"output","preservation","live"}:
+                name={"output":"listing_output","preservation":"listing_preserved","live":"listing_live"}[fault]
+                mocks.enter_context(patch.object(P,name,side_effect=P.ProducerError("listing_invalid" if fault=="output" else "preservation_failed")))
+            errors=[]; item=P.execute_listing("listing",case.parent,Path("inert.bin"),P.H.sha(b"inert"),RUNTIME,errors)
+        return item,errors,calls
+
+    def test_full_fake_listing_control_flow_and_no_queue_or_content_action(self):
+        item,errors,calls=self.execute_fake()
+        self.assertFalse(errors); checks=item["record"]["checks"]
+        self.assertTrue(all(v for k,v in checks.items() if k!="group_finalized"))
+        start=[v for k,v in calls if k=="start"]
+        self.assertEqual(len(start),1); self.assertIn("--list-remote",start[0]["args"])
+        self.assertNotIn("--download",start[0]["args"]); self.assertNotIn(("write","queue.csv"),calls)
+        self.assertIn(("Verify","listing"),calls); self.assertIn(("remove","listing"),calls)
+
+    def test_final_commit_precedes_fixture_teardown_after_successful_exit(self):
+        item,errors,calls=self.execute_fake("commit_delayed")
+        self.assertFalse(errors)
+        self.assertTrue(all(v for k,v in item["record"]["checks"].items() if k!="group_finalized"))
+        poll=next(i for i,(action,_) in enumerate(calls) if action=="poll")
+        self.assertLess(poll,calls.index(("commit","listing")))
+        self.assertLess(calls.index(("commit","listing")),calls.index(("fixture_close","listing")))
+
+    def test_late_failures_remain_failed_and_uncertain_ownership_blocks_removal(self):
+        for fault in ("exit","live","output","preservation","fixture_close","fixture_active","fixture_error","session_close","verify"):
+            item,errors,calls=self.execute_fake(fault)
+            self.assertTrue(errors,fault); self.assertEqual(item["record"]["status"],"failed")
+            self.assertFalse(item["record"]["checks"]["group_finalized"])
+            if fault in {"preservation","fixture_active","session_close","verify"}: self.assertNotIn(("remove","listing"),calls)
+            self.assertNotIn("private canary",json.dumps(item["record"]))
+
+    def test_group_requires_complete_case_and_post_suite_cleanup(self):
+        for broken in (None,"temp_cleanup","configuration_preserved","suite_verify"):
+            row=deepcopy(TEST.listing_receipt()["cases"]["listing"]); row.update(status="failed",failure_code=None)
+            row["checks"]["group_finalized"]=False
+            if broken in row["checks"]: row["checks"][broken]=False
+            item=dict(record=row,artifact={"fixed":True})
+            def prepare(*args):
+                if broken=="suite_verify" and args[-1]=="Verify": raise P.ProducerError("cleanup_failed")
+            with ExitStack() as stack:
+                for obj,key,value in ((P.H,"hosted_guard",Mock()),(P.E,"runtime_binding",lambda *a:RUNTIME),
+                    (P.E,"compute_listing_bindings",lambda *a:TEST.BINDINGS),(P,"listing_bindings",lambda *a:TEST.BINDINGS),
+                    (P.H,"prepare",prepare),(P.H,"identity",lambda *a:(1,2)),(P.H,"inventory",lambda *a:{}),
+                    (P.H,"remove_owned",Mock()),(P,"execute_listing",lambda *a:item)):
+                    stack.enter_context(patch.object(obj,key,value))
+                stack.enter_context(patch.dict(P.os.environ,{"GITHUB_SHA":TEST.BINDINGS["build_commit"],"RUNNER_TEMP":"synthetic-parent"}))
+                result=P.run_listing("inert",TEST.BINDINGS["application_sha256"],TEST.BINDINGS["build_commit"])
+            self.assertEqual(result["result"],"passed" if broken is None else "failed")
+            self.assertFalse(any(result["claims"].values()))
+
+    def test_host_guard_and_cli_exclusivity_before_work(self):
+        with patch.object(P.H,"hosted_guard",side_effect=P.ProducerError("binding_failed")),patch.object(P.E,"compute_listing_bindings") as bind:
+            with self.assertRaises(P.ProducerError): P.run_listing("unused","0"*64,"1"*40)
+            bind.assert_not_called()
+        with patch.object(P.H,"hosted_guard") as guard:
+            with self.assertRaises(SystemExit) as error:
+                P.main(["--application","unused","--application-sha256","unused","--build-commit","unused","--report","unused","--listing-only","--cancellation-only"])
+            self.assertEqual(error.exception.code,2); guard.assert_not_called()
+
+
 if __name__ == "__main__": unittest.main()

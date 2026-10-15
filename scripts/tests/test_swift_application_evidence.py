@@ -211,4 +211,96 @@ class CancellationEvidenceTests(unittest.TestCase):
         self.validate(r)
 
 
+
+def listing_receipt():
+    pairs = [("auth_held", "listing"), ("gate_released", "listing"), ("grant", "listing"),
+             ("account", "account"), ("container", "container"), ("head", "space"), ("head", "readme"), ("head", "empty")]
+    events = [dict(ordinal=i+1, kind=k, role=r, status=0 if i < 2 else 200, object_bytes=0) for i,(k,r) in enumerate(pairs)]
+    row = dict(status="passed", exit_code=0, runtime_sha256=RUNTIME["sha256"], continuity=None, failure_code=None,
+        observation=dict(kind="live_image", runtime_process_count=1), checks=dict.fromkeys(E.LIST_CHECKS["listing"], True),
+        fixture=dict(case="listing", requests=6, payload_bytes=0, response_bytes=1700, source_preserved=True, errors=[], events=events))
+    return dict(schema_version=3, scope=E.SCOPE, fixture_mode=E.LIST_MODE, backend="swift", platform="windows",
+        created_at="2026-10-12T12:00:00Z", runtime=deepcopy(RUNTIME), bindings=deepcopy(BINDINGS), cases={"listing":row},
+        experiment=dict(status="passed", failure_code=None, checks=dict.fromkeys(E.GROUP_CHECKS, True)),
+        lifecycle_scope="configured_account_root_listing", claims=dict.fromkeys(E.LIST_FALSE_CLAIMS, False),
+        cleanup_complete=True, errors=[], result="passed", capabilities=E.listing_capabilities({"listing":row}, True))
+
+
+class ListingEvidenceTests(unittest.TestCase):
+    setUp = EvidenceTests.setUp
+
+    def validate(self, value): return E.validate_listing_receipt(value, RUNTIME, BINDINGS, now=NOW)
+
+    def reject(self, value):
+        with self.assertRaises((E.A.ApplicationEvidenceError, TypeError, ValueError)): self.validate(value)
+
+    def test_literal_inventory_and_success_scope(self):
+        value = listing_receipt(); self.assertIs(self.validate(value), value)
+        self.assertEqual(E.listing_rows(), [
+            ["excel-safe-v1","Synthetic","synthetic-bucket","88","2000-01-01T00:00:00+00:00","true","",""],
+            ["excel-safe-v1","Synthetic","synthetic-bucket/README-synthetic.txt","62","2024-01-01T00:00:00+00:00","false","",""],
+            ["excel-safe-v1","Synthetic","synthetic-bucket/empty.txt","0","2024-01-01T00:00:00+00:00","false","",""],
+            ["excel-safe-v1","Synthetic","synthetic-bucket/space name.txt","26","2024-01-01T00:00:00+00:00","false","",""]])
+        self.assertTrue(all(v is False for v in value["claims"].values()))
+        self.assertNotIn("download_hash", value["capabilities"])
+
+    def test_every_check_shape_and_primitive_is_required(self):
+        for key in E.RECEIPT_KEYS:
+            v=listing_receipt(); del v[key]; self.reject(v)
+        for key in E.LIST_CHECKS["listing"]:
+            for bad in (False, None, 1):
+                v=listing_receipt(); v["cases"]["listing"]["checks"][key]=bad; self.reject(v)
+        for key in E.GROUP_CHECKS:
+            v=listing_receipt(); v["experiment"]["checks"][key]=False; self.reject(v)
+        for change in (dict(extra="private canary"),dict(schema_version=True),dict(cleanup_complete=1),dict(lifecycle_scope="acquisition")):
+            self.reject(dict(listing_receipt(), **change))
+
+    def test_ordered_complete_route_and_metadata_not_counts_alone(self):
+        for action in ("omit_root", "duplicate_head", "missing_empty", "grant_after_listing", "private_role", "payload", "requests"):
+            v=listing_receipt(); f=v["cases"]["listing"]["fixture"]; events=f["events"]
+            if action == "omit_root": del events[3]
+            elif action == "duplicate_head": events[-1]["role"]="readme"
+            elif action == "missing_empty": events.pop()
+            elif action == "grant_after_listing": events[2],events[3]=events[3],events[2]
+            elif action == "private_role": events[-1]["role"]="private canary"
+            elif action == "payload": f["payload_bytes"]=1
+            else: f["requests"]=True
+            for i,row in enumerate(events,1): row["ordinal"]=i
+            self.reject(v)
+        v=listing_receipt(); v["cases"]["listing"]["fixture"]["events"][5:] = list(reversed(v["cases"]["listing"]["fixture"]["events"][5:]))
+        for i,row in enumerate(v["cases"]["listing"]["fixture"]["events"],1): row["ordinal"]=i
+        self.validate(v)
+
+    def test_runtime_bindings_age_observation_and_mixed_modes_rejected(self):
+        for key in BINDINGS:
+            v=listing_receipt(); v["bindings"][key]="f"*64; self.reject(v)
+        for key in RUNTIME:
+            v=listing_receipt(); v["runtime"][key]="wrong"; self.reject(v)
+        for stamp in ("2020-01-01T00:00:00Z", "2026-10-12T12:06:00Z"):
+            v=listing_receipt(); v["created_at"]=stamp; self.reject(v)
+        for change in (dict(kind="launch_image"), dict(runtime_process_count=True), dict(runtime_process_count=2), dict(path="private canary")):
+            v=listing_receipt(); v["cases"]["listing"]["observation"].update(change); self.reject(v)
+        for old in (receipt(), cancellation_receipt()): self.reject(old)
+        for validate in (E.validate_receipt,E.validate_cancellation_receipt):
+            with self.assertRaises(E.A.ApplicationEvidenceError): validate(listing_receipt(),RUNTIME,BINDINGS,now=NOW)
+
+    def test_not_run_and_failed_cleanup_cannot_be_promoted(self):
+        v=listing_receipt(); row=v["cases"]["listing"]
+        row.update(status="failed", failure_code="cleanup_failed"); row["checks"]["group_finalized"]=False; row["checks"]["temp_cleanup"]=False
+        v.update(result="failed", cleanup_complete=False, errors=["cleanup_failed"], capabilities=E.listing_capabilities(v["cases"],False))
+        v["experiment"].update(status="failed",failure_code="cleanup_failed"); v["experiment"]["checks"]["temp_cleanup"]=False
+        self.validate(v)
+        v["result"]="passed"; self.reject(v)
+        v=listing_receipt(); v["cases"]["listing"] = dict.fromkeys(E.RECORD_KEYS,None)
+        v["cases"]["listing"].update(status="not_run",checks=dict.fromkeys(E.LIST_CHECKS["listing"],None))
+        v["experiment"]=E.empty_group(); v.update(result="failed",errors=["binding_failed"],capabilities=E.listing_capabilities(v["cases"],True))
+        self.validate(v)
+
+    def test_explicit_validator_cli_modes_are_exclusive(self):
+        with patch.object(E,"read_bounded") as read:
+            with self.assertRaises(SystemExit) as error:
+                E.main(["--receipt","unused","--application","unused","--build-commit","unused","--report","unused","--listing-only","--cancellation-only"])
+            self.assertEqual(error.exception.code,2); read.assert_not_called()
+
+
 if __name__ == "__main__": unittest.main()

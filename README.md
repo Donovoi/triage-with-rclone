@@ -30,9 +30,9 @@ See [test status and known gaps](rclone-triage/tests/provider_testing.md) for th
 
 Local-file and ZIP checks have passed, including cancellation and cleanup.
 
-Dropbox and Swift download cancellation tests have passed. B2, Swift and WebDAV download checks have passed using local test servers. These results apply to the tested Windows builds; tests with real Swift accounts are still pending.
+Dropbox and Swift download cancellation tests have passed. B2, Swift, WebDAV and Azure Blob download checks have passed using local test servers. These results apply to the tested Windows builds; tests with real Swift accounts are still pending.
 
-Current work: investigate intermittent Windows test failures, check Azure Blob downloads, and finish the remaining provider tests.
+Current work: test Swift file lists, fix intermittent Windows test failures, and check the remaining providers.
 
 ## What comes next
 
