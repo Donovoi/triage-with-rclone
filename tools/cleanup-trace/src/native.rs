@@ -4,6 +4,7 @@ use crate::ownership::{
     self, Buffer as OwnershipBuffer, Event as OwnershipEvent, Reason as OwnershipReason,
 };
 use crate::schema_metadata;
+use crate::{resource_use, resource_use_windows};
 use std::{
     env,
     fs::File,
@@ -496,6 +497,9 @@ pub struct Trace {
     runtime_sha256: String,
     frequency: i64,
     emitted: bool,
+    resource_probe: Option<Option<resource_use_windows::Probe>>,
+    prior_probe_closed: bool,
+    primary_written: bool,
 }
 impl Trace {
     pub fn arm(file: &File, runtime_sha256: &str) -> Option<Self> {
@@ -523,6 +527,9 @@ impl Trace {
             },
             frequency: 0,
             emitted: false,
+            resource_probe: None,
+            prior_probe_closed: true,
+            primary_written: false,
         };
         // Environment authorization precedes any native identity or ETW call.
         let setup = if !cfg!(target_arch = "aarch64")
@@ -551,6 +558,10 @@ impl Trace {
     unsafe fn setup(&mut self, file: &File) -> Outcome {
         let handle = file.as_raw_handle();
         let id = identity(handle)?;
+        // Separate explicit opt-in, still behind original hosted ARM64 authorization.
+        if env::var("TRIAGE_RUNTIME_RESOURCE_USE").as_deref() == Ok("1") {
+            self.resource_probe = Some(resource_use_windows::Probe::capture(file, id));
+        }
         let mut path = [0u16; 1024];
         let n =
             GetFinalPathNameByHandleW(handle, path.as_mut_ptr(), path.len() as u32, VOLUME_NAME_NT);
@@ -688,6 +699,11 @@ impl Trace {
             }
             let window = before.and_then(|a| after.map(|b| (a, b, tid)));
             self.finish(Some(original.is_ok()), code, window);
+            // Failure-only; primary trace has already been attempted and ETW stopped.
+            // This runs before returning into private_fs residue inspection.
+            if code == Some(32) {
+                self.observe_resource_use();
+            }
         })
     }
     unsafe fn verify_survivor(&mut self) {
@@ -714,7 +730,34 @@ impl Trace {
             .is_some_and(|(a, b)| same_file(&a, b));
         if CloseHandle(h) == 0 {
             self.proof.identity = false;
+            self.prior_probe_closed = false;
             self.reason = Some("cleanup_uncertain");
+        }
+    }
+    fn observe_resource_use(&mut self) {
+        let Some(probe) = self.resource_probe.as_mut() else {
+            return;
+        };
+        // Resource closure, not correlation/schema/ownership interpretation, gates RM.
+        let closed = self.proof.started
+            && self.proof.stopped
+            && self.proof.absent
+            && self.proof.completed
+            && self.proof.closed
+            && self.proof.joined;
+        let report = if !closed {
+            resource_use::Report::unavailable(resource_use::Reason::TraceUnclosed)
+        } else if !self.prior_probe_closed {
+            resource_use::Report::unavailable(resource_use::Reason::PriorProbeUnclosed)
+        } else if !self.primary_written {
+            resource_use::Report::unavailable(resource_use::Reason::PrimaryUnwritten)
+        } else if let Some(probe) = probe {
+            resource_use::observe(probe)
+        } else {
+            resource_use::Report::unavailable(resource_use::Reason::RegistrationUnavailable)
+        };
+        if let Some(line) = report.line(&self.runtime_sha256, closed, self.prior_probe_closed) {
+            let _ = io::stderr().lock().write_all(line.as_bytes());
         }
     }
     fn shutdown(&mut self) -> Option<Consumer> {
@@ -911,7 +954,8 @@ impl Trace {
         };
         let record=format!("{{\"schema\":4,\"capture_contract\":\"{}\",\"scope\":\"original_runtime_remove_tree\",\"status\":\"{}\",\"reason\":\"{}\",\"original_ok\":{},\"os_code\":{},\"operation_us\":{},\"runtime_sha256\":\"{}\",\"target_identity_verified\":{},\"session_started\":{},\"settings_verified\":{},\"bounded\":{},\"zero_loss\":{},\"stop_succeeded\":{},\"session_absent\":{},\"consumer_completed\":{},\"consumer_closed\":{},\"worker_joined\":{},\"counts\":{},\"schema_rejection\":{},\"ownership\":{}}}",admission::CAPTURE_CONTRACT,status,self.reason.unwrap_or("none"),original.map_or_else(||"null".into(),|v|v.to_string()),nullable(os_code.map(u64::from)),nullable(duration),self.runtime_sha256,self.proof.identity,self.proof.started,self.proof.settings,self.proof.bounded,self.proof.lossless,self.proof.stopped,self.proof.absent,self.proof.completed,self.proof.closed,self.proof.joined,counted,rejection.unwrap_or_else(||"null".into()),ownership);
         if record.len() <= 4096 {
-            let _ = writeln!(io::stderr().lock(), "runtime_cleanup_trace={record}");
+            self.primary_written =
+                writeln!(io::stderr().lock(), "runtime_cleanup_trace={record}").is_ok();
         }
         // Separate metadata never supplies original counts/reasons or cleanup proof.
         let schema = schema_metadata::json(
@@ -953,7 +997,7 @@ unsafe fn identity(handle: HANDLE) -> Result<BY_HANDLE_FILE_INFORMATION, &'stati
         Ok(x)
     }
 }
-fn same_file(a: &BY_HANDLE_FILE_INFORMATION, b: &BY_HANDLE_FILE_INFORMATION) -> bool {
+pub(crate) fn same_file(a: &BY_HANDLE_FILE_INFORMATION, b: &BY_HANDLE_FILE_INFORMATION) -> bool {
     a.dwVolumeSerialNumber == b.dwVolumeSerialNumber
         && a.nFileIndexHigh == b.nFileIndexHigh
         && a.nFileIndexLow == b.nFileIndexLow
