@@ -561,7 +561,7 @@ LIST_FILES = (("README-synthetic.txt", BODY), ("empty.txt", b""),
 LIST_IDS = ("readme", "empty", "space")
 LIST_TARGETS = {AUTH: ("grant", "listing"),
     ACCOUNT + "?format=json&limit=10000": ("account", "account"),
-    LIST_CONTAINER + "?delimiter=%2F&format=json&limit=1000": ("container", "container"),
+    LIST_CONTAINER + "?format=json&limit=1000": ("container", "container"),
     **{LIST_CONTAINER + "/" + name.replace(" ", "%20"): ("head", role)
        for (name, _), role in zip(LIST_FILES, LIST_IDS)}}
 

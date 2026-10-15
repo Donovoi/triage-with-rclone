@@ -482,7 +482,7 @@ def listing_state_ready():
     state = F.AppSwiftListingState(USER, KEY)
     token, _ = complete(state, "GET", F.AUTH)
     complete(state, "GET", F.ACCOUNT + "?format=json&limit=10000", token)
-    complete(state, "GET", F.LIST_CONTAINER + "?delimiter=%2F&format=json&limit=1000", token)
+    complete(state, "GET", F.LIST_CONTAINER + "?format=json&limit=1000", token)
     return state, token
 
 
@@ -506,7 +506,7 @@ class ListingFixtureTests(unittest.TestCase):
             token, _ = complete(state, "GET", F.AUTH)
             _, account = complete(state, "GET", F.ACCOUNT + "?format=json&limit=10000", token)
             self.assertEqual(json.loads(account[1]), [dict(name="synthetic-bucket", count=3, bytes=88)])
-            _, objects = complete(state, "GET", F.LIST_CONTAINER + "?delimiter=%2F&format=json&limit=1000", token)
+            _, objects = complete(state, "GET", F.LIST_CONTAINER + "?format=json&limit=1000", token)
             self.assertEqual([(r["name"], r["bytes"], r["hash"]) for r in json.loads(objects[1])], expected)
             for index in order:
                 name, size, md5 = expected[index]
@@ -518,7 +518,7 @@ class ListingFixtureTests(unittest.TestCase):
 
     def test_missing_account_root_repeated_metadata_and_content_never_qualify(self):
         state = F.AppSwiftListingState(USER, KEY); token, _ = complete(state, "GET", F.AUTH)
-        with self.assertRaises(F.FixtureError): state.begin("GET", F.LIST_CONTAINER + "?delimiter=%2F&format=json&limit=1000", token=token)
+        with self.assertRaises(F.FixtureError): state.begin("GET", F.LIST_CONTAINER + "?format=json&limit=1000", token=token)
         for method in ("GET", "PUT", "DELETE", "POST", "COPY"):
             state, token = listing_state_ready()
             with self.assertRaises(F.FixtureError): state.begin(method, F.LIST_CONTAINER + "/empty.txt", token=token)
@@ -538,6 +538,30 @@ class ListingFixtureTests(unittest.TestCase):
             with self.assertRaises(F.FixtureError): server._parse(io.BytesIO(data))
         for alias in ("space+name.txt", "space%2520name.txt", "../space%20name.txt", "space name.txt"):
             with self.assertRaises(F.FixtureError): server._parse(io.BytesIO(raw.replace(target.encode(), (F.LIST_CONTAINER + "/" + alias).encode())))
+
+    def test_recursive_listr_container_query_matches_pinned_client(self):
+        # rclone ListJSON calls walk.ListR even without --fast-list. Swift.ListR
+        # passes recurse=true, so the pinned client omits the delimiter option.
+        server = F._ListingServer.__new__(F._ListingServer); server.port = 1234
+        state = F.AppSwiftListingState(USER, KEY)
+        token, _ = complete(state, "GET", F.AUTH)
+        complete(state, "GET", F.ACCOUNT + "?format=json&limit=10000", token)
+        target = F.LIST_CONTAINER + "?format=json&limit=1000"
+        raw = f"GET {target} HTTP/1.1\r\nHost: 127.0.0.1:1234\r\nX-Auth-Token: {token}\r\n\r\n".encode()
+        fields = server._parse(io.BytesIO(raw))
+        self.assertEqual(fields, ("GET", target, None, None, token))
+        request = state.begin(*fields); reply = state.response(request, ORIGIN)
+        state.commit(request, reply[0], 256 + len(reply[1]), reply[3])
+        self.assertTrue(state.container_done)
+        self.assertEqual((state.requests, state.payload_bytes, state.completed), (3, 0, False))
+        self.assertEqual([event[0] for event in state.events],
+                         ["auth_held", "gate_released", "grant", "account", "container"])
+        self.assertFalse(state.heads)
+        self.assertTrue(state.source_preserved())
+        for alias in ("?delimiter=%2F&format=json&limit=1000", "?format=json&limit=1",
+                      "?format=json&format=json&limit=1000", "?limit=1000&format=json"):
+            with self.subTest(alias=alias), self.assertRaisesRegex(F.FixtureError, "^headers_invalid$"):
+                server._parse(io.BytesIO(raw.replace(target.encode(), (F.LIST_CONTAINER + alias).encode())))
 
     def test_teardown_release_and_uncommitted_auth_cannot_grant(self):
         state = F.AppSwiftListingState(USER, KEY)
