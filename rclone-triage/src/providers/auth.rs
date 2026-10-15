@@ -330,29 +330,35 @@ fn parse_onedrive_drive_selection_response(body: &str) -> Result<OneDriveDriveSe
 }
 
 fn resolve_onedrive_drive_selection(access_token: &str) -> Result<OneDriveDriveSelection> {
-    let agent = ureq::AgentBuilder::new()
-        .timeout_connect(Duration::from_secs(5))
-        .timeout_read(Duration::from_secs(15))
-        .timeout_write(Duration::from_secs(15))
-        .redirects(0)
-        .build();
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        // ureq 2 did not read proxy settings from the environment.
+        .proxy(None)
+        .timeout_connect(Some(Duration::from_secs(5)))
+        // ureq 3 bounds phases; body budgets do not reset for each I/O.
+        .timeout_send_request(Some(Duration::from_secs(15)))
+        .timeout_send_body(Some(Duration::from_secs(15)))
+        .timeout_recv_response(Some(Duration::from_secs(15)))
+        .timeout_recv_body(Some(Duration::from_secs(15)))
+        .max_redirects(0)
+        .build()
+        .into();
 
     let response = match agent
         .get("https://graph.microsoft.com/v1.0/me/drive")
-        .set("Authorization", &format!("Bearer {}", access_token))
-        .set("Accept", "application/json")
+        .header("Authorization", format!("Bearer {}", access_token))
+        .header("Accept", "application/json")
         .call()
     {
         Ok(response) => response,
-        Err(ureq::Error::Status(code, _)) => {
+        Err(ureq::Error::StatusCode(code)) => {
             bail!("OneDrive drive discovery failed (HTTP {})", code);
         }
         Err(_) => bail!("OneDrive drive discovery transport failed"),
     };
-    if !(200..300).contains(&response.status()) {
+    if !(200..300).contains(&response.status().as_u16()) {
         bail!(
             "OneDrive drive discovery failed (HTTP {})",
-            response.status()
+            response.status().as_u16()
         );
     }
     let body: serde_json::Value = super::mobile::read_oauth_response(response)?;

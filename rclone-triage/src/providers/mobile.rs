@@ -16,22 +16,29 @@ use super::{
 };
 
 fn oauth_agent() -> ureq::Agent {
-    ureq::AgentBuilder::new()
-        .timeout_connect(StdDuration::from_secs(10))
-        .timeout_read(StdDuration::from_secs(20))
-        .timeout_write(StdDuration::from_secs(20))
-        .timeout(StdDuration::from_secs(30))
-        .redirects(0)
+    ureq::Agent::config_builder()
+        // ureq 2 did not read proxy settings from the environment.
+        .proxy(None)
+        .timeout_connect(Some(StdDuration::from_secs(10)))
+        // ureq 3 bounds phases; body budgets do not reset for each I/O.
+        .timeout_send_request(Some(StdDuration::from_secs(20)))
+        .timeout_send_body(Some(StdDuration::from_secs(20)))
+        .timeout_recv_response(Some(StdDuration::from_secs(20)))
+        .timeout_recv_body(Some(StdDuration::from_secs(20)))
+        .timeout_global(Some(StdDuration::from_secs(30)))
+        .max_redirects(0)
         .build()
+        .into()
 }
 
 const MAX_OAUTH_RESPONSE_BYTES: u64 = 64 * 1024;
 
 pub(super) fn read_oauth_response<T: serde::de::DeserializeOwned>(
-    response: ureq::Response,
+    response: ureq::http::Response<ureq::Body>,
 ) -> Result<T> {
     let mut bytes = Vec::new();
     response
+        .into_body()
         .into_reader()
         .take(MAX_OAUTH_RESPONSE_BYTES + 1)
         .read_to_end(&mut bytes)
@@ -281,18 +288,21 @@ pub(super) fn exchange_code_for_token_with_policy(
 
     let response = oauth_agent()
         .post(token_url)
-        .set("Content-Type", "application/x-www-form-urlencoded")
-        .send_string(&body);
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .send(body.as_str());
 
     let response = match response {
         Ok(ok) => ok,
-        Err(ureq::Error::Status(code, _)) => {
+        Err(ureq::Error::StatusCode(code)) => {
             bail!("Token exchange failed (HTTP {})", code);
         }
         Err(_) => bail!("Token exchange transport failed"),
     };
-    if !(200..300).contains(&response.status()) {
-        bail!("Token exchange failed (HTTP {})", response.status());
+    if !(200..300).contains(&response.status().as_u16()) {
+        bail!(
+            "Token exchange failed (HTTP {})",
+            response.status().as_u16()
+        );
     }
     let token = match policy {
         CodeGrantPolicy::Existing => read_oauth_response(response)?,
@@ -384,18 +394,21 @@ pub fn request_device_code(config: &DeviceCodeConfig) -> Result<DeviceCodeInfo> 
 
     let response = oauth_agent()
         .post(&config.device_code_url)
-        .set("Content-Type", "application/x-www-form-urlencoded")
-        .send_string(&body);
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .send(body.as_str());
 
     let response = match response {
         Ok(ok) => ok,
-        Err(ureq::Error::Status(code, _)) => {
+        Err(ureq::Error::StatusCode(code)) => {
             bail!("Device code request failed (HTTP {})", code);
         }
         Err(_) => bail!("Device code request transport failed"),
     };
-    if !(200..300).contains(&response.status()) {
-        bail!("Device code request failed (HTTP {})", response.status());
+    if !(200..300).contains(&response.status().as_u16()) {
+        bail!(
+            "Device code request failed (HTTP {})",
+            response.status().as_u16()
+        );
     }
     let payload: DeviceCodeResponse = read_oauth_response(response)?;
 
@@ -454,24 +467,29 @@ pub(super) fn poll_device_code_for_token_with_cancel(
 
         let response = oauth_agent()
             .post(&config.token_url)
-            .timeout(
+            .config()
+            // Polling must retain OAuth error bodies (pending, slow_down, denial).
+            .http_status_as_error(false)
+            .timeout_global(Some(
                 StdDuration::from_secs(expires_in)
                     .saturating_sub(start.elapsed())
                     .min(StdDuration::from_secs(30)),
-            )
-            .set("Content-Type", "application/x-www-form-urlencoded")
-            .send_string(&body);
+            ))
+            .build()
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .send(body.as_str());
 
         ensure_not_cancelled(cancel)?;
 
         match response {
-            Ok(ok) => {
-                if !(200..300).contains(&ok.status()) {
-                    bail!("Token polling failed (HTTP {})", ok.status());
+            Ok(ok) if ok.status().as_u16() < 400 => {
+                if !ok.status().is_success() {
+                    bail!("Token polling failed (HTTP {})", ok.status().as_u16());
                 }
                 return token_response_to_rclone_json(read_oauth_response(ok)?);
             }
-            Err(ureq::Error::Status(code, resp)) => {
+            Ok(resp) => {
+                let code = resp.status().as_u16();
                 if let Ok(error_json) = read_oauth_response::<serde_json::Value>(resp) {
                     if let Some(err) = error_json.get("error").and_then(|v| v.as_str()) {
                         match err {
@@ -581,8 +599,62 @@ fn urlencoded(s: &str) -> String {
 mod tests {
     use super::*;
 
+    #[test]
+    fn ureq3_oauth_reader_accepts_exact_limit_and_rejects_one_byte_over() {
+        let mut body = b"{}".to_vec();
+        body.resize(MAX_OAUTH_RESPONSE_BYTES as usize, b' ');
+        let response = ureq::http::Response::new(ureq::Body::builder().data(body.clone()));
+        assert_eq!(read_oauth_response::<Value>(response).unwrap(), json!({}));
+
+        body.push(b' ');
+        let response = ureq::http::Response::new(ureq::Body::builder().data(body));
+        assert_eq!(
+            read_oauth_response::<Value>(response)
+                .unwrap_err()
+                .to_string(),
+            "OAuth response exceeds size limit"
+        );
+    }
+
+    #[test]
+    fn ureq3_oauth_reader_redacts_json_utf8_and_reader_errors() {
+        const CANARY: &str = "synthetic-private-canary";
+        for body in [format!("{{{CANARY}").into_bytes(), vec![0xff, 0xfe]] {
+            let response = ureq::http::Response::new(ureq::Body::builder().data(body));
+            let error = read_oauth_response::<Value>(response).unwrap_err();
+            assert_eq!(error.to_string(), "Invalid OAuth response JSON");
+            assert!(!format!("{error:#}").contains(CANARY));
+        }
+        struct FailedBody;
+        impl std::io::Read for FailedBody {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::other(CANARY))
+            }
+        }
+        let response = ureq::http::Response::new(ureq::Body::builder().reader(FailedBody));
+        let error = read_oauth_response::<Value>(response).unwrap_err();
+        assert_eq!(error.to_string(), "Failed to read OAuth response");
+        assert!(!format!("{error:#}").contains(CANARY));
+    }
+
+    #[test]
+    fn ureq3_oauth_agent_keeps_public_configuration_contract() {
+        let agent = oauth_agent();
+        let config = agent.config();
+        assert!(config.proxy().is_none());
+        assert_eq!(config.max_redirects(), 0);
+        assert!(config.http_status_as_error());
+        let limits = config.timeouts();
+        assert_eq!(limits.global, Some(StdDuration::from_secs(30)));
+        assert_eq!(limits.connect, Some(StdDuration::from_secs(10)));
+        assert_eq!(limits.send_request, Some(StdDuration::from_secs(20)));
+        assert_eq!(limits.send_body, Some(StdDuration::from_secs(20)));
+        assert_eq!(limits.recv_response, Some(StdDuration::from_secs(20)));
+        assert_eq!(limits.recv_body, Some(StdDuration::from_secs(20)));
+    }
+
     fn dropbox_response(body: &str) -> Result<Value> {
-        let response = ureq::Response::new(200, "OK", body).unwrap();
+        let response = ureq::http::Response::new(ureq::Body::builder().data(body));
         token_response_to_rclone_json(dropbox_grant_to_token(read_oauth_response(response)?)?)
     }
 
@@ -681,12 +753,10 @@ mod tests {
     #[test]
     fn ordinary_grants_keep_ignoring_unrelated_scope_shapes() {
         for scope in [json!(["legacy"]), json!({"legacy": true}), Value::Null] {
-            let response = ureq::Response::new(
-                200,
-                "OK",
-                &json!({"access_token":"synthetic", "scope":scope}).to_string(),
-            )
-            .unwrap();
+            let response = ureq::http::Response::new(
+                ureq::Body::builder()
+                    .data(json!({"access_token":"synthetic", "scope":scope}).to_string()),
+            );
             let token =
                 token_response_to_rclone_json(read_oauth_response(response).unwrap()).unwrap();
             assert_eq!(token, json!({"access_token":"synthetic"}));

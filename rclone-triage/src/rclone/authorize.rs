@@ -522,11 +522,19 @@ pub fn send_local_authorize_callback(
         bail!("code was empty");
     }
 
-    let agent = ureq::AgentBuilder::new()
-        .timeout_connect(Duration::from_secs(5))
-        .timeout_read(Duration::from_secs(15))
-        .timeout_write(Duration::from_secs(15))
-        .build();
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        // ureq 2 did not read proxy settings from the environment.
+        .proxy(None)
+        .timeout_connect(Some(Duration::from_secs(5)))
+        // ureq 3 bounds phases; body budgets do not reset for each I/O.
+        .timeout_send_request(Some(Duration::from_secs(15)))
+        .timeout_send_body(Some(Duration::from_secs(15)))
+        .timeout_recv_response(Some(Duration::from_secs(15)))
+        .timeout_recv_body(Some(Duration::from_secs(15)))
+        .max_redirects(5)
+        .http_status_as_error(false)
+        .build()
+        .into();
 
     let mut req = agent.get(redirect_uri).query("code", code);
     if let Some(state) = state.filter(|s| !s.trim().is_empty()) {
@@ -534,16 +542,32 @@ pub fn send_local_authorize_callback(
     }
 
     match req.call() {
-        Ok(resp) => {
-            let _ = resp.into_string();
-            Ok(())
-        }
-        Err(ureq::Error::Status(status, resp)) => {
-            let body = resp.into_string().unwrap_or_default();
+        Ok(resp) if resp.status().as_u16() >= 400 => {
+            let status = resp.status().as_u16();
+            let body = read_response_text(resp).unwrap_or_default();
             bail!("Local callback returned HTTP {}: {}", status, body);
+        }
+        Ok(resp) => {
+            let _ = read_response_text(resp);
+            Ok(())
         }
         Err(e) => Err(e.into()),
     }
+}
+
+// Preserve ureq 2's 10 MiB limit and lossy UTF-8 decoding for every MIME type.
+fn read_response_text(response: ureq::http::Response<ureq::Body>) -> std::io::Result<String> {
+    const LIMIT: u64 = 10 * 1024 * 1024;
+    let mut bytes = Vec::new();
+    response
+        .into_body()
+        .into_reader()
+        .take(LIMIT + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > LIMIT {
+        return Err(std::io::Error::other("response too big for into_string"));
+    }
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 /// Spawn `rclone authorize <backend>` and stream output lines.
@@ -642,6 +666,48 @@ fn own_authorize_readers(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ureq3_text_reader_accepts_exact_limit_and_rejects_one_byte_over() {
+        const LIMIT: usize = 10 * 1024 * 1024;
+        let at_limit = ureq::http::Response::new(ureq::Body::builder().data(vec![b'x'; LIMIT]));
+        let text = read_response_text(at_limit).unwrap();
+        assert_eq!(text.len(), LIMIT);
+        assert!(text.bytes().all(|byte| byte == b'x'));
+
+        let over_limit =
+            ureq::http::Response::new(ureq::Body::builder().data(vec![b'x'; LIMIT + 1]));
+        let error = read_response_text(over_limit).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::Other);
+        assert_eq!(error.to_string(), "response too big for into_string");
+    }
+
+    #[test]
+    fn ureq3_text_reader_keeps_lossy_utf8_for_text_and_binary_mime() {
+        for mime in ["text/plain", "application/octet-stream"] {
+            let response = ureq::http::Response::new(
+                ureq::Body::builder()
+                    .mime_type(mime)
+                    .data(vec![b'a', 0xff, b'z']),
+            );
+            assert_eq!(read_response_text(response).unwrap(), "a\u{fffd}z");
+        }
+    }
+
+    #[test]
+    fn ureq3_text_reader_does_not_accept_an_incomplete_body_after_read_error() {
+        struct FailedBody;
+        impl std::io::Read for FailedBody {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "synthetic-read-error",
+                ))
+            }
+        }
+        let response = ureq::http::Response::new(ureq::Body::builder().reader(FailedBody));
+        assert!(read_response_text(response).is_err());
+    }
 
     // These process tests run only in the hosted suite. The child is the test
     // harness itself and emits synthetic output; it never contacts a provider.
