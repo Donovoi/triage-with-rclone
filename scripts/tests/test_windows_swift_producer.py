@@ -767,6 +767,7 @@ class ListingProducerTests(unittest.TestCase):
             (P.H,"create_private_roots",lambda p:{}),(P.H,"private_directory",Mock()),(P,"create_source",lambda p:(1,3)),
             (P.H,"read",lambda *a,**k:b"inert"),(P.H,"private_write",lambda p,n,b:calls.append(("write",n))),
             (P.H,"Bridge",lambda c:bridge),(P.H,"application_roots_empty",Mock()),(P.H,"helper_baseline",lambda *a:{}),
+            (P.H,"environment",lambda c:{"SYNTHETIC_ENV":"inert"}),
             (P.F,"AppSwiftListingState",lambda *a:state),(P.F,"serve_swift_listing",lambda s:context),
             (P,"listing_live",Mock(return_value=dict(kind="live_image",runtime_process_count=1))),
             (P.H,"configuration_preserved",Mock(return_value="working")),
@@ -778,6 +779,9 @@ class ListingProducerTests(unittest.TestCase):
         if fault=="session_close": bridge.close.return_value=False
         if fault=="fixture_error": state.snapshot.return_value["errors"]=["request_timeout"]
         with ExitStack() as mocks:
+            mocks.enter_context(patch.dict(P.os.environ))
+            P.os.environ.pop("SYSTEMROOT",None)
+            P.os.environ.pop("WINDIR",None)
             for obj,key,value in patches: mocks.enter_context(patch.object(obj,key,value))
             if fault=="commit_delayed": mocks.enter_context(patch.object(P.time,"sleep",side_effect=resumed))
             if fault in {"output","preservation","live"}:
@@ -792,6 +796,7 @@ class ListingProducerTests(unittest.TestCase):
         self.assertTrue(all(v for k,v in checks.items() if k!="group_finalized"))
         start=[v for k,v in calls if k=="start"]
         self.assertEqual(len(start),1); self.assertIn("--list-remote",start[0]["args"])
+        self.assertEqual(start[0]["environment"],{"SYNTHETIC_ENV":"inert"})
         self.assertNotIn("--download",start[0]["args"]); self.assertNotIn(("write","queue.csv"),calls)
         self.assertIn(("Verify","listing"),calls); self.assertIn(("remove","listing"),calls)
 
