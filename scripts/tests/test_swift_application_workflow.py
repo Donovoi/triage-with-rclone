@@ -50,6 +50,17 @@ def bound_command(step):
     return script, args
 
 
+def without_nightly_dependency(text, job_id):
+    release = jobs(text)["release"]
+    needs = scalar(release, "needs", 4)
+    dependencies = needs.strip("[]").split(", ")
+    require(dependencies.count(job_id) == 1, "mutation_requires_one_dependency")
+    dependencies.remove(job_id)
+    changed = release.replace(f"    needs: {needs}\n", f"    needs: [{', '.join(dependencies)}]\n", 1)
+    require(changed != release, "mutation_must_change_release")
+    return text.replace(release, changed, 1)
+
+
 def validate(text, cancellation=False):
     job_id = "windows-swift-cancellation" if cancellation else "windows-swift"
     producer_id = "swift_cancel_cases" if cancellation else "swift_cases"
@@ -143,8 +154,10 @@ class SwiftWorkflowTests(unittest.TestCase):
             ("if-no-files-found: error", "if-no-files-found: warn")))
 
     def test_swift_must_gate_nightly(self):
+        changed = without_nightly_dependency(self.text, "windows-swift")
+        self.assertNotEqual(changed, self.text)
         with self.assertRaises(ValueError):
-            validate(self.text.replace("windows-b2, windows-swift, ", "windows-b2, ", 1))
+            validate(changed)
 
 
 
@@ -198,8 +211,10 @@ class SwiftCancellationWorkflowTests(unittest.TestCase):
             ("if-no-files-found: error", "if-no-files-found: warn")))
 
     def test_cancellation_must_gate_nightly(self):
+        changed = without_nightly_dependency(self.text, "windows-swift-cancellation")
+        self.assertNotEqual(changed, self.text)
         with self.assertRaises(ValueError):
-            validate(self.text.replace("windows-swift, windows-swift-cancellation, ", "windows-swift, ", 1), cancellation=True)
+            validate(changed, cancellation=True)
 
 
 if __name__ == "__main__": unittest.main()
