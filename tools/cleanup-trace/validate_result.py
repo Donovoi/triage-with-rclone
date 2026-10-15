@@ -11,7 +11,16 @@ CORRELATION_REASONS = frozenset((
     "correlation_end_before_start", "correlation_end_unowned", "correlation_cross_thread_reuse",
 ))
 # Keep the old common reason readable for preserved historical records.
-REASONS = CORRELATION_REASONS | frozenset(("none", "unsupported_environment", "identity_unavailable", "budget_exceeded", "schema_unavailable", "clock_unavailable", "correlation_missing_or_ambiguous", "event_loss", "session_collision", "access_denied", "session_unavailable", "consumer_unavailable", "cleanup_uncertain", "session_configuration_mismatch", "operation_not_observed", "status_not_attributed"))
+BUDGET_BRANCH_REASONS = frozenset((
+    "start_reservation_failed",
+    "end_reservation_failed",
+    "end_capacity_reached",
+    "target_start_capacity_reached",
+    "callback_limit_exceeded",
+    "initial_session_bounds_unverified",
+    "final_bounds_proof_unverified",
+))
+REASONS = CORRELATION_REASONS | BUDGET_BRANCH_REASONS | frozenset(("none", "unsupported_environment", "identity_unavailable", "budget_exceeded", "schema_unavailable", "clock_unavailable", "correlation_missing_or_ambiguous", "event_loss", "session_collision", "access_denied", "session_unavailable", "consumer_unavailable", "cleanup_uncertain", "session_configuration_mismatch", "operation_not_observed", "status_not_attributed"))
 BOOLS = frozenset(("target_identity_verified", "session_started", "settings_verified", "bounded", "zero_loss", "stop_succeeded", "session_absent", "consumer_completed", "consumer_closed", "worker_joined"))
 KEYS = BOOLS | {"schema", "scope", "status", "reason", "original_ok", "os_code", "operation_us", "runtime_sha256", "counts", "schema_rejection"}
 OWNERSHIP_COUNTS = frozenset(("starts", "ends", "complete_pairs", "nonselected_create_pairs", "other_operation_pairs"))
@@ -174,6 +183,8 @@ def validate(raw, test_exit, expected_runtime):
         raise ValueError("runtime_binding")
     if type(value["status"]) is not str or type(value["reason"]) is not str or value["status"] not in ("observed", "not_reproduced", "unavailable") or value["reason"] not in REASONS:
         raise ValueError("enum")
+    if value["reason"] in {"initial_session_bounds_unverified", "final_bounds_proof_unverified"} and value["bounded"]:
+        raise ValueError("budget_bounds_contradiction")
     if value["original_ok"] is not None and type(value["original_ok"]) is not bool:
         raise ValueError("original_result")
     if value["os_code"] is not None and not uint(value["os_code"], 0xffffffff):

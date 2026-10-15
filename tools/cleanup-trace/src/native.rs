@@ -173,10 +173,10 @@ impl Collector {
         };
         x.starts
             .try_reserve_exact(MAX_STARTS)
-            .map_err(|_| "budget_exceeded")?;
+            .map_err(|_| "start_reservation_failed")?;
         x.ends
             .try_reserve_exact(MAX_ENDS)
-            .map_err(|_| "budget_exceeded")?;
+            .map_err(|_| "end_reservation_failed")?;
         x.ownership.reserve(); // Supplemental allocation failure cannot replace the original gate.
         Ok(x)
     }
@@ -277,7 +277,7 @@ unsafe fn consume(e: *const EVENT_RECORD, s: &mut Collector) -> Outcome {
     }
     if h.EventDescriptor.Opcode == 76 {
         if s.ends.len() == MAX_ENDS {
-            return Err("budget_exceeded");
+            return Err("end_capacity_reached");
         }
         let end = End {
             qpc: h.TimeStamp,
@@ -309,7 +309,7 @@ unsafe fn consume(e: *const EVENT_RECORD, s: &mut Collector) -> Outcome {
             return Ok(()); // Other paths are discarded; never printed or retained.
         }
         if s.starts.len() == MAX_STARTS {
-            return Err("budget_exceeded");
+            return Err("target_start_capacity_reached");
         }
         let start = Start {
             qpc: h.TimeStamp,
@@ -400,7 +400,7 @@ unsafe extern "system" fn on_event(e: *mut EVENT_RECORD) {
     }
     s.callbacks += 1;
     if s.callbacks > MAX_CALLBACKS {
-        s.error = Some("budget_exceeded");
+        s.error = Some("callback_limit_exceeded");
         return;
     }
     let prior_starts = s.starts.len();
@@ -597,7 +597,7 @@ impl Trace {
             return Err("session_configuration_mismatch");
         }
         if !self.proof.bounded {
-            return Err("budget_exceeded");
+            return Err("initial_session_bounds_unverified");
         }
         if !self.proof.lossless {
             return Err("event_loss");
@@ -813,7 +813,7 @@ impl Trace {
             self.reason = Some("event_loss");
         }
         if self.reason.is_none() && !self.proof.bounded {
-            self.reason = Some("budget_exceeded");
+            self.reason = Some("final_bounds_proof_unverified");
         }
         if original == Some(false) && !self.proof.identity && self.reason.is_none() {
             self.reason = Some("identity_unavailable");
