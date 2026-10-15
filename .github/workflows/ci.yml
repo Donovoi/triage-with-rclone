@@ -87,7 +87,7 @@ jobs:
             --format json --desc off --output "$RUNNER_TEMP/python-dependency-audit.json"
       - name: Retain dependency audit evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: python-dependency-audit
           path: ${{ runner.temp }}/python-dependency-audit.json
@@ -118,7 +118,7 @@ jobs:
       # Never upload the image, Docker cache, synthetic credentials or raw logs.
       - name: Retain sanitized SMB protocol result
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: smb-protocol
           path: ${{ runner.temp }}/smb-protocol.json
@@ -148,7 +148,7 @@ jobs:
       # Positive feasibility only: never import this receipt into the coverage ledger.
       - name: Retain sanitized pCloud feasibility result
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: pcloud-oauth-feasibility
           path: ${{ runner.temp }}/pcloud-oauth-feasibility.json
@@ -177,7 +177,7 @@ jobs:
             --report "$RUNNER_TEMP/pcloud-oauth-authentication.json"
       - name: Retain sanitized pCloud authentication evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: pcloud-oauth-authentication
           path: ${{ runner.temp }}/pcloud-oauth-authentication.json
@@ -208,7 +208,7 @@ jobs:
       # Source experiment only: no ledger import, images, credentials or raw logs.
       - name: Retain sanitized GCS experiment result
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: gcs-oauth-experiment
           path: ${{ runner.temp }}/gcs-oauth-experiment.json
@@ -239,7 +239,7 @@ jobs:
       # Never upload images, credentials, raw logs or private configuration.
       - name: Retain sanitized GCS lifecycle evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: gcs-oauth-lifecycle
           path: ${{ runner.temp }}/gcs-oauth-lifecycle.json
@@ -390,7 +390,7 @@ jobs:
             --require-plans --require-fixtures local,archive,http,webdav,ftp,sftp,s3,swift,b2,azureblob,azurefiles,seafile,memory,koofr,pixeldrain,filefabric,netstorage,internetarchive --require-gcs-static-token
       - name: Retain sanitized protocol evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: provider-evidence-${{ runner.os }}
           path: |
@@ -462,7 +462,7 @@ jobs:
             --require-fixtures local,archive,http,webdav,ftp,sftp,s3,swift,b2,azureblob,azurefiles,seafile,memory,koofr,pixeldrain,filefabric,netstorage,internetarchive --require-gcs-static-token
       - name: Retain sanitized Windows application evidence
         if: always() && runner.os == 'Windows'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: provider-evidence-Windows-application
           path: |
@@ -488,7 +488,7 @@ jobs:
             --require-application-mode webdav:webdav_basic_loopback_cli_v1:windows
       - name: Retain sanitized configured WebDAV application evidence
         if: always() && runner.os == 'Windows'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: provider-evidence-Windows-webdav-application
           path: |
@@ -528,7 +528,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'tui_experiment_evidence_failed' }
       - name: Retain sanitized TUI experiment evidence
         if: ${{ !cancelled() && runner.os == 'Windows' && (steps.tui_evidence.outcome == 'success' || steps.tui_evidence.outcome == 'failure') }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: tui-experiment-Windows
           path: ${{ runner.temp }}/tui-experiment-validation.json
@@ -549,7 +549,7 @@ jobs:
           fi
       - name: Upload checked Windows build
         if: runner.os == 'Windows'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: rclone-triage-windows
           path: |
@@ -612,7 +612,7 @@ jobs:
       - name: Retain only validated B2 experiment evidence
         if: ${{ !cancelled() && (steps.b2_validation.outcome == 'success' || steps.b2_validation.outcome == 'failure') }}
         timeout-minutes: 2
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: b2-experiment-Windows
           path: ${{ runner.temp }}/b2-validation.json
@@ -672,7 +672,7 @@ jobs:
       - name: Retain only normalized Swift experiment evidence
         if: ${{ !cancelled() && (steps.swift_validation.outcome == 'success' || steps.swift_validation.outcome == 'failure') }}
         timeout-minutes: 2
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: swift-experiment-Windows
           path: ${{ runner.temp }}/swift-validation.json
@@ -732,7 +732,7 @@ jobs:
       - name: Retain only normalized Azure Blob experiment evidence
         if: ${{ !cancelled() && (steps.azureblob_validation.outcome == 'success' || steps.azureblob_validation.outcome == 'failure') }}
         timeout-minutes: 2
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: azureblob-experiment-Windows
           path: ${{ runner.temp }}/azureblob-validation.json
@@ -792,7 +792,7 @@ jobs:
       - name: Retain only normalized Swift experiment evidence
         if: ${{ !cancelled() && (steps.swift_cancel_validation.outcome == 'success' || steps.swift_cancel_validation.outcome == 'failure') }}
         timeout-minutes: 2
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: swift-cancellation-experiment-Windows
           path: ${{ runner.temp }}/swift-cancellation-validation.json
@@ -852,7 +852,7 @@ jobs:
       - name: Retain only normalized WebDAV fixed-token experiment evidence
         if: ${{ !cancelled() && (steps.webdav_bearer_validation.outcome == 'success' || steps.webdav_bearer_validation.outcome == 'failure') }}
         timeout-minutes: 2
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: webdav-bearer-experiment-Windows
           path: ${{ runner.temp }}/webdav-bearer-validation.json
@@ -955,7 +955,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'filesystem_coverage_failed' }
       - name: Retain only validated filesystem evidence
         if: ${{ !cancelled() && (steps.filesystem_validation.outcome == 'success' || steps.filesystem_validation.outcome == 'failure') }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: filesystem-evidence-Windows-${{ matrix.backend }}
           path: ${{ runner.temp }}/filesystem-validation.json
@@ -963,7 +963,7 @@ jobs:
           retention-days: 14
       - name: Retain sanitized filesystem coverage ledger
         if: ${{ !cancelled() && (steps.filesystem_coverage.outcome == 'success' || steps.filesystem_coverage.outcome == 'failure') }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: provider-evidence-Windows-filesystem-${{ matrix.backend }}
           path: ${{ runner.temp }}/provider-evidence-windows-filesystem.json
@@ -1033,7 +1033,7 @@ jobs:
             --output "$env:INVENTORY_OUTPUT"
           if ($LASTEXITCODE -ne 0) { throw 'Dependency inventory failed' }
       - name: Upload checked Windows target
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: rclone-triage-windows-${{ matrix.arch }}
           path: |
@@ -1088,7 +1088,7 @@ jobs:
             --require-plans --require-fixtures local,archive,http,webdav,ftp,sftp,s3,swift,b2,azureblob,azurefiles,seafile,memory,koofr,pixeldrain,filefabric,netstorage,internetarchive,gcs,smb,pcloud
       - name: Retain sanitized combined ledger
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: provider-evidence-Linux-combined
           path: ${{ runner.temp }}/provider-evidence-linux-combined.json
