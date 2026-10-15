@@ -50,8 +50,23 @@ def bound_command(step):
     return script, args
 
 
-def validate(text):
-    definitions = jobs(text); job = definitions["windows-swift"]; chain = steps(job)
+def without_nightly_dependency(text, job_id):
+    release = jobs(text)["release"]
+    needs = scalar(release, "needs", 4)
+    dependencies = needs.strip("[]").split(", ")
+    require(dependencies.count(job_id) == 1, "mutation_requires_one_dependency")
+    dependencies.remove(job_id)
+    changed = release.replace(f"    needs: {needs}\n", f"    needs: [{', '.join(dependencies)}]\n", 1)
+    require(changed != release, "mutation_must_change_release")
+    return text.replace(release, changed, 1)
+
+
+def validate(text, cancellation=False):
+    job_id = "windows-swift-cancellation" if cancellation else "windows-swift"
+    producer_id = "swift_cancel_cases" if cancellation else "swift_cases"
+    validator_id = "swift_cancel_validation" if cancellation else "swift_validation"
+    stem = "swift-cancellation" if cancellation else "swift"
+    definitions = jobs(text); job = definitions[job_id]; chain = steps(job)
     require(scalar(job, "needs", 4) == "test" and scalar(job, "runs-on", 4) == "windows-latest", "checked_hosted_build")
     require(not re.search(r"^    (?:if|services|permissions):", job, re.MULTILINE) and
         "continue-on-error" not in job and "secrets." not in job, "mandatory_unprivileged_job")
@@ -67,21 +82,25 @@ def validate(text):
     require(len(checked) == 1 and all(path in checked[0] for path in
         ("rclone-triage/target/release/rclone-triage.exe", "rclone-triage/target/release/dependencies.json", "rclone-version.env")), "checked_artifact_layout")
     runs = [part for part in chain if "        run:" in part]
-    require(len(runs) == 2 and scalar(runs[0], "id", 8) == "swift_cases" and scalar(runs[1], "id", 8) == "swift_validation", "distinct_ordered_steps")
+    require(len(runs) == 2 and scalar(runs[0], "id", 8) == producer_id and scalar(runs[1], "id", 8) == validator_id, "distinct_ordered_steps")
     require(not re.search(r"^        if:", runs[0], re.MULTILINE), "producer_not_optional")
     producer, p = bound_command(runs[0]); _, v = bound_command(runs[1])
+    require(p.count("--cancellation-only") == v.count("--cancellation-only") == int(cancellation), "explicit_matching_mode")
     require(p[0] == "scripts/application-lab/run_windows_swift.py" and v[0] == "scripts/swift_application_evidence.py", "producer_then_independent_validator")
     require("Get-FileHash -LiteralPath $application -Algorithm SHA256" in producer and
         p[p.index("--application-sha256") + 1] == "$applicationHash", "application_hash_required")
-    require(p[p.index("--report") + 1] == v[v.index("--receipt") + 1] == "$env:RUNNER_TEMP/swift.private.json" and
-        v[v.index("--report") + 1] == "$env:RUNNER_TEMP/swift-validation.json", "private_input_normalized_output")
-    after_either_outcome(runs[1], "swift_cases")
+    require(p[p.index("--report") + 1] == v[v.index("--receipt") + 1] == f"$env:RUNNER_TEMP/{stem}.private.json" and
+        v[v.index("--report") + 1] == f"$env:RUNNER_TEMP/{stem}-validation.json", "private_input_normalized_output")
+    after_either_outcome(runs[1], producer_id)
     uploads = [part for part in chain if "uses: actions/upload-artifact@" in part]
     require(len(uploads) == 1, "one_normalized_upload"); upload = uploads[0]
-    after_either_outcome(upload, "swift_validation")
-    require(scalar(upload, "path", 10) == "${{ runner.temp }}/swift-validation.json" and
+    after_either_outcome(upload, validator_id)
+    require(scalar(upload, "path", 10) == "${{ runner.temp }}/" + stem + "-validation.json" and
         scalar(upload, "if-no-files-found", 10) == "error", "normalized_only_upload")
-    require(scalar(definitions["release"], "needs", 4).strip("[]").split(", ").count("windows-swift") == 1, "mandatory_nightly_dependency")
+    require(scalar(upload, "name", 10) == stem + "-experiment-Windows", "distinct_normalized_artifact")
+    require(scalar(job, "timeout-minutes", 4) == "20" and scalar(runs[0], "timeout-minutes", 8) == "8" and
+        scalar(runs[1], "timeout-minutes", 8) == "3", "bounded_execution")
+    require(scalar(definitions["release"], "needs", 4).strip("[]").split(", ").count(job_id) == 1, "mandatory_nightly_dependency")
 
 
 class SwiftWorkflowTests(unittest.TestCase):
@@ -135,8 +154,67 @@ class SwiftWorkflowTests(unittest.TestCase):
             ("if-no-files-found: error", "if-no-files-found: warn")))
 
     def test_swift_must_gate_nightly(self):
+        changed = without_nightly_dependency(self.text, "windows-swift")
+        self.assertNotEqual(changed, self.text)
         with self.assertRaises(ValueError):
-            validate(self.text.replace("windows-b2, windows-swift, windows-architectures", "windows-b2, windows-architectures", 1))
+            validate(changed)
+
+
+
+
+class SwiftCancellationWorkflowTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls): cls.text = WORKFLOW.read_text(encoding="utf-8")
+
+    def reject(self, mutations, region=None):
+        region = region or jobs(self.text)["windows-swift-cancellation"]
+        for old, new in mutations:
+            with self.subTest(mutation=old):
+                self.assertIn(old, region)
+                changed = self.text.replace(region, region.replace(old, new, 1), 1)
+                with self.assertRaises((ValueError, KeyError, IndexError)):
+                    validate(changed, cancellation=True)
+
+    def test_bound_cancellation_and_unchanged_renewal_modes(self):
+        validate(self.text)
+        validate(self.text, cancellation=True)
+
+    def test_both_steps_require_one_explicit_cancellation_selection(self):
+        runs = [s for s in steps(jobs(self.text)["windows-swift-cancellation"]) if "        run:" in s]
+        for region in runs:
+            self.reject(((" --cancellation-only", ""), (" --cancellation-only", " --cancellation-only --cancellation-only")), region)
+
+    def test_renewal_cannot_silently_switch_modes(self):
+        region = jobs(self.text)["windows-swift"]
+        changed = region.replace("run_windows_swift.py `", "run_windows_swift.py --cancellation-only `", 1)
+        with self.assertRaises(ValueError): validate(self.text.replace(region, changed, 1))
+
+    def test_foreign_build_or_optional_job_rejected(self):
+        self.reject((("needs: test", "needs: revision"), ("windows-latest", "self-hosted"),
+            ("path: ${{ runner.temp }}/swift-build", "path: ${{ runner.temp }}/swift-build\n          run-id: 123"),
+            ("persist-credentials: false", "persist-credentials: true"),
+            ("    steps:", "    continue-on-error: true\n    steps:"), ("timeout-minutes: 20", "timeout-minutes: 60")))
+
+    def test_both_steps_enforce_binding_and_exit(self):
+        runs = [s for s in steps(jobs(self.text)["windows-swift-cancellation"]) if "        run:" in s]
+        for region in runs:
+            self.reject((("$env:GITHUB_SHA -cne $buildCommit", "$false"), (".Hash -cne $expectedPins", ".Hash -eq $expectedPins"),
+                ("$env:RUNNER_ENVIRONMENT -cne 'github-hosted'", "$false")), region)
+            guard = re.findall(r"if \(\$LASTEXITCODE -ne 0\) \{ throw '[^']+' \}", region)[-1]
+            self.reject(((guard, "Write-Output 'ignored'"),), region)
+
+    def test_failure_reports_are_required_and_private_inputs_stay_private(self):
+        self.reject((("steps.swift_cancel_cases.outcome == 'failure'", "steps.swift_cancel_cases.outcome == 'skipped'"),
+            ("steps.swift_cancel_validation.outcome == 'failure'", "steps.swift_cancel_validation.outcome == 'skipped'"),
+            ("path: ${{ runner.temp }}/swift-cancellation-validation.json", "path: ${{ runner.temp }}/swift-cancellation.private.json"),
+            ("name: swift-cancellation-experiment-Windows", "name: swift-experiment-Windows"),
+            ("if-no-files-found: error", "if-no-files-found: warn")))
+
+    def test_cancellation_must_gate_nightly(self):
+        changed = without_nightly_dependency(self.text, "windows-swift-cancellation")
+        self.assertNotEqual(changed, self.text)
+        with self.assertRaises(ValueError):
+            validate(changed, cancellation=True)
 
 
 if __name__ == "__main__": unittest.main()

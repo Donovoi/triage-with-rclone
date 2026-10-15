@@ -227,12 +227,165 @@ def validate_receipt(receipt, expected_runtime, expected_bindings, now=None, max
     return receipt
 
 
+
+CANCEL_MODE = "swift_content_cancellation_cli_v2"
+CANCEL_CASES = ("cancellation",)
+CANCEL_CHECKS = {"cancellation": (COMMON - {"same_copy_process"}) | {
+    "exit_failure", "transfer_active", "content_progress_exact", "witness_closed", "ctrl_c_sent",
+    "cancelled_result_exact", "manifest_incomplete", "no_partial_outputs", "no_download_outputs"}}
+CANCEL_FALSE_CLAIMS = FALSE_CLAIMS - {"cancellation_verified"}
+
+
+def cancellation_manifest():
+    # Independent literal oracle. No producer or fixture is imported here.
+    return dict(member="synthetic-bucket/large/cancel.bin", size=262144,
+        sha256="2312394bd99545d9de131c24efb781e765ac1aec243f2ed9347597a793a415e9",
+        md5="d19215b1d714757e1fdb0060c52fd4c8", verified_prefixes=[65536, 131072],
+        request_cap=128, event_cap=512, response_byte_cap=524288, fixture_seconds=180, request_seconds=15)
+
+
+def compute_cancellation_bindings(root, application, build_commit):
+    value = compute_bindings(root, application, build_commit)
+    value["fixture_manifest_sha256"] = hashlib.sha256(compact(cancellation_manifest())).hexdigest()
+    return value
+
+
+def empty_cancellation_cases():
+    return {"cancellation": dict(status="not_run", exit_code=None, runtime_sha256=None, observation=None,
+        continuity=None, failure_code=None, fixture=None, checks=dict.fromkeys(CANCEL_CHECKS["cancellation"], None))}
+
+
+def cancellation_capabilities(cases, cleanup_complete):
+    passed = cleanup_complete and cases["cancellation"]["status"] == "passed"
+    return {k: "passed" if passed else "not_verified" for k in ("content_verified_cancellation", "cleanup")}
+
+
+def cancellation_observation(value):
+    need(type(value) is dict and set(value) == {"kind", "runtime_process_count", "first_verified_bytes", "last_verified_bytes"} and
+         value["kind"] == "live_image" and type(value["runtime_process_count"]) is int and value["runtime_process_count"] == 1 and
+         type(value["first_verified_bytes"]) is int and value["first_verified_bytes"] == 65536 and
+         type(value["last_verified_bytes"]) is int and value["last_verified_bytes"] == 131072)
+
+
+def cancellation_fixture(value, *, successful=False):
+    need(type(value) is dict and set(value) == {"case", "requests", "payload_bytes", "response_bytes", "source_preserved", "errors", "events"} and
+         value["case"] == "cancellation" and type(value["source_preserved"]) is bool and
+         all(type(value[k]) is int and 0 <= value[k] <= maximum for k, maximum in
+             (("requests", 128), ("payload_bytes", 131072), ("response_bytes", 524288))))
+    allowed_errors = {"input_invalid", "event_limit", "thread_start_failed", "accept_failed", "admission_limit", "lifetime_limit",
+        "request_timeout", "socket_unowned", "unexpected_input", "client_aborted", "request_invalid", "headers_invalid",
+        "method_rejected", "route_invalid", "byte_limit", "source_changed", "request_limit", "cancel_replayed",
+        "request_body_rejected", "connection_failed", "worker_failed", "cleanup_failed", "credentials_invalid",
+        "token_invalid", "sequence_invalid", "gate_invalid"}
+    need(type(value["errors"]) is list and len(value["errors"]) <= len(allowed_errors) and
+         all(type(e) is str and e in allowed_errors for e in value["errors"]) and len(set(value["errors"])) == len(value["errors"]))
+    events = value["events"]
+    kinds = {"grant", "head", "get_held", "headers", "chunk", "prefix_released", "cancel_armed", "disconnected", "held_teardown"}
+    need(type(events) is list and len(events) <= 512)
+    for i, e in enumerate(events):
+        need(type(e) is dict and set(e) == {"ordinal", "kind", "role", "status", "object_bytes"} and
+             type(e["ordinal"]) is int and e["ordinal"] == i + 1 and type(e["kind"]) is str and e["kind"] in kinds and
+             type(e["role"]) is str and e["role"] in {"stat", "copy_initial"} and
+             type(e["status"]) is int and e["status"] == (200 if e["kind"] in {"grant", "head", "headers", "chunk"} else 0) and
+             type(e["object_bytes"]) is int and e["object_bytes"] == (65536 if e["kind"] == "chunk" else 0))
+    if successful:
+        need(value["source_preserved"] and not value["errors"] and value["payload_bytes"] == 131072 and
+             131072 < value["response_bytes"] <= 524288)
+        rows = [(e["kind"], e["role"]) for e in events]
+        cursor = 0
+        for role in ("stat", "copy_initial"):
+            need(rows[cursor:cursor + 1] == [("grant", role)])
+            cursor += 1
+            count = 0
+            while rows[cursor:cursor + 1] == [("head", role)]:
+                count += 1; cursor += 1
+            need(1 <= count <= 4)
+        tail = ["get_held", "headers", "chunk", "prefix_released", "chunk", "cancel_armed"]
+        need(rows[cursor:cursor + len(tail)] == [(k, "copy_initial") for k in tail] and
+             len(rows) == cursor + len(tail) + 1 and rows[-1] in [(k, "copy_initial") for k in ("disconnected", "held_teardown")] and
+             value["requests"] == cursor + 1)
+    return value
+
+
+def validate_cancellation_receipt(receipt, expected_runtime, expected_bindings, now=None, max_age_hours=24):
+    need(type(receipt) is dict and set(receipt) == RECEIPT_KEYS and type(receipt["schema_version"]) is int and
+         receipt["schema_version"] == 2 and receipt["scope"] == SCOPE and receipt["fixture_mode"] == CANCEL_MODE and
+         receipt["backend"] == "swift" and receipt["lifecycle_scope"] == "content_verified_incomplete_transfer" and receipt["platform"] == "windows")
+    A.validate_bindings(expected_bindings)
+    A.validate_bindings(receipt["bindings"])
+    need(receipt["bindings"] == expected_bindings and receipt["runtime"] == expected_runtime and
+         type(expected_runtime) is dict and set(expected_runtime) == {"version", "sha256", "platform"} and
+         valid_hash(expected_runtime["sha256"]) and expected_runtime["platform"] == "windows" and
+         type(expected_runtime["version"]) is str and re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", expected_runtime["version"]))
+    need(type(receipt["created_at"]) is str and re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", receipt["created_at"]))
+    try:
+        stamp = datetime.strptime(receipt["created_at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except ValueError:
+        fail("swift_receipt_invalid")
+    now = now or datetime.now(timezone.utc)
+    need(now - timedelta(hours=max_age_hours) <= stamp <= now + timedelta(minutes=5))
+    need(type(receipt["claims"]) is dict and set(receipt["claims"]) == CANCEL_FALSE_CLAIMS and
+         all(v is False for v in receipt["claims"].values()) and type(receipt["cleanup_complete"]) is bool)
+    errors = receipt["errors"]
+    need(type(errors) is list and all(type(e) is str and e in FAILURE_CODES for e in errors) and len(set(errors)) == len(errors))
+    cases, group = receipt["cases"], receipt["experiment"]
+    need(type(cases) is dict and set(cases) == set(CANCEL_CASES) and type(group) is dict and
+         set(group) == {"status", "failure_code", "checks"} and type(group["checks"]) is dict and set(group["checks"]) == GROUP_CHECKS)
+    stopped = False
+    for name in CANCEL_CASES:
+        r = cases[name]
+        need(type(r) is dict and set(r) == RECORD_KEYS and type(r["status"]) is str and r["status"] in {"passed", "failed", "not_run"} and
+             type(r["checks"]) is dict and set(r["checks"]) == CANCEL_CHECKS[name])
+        if r["status"] == "not_run":
+            stopped = True
+            need(all(r[k] is None for k in RECORD_KEYS - {"status", "checks"}) and all(v is None for v in r["checks"].values()))
+            continue
+        need(not stopped and all(type(v) is bool for v in r["checks"].values()) and
+             (r["exit_code"] is None or type(r["exit_code"]) is int and 0 <= r["exit_code"] < 2**32) and
+             (r["runtime_sha256"] is None or r["runtime_sha256"] == expected_runtime["sha256"]))
+        if r["observation"] is not None:
+            cancellation_observation(r["observation"])
+            need(r["runtime_sha256"] == expected_runtime["sha256"])
+        need(not r["checks"]["runtime_observed"] or r["observation"] is not None)
+        need(r["continuity"] is None)  # No retained-process claim in this mode.
+        if r["fixture"] is not None:
+            cancellation_fixture(r["fixture"], successful=r["status"] == "passed")
+        need(not r["checks"]["fixture_valid"] or r["fixture"] is not None)
+        if r["status"] == "passed":
+            need(r["failure_code"] is None and all(r["checks"].values()) and r["observation"] is not None and
+                 r["fixture"] is not None and
+                 type(r["exit_code"]) is int and r["exit_code"] == 1)
+        else:
+            need(type(r["failure_code"]) is str and r["failure_code"] in errors)
+    attempted = any(r["status"] != "not_run" for r in cases.values())
+    if group["status"] == "not_run":
+        need(not attempted and group["failure_code"] is None and all(v is None for v in group["checks"].values()))
+    else:
+        need(group["status"] in {"passed", "failed"} and all(type(v) is bool for v in group["checks"].values()))
+        if group["status"] == "passed":
+            need(not errors and group["failure_code"] is None and all(group["checks"].values()) and all(r["status"] == "passed" for r in cases.values()))
+        else:
+            need(type(group["failure_code"]) is str and group["failure_code"] in errors and not any(r["status"] == "passed" for r in cases.values()))
+        for r in cases.values():
+            if r["status"] != "not_run":
+                need(not r["checks"]["group_finalized"] or group["status"] == "passed")
+    passed = group["status"] == "passed" and receipt["cleanup_complete"] and not errors
+    if attempted and receipt["cleanup_complete"]:
+        need(all(group["checks"][k] is True for k in ("all_processes_reaped", "fixture_cleanup", "temp_cleanup")) and
+             all(all(r["checks"][k] is True for k in ("process_cleanup", "fixture_cleanup", "temp_cleanup"))
+                 for r in cases.values() if r["status"] != "not_run"))
+    need(receipt["result"] == ("passed" if passed else "failed") and receipt["capabilities"] == cancellation_capabilities(cases, receipt["cleanup_complete"]) and
+         (receipt["cleanup_complete"] or "cleanup_failed" in errors))
+    return receipt
+
+
 def main(argv=None):
     import argparse
     import os
     parser = argparse.ArgumentParser()
     for flag in ("receipt", "application", "build-commit", "report"):
         parser.add_argument("--" + flag, required=True)
+    parser.add_argument("--cancellation-only", action="store_true")
     args = parser.parse_args(argv)
     normalized = None
     digest = None
@@ -240,7 +393,9 @@ def main(argv=None):
         raw = read_bounded(args.receipt, 128 * 1024)
         digest = hashlib.sha256(raw).hexdigest()
         root = Path(__file__).absolute().parent.parent
-        normalized = validate_receipt(parse_receipt(raw), runtime_binding(root), compute_bindings(root, args.application, args.build_commit))
+        validate = validate_cancellation_receipt if args.cancellation_only else validate_receipt
+        bind = compute_cancellation_bindings if args.cancellation_only else compute_bindings
+        normalized = validate(parse_receipt(raw), runtime_binding(root), bind(root, args.application, args.build_commit))
         result, errors, code = normalized["result"], [], 0 if normalized["result"] == "passed" else 1
     except Exception:
         result, errors, code = "invalid", ["validation_failed"], 2

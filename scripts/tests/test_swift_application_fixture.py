@@ -357,4 +357,124 @@ class FixtureTests(unittest.TestCase):
                 server._close_socket.assert_called_once_with(sock)
 
 
+
+def cancel_metadata(state):
+    def response(method, path, token=None):
+        request = state.begin(method, path, USER if path == F.AUTH else None, KEY if path == F.AUTH else None, token)
+        value = state.response(request, ORIGIN)
+        state.commit(request, value[0], 256, value[3])
+        return request[3], value
+    stat_token, _ = response("GET", F.AUTH)
+    _, head = response("HEAD", F.CANCEL_OBJECT, stat_token)
+    copy_token, _ = response("GET", F.AUTH)
+    response("HEAD", F.CANCEL_OBJECT, copy_token)
+    return stat_token, copy_token, head
+
+
+class CancellationFixtureTests(unittest.TestCase):
+    def setUp(self):
+        for obj, name in ((subprocess, "Popen"), (socket, "socket"), (socket, "create_connection"), (threading.Thread, "start")):
+            guard = patch.object(obj, name, side_effect=AssertionError("forbidden")); guard.start(); self.addCleanup(guard.stop)
+
+    def state(self): return F.AppSwiftCancellationState(USER, KEY)
+
+    def test_literal_body_and_metadata_oracle_distinct_from_v1(self):
+        state = self.state(); _, _, head = cancel_metadata(state)
+        expected = bytes(range(256)) * 1024
+        self.assertEqual(len(expected), 262144)
+        self.assertEqual(hashlib.sha256(expected).hexdigest(), "2312394bd99545d9de131c24efb781e765ac1aec243f2ed9347597a793a415e9")
+        self.assertEqual(hashlib.md5(expected).hexdigest(), "d19215b1d714757e1fdb0060c52fd4c8")
+        self.assertEqual(head[1], expected); self.assertEqual(head[2]["Etag"], "d19215b1d714757e1fdb0060c52fd4c8")
+        self.assertEqual(len(F.BODY), 62); self.assertFalse(state.injected)
+
+    def test_state_two_committed_chunks_no_tail_teardown_and_oracle_replay(self):
+        for terminal in ("peer_closed", "held_teardown"):
+            s = self.state(); _, token, _ = cancel_metadata(s)
+            request = s.begin("GET", F.CANCEL_OBJECT, token=token); s.response(request, ORIGIN)
+            for action in (s.release_prefix, s.arm_cancel, s.peer_closed):
+                with self.assertRaises(F.FixtureError): action()
+            s.commit_headers(request, 256)
+            with self.assertRaises(F.FixtureError): s.commit_headers(request, 256)
+            s.commit_chunk(request, bytes(range(256))*256)
+            with self.assertRaises(F.FixtureError): s.commit_chunk(request, bytes(range(256))*256)
+            s.release_prefix(); s.commit_chunk(request, bytes(range(256))*256); s.arm_cancel(); getattr(s, terminal)()
+            with self.assertRaises(F.FixtureError): s.commit_chunk(request, bytes(range(256))*256)
+            path = PATH.parents[1]/"swift_application_evidence.py"
+            contract = types.ModuleType("isolated_cancel_contract"); contract.__file__ = str(path)
+            exec(compile(path.read_bytes(), str(path), "exec"), contract.__dict__)
+            self.assertIs(contract.cancellation_fixture(s.snapshot(), successful=True)["source_preserved"], True)
+            self.assertEqual(s.payload_bytes, 131072)
+            self.assertFalse(s.completed); self.assertFalse(s.injected)
+
+    def test_wrong_stat_stale_extra_get_and_original_object_rejected(self):
+        for scenario in ("wrong", "stat", "old_path", "extra"):
+            s = self.state(); stat_token, token, _ = cancel_metadata(s)
+            if scenario == "extra": s.begin("GET", F.CANCEL_OBJECT, token=token)
+            with self.assertRaises(F.FixtureError):
+                s.begin("GET", F.OBJECT if scenario == "old_path" else F.CANCEL_OBJECT,
+                        token="unknown" if scenario == "wrong" else stat_token if scenario == "stat" else token)
+
+    def test_fake_chunk_worker_counts_only_returned_sends_and_never_tail(self):
+        for failed_send in (None, 0, 1, 2):
+            s = self.state(); _, token, _ = cancel_metadata(s)
+            base, sock = worker_server(s, ("GET", F.CANCEL_OBJECT, None, None, token))
+            server = F._CancellationServer.__new__(F._CancellationServer); server.__dict__.update(base.__dict__)
+            server._live = Mock()
+            sent=[]
+            def send(data):
+                self.assertFalse(s.lock._is_owned()); self.assertTrue(server._dispatch_lock.held)
+                # Current send is not yet committed; counters describe prior returned sends only.
+                self.assertEqual(s.payload_bytes, 65536 * max(0, len(sent)-1))
+                if len(sent) == failed_send: raise OSError("private canary")
+                sent.append(data)
+            def gate(_sock, *, tail):
+                if tail: s.arm_cancel(); s.held_teardown(); return False
+                s.release_prefix(); return True
+            sock.sendall.side_effect = send; server._cancel_wait = gate
+            with patch.object(F.select, "select", return_value=([], [], [])), patch.object(F.time, "monotonic", return_value=0): server._worker(sock)
+            self.assertLessEqual(sum(len(b) for b in sent[1:]), 131072)
+            self.assertEqual(s.payload_bytes, 65536*max(0,len(sent)-1))
+            self.assertEqual(s.errors, [] if failed_send is None else ["connection_failed"])
+            self.assertFalse(server._dispatch_lock.held); self.assertNotIn(sock,server.sockets)
+            sock.settimeout.assert_called_once_with(15.0)
+
+    def test_abort_wait_no_release_credit_and_no_deadline_mutation(self):
+        s=self.state(); _, token, _=cancel_metadata(s)
+        base,sock=worker_server(s,("GET",F.CANCEL_OBJECT,None,None,token))
+        server=F._CancellationServer.__new__(F._CancellationServer);server.__dict__.update(base.__dict__)
+        server.stopping.set(); before=server.sockets[sock]
+        self.assertFalse(server._cancel_wait(sock,tail=False))
+        self.assertFalse(s.prefix_released); self.assertEqual(server.sockets[sock],before)
+        with self.assertRaises(F.FixtureError): server._cancel_wait(sock,tail=True)
+
+    def test_fixed_parser_rejects_old_object_range_and_source_mutation(self):
+        server=F._CancellationServer.__new__(F._CancellationServer);server.port=1234
+        wire=lambda target: ("GET "+target+" HTTP/1.1\r\nHost: 127.0.0.1:1234\r\n\r\n").encode()
+        self.assertEqual(server._parse(io.BytesIO(wire(F.CANCEL_OBJECT)))[1],F.CANCEL_OBJECT)
+        with self.assertRaises(F.FixtureError):server._parse(io.BytesIO(wire(F.OBJECT)))
+        s=self.state();s._body=b"x"*262144
+        with self.assertRaises(F.FixtureError):s.begin("GET",F.AUTH,USER,KEY)
+
+    def test_tail_eof_reset_and_teardown_are_distinct_from_premature_abort(self):
+        for kind in ("eof", "reset", "teardown", "early", "unexpected", "unarmed"):
+            s=self.state();_,token,_=cancel_metadata(s)
+            request=s.begin("GET",F.CANCEL_OBJECT,token=token);s.response(request,ORIGIN);s.commit_headers(request,256)
+            s.commit_chunk(request,bytes(range(256))*256);s.release_prefix();s.commit_chunk(request,bytes(range(256))*256)
+            if kind != "unarmed":s.arm_cancel()
+            base,sock=worker_server(s,("GET",F.CANCEL_OBJECT,None,None,token))
+            server=F._CancellationServer.__new__(F._CancellationServer);server.__dict__.update(base.__dict__);server._live=Mock()
+            sock.recv.return_value=b"unexpected" if kind=="unexpected" else b""
+            if kind=="reset":sock.recv.side_effect=ConnectionResetError("private canary")
+            if kind=="teardown":server.stopping.set()
+            # An early gate cannot be released in the abort branch.
+            if kind=="early":s.prefix_released=False
+            with patch.object(F.select,"select",return_value=([sock],[],[])):
+                if kind in {"early","unexpected","unarmed"}:
+                    with self.assertRaises(F.FixtureError):server._cancel_wait(sock,tail=kind!="early")
+                else:
+                    self.assertFalse(server._cancel_wait(sock,tail=True))
+                    self.assertEqual(s.events[-1][0],"held_teardown" if kind=="teardown" else "disconnected")
+            sock.sendall.assert_not_called()
+
+
 if __name__ == "__main__": unittest.main()
