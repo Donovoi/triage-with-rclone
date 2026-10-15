@@ -617,7 +617,8 @@ fn complete_proof_consumes_once_and_binds_the_final_snapshot() {
 
 #[test]
 fn omitted_end_handoff_preserves_ownership_prefix_uncertainty() {
-    use crate::ownership::{Buffer, Event, Kind, Reason as OwnershipReason, Report};
+    use crate::ownership::{Buffer, Event, Kind, Pattern, Reason as OwnershipReason, Report};
+    // Equal QPCs reject at the original ordering gate, before prefix proof.
     let mut admission = Admission::new().unwrap();
     let mut ownership = Buffer::default();
     ownership.reserve();
@@ -644,8 +645,73 @@ fn omitted_end_handoff_preserves_ownership_prefix_uncertainty() {
             Ok((2, 5, 3)),
             Some("correlation_end_multiple")
         ),
-        Report::Unavailable(OwnershipReason::Window)
+        Report::Unavailable(OwnershipReason::Order)
     ));
+
+    // Supply the exact Create and strictly ordered ends so the orphan prefix,
+    // rather than missing Create or equal timestamps, is decisive.
+    for orphan in [true, false] {
+        let mut admission = Admission::new().unwrap();
+        let mut ownership = Buffer::default();
+        ownership.reserve();
+        let mut ordinal = 1;
+        if orphan {
+            let handoff = admission.decoded_end(end(1, 7), bounds(2, 5));
+            assert_eq!(handoff.decision, Decision::OmittedBefore);
+            ownership.push(Event {
+                ordinal,
+                qpc: handoff.end.qpc,
+                irp: handoff.end.irp,
+                kind: Kind::End,
+            });
+            ordinal += 1;
+        }
+        ownership.push(Event {
+            ordinal,
+            qpc: 3,
+            irp: 7,
+            kind: Kind::Create,
+        });
+        for qpc in [4, 5] {
+            ordinal += 1;
+            let handoff = admission.decoded_end(end(qpc, 7), bounds(2, 5));
+            assert_eq!(handoff.decision, Decision::Retained);
+            ownership.push(Event {
+                ordinal,
+                qpc: handoff.end.qpc,
+                irp: handoff.end.irp,
+                kind: Kind::End,
+            });
+        }
+        let proof = admission.finish(2, 5).unwrap();
+        assert_eq!(proof.as_slice().len(), 2);
+        assert_eq!(
+            correlate(&[start(3, 7)], proof.as_slice(), 2, 5, 3),
+            Err("correlation_end_multiple")
+        );
+        let report = ownership.report(
+            &[start(3, 7)],
+            proof.as_slice(),
+            Ok((2, 5, 3)),
+            Some("correlation_end_multiple"),
+        );
+        if orphan {
+            assert!(matches!(
+                report,
+                Report::Unavailable(OwnershipReason::Window)
+            ));
+        } else {
+            assert!(matches!(
+                report,
+                Report::Observed {
+                    pattern: Pattern::ExtraEnd,
+                    starts: 1,
+                    ends: 2,
+                    pairs: None
+                }
+            ));
+        }
+    }
 }
 
 #[test]

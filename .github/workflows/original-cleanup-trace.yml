@@ -53,7 +53,16 @@ jobs:
           $admissionLog = Join-Path $env:RUNNER_TEMP 'original-cleanup-admission-tests.private.log'
           if ([IO.File]::Exists($admissionLog)) { throw 'Pure admission log already exists' }
           cargo test --manifest-path tools/cleanup-trace/Cargo.toml --locked --lib admission::tests -- --test-threads=1 > $admissionLog 2>&1
-          if ($LASTEXITCODE -ne 0) { throw 'Pure admission tests failed' }
+          $admissionExit = $LASTEXITCODE
+          if ($admissionExit -ne 0) {
+            Write-Output "admission_cargo_exit=$admissionExit"
+            try {
+              $admissionDiagnosticErr = Join-Path $env:RUNNER_TEMP 'original-cleanup-admission-summary-stderr.private'
+              if ([IO.File]::Exists($admissionDiagnosticErr)) { throw 'Private diagnostic already exists' }
+              python -B tools/cleanup-trace/summarize_admission.py --log $admissionLog --cargo-exit $admissionExit 2> $admissionDiagnosticErr
+            } catch { Write-Output 'admission_test_diagnostic_unavailable' }
+            throw 'Pure admission tests failed'
+          }
           if ((Get-Item -LiteralPath $admissionLog).Length -gt 262144) { throw 'Pure admission log exceeds bound' }
           $admissionOutput = [IO.File]::ReadAllText($admissionLog)
           $admissionCases = [regex]::Matches($admissionOutput, '(?m)^test admission::tests::[a-z0-9_]+ \.\.\. ok\r?$')
