@@ -1603,6 +1603,47 @@ fn handle_export_screen<
     }
 }
 
+#[derive(Clone, Copy)]
+enum MainMenuFailureOperation {
+    FlowReset,
+    ProviderRefresh,
+}
+
+fn write_main_menu_failure(
+    operation: MainMenuFailureOperation,
+    diagnostic: Option<crate::utils::private_fs::CleanupDiagnostic>,
+    writer: &mut impl std::io::Write,
+) {
+    let operation = match operation {
+        MainMenuFailureOperation::FlowReset => "flow_reset",
+        MainMenuFailureOperation::ProviderRefresh => "provider_refresh",
+    };
+    // Only the existing typed cleanup projection may identify an error category.
+    // Neither arbitrary Error display nor the ownership-unavailable fallback is used.
+    match diagnostic {
+        Some(diagnostic) => {
+            let _ = writeln!(writer, "ui_main_menu_failure={{\"operation\":\"{operation}\",\"category\":\"typed_runtime_cleanup\",\"cleanup\":{diagnostic}}}");
+        }
+        None => {
+            let _ = writeln!(writer, "ui_main_menu_failure={{\"operation\":\"{operation}\",\"category\":\"unknown\",\"cleanup\":null}}");
+        }
+    }
+}
+
+fn observe_main_menu_error(
+    error: anyhow::Error,
+    operation: MainMenuFailureOperation,
+    writer: &mut impl std::io::Write,
+) -> anyhow::Error {
+    let diagnostic = error.chain().take(16).find_map(|cause| {
+        cause
+            .downcast_ref::<std::io::Error>()
+            .and_then(crate::utils::private_fs::cleanup_diagnostic)
+    });
+    write_main_menu_failure(operation, diagnostic, writer);
+    error
+}
+
 fn handle_main_menu_enter(app: &mut App) -> Result<bool> {
     if app.menu_selected >= app.menu_items.len() {
         return Ok(false);
@@ -1611,7 +1652,13 @@ fn handle_main_menu_enter(app: &mut App) -> Result<bool> {
     let action = app.menu_items[app.menu_selected].action;
     app.selected_action = Some(action);
     app.menu_status.clear();
-    app.reset_flow_state()?;
+    app.reset_flow_state().map_err(|error| {
+        observe_main_menu_error(
+            error,
+            MainMenuFailureOperation::FlowReset,
+            &mut std::io::stderr().lock(),
+        )
+    })?;
 
     Ok(match action {
         crate::ui::MenuAction::Exit => {
@@ -1668,7 +1715,13 @@ fn handle_main_menu_enter(app: &mut App) -> Result<bool> {
                 }
             } else {
                 app.state = crate::ui::AppState::ProviderSelect;
-                try_refresh_providers(app)?;
+                try_refresh_providers(app).map_err(|error| {
+                    observe_main_menu_error(
+                        error,
+                        MainMenuFailureOperation::ProviderRefresh,
+                        &mut std::io::stderr().lock(),
+                    )
+                })?;
             }
             false
         }
@@ -1910,6 +1963,73 @@ fn perform_post_auth_mount<
 mod tests {
     use super::*;
     use crossterm::event::KeyModifiers;
+
+    #[test]
+    fn main_menu_diagnostic_preserves_error_identity_and_unknown_cause() {
+        let error = anyhow::anyhow!("private-canary-path-token");
+        let identity = error.as_ref() as *const (dyn std::error::Error + Send + Sync);
+        let mut written = Vec::new();
+        let returned =
+            observe_main_menu_error(error, MainMenuFailureOperation::FlowReset, &mut written);
+        assert!(std::ptr::addr_eq(
+            identity,
+            returned.as_ref() as *const (dyn std::error::Error + Send + Sync)
+        ));
+        assert_eq!(written, b"ui_main_menu_failure={\"operation\":\"flow_reset\",\"category\":\"unknown\",\"cleanup\":null}\n");
+        assert!(!String::from_utf8(written).unwrap().contains("canary"));
+    }
+
+    #[test]
+    fn ordinary_os_error_is_not_typed_runtime_cleanup() {
+        let mut written = Vec::new();
+        let error: anyhow::Error = std::io::Error::from_raw_os_error(32).into();
+        let returned = observe_main_menu_error(
+            error,
+            MainMenuFailureOperation::ProviderRefresh,
+            &mut written,
+        );
+        assert_eq!(
+            returned
+                .downcast_ref::<std::io::Error>()
+                .unwrap()
+                .raw_os_error(),
+            Some(32)
+        );
+        assert_eq!(written, b"ui_main_menu_failure={\"operation\":\"provider_refresh\",\"category\":\"unknown\",\"cleanup\":null}\n");
+    }
+
+    #[test]
+    fn main_menu_diagnostic_writer_failure_does_not_replace_error() {
+        struct Broken;
+        impl std::io::Write for Broken {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::other("private-canary-write"))
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let error = anyhow::anyhow!("original-error");
+        let identity = error.as_ref() as *const (dyn std::error::Error + Send + Sync);
+        let returned =
+            observe_main_menu_error(error, MainMenuFailureOperation::FlowReset, &mut Broken);
+        assert!(std::ptr::addr_eq(
+            identity,
+            returned.as_ref() as *const (dyn std::error::Error + Send + Sync)
+        ));
+    }
+
+    #[test]
+    fn main_menu_typed_projection_is_bounded_and_finite() {
+        let mut written = Vec::new();
+        write_main_menu_failure(
+            MainMenuFailureOperation::ProviderRefresh,
+            Some(crate::utils::private_fs::CleanupDiagnostic::ownership_unavailable()),
+            &mut written,
+        );
+        assert!(written.len() <= 256);
+        assert_eq!(written, b"ui_main_menu_failure={\"operation\":\"provider_refresh\",\"category\":\"typed_runtime_cleanup\",\"cleanup\":{\"stage\":\"identity\",\"kind\":\"other\",\"os_code\":null}}\n");
+    }
 
     #[test]
     fn mobile_menu_only_offers_device_code_for_supported_selections() {
