@@ -353,6 +353,8 @@ jobs:
         run: bash ../scripts/download-rclone.sh --linux "$RUNNER_TEMP/rclone-native"
       - name: Runtime updater and provider evidence regressions
         run: python -B -m unittest discover -s ../scripts/tests -p "test_*.py"
+      - name: Cleanup trace report regressions
+        run: python -B ../tools/cleanup-trace/test_pure.py
       - name: All 20 isolated backend protocol fixtures
         env:
           PROVIDER_BINARY: ${{ runner.os == 'Windows' && format('{0}/rclone-triage/assets/rclone.exe', github.workspace) || format('{0}/rclone-native', runner.temp) }}
