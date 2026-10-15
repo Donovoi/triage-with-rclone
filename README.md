@@ -32,7 +32,7 @@ Local-file and ZIP checks have passed, including cancellation and cleanup.
 
 Dropbox download cancellation tests have passed. B2, Swift and WebDAV download checks have passed using local test servers. These results apply to the tested Windows builds; tests with real Swift accounts are still pending.
 
-Current work: fix Windows test startup and cleanup failures, check FTP recovery after a lost connection, and test WebDAV with new access tokens.
+Current work: fix Windows test startup and cleanup failures, test stopping Swift downloads, and finish the remaining provider checks.
 
 ## What comes next
 
