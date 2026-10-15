@@ -427,7 +427,7 @@ class WebdavApplicationEvidenceTests(unittest.TestCase):
             root = Path(directory)
             self.prepare_tree(root)
             before = E.compute_bindings(root, root / "application.exe", "d" * 40)
-            self.assertEqual(len(E.HARNESS_FILES), 9)
+            self.assertEqual(len(E.HARNESS_FILES), 10)
             for name in E.HARNESS_FILES:
                 path = root / name
                 data = path.read_bytes()

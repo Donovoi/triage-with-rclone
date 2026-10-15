@@ -287,7 +287,7 @@ class BindingCliTests(unittest.TestCase):
 
     def test_bindings_use_exact_source_closure_and_literal_payload_manifest(self):
         value = self.value()["bindings"]
-        self.assertEqual(len(E.HARNESS_FILES), 14)
+        self.assertEqual(len(E.HARNESS_FILES), 15)
         self.assertIn("scripts/tui_application_evidence.py", E.HARNESS_FILES)
         self.assertEqual(value["application_sha256"], hashlib.sha256(self.app.read_bytes()).hexdigest())
         names = ["rclone-triage/Cargo.toml", "rclone-triage/Cargo.lock", "rclone-triage/build.rs",

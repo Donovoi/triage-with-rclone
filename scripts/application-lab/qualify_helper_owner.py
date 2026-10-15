@@ -1,0 +1,333 @@
+#!/usr/bin/env python3
+"""Hosted x64 inert retained-stdout calibration, separate from production success."""
+import ctypes
+import hashlib
+import json
+import math
+import os
+from pathlib import Path
+import re
+import struct
+import subprocess
+import sys
+import time
+import types
+import uuid
+
+HERE = Path(__file__).resolve().parent
+ROOT = HERE.parents[1]
+SELF_SHA256 = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+# Final exact-source header is generated only from the held integration and this fixture.
+SOURCE_PINS = {'.github/workflows/ci.yml': {'bytes': 65976, 'sha256': '47d16b52cd472914b46220e274dcfbbf922a1848d3f3de216c4b037eb2ad804a'}, 'scripts/application_evidence.py': {'bytes': 13266, 'sha256': 'a229fdecc8c5285920c0a56118fddf6cda020e89adddefb89d382ef4b866cf88'}, 'scripts/application-lab/fixture_http.py': {'bytes': 19465, 'sha256': 'ee98f60c2764f142d0a3c834c329fe6f82cfd87df8d126101b83a5e6f95ca8cb'}, 'scripts/application-lab/HostedConPtySession.cs': {'bytes': 104364, 'sha256': 'ecded11bd529a8da58e87a8f0b37c807e85778a2655368ea0f459a1d0ee506d1'}, 'scripts/application-lab/hosted_session.ps1': {'bytes': 10525, 'sha256': 'f333b67a0817838da543b448f547de6e65886bf46e994bb2e078431e91853d03'}, 'scripts/application-lab/prepare_case.ps1': {'bytes': 11317, 'sha256': '9f92c3a570a8dc94ebf9375789eeaf0b7f897e89af4028bc923ba3a6c963d1a5'}, 'scripts/application-lab/run_windows_http.py': {'bytes': 116983, 'sha256': 'a95f78b0c35a1538e0780cbac5bde238088b767363343c3dbc809403cc48510a'}, 'scripts/application-lab/owned_helper_process.py': {'bytes': 27931, 'sha256': '462f34e63cdb2adb9631110b4ef888f722ead24a27121b31e79f5ec88ef7050d'}, 'scripts/application-lab/helper_owner_fixture.py': {'bytes': 14693, 'sha256': 'fd1f6233a14b5cb0712730e35bfec72d240262260f44297a348e0e04cfafd46e'}}
+REGISTRATION = """      - name: Check hosted x64 helper descendant ownership
+        if: runner.os == 'Windows' && runner.arch == 'X64'
+        timeout-minutes: 2
+        run: python -B -I -S ../scripts/application-lab/qualify_helper_owner.py
+"""
+REASONS = frozenset({'host', 'sources', 'image', 'setup', 'expected_failure', 'transfer', 'admission',
+    'release', 'child_exit', 'reader', 'handles', 'preservation', 'temp_cleanup', 'unexpected'})
+
+
+class CalibrationError(ValueError):
+    pass
+
+
+def need(value):
+    if not value:
+        raise CalibrationError('calibration_failed')
+
+
+def load(name, path, digest):
+    raw = path.read_bytes()
+    need(len(raw) <= 512*1024 and hashlib.sha256(raw).hexdigest() == digest)
+    module = types.ModuleType(name)
+    module.__file__ = str(path)
+    exec(compile(raw, str(path), 'exec'), module.__dict__)
+    return module
+
+
+def pe_x64(raw):
+    need(type(raw) is bytes and 64 <= len(raw) <= 32*1024*1024 and raw[:2] == b'MZ')
+    offset = struct.unpack_from('<I', raw, 60)[0]
+    need(64 <= offset <= len(raw)-26 and raw[offset:offset+4] == b'PE\0\0')
+    need(struct.unpack_from('<H', raw, offset+4)[0] == 0x8664 and struct.unpack_from('<H', raw, offset+24)[0] == 0x20b)
+
+
+def verify_sources(F):
+    need(len(SOURCE_PINS) == 9)
+    rows = []
+    for name, pin in sorted(SOURCE_PINS.items()):
+        raw = F.read(ROOT / name, 512*1024)
+        need(len(raw) == pin['bytes'] and hashlib.sha256(raw).hexdigest() == pin['sha256'])
+        rows.append([name, pin['sha256']])
+    workflow = F.read(ROOT / '.github/workflows/ci.yml', 512*1024).decode('utf-8')
+    old = "      - name: Check hosted Windows helper readiness and cleanup\n        if: runner.os == 'Windows'\n        run: python -B ../scripts/application-lab/run_windows_http.py --bridge-probe\n"
+    need(workflow.count(old + REGISTRATION) == 1)
+    need(workflow.count('run: python -B ../scripts/application-lab/run_windows_http.py --setup-probe') == 1)
+    return hashlib.sha256(F.compact(rows)).hexdigest()
+
+
+def recover(owner, error):
+    need(type(error) is subprocess.TimeoutExpired and type(error.timeout) is int and error.timeout == 20)
+    current, matches, count = error.__traceback__, [], 0
+    while current is not None:
+        count += 1
+        need(count <= 4)
+        if current.tb_frame.f_code is owner.run_setup.__code__:
+            local = current.tb_frame.f_locals
+            process, capture = local.get('process'), local.get('capture')
+            need(type(process) is owner.HelperProcess and type(capture) is owner._Capture)
+            need(capture.process is process and owner._active is process)
+            matches.append((process, capture))
+        current = current.tb_next
+    need(len(matches) == 1)
+    return matches[0]
+
+
+def expected_failure(owner, process, capture, error):
+    need(type(error) is subprocess.TimeoutExpired and type(error.timeout) is int and error.timeout == 20 and error.output == b'')
+    need(owner._active is process and process.returncode == 0 and type(process.returncode) is int)
+    need(process.process.closed is True and process.finalized is True and process.final_result is False)
+    need(process.uncertain is True and type(process.forced) is bool)
+    need(process.created is True and process.creation_resolved is True and process.resumed is True)
+    for handle in [process.process, process.primary_thread, process.job, *process.child]:
+        need(handle.closed is True and type(handle.users) is int and handle.users == 0)
+    need(process.active_count == 1 and type(process.active_count) is int and process.total_count == 2 and type(process.total_count) is int)
+    need(capture.returned is True and capture.claimed is True and capture.revoked is False)
+    need(capture.eof is False and capture.failed is False and capture.overflow is False)
+    need(capture.snapshot() == b'' and capture.thread.is_alive() is True and capture.pipe.closed is False)
+    need(capture.pipe is process.stdout)
+
+
+def owner_handles_closed(process):
+    for handle in [process.process, process.primary_thread, process.job, *process.child, *process.parent]:
+        need(type(handle.users) is int and handle.users == 0 and (handle.value is None or handle.closed is True))
+
+
+def accept_transfer(F, api, value, expected):
+    F.transfer(value, expected)
+    handle = value['child_handle']
+    # Do not close or retain the incoming number as an owned capability before identity agrees.
+    need(api.identify(handle) == value['child'])
+    api.flags(handle, 0)
+    api.x64(handle)
+    need(not api.wait(handle, 0))
+    return handle
+
+
+def admission(owner, process, args, environment):
+    try:
+        owner.run_setup(args, env=environment, timeout=20, failure_drain_seconds=5,
+                        capture_limit=4096, check=False)
+    except owner.OwnershipError:
+        need(owner._active is process)
+    else:
+        raise CalibrationError('calibration_failed')
+
+
+def remaining(deadline, clock):
+    now = clock()
+    need(type(now) in (int, float) and math.isfinite(now) and deadline-10 <= now)
+    return max(0, deadline-now)
+
+
+def observe_cleanup(api, release, child, capture, clock=time.monotonic):
+    """One signal, one child wait, one remaining-time existing reader join. No kill."""
+    result = dict(released=False, child_exit=None, reader_closed=False, complete=False, error=None)
+    def failed(reason):
+        if result['error'] is None:
+            result['error'] = reason
+    try:
+        api.signal(release)
+        result['released'] = True
+    except BaseException:
+        failed('release')
+    try:
+        start = clock()
+        need(type(start) in (int, float) and math.isfinite(start))
+        deadline = start + 10
+    except BaseException:
+        failed('unexpected')
+        return result
+    if child is not None:
+        try:
+            need(api.wait(child, int(remaining(deadline, clock)*1000)))
+            code = api.exit_code(child)
+            need(type(code) is int and 0 <= code < 2**32)
+            result['child_exit'] = code
+            need(code == 0)
+        except BaseException:
+            failed('child_exit')
+    else:
+        failed('child_exit')
+    if capture is not None:
+        try:
+            capture.thread.join(remaining(deadline, clock))
+            need(capture.thread.is_alive() is False and capture.eof is True and capture.failed is False and capture.overflow is False)
+            need(capture.snapshot() == b'' and capture.pipe.closed is True and capture.pipe.handle.users == 0)
+            result['reader_closed'] = True
+        except BaseException:
+            failed('reader')
+    else:
+        failed('reader')
+    result['complete'] = result['released'] and result['child_exit'] == 0 and result['reader_closed'] and result['error'] is None
+    return result
+
+
+def remove_owned(F, directory, original_identity, hashes):
+    info = F.plain(directory, True)
+    need((info.st_dev, info.st_ino) == original_identity)
+    need(set(p.name for p in directory.iterdir()) == {'request.json', 'transfer.json'} and set(hashes) == {'request.json', 'transfer.json'})
+    for name in ('request.json', 'transfer.json'):
+        need(F.digest(directory / name, 4096) == hashes[name])
+    for name in ('transfer.json', 'request.json'):
+        (directory / name).unlink()
+    directory.rmdir()
+    need(not directory.exists())
+
+
+def emit(value):
+    # No incoming native text, identity, handle, path, timestamp or transcript is copied.
+    try:
+        need(set(value) == {'schema_version', 'scope', 'result', 'reason', 'expected_failure', 'owner_sticky_failed',
+            'cleanup_complete', 'parent_exit', 'child_exit', 'forced', 'architecture', 'sources_sha256',
+            'controller_sha256', 'python_sha256', 'powershell_file_sha256'})
+        need(value['reason'] is None or value['reason'] in REASONS)
+        need(type(value['schema_version']) is int and value['schema_version'] == 1)
+        need(value['scope'] == 'hosted_windows_x64_inert_descendant' and value['result'] in {'passed', 'failed'})
+        need(value['architecture'] in {None, 'native_x64'})
+        for key in ('expected_failure', 'owner_sticky_failed', 'cleanup_complete'):
+            need(type(value[key]) is bool)
+        need(value['forced'] is None or type(value['forced']) is bool)
+        for key in ('parent_exit', 'child_exit'):
+            need(value[key] is None or type(value[key]) is int and 0 <= value[key] < 2**32)
+        for key in ('sources_sha256', 'controller_sha256', 'python_sha256', 'powershell_file_sha256'):
+            need(value[key] is None or type(value[key]) is str and re.fullmatch('[0-9a-f]{64}', value[key]))
+        if value['result'] == 'passed':
+            need(value['reason'] is None and value['expected_failure'] and value['owner_sticky_failed'] and value['cleanup_complete'])
+            need(value['parent_exit'] == value['child_exit'] == 0 and value['architecture'] == 'native_x64')
+            need(all(value[k] is not None for k in ('forced', 'sources_sha256', 'controller_sha256', 'python_sha256', 'powershell_file_sha256')))
+        raw = json.dumps(value, separators=(',', ':'), ensure_ascii=True).encode('ascii')
+        need(len(raw) <= 2048)
+        print('helper_owner_calibration=' + raw.decode('ascii'), flush=True)
+        return True
+    except BaseException:
+        return False
+
+
+def main():
+    value = dict(schema_version=1, scope='hosted_windows_x64_inert_descendant', result='failed', reason=None,
+        expected_failure=False, owner_sticky_failed=False, cleanup_complete=False, parent_exit=None, child_exit=None,
+        forced=None, architecture=None, sources_sha256=None, controller_sha256=None, python_sha256=None,
+        powershell_file_sha256=None)
+    phase, F, H, api, directory, directory_identity = 'host', None, None, None, None, None
+    release, ready, child, capture, process, primary = None, None, None, None, None, None
+    handles, hashes, normalized = [], {}, None
+    try:
+        need(len(sys.argv) == 1 and os.name == 'nt' and ctypes.sizeof(ctypes.c_void_p) == 8)
+        need(os.environ.get('GITHUB_ACTIONS') == 'true' and os.environ.get('RUNNER_OS') == 'Windows'
+             and os.environ.get('RUNNER_ARCH') == 'X64' and os.environ.get('RUNNER_ENVIRONMENT') == 'github-hosted')
+        phase = 'sources'
+        name = 'scripts/application-lab/helper_owner_fixture.py'
+        F = load('helper_owner_fixture', ROOT / name, SOURCE_PINS[name]['sha256'])
+        value['sources_sha256'] = verify_sources(F)
+        value['controller_sha256'] = F.digest(Path(__file__), 512*1024)
+        need(value['controller_sha256'] == SELF_SHA256)
+        H = load('calibration_http', HERE / 'run_windows_http.py', SOURCE_PINS['scripts/application-lab/run_windows_http.py']['sha256'])
+        H.loaded_sources_preserved()
+        phase = 'image'
+        api = F.Native()
+        current = api.identify(api.current())
+        api.x64(api.current())
+        image = F.read(current['image'], 32*1024*1024)
+        pe_x64(image)
+        value['python_sha256'] = hashlib.sha256(image).hexdigest()
+        powershell = H.powershell()
+        image = H.read(powershell, 32*1024*1024, allow_hardlinks=True)
+        pe_x64(image)
+        value['powershell_file_sha256'] = hashlib.sha256(image).hexdigest()
+        value['architecture'] = 'native_x64'
+        parent = Path(os.environ['RUNNER_TEMP']).absolute()
+        F.plain(parent, True)
+        directory = parent / ('helper-owner-' + uuid.uuid4().hex)
+        directory.mkdir()
+        info = F.plain(directory, True); directory_identity = (info.st_dev, info.st_ino)
+        release = api.event(); handles.append(release)
+        ready = api.event(); handles.append(ready)
+        need(release != ready and not api.wait(release, 0) and not api.wait(ready, 0))
+        expected = dict(schema_version=1, nonce=uuid.uuid4().hex, controller=current, python_sha256=value['python_sha256'],
+                        fixture_sha256=SOURCE_PINS[name]['sha256'], release=release, ready=ready)
+        F.request(expected)
+        request_path = directory / 'request.json'
+        F.publish(request_path, expected)
+        hashes['request.json'] = F.digest(request_path, 4096)
+        args = [current['image'], '-B', '-I', '-S', str(HERE / 'helper_owner_fixture.py'), 'parent', str(request_path)]
+        environment = {key: os.environ[key] for key in ('SYSTEMROOT', 'WINDIR', 'TEMP', 'TMP') if key in os.environ}
+        need(environment.get('SYSTEMROOT'))
+        phase = 'setup'
+        try:
+            H.O.run_setup(args, env=environment, timeout=20, failure_drain_seconds=5, capture_limit=4096, check=False)
+        except BaseException as error:
+            primary = error
+            phase = 'expected_failure'
+            process, capture = recover(H.O, error)
+            expected_failure(H.O, process, capture, error)
+            value['expected_failure'] = True
+            value['owner_sticky_failed'] = True
+            value['parent_exit'], value['forced'] = process.returncode, process.forced
+        else:
+            raise CalibrationError('calibration_failed')
+        phase = 'transfer'
+        transfer_path = directory / 'transfer.json'
+        transferred = F.record(transfer_path)
+        child = accept_transfer(F, api, transferred, expected); handles.append(child)
+        hashes['transfer.json'] = F.digest(transfer_path, 4096)
+        need(api.wait(ready, 0))
+        phase = 'admission'
+        admission(H.O, process, args, environment)
+    except BaseException:
+        value['reason'] = phase if phase in REASONS else 'unexpected'
+    finally:
+        if release is not None:
+            try:
+                normalized = observe_cleanup(api, release, child, capture)
+                value['child_exit'] = normalized['child_exit']
+                if value['reason'] is None:
+                    value['reason'] = normalized['error']
+            except BaseException:
+                if value['reason'] is None:
+                    value['reason'] = 'unexpected'
+        else:
+            value['reason'] = value['reason'] or 'release'
+        closed = True
+        # No wait is outstanding here; only validated or directly created handles are closed.
+        for handle in reversed(handles):
+            try:
+                api.close(handle)
+            except BaseException:
+                closed = False
+                value['reason'] = value['reason'] or 'handles'
+        try:
+            need(normalized is not None and normalized['complete'] and closed)
+            phase = 'preservation'
+            need(verify_sources(F) == value['sources_sha256'])
+            need(F.digest(Path(__file__), 512*1024) == value['controller_sha256'])
+            need(H.O._active is process and process.final_result is False and process.uncertain is True)
+            owner_handles_closed(process)
+            phase = 'temp_cleanup'
+            remove_owned(F, directory, directory_identity, hashes)
+            value['cleanup_complete'] = True
+        except BaseException:
+            value['reason'] = value['reason'] or (phase if phase in REASONS else 'unexpected')
+    try:
+        if primary is not None:
+            primary.__traceback__ = None
+    except BaseException:
+        pass
+    value['result'] = 'passed' if value['reason'] is None and value['expected_failure'] and value['cleanup_complete'] else 'failed'
+    printed = emit(value)
+    return 0 if printed and value['result'] == 'passed' else 1
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())
