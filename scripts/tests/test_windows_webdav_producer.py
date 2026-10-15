@@ -468,7 +468,9 @@ class ProducerTests(unittest.TestCase):
         for endpoint in ("https://127.0.0.1:23456/", "http://localhost:23456/", "http://127.0.0.1:65536/", "http://127.0.0.1:80/path"):
             with self.subTest(endpoint=endpoint), self.assertRaises(P.ProducerError):
                 P.config_bytes(endpoint, SECRET[0], SECRET[4])
-        self.assertEqual(len(P.E.HARNESS_FILES), 9)
+        self.assertEqual(len(P.E.HARNESS_FILES), 10)
+        self.assertEqual(len(set(P.E.HARNESS_FILES)), 10)
+        self.assertIn("scripts/application-lab/owned_helper_process.py", P.E.HARNESS_FILES)
         self.assertIn("scripts/application-lab/run_windows_http.py", P.E.HARNESS_FILES)
     def test_denial_truncation_error_is_specific_loopback_final_record(self):
         cause = "read metadata failed: 401 Unauthorized"
