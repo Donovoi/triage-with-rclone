@@ -869,6 +869,15 @@ pub fn browsers_with_sessions(provider: CloudProvider) -> Vec<(Browser, BrowserS
 mod tests {
     use super::*;
 
+    #[test]
+    fn legacy_pbkdf2_sha1_matches_known_answer() {
+        // RFC 6070, section 2: independent HMAC-SHA1 compatibility vector.
+        // Keep this cross-platform so Windows CI also checks the dependency pairing.
+        let mut key = [0u8; 20];
+        pbkdf2::pbkdf2_hmac::<sha1::Sha1>(b"password", b"salt", 1, &mut key);
+        assert_eq!(hex::encode(key), "0c60c80f961f0e71f3a9b524af6012062fe037a6");
+    }
+
     #[cfg(windows)]
     #[test]
     fn chromium_windows_decryption_matches_known_answer_and_rejects_tampering() {

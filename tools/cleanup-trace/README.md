@@ -1,39 +1,63 @@
 # Original runtime cleanup diagnostic
 
-The current manual target is the exact ARM64 library unit. Historical CLI
-artifact selection and validator modes remain readable. In library mode the
-legacy `--application-sha256` argument must equal the test-harness hash and is
-not emitted as a CLI application hash. No CLI executable is selected or invoked.
+The current manual target is the exact ARM64 CLI regression
+`cli_preserves_remote_identity_and_original_config`. Historical empty-listing
+and library artifact/validator modes remain readable. In library mode the
+legacy `--application-sha256` argument still must equal the test-harness hash
+and is not emitted as a CLI application hash. The new `--cli-acquisition` mode
+instead requires the actual CLI application hash and a distinct harness hash.
 
 This default-off developer feature observes the original runtime removal in one
-existing Windows ARM64 library regression. It does not fix cleanup, identify a holder,
+existing Windows ARM64 acquisition regression. It does not fix cleanup, identify a holder,
 or count as application/provider acceptance. Normal CI and release features are
 unchanged. Do not run it on a working PC.
 
 The manual-only **Original Windows runtime cleanup trace** workflow requires the
 exact reviewed commit. It builds with `runtime-cleanup-trace`, binds the tested
-library-test/runtime SHA-256, and invokes only
-`ui::runner::tests::test_main_menu_enter_download_sets_status` once.
-Compile-only Cargo JSON selects exactly the `rclone_triage` library test
-harness from this package's ARM64 release output with the trace feature. The
-workflow invokes that harness directly with the fixed selector and `--exact`;
-it does not rebuild or enumerate tests before execution. Dynamic provider discovery
-is explicitly `RCLONE_TRIAGE_DYNAMIC_PROVIDERS=1`, never the disabled shortcut.
-Runtime, harness
-and build-record hashes must remain unchanged. The validator requires one
+application/harness/runtime SHA-256, and invokes only the selected acquisition
+test once. Compile-only Cargo JSON selects exactly the `rclone-triage` application
+and `cli_acquisition` integration harness from this package's ARM64 release
+output with the trace feature and a final successful build record. The
+workflow first invokes its fixed `cleanup_diagnostics::tests::` pure-only filter,
+requires all five named forwarding unit tests to pass, then invokes the single
+acquisition test directly with the fixed selector and `--exact`;
+it does not rebuild or enumerate tests before execution. The fixture's existing
+compile-time application path, two-remote queue, inherited-environment isolation
+and assertions remain unchanged. No library-only dynamic-provider setting is
+borrowed: this CLI fixture removes inherited `RCLONE_*` variables.
+Runtime, application, harness, build record and source bindings must remain
+unchanged. A private pre-build record binds the commit/tree and application-entry
+and integration-test source hashes; clean tracked source and exact revision are
+checked around the build/test. The validator requires one
 completed, non-ignored named test with a result matching the actual native exit.
-The additional closed `execution` object binds the harness, build-record and
-stdout hashes; the previous validator invocation and record remain readable.
+The closed `execution` object binds those identities and the private stdout
+hash. The separate schema result names the same acquisition test and actual
+application, never a library executable. Missing/partial/mixed-mode bindings fail.
+The pure filter performs only in-memory byte projection and fake-writer checks;
+it cannot launch the application or trace. Both harness invocations share the
+existing three-minute observation step. Local preparation can compile these
+tests without executing the application, collector or integration harness.
 
 Raw build/test output stays private. Selection reads at most 16 MiB of Cargo JSON;
 validation reads at most 4 MiB from each test stream. These are post-exit read
 bounds, not disk-growth limits or process-cleanup guarantees. Only the bounded,
 closed Python-validated JSON is printed. No raw log is uploaded.
 The original test exit still controls failure even when its trace is valid.
-The unchanged library test and removal hook already emit the trace on stderr;
-no application invocation, forwarding or test assertion is changed. There is
-no retry or artifact publication. A successful instrumented cleanup is
+The selected test captures child stderr. A feature-only success-path forwarder
+copies each unique bounded trace/schema record to the private harness stderr;
+missing, duplicate or oversized records are not selected or truncated. Selection
+is independent, so missing/invalid schema output does not erase a valid original
+trace; the unchanged validator preserves that trace and fails the schema gate. Failure
+already prints the captured stderr through the original assertion, so it is not
+forwarded again. Writer failure is best effort and cannot change that assertion.
+The independent Python validator still owns record semantics. No application
+invocation, fixture, assertion or cleanup operation changes, and there is no
+retry or artifact publication. A successful instrumented cleanup is
 `not_reproduced`, never evidence of a fix. An unavailable trace fails the job.
+This isolated test does not reproduce the earlier full-suite ordering. If the
+failure does not recur it proves only that this instrumented invocation passed;
+it cannot identify the earlier holder. Schema1168, unknown events or ambiguous
+ends stay unavailable. No Restart Manager or other holder-discovery API is added.
 
 Registration uses the existing extraction file handle before child launch. The
 trace keeps no additional file or directory handle across removal. The hook runs
@@ -132,8 +156,9 @@ or malformed metadata cannot become available. No unsupported event and
 allocation failure without a TDH call remain distinct from a failed TDH status.
 Original failure and cleanup precedence is unchanged when metadata succeeds.
 
-Library-mode validation writes a separate create-only private schema result,
-binding the exact original-trace SHA256, commit, harness, build record and runtime,
+Library and closed acquisition modes write a separate create-only private schema result,
+binding the exact original-trace SHA256, commit, harness, build record and runtime;
+the acquisition mode additionally binds the actual application and source hashes,
 then prints its bounded sanitized representation. It never merges schema fields
 into original counts or reasons. Existing test/step supervision is unchanged:
 TDH has no timeout parameter, so one-call and byte bounds are not an API latency

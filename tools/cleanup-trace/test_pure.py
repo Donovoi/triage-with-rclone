@@ -1,5 +1,6 @@
 """Pure report validation only; never calls the native trace or application."""
 import json
+import re
 import contextlib
 import io
 import tempfile
@@ -176,7 +177,7 @@ class HarnessTests(unittest.TestCase):
     def test_workflow_fixed_single_call_and_matching_forwarding(self):
         root=Path(__file__).resolve().parents[2]
         workflow=(root/'.github/workflows/original-cleanup-trace.yml').read_text()
-        invocation=f'& $harness {V.LIBRARY_TEST} --exact --nocapture --test-threads=1 > $privateOut 2> $privateErr'
+        invocation=f'& $harness {V.ACQUISITION_TEST} --exact --nocapture --test-threads=1 > $privateOut 2> $privateErr'
         self.assertEqual(workflow.count(invocation),1)
         self.assertEqual(workflow.count('cargo test --locked --release'),1)
         self.assertIn('--no-run --message-format=json',workflow)
@@ -184,10 +185,10 @@ class HarnessTests(unittest.TestCase):
         self.assertIn('--test-stdout $privateOut --test-harness-sha256 $harnessHash --cargo-json-sha256 $cargoJsonHash',workflow)
         self.assertIn('if ($originalExit -ne 0) { exit $originalExit }',workflow)
         self.assertEqual(workflow.count('Get-FileHash -LiteralPath $harness'),2)
-        self.assertIn('--lib --no-run --message-format=json',workflow)
-        self.assertIn("RCLONE_TRIAGE_DYNAMIC_PROVIDERS: '1'",workflow)
-        self.assertIn('--library-unit --dynamic-providers $env:RCLONE_TRIAGE_DYNAMIC_PROVIDERS',workflow)
-        self.assertNotIn('$selected.application',workflow)
+        self.assertIn('--test cli_acquisition --no-run --message-format=json',workflow)
+        self.assertNotIn('RCLONE_TRIAGE_DYNAMIC_PROVIDERS',workflow)
+        self.assertIn('--cli-acquisition',workflow)
+        self.assertIn('$selected.application',workflow)
         source=(root/'rclone-triage/src/ui/runner.rs').read_text()
         unit=source[source.index('    fn test_main_menu_enter_download_sets_status()'):]
         unit=unit[:unit.index('    #[test]')]
@@ -604,6 +605,192 @@ class SchemaMetadataTests(unittest.TestCase):
                 self.assertEqual(failure,dict(schema=1,scope='original_cleanup_schema_diagnostic_only',status='invalid',
                     reason='schema_validation_failed',ownership_attributed=False,cleanup_fixed=False,provider_accepted=False))
                 self.assertNotIn('PRIVATE_CANARY',out.getvalue());self.assertFalse(schema.exists())
+
+
+class AcquisitionTests(unittest.TestCase):
+    def rows(self):
+        rows = artifacts()
+        for row in rows[:2]:
+            row['profile'].update(opt_level='3', debug_assertions=False, overflow_checks=False)
+        return rows
+
+    def binding(self):
+        return dict(application_sha256='b'*64, application_source_sha256='d'*64,
+                    test_source_sha256='e'*64, source_tree='f'*40)
+
+    def test_closed_feature_enabled_release_pair_and_complete_build(self):
+        rows = self.rows(); raw = cargo_bytes(rows)
+        selected = A.select(raw, ROOT, cli_acquisition=True)
+        self.assertEqual(selected['artifact_kind'], 'cli_acquisition')
+        self.assertEqual(selected['application'], rows[0]['executable'])
+        self.assertEqual(selected['test_harness'], rows[1]['executable'])
+        self.assertEqual(selected['cargo_json_sha256'], V.hashlib.sha256(raw).hexdigest())
+        self.assertEqual(selected['schema'], 3)
+        for index in (0, 1):
+            for field, bad in (('opt_level','0'),('debug_assertions',True),('overflow_checks',True)):
+                broken=self.rows();broken[index]['profile'][field]=bad
+                with self.subTest(index=index,field=field),self.assertRaises(ValueError):
+                    A.select(cargo_bytes(broken),ROOT,cli_acquisition=True)
+        for rows in (self.rows()+[dict(reason='compiler-message')], artifacts(),
+                     self.rows()[:1]+self.rows()[2:], self.rows()+self.rows()[:1]):
+            with self.assertRaises(ValueError): A.select(cargo_bytes(rows), ROOT, cli_acquisition=True)
+        with self.assertRaises(ValueError): A.select(raw, ROOT, True, True)
+
+    def test_wrong_target_feature_or_application_cannot_substitute(self):
+        for index in (0,1):
+            for field,bad in (('features',['default']),('executable',r'D:\private\other.exe'),
+                              ('filenames',[]),('manifest_path',ROOT+r'\other\Cargo.toml')):
+                rows=self.rows();rows[index][field]=bad
+                with self.subTest(index=index,field=field),self.assertRaises(ValueError):
+                    A.select(cargo_bytes(rows),ROOT,cli_acquisition=True)
+
+    def test_exact_acquisition_execution_never_labels_library_or_listing(self):
+        for code in (0,101):
+            stdout=harness_stdout(code).replace(V.EMPTY_TEST.encode(),V.ACQUISITION_TEST.encode())
+            result=V.validate_harness(stdout,code,'c'*64,SHA,cli_acquisition=True)
+            self.assertEqual(result['test'],V.ACQUISITION_TEST)
+            self.assertEqual(result['artifact_kind'],'cli_acquisition')
+            self.assertNotIn('dynamic_providers',result)
+            for wrong in (V.EMPTY_TEST,V.LIBRARY_TEST,'PRIVATE_CANARY'):
+                with self.assertRaises(ValueError):
+                    V.validate_harness(stdout.replace(V.ACQUISITION_TEST.encode(),wrong.encode()),code,'c'*64,SHA,cli_acquisition=True)
+            with self.assertRaises(ValueError):
+                V.validate_harness(stdout,code,'c'*64,SHA,True,'1',True)
+            with self.assertRaises(ValueError):
+                V.validate_harness(stdout,code,'c'*64,SHA,dynamic_providers='1',cli_acquisition=True)
+
+    def test_source_binding_is_closed_and_private_values_do_not_escape(self):
+        good=self.binding();self.assertEqual(V.validate_cli_binding(good),good)
+        for field in good:
+            for bad in (None,True,1,[],'PRIVATE_CANARY','A'*len(good[field]),good[field][1:]):
+                value=dict(good);value[field]=bad
+                with self.subTest(field=field,bad=bad),self.assertRaises(ValueError) as error:
+                    V.validate_cli_binding(value)
+                self.assertNotIn('PRIVATE_CANARY',str(error.exception))
+            value=dict(good);del value[field]
+            with self.assertRaises(ValueError):V.validate_cli_binding(value)
+        for value in (None,[],good|{'PRIVATE_CANARY':1}):
+            with self.assertRaises(ValueError):V.validate_cli_binding(value)
+
+    def run_cli(self, directory, code=0, unavailable=False, mutate=None, suffix=None):
+        trace=directory/'stderr';stdout=directory/'stdout';schema=directory/'schema'
+        x=record()
+        if code==0:x.update(status='not_reproduced',original_ok=True,os_code=None,target_identity_verified=False)
+        if unavailable:x.update(status='unavailable',reason='correlation_end_multiple',counts=None)
+        raw=b'runtime_cleanup_trace='+json.dumps(x).encode()+b'\n'
+        raw += suffix if suffix is not None else b'runtime_cleanup_schema='+json.dumps(schema_observation()).encode()+b'\n'
+        trace.write_bytes(raw)
+        stdout.write_bytes(harness_stdout(code).replace(V.EMPTY_TEST.encode(),V.ACQUISITION_TEST.encode()))
+        argv=['validator','--log',str(trace),'--test-exit',str(code),'--runtime-sha256',SHA,
+              '--application-sha256','b'*64,'--commit','a'*40,'--test-stdout',str(stdout),
+              '--test-harness-sha256','c'*64,'--cargo-json-sha256',SHA,'--cli-acquisition',
+              '--application-source-sha256','d'*64,'--test-source-sha256','e'*64,
+              '--source-tree','f'*40,'--schema-result',str(schema)]
+        if mutate:mutate(argv)
+        out=io.StringIO()
+        with mock.patch('sys.argv',argv),contextlib.redirect_stdout(out):status=V.main()
+        return status,out.getvalue(),x,schema
+
+    def test_success_failure_and_unavailable_keep_original_gates(self):
+        for code,unavailable,expected in ((0,False,0),(101,False,0),(0,True,1),(101,True,1)):
+            with self.subTest(code=code,unavailable=unavailable),tempfile.TemporaryDirectory() as directory:
+                status,text,trace,schema=self.run_cli(Path(directory),code,unavailable)
+                self.assertEqual(status,expected)
+                primary=json.loads(text.splitlines()[0]);diagnostic=json.loads(schema.read_bytes())
+                self.assertEqual(primary['trace'],trace)
+                self.assertEqual(primary['execution']['test_exit'],code)
+                self.assertEqual(primary['scope'],'original_cleanup_cli_acquisition_diagnostic_only')
+                self.assertEqual(primary['application_sha256'],'b'*64)
+                self.assertEqual(diagnostic['test'],V.ACQUISITION_TEST)
+                self.assertEqual(diagnostic['test_harness_sha256'],'c'*64)
+                for key,value in self.binding().items():
+                    self.assertEqual(primary['execution'][key],value);self.assertEqual(diagnostic[key],value)
+                for key in ('ownership_attributed','cleanup_fixed','provider_accepted'):
+                    self.assertIs(diagnostic[key],False)
+
+    def test_missing_binding_mislabeled_artifact_and_wrong_mode_fail_closed(self):
+        for flag in ('--application-source-sha256','--test-source-sha256','--source-tree',
+                     '--test-stdout','--test-harness-sha256','--cargo-json-sha256','--schema-result'):
+            def remove(argv):
+                index=argv.index(flag);del argv[index:index+2]
+            with self.subTest(flag=flag),tempfile.TemporaryDirectory() as directory:
+                status,text,_,schema=self.run_cli(Path(directory),mutate=remove)
+                self.assertEqual(status,2);self.assertFalse(schema.exists())
+                self.assertEqual(json.loads(text)['reason'],'validation_failed')
+        def replace(flag,value):
+            return lambda argv: argv.__setitem__(argv.index(flag)+1,value)
+        for mutate in (replace('--application-sha256','c'*64),replace('--test-source-sha256','PRIVATE_CANARY'),
+                       lambda argv: argv.extend(['--dynamic-providers','1']),
+                       lambda argv: argv.remove('--cli-acquisition')):
+            with tempfile.TemporaryDirectory() as directory:
+                status,text,_,schema=self.run_cli(Path(directory),mutate=mutate)
+                self.assertEqual(status,2);self.assertFalse(schema.exists());self.assertNotIn('PRIVATE_CANARY',text)
+
+    def test_missing_duplicate_or_bad_schema_cannot_hide_original_trace(self):
+        for suffix in (b'',b'runtime_cleanup_schema=PRIVATE_CANARY\n',
+                       b'runtime_cleanup_schema={}\nruntime_cleanup_schema={}\n'):
+            with self.subTest(suffix=suffix),tempfile.TemporaryDirectory() as directory:
+                status,text,trace,schema=self.run_cli(Path(directory),101,True,suffix=suffix)
+                self.assertEqual(status,2);self.assertFalse(schema.exists())
+                self.assertEqual(json.loads(text.splitlines()[0])['trace'],trace)
+                self.assertNotIn('PRIVATE_CANARY',text)
+                self.assertEqual(json.loads(text.splitlines()[1].split('=',1)[1])['reason'],'schema_validation_failed')
+
+
+class AcquisitionWorkflowTests(unittest.TestCase):
+    def check_workflow(self, text):
+        calls=re.findall(r'^\s*& \$harness (.*)$',text,re.M)
+        self.assertEqual(calls,['cleanup_diagnostics::tests:: --test-threads=1 > $forwardOut 2> $forwardErr',
+                               V.ACQUISITION_TEST+' --exact --nocapture --test-threads=1 > $privateOut 2> $privateErr'])
+        self.assertIn('$forwardExit -ne 0',text)
+        self.assertIn('running 5 tests',text)
+        self.assertIn('5 passed; 0 failed; 0 ignored;',text)
+        self.assertIn('$forwardCases -join',text);self.assertIn('$expectedForwardCases -join',text)
+        self.assertIn('--test cli_acquisition --no-run --message-format=json',text)
+        self.assertIn('github-hosted',text);self.assertIn('windows-11-arm',text)
+        self.assertIn('timeout-minutes: 3',text);self.assertIn('timeout-minutes: 40',text)
+        self.assertIn('--application-sha256 $applicationHash',text)
+        self.assertIn('--test-harness-sha256 $harnessHash',text)
+        for argument,value in (('application-source-sha256','application_source_sha256'),
+                               ('test-source-sha256','test_source_sha256'),('source-tree','source_tree')):
+            self.assertIn('--'+argument+' $source.'+value,text)
+        for path in ('$application','$harness','$runtime','$cargoJson'):
+            self.assertEqual(text.count('Get-FileHash -LiteralPath '+path+' -Algorithm SHA256'),2)
+        self.assertEqual(text.count('git diff --quiet HEAD --'),3)
+        self.assertIn("$actual -cne $env:EXPECTED_SHA",text)
+        self.assertIn("$actual -cne $source.commit",text)
+        self.assertIn("if ($originalExit -ne 0) { exit $originalExit }",text)
+        self.assertIn('exit $validationExit',text)
+        for forbidden in ('actions/upload-artifact','Get-Content -LiteralPath $privateErr',
+                          'Get-Content -LiteralPath $privateOut','--library-unit','RCLONE_TRIAGE_DYNAMIC_PROVIDERS'):
+            self.assertNotIn(forbidden,text)
+
+    def test_workflow_source_artifact_failure_and_privacy_boundaries(self):
+        root=Path(__file__).resolve().parents[2]
+        text=(root/'.github/workflows/original-cleanup-trace.yml').read_text()
+        self.check_workflow(text)
+        mutations=((V.ACQUISITION_TEST,V.LIBRARY_TEST),('--exact --nocapture','--nocapture'),
+                   ('--application-sha256 $applicationHash','--application-sha256 $harnessHash'),
+                   ('--test-source-sha256 $source.test_source_sha256',''),
+                   ('git diff --quiet HEAD --',''),('if ($originalExit -ne 0) { exit $originalExit }',''),
+                   ('exit $validationExit','exit 0'),('$actual -cne $env:EXPECTED_SHA','$false'),
+                   ('cleanup_diagnostics::tests:: --test-threads=1','unrelated_filter --test-threads=1'),
+                   ('$forwardExit -ne 0','$false'),('running 5 tests','running 0 tests'))
+        for before,after in mutations:
+            with self.subTest(before=before),self.assertRaises(AssertionError):
+                self.check_workflow(text.replace(before,after))
+        with self.assertRaises(AssertionError):self.check_workflow(text+'\nuses: actions/upload-artifact@private\n')
+
+    def test_success_only_forwarding_keeps_original_acquisition_assertions(self):
+        root=Path(__file__).resolve().parents[2]
+        source=(root/'rclone-triage/tests/cli_acquisition.rs').read_text()
+        unit=source.split('fn '+V.ACQUISITION_TEST+'() {',1)[1].split('\n#[test]',1)[0]
+        self.assertEqual(unit.count('fixture.acquire('),1)
+        self.assertEqual(unit.count('cleanup_diagnostics::forward('),1)
+        self.assertIn('if output.status.success() {\n        cleanup_diagnostics::forward(true,',unit)
+        self.assertIn('String::from_utf8_lossy(&output.stderr)',unit)
+        self.assertIn('assert_eq!(manifest["complete"], true)',unit)
+        self.assertIn('fixture.original',unit)
 
 
 if __name__=="__main__":unittest.main()

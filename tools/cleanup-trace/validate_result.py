@@ -222,6 +222,18 @@ def select(raw):
 
 EMPTY_TEST = "cli_imported_listing_empty_remote_publishes_explicit_empty_csv_schema"
 LIBRARY_TEST = "ui::runner::tests::test_main_menu_enter_download_sets_status"
+ACQUISITION_TEST = "cli_preserves_remote_identity_and_original_config"
+
+
+def validate_cli_binding(value):
+    keys = {"application_sha256", "application_source_sha256", "test_source_sha256", "source_tree"}
+    if type(value) is not dict or value.keys() != keys:
+        raise ValueError("acquisition_source_binding")
+    for key in keys:
+        width = 40 if key == "source_tree" else 64
+        if type(value[key]) is not str or re.fullmatch("[a-f0-9]{" + str(width) + "}", value[key]) is None:
+            raise ValueError("acquisition_source_binding")
+    return dict(value)
 
 
 def validate_schema(raw, trace):
@@ -314,7 +326,7 @@ def validate_schema(raw, trace):
     return x
 
 
-def schema_result(raw, trace, commit, harness_hash, cargo_hash, original_raw):
+def schema_result(raw, trace, commit, harness_hash, cargo_hash, original_raw, cli_binding=None):
     prefix = b"runtime_cleanup_schema="
     values = [line[len(prefix):] for line in raw.splitlines() if line.startswith(prefix)]
     if len(values) != 1:
@@ -325,12 +337,17 @@ def schema_result(raw, trace, commit, harness_hash, cargo_hash, original_raw):
                   original_trace_sha256=hashlib.sha256(original_raw).hexdigest(),
                   private_log_sha256=hashlib.sha256(raw).hexdigest(), observation=observation,
                   ownership_attributed=False, cleanup_fixed=False, provider_accepted=False)
+    if cli_binding is not None:
+        cli_binding = validate_cli_binding(cli_binding)
+        if cli_binding["application_sha256"] == harness_hash:
+            raise ValueError("distinct_cli_artifacts")
+        result.update(cli_binding, test=ACQUISITION_TEST)
     encoded=json.dumps(result,sort_keys=True,separators=(",",":")).encode("ascii")+b"\n"
     if len(encoded) + len(b"runtime_cleanup_schema_result=") > 8192: raise ValueError("schema_result_bound")
     return encoded
 
 
-def validate_harness(raw, test_exit, harness_sha256, cargo_json_sha256, library_unit=False, dynamic_providers=None):
+def validate_harness(raw, test_exit, harness_sha256, cargo_json_sha256, library_unit=False, dynamic_providers=None, cli_acquisition=False):
     """Bind one completed, non-ignored exact test; never publish libtest text."""
     if type(raw) is not bytes or not 0 < len(raw) <= 4*1024*1024:
         raise ValueError("stdout_bound")
@@ -339,9 +356,11 @@ def validate_harness(raw, test_exit, harness_sha256, cargo_json_sha256, library_
     if any(type(value) is not str or not re.fullmatch("[a-f0-9]{64}", value)
            for value in (harness_sha256, cargo_json_sha256)):
         raise ValueError("harness_binding")
+    if library_unit and cli_acquisition or cli_acquisition and dynamic_providers is not None:
+        raise ValueError("exclusive_harness_mode")
     if library_unit and dynamic_providers != "1":
         raise ValueError("dynamic_catalogue_required")
-    test = LIBRARY_TEST if library_unit else EMPTY_TEST
+    test = ACQUISITION_TEST if cli_acquisition else LIBRARY_TEST if library_unit else EMPTY_TEST
     lines = raw.decode("utf-8", errors="strict").splitlines()
     running = [line for line in lines if line.startswith("running ")]
     cases = [line for line in lines if line.startswith("test ") and not line.startswith("test result:")]
@@ -359,6 +378,8 @@ def validate_harness(raw, test_exit, harness_sha256, cargo_json_sha256, library_
             "feature": "runtime-cleanup-trace"}
     if library_unit:
         result.update(artifact_kind="library_test", dynamic_providers="1")
+    if cli_acquisition:
+        result.update(artifact_kind="cli_acquisition")
     return result
 
 
@@ -372,9 +393,14 @@ def main():
     parser.add_argument("--test-stdout", type=Path)
     parser.add_argument("--test-harness-sha256")
     parser.add_argument("--cargo-json-sha256")
-    parser.add_argument("--library-unit", action="store_true")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--library-unit", action="store_true")
+    mode.add_argument("--cli-acquisition", action="store_true")
     parser.add_argument("--dynamic-providers")
     parser.add_argument("--schema-result", type=Path)
+    parser.add_argument("--application-source-sha256")
+    parser.add_argument("--test-source-sha256")
+    parser.add_argument("--source-tree")
     args=parser.parse_args()
     try:
         if not re.fullmatch("[a-f0-9]{64}",args.application_sha256) or not re.fullmatch("[a-f0-9]{40}",args.commit):
@@ -383,22 +409,37 @@ def main():
         record=validate(select(raw),args.test_exit,args.runtime_sha256)
         result={"schema":1,"scope":"original_cleanup_diagnostic_only","commit":args.commit,"application_sha256":args.application_sha256,"private_log_sha256":hashlib.sha256(raw).hexdigest(),"trace":record,"provider_accepted":False,"cleanup_fixed":False}
         binding=(args.test_stdout,args.test_harness_sha256,args.cargo_json_sha256)
+        cli_binding = None
+        source_binding = (args.application_source_sha256, args.test_source_sha256, args.source_tree)
+        if args.cli_acquisition:
+            if any(v is None for v in binding) or args.schema_result is None or args.dynamic_providers is not None:
+                raise ValueError("acquisition_binding_required")
+            if args.application_sha256 == args.test_harness_sha256:
+                raise ValueError("distinct_cli_artifacts")
+            cli_binding = validate_cli_binding(dict(application_sha256=args.application_sha256,
+                application_source_sha256=args.application_source_sha256,
+                test_source_sha256=args.test_source_sha256, source_tree=args.source_tree))
+        elif any(v is not None for v in source_binding):
+            raise ValueError("acquisition_only_binding")
         if args.library_unit and (any(v is None for v in binding) or args.schema_result is None
                                   or args.application_sha256 != args.test_harness_sha256):
             raise ValueError("library_binding_required")
-        if not args.library_unit and (args.dynamic_providers is not None or args.schema_result is not None):
+        if not args.library_unit and not args.cli_acquisition and (args.dynamic_providers is not None or args.schema_result is not None):
             raise ValueError("library_only_binding")
         if any(value is not None for value in binding):
             if any(value is None for value in binding): raise ValueError("partial_harness_binding")
             with args.test_stdout.open("rb") as stream: stdout=stream.read(4*1024*1024+1)
-            result["execution"]=validate_harness(stdout,args.test_exit,args.test_harness_sha256,args.cargo_json_sha256,args.library_unit,args.dynamic_providers)
+            result["execution"]=validate_harness(stdout,args.test_exit,args.test_harness_sha256,args.cargo_json_sha256,args.library_unit,args.dynamic_providers,args.cli_acquisition)
+            if cli_binding is not None:
+                result["execution"].update(cli_binding)
+                result["scope"] = "original_cleanup_cli_acquisition_diagnostic_only"
         if args.library_unit:
             result["scope"]="original_cleanup_library_diagnostic_only"
             result.pop("application_sha256")  # The tested executable is libtest, not the CLI.
         print(json.dumps(result,sort_keys=True,separators=(",",":")))
-        if args.library_unit:
+        if args.library_unit or args.cli_acquisition:
             try:
-                encoded=schema_result(raw,record,args.commit,args.test_harness_sha256,args.cargo_json_sha256,select(raw))
+                encoded=schema_result(raw,record,args.commit,args.test_harness_sha256,args.cargo_json_sha256,select(raw),cli_binding)
                 with args.schema_result.open("xb") as stream: stream.write(encoded)
             except (OSError,ValueError,TypeError,KeyError,UnicodeError):
                 # Supplemental failure cannot erase a separately validated original trace.
