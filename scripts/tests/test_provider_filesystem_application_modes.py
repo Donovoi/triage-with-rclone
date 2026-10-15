@@ -66,13 +66,13 @@ class FilesystemApplicationModeTests(unittest.TestCase):
         self.assertFalse(self.row(report, key)["complete"])
         return report
 
-    def test_finite_filesystem_entries_have_no_completion_right(self):
+    def test_finite_filesystem_entries_are_eligible_without_receipt_overclaims(self):
         for key in FILESYSTEM:
             self.assertEqual(dict(C.APPLICATION_REGISTRY[key]), {
                 "module": "filesystem_application_evidence.py",
-                "producer": "application-lab/run_windows_filesystem.py", "can_complete_application": False})
+                "producer": "application-lab/run_windows_filesystem.py", "can_complete_application": True})
             with self.assertRaises(TypeError):
-                C.APPLICATION_REGISTRY[key]["can_complete_application"] = True
+                C.APPLICATION_REGISTRY[key]["can_complete_application"] = False
             helper = C.application_module(key=key)
             self.assertEqual(helper.MODE[key[0]], key[1])
             self.assertIs(helper.validate_receipt(receipt(key), RUNTIME, FILESYSTEM_BINDINGS, now=NOW)["claims"]["provider_accepted"], False)
@@ -90,10 +90,10 @@ class FilesystemApplicationModeTests(unittest.TestCase):
                     self.assertEqual(app["modes"][key[1]]["capabilities"], dict.fromkeys(CAPS, "passed"))
                     self.assertEqual(app["modes"][key[1]]["status"], "passed")
                     self.assertEqual(app["runs"][0]["bindings"], self.bindings[key])
-                    self.assertEqual(app["status"], "passed" if key == HTTP else "not_verified")
+                    self.assertEqual(app["status"], "not_verified" if key == DAV else "passed")
                 self.assertEqual(C.gate_errors(report, require_application=["http"]), [])
                 for key in FILESYSTEM:
-                    self.assertEqual(C.gate_errors(report, require_application=[key[0]]), ["required_application_not_verified"])
+                    self.assertEqual(C.gate_errors(report, require_application=[key[0]]), [])
                     self.assertFalse(self.row(report, key)["complete"])
                 self.assertFalse(report["all_complete"])
 
@@ -194,14 +194,14 @@ class FilesystemApplicationModeTests(unittest.TestCase):
                         if other != key:
                             self.assertEqual(C.gate_errors(report, require_application_modes=[other]), [])
 
-    def test_weakened_policy_cannot_promote_application_provider_or_other_tiers(self):
+    def test_application_eligibility_cannot_replace_protocol_or_other_tiers(self):
         for required in (sorted(CAPS), ["cleanup"]):
             self.policy["profiles"]["test"]["required"]["application"] = required
             report = self.evaluate([receipt(key) for key in FILESYSTEM])
             for key in FILESYSTEM:
                 row = self.row(report, key)
                 self.assertEqual(C.gate_errors(report, require_application_modes=[key]), [])
-                self.assertEqual(row["evidence"]["application"]["status"], "not_verified")
+                self.assertEqual(row["evidence"]["application"]["status"], "passed")
                 self.assertEqual(row["evidence"]["local_protocol"]["status"], "not_verified")
                 self.assertFalse(row["complete"])
             self.assertFalse(report["all_complete"])
@@ -273,7 +273,7 @@ class FilesystemApplicationModeTests(unittest.TestCase):
             load.assert_called_once_with(key=key)
             helper.compute_bindings.assert_called_once_with(C.ROOT, Path("never-executed.exe"), "d" * 40)
 
-    def test_cli_revalidates_raw_receipts_and_refuses_full_application_gate(self):
+    def test_cli_revalidates_raw_receipts_but_still_requires_protocol(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             policy, output = root / "policy.json", root / "report.json"
@@ -295,8 +295,9 @@ class FilesystemApplicationModeTests(unittest.TestCase):
                 result = json.loads(output.read_text())
                 self.assertFalse(result["all_complete"])
                 output.unlink()
-                self.assertEqual(C.main(args + ["--require-application", "local", "--require-application", "archive"]), 1)
-                self.assertEqual(json.loads(output.read_text())["gate_errors"], ["required_application_not_verified"])
+                self.assertEqual(C.main(args + ["--require-application", "local,archive",
+                                              "--require-fixtures", "local,archive"]), 1)
+                self.assertEqual(json.loads(output.read_text())["gate_errors"], ["required_fixture_not_verified"])
 
 
 if __name__ == "__main__":

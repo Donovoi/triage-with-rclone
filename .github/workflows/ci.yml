@@ -616,6 +616,126 @@ jobs:
           path: ${{ runner.temp }}/b2-validation.json
           if-no-files-found: error
           retention-days: 14
+  windows-swift:
+    name: Windows Swift token replacement experiment
+    needs: test
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        timeout-minutes: 2
+        with:
+          name: rclone-triage-windows
+          path: ${{ runner.temp }}/swift-build
+      - name: Check Swift token replacement and renewal denial with the Windows application
+        id: swift_cases
+        timeout-minutes: 8
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:GITHUB_ACTIONS -cne 'true' -or $env:RUNNER_ENVIRONMENT -cne 'github-hosted') { throw 'swift_hosted_required' }
+          $application = (Resolve-Path "$env:RUNNER_TEMP/swift-build/rclone-triage/target/release/rclone-triage.exe").Path
+          $buildCommit = (& git rev-parse --verify HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $buildCommit -cnotmatch '^[0-9a-f]{40}$' -or $env:GITHUB_SHA -cne $buildCommit) { throw 'swift_build_binding_failed' }
+          $expectedPins = (Get-FileHash -LiteralPath rclone-version.env -Algorithm SHA256).Hash
+          if ((Get-FileHash -LiteralPath "$env:RUNNER_TEMP/swift-build/rclone-version.env" -Algorithm SHA256).Hash -cne $expectedPins) { throw 'swift_runtime_binding_failed' }
+          $applicationHash = (Get-FileHash -LiteralPath $application -Algorithm SHA256).Hash.ToLowerInvariant()
+          python -B scripts/application-lab/run_windows_swift.py `
+            --application $application --application-sha256 $applicationHash --build-commit $buildCommit `
+            --report "$env:RUNNER_TEMP/swift.private.json"
+          if ($LASTEXITCODE -ne 0) { throw 'swift_cases_failed' }
+      - name: Independently validate Swift experiment evidence
+        id: swift_validation
+        if: ${{ !cancelled() && (steps.swift_cases.outcome == 'success' || steps.swift_cases.outcome == 'failure') }}
+        timeout-minutes: 3
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:GITHUB_ACTIONS -cne 'true' -or $env:RUNNER_ENVIRONMENT -cne 'github-hosted') { throw 'swift_hosted_required' }
+          $application = (Resolve-Path "$env:RUNNER_TEMP/swift-build/rclone-triage/target/release/rclone-triage.exe").Path
+          $buildCommit = (& git rev-parse --verify HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $buildCommit -cnotmatch '^[0-9a-f]{40}$' -or $env:GITHUB_SHA -cne $buildCommit) { throw 'swift_build_binding_failed' }
+          $expectedPins = (Get-FileHash -LiteralPath rclone-version.env -Algorithm SHA256).Hash
+          if ((Get-FileHash -LiteralPath "$env:RUNNER_TEMP/swift-build/rclone-version.env" -Algorithm SHA256).Hash -cne $expectedPins) { throw 'swift_runtime_binding_failed' }
+          python -B scripts/swift_application_evidence.py `
+            --receipt "$env:RUNNER_TEMP/swift.private.json" --application $application `
+            --build-commit $buildCommit --report "$env:RUNNER_TEMP/swift-validation.json"
+          if ($LASTEXITCODE -ne 0) { throw 'swift_evidence_failed' }
+      - name: Retain only normalized Swift experiment evidence
+        if: ${{ !cancelled() && (steps.swift_validation.outcome == 'success' || steps.swift_validation.outcome == 'failure') }}
+        timeout-minutes: 2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: swift-experiment-Windows
+          path: ${{ runner.temp }}/swift-validation.json
+          if-no-files-found: error
+          retention-days: 14
+  windows-webdav-bearer:
+    name: Windows WebDAV fixed-token rejection experiment
+    needs: test
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        timeout-minutes: 2
+        with:
+          name: rclone-triage-windows
+          path: ${{ runner.temp }}/webdav-bearer-build
+      - name: Check WebDAV fixed-token rejection with the Windows application
+        id: webdav_bearer_cases
+        timeout-minutes: 8
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:GITHUB_ACTIONS -cne 'true' -or $env:RUNNER_ENVIRONMENT -cne 'github-hosted') { throw 'webdav-bearer_hosted_required' }
+          $application = (Resolve-Path "$env:RUNNER_TEMP/webdav-bearer-build/rclone-triage/target/release/rclone-triage.exe").Path
+          $buildCommit = (& git rev-parse --verify HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $buildCommit -cnotmatch '^[0-9a-f]{40}$' -or $env:GITHUB_SHA -cne $buildCommit) { throw 'webdav-bearer_build_binding_failed' }
+          $expectedPins = (Get-FileHash -LiteralPath rclone-version.env -Algorithm SHA256).Hash
+          if ((Get-FileHash -LiteralPath "$env:RUNNER_TEMP/webdav-bearer-build/rclone-version.env" -Algorithm SHA256).Hash -cne $expectedPins) { throw 'webdav-bearer_runtime_binding_failed' }
+          $applicationHash = (Get-FileHash -LiteralPath $application -Algorithm SHA256).Hash.ToLowerInvariant()
+          python -B scripts/application-lab/run_windows_webdav_bearer.py `
+            --application $application --application-sha256 $applicationHash --build-commit $buildCommit `
+            --report "$env:RUNNER_TEMP/webdav-bearer.private.json"
+          if ($LASTEXITCODE -ne 0) { throw 'webdav_bearer_cases_failed' }
+      - name: Independently validate WebDAV fixed-token experiment evidence
+        id: webdav_bearer_validation
+        if: ${{ !cancelled() && (steps.webdav_bearer_cases.outcome == 'success' || steps.webdav_bearer_cases.outcome == 'failure') }}
+        timeout-minutes: 3
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:GITHUB_ACTIONS -cne 'true' -or $env:RUNNER_ENVIRONMENT -cne 'github-hosted') { throw 'webdav-bearer_hosted_required' }
+          $application = (Resolve-Path "$env:RUNNER_TEMP/webdav-bearer-build/rclone-triage/target/release/rclone-triage.exe").Path
+          $buildCommit = (& git rev-parse --verify HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $buildCommit -cnotmatch '^[0-9a-f]{40}$' -or $env:GITHUB_SHA -cne $buildCommit) { throw 'webdav-bearer_build_binding_failed' }
+          $expectedPins = (Get-FileHash -LiteralPath rclone-version.env -Algorithm SHA256).Hash
+          if ((Get-FileHash -LiteralPath "$env:RUNNER_TEMP/webdav-bearer-build/rclone-version.env" -Algorithm SHA256).Hash -cne $expectedPins) { throw 'webdav-bearer_runtime_binding_failed' }
+          python -B scripts/webdav_bearer_application_evidence.py `
+            --receipt "$env:RUNNER_TEMP/webdav-bearer.private.json" --application $application `
+            --build-commit $buildCommit --report "$env:RUNNER_TEMP/webdav-bearer-validation.json"
+          if ($LASTEXITCODE -ne 0) { throw 'webdav-bearer_evidence_failed' }
+      - name: Retain only normalized WebDAV fixed-token experiment evidence
+        if: ${{ !cancelled() && (steps.webdav_bearer_validation.outcome == 'success' || steps.webdav_bearer_validation.outcome == 'failure') }}
+        timeout-minutes: 2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: webdav-bearer-experiment-Windows
+          path: ${{ runner.temp }}/webdav-bearer-validation.json
+          if-no-files-found: error
+          retention-days: 14
   windows-filesystem:
     name: Windows filesystem (${{ matrix.backend }})
     needs: test
@@ -698,11 +818,18 @@ jobs:
           $runtime = (Resolve-Path rclone-triage/assets/rclone.exe).Path
           $buildCommit = (& git rev-parse --verify HEAD).Trim()
           if ($LASTEXITCODE -ne 0 -or $buildCommit -notmatch '^[0-9a-f]{40}$' -or $env:GITHUB_SHA -cne $buildCommit) { throw 'filesystem_build_binding_failed' }
+          $protocolReceipt = "$env:RUNNER_TEMP/filesystem-protocol.private.json"
+          if (Test-Path -LiteralPath $protocolReceipt) { throw 'filesystem_protocol_receipt_already_exists' }
+          python -B scripts/provider-lab/run_lab.py --rclone $runtime `
+            --backends $env:FILESYSTEM_BACKEND --report $protocolReceipt
+          if ($LASTEXITCODE -ne 0) { throw 'filesystem_protocol_failed' }
           python -B scripts/provider_coverage.py --rclone $runtime `
             --report "$env:RUNNER_TEMP/provider-evidence-windows-filesystem.json" `
+            --fixture-receipt $protocolReceipt `
             --application-receipt "$env:RUNNER_TEMP/filesystem.private.json" `
             --application $application --application-build-commit $buildCommit `
-            --require-plans --require-application-mode $mode
+            --require-plans --require-application-mode $mode `
+            --require-application $env:FILESYSTEM_BACKEND --require-fixtures $env:FILESYSTEM_BACKEND
           if ($LASTEXITCODE -ne 0) { throw 'filesystem_coverage_failed' }
       - name: Retain only validated filesystem evidence
         if: ${{ !cancelled() && (steps.filesystem_validation.outcome == 'success' || steps.filesystem_validation.outcome == 'failure') }}
@@ -847,7 +974,7 @@ jobs:
           retention-days: 14
   release:
     name: Publish Windows nightly
-    needs: [test, windows-filesystem, windows-b2, windows-architectures, audit, python-audit, smb-protocol, linux-provider-evidence, pcloud-oauth-feasibility, pcloud-oauth-authentication, gcs-oauth-lifecycle]
+    needs: [test, windows-filesystem, windows-b2, windows-swift, windows-architectures, audit, python-audit, smb-protocol, linux-provider-evidence, pcloud-oauth-feasibility, pcloud-oauth-authentication, gcs-oauth-lifecycle, windows-webdav-bearer]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:

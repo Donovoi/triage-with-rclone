@@ -1025,7 +1025,7 @@ fn compute_file_hash_cancellable<F: Fn() -> bool>(
                 }
                 hasher.update(&buffer[..read]);
             }
-            Ok(format!("{:x}", hasher.finalize()))
+            Ok(hex::encode(hasher.finalize()))
         }
         _ => bail!("Unsupported hash type: {}", hash_type),
     }
@@ -1677,6 +1677,17 @@ mod tests {
         assert_eq!(
             hash,
             "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
+        );
+    }
+
+    #[test]
+    fn test_compute_file_hash_sha1_known_answer() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("sha1-vector.txt");
+        fs::write(&file_path, b"abc").unwrap();
+        assert_eq!(
+            compute_file_hash(&file_path, "sha1").unwrap(),
+            "a9993e364706816aba3e25717850c26c9cd0d89d"
         );
     }
 

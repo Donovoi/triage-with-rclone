@@ -525,10 +525,153 @@ fn cli_imported_listing_missing_input_and_invalid_output_fail_without_publicatio
     );
 }
 
+#[cfg(feature = "runtime-cleanup-trace")]
+mod cleanup_diagnostics {
+    /// The failure assertion already emits stderr. Select each bounded record
+    /// independently; supplemental failure must not erase a valid original trace.
+    pub fn forward(success: bool, stderr: &[u8], writer: &mut impl std::io::Write) {
+        if !success || stderr.len() > 4 * 1024 * 1024 {
+            return;
+        }
+        let prefixes: [(&[u8], usize); 2] = [
+            (b"runtime_cleanup_trace=", 4096),
+            (b"runtime_cleanup_schema=", 8192),
+        ];
+        let mut selected = [None, None];
+        let mut invalid = [false, false];
+        for line in stderr.split(|byte| *byte == b'\n') {
+            let line = line.strip_suffix(b"\r").unwrap_or(line);
+            for (index, (prefix, limit)) in prefixes.iter().enumerate() {
+                if line.starts_with(prefix) {
+                    if invalid[index]
+                        || selected[index].is_some()
+                        || line.len() > prefix.len() + limit
+                    {
+                        invalid[index] = true;
+                        selected[index] = None;
+                    } else {
+                        selected[index] = Some(line);
+                    }
+                }
+            }
+        }
+        for line in selected.into_iter().flatten() {
+            if writer.write_all(line).is_err() || writer.write_all(b"\n").is_err() {
+                return;
+            }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::forward;
+
+        const PAIR: &[u8] = b"runtime_cleanup_trace={}\nruntime_cleanup_schema={}\n";
+
+        #[test]
+        fn success_forwards_only_the_pair() {
+            let mut input = b"PRIVATE_CANARY\n".to_vec();
+            input.extend_from_slice(PAIR);
+            input.extend_from_slice(b"PRIVATE_CANARY\n");
+            let mut output = Vec::new();
+            forward(true, &input, &mut output);
+            assert_eq!(output, PAIR);
+        }
+
+        #[test]
+        fn failure_does_not_duplicate_the_original_assertion_output() {
+            let mut output = Vec::new();
+            forward(false, PAIR, &mut output);
+            assert!(output.is_empty());
+        }
+
+        #[test]
+        fn missing_duplicate_and_oversized_records_are_not_selected() {
+            let trace = b"runtime_cleanup_trace={}\n".as_slice();
+            let schema = b"runtime_cleanup_schema={}\n".as_slice();
+            let cases = [
+                (b"PRIVATE_CANARY\n".to_vec(), b"".as_slice()),
+                (trace.to_vec(), trace),
+                (schema.to_vec(), schema),
+                ([PAIR, PAIR].concat(), b"".as_slice()),
+                (
+                    [PAIR, b"runtime_cleanup_schema=duplicate\n"].concat(),
+                    trace,
+                ),
+                ([PAIR, trace, trace].concat(), schema),
+                (
+                    [
+                        b"runtime_cleanup_trace=".as_slice(),
+                        &vec![b'x'; 4097],
+                        b"\nruntime_cleanup_schema={}\n",
+                    ]
+                    .concat(),
+                    schema,
+                ),
+                (
+                    [
+                        b"runtime_cleanup_trace={}\nruntime_cleanup_schema=".as_slice(),
+                        &vec![b'x'; 8193],
+                        b"\n",
+                    ]
+                    .concat(),
+                    trace,
+                ),
+                (vec![b'x'; 4 * 1024 * 1024 + 1], b"".as_slice()),
+            ];
+            for (input, expected) in cases {
+                let mut output = Vec::new();
+                forward(true, &input, &mut output);
+                assert_eq!(output, expected);
+            }
+        }
+
+        #[test]
+        fn exact_caps_and_crlf_are_preserved_without_truncation() {
+            let input = [
+                b"runtime_cleanup_trace=".as_slice(),
+                &vec![b'x'; 4096],
+                b"\r\nruntime_cleanup_schema=",
+                &vec![b'y'; 8192],
+                b"\r\n",
+            ]
+            .concat();
+            let mut output = Vec::new();
+            forward(true, &input, &mut output);
+            assert_eq!(
+                output.len(),
+                4096 + 8192
+                    + b"runtime_cleanup_trace=".len()
+                    + b"runtime_cleanup_schema=".len()
+                    + 2
+            );
+            assert!(!output.contains(&b'\r'));
+        }
+
+        #[test]
+        fn writer_failure_is_best_effort() {
+            struct Broken;
+            impl std::io::Write for Broken {
+                fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                    Err(std::io::Error::other("PRIVATE_CANARY"))
+                }
+                fn flush(&mut self) -> std::io::Result<()> {
+                    panic!("flush must not be called")
+                }
+            }
+            forward(true, PAIR, &mut Broken);
+        }
+    }
+}
+
 #[test]
 fn cli_preserves_remote_identity_and_original_config() {
     let fixture = Fixture::new();
     let output = fixture.acquire("Path,Remote,Size\nsame.txt,RemoteA,8\nsame.txt,RemoteB,8\n");
+    #[cfg(feature = "runtime-cleanup-trace")]
+    if output.status.success() {
+        cleanup_diagnostics::forward(true, &output.stderr, &mut std::io::stderr().lock());
+    }
     assert!(
         output.status.success(),
         "{}",
