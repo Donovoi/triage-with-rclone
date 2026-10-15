@@ -137,4 +137,78 @@ class EvidenceTests(unittest.TestCase):
         r = receipt(); r["cases"]["token_replacement"]["fixture"]["errors"] = ["private token canary"]; self.reject(r)
 
 
+
+def cancellation_receipt():
+    rows=[("grant","stat"),("head","stat"),("grant","copy_initial"),("head","copy_initial")]
+    rows += [(k,"copy_initial") for k in ("get_held","headers","chunk","prefix_released","chunk","cancel_armed","disconnected")]
+    events=[dict(ordinal=i+1,kind=k,role=role,status=200 if k in {"grant","head","headers","chunk"} else 0,
+        object_bytes=65536 if k=="chunk" else 0) for i,(k,role) in enumerate(rows)]
+    case=dict(status="passed",exit_code=1,runtime_sha256=RUNTIME["sha256"],continuity=None,failure_code=None,
+        observation=dict(kind="live_image",runtime_process_count=1,first_verified_bytes=65536,last_verified_bytes=131072),
+        fixture=dict(case="cancellation",requests=5,payload_bytes=131072,response_bytes=132352,source_preserved=True,errors=[],events=events),
+        checks=dict.fromkeys(E.CANCEL_CHECKS["cancellation"],True))
+    return dict(schema_version=2,scope=E.SCOPE,fixture_mode=E.CANCEL_MODE,backend="swift",platform="windows",created_at="2026-10-12T12:00:00Z",
+        runtime=deepcopy(RUNTIME),bindings=deepcopy(BINDINGS),cases={"cancellation":case},experiment=dict(status="passed",failure_code=None,
+        checks=dict.fromkeys(E.GROUP_CHECKS,True)),lifecycle_scope="content_verified_incomplete_transfer",claims=dict.fromkeys(E.CANCEL_FALSE_CLAIMS,False),
+        cleanup_complete=True,errors=[],result="passed",capabilities={"content_verified_cancellation":"passed","cleanup":"passed"})
+
+
+class CancellationEvidenceTests(unittest.TestCase):
+    def validate(self,r): return E.validate_cancellation_receipt(r,RUNTIME,BINDINGS,now=NOW)
+    def reject(self,r):
+        with self.assertRaises(E.A.ApplicationEvidenceError): self.validate(r)
+
+    def test_independent_literal_mode_oracle_and_legacy_is_not_relabelled(self):
+        self.assertIs(self.validate(cancellation_receipt())["cleanup_complete"],True)
+        self.assertEqual(E.cancellation_manifest()["sha256"],"2312394bd99545d9de131c24efb781e765ac1aec243f2ed9347597a793a415e9")
+        self.assertEqual(E.cancellation_manifest()["verified_prefixes"],[65536,131072])
+        self.reject(receipt())
+        with self.assertRaises(E.A.ApplicationEvidenceError): E.validate_receipt(cancellation_receipt(),RUNTIME,BINDINGS,now=NOW)
+        self.assertFalse(receipt()["claims"]["cancellation_verified"])
+
+    def test_all_required_flags_numbers_progress_and_no_retained_process_claim(self):
+        for key in E.CANCEL_CHECKS["cancellation"]:
+            for v in (False,None,1):
+                r=cancellation_receipt();r["cases"]["cancellation"]["checks"][key]=v;self.reject(r)
+        for key in ("runtime_process_count","first_verified_bytes","last_verified_bytes"):
+            for v in (True,0,262144,"private canary"):
+                r=cancellation_receipt();r["cases"]["cancellation"]["observation"][key]=v;self.reject(r)
+        for key,v in (("exit_code",0),("exit_code",True),("continuity",{"arm":proof("arm")}), ("runtime_sha256","f"*64)):
+            r=cancellation_receipt();r["cases"]["cancellation"][key]=v;self.reject(r)
+
+    def test_fixture_events_exact_counts_no_tail_or_renewal_credit(self):
+        for key,v in (("requests",6),("payload_bytes",262144),("source_preserved",False),("errors",["client_aborted"]),("response_bytes",True)):
+            r=cancellation_receipt();r["cases"]["cancellation"]["fixture"][key]=v;self.reject(r)
+        for mutation in ("reorder","extra","missing","wrong_role","wrong_kind","wrong_size"):
+            r=cancellation_receipt();ev=r["cases"]["cancellation"]["fixture"]["events"]
+            if mutation=="reorder":ev[6],ev[7]=ev[7],ev[6]
+            elif mutation=="extra":ev.append(dict(ev[-1]))
+            elif mutation=="missing":ev.pop()
+            elif mutation=="wrong_role":ev[-1]["role"]="stat"
+            elif mutation=="wrong_kind":ev[-1]["kind"]="private canary"
+            else:ev[6]["object_bytes"]=True
+            self.reject(r)
+        r=cancellation_receipt();r["cases"]["cancellation"]["fixture"]["events"][-1]["kind"]="held_teardown";self.validate(r)
+
+    def test_binding_age_group_cleanup_and_private_claims_fail_closed(self):
+        for key in BINDINGS:
+            r=cancellation_receipt();r["bindings"][key]="e"*64;self.reject(r)
+        for key,v in (("fixture_mode",E.MODE),("schema_version",True),("created_at","2020-01-01T00:00:00Z"),("cleanup_complete",False)):
+            r=cancellation_receipt();r[key]=v;self.reject(r)
+        for key in E.GROUP_CHECKS:
+            r=cancellation_receipt();r["experiment"]["checks"][key]=False;self.reject(r)
+        for key in E.CANCEL_FALSE_CLAIMS:
+            r=cancellation_receipt();r["claims"][key]=True;self.reject(r)
+        r=cancellation_receipt();r["cases"]["cancellation"]["observation"]["path"]="private canary";self.reject(r)
+
+    def test_failed_receipt_retains_partial_evidence_without_credit(self):
+        r=cancellation_receipt();c=r["cases"]["cancellation"]
+        c.update(status="failed",failure_code="cancellation_failed",exit_code=None,observation=None,runtime_sha256=None)
+        c["checks"]=dict.fromkeys(E.CANCEL_CHECKS["cancellation"],False)
+        r.update(errors=["cancellation_failed","cleanup_failed"],result="failed",cleanup_complete=False,
+            capabilities={"content_verified_cancellation":"not_verified","cleanup":"not_verified"})
+        r["experiment"].update(status="failed",failure_code="cancellation_failed",checks=dict.fromkeys(E.GROUP_CHECKS,False))
+        self.validate(r)
+
+
 if __name__ == "__main__": unittest.main()
