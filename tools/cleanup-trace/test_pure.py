@@ -300,6 +300,8 @@ class OwnershipTests(unittest.TestCase):
     def test_schema2_null_ownership_preserves_other_original_results(self):
         for reason in V.REASONS - {"none", "correlation_end_multiple"}:
             value = self.trace(); value.update(reason=reason, ownership=None)
+            if reason in {"initial_session_bounds_unverified", "final_bounds_proof_unverified"}:
+                value["bounded"] = False
             self.assertEqual(self.check(value)["reason"], reason)
         value = record(); value.update(schema=2, ownership=None)
         self.assertEqual(self.check(value)["status"], "observed")
