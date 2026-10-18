@@ -77,7 +77,7 @@ FALSE_CLAIMS = frozenset({"setup_verified", "interactive_login_verified", "authe
 FAILURE_CODES = A.FAILURE_CODES | {"authority_failed", "credential_transition_failed", "denial_failed",
                                    "truncation_failed", "group_failed"}
 HARNESS_FILES = (
-    "scripts/application_evidence.py", "scripts/webdav_application_evidence.py",
+    "scripts/application_evidence.py", "scripts/application_source_snapshot.py", "scripts/webdav_application_evidence.py",
     "scripts/application-lab/fixture_http.py", "scripts/application-lab/fixture_webdav.py",
     "scripts/application-lab/HostedConPtySession.cs", "scripts/application-lab/hosted_session.ps1",
     "scripts/application-lab/prepare_case.ps1", "scripts/application-lab/run_windows_http.py", "scripts/application-lab/owned_helper_process.py",
@@ -177,13 +177,13 @@ def runtime_binding(root):
     return {"version": values["RCLONE_VERSION"], "sha256": values["RCLONE_EXE_SHA256"], "platform": "windows"}
 
 
-def compute_bindings(root, application, build_commit):
+def compute_bindings(root, application, build_commit, *, _harness_files=None):
     """Fixed source names and literal manifest only; never receipt-directed imports."""
     root = Path(root)
     if A.file_hash(_BASE_PATH) != _BASE_SHA256 or A.file_hash(root / "scripts/application_evidence.py") != _BASE_SHA256:
         fail("webdav_shared_contract_changed")
-    bindings = A.compute_bindings(root, application, build_commit, fixture_manifest())
-    bindings["harness_sha256"] = A.tree_hash(root, HARNESS_FILES)
+    bindings = A.compute_bindings(root, application, build_commit, fixture_manifest(),
+        _harness_files=HARNESS_FILES if _harness_files is None else _harness_files)
     return bindings
 
 
