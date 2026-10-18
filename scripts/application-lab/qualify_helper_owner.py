@@ -27,7 +27,9 @@ REGISTRATION = """      - name: Check hosted x64 helper descendant ownership
 REASONS = frozenset({'host', 'sources', 'image', 'setup', 'expected_failure', 'transfer', 'admission',
     'release', 'child_exit', 'reader', 'handles', 'preservation', 'temp_cleanup', 'unexpected',
     'job_observation', 'job_quiescence'})
-CONTRACT = 'known_child_membership_job_quiescence_v2'
+CONTRACT = 'known_child_membership_bounded_job_quiescence_v3'
+QUIESCENCE_STATUSES = frozenset({'not_started', 'zero_observed', 'deadline_exhausted',
+    'observation_cap', 'query_failed', 'invalid_accounting', 'clock_failed', 'pace_failed'})
 
 
 class CalibrationError(ValueError):
@@ -56,6 +58,8 @@ class JobObservation:
         self.install_attempted = self.restore_attempted = self.restored = False
         self.query_attempted = self.close_attempted = False
         self.closed = self.member = None
+        self.query_count, self.quiescence_status = 0, 'not_started'
+        self.last_clock = self.within_cleanup_deadline = None
 
         def wrapper(native, handle):
             # Always call the original once, even on a repeated/foreign call.
@@ -121,14 +125,65 @@ class JobObservation:
             self.failed = True
             raise
 
-    def quiescence(self):
+    def quiescence(self, deadline, last_clock, clock=time.monotonic, pause=time.sleep):
+        """Observe one retained Job within the existing cleanup window, without retrying errors."""
+        def tick(before=False):
+            try:
+                self.last_clock = clock_value(self.last_clock, clock)
+            except BaseException:
+                self.within_cleanup_deadline = False
+                self.quiescence_status = 'clock_failed'
+                raise
+            self.within_cleanup_deadline = self.last_clock <= deadline
+            if self.last_clock > deadline or before and self.last_clock == deadline:
+                self.quiescence_status = 'deadline_exhausted'
+                raise CalibrationError('calibration_failed')
         try:
             need(not self.failed and self.restored and self.member is True and
                  self.job is not None and not self.query_attempted and not self.close_attempted)
             self.query_attempted = True
-            # A separate single observation, not a second owner finalization.
-            self.after = counts(self.original(self.native, self.job))
-            need(self.after[0] == 0 and self.after[1] >= self.before[1])
+            try:
+                need(type(deadline) in (int, float) and math.isfinite(deadline))
+                need(type(last_clock) in (int, float) and math.isfinite(last_clock))
+                self.last_clock = last_clock
+            except BaseException:
+                self.within_cleanup_deadline = False
+                self.quiescence_status = 'clock_failed'
+                raise
+            total = counts(self.before)[1]
+            for _ in range(201):
+                tick(before=True)
+                self.query_count += 1
+                try:
+                    sample = self.original(self.native, self.job)
+                except BaseException:
+                    self.quiescence_status = 'query_failed'
+                    raise
+                try:
+                    self.after = counts(sample)  # Keep sane late or contradictory counts.
+                except BaseException:
+                    self.quiescence_status = 'invalid_accounting'
+                    raise
+                tick()
+                if self.after[1] < total:
+                    self.quiescence_status = 'invalid_accounting'
+                    raise CalibrationError('calibration_failed')
+                total = self.after[1]
+                if self.after[0] == 0:
+                    self.quiescence_status = 'zero_observed'
+                    return
+                if self.query_count == 201:
+                    self.quiescence_status = 'observation_cap'
+                    raise CalibrationError('calibration_failed')
+                if self.last_clock == deadline:
+                    self.quiescence_status = 'deadline_exhausted'
+                    raise CalibrationError('calibration_failed')
+                try:
+                    pause(min(0.05, deadline - self.last_clock))
+                except BaseException:
+                    self.quiescence_status = 'pace_failed'
+                    raise
+                tick(before=True)
         except BaseException:
             self.failed = True
             raise
@@ -233,52 +288,84 @@ def admission(owner, process, args, environment):
         raise CalibrationError('calibration_failed')
 
 
-def remaining(deadline, clock):
+def clock_value(last_clock, clock):
     now = clock()
-    need(type(now) in (int, float) and math.isfinite(now) and deadline-10 <= now)
-    return max(0, deadline-now)
+    need(type(now) in (int, float) and math.isfinite(now))
+    need(last_clock is None or type(last_clock) in (int, float) and math.isfinite(last_clock) and now >= last_clock)
+    return now
+
+
+def advance_cleanup(result, clock):
+    """Carry one deadline and the latest valid clock through all cleanup operations."""
+    try:
+        need(result['deadline'] is not None and result['last_clock'] is not None)
+        result['last_clock'] = clock_value(result['last_clock'], clock)
+        result['within_deadline'] = result['within_deadline'] is True and result['last_clock'] <= result['deadline']
+        return max(0, result['deadline'] - result['last_clock']) if result['within_deadline'] else 0
+    except BaseException:
+        result['within_deadline'] = False
+        raise
 
 
 def observe_cleanup(api, release, child, capture, clock=time.monotonic):
     """One signal, one child wait, one remaining-time existing reader join. No kill."""
-    result = dict(released=False, child_exit=None, reader_closed=False, complete=False, error=None)
+    result = dict(released=False, child_exit=None, reader_closed=False, complete=False, error=None,
+                  deadline=None, last_clock=None, within_deadline=None)
     def failed(reason):
         if result['error'] is None:
             result['error'] = reason
+    try:
+        start = clock_value(None, clock)
+        deadline = start + 10
+        need(math.isfinite(deadline) and deadline > start)
+        result.update(deadline=deadline, last_clock=start, within_deadline=True)
+    except BaseException:
+        result['within_deadline'] = False
+        failed('unexpected')
     try:
         api.signal(release)
         result['released'] = True
     except BaseException:
         failed('release')
     try:
-        start = clock()
-        need(type(start) in (int, float) and math.isfinite(start))
-        deadline = start + 10
+        advance_cleanup(result, clock)
     except BaseException:
         failed('unexpected')
-        return result
     if child is not None:
         try:
-            need(api.wait(child, int(remaining(deadline, clock)*1000)))
-            code = api.exit_code(child)
-            need(type(code) is int and 0 <= code < 2**32)
-            result['child_exit'] = code
-            need(code == 0)
+            seconds = advance_cleanup(result, clock)
+            need(seconds > 0)
+            try:
+                exited = api.wait(child, int(seconds*1000))
+                if exited:
+                    code = api.exit_code(child)
+                    need(type(code) is int and 0 <= code < 2**32)
+                    result['child_exit'] = code
+            finally:
+                advance_cleanup(result, clock)
+            need(exited and result['within_deadline'] is True and result['child_exit'] == 0)
         except BaseException:
             failed('child_exit')
     else:
         failed('child_exit')
     if capture is not None:
         try:
-            capture.thread.join(remaining(deadline, clock))
-            need(capture.thread.is_alive() is False and capture.eof is True and capture.failed is False and capture.overflow is False)
-            need(capture.snapshot() == b'' and capture.pipe.closed is True and capture.pipe.handle.users == 0)
-            result['reader_closed'] = True
+            seconds = advance_cleanup(result, clock)
+            need(seconds > 0)
+            try:
+                capture.thread.join(seconds)
+                need(capture.thread.is_alive() is False and capture.eof is True and capture.failed is False and capture.overflow is False)
+                need(capture.snapshot() == b'' and capture.pipe.closed is True and capture.pipe.handle.users == 0)
+                result['reader_closed'] = True
+            finally:
+                advance_cleanup(result, clock)
+            need(result['within_deadline'] is True)
         except BaseException:
             failed('reader')
     else:
         failed('reader')
-    result['complete'] = result['released'] and result['child_exit'] == 0 and result['reader_closed'] and result['error'] is None
+    result['complete'] = (result['released'] and result['child_exit'] == 0 and result['reader_closed'] and
+                          result['within_deadline'] is True and result['error'] is None)
     return result
 
 
@@ -300,14 +387,17 @@ def emit(value):
         need(set(value) == {'schema_version', 'scope', 'result', 'reason', 'expected_failure', 'owner_sticky_failed',
             'cleanup_complete', 'parent_exit', 'child_exit', 'forced', 'architecture', 'sources_sha256',
             'controller_sha256', 'python_sha256', 'powershell_file_sha256', 'contract', 'child_in_job',
-            'before_active', 'before_total', 'final_active', 'final_total', 'query_job_closed', 'observation_complete'})
+            'before_active', 'before_total', 'final_active', 'final_total', 'query_job_closed', 'observation_complete',
+            'query_count', 'within_cleanup_deadline', 'quiescence_status'})
         need(value['reason'] is None or value['reason'] in REASONS)
-        need(type(value['schema_version']) is int and value['schema_version'] == 2 and value['contract'] == CONTRACT)
+        need(type(value['schema_version']) is int and value['schema_version'] == 3 and value['contract'] == CONTRACT)
+        need(type(value['query_count']) is int and 0 <= value['query_count'] <= 201)
+        need(type(value['quiescence_status']) is str and value['quiescence_status'] in QUIESCENCE_STATUSES)
         need(value['scope'] == 'hosted_windows_x64_inert_descendant' and value['result'] in {'passed', 'failed'})
         need(value['architecture'] in {None, 'native_x64'})
         for key in ('expected_failure', 'owner_sticky_failed', 'cleanup_complete', 'observation_complete'):
             need(type(value[key]) is bool)
-        for key in ('forced', 'child_in_job', 'query_job_closed'):
+        for key in ('forced', 'child_in_job', 'query_job_closed', 'within_cleanup_deadline'):
             need(value[key] is None or type(value[key]) is bool)
         for key in ('parent_exit', 'child_exit', 'before_active', 'before_total', 'final_active', 'final_total'):
             need(value[key] is None or type(value[key]) is int and 0 <= value[key] < 2**32)
@@ -317,6 +407,7 @@ def emit(value):
         if value['observation_complete']:
             need(value['child_in_job'] is True and value['query_job_closed'] is True and value['final_active'] == 0)
             need(value['before_total'] is not None and value['final_total'] >= value['before_total'])
+            need(value['query_count'] > 0 and value['quiescence_status'] == 'zero_observed' and value['within_cleanup_deadline'] is True)
         for key in ('sources_sha256', 'controller_sha256', 'python_sha256', 'powershell_file_sha256'):
             need(value[key] is None or type(value[key]) is str and re.fullmatch('[0-9a-f]{64}', value[key]))
         if value['result'] == 'passed':
@@ -333,11 +424,12 @@ def emit(value):
 
 
 def main():
-    value = dict(schema_version=2, contract=CONTRACT, scope='hosted_windows_x64_inert_descendant', result='failed', reason=None,
+    value = dict(schema_version=3, contract=CONTRACT, scope='hosted_windows_x64_inert_descendant', result='failed', reason=None,
         expected_failure=False, owner_sticky_failed=False, cleanup_complete=False, parent_exit=None, child_exit=None,
         forced=None, architecture=None, sources_sha256=None, controller_sha256=None, python_sha256=None,
         powershell_file_sha256=None, child_in_job=None, before_active=None, before_total=None,
-        final_active=None, final_total=None, query_job_closed=None, observation_complete=False)
+        final_active=None, final_total=None, query_job_closed=None, observation_complete=False,
+        query_count=0, within_cleanup_deadline=None, quiescence_status='not_started')
     phase, F, H, api, directory, directory_identity = 'host', None, None, None, None, None
     release, ready, child, capture, process, primary = None, None, None, None, None, None
     handles, hashes, normalized, observation = [], {}, None, None
@@ -417,7 +509,7 @@ def main():
     finally:
         if release is not None:
             try:
-                normalized = observe_cleanup(api, release, child, capture)
+                normalized = observe_cleanup(api, release, child, capture, clock=time.monotonic)
                 value['child_exit'] = normalized['child_exit']
                 if value['reason'] is None:
                     value['reason'] = normalized['error']
@@ -434,25 +526,43 @@ def main():
             except BaseException:
                 closed = False
                 value['reason'] = value['reason'] or 'handles'
+            try:
+                need(normalized is not None)
+                advance_cleanup(normalized, time.monotonic)
+            except BaseException:
+                value['reason'] = value['reason'] or 'handles'
         quiet = False
         try:
-            need(normalized is not None and normalized['complete'] and closed)
             phase = 'job_quiescence'
+            need(normalized is not None and normalized['complete'] and normalized['within_deadline'] is True and closed)
             need(observation is not None)
-            observation.quiescence()
+            observation.quiescence(normalized['deadline'], normalized['last_clock'], clock=time.monotonic, pause=time.sleep)
             quiet = True
         except BaseException:
             value['reason'] = value['reason'] or (phase if phase in REASONS else 'unexpected')
         finally:
             if observation is not None:
+                if observation.last_clock is not None:
+                    normalized['last_clock'] = observation.last_clock
+                if normalized is not None and observation.within_cleanup_deadline is False:
+                    normalized['within_deadline'] = False
                 observation.restore()  # No-op after the one protected restoration.
                 observation.close()
+                try:
+                    need(normalized is not None)
+                    advance_cleanup(normalized, time.monotonic)
+                except BaseException:
+                    value['reason'] = value['reason'] or 'job_quiescence'
                 value['child_in_job'], value['query_job_closed'] = observation.member, observation.closed
+                value['query_count'], value['quiescence_status'] = observation.query_count, observation.quiescence_status
                 if observation.before is not None:
                     value['before_active'], value['before_total'] = observation.before
                 if observation.after is not None:
                     value['final_active'], value['final_total'] = observation.after
-                value['observation_complete'] = bool(quiet and not observation.failed and observation.closed is True)
+                value['observation_complete'] = bool(quiet and not observation.failed and observation.closed is True and
+                    normalized is not None and normalized['within_deadline'] is True)
+            if normalized is not None:
+                value['within_cleanup_deadline'] = normalized['within_deadline']
         try:
             need(value['observation_complete'])
             phase = 'preservation'
