@@ -184,6 +184,7 @@ pub fn export_listing_xlsx(entries: &[FileEntry], path: impl AsRef<Path>) -> Res
 #[cfg(test)]
 mod tests {
     use super::*;
+    use calamine::{open_workbook_auto, Data, Reader};
     use chrono::{DateTime, Utc};
 
     #[test]
@@ -321,5 +322,107 @@ mod tests {
 
         export_listing_xlsx(&[entry], &xlsx_path).unwrap();
         assert!(xlsx_path.exists());
+    }
+
+    #[test]
+    fn xlsx_round_trip_preserves_literal_names_exact_sizes_and_queue_columns() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("listing.xlsx");
+        crate::utils::private_fs::write(&path, b"earlier listing").unwrap();
+        let names = [
+            "=1+1",
+            "+literal.txt",
+            "-literal.txt",
+            "@literal.txt",
+            "'literal.txt",
+            " leading \u{96ea}.txt ",
+        ];
+        let sizes = [
+            Some(9_007_199_254_740_993),
+            Some(u64::MAX),
+            Some(0),
+            None,
+            Some(42),
+            Some(999),
+        ];
+        let entries: Vec<_> = names
+            .iter()
+            .zip(sizes)
+            .enumerate()
+            .map(|(index, (name, size))| FileEntry {
+                path: (*name).into(),
+                size,
+                modified: Some(DateTime::<Utc>::from(std::time::SystemTime::UNIX_EPOCH)),
+                is_dir: false,
+                hash: Some("00112233445566778899aabbccddeeff".into()),
+                hash_type: Some("md5".into()),
+                remote_name: (index != 3).then(|| "+synthetic-remote".into()),
+            })
+            .collect();
+
+        export_listing_xlsx(&entries, &path).unwrap();
+        crate::utils::private_fs::open_private(&path).unwrap();
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+
+        let mut workbook = open_workbook_auto(&path).unwrap();
+        let listing = workbook.worksheet_range("Listing").unwrap();
+        let headers = [
+            "Remote", "Path", "Size", "Modified", "IsDir", "Hash", "HashType",
+        ];
+        for (column, header) in headers.iter().enumerate() {
+            assert_eq!(
+                listing.get_value((0, column as u32)),
+                Some(&Data::String((*header).into()))
+            );
+        }
+        for (index, entry) in entries.iter().enumerate() {
+            let row = (index + 1) as u32;
+            assert_eq!(
+                listing.get_value((row, 1)),
+                Some(&Data::String(entry.path.clone()))
+            );
+            let expected_size = entry
+                .size
+                .map(|size| Data::String(size.to_string()))
+                .unwrap_or(Data::Empty);
+            assert_eq!(listing.get_value((row, 2)), Some(&expected_size));
+            assert_eq!(
+                listing.get_value((row, 3)),
+                Some(&Data::String("1970-01-01T00:00:00+00:00".into()))
+            );
+            assert_eq!(listing.get_value((row, 4)), Some(&Data::Bool(false)));
+        }
+        assert!(workbook
+            .worksheet_formula("Listing")
+            .unwrap()
+            .cells()
+            .all(|(_, _, formula)| formula.is_empty()));
+        drop(workbook);
+
+        let imported = crate::files::queue::read_download_queue(&path).unwrap();
+        assert_eq!(imported.len(), entries.len());
+        for (actual, expected) in imported.iter().zip(&entries) {
+            assert_eq!(actual.path, expected.path);
+            assert_eq!(actual.size, expected.size);
+            assert_eq!(actual.remote_name, expected.remote_name);
+            assert_eq!(actual.hash, expected.hash);
+            assert_eq!(actual.hash_type, expected.hash_type);
+            assert!(!actual.is_dir);
+        }
+    }
+
+    #[test]
+    fn xlsx_refused_replacement_preserves_previous_bytes_without_staging_leftovers() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("existing.xlsx");
+        std::fs::write(&path, b"earlier workbook").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        }
+        assert!(export_listing_xlsx(&[], &path).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"earlier workbook");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
     }
 }
