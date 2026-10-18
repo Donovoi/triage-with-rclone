@@ -62,10 +62,9 @@ def source_binding(application, application_sha, build_commit):
     H.need(H.sha(H.read(Path(__file__), 512 * 1024)) == SELF_SHA256 and
            all(H.sha(H.read(module.__file__, 512 * 1024)) == module.loaded_source_sha256
                for module in (T, N, O, F, T.H, T.S, F.F)), "preservation_failed")
-    result = H.E.compute_bindings(H.ROOT, application, build_commit, H.fixture_manifest())
+    result = H.E.compute_bindings(H.ROOT, application, build_commit, H.fixture_manifest(), _tui_harness_files=HARNESS)
     H.need(result["application_sha256"] == application_sha and os.environ.get("GITHUB_SHA") == build_commit,
            "binding_failed")
-    result["tui_harness_sha256"] = H.E.tree_hash(H.ROOT, HARNESS)
     return result
 
 

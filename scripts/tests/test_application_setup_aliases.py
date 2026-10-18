@@ -61,7 +61,7 @@ class SetupAliasTests(unittest.TestCase):
              mock.patch.object(H, "setup_environment", return_value={"SYNTHETIC": "1"}), \
              mock.patch.object(H, "powershell", return_value="fixed-system-powershell"), \
              mock.patch.object(H, "hidden", return_value={}), \
-             mock.patch.object(H.subprocess, "run", return_value=types.SimpleNamespace(
+             mock.patch.object(H.O, "run_setup", return_value=types.SimpleNamespace(
                  returncode=0, stdout=output)) as child:
             for name in HTTP + WEBDAV + ("webdav-credential-setup", "webdav-credentials", "app-webdav-" + "b" * 32):
                 self.assertEqual(H.prepare(parent, name), parent / name)
@@ -69,7 +69,29 @@ class SetupAliasTests(unittest.TestCase):
                     "-NonInteractive", "-File", str(H.HERE / "prepare_case.ps1"),
                     "-Action", "Create", "-Parent", str(parent), "-Name", name])
                 self.assertEqual(child.call_args.kwargs["timeout"], 20)
-                self.assertEqual(child.call_args.kwargs["env"], {"SYNTHETIC": "1"})
+                self.assertEqual(child.call_args.kwargs, dict(timeout=20, check=False,
+                    env={"SYNTHETIC": "1"}, stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL))
+                self.assertEqual(child.call_count, 1)
+                child.reset_mock()
+
+
+    def test_owned_setup_rejection_keeps_closed_setup_failure(self):
+        parent = Path("synthetic-parent").absolute()
+        with mock.patch.object(H, "hosted_guard"), mock.patch.object(H, "identity", return_value=(1, 2)), \
+             mock.patch.object(H, "setup_environment", return_value={"SYNTHETIC": "1"}), \
+             mock.patch.object(H, "powershell", return_value="fixed-system-powershell"), \
+             mock.patch.object(H, "hidden", return_value={}), \
+             mock.patch.object(H, "setup_diagnostic") as diagnostic, \
+             mock.patch.object(H.O, "run_setup", side_effect=H.O.OwnershipError()) as child:
+            with self.assertRaisesRegex(H.ProducerError, "^case_setup_failed$"):
+                H.prepare(parent, "listing")
+            child.assert_called_once_with(["fixed-system-powershell", "-NoProfile",
+                "-NonInteractive", "-File", str(H.HERE / "prepare_case.ps1"),
+                "-Action", "Create", "-Parent", str(parent), "-Name", "listing"],
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                timeout=20, check=False, env={"SYNTHETIC": "1"})
+            diagnostic.assert_called_once_with("ownership_failed", "Create", "listing", None, None)
 
 
 if __name__ == "__main__":

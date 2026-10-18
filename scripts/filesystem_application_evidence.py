@@ -96,8 +96,7 @@ def compute_bindings(root, application, build_commit):
     _need(A.file_hash(HERE / "application_evidence.py") == _BASE_SHA and
           A.file_hash(HERE / "application-lab/fixture_filesystem.py") == _FIXTURE_SHA,
           "filesystem_contract_changed")
-    result = A.compute_bindings(root, application, build_commit, fixture_manifest())
-    result["harness_sha256"] = A.tree_hash(root, HARNESS_FILES)
+    result = A.compute_bindings(root, application, build_commit, fixture_manifest(), _harness_files=HARNESS_FILES)
     return result
 
 
