@@ -12,6 +12,7 @@ import math
 from pathlib import Path
 import re
 import stat
+import types
 
 
 SCOPE = "windows_hosted_application"
@@ -42,12 +43,12 @@ FAILURE_CODES = frozenset({"binding_failed", "case_setup_failed", "session_faile
                            "preservation_failed", "cancellation_failed", "cleanup_failed",
                            "unexpected_failure"})
 HARNESS_FILES = (
-    "scripts/application_evidence.py",
+    "scripts/application_evidence.py", "scripts/application_source_snapshot.py",
     "scripts/application-lab/fixture_http.py",
     "scripts/application-lab/HostedConPtySession.cs",
     "scripts/application-lab/hosted_session.ps1",
     "scripts/application-lab/prepare_case.ps1",
-    "scripts/application-lab/run_windows_http.py",
+    "scripts/application-lab/run_windows_http.py", "scripts/application-lab/owned_helper_process.py",
 )
 BINDING_KEYS = frozenset({"application_sha256", "application_source_sha256", "build_commit",
                          "build_target", "build_profile", "cargo_lock_sha256",
@@ -103,42 +104,65 @@ def tree_hash(root, names):
     return hashlib.sha256(compact(rows)).hexdigest()
 
 
-def application_source_hash(root):
-    root = Path(root)
-    source = root / "rclone-triage" / "src"
-    names = ["rclone-triage/Cargo.toml", "rclone-triage/Cargo.lock", "rclone-triage/build.rs",
-             "rclone-triage/.cargo/config.toml"]
+_SOURCE_PATH = Path(__file__).absolute().with_name("application_source_snapshot.py")
+with plain_file(_SOURCE_PATH).open("rb") as _source_stream:
+    _SOURCE_BYTES = _source_stream.read(128 * 1024 + 1)
+if not 0 < len(_SOURCE_BYTES) <= 128 * 1024:
+    fail("application_source_helper_invalid")
+_SOURCE_SHA = hashlib.sha256(_SOURCE_BYTES).hexdigest()
+SOURCE = types.ModuleType("application_declared_source_policy")
+SOURCE.__file__ = str(_SOURCE_PATH)
+exec(compile(_SOURCE_BYTES, str(_SOURCE_PATH), "exec"), SOURCE.__dict__)
+
+
+def source_helper_preserved(root):
     try:
-        for path in source.rglob("*"):
-            # Validate directories too; rglob must not hide a linked source tree.
-            info = path.lstat()
-            if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
-                fail("application_binding_reparse_path")
-            if path.is_file():
-                names.append(path.relative_to(root).as_posix())
-    except OSError:
-        fail("application_source_unreadable")
-    if len(names) == 4:
-        fail("application_source_empty")
-    return tree_hash(root, names)
+        if (SOURCE.read_file(_SOURCE_PATH) != _SOURCE_SHA or
+                SOURCE.read_file(Path(root) / "scripts/application_source_snapshot.py") != _SOURCE_SHA):
+            fail("application_source_helper_changed")
+    except SOURCE.SourceSnapshotError:
+        fail("application_source_helper_changed")
 
 
-def compute_bindings(root, application, build_commit, fixture_manifest):
+def application_source_hash(root):
+    source_helper_preserved(root)
+    try:
+        rows = SOURCE.source_rows(root)
+    except SOURCE.SourceSnapshotError:
+        fail("application_source_invalid")
+    source_helper_preserved(root)
+    return hashlib.sha256(compact(rows)).hexdigest()
+
+
+def compute_bindings(root, application, build_commit, fixture_manifest, *, _harness_files=None, _tui_harness_files=None):
     """Read current files only. This function never runs an application/runtime."""
     if not isinstance(build_commit, str) or not re.fullmatch(r"[0-9a-f]{40}", build_commit):
         fail("application_build_commit_invalid")
     root = Path(root)
-    return {
+    source_helper_preserved(root)
+    try:
+        source = SOURCE.Snapshot(root)
+    except SOURCE.SourceSnapshotError:
+        fail("application_source_invalid")
+    result = {
         "application_sha256": file_hash(application),
-        "application_source_sha256": application_source_hash(root),
+        "application_source_sha256": hashlib.sha256(compact(source.rows)).hexdigest(),
         "build_commit": build_commit,
         "build_target": "x86_64-pc-windows-msvc",
         "build_profile": "release",
         "cargo_lock_sha256": file_hash(root / "rclone-triage/Cargo.lock"),
         "runtime_manifest_sha256": file_hash(root / "rclone-version.env"),
-        "harness_sha256": tree_hash(root, HARNESS_FILES),
+        "harness_sha256": tree_hash(root, HARNESS_FILES if _harness_files is None else _harness_files),
         "fixture_manifest_sha256": hashlib.sha256(compact(fixture_manifest)).hexdigest(),
     }
+    if _tui_harness_files is not None:
+        result["tui_harness_sha256"] = tree_hash(root, _tui_harness_files)
+    source_helper_preserved(root)
+    try:
+        source.assert_current()
+    except SOURCE.SourceSnapshotError:
+        fail("application_source_invalid")
+    return result
 
 
 def validate_bindings(bindings):

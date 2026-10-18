@@ -261,6 +261,9 @@ class BindingCliTests(unittest.TestCase):
             path = self.root / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("synthetic " + name, encoding="utf-8")
+        (self.root / "rclone-triage/Cargo.toml").write_text('[package]\nname="synthetic"\nversion="0.0.0"\n')
+        (self.root / "rclone-triage/.cargo/config.toml").write_text("")
+        (self.root / "scripts/application_source_snapshot.py").write_bytes(E._SOURCE_BYTES)
         self.pin_names = ("RCLONE_EXE_SHA256", "RCLONE_WINDOWS_ZIP_SHA256", "RCLONE_LINUX_ZIP_SHA256",
                           "RCLONE_LINUX_EXE_SHA256", "RCLONE_WINDOWS_X86_EXE_SHA256", "RCLONE_WINDOWS_X86_ZIP_SHA256",
                           "RCLONE_WINDOWS_ARM64_EXE_SHA256", "RCLONE_WINDOWS_ARM64_ZIP_SHA256")
@@ -287,7 +290,7 @@ class BindingCliTests(unittest.TestCase):
 
     def test_bindings_use_exact_source_closure_and_literal_payload_manifest(self):
         value = self.value()["bindings"]
-        self.assertEqual(len(E.HARNESS_FILES), 14)
+        self.assertEqual(len(E.HARNESS_FILES), 16)
         self.assertIn("scripts/tui_application_evidence.py", E.HARNESS_FILES)
         self.assertEqual(value["application_sha256"], hashlib.sha256(self.app.read_bytes()).hexdigest())
         names = ["rclone-triage/Cargo.toml", "rclone-triage/Cargo.lock", "rclone-triage/build.rs",
@@ -301,7 +304,7 @@ class BindingCliTests(unittest.TestCase):
                           "sha256": hashlib.sha256(payloads[p]).hexdigest()} for p in sorted(payloads)])
         for name in ("rclone-triage/src/main.rs", "rclone-triage/.cargo/config.toml", "scripts/application-lab/tui_screen.py"):
             path = self.root / name; original = path.read_bytes()
-            path.write_bytes(original + b"changed")
+            path.write_bytes(original + (b"# changed\n" if path.suffix == ".toml" else b"changed"))
             self.assertNotEqual(value, E.compute_bindings(self.root, self.app, "d" * 40))
             path.write_bytes(original)
 

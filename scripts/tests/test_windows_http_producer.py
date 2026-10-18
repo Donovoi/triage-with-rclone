@@ -368,7 +368,7 @@ class ProducerTests(unittest.TestCase):
         (self.profile / "AppData/Roaming").mkdir(parents=True)
         (self.profile / "AppData/Local").mkdir()
         self.digest = hashlib.sha256(self.app.read_bytes()).hexdigest()
-        self.no_native = mock.patch.object(P.subprocess, "Popen", side_effect=AssertionError("native forbidden"))
+        self.no_native = mock.patch.object(P.O, "spawn", side_effect=AssertionError("native forbidden"))
         self.no_native.start()
         self.real_private_create = P._private_create
         self.real_native_create = P._native_private_create
@@ -576,7 +576,7 @@ class ProducerTests(unittest.TestCase):
                 self.assertTrue(all(not stream.closed for stream in self.created_streams if str(case) in stream.name))
                 raise OSError("private-canary")
             with mock.patch.object(P, "private_file", side_effect=create), mock.patch.object(P, "powershell", return_value="fixed"), \
-                 mock.patch.object(P, "hidden", return_value={}), mock.patch.object(P.subprocess, "Popen", side_effect=launch) as child, \
+                 mock.patch.object(P, "hidden", return_value={}), mock.patch.object(P.O, "spawn", side_effect=launch) as child, \
                  redirect_stdout(io.StringIO()) as output, self.assertRaises((P.ProducerError, OSError)):
                 P.Bridge(case)
             self.assertEqual(child.call_count, failure == "launch")
@@ -590,13 +590,26 @@ class ProducerTests(unittest.TestCase):
                     case = self.root / f"thread-{fail_at}-{live}"
                     case.mkdir()
                     process = mock.Mock(returncode=-1)
-                    threads = [mock.Mock() for _ in range(3)]
-                    for index, thread in enumerate(threads):
+                    process.stdout.read1.return_value = process.stderr.read1.return_value = b""
+                    threads = []
+                    def thread_factory(*, target, daemon):
+                        index = len(threads)
+                        thread = mock.Mock()
                         thread.is_alive.return_value = live and index < fail_at and index < 2
-                    threads[fail_at].start.side_effect = RuntimeError("private-canary")
+                        def start():
+                            if index == fail_at:
+                                raise RuntimeError("private-canary")
+                            if live:
+                                # Fake pause after the atomic resource claim.
+                                target.__self__.claimed = True
+                            else:
+                                target()
+                        thread.start.side_effect = start
+                        threads.append(thread)
+                        return thread
                     with mock.patch.object(P, "powershell", return_value="fixed"), mock.patch.object(P, "hidden", return_value={}), \
-                         mock.patch.object(P.subprocess, "Popen", return_value=process), \
-                         mock.patch.object(P.threading, "Thread", side_effect=threads), redirect_stdout(io.StringIO()) as output:
+                         mock.patch.object(P.O, "spawn", return_value=process), \
+                         mock.patch.object(P.threading, "Thread", side_effect=thread_factory), redirect_stdout(io.StringIO()) as output:
                         with self.assertRaisesRegex(RuntimeError, "private-canary"):
                             P.Bridge(case)
                     process.kill.assert_called_once()
@@ -607,8 +620,109 @@ class ProducerTests(unittest.TestCase):
                             pipe.close.assert_not_called()
                         else:
                             pipe.close.assert_called_once()
-                    self.assertTrue(all(stream.closed for stream in self.created_streams))
+                    for index, stream in enumerate(s for s in self.created_streams if str(case) in s.name):
+                        self.assertEqual(stream.closed, not (index < fail_at and live))
+                    process.mark_uncertain.assert_called_once()
+                    process.finalize.assert_called_once()
                     self.assertNotIn("canary", output.getvalue())
+
+    def test_bridge_interrupted_unclaimed_start_revokes_late_pipe_and_log_claim(self):
+        process, targets = mock.Mock(returncode=-1), []
+        first = KeyboardInterrupt("private-canary")
+        def factory(*, target, daemon):
+            targets.append(target)
+            return mock.Mock(start=mock.Mock(side_effect=first))
+        with mock.patch.object(P, "powershell", return_value="fixed"), mock.patch.object(P, "hidden", return_value={}), \
+             mock.patch.object(P.O, "spawn", return_value=process), mock.patch.object(P.threading, "Thread", side_effect=factory), \
+             redirect_stdout(io.StringIO()), self.assertRaises(KeyboardInterrupt) as caught:
+            P.Bridge(self.root)
+        self.assertIs(caught.exception, first)
+        self.assertEqual(len(targets), 3)  # Watchdog also preregistered.
+        for target in targets:
+            target()
+        process.stdout.read1.assert_not_called()
+        process.stderr.read1.assert_not_called()
+        process.poll.assert_not_called()
+        process.stdout.close.assert_called_once()
+        process.stderr.close.assert_called_once()
+        self.assertTrue(all(stream.closed for stream in self.created_streams))
+
+    def test_bridge_start_primary_survives_each_secondary_and_claimed_log_is_retained(self):
+        first, targets, threads = SystemExit("private-canary"), [], []
+        process = mock.Mock(returncode=None)
+        for method in (process.kill, process.wait, process.stdin.close, process.finalize):
+            method.side_effect = KeyboardInterrupt("secondary-private")
+        def factory(*, target, daemon):
+            targets.append(target)
+            thread = mock.Mock()
+            def start():
+                target.__self__.claimed = True
+                raise first
+            thread.start.side_effect = start
+            thread.join.side_effect = KeyboardInterrupt("secondary-private")
+            thread.is_alive.return_value = False  # Alone is not closure proof.
+            threads.append(thread)
+            return thread
+        with mock.patch.object(P, "powershell", return_value="fixed"), mock.patch.object(P, "hidden", return_value={}), \
+             mock.patch.object(P.O, "spawn", return_value=process), mock.patch.object(P.threading, "Thread", side_effect=factory), \
+             redirect_stdout(io.StringIO()) as output, self.assertRaises(SystemExit) as caught:
+            P.Bridge(self.root)
+        self.assertIs(caught.exception, first)
+        process.kill.assert_called_once()
+        process.wait.assert_called_once_with(timeout=5)
+        threads[0].join.assert_called_once_with(2)
+        threads[2].join.assert_not_called()
+        process.stdout.close.assert_not_called()
+        process.stderr.close.assert_called_once()
+        process.finalize.assert_called_once()
+        self.assertFalse(self.created_streams[0].closed)
+        self.assertTrue(self.created_streams[1].closed)
+        self.assertNotIn("private", output.getvalue())
+
+    def test_bridge_launch_primary_survives_overridden_diagnostic_baseexception(self):
+        first = OSError("primary-private-canary")
+        with mock.patch.object(P, "powershell", return_value="fixed"), mock.patch.object(P, "hidden", return_value={}), \
+             mock.patch.object(P.O, "spawn", side_effect=first), \
+             mock.patch.object(P.Bridge, "_diagnostic", side_effect=KeyboardInterrupt("diagnostic-private-canary")), \
+             redirect_stdout(io.StringIO()) as output, self.assertRaises(OSError) as caught:
+            P.Bridge(self.root)
+        self.assertIs(caught.exception, first)
+        self.assertTrue(all(stream.closed for stream in self.created_streams))
+        self.assertEqual(output.getvalue(), "")
+
+    def test_bridge_start_primary_and_cleanup_survive_overridden_diagnostic_baseexception(self):
+        first, events, threads = KeyboardInterrupt("primary-private-canary"), [], []
+        process = mock.Mock(returncode=-1)
+        process.stdout.read1.return_value = process.stderr.read1.return_value = b""
+        for name, method in (("uncertain", process.mark_uncertain), ("kill", process.kill),
+                             ("stdin_close", process.stdin.close), ("stdout_close", process.stdout.close),
+                             ("stderr_close", process.stderr.close), ("finalize", process.finalize)):
+            method.side_effect = lambda name=name: events.append(name)
+        process.wait.side_effect = lambda timeout: events.append(("wait", timeout))
+        def factory(*, target, daemon):
+            index = len(threads)
+            thread = mock.Mock()
+            thread.is_alive.return_value = False
+            thread.join.side_effect = lambda timeout: events.append(("join", index, timeout))
+            def start():
+                if index == 1:
+                    raise first
+                target()
+            thread.start.side_effect = start
+            threads.append(thread)
+            return thread
+        with mock.patch.object(P, "powershell", return_value="fixed"), mock.patch.object(P, "hidden", return_value={}), \
+             mock.patch.object(P.O, "spawn", return_value=process), mock.patch.object(P.threading, "Thread", side_effect=factory), \
+             mock.patch.object(P.Bridge, "_diagnostic", side_effect=SystemExit("diagnostic-private-canary")), \
+             redirect_stdout(io.StringIO()) as output, self.assertRaises(KeyboardInterrupt) as caught:
+            P.Bridge(self.root)
+        self.assertIs(caught.exception, first)
+        self.assertEqual(events, ["uncertain", "kill", ("wait", 5), ("join", 0, 2),
+                                  "stdout_close", "stderr_close", "stdin_close", "finalize"])
+        threads[1].join.assert_not_called()
+        threads[2].join.assert_not_called()
+        self.assertTrue(all(stream.closed for stream in self.created_streams))
+        self.assertEqual(output.getvalue(), "")
 
     def execute_case(self, name, *, suite_name=None, **kwargs):
         flow = Flow(name, **kwargs)
@@ -1907,6 +2021,7 @@ class ProducerTests(unittest.TestCase):
         alive.is_alive.return_value, dead.is_alive.return_value = True, False
         bridge.threads = [alive, dead]
         bridge.process = mock.Mock(returncode=0)
+        bridge.process.finalize.return_value = True
         bridge.process.poll.return_value = 0
         self.assertFalse(bridge.close())
         bridge.process.stdout.close.assert_not_called()
@@ -1926,6 +2041,7 @@ class ProducerTests(unittest.TestCase):
         bridge.messages = P.queue.Queue()
         bridge.deadline = P.time.monotonic() + 60
         bridge.process = mock.Mock(returncode=0)
+        bridge.process.finalize.return_value = True
         bridge.process.poll.return_value = None
         bridge.threads = []
         bridge.watchdog = mock.Mock()
@@ -2100,6 +2216,261 @@ class ProducerTests(unittest.TestCase):
             with redirect_stdout(io.StringIO()) as output, self.assertRaises(P.ProducerError):
                 P.session_diagnostic(*fields)
             self.assertEqual(output.getvalue(), "")
+
+    def timing_bridge(self, name):
+        bridge = self.bare_bridge(name)
+        bridge.deadline = 165
+        bridge.ready_timing = P._ReadyTiming(0)
+        return bridge
+
+    def ready_timing_record(self, output):
+        lines = [line for line in output.getvalue().splitlines()
+                 if line.startswith("application_helper_ready_timing=")]
+        self.assertEqual(len(lines), 1)
+        self.assertLess(len(lines[0].encode("ascii")), 1024)
+        self.assertNotIn("private-canary", lines[0])
+        record = json.loads(lines[0].split("=", 1)[1])
+        self.assertEqual(set(record), set(P.READY_TIMING_FIELDS) |
+                         {"schema_version", "clock", "action", "phase", "outcome", "status"})
+        return record
+
+    def timing_stderr(self, bridge, chunks, times):
+        stream = mock.Mock()
+        stream.read1.side_effect = [*chunks, b""]
+        with mock.patch.object(P.time, "monotonic", side_effect=times) as clock:
+            bridge._reader(stream, "stderr")
+        self.assertEqual(clock.call_count, len(times))
+        self.assertFalse(bridge.failed.is_set())
+
+    def test_ready_timing_split_coalesced_early_late_markers(self):
+        first = b"application_bridge_stage=compile\n"
+        second = b"application_bridge_stage=compiled\n"
+        examples = [([first, second], [1, 2], (1000, 2000)),
+                    ([first, second], [48, 49], (48000, 49000)),
+                    ([first + second], [3], (3000, 3000)),
+                    ([first[:9], first[9:-1] + b"\r", b"\n" + second[:8], second[8:]],
+                     [1, 2], (1000, 2000))]
+        for index, (chunks, times, expected) in enumerate(examples):
+            bridge = self.timing_bridge("timing-arrival-" + str(index))
+            self.timing_stderr(bridge, chunks, times)
+            bridge.messages.get = mock.Mock(side_effect=P.queue.Empty)
+            with mock.patch.object(P.time, "monotonic", side_effect=[50, 51, 111]) as clock, \
+                 redirect_stdout(io.StringIO()) as output, self.assertRaisesRegex(P.ProducerError, "^session_failed$"):
+                bridge.command("ready")
+            value = self.ready_timing_record(output)
+            self.assertEqual(value["status"], "observed")
+            self.assertEqual((value["compile_seen_ms"], value["compiled_seen_ms"]), expected)
+            self.assertEqual([value[key] for key in P.READY_TIMING_FIELDS[2:]], [50000, 51000, 60000, 111000])
+            self.assertEqual(clock.call_count, 3)
+            bridge.messages.get.assert_called_once_with(timeout=60)
+            self.assertEqual(bridge.deadline, 165)
+
+    def test_ready_timing_missing_markers_keep_known_wait_and_write(self):
+        for index, raw in enumerate((b"", b"application_bridge_stage=compile\n")):
+            bridge = self.timing_bridge("timing-missing-" + str(index))
+            if raw:
+                self.timing_stderr(bridge, [raw], [2])
+            bridge.deadline = 60.5
+            bridge.messages.get = mock.Mock(side_effect=P.queue.Empty)
+            with mock.patch.object(P.time, "monotonic", side_effect=[50, 51, 60.5]), \
+                 redirect_stdout(io.StringIO()) as output, self.assertRaises(P.ProducerError):
+                bridge.command("ready")
+            value = self.ready_timing_record(output)
+            self.assertEqual(value["status"], "observed")
+            self.assertEqual(value["compile_seen_ms"], 2000 if raw else None)
+            self.assertIsNone(value["compiled_seen_ms"])
+            self.assertEqual([value[key] for key in P.READY_TIMING_FIELDS[2:]], [50000, 51000, 9500, 60500])
+            bridge.messages.get.assert_called_once_with(timeout=9.5)
+            self.assertEqual(bridge.deadline, 60.5)
+
+    def test_ready_timing_invalid_stage_never_changes_verdict(self):
+        first = b"application_bridge_stage=compile\n"
+        second = b"application_bridge_stage=compiled\n"
+        for index, raw in enumerate((first[:-1], first + second[:-1], first + first, second + first,
+                first + second + b"private-canary", b"x" * 4097, b"\n" + first, first + b"\n")):
+            bridge = self.timing_bridge("timing-invalid-" + str(index))
+            self.timing_stderr(bridge, [raw], [1] if raw == first + second[:-1] else [])
+            bridge.messages.get = mock.Mock(side_effect=P.queue.Empty)
+            with mock.patch.object(P.time, "monotonic", side_effect=[2, 3, 4]), \
+                 redirect_stdout(io.StringIO()) as output, self.assertRaisesRegex(P.ProducerError, "^session_failed$"):
+                bridge.command("ready")
+            value = self.ready_timing_record(output)
+            self.assertEqual(value["status"], "unavailable")
+            self.assertTrue(all(value[key] is None for key in P.READY_TIMING_FIELDS))
+            self.assertTrue(bridge.failed.is_set())
+            bridge.process.kill.assert_not_called()
+
+    def test_ready_timing_failure_snapshot_cannot_be_backfilled_or_reemitted(self):
+        bridge = self.timing_bridge("timing-frozen")
+        bridge.messages.get = mock.Mock(side_effect=P.queue.Empty)
+        with mock.patch.object(P.time, "monotonic", side_effect=[1, 2, 3]), \
+             redirect_stdout(io.StringIO()) as output, self.assertRaises(P.ProducerError):
+            bridge.command("ready")
+        snapshot = bridge.ready_timing.snapshot
+        original = self.ready_timing_record(output)
+        with mock.patch.object(P.time, "monotonic", side_effect=AssertionError("late clock")), \
+             redirect_stdout(io.StringIO()) as later:
+            bridge._reader(io.BytesIO(b"application_bridge_stage=compile\napplication_bridge_stage=compiled\n"), "stderr")
+            bridge.ready_timing.write_returned()
+            bridge.ready_timing.wait_started(4, 5)
+            bridge.ready_timing.failure(bytes(bridge.stage_bytes), False, "wait", "timeout")
+        self.assertIs(bridge.ready_timing.snapshot, snapshot)
+        self.assertEqual(later.getvalue(), "")
+        self.assertIsNone(original["compile_seen_ms"])
+        self.assertIsNone(original["compiled_seen_ms"])
+
+    def test_ready_timing_projection_rejects_bad_clocks_bounds_and_private_values(self):
+        original = (0, 1, 2, 3, 4, 60, 64)
+        for index in range(7):
+            for bad in (True, "private-canary", float("nan"), float("inf"), 10**50):
+                snapshot = list(original)
+                snapshot[index] = bad
+                value = P.ready_timing_projection(tuple(snapshot), "wait", "timeout")
+                self.assertEqual(value["status"], "unavailable", (index, type(bad).__name__))
+                self.assertTrue(all(value[key] is None for key in P.READY_TIMING_FIELDS))
+                self.assertNotIn("private-canary", json.dumps(value))
+        for snapshot in ((0, -1, 2, 3, 4, 60, 64), (0, 3, 2, 3, 4, 60, 64), (0, 1, 2, 5, 4, 60, 64),
+                         (0, None, 2, 3, 4, 60, 64), (0, 1, 2, None, 4, 60, 64),
+                         (0, 1, 2, 3, 4, 0.009, 64), (0, 1, 2, 3, 4, 60.001, 64)):
+            self.assertEqual(P.ready_timing_projection(snapshot, "wait", "timeout")["status"], "unavailable")
+        for phase, outcome in (("private-canary", "timeout"), ("wait", "private-canary")):
+            with self.assertRaises(P.ProducerError):
+                P.ready_timing_projection(original, phase, outcome)
+        value = P.ready_timing_projection((0, None, None, 0, 0, 0.01, 2147483.647), "wait", "timeout")
+        self.assertEqual(value["status"], "observed")
+        self.assertEqual(value["wait_budget_ms"], 10)
+        self.assertLess(len(P.E.compact(value)) + len("application_helper_ready_timing="), 1024)
+        self.assertTrue(all(value[key] is None or type(value[key]) is int for key in P.READY_TIMING_FIELDS))
+
+    def test_ready_timing_write_preflight_and_reply_failures_keep_original_labels(self):
+        for mode in ("write", "preflight", "reply"):
+            bridge = self.timing_bridge("timing-phase-" + mode)
+            if mode == "write":
+                bridge.process.stdin.write.side_effect = OSError("private-canary")
+            elif mode == "preflight":
+                bridge.failed.set()
+            else:
+                self.reply_on_write(bridge, b"{}")
+            with mock.patch.object(P.time, "monotonic", return_value=1), redirect_stdout(io.StringIO()) as output, \
+                 self.assertRaisesRegex(P.ProducerError, "^session_failed$"):
+                bridge.command("ready")
+            value = self.ready_timing_record(output)
+            self.assertEqual(value["phase"], mode)
+            self.assertEqual(value["outcome"], {"write": "io_failed", "preflight": "rejected", "reply": "protocol_failed"}[mode])
+            self.assertEqual(value["status"], "observed")
+            if mode != "reply":
+                self.assertTrue(all(value[key] is None for key in ("write_returned_ms", "wait_started_ms", "wait_budget_ms")))
+
+    def test_ready_timing_success_silent_and_later_commands_keep_single_clock(self):
+        bridge = self.timing_bridge("timing-success")
+        self.reply_on_write(bridge)
+        with mock.patch.object(P.time, "monotonic", side_effect=[1, 2]) as clock, redirect_stdout(io.StringIO()) as output:
+            self.assertTrue(bridge.command("ready")["ok"])
+        self.assertEqual(clock.call_count, 2)
+        self.assertEqual(output.getvalue(), "")
+        self.reply_on_write(bridge, json.dumps(session("start")).encode())
+        bridge.messages.get = mock.Mock(wraps=bridge.messages.get)
+        with mock.patch.object(P.time, "monotonic", return_value=3) as clock, redirect_stdout(io.StringIO()) as output:
+            self.assertTrue(bridge.command("start")["ok"])
+        self.assertEqual(clock.call_count, 1)
+        bridge.messages.get.assert_called_once_with(timeout=35)
+        self.assertEqual(output.getvalue(), "")
+
+    def test_ready_timing_clock_cache_and_printer_baseexceptions_preserve_timeout(self):
+        for mode in ("write_clock", "failure_clock", "cache", "printer"):
+            bridge = self.timing_bridge("timing-suppressed-" + mode)
+            bridge.messages.get = mock.Mock(side_effect=P.queue.Empty)
+            sequence = ([KeyboardInterrupt("private-canary"), 2, 3] if mode == "write_clock" else
+                        [1, 2, SystemExit("private-canary")] if mode == "failure_clock" else [1, 2, 3])
+            original_print = print
+            def printing(*args, **kwargs):
+                if mode == "printer" and args[0].startswith("application_helper_ready_timing="):
+                    raise KeyboardInterrupt("private-canary")
+                return original_print(*args, **kwargs)
+            if mode == "cache":
+                bridge.ready_timing = mock.Mock()
+                bridge.ready_timing.write_returned.side_effect = SystemExit("private-canary")
+                bridge.ready_timing.wait_started.side_effect = SystemExit("private-canary")
+                bridge.ready_timing.failure.side_effect = KeyboardInterrupt("private-canary")
+                sequence = [2]
+            with mock.patch.object(P.time, "monotonic", side_effect=sequence), mock.patch("builtins.print", side_effect=printing), \
+                 redirect_stdout(io.StringIO()) as output, self.assertRaisesRegex(P.ProducerError, "^session_failed$"):
+                bridge.command("ready")
+            self.assertTrue(bridge.failed.is_set())
+            bridge.messages.get.assert_called_once_with(timeout=60)
+            self.assertNotIn("private-canary", output.getvalue())
+            if mode == "write_clock":
+                self.assertEqual(self.ready_timing_record(output)["status"], "unavailable")
+
+    def test_ready_timing_marker_clock_failure_does_not_poison_reader(self):
+        bridge = self.timing_bridge("timing-stage-clock")
+        with mock.patch.object(P.time, "monotonic", side_effect=KeyboardInterrupt("private-canary")):
+            bridge._reader(io.BytesIO(b"application_bridge_stage=compile\n"), "stderr")
+        self.assertFalse(bridge.failed.is_set())
+        self.assertEqual(P.bridge_stage(bytes(bridge.stage_bytes)), "compile")
+        self.assertTrue(bridge.ready_timing.invalid)
+
+    def test_ready_timing_inherited_source_observed_and_tui_paths_emit(self):
+        modules = [P.load("timing_filesystem", P.HERE / "filesystem_controller.py"),
+                   P.load("timing_tui", P.HERE / "tui_controller.py")]
+        for cls, module in ((modules[0].SourceBridge, modules[0]), (modules[0].ObservedSourceBridge, modules[0]),
+                            (modules[1].TuiBridge, modules[1])):
+            base = self.timing_bridge("timing-inherited-" + cls.__name__)
+            bridge = cls.__new__(cls)
+            bridge.__dict__.update(base.__dict__)
+            bridge.wire_bytes = 0
+            bridge.observer_started = False
+            bridge.ready_timing = module.H._ReadyTiming(0)
+            bridge.messages.get = mock.Mock(side_effect=P.queue.Empty)
+            with mock.patch.object(module.H.time, "monotonic", side_effect=[1, 2, 3]), \
+                 redirect_stdout(io.StringIO()) as output, self.assertRaisesRegex(module.H.ProducerError, "^session_failed$"):
+                bridge.command("ready")
+            self.assertEqual(self.ready_timing_record(output)["status"], "observed")
+            self.assertTrue(bridge.failed.is_set())
+
+    def test_ready_timing_does_not_change_cleanup_operation_trace(self):
+        traces = []
+        for enabled in (False, True):
+            bridge = self.transport_bridge("timing-close-" + str(enabled))
+            bridge.last = None
+            bridge.process.poll.return_value = None
+            bridge.messages.get = mock.Mock(side_effect=P.queue.Empty)
+            if enabled:
+                bridge.ready_timing = P._ReadyTiming(0)
+            events = []
+            for name, method in (("poll", bridge.process.poll), ("write", bridge.process.stdin.write),
+                    ("flush", bridge.process.stdin.flush), ("wait", bridge.process.wait), ("kill", bridge.process.kill),
+                    ("stdin_close", bridge.process.stdin.close), ("stdout_close", bridge.process.stdout.close),
+                    ("stderr_close", bridge.process.stderr.close), ("watch_join", bridge.watchdog.join),
+                    ("reader0_join", bridge.threads[0].join), ("reader1_join", bridge.threads[1].join)):
+                def observe(*args, name=name, method=method, **kwargs):
+                    events.append((name, args, kwargs))
+                    return method.return_value
+                method.side_effect = observe
+            with mock.patch.object(P.time, "monotonic", return_value=1), redirect_stdout(io.StringIO()):
+                with self.assertRaises(P.ProducerError):
+                    bridge.command("ready")
+                self.assertFalse(bridge.close())
+            traces.append(events)
+            bridge.process.wait.assert_called_once_with(timeout=10)
+            bridge.process.kill.assert_not_called()
+        self.assertEqual(traces[0], traces[1])
+
+
+    def test_ready_timing_invalid_action_never_invokes_equality_or_stringification(self):
+        class Hostile:
+            def __eq__(self, other):
+                raise KeyboardInterrupt("equality-private-canary")
+            def __str__(self):
+                raise SystemExit("string-private-canary")
+        bridge = self.timing_bridge("timing-hostile-action")
+        with redirect_stdout(io.StringIO()) as output, self.assertRaisesRegex(P.ProducerError, "^session_failed$"):
+            bridge.command(Hostile())
+        self.assertTrue(bridge.failed.is_set())
+        bridge.process.poll.assert_not_called()
+        bridge.process.stdin.write.assert_not_called()
+        self.assertFalse(bridge.ready_timing.frozen)
+        self.assertEqual(output.getvalue(), 'application_session_diagnostic={"action":"invalid","last_stage":null,"outcome":"rejected","phase":"preflight"}\n')
 
     def transport_bridge(self, name):
         bridge = self.bare_bridge(name)
@@ -2336,7 +2707,7 @@ class ProducerTests(unittest.TestCase):
         output = io.StringIO()
         with mock.patch.dict(os.environ, {"GITHUB_ACTIONS": "true", "RUNNER_OS": "Windows", "RUNNER_ENVIRONMENT": "github-hosted"}), \
              mock.patch.object(P, "hosted_guard"), mock.patch.object(P, "powershell", return_value="fixed-system-powershell"), \
-             mock.patch.object(P, "hidden", return_value={}), mock.patch.object(P.subprocess, "run", return_value=result, side_effect=error) as child:
+             mock.patch.object(P, "hidden", return_value={}), mock.patch.object(P.O, "run_setup", return_value=result, side_effect=error) as child:
             if identity_effect is not None:
                 with mock.patch.object(P, "identity", side_effect=identity_effect), redirect_stdout(output):
                     with self.assertRaisesRegex(P.ProducerError, "^case_setup_failed$"):
@@ -2366,7 +2737,7 @@ class ProducerTests(unittest.TestCase):
             with self.subTest(action=action):
                 result = types.SimpleNamespace(returncode=0, stdout=self.setup_stream(action))
                 with mock.patch.object(P, "hosted_guard"), mock.patch.object(P, "powershell", return_value="fixed-system-powershell"), \
-                     mock.patch.object(P, "hidden", return_value={}), mock.patch.object(P.subprocess, "run", return_value=result), redirect_stdout(io.StringIO()) as output:
+                     mock.patch.object(P, "hidden", return_value={}), mock.patch.object(P.O, "run_setup", return_value=result), redirect_stdout(io.StringIO()) as output:
                     self.assertEqual(P.prepare(self.root, "listing", action), self.root / "listing")
                 self.assertEqual(output.getvalue(), "")
         missing = self.setup_stream(stages=["input", "parent", "identity", "compile", "create", "verify", "complete"])
@@ -2502,7 +2873,7 @@ class ProducerTests(unittest.TestCase):
         retained = self.root / "private-canary"
         retained.write_bytes(b"private-canary")
         with mock.patch.object(P, "hosted_guard"), mock.patch.object(P, "powershell", return_value="fixed-system-powershell"), \
-             mock.patch.object(P, "hidden", return_value={}), mock.patch.object(P.subprocess, "run", return_value=types.SimpleNamespace(returncode=1, stdout=raw)), \
+             mock.patch.object(P, "hidden", return_value={}), mock.patch.object(P.O, "run_setup", return_value=types.SimpleNamespace(returncode=1, stdout=raw)), \
              mock.patch.object(P, "setup_diagnostic", side_effect=RuntimeError("private-canary")), redirect_stdout(io.StringIO()) as output:
             with self.assertRaisesRegex(P.ProducerError, "^case_setup_failed$"):
                 P.prepare(self.root, "listing", "Verify")
@@ -2523,7 +2894,7 @@ class ProducerTests(unittest.TestCase):
             raw = self.setup_stream(action, stages, False, failure)
             with self.subTest(action=action, category=category, code=code), \
                  mock.patch.object(P, "hosted_guard"), mock.patch.object(P, "powershell", return_value="fixed-system-powershell"), \
-                 mock.patch.object(P, "hidden", return_value={}), mock.patch.object(P.subprocess, "run", return_value=types.SimpleNamespace(returncode=code, stdout=raw)), \
+                 mock.patch.object(P, "hidden", return_value={}), mock.patch.object(P.O, "run_setup", return_value=types.SimpleNamespace(returncode=code, stdout=raw)), \
                  redirect_stdout(io.StringIO()):
                 with self.assertRaisesRegex(P.ProducerError, "^case_setup_failed$") as caught:
                     P.prepare(self.root, "listing", action)
@@ -2900,7 +3271,7 @@ class ProducerTests(unittest.TestCase):
         with mock.patch.dict(os.environ, self.synthetic_setup_environment(**extras), clear=True):
             with mock.patch.object(P, "powershell", return_value="fixed-system-powershell"), \
                  mock.patch.object(P, "hidden", return_value={}), \
-                 mock.patch.object(P.subprocess, "Popen", return_value=mock.Mock()) as child, \
+                 mock.patch.object(P.O, "spawn", return_value=mock.Mock()) as child, \
                  mock.patch.object(P.threading, "Thread"):
                 P.Bridge(self.root)
             application_env = P.environment(self.root)
@@ -2945,7 +3316,7 @@ class ProducerTests(unittest.TestCase):
                 raise P.ProducerError("preservation_failed")
             return actual_plain(path, directory, **kwargs)
         with mock.patch.object(P, "hosted_guard"), mock.patch.object(P, "plain", side_effect=linked), \
-             mock.patch.object(P.subprocess, "run") as child, redirect_stdout(io.StringIO()) as output:
+             mock.patch.object(P.O, "run_setup") as child, redirect_stdout(io.StringIO()) as output:
             with self.assertRaisesRegex(P.ProducerError, "^case_setup_failed$"):
                 P.prepare(self.root, "listing")
         child.assert_not_called()
@@ -2965,7 +3336,7 @@ class ProducerTests(unittest.TestCase):
         result = types.SimpleNamespace(returncode=0, stdout=self.setup_stream())
         with mock.patch.dict(os.environ, self.synthetic_setup_environment(APPLICATION_LAB_SENTINEL="private-canary"), clear=True), \
              mock.patch.object(P, "hosted_guard"), mock.patch.object(P, "powershell", return_value="fixed-system-powershell"), \
-             mock.patch.object(P, "hidden", return_value={}), mock.patch.object(P.subprocess, "run", return_value=result) as child:
+             mock.patch.object(P, "hidden", return_value={}), mock.patch.object(P.O, "run_setup", return_value=result) as child:
             with redirect_stdout(io.StringIO()) as output:
                 P.prepare(self.root, "listing")
             self.assertEqual(child.call_args.kwargs["env"], dict(os.environ))
