@@ -32,7 +32,7 @@ PROOF_KEYS = frozenset({"phase", "runtime_ordinal", "runtime_sha256", "applicati
 RECORD_KEYS = frozenset({"status", "exit_code", "runtime_sha256", "observation", "continuity", "failure_code", "checks", "fixture"})
 RECEIPT_KEYS = A.RECEIPT_KEYS | {"claims", "experiment", "renewal_denial"}
 HARNESS_FILES = (
-    "scripts/application_evidence.py", "scripts/webdav_application_evidence.py", "scripts/b2_application_evidence.py",
+    "scripts/application_evidence.py", "scripts/application_source_snapshot.py", "scripts/webdav_application_evidence.py", "scripts/b2_application_evidence.py",
     "scripts/application-lab/fixture_http.py", "scripts/application-lab/fixture_webdav.py", "scripts/application-lab/fixture_b2.py",
     "scripts/application-lab/run_windows_http.py", "scripts/application-lab/owned_helper_process.py", "scripts/application-lab/run_windows_webdav.py",
     "scripts/application-lab/run_windows_b2.py", "scripts/application-lab/filesystem_controller.py",
@@ -50,8 +50,7 @@ def fixture_manifest():
 def compute_bindings(root, application, build_commit):
     if A.file_hash(_PATH) != _SHA or A.file_hash(Path(root) / "scripts/webdav_application_evidence.py") != _SHA:
         fail("b2_source_changed")
-    result = W.compute_bindings(root, application, build_commit)
-    result["harness_sha256"] = A.tree_hash(root, HARNESS_FILES)
+    result = W.compute_bindings(root, application, build_commit, _harness_files=HARNESS_FILES)
     result["fixture_manifest_sha256"] = hashlib.sha256(compact(fixture_manifest())).hexdigest()
     return result
 

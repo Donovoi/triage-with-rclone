@@ -366,6 +366,8 @@ class Contracts(unittest.TestCase):
             self.assertFalse(owned.exists())
 
     def test_actual_source_header_and_registration_reject_each_changed_input(self):
+        self.assertEqual(len(Q.SOURCE_PINS), 10)
+        self.assertIn('scripts/application_source_snapshot.py', Q.SOURCE_PINS)
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             windows_source_view(root)
