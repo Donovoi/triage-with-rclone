@@ -136,6 +136,18 @@ class FakeOwner:
         raise error
 
 
+class FakeClock:
+    """An explicitly advanced clock; never sleeps or starts a thread."""
+    def __init__(self):
+        self.now, self.calls, self.pauses = 0, [], []
+    def __call__(self):
+        self.calls.append(self.now)
+        return self.now
+    def pause(self, seconds):
+        self.pauses.append(seconds)
+        self.now += seconds
+
+
 class Contracts(unittest.TestCase):
     def test_request_transfer_closed_types_sources_nonce_and_aliases(self):
         expected = request(); value = transfer(expected)
@@ -284,12 +296,15 @@ class Contracts(unittest.TestCase):
 
     def test_one_release_wait_and_existing_reader_join_share_ten_seconds(self):
         api, capture = self.cleanup_case()
-        result = Q.observe_cleanup(api, 101, 900, capture, clock=mock.Mock(side_effect=[0, 1, 3]))
+        clock = mock.Mock(side_effect=[0, 1, 1, 3, 3, 4])
+        result = Q.observe_cleanup(api, 101, 900, capture, clock=clock)
         self.assertTrue(result['complete'])
         api.signal.assert_called_once_with(101)
         api.wait.assert_called_once_with(900, 9000)
         api.exit_code.assert_called_once_with(900)
         capture.thread.join.assert_called_once_with(7)
+        self.assertEqual((result['deadline'], result['last_clock'], result['within_deadline']), (10, 4, True))
+        self.assertEqual(clock.call_count, 6)
         capture.pipe = mock.Mock()
         api.close.assert_not_called()
 
@@ -309,7 +324,7 @@ class Contracts(unittest.TestCase):
                     if mode == 'borrow': capture.pipe.handle.users = 1
                     if mode == 'output': capture.snapshot.return_value = b'unexpected'
                 capture.thread.join.side_effect = finish
-            result = Q.observe_cleanup(api, 101, 900, capture, clock=mock.Mock(side_effect=[0, 1, 3]))
+            result = Q.observe_cleanup(api, 101, 900, capture, clock=lambda: 0)
             self.assertFalse(result['complete'], mode)
             self.assertEqual(api.signal.call_count, 1)
             self.assertEqual(api.wait.call_count, 1)
@@ -317,18 +332,24 @@ class Contracts(unittest.TestCase):
             if mode == 'timeout': api.exit_code.assert_not_called()
 
     def test_remaining_invalid_or_exhausted_clock_never_adds_budget(self):
-        self.assertEqual(Q.remaining(10, lambda: 11), 0)
+        state = dict(deadline=10, last_clock=3, within_deadline=True)
+        self.assertEqual(Q.advance_cleanup(state, lambda: 11), 0)
+        self.assertEqual(state, dict(deadline=10, last_clock=11, within_deadline=False))
         for invalid in (float('nan'), float('inf'), True, -1):
-            with self.assertRaises(Q.CalibrationError): Q.remaining(10, lambda: invalid)
+            state = dict(deadline=10, last_clock=0, within_deadline=True)
+            with self.assertRaises(Q.CalibrationError): Q.advance_cleanup(state, lambda: invalid)
+            self.assertEqual(state, dict(deadline=10, last_clock=0, within_deadline=False))
 
     def test_invalid_cleanup_clock_still_releases_once_without_guessing_a_wait(self):
-        api, capture = self.cleanup_case()
-        result = Q.observe_cleanup(api, 101, 900, capture, clock=lambda: float('nan'))
-        self.assertFalse(result['complete'])
-        self.assertEqual(result['error'], 'unexpected')
-        api.signal.assert_called_once_with(101)
-        api.wait.assert_not_called()
-        capture.thread.join.assert_not_called()
+        for invalid in (float('nan'), float('inf'), True, 1e308):
+            api, capture = self.cleanup_case()
+            result = Q.observe_cleanup(api, 101, 900, capture, clock=lambda: invalid)
+            self.assertFalse(result['complete'])
+            self.assertEqual(result['error'], 'unexpected')
+            self.assertIs(result['within_deadline'], False)
+            api.signal.assert_called_once_with(101)
+            api.wait.assert_not_called()
+            capture.thread.join.assert_not_called()
 
     def test_exact_flat_temp_members_hashes_identity_and_cleanup(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -442,6 +463,8 @@ class Contracts(unittest.TestCase):
             data[64:68] = b'PE\0\0'; struct.pack_into('<H', data, 68, 0x8664); struct.pack_into('<H', data, 88, 0x20b)
             image.write_bytes(data)
             owner = FakeOwner()
+            clock = FakeClock(); owner.clock = clock
+            if fault == 'initial_clock': clock.now = float('nan')
             current = dict(pid=10, created=20, image=str(image))
             api = mock.Mock(); api.current.return_value = -1; api.event.side_effect = [101, 102]
             api.duplicate.return_value = 901
@@ -449,9 +472,25 @@ class Contracts(unittest.TestCase):
                 owner.native_calls.append(('close', handle))
                 if (fault, handle) in {('child_close', 900), ('job_close', 901)}:
                     raise KeyboardInterrupt('close-canary')
+                if (fault, handle) in {('reference_late', 101), ('job_close_late', 901)}:
+                    clock.now = 11
+                if fault == 'job_close_backward' and handle == 901:
+                    clock.now = 1
+                if fault == 'residual_window' and handle == 101: clock.now = 9
             api.close.side_effect = close
             if fault == 'nonzero': owner.after = (1, 4)
             if fault == 'decreasing_total': owner.after = (0, 1)
+            if fault in {'eventually_zero', 'job_close_backward', 'residual_window', 'query_late'}:
+                original = owner._Win32.accounting
+                samples = iter(((1, 4), (0, 5)))
+                def accounting(native, handle):
+                    if handle == 901:
+                        owner.native_calls.append(('accounting', handle))
+                        clock.now += 0.2 if fault == 'residual_window' else 2
+                        if fault == 'query_late': clock.now = 11
+                        return next(samples)
+                    return original(native, handle)
+                owner._Win32.accounting = accounting
             if fault == 'query':
                 original = owner._Win32.accounting
                 def accounting(native, handle):
@@ -461,17 +500,30 @@ class Contracts(unittest.TestCase):
                     return original(native, handle)
                 owner._Win32.accounting = accounting
             api.identify.side_effect = lambda h: current if h == -1 else dict(current, pid=11, created=21)
-            api.wait.side_effect = lambda handle, ms: handle == 102 and owner._active is not None or handle == 900 and ms > 0
+            def wait(handle, ms):
+                if handle == 900 and ms > 0 and fault == 'child_late': clock.now = 11
+                if handle == 900 and ms > 0 and fault == 'residual_window': clock.now = 4
+                return handle == 102 and owner._active is not None or handle == 900 and ms > 0
+            api.wait.side_effect = wait
+            def signal(handle):
+                if fault == 'release_late': clock.now = 11
+                if fault == 'residual_window': clock.now = 2
+            api.signal.side_effect = signal
             api.exit_code.return_value = 0
             def started(args):
                 request_path = Path(args[-1]); expected = F.record(request_path)
                 F.publish(request_path.with_name('transfer.json'), transfer(expected))
-                owner.capture.thread.join.side_effect = owner.capture.finish
+                def finish(seconds):
+                    owner.capture.finish(seconds)
+                    if fault == 'reader_late': clock.now = 11
+                    if fault == 'residual_window': clock.now = 8
+                owner.capture.thread.join.side_effect = finish
                 if fault == 'membership': owner._active.api.k.IsProcessInJob.side_effect = lambda *args: 0
             owner.on_start = started
             H = types.SimpleNamespace(O=owner, loaded_sources_preserved=lambda: None, powershell=lambda: str(image),
                                       read=lambda p, limit, **kwargs: F.read(p, limit))
             with mock.patch.object(Q, 'load', side_effect=[F, H]), mock.patch.object(F, 'Native', return_value=api), \
+                 mock.patch.object(Q, 'time', types.SimpleNamespace(monotonic=clock, sleep=clock.pause)), \
                  mock.patch.object(Q, 'ROOT', source_view), \
                  mock.patch.object(Q, 'os', types.SimpleNamespace(name='nt', environ=os.environ)), mock.patch.object(Q.sys, 'argv', ['fixed']), \
                  mock.patch.dict(os.environ, dict(GITHUB_ACTIONS='true', RUNNER_OS='Windows', RUNNER_ARCH='X64',
@@ -486,11 +538,14 @@ class Contracts(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(value['result'], 'passed')
         self.assertTrue(value['expected_failure'] and value['owner_sticky_failed'] and value['cleanup_complete'])
-        self.assertEqual(value['schema_version'], 2)
+        self.assertEqual(value['schema_version'], 3)
         self.assertEqual(value['contract'], Q.CONTRACT)
         self.assertEqual((value['before_active'], value['before_total']), (2, 4))
         self.assertEqual((value['final_active'], value['final_total']), (0, 4))
         self.assertTrue(value['child_in_job'] and value['query_job_closed'] and value['observation_complete'])
+        self.assertEqual((value['query_count'], value['quiescence_status'], value['within_cleanup_deadline']),
+                         (1, 'zero_observed', True))
+        self.assertEqual(owner.clock.pauses, [])
         self.assertIs(owner._active.final_result, False)
         self.assertEqual(len(owner.calls), 2)
         self.assertEqual(owner.calls[0], owner.calls[1])
@@ -515,7 +570,8 @@ class Contracts(unittest.TestCase):
                 self.assertEqual(api.close.call_args_list, [mock.call(900), mock.call(102), mock.call(101), mock.call(901)])
                 api.signal.assert_called_once_with(101)
                 final_calls = owner.native_calls.count(('accounting', 901))
-                self.assertEqual(final_calls, 0 if fault in {'child_close', 'membership'} else 1)
+                if fault == 'nonzero': self.assertTrue(1 < final_calls <= 201)
+                else: self.assertEqual(final_calls, 0 if fault in {'child_close', 'membership'} else 1)
                 if fault == 'job_close': self.assertIsNone(value['query_job_closed'])
                 if fault == 'nonzero': self.assertEqual(value['final_active'], 1)
                 self.assertNotIn('canary', json.dumps(value))
@@ -681,30 +737,33 @@ class Contracts(unittest.TestCase):
             observation.close()
         self.assertNotIn('OpenProcess', (ROOT/'scripts/application-lab/qualify_helper_owner.py').read_text())
 
-    def test_single_final_query_requires_zero_and_successful_once_only_job_close(self):
+    def test_single_window_requires_zero_and_successful_once_only_job_close(self):
         for result in ((0, 4), (0, 5), (0, 1), (1, 4), (True, 4), (0, True), (4, 2)):
             owner, api, observation, _ = self.observe(); owner.after = result
             observation.membership(900)
-            if result in ((0, 4), (0, 5)): observation.quiescence()
+            pause = mock.Mock()
+            if result in ((0, 4), (0, 5)): observation.quiescence(10, 0, clock=lambda: 0, pause=pause)
             else:
-                with self.assertRaises(Q.CalibrationError): observation.quiescence()
+                with self.assertRaises(Q.CalibrationError): observation.quiescence(10, 0, clock=lambda: 0, pause=pause)
             if result == (0, 1) and type(result[1]) is int:
                 self.assertEqual(observation.before, (2, 4))
                 self.assertEqual(observation.after, (0, 1))
                 self.assertTrue(observation.failed)
-            with self.assertRaises(Q.CalibrationError): observation.quiescence()
-            self.assertEqual(owner.native_calls.count(('accounting', 901)), 1)
+            with self.assertRaises(Q.CalibrationError): observation.quiescence(10, 0, clock=lambda: 0, pause=pause)
+            pending = result == (1, 4) and type(result[0]) is int
+            self.assertEqual(owner.native_calls.count(('accounting', 901)), 201 if pending else 1)
+            self.assertEqual(pause.call_count, 200 if pending else 0)
             observation.close(); observation.close(); api.close.assert_called_once_with(901)
         owner, api, observation, _ = self.observe(); observation.membership(900)
         api.close.side_effect = KeyboardInterrupt('close-canary')
-        observation.quiescence()
+        observation.quiescence(10, 0, clock=lambda: 0, pause=mock.Mock())
         self.assertFalse(observation.close()); self.assertFalse(observation.close())
         self.assertTrue(observation.failed); self.assertIsNone(observation.closed)
         api.close.assert_called_once_with(901)
 
     def test_final_query_error_or_missing_member_never_becomes_quiet(self):
         owner, api, observation, _ = self.observe()
-        with self.assertRaises(Q.CalibrationError): observation.quiescence()
+        with self.assertRaises(Q.CalibrationError): observation.quiescence(10, 0, clock=lambda: 0, pause=mock.Mock())
         self.assertNotIn(('accounting', 901), owner.native_calls); observation.close()
         owner, api, observation, _ = self.observe(); observation.membership(900)
         primary = KeyboardInterrupt('query-canary')
@@ -713,18 +772,198 @@ class Contracts(unittest.TestCase):
             if handle == 901: raise primary
             return original(native, handle)
         observation.original = query
-        with self.assertRaises(KeyboardInterrupt) as caught: observation.quiescence()
+        with self.assertRaises(KeyboardInterrupt) as caught: observation.quiescence(10, 0, clock=lambda: 0, pause=mock.Mock())
         self.assertIs(caught.exception, primary)
         self.assertIsNone(observation.after); self.assertTrue(observation.failed)
+        self.assertEqual((observation.query_count, observation.quiescence_status), (1, 'query_failed'))
         observation.close(); api.close.assert_called_once_with(901)
 
+    def window_case(self, samples):
+        owner, api, observation, _ = self.observe()
+        observation.membership(900)
+        samples = iter(samples)
+        def query(native, handle):
+            self.assertIs(native, owner._active.api)
+            self.assertEqual(handle, 901)
+            owner.native_calls.append(('accounting', handle))
+            sample = next(samples)
+            if isinstance(sample, BaseException): raise sample
+            return sample
+        observation.original = query
+        return owner, api, observation
+
+    def test_window_immediate_zero_exact_deadline_and_no_pacing(self):
+        owner, api, observation = self.window_case([(0, 4)])
+        clock = mock.Mock(side_effect=[9, 10]); pause = mock.Mock()
+        observation.quiescence(10, 8, clock=clock, pause=pause)
+        self.assertEqual((observation.query_count, observation.quiescence_status, observation.last_clock),
+                         (1, 'zero_observed', 10))
+        self.assertIs(observation.within_cleanup_deadline, True)
+        pause.assert_not_called(); self.assertEqual(clock.call_count, 2)
+        observation.close(); observation.close(); api.close.assert_called_once_with(901)
+
+    def test_window_valid_pending_samples_allow_active_and_total_increases_in_order(self):
+        owner, api, observation = self.window_case([(1, 4), (3, 6), (0, 7)])
+        events = []; timer = FakeClock()
+        original = observation.original
+        def query(native, handle): events.append('query'); return original(native, handle)
+        def clock(): events.append('clock'); return timer()
+        def pause(seconds): events.append(('pause', seconds)); timer.pause(seconds)
+        observation.original = query
+        observation.quiescence(10, 0, clock=clock, pause=pause)
+        self.assertEqual(events, ['clock', 'query', 'clock', ('pause', 0.05), 'clock',
+            'clock', 'query', 'clock', ('pause', 0.05), 'clock', 'clock', 'query', 'clock'])
+        self.assertEqual((observation.query_count, observation.after, observation.last_clock), (3, (0, 7), 0.1))
+        self.assertEqual(observation.quiescence_status, 'zero_observed')
+        observation.close(); api.close.assert_called_once_with(901)
+
+    def test_window_retains_late_zero_and_rejects_prequery_deadline_without_call(self):
+        for ticks, expected, after in (([10], 0, None), ([9, 11], 1, (0, 4))):
+            owner, api, observation = self.window_case([(0, 4)])
+            pause = mock.Mock()
+            with self.assertRaises(Q.CalibrationError):
+                observation.quiescence(10, 8, clock=mock.Mock(side_effect=ticks), pause=pause)
+            self.assertEqual((observation.query_count, observation.after), (expected, after))
+            self.assertEqual(observation.quiescence_status, 'deadline_exhausted')
+            self.assertIs(observation.within_cleanup_deadline, expected == 0)
+            pause.assert_not_called()
+            with self.assertRaises(Q.CalibrationError):
+                observation.quiescence(20, 0, clock=lambda: 0, pause=pause)
+            self.assertEqual(observation.query_count, expected)
+            observation.close(); observation.close(); api.close.assert_called_once_with(901)
+
+    def test_window_clock_errors_are_terminal_and_keep_latest_valid_clock(self):
+        for invalid in (True, float('nan'), float('inf'), 7, KeyboardInterrupt('clock-canary')):
+            for after_query in (False, True):
+                owner, api, observation = self.window_case([(0, 4)])
+                ticks = [9, invalid] if after_query else [invalid]
+                pause = mock.Mock()
+                with self.assertRaises(BaseException):
+                    observation.quiescence(10, 8, clock=mock.Mock(side_effect=ticks), pause=pause)
+                self.assertEqual(observation.query_count, int(after_query))
+                self.assertEqual(observation.last_clock, 9 if after_query else 8)
+                self.assertEqual(observation.after, (0, 4) if after_query else None)
+                self.assertEqual(observation.quiescence_status, 'clock_failed')
+                self.assertIs(observation.within_cleanup_deadline, False)
+                pause.assert_not_called()
+                observation.close(); observation.close(); api.close.assert_called_once_with(901)
+        for deadline, last in ((True, 0), (float('nan'), 0), (10, True), (10, float('inf'))):
+            owner, api, observation = self.window_case([(0, 4)])
+            clock, pause = mock.Mock(), mock.Mock()
+            with self.assertRaises(Q.CalibrationError): observation.quiescence(deadline, last, clock=clock, pause=pause)
+            self.assertEqual(observation.query_count, 0); clock.assert_not_called(); pause.assert_not_called()
+            self.assertEqual(observation.quiescence_status, 'clock_failed')
+            observation.close(); api.close.assert_called_once_with(901)
+
+    def test_window_query_schema_or_decreasing_total_failure_never_retries_hypothetical_zero(self):
+        for bad in (KeyboardInterrupt('query-canary'), None, [0, 5], (True, 5), (0, True), (8, 5), (0, 4)):
+            owner, api, observation = self.window_case([(1, 5), bad, (0, 5)])
+            pause = mock.Mock()
+            with self.assertRaises(BaseException): observation.quiescence(10, 0, clock=lambda: 0, pause=pause)
+            self.assertEqual(observation.query_count, 2)
+            self.assertEqual(observation.quiescence_status, 'query_failed' if isinstance(bad, BaseException) else 'invalid_accounting')
+            self.assertEqual(observation.after, (0, 4) if bad == (0, 4) else (1, 5))
+            pause.assert_called_once_with(0.05)
+            with self.assertRaises(Q.CalibrationError): observation.quiescence(20, 0, clock=lambda: 0, pause=pause)
+            self.assertEqual(observation.query_count, 2)
+            observation.close(); observation.close(); api.close.assert_called_once_with(901)
+
+    def test_window_pacing_is_residual_bounded_and_failure_or_overshoot_is_terminal(self):
+        for mode in ('overshoot', 'exact_deadline', 'exception', 'clock_backward'):
+            owner, api, observation = self.window_case([(1, 4), (0, 4)])
+            pause = mock.Mock(side_effect=KeyboardInterrupt('pace-canary') if mode == 'exception' else None)
+            ticks = [9.98, 9.99, 10.01 if mode == 'overshoot' else 10 if mode == 'exact_deadline' else 9.98]
+            with self.assertRaises(BaseException):
+                observation.quiescence(10, 9.9, clock=mock.Mock(side_effect=ticks), pause=pause)
+            self.assertEqual(observation.query_count, 1)
+            self.assertEqual(observation.after, (1, 4))
+            self.assertEqual(pause.call_count, 1)
+            self.assertAlmostEqual(pause.call_args.args[0], 0.01)
+            expected = 'pace_failed' if mode == 'exception' else 'clock_failed' if mode == 'clock_backward' else 'deadline_exhausted'
+            self.assertEqual(observation.quiescence_status, expected)
+            observation.close(); observation.close(); api.close.assert_called_once_with(901)
+
+    def test_window_nonadvancing_clock_caps_queries_and_never_paces_after_query201(self):
+        owner, api, observation = self.window_case([(1, 4)]*201 + [(0, 4)])
+        pause = mock.Mock(); clock = mock.Mock(return_value=0)
+        with self.assertRaises(Q.CalibrationError): observation.quiescence(10, 0, clock=clock, pause=pause)
+        self.assertEqual((observation.query_count, observation.quiescence_status), (201, 'observation_cap'))
+        self.assertEqual(pause.call_args_list, [mock.call(0.05)]*200)
+        self.assertEqual(clock.call_count, 602)
+        self.assertEqual(observation.after, (1, 4))
+        observation.close(); observation.close(); api.close.assert_called_once_with(901)
+
+    def test_full_controller_uses_residual_budget_after_release_wait_join_and_reference_closes(self):
+        code, value, owner, api, remaining = self.controller_case('residual_window')
+        self.assertEqual((code, value['result'], value['query_count']), (0, 'passed', 2))
+        self.assertEqual((value['final_active'], value['final_total']), (0, 5))
+        self.assertIs(value['within_cleanup_deadline'], True)
+        self.assertAlmostEqual(owner.clock.now, 9.45)
+        self.assertEqual(owner.clock.pauses, [0.05])
+        self.assertIn(mock.call(900, 8000), api.wait.call_args_list)
+        owner.capture.thread.join.assert_called_once_with(6)
+        api.signal.assert_called_once_with(101)
+        self.assertEqual(api.close.call_args_list, [mock.call(900), mock.call(102), mock.call(101), mock.call(901)])
+        self.assertEqual(remaining, {'python.exe', 'source'})
+        self.assertIs(owner._active.final_result, False)
+
+    def test_full_controller_earlier_deadline_exhaustion_or_invalid_start_never_queries(self):
+        for fault in ('initial_clock', 'release_late', 'child_late', 'reader_late', 'reference_late'):
+            with self.subTest(fault=fault):
+                code, value, owner, api, remaining = self.controller_case(fault)
+                self.assertEqual((code, value['result'], value['query_count']), (1, 'failed', 0))
+                self.assertEqual(value['quiescence_status'], 'not_started')
+                self.assertIs(value['within_cleanup_deadline'], False)
+                self.assertFalse(value['cleanup_complete'] or value['observation_complete'])
+                self.assertEqual(owner.clock.pauses, [])
+                api.signal.assert_called_once_with(101)
+                self.assertEqual(api.close.call_args_list, [mock.call(900), mock.call(102), mock.call(101), mock.call(901)])
+                self.assertEqual(len(remaining - {'python.exe', 'source'}), 1)
+                if fault in {'initial_clock', 'release_late'}:
+                    self.assertFalse(any(call.args[0] == 900 and call.args[1] > 0 for call in api.wait.call_args_list))
+                if fault in {'initial_clock', 'release_late', 'child_late'}: owner.capture.thread.join.assert_not_called()
+                if fault in {'child_late', 'reader_late', 'reference_late'}: self.assertEqual(value['child_exit'], 0)
+
+    def test_full_controller_late_query_or_final_close_and_backward_close_never_pass(self):
+        for fault in ('query_late', 'job_close_late', 'job_close_backward'):
+            code, value, owner, api, remaining = self.controller_case(fault)
+            self.assertEqual((code, value['result']), (1, 'failed'))
+            self.assertFalse(value['observation_complete'] or value['cleanup_complete'])
+            self.assertIs(value['within_cleanup_deadline'], False)
+            self.assertIs(value['query_job_closed'], True)
+            self.assertEqual(value['quiescence_status'], 'deadline_exhausted' if fault == 'query_late' else 'zero_observed')
+            if fault != 'query_late': self.assertEqual(value['final_active'], 0)
+            self.assertEqual(api.close.call_args_list, [mock.call(900), mock.call(102), mock.call(101), mock.call(901)])
+            self.assertEqual(len(remaining - {'python.exe', 'source'}), 1)
+
+    def test_cleanup_late_operations_preserve_actual_exit_and_reader_facts(self):
+        for operation in ('release', 'child', 'reader'):
+            api, capture = self.cleanup_case(); clock = FakeClock()
+            def signal(handle):
+                if operation == 'release': clock.now = 11
+            def wait(handle, ms):
+                if operation == 'child': clock.now = 11
+                return True
+            def join(seconds):
+                capture.finish(seconds)
+                if operation == 'reader': clock.now = 11
+            api.signal.side_effect = signal; api.wait.side_effect = wait; capture.thread.join.side_effect = join
+            result = Q.observe_cleanup(api, 101, 900, capture, clock=clock)
+            self.assertFalse(result['complete'])
+            self.assertIs(result['within_deadline'], False)
+            self.assertEqual(result['deadline'], 10)
+            self.assertEqual(result['child_exit'], None if operation == 'release' else 0)
+            self.assertEqual(result['reader_closed'], operation == 'reader')
+            api.signal.assert_called_once_with(101)
+
     def test_emitter_monotonic_total_required_only_for_complete_observation(self):
-        value = dict(schema_version=2, contract=Q.CONTRACT, scope='hosted_windows_x64_inert_descendant',
+        value = dict(schema_version=3, contract=Q.CONTRACT, scope='hosted_windows_x64_inert_descendant',
             result='passed', reason=None, expected_failure=True, owner_sticky_failed=True, cleanup_complete=True,
             parent_exit=0, child_exit=0, forced=True, architecture='native_x64', sources_sha256='1'*64,
             controller_sha256='2'*64, python_sha256='3'*64, powershell_file_sha256='4'*64,
             child_in_job=True, query_job_closed=True, observation_complete=True,
-            before_active=2, before_total=4, final_active=0, final_total=4)
+            before_active=2, before_total=4, final_active=0, final_total=4,
+            query_count=1, within_cleanup_deadline=True, quiescence_status='zero_observed')
         for total in (4, 5):
             with redirect_stdout(io.StringIO()) as output:
                 self.assertTrue(Q.emit(dict(value, final_total=total)))
@@ -739,23 +978,44 @@ class Contracts(unittest.TestCase):
             self.assertTrue(Q.emit(failed))
         self.assertEqual(json.loads(output.getvalue().split('=', 1)[1]), failed)
 
+    def test_schema3_completion_requires_bounded_observation_and_deadline_facts(self):
+        code, value, _, _, _ = self.controller_case()
+        self.assertEqual(code, 0)
+        for mutation in ({'query_count':0}, {'query_count':202}, {'query_count':True},
+                         {'within_cleanup_deadline':False}, {'within_cleanup_deadline':None},
+                         {'quiescence_status':'not_started'}, {'quiescence_status':'deadline_exhausted'},
+                         {'schema_version':2}, {'contract':'known_child_membership_job_quiescence_v2'},
+                         {'private_extra':'canary'}):
+            with redirect_stdout(io.StringIO()) as output:
+                self.assertFalse(Q.emit(dict(value, **mutation)))
+            self.assertEqual(output.getvalue(), '')
+        for status in Q.QUIESCENCE_STATUSES:
+            failed = dict(value, result='failed', reason='job_quiescence', cleanup_complete=False,
+                          observation_complete=False, within_cleanup_deadline=False, quiescence_status=status)
+            with redirect_stdout(io.StringIO()) as output:
+                self.assertTrue(Q.emit(failed))
+            self.assertEqual(json.loads(output.getvalue().split('=', 1)[1]), failed)
+            self.assertLess(len(output.getvalue().encode('ascii')), 2048)
+
     def test_closed_public_record_rejects_private_strings_and_printer_failure(self):
-        value = dict(schema_version=2, contract=Q.CONTRACT, scope='hosted_windows_x64_inert_descendant', result='failed', reason='transfer',
+        value = dict(schema_version=3, contract=Q.CONTRACT, scope='hosted_windows_x64_inert_descendant', result='failed', reason='transfer',
             expected_failure=False, owner_sticky_failed=False, cleanup_complete=False, parent_exit=None, child_exit=None,
             forced=None, architecture=None, sources_sha256=None, controller_sha256=None, python_sha256=None, powershell_file_sha256=None,
             child_in_job=None, query_job_closed=None, observation_complete=False, before_active=None, before_total=None,
-            final_active=None, final_total=None)
+            final_active=None, final_total=None, query_count=0, within_cleanup_deadline=None, quiescence_status='not_started')
         with redirect_stdout(io.StringIO()) as output:
             self.assertTrue(Q.emit(value))
         self.assertLess(len(output.getvalue().encode()), 2048)
-        for key in ('reason', 'sources_sha256', 'forced', 'child_exit', 'contract', 'child_in_job', 'final_active', 'query_job_closed'):
+        for key in ('reason', 'sources_sha256', 'forced', 'child_exit', 'contract', 'child_in_job', 'final_active', 'query_job_closed',
+                    'query_count', 'within_cleanup_deadline', 'quiescence_status'):
             with redirect_stdout(io.StringIO()) as output:
                 self.assertFalse(Q.emit(dict(value, **{key:'private-canary'})))
             self.assertEqual(output.getvalue(), '')
         with mock.patch('builtins.print', side_effect=KeyboardInterrupt('private-canary')):
             self.assertFalse(Q.emit(value))
         for mutation in ({'schema_version':1}, {'observation_complete':True}, {'final_active':0},
-                         {'final_active':1, 'final_total':0}, {'child_in_job':1}):
+                         {'final_active':1, 'final_total':0}, {'child_in_job':1}, {'query_count':True},
+                         {'query_count':-1}, {'query_count':202}, {'within_cleanup_deadline':1}, {'schema_version':2}):
             with redirect_stdout(io.StringIO()) as output:
                 self.assertFalse(Q.emit(dict(value, **mutation)))
             self.assertEqual(output.getvalue(), '')
