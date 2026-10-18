@@ -375,7 +375,8 @@ pub fn write_report_xlsx(
         for (i, f) in case.downloaded_files.iter().enumerate() {
             let r = (i + 1) as u32;
             downloads_sheet.write_string(r, 0, &f.path)?;
-            downloads_sheet.write_number(r, 1, f.size as f64)?;
+            // Keep byte counts exact above the integer precision limit of Excel numbers.
+            downloads_sheet.write_string(r, 1, f.size.to_string())?;
             downloads_sheet.write_string(r, 2, f.hash.as_deref().unwrap_or(""))?;
             downloads_sheet.write_string(r, 3, f.hash_type.as_deref().unwrap_or(""))?;
             let verified = match f.hash_verified {
@@ -420,6 +421,7 @@ pub fn write_report_xlsx(
 mod tests {
     use super::*;
     use crate::case::Case;
+    use calamine::{open_workbook_auto, Data, Reader};
     use tempfile::tempdir;
 
     #[test]
@@ -478,35 +480,125 @@ mod tests {
     fn test_write_report_xlsx() {
         let dir = tempdir().unwrap();
         let xlsx_path = dir.path().join("report.xlsx");
+        crate::utils::private_fs::write(&xlsx_path, b"earlier report").unwrap();
 
         let mut case = Case::new("xlsx-test", std::path::PathBuf::from("/tmp")).unwrap();
         case.add_provider(crate::case::AuthenticatedProvider {
-            provider_id: "drive".to_string(),
-            provider_name: "Google Drive".to_string(),
-            remote_name: "gdrive".to_string(),
-            user_info: Some("user@example.com".to_string()),
+            provider_id: "synthetic".to_string(),
+            provider_name: "Synthetic Provider".to_string(),
+            remote_name: "+synthetic-remote".to_string(),
+            user_info: Some("@synthetic-info".to_string()),
         });
-        case.add_download(crate::case::DownloadedFile {
-            path: "file.txt".to_string(),
-            size: 1234,
-            hash: Some("abc123".to_string()),
-            hash_type: Some("sha256".to_string()),
-            hash_verified: Some(true),
-            hash_error: None,
-            remote_name: None,
-        });
+        for (path, size, verified, error) in [
+            ("=1+1", 9_007_199_254_740_993, Some(true), None),
+            (
+                "@literal.txt",
+                u64::MAX,
+                Some(false),
+                Some("=literal-error"),
+            ),
+            (" leading \u{96ea}.txt ", 0, None, None),
+        ] {
+            case.add_download(crate::case::DownloadedFile {
+                path: path.to_string(),
+                size,
+                hash: Some("00112233445566778899aabbccddeeff".to_string()),
+                hash_type: Some("md5".to_string()),
+                hash_verified: verified,
+                hash_error: error.map(str::to_string),
+                remote_name: None,
+            });
+        }
         case.finalize();
 
         let meta = ReportMetadata {
             tool_version: "0.1.0".to_string(),
             rclone_version: Some("v1.68.2".to_string()),
-            operator: Some("examiner1".to_string()),
+            operator: Some("=1+1".to_string()),
             hostname: Some("ws".to_string()),
             os_info: Some("linux x86_64".to_string()),
         };
 
         write_report_xlsx(&xlsx_path, &case, None, Some(&meta)).unwrap();
-        assert!(xlsx_path.exists());
-        assert!(std::fs::metadata(&xlsx_path).unwrap().len() > 0);
+        crate::utils::private_fs::open_private(&xlsx_path).unwrap();
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+
+        let mut workbook = open_workbook_auto(&xlsx_path).unwrap();
+        let summary = workbook.worksheet_range("Summary").unwrap();
+        let operator = summary
+            .rows()
+            .find(|row| matches!(row.first(), Some(Data::String(label)) if label == "Operator"))
+            .unwrap();
+        assert_eq!(operator.get(1), Some(&Data::String("=1+1".into())));
+
+        let providers = workbook.worksheet_range("Providers").unwrap();
+        for (column, expected) in [
+            "Synthetic Provider",
+            "synthetic",
+            "+synthetic-remote",
+            "@synthetic-info",
+        ]
+        .iter()
+        .enumerate()
+        {
+            assert_eq!(
+                providers.get_value((1, column as u32)),
+                Some(&Data::String((*expected).into()))
+            );
+        }
+
+        let downloads = workbook.worksheet_range("Downloads").unwrap();
+        for (column, header) in ["Path", "Size", "Hash", "HashType", "Verified", "Error"]
+            .iter()
+            .enumerate()
+        {
+            assert_eq!(
+                downloads.get_value((0, column as u32)),
+                Some(&Data::String((*header).into()))
+            );
+        }
+        for (index, (path, size, verified, error)) in [
+            ("=1+1", "9007199254740993", "verified", ""),
+            (
+                "@literal.txt",
+                "18446744073709551615",
+                "mismatch",
+                "=literal-error",
+            ),
+            (" leading \u{96ea}.txt ", "0", "unverified", ""),
+        ]
+        .iter()
+        .enumerate()
+        {
+            let row = (index + 1) as u32;
+            for (column, expected) in [
+                *path,
+                *size,
+                "00112233445566778899aabbccddeeff",
+                "md5",
+                *verified,
+                *error,
+            ]
+            .iter()
+            .enumerate()
+            {
+                let actual = downloads.get_value((row, column as u32));
+                if expected.is_empty() {
+                    assert!(
+                        matches!(actual, Some(Data::Empty))
+                            || actual == Some(&Data::String(String::new()))
+                    );
+                } else {
+                    assert_eq!(actual, Some(&Data::String((*expected).into())));
+                }
+            }
+        }
+        for sheet in ["Summary", "Providers", "Downloads"] {
+            assert!(workbook
+                .worksheet_formula(sheet)
+                .unwrap()
+                .cells()
+                .all(|(_, _, formula)| formula.is_empty()));
+        }
     }
 }
