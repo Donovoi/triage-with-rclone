@@ -63,7 +63,7 @@ class SourceSnapshotTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
+        self.root = Path(self.temp.name).resolve(strict=True)
         self.addCleanup(patch.stopall)
         patch.dict(os.environ, {"CARGO_TARGET_DIR": "", "CARGO_BUILD_TARGET_DIR": ""}).start()
         for name, data in FILES.items():
@@ -154,15 +154,21 @@ class SourceSnapshotTests(unittest.TestCase):
         target.unlink();target.mkdir()
         original = Path.lstat
         for affected,kind in ((target,"symlink"),(target,"reparse"),(self.root/"local/alpha","reparse")):
-            def lstat(path, *args, **kwargs):
-                info = original(path, *args, **kwargs)
-                if path == affected:
-                    values = {name: getattr(info, name) for name in ("st_dev", "st_ino", "st_mode", "st_size", "st_mtime_ns", "st_ctime_ns")}
-                    values["st_mode"] = stat.S_IFLNK if kind == "symlink" else info.st_mode
-                    values["st_file_attributes"] = 0x400 if kind == "reparse" else 0
-                    return types.SimpleNamespace(**values)
-                return info
-            with patch.object(Path, "lstat", lstat), self.assertRaises(S.SourceSnapshotError): self.rows()
+            with self.subTest(affected=affected.relative_to(self.root).as_posix(), kind=kind):
+                injected = []
+                def lstat(path, *args, **kwargs):
+                    info = original(path, *args, **kwargs)
+                    if path == affected:
+                        injected.append(path)
+                        values = {name: getattr(info, name) for name in ("st_dev", "st_ino", "st_mode", "st_size", "st_mtime_ns", "st_ctime_ns")}
+                        values["st_mode"] = stat.S_IFLNK if kind == "symlink" else info.st_mode
+                        values["st_file_attributes"] = 0x400 if kind == "reparse" else 0
+                        return types.SimpleNamespace(**values)
+                    return info
+                try:
+                    with patch.object(Path, "lstat", lstat), self.assertRaises(S.SourceSnapshotError): self.rows()
+                finally:
+                    self.assertTrue(injected, "link/reparse fault hook was not reached")
         changed = False
         def read(path, *args, **kwargs):
             nonlocal changed
@@ -305,15 +311,19 @@ class SourceSnapshotTests(unittest.TestCase):
                 return info
             with patch.object(os,"fstat",side_effect=changed),self.assertRaises(error):reader(path,S.MAX_FILE_BYTES)
             self.assertEqual(len(calls),2)
-        original=Path.lstat
+        original=Path.lstat;injected=[]
         def nonregular(item,*args,**kwargs):
             info=original(item,*args,**kwargs)
             if item==path:
+                injected.append(item)
                 values={name:getattr(info,name) for name in ("st_dev","st_ino","st_mode","st_size","st_mtime_ns","st_ctime_ns")}
                 values["st_mode"]=stat.S_IFIFO
                 return types.SimpleNamespace(**values)
             return info
-        with patch.object(Path,"lstat",nonregular),self.assertRaises(S.SourceSnapshotError):self.rows()
+        try:
+            with patch.object(Path,"lstat",nonregular),self.assertRaises(S.SourceSnapshotError):self.rows()
+        finally:
+            self.assertTrue(injected, "nonregular fault hook was not reached")
 
     def metadata_read(self, *, windows=True, unequal_ctime=False, cross_change=None, same_change=None,
                       birth_presence="both"):
