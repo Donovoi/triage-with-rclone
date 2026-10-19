@@ -199,7 +199,8 @@ class ObservedControllerTests(unittest.TestCase):
             with self.subTest(concurrent_limit=limit): self.reject(snapshot(), concurrent=limit)
 
     def test_failed_startup_and_closed_error_vocabulary_are_retained(self):
-        for error in F.DEBUG_ERRORS | F.SOURCE_ERRORS | F.H.SESSION_ERRORS:
+        original_errors = F.DEBUG_ERRORS | F.SOURCE_ERRORS | (F.H.SESSION_ERRORS - F.H.PROCESS_OBSERVATION_ERRORS)
+        for error in original_errors:
             value = snapshot("invalid")
             value.update(ok=False, state="finished", errors=[error], app_exited=True)
             self.assertEqual(self.validate(value), value)
@@ -208,6 +209,20 @@ class ObservedControllerTests(unittest.TestCase):
         self.reject(dict(value, ok=True, errors=[]))
         self.reject(dict(value, debug_handles_closed=True))
         self.reject(dict(snapshot(), system_helper_reference_closed=True))
+
+    def test_observation_stage_requires_its_generic_error_and_one_known_stage(self):
+        for stage in F.H.PROCESS_OBSERVATION_ERRORS:
+            value = snapshot("invalid")
+            value.update(ok=False, state="finished", errors=["process_observation_failed", stage], app_exited=True)
+            with self.subTest(stage=stage):
+                self.assertEqual(self.validate(value), value)
+                self.reject(dict(value, errors=[stage]))
+        value = snapshot("invalid")
+        value.update(ok=False, state="finished", app_exited=True)
+        for errors in (
+                ["process_observation_failed", "process_observation_stage_child_open", "process_observation_stage_unknown"],
+                ["process_observation_failed", "process_observation_stage_private-canary"]):
+            with self.subTest(errors=errors): self.reject(dict(value, errors=errors))
 
     def test_monotone_observations_and_hashes(self):
         initial = snapshot("poll", True); initial.update(state="running")

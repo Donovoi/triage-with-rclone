@@ -673,7 +673,11 @@ def remove_owned(root, expected_identity):
 SESSION_KEYS = frozenset({"schema_version", "action", "ok", "state", "app_exit_code", "runtime_image_observed",
     "runtime_sha256", "runtime_process_count", "ctrl_c_sent", "output_bytes", "output_limit_exceeded", "forced_termination",
     "app_exited", "observed_children_exited", "job_zero_confirmed", "reader_joined", "conpty_closed", "errors"})
-SESSION_ERRORS = frozenset("protocol_invalid job_assignment_failed termination_failed deadline_exceeded start_failed "
+PROCESS_OBSERVATION_ERRORS = frozenset("process_observation_stage_" + stage for stage in (
+    "pid_buffer_allocate", "pid_list_query", "pid_list_shape", "pid_value", "retained_child_wait",
+    "child_open", "child_membership", "child_exit_wait", "child_capacity", "child_created",
+    "child_handle_close", "pid_buffer_free", "job_accounting", "app_exit_wait", "app_exit_code", "unknown"))
+SESSION_ERRORS = PROCESS_OBSERVATION_ERRORS | frozenset("protocol_invalid job_assignment_failed termination_failed deadline_exceeded start_failed "
     "output_limit_exceeded reader_failed job_query_failed process_observation_failed runtime_observation_failed "
     "ctrl_c_refused input_failed input_timeout forced_termination process_cleanup_failed input_cleanup_failed "
     "reader_cleanup_failed console_cleanup_failed console_cleanup_timeout".split())
@@ -696,6 +700,8 @@ def validate_session(value, action):
     errors = value["errors"]
     need(type(errors) is list and len(errors) <= 24 and all(type(e) is str and e in SESSION_ERRORS for e in errors)
          and len(set(errors)) == len(errors) and value["ok"] == (not errors), "session_failed")
+    stages = PROCESS_OBSERVATION_ERRORS.intersection(errors)
+    need(not stages or len(stages) == 1 and "process_observation_failed" in errors, "session_failed")
     return value
 
 
