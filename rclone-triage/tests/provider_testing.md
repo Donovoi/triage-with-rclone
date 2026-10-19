@@ -1,5 +1,11 @@
 # Provider testing
 
+## Google Drive: scoped preservation check
+
+On 19 October 2026 (UTC), the Windows x64 app checked one dedicated, read-only Google Drive test folder. The file lists before and after matched: 11 files and 8 folders. Ten small test files were downloaded three times. All 30 downloads, totalling 200,412 bytes, matched independent expected hashes. The app and helper processes ended, temporary folders were checked, and the lab was shut down and disconnected. Private working settings and evidence were retained.
+
+This result applies to build `8f412d39e1f36a3755714a836f598d2420da333c`, executable SHA256 `3e79ec968bb9a3010cf5ecd08503e3ad388a5b0096c8209a1d60885134302912`, with the pinned rclone 1.75.2 package. It checks the listed metadata and sampled bytes at those observations; it does not prove that the source never changed between them. The optional 16 MiB file was listed but not downloaded. This run did not test new login, refresh, denial, revocation or cancellation, independently observe the running rclone image, or qualify another build. The coverage ledger and full-provider status are unchanged.
+
 ## Dropbox App Folder progress
 
 On 10 October 2026, the checked Windows x64 app passed these tests against a dedicated, read-only Dropbox App Folder in the isolated lab:

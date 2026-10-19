@@ -742,6 +742,51 @@ jobs:
           path: ${{ runner.temp }}/azureblob-validation.json
           if-no-files-found: error
           retention-days: 14
+      - name: Check Azure Blob known-byte acquisition and authenticated download denial
+        id: azureblob_download_denial_cases
+        timeout-minutes: 8
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:GITHUB_ACTIONS -cne 'true' -or $env:RUNNER_ENVIRONMENT -cne 'github-hosted') { throw 'azureblob_hosted_required' }
+          $application = (Resolve-Path "$env:RUNNER_TEMP/azureblob-build/rclone-triage/target/release/rclone-triage.exe").Path
+          $buildCommit = (& git rev-parse --verify HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $buildCommit -cnotmatch '^[0-9a-f]{40}$' -or $env:GITHUB_SHA -cne $buildCommit) { throw 'azureblob_build_binding_failed' }
+          $expectedPins = (Get-FileHash -LiteralPath rclone-version.env -Algorithm SHA256).Hash
+          if ((Get-FileHash -LiteralPath "$env:RUNNER_TEMP/azureblob-build/rclone-version.env" -Algorithm SHA256).Hash -cne $expectedPins) { throw 'azureblob_runtime_binding_failed' }
+          $applicationHash = (Get-FileHash -LiteralPath $application -Algorithm SHA256).Hash.ToLowerInvariant()
+          python -B scripts/application-lab/run_windows_azureblob.py `
+            --application $application --application-sha256 $applicationHash --build-commit $buildCommit `
+            --fixture-mode azureblob_sharedkey_download_denial_cli_v1 `
+            --report "$env:RUNNER_TEMP/azureblob-download-denial.private.json"
+          if ($LASTEXITCODE -ne 0) { throw 'azureblob_download_denial_cases_failed' }
+      - name: Independently validate Azure Blob download-denial experiment evidence
+        id: azureblob_download_denial_validation
+        if: ${{ !cancelled() && (steps.azureblob_download_denial_cases.outcome == 'success' || steps.azureblob_download_denial_cases.outcome == 'failure') }}
+        timeout-minutes: 3
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:GITHUB_ACTIONS -cne 'true' -or $env:RUNNER_ENVIRONMENT -cne 'github-hosted') { throw 'azureblob_hosted_required' }
+          $application = (Resolve-Path "$env:RUNNER_TEMP/azureblob-build/rclone-triage/target/release/rclone-triage.exe").Path
+          $buildCommit = (& git rev-parse --verify HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $buildCommit -cnotmatch '^[0-9a-f]{40}$' -or $env:GITHUB_SHA -cne $buildCommit) { throw 'azureblob_build_binding_failed' }
+          $expectedPins = (Get-FileHash -LiteralPath rclone-version.env -Algorithm SHA256).Hash
+          if ((Get-FileHash -LiteralPath "$env:RUNNER_TEMP/azureblob-build/rclone-version.env" -Algorithm SHA256).Hash -cne $expectedPins) { throw 'azureblob_runtime_binding_failed' }
+          python -B scripts/azureblob_application_evidence.py `
+            --receipt "$env:RUNNER_TEMP/azureblob-download-denial.private.json" --application $application `
+            --fixture-mode azureblob_sharedkey_download_denial_cli_v1 `
+            --build-commit $buildCommit --report "$env:RUNNER_TEMP/azureblob-download-denial-validation.json"
+          if ($LASTEXITCODE -ne 0) { throw 'azureblob_evidence_failed' }
+      - name: Retain only normalized Azure Blob download-denial experiment evidence
+        if: ${{ !cancelled() && (steps.azureblob_download_denial_validation.outcome == 'success' || steps.azureblob_download_denial_validation.outcome == 'failure') }}
+        timeout-minutes: 2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: azureblob-download-denial-experiment-Windows
+          path: ${{ runner.temp }}/azureblob-download-denial-validation.json
+          if-no-files-found: error
+          retention-days: 14
   windows-swift-cancellation:
     name: Windows Swift download cancellation experiment
     needs: test

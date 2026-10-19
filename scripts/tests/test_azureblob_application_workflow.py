@@ -55,7 +55,8 @@ def validate(text):
     require(scalar(job, "needs", 4) == "test" and scalar(job, "runs-on", 4) == "windows-latest", "checked_hosted_build")
     require(not re.search(r"^    (?:if|services|permissions):", job, re.MULTILINE) and
         "continue-on-error" not in job and "secrets." not in job, "mandatory_unprivileged_job")
-    require(action_refs(job) == action_refs(definitions["windows-b2"]) and len(action_refs(job)) == 4, "shared_pinned_actions")
+    shared = action_refs(definitions["windows-b2"])
+    require(len(shared) == 4 and action_refs(job) == shared + [shared[-1]], "shared_pinned_actions")
     require("persist-credentials: false" in chain[0], "no_persisted_credentials")
     downloads = [part for part in chain if "uses: actions/download-artifact@" in part]
     require(len(downloads) == 1, "one_checked_download")
@@ -67,23 +68,33 @@ def validate(text):
     require(len(checked) == 1 and all(path in checked[0] for path in
         ("rclone-triage/target/release/rclone-triage.exe", "rclone-triage/target/release/dependencies.json", "rclone-version.env")), "checked_artifact_layout")
     runs = [part for part in chain if "        run:" in part]
-    require(len(runs) == 2 and scalar(runs[0], "id", 8) == "azureblob_cases" and scalar(runs[1], "id", 8) == "azureblob_validation", "distinct_ordered_steps")
-    require(not re.search(r"^        if:", runs[0], re.MULTILINE), "producer_not_optional")
-    producer, p = bound_command(runs[0]); _, v = bound_command(runs[1])
-    require(p[0] == "scripts/application-lab/run_windows_azureblob.py" and v[0] == "scripts/azureblob_application_evidence.py", "producer_then_independent_validator")
-    require("Get-FileHash -LiteralPath $application -Algorithm SHA256" in producer and
-        p[p.index("--application-sha256") + 1] == "$applicationHash", "application_hash_required")
-    require(p[p.index("--report") + 1] == v[v.index("--receipt") + 1] == "$env:RUNNER_TEMP/azureblob.private.json" and
-        v[v.index("--report") + 1] == "$env:RUNNER_TEMP/azureblob-validation.json", "private_input_normalized_output")
-    after_either_outcome(runs[1], "azureblob_cases")
+    ids = ["azureblob_cases", "azureblob_validation", "azureblob_download_denial_cases", "azureblob_download_denial_validation"]
+    require(len(runs) == 4 and [scalar(part, "id", 8) for part in runs] == ids, "distinct_ordered_steps")
     uploads = [part for part in chain if "uses: actions/upload-artifact@" in part]
-    require(len(uploads) == 1, "one_normalized_upload"); upload = uploads[0]
-    after_either_outcome(upload, "azureblob_validation")
-    require(scalar(upload, "path", 10) == "${{ runner.temp }}/azureblob-validation.json" and
-        scalar(upload, "if-no-files-found", 10) == "error", "normalized_only_upload")
-    require(scalar(upload, "name", 10) == "azureblob-experiment-Windows", "distinct_normalized_artifact")
-    require(scalar(job, "timeout-minutes", 4) == "20" and scalar(runs[0], "timeout-minutes", 8) == "8" and
-        scalar(runs[1], "timeout-minutes", 8) == "3", "bounded_execution")
+    require(len(uploads) == 2, "two_distinct_normalized_uploads")
+    for index, stem in enumerate(("azureblob", "azureblob-download-denial")):
+        first, second = runs[index * 2:index * 2 + 2]; upload = uploads[index]
+        require(not re.search(r"^        if:", first, re.MULTILINE), "producer_not_optional")
+        producer, p = bound_command(first); _, v = bound_command(second)
+        require(p[0] == "scripts/application-lab/run_windows_azureblob.py" and v[0] == "scripts/azureblob_application_evidence.py", "producer_then_independent_validator")
+        require("Get-FileHash -LiteralPath $application -Algorithm SHA256" in producer and
+            p[p.index("--application-sha256") + 1] == "$applicationHash", "application_hash_required")
+        if index == 0:
+            require("--fixture-mode" not in p and "--fixture-mode" not in v, "original_default_mode_retained")
+        else:
+            for args in (p, v):
+                require(args.count("--fixture-mode") == 1 and args[args.index("--fixture-mode") + 1] ==
+                    "azureblob_sharedkey_download_denial_cli_v1", "explicit_download_denial_mode")
+        require(p[p.index("--report") + 1] == v[v.index("--receipt") + 1] == "$env:RUNNER_TEMP/" + stem + ".private.json" and
+            v[v.index("--report") + 1] == "$env:RUNNER_TEMP/" + stem + "-validation.json", "private_input_normalized_output")
+        after_either_outcome(second, ids[index * 2]); after_either_outcome(upload, ids[index * 2 + 1])
+        require(chain.index(first) < chain.index(second) < chain.index(upload) and
+            (index == 0 or chain.index(uploads[0]) < chain.index(first)), "retained_evidence_before_next_mode")
+        require(scalar(upload, "path", 10) == "${{ runner.temp }}/" + stem + "-validation.json" and
+            scalar(upload, "if-no-files-found", 10) == "error", "normalized_only_upload")
+        require(scalar(upload, "name", 10) == stem + "-experiment-Windows", "distinct_normalized_artifact")
+        require(scalar(first, "timeout-minutes", 8) == "8" and scalar(second, "timeout-minutes", 8) == "3", "bounded_steps")
+    require(scalar(job, "timeout-minutes", 4) == "20", "bounded_execution")
     require(scalar(definitions["release"], "needs", 4).strip("[]").split(", ").count("windows-azureblob") == 1, "mandatory_nightly_dependency")
 
 
@@ -142,6 +153,18 @@ class AzureBlobWorkflowTests(unittest.TestCase):
     def test_azureblob_must_gate_nightly(self):
         with self.assertRaises(ValueError):
             validate(self.text.replace("windows-swift, windows-azureblob, ", "windows-swift, ", 1))
+
+    def test_new_mode_and_evidence_cannot_replay_original_mode(self):
+        chain = steps(jobs(self.text)["windows-azureblob"])
+        for region in [part for part in chain if "        run:" in part][2:]:
+            self.reject((("--fixture-mode azureblob_sharedkey_download_denial_cli_v1", ""),
+                ("--fixture-mode azureblob_sharedkey_download_denial_cli_v1", "--fixture-mode azureblob_sharedkey_acquisition_cli_v1"),
+                ("azureblob-download-denial.private.json", "azureblob.private.json")), region)
+        self.reject((("steps.azureblob_download_denial_cases.outcome == 'failure'", "steps.azureblob_download_denial_cases.outcome == 'skipped'"),
+            ("steps.azureblob_download_denial_validation.outcome == 'failure'", "steps.azureblob_download_denial_validation.outcome == 'skipped'"),
+            ("        id: azureblob_download_denial_cases", "        if: false\n        id: azureblob_download_denial_cases"),
+            ("path: ${{ runner.temp }}/azureblob-download-denial-validation.json", "path: ${{ runner.temp }}/azureblob-download-denial.private.json"),
+            ("name: azureblob-download-denial-experiment-Windows", "name: azureblob-experiment-Windows")))
 
 
 if __name__ == "__main__": unittest.main()
