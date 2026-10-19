@@ -845,11 +845,290 @@ def run_cancellation(application, application_sha, commit):
     return receipt
 
 
+def listing_bindings(application, commit):
+    value = bindings(application, commit)
+    value["fixture_manifest_sha256"] = H.sha(E.compact(E.listing_manifest()))
+    return value
+
+
+def listing_csv(data):
+    need(type(data) is bytes and 0 < len(data) <= 16384 and data.startswith(b"\xef\xbb\xbf"), "listing_invalid")
+    try:
+        rows = list(csv.reader(io.StringIO(data.decode("utf-8-sig"), newline=""), strict=True))
+    except (UnicodeError, csv.Error):
+        raise ProducerError("listing_invalid") from None
+    # Literal schema/oracle belongs to the independent evidence module. No
+    # apostrophe stripping, case folding, path normalization or hash borrowing.
+    need(rows and rows[0] == H.HEADERS and sorted(rows[1:]) == sorted(E.listing_rows()), "listing_invalid")
+    return True
+
+
+def listing_output(case):
+    base = case / "output" / H.CASE_NAME
+    listing_csv(H.read(base / "listings/inventory.csv", 16384))
+    W.output_inventory("listing", case)
+    need(not H.inventory(base / "downloads"), "outputs_invalid")
+    return dict.fromkeys(("inventory_exact", "listing_complete", "outputs_exact", "no_download_outputs"), True)
+
+
+def listing_preserved(item, app_sha, *, before_start=False):
+    case = item["case"]
+    need(H.identity(case) == item["lease"] and H.identity(case / "source") == item["source"] and not H.inventory(case / "source") and
+         H.sha(H.read(case / "application.exe", 512 * 1024 * 1024)) == app_sha and
+         "queue.csv" not in H.inventory(case), "preservation_failed")
+    if before_start and not item["config_written"]:
+        need("source.conf" not in H.inventory(case), "preservation_failed")
+    else:
+        need(H.read(case / "source.conf", 8192) == item["config"], "preservation_failed")
+    if before_start:
+        need(not H.inventory(case / "output"), "preservation_failed")
+    if item["record"]["checks"]["configuration_preserved"]:
+        H.configuration_preserved(case, item["config"])
+    if item["artifact"] is not None:
+        need(W.fingerprint(case) == item["artifact"], "preservation_failed")
+
+
+def listing_live(bridge, case, state, runtime, deadline):
+    while state.gate_snapshot()["listing_auth"]["entered"] is None:
+        need(time.monotonic() < deadline and not state.errors, "runtime_unobserved")
+        response = bridge.command("poll")
+        need(response["ok"] and not response["app_exited"], "runtime_unobserved")
+        state.wakes["listing_auth"].wait(0.02)
+    need(time.monotonic() < deadline and not state.errors, "deadline_exceeded")
+    value = bridge.command("observe_runtime", extraction_root=str(case / "temp"), expected_sha256=runtime["sha256"])
+    H.validate_session(value, "observe_runtime")
+    need(time.monotonic() < deadline and value["ok"] and not value["errors"] and value["state"] == "running" and
+         not value["app_exited"] and value["runtime_image_observed"] and value["runtime_sha256"] == runtime["sha256"] and
+         type(value["runtime_process_count"]) is int and value["runtime_process_count"] == 1 and
+         not value["forced_termination"] and not value["output_limit_exceeded"], "runtime_unobserved")
+    state.release_gate("listing_auth")
+    return dict(kind="live_image", runtime_process_count=1)
+
+
+def listing_committed(state, deadline):
+    # The app can exit after receiving the final HEAD while its fixture worker
+    # has not resumed after sendall. Observe the committed response before
+    # teardown can stop that worker; the original case deadline still applies.
+    while True:
+        need(time.monotonic() < deadline, "deadline_exceeded")
+        value = E.listing_fixture(state.snapshot())
+        need(not value["errors"] and value["source_preserved"] and len(value["events"]) <= 8, "fixture_failed")
+        if len(value["events"]) == 8:
+            E.listing_fixture(value, successful=True)
+            need(time.monotonic() < deadline, "deadline_exceeded")
+            return
+        time.sleep(min(0.02, max(0, deadline - time.monotonic())))
+
+
+def listing_close_session(bridge, ready, start_attempted):
+    ready_proof = False
+    try:
+        if ready and not start_attempted:
+            H.validate_close_ready(bridge.command("close_ready"))
+            ready_proof = True
+    finally:
+        closed = bridge.close()
+    if ready_proof:
+        return closed is True
+    if closed is not True or type(bridge.last) is not dict:
+        return False
+    value = bridge.last
+    H.validate_session(value, value.get("action"))
+    return (value["state"] == "finished" and not set(value["errors"]) & CLEANUP_UNCERTAIN and
+            all(value[k] is True for k in H.SESSION_CLEANUP))
+
+
+def execute_listing(name, suite, application, app_sha, runtime, errors):
+    record = dict(status="failed", exit_code=None, runtime_sha256=None, observation=None, continuity=None, fixture=None,
+        failure_code=None, checks=dict.fromkeys(E.LIST_CHECKS[name], False))
+    item = dict(name=name, record=record, case=suite / "listing", lease=None,
+        source=None, roots=None, baseline=None, artifact=None, config=None, config_written=False)
+    case, checks = item["case"], record["checks"]
+    bridge = server = state = context = None
+    entered = ready = start_attempted = fixture_attempted = False
+    deadline = time.monotonic() + 120
+    try:
+        H.prepare(suite, case.name)
+        item["lease"] = H.identity(case)
+        item["roots"] = H.create_private_roots(case)
+        H.private_directory(case, "output")
+        item["source"] = create_source(case)
+        body = H.read(application, 512 * 1024 * 1024, allow_hardlinks=True)
+        need(H.sha(body) == app_sha, "binding_failed")
+        H.private_write(case, "application.exe", body)
+        bridge = H.Bridge(case)
+        H.validate_ready(bridge.command("ready"))
+        ready = True
+        # Capture helper-only identity/layout before later fixture/config setup
+        # can fail. An unavailable baseline remains a cleanup failure.
+        H.application_roots_empty(case, item["roots"])
+        item["baseline"] = H.helper_baseline(case, item["roots"])
+        # Fresh fixture starts after readiness, inside the original case deadline.
+        user, key = secrets.token_hex(32), secrets.token_hex(32)
+        state = F.AppSwiftListingState(user, key)
+        context = F.serve_swift_listing(state)
+        fixture_attempted = True
+        server = context.__enter__()
+        entered = True
+        deadline = min(deadline, server.deadline)
+        config = item["config"] = config_bytes(server.endpoint, user, key)
+        H.private_write(case, "source.conf", config)
+        item["config_written"] = True
+        H.application_roots_empty(case, item["roots"])
+        # Normal launch keeps the original latest pre-start baseline. The earlier
+        # ready-only snapshot is only needed when setup never reaches this point.
+        item["baseline"] = H.helper_baseline(case, item["roots"])
+        remaining = int((deadline - time.monotonic()) * 1000)
+        need(1000 <= remaining <= 120000, "deadline_exceeded")
+        start_fields = dict(app_path=str(case / "application.exe"), app_sha256=app_sha,
+            args=H.app_args("listing", case), case_root=str(case), environment=H.environment(case),
+            transcript_path=str(case / "transcript.private"), max_output_bytes=8 * 1024 * 1024,
+            deadline_ms=remaining, max_runtime_processes=1)
+        start_attempted = True  # A possibly issued start never uses ready-only cleanup.
+        response = bridge.command("start", **start_fields)
+        need(response["ok"], "session_failed")
+        record["observation"] = listing_live(bridge, case, state, runtime, deadline)
+        record["runtime_sha256"] = runtime["sha256"]
+        checks["runtime_observed"] = True
+        while not response["app_exited"]:
+            need(time.monotonic() < deadline, "deadline_exceeded")
+            response = bridge.command("poll")
+            need(response["ok"], "session_failed")
+            if not response["app_exited"]:
+                time.sleep(0.02)
+        if response["state"] != "finished":
+            response = bridge.command("finish", grace_ms=5000)
+        need(time.monotonic() < deadline, "deadline_exceeded")
+        H.validate_session(response, response.get("action"))
+        need(response["ok"] and response["state"] == "finished" and not response["errors"] and
+             not response["forced_termination"] and not response["ctrl_c_sent"] and not response["output_limit_exceeded"] and
+             all(response[k] for k in H.SESSION_CLEANUP), "session_failed")
+        record["exit_code"] = response["app_exit_code"]
+        record["runtime_sha256"] = runtime["sha256"]
+        checks["orderly_exit"] = True
+        need(type(record["exit_code"]) is int and record["exit_code"] == 0, "session_failed")
+        checks["exit_success"] = True
+        listing_committed(state, deadline)
+        working = H.configuration_preserved(case, config)
+        checks["configuration_preserved"] = True
+        checks.update(listing_output(case))
+        item["artifact"] = W.fingerprint(case)
+    except BaseException as error:
+        mark(record, failure(error), errors)
+    finally:
+        if bridge is not None:
+            try:
+                checks["process_cleanup"] = listing_close_session(bridge, ready, start_attempted)
+                if start_attempted and checks["process_cleanup"] and record["exit_code"] is None:
+                    record["exit_code"] = bridge.last.get("app_exit_code")
+            except BaseException:
+                checks["process_cleanup"] = False
+        if entered:
+            try:
+                context.__exit__(None, None, None)
+            except BaseException:
+                mark(record, "cleanup_failed", errors)
+        elif state is not None:
+            server = state._transport
+        checks["fixture_cleanup"] = not fixture_attempted or fixture_closed(server)
+        if state is not None:
+            try:
+                record["fixture"] = state.snapshot()
+                E.listing_fixture(record["fixture"], successful=True)
+                checks.update(fixture_valid=True, source_preserved=True)
+                checks["authenticated"] = True
+            except BaseException:
+                mark(record, "fixture_failed", errors)
+        if item["lease"] is not None and all(checks[k] for k in ("process_cleanup", "fixture_cleanup")):
+            try:
+                listing_preserved(item, app_sha, before_start=not start_attempted)
+                H.application_roots_empty(case, item["roots"])
+                H.helper_cleanup_preserved(H.helper_baseline(case, item["roots"]), item["baseline"])
+                checks["process_cleanup"] = False
+                H.prepare(suite, case.name, "Verify")
+                checks["process_cleanup"] = True
+                H.remove_owned(case, item["lease"])
+                checks["temp_cleanup"] = True
+            except BaseException:
+                mark(record, "cleanup_failed", errors)
+        if not all(checks[k] for k in ("process_cleanup", "fixture_cleanup", "temp_cleanup")):
+            mark(record, "cleanup_failed", errors)
+    return item
+
+
+def run_listing(application, application_sha, commit):
+    H.hosted_guard()
+    application = Path(application).absolute()
+    runtime, bound = E.runtime_binding(ROOT), E.compute_listing_bindings(ROOT, application, commit)
+    cases, group, errors, items = {"listing": dict(status="not_run", exit_code=None, runtime_sha256=None, observation=None, continuity=None, fixture=None, failure_code=None, checks=dict.fromkeys(E.LIST_CHECKS["listing"], None))}, E.empty_group(), [], []
+    suite = suite_id = None
+    clean = False
+    try:
+        need(bound["application_sha256"] == application_sha and os.environ.get("GITHUB_SHA") == commit and listing_bindings(application, commit) == bound, "binding_failed")
+        parent = Path(os.environ["RUNNER_TEMP"]).absolute()
+        suite = parent / ("app-http-" + uuid.uuid4().hex)
+        H.prepare(parent, suite.name)
+        suite_id = H.identity(suite)
+        group.update(status="failed", checks=dict.fromkeys(E.GROUP_CHECKS, False))
+        for name in E.LIST_CASES:
+            item = execute_listing(name, suite, application, application_sha, runtime, errors)
+            items.append(item)
+            cases[name] = item["record"]
+            if errors:
+                break
+    except BaseException as error:
+        errors.append(failure(error))
+    finally:
+        try:
+            need(listing_bindings(application, commit) == bound and E.runtime_binding(ROOT) == runtime, "preservation_failed")
+        except BaseException:
+            errors.append("preservation_failed")
+        if group["status"] != "not_run":
+            group["checks"].update(configs_preserved=len(items) == 1 and all(i["record"]["checks"]["configuration_preserved"] for i in items),
+                artifacts_preserved=len(items) == 1 and all(i["artifact"] is not None and i["record"]["checks"]["temp_cleanup"] for i in items),
+                all_processes_reaped=bool(items) and all(i["record"]["checks"]["process_cleanup"] for i in items),
+                fixture_cleanup=bool(items) and all(i["record"]["checks"]["fixture_cleanup"] for i in items))
+        if suite_id is not None:
+            try:
+                need(bool(items) and all(i["record"]["checks"]["temp_cleanup"] for i in items) and not H.inventory(suite), "cleanup_failed")
+                group["checks"]["all_processes_reaped"] = False
+                H.prepare(suite.parent, suite.name, "Verify")
+                group["checks"]["all_processes_reaped"] = True
+                H.remove_owned(suite, suite_id)
+                group["checks"]["temp_cleanup"] = True
+                clean = True
+            except BaseException:
+                errors.append("cleanup_failed")
+        elif suite is None:
+            clean = True
+        else:
+            errors.append("cleanup_failed")
+    errors = list(dict.fromkeys(errors))
+    success = len(items) == 1 and not errors and clean and all(group["checks"].values()) and all(
+        all(v for k, v in i["record"]["checks"].items() if k != "group_finalized") for i in items)
+    if success:
+        group["status"] = "passed"
+        for row in cases.values():
+            row["status"], row["checks"]["group_finalized"] = "passed", True
+    elif group["status"] != "not_run":
+        mark(group, "group_failed", errors)
+        for row in cases.values():
+            if row["status"] != "not_run":
+                mark(row, row["failure_code"] or "group_failed", errors)
+    receipt = dict(schema_version=3, scope=E.SCOPE, fixture_mode=E.LIST_MODE, backend="swift", platform="windows",
+        created_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), runtime=runtime, bindings=bound, cases=cases,
+        experiment=group, lifecycle_scope="configured_account_root_listing", claims=dict.fromkeys(E.LIST_FALSE_CLAIMS, False), cleanup_complete=clean,
+        errors=errors, capabilities=E.listing_capabilities(cases, clean), result="passed" if success else "failed")
+    E.validate_listing_receipt(receipt, runtime, bound)
+    return receipt
+
 def main(argv=None):
     parser = argparse.ArgumentParser()
     for flag in ("application", "application-sha256", "build-commit", "report"):
         parser.add_argument("--" + flag, required=True)
-    parser.add_argument("--cancellation-only", action="store_true")
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument("--cancellation-only", action="store_true")
+    modes.add_argument("--listing-only", action="store_true")
     args = parser.parse_args(argv)
     descriptor = prior = None
     try:
@@ -860,7 +1139,7 @@ def main(argv=None):
         path = Path(args.report).absolute()
         H.plain(path.parent, True)
         descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        runner = run_cancellation if args.cancellation_only else run
+        runner = run_listing if args.listing_only else run_cancellation if args.cancellation_only else run
         receipt = runner(args.application, args.application_sha256, args.build_commit)
         with os.fdopen(descriptor, "wb") as stream:
             descriptor = None
