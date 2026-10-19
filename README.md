@@ -32,7 +32,9 @@ Local-file and ZIP checks have passed, including cancellation and cleanup.
 
 Dropbox and Swift download cancellation tests have passed. B2, Swift, WebDAV and Azure Blob download checks have passed using local test servers. These results apply to the tested Windows builds; tests with real Swift accounts are still pending.
 
-Current work: finish Windows checks, test Swift file lists and check the remaining providers.
+Google Drive file lists and repeated downloads passed in a small read-only test folder. Login, refresh and other provider checks are still incomplete.
+
+Current work: test what happens when an Azure Blob download is refused, then continue tests for the remaining providers.
 
 ## What comes next
 
