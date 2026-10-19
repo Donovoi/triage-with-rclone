@@ -138,7 +138,9 @@ class ProtocolTests(unittest.TestCase):
             self.assertEqual(output.getvalue(), "")
 
     def test_tui_diagnostic_remains_bounded_at_all_static_limits(self):
-        value = dict(snapshot(), ok=False, errors=sorted(T.H.SESSION_ERRORS | T.TUI_ERRORS)[:24],
+        errors = sorted((T.H.SESSION_ERRORS - T.H.PROCESS_OBSERVATION_ERRORS) | T.TUI_ERRORS)[:23]
+        errors.append("process_observation_stage_unknown")
+        value = dict(snapshot(), ok=False, errors=errors,
                      runtime_process_count=64, forced_termination=True, output_bytes=8 * 1024 * 1024 + 65536,
                      **T.COUNTER_BOUNDS)
         self.bridge.last = value
@@ -147,6 +149,35 @@ class ProtocolTests(unittest.TestCase):
         with redirect_stdout(io.StringIO()) as output:
             self.bridge.failure_diagnostic(value, "start")
         self.assertLessEqual(len(output.getvalue().encode("ascii")), 4096)
+
+    def test_shared_poll_observation_stage_is_closed_and_never_promotes_tui_success(self):
+        for stage in T.H.PROCESS_OBSERVATION_ERRORS:
+            value = dict(snapshot("poll"), ok=False,
+                         errors=["process_observation_failed", stage, "forced_termination"], forced_termination=True)
+            self.bridge.last = None
+            self.bridge.last = self.bridge.validate_session(value, "poll")
+            with redirect_stdout(io.StringIO()) as output:
+                self.bridge.failure_diagnostic(value, "poll")
+            self.assertEqual(json.loads(output.getvalue().split("=", 1)[1])["errors"], value["errors"])
+            self.assertLessEqual(len(output.getvalue().encode("ascii")), 4096)
+        for errors in (["process_observation_stage_unknown"],
+                       ["process_observation_failed", "process_observation_stage_private-canary"],
+                       ["process_observation_failed", "process_observation_stage_unknown", "process_observation_stage_child_open"]):
+            self.bridge.last = None
+            self.rejects(dict(snapshot("poll"), ok=False, errors=errors), "poll")
+
+    def test_shared_poll_full_original_error_cap_keeps_cleanup_without_stage(self):
+        original = sorted((T.H.SESSION_ERRORS - T.H.PROCESS_OBSERVATION_ERRORS) | T.TUI_ERRORS)
+        self.assertEqual(len(original), 24)
+        self.assertIn("reader_cleanup_failed", original)
+        value = dict(snapshot("poll"), ok=False, errors=original, forced_termination=True)
+        self.bridge.last = self.bridge.validate_session(value, "poll")
+        with redirect_stdout(io.StringIO()) as output:
+            self.bridge.failure_diagnostic(value, "poll")
+        self.assertEqual(json.loads(output.getvalue().split("=", 1)[1])["errors"], original)
+        self.assertLessEqual(len(output.getvalue().encode("ascii")), 4096)
+        self.bridge.last = None
+        self.rejects(dict(value, errors=original + ["process_observation_stage_unknown"]), "poll")
 
     def test_command_emits_only_failure_and_printing_cannot_change_the_saved_response(self):
         for failure, print_failure in ((True, False), (True, True), (False, False)):
