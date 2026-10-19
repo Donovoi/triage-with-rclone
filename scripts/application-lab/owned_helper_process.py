@@ -608,6 +608,110 @@ class _Capture:
         self.process.mark_uncertain()
         return False
 
+    def failure_close_nowait(self):
+        # A failed clock grants no join or reader-close authority. Revoke only
+        # an unclaimed interrupted start; a claimed reader keeps its own pipe.
+        with self.lock:
+            if not self.returned and not self.claimed:
+                self.revoked = True
+            revoked = self.revoked
+            self.stop = True
+        if revoked:
+            self.pipe.close()
+        self.process.mark_uncertain()
+
+
+class _SetupQuiescence:
+    """Setup-success observation only; finalization remains an independent proof."""
+    def __init__(self):
+        self.status, self.queries = "admission_failed", 0
+        self.active = self.total = self.last_clock = self.deadline_expired = None
+
+    def clock(self, deadline, *, starting=False):
+        try:
+            need(type(deadline) in (int, float) and math.isfinite(deadline))
+            now = time.monotonic()
+            need(type(now) in (int, float) and math.isfinite(now) and now >= 0 and
+                 (self.last_clock is None or now >= self.last_clock))
+        except BaseException:
+            self.status = "clock_failed"
+            self.deadline_expired = None
+            raise
+        self.last_clock = now
+        self.deadline_expired = now >= deadline if starting else now > deadline
+        if self.deadline_expired:
+            self.status = "deadline_exhausted"
+            raise OwnershipError("helper_ownership_failed")
+        return now
+
+    def observe(self, process, capture, deadline):
+        try:
+            _registered()
+            with _lock:
+                need(_active is process and not _poisoned)
+            need(not process.finalized and not process.forced and not process.uncertain and
+                 process.creation_resolved and process.created and process.resumed and
+                 type(process.returncode) is int and process.returncode == 0)
+            need(capture.process is process and capture.pipe is process.stdout and
+                 capture.returned and capture.claimed and not capture.revoked and not capture.stop and
+                 capture.eof and not capture.failed and not capture.overflow and
+                 not capture.thread.is_alive() and process.stdout.closed and
+                 process.stdout.handle is process.parent[1] and process.stdin is None and process.stderr is None)
+            for cell in (*process.child, process.primary_thread, *process.parent):
+                with cell.lock:
+                    need(cell.owner is process and cell.users == 0 and
+                         (cell.value is None or cell.closed is True))
+            for cell in (process.process, process.job):
+                with cell.lock:
+                    need(cell.owner is process and cell.value is not None and cell.users == 0 and
+                         not cell.attempted and cell.closed is None)
+            self.clock(deadline, starting=True)
+            self.status = "parent_close_failed"
+            need(process.process.close() and process.process.closed is True)
+            self.clock(deadline)
+            while self.queries < 401:
+                self.clock(deadline, starting=True)
+                self.status = "query_failed"
+                self.queries += 1
+                with process.job.borrow() as handle:
+                    sample = process.api.accounting(handle)
+                self.status = "invalid_accounting"
+                need(type(sample) is tuple and len(sample) == 2)
+                active, total = sample
+                need(type(active) is int and type(total) is int and 0 <= active <= total < 2**32 and
+                     total >= 1 and (self.total is None or total >= self.total))
+                self.active, self.total = active, total
+                now = self.clock(deadline)
+                if active == 0:
+                    self.status = "zero_observed"
+                    return
+                if self.queries == 401:
+                    self.status = "observation_cap"
+                    raise OwnershipError("helper_ownership_failed")
+                now = self.clock(deadline, starting=True)
+                self.status = "pace_failed"
+                time.sleep(min(0.05, deadline - now))
+                self.clock(deadline)
+        except BaseException:
+            _retain_uncertainty(process)
+            raise
+
+    def diagnostic(self):
+        # This is emitted only while propagating failure, including a failed
+        # final proof after zero_observed. Finalizer counts never overwrite it.
+        try:
+            statuses = {"admission_failed", "parent_close_failed", "query_failed", "invalid_accounting",
+                        "clock_failed", "deadline_exhausted", "observation_cap", "pace_failed", "zero_observed"}
+            need(self.status in statuses and type(self.queries) is int and 0 <= self.queries <= 401)
+            need((self.active is None and self.total is None) or
+                 (type(self.active) is int and type(self.total) is int and 0 <= self.active <= self.total < 2**32 and self.total >= 1))
+            need(self.deadline_expired is None or type(self.deadline_expired) is bool)
+            record = dict(schema_version=1, status=self.status, queries=self.queries,
+                          active=self.active, total=self.total, deadline_expired=self.deadline_expired)
+            print("application_helper_setup_quiescence=" + json.dumps(record, separators=(",", ":")), flush=True)
+        except BaseException:
+            pass
+
 
 def run_setup(args, *, env, cwd=None, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
               stderr=subprocess.DEVNULL, timeout=20, check=False, failure_drain_seconds=5,
@@ -616,7 +720,7 @@ def run_setup(args, *, env, cwd=None, stdin=subprocess.DEVNULL, stdout=subproces
          (stdin, stdout, stderr) == (subprocess.DEVNULL, subprocess.PIPE, subprocess.DEVNULL))
     process = spawn(args, env=env, cwd=cwd, stdin=stdin, stdout=stdout, stderr=stderr, **hidden)
     deadline = time.monotonic() + 20
-    capture = None
+    capture = observation = None
     try:
         capture = _Capture(process)
         capture.start()
@@ -625,21 +729,36 @@ def run_setup(args, *, env, cwd=None, stdin=subprocess.DEVNULL, stdout=subproces
         process.wait(timeout=max(0, deadline - time.monotonic()))
         need(capture.eof and not capture.failed and not capture.overflow)
         data = capture.snapshot()
-        need(type(data) is bytes and process.finalize())
+        need(type(data) is bytes)
+        if process.returncode == 0:
+            observation = _SetupQuiescence()
+            observation.observe(process, capture, deadline)
+        need(process.finalize())
         return subprocess.CompletedProcess(args, process.returncode, stdout=data, stderr=None)
     except BaseException as primary:
-        failure_deadline = time.monotonic() + 5
+        try:
+            failure_start = time.monotonic()
+            need(type(failure_start) in (int, float) and math.isfinite(failure_start) and failure_start >= 0 and
+                 (observation is None or observation.last_clock is None or failure_start >= observation.last_clock))
+            failure_deadline = failure_start + 5
+            need(math.isfinite(failure_deadline))
+        except BaseException:
+            failure_deadline = None
+            _retain_uncertainty(process)
         try:
             process.kill()  # The original one parent kill, never a tree kill.
         except BaseException:
             _retain_uncertainty(process)
         try:
-            process.wait(timeout=max(0, failure_deadline - time.monotonic()))
+            process.wait(timeout=0 if failure_deadline is None else max(0, failure_deadline - time.monotonic()))
         except BaseException:
             _retain_uncertainty(process)
         try:
             if capture is not None:
-                capture.failure_close(failure_deadline)
+                if failure_deadline is None:
+                    capture.failure_close_nowait()
+                else:
+                    capture.failure_close(failure_deadline)
             else:
                 process.stdout.close()  # No reader was constructed or started.
                 process.mark_uncertain()
@@ -655,4 +774,9 @@ def run_setup(args, *, env, cwd=None, stdin=subprocess.DEVNULL, stdout=subproces
             process.finalize()
         except BaseException:
             _retain_uncertainty(process)
+        if observation is not None:
+            try:
+                observation.diagnostic()
+            except BaseException:
+                pass
         raise
