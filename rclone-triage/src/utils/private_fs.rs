@@ -398,8 +398,21 @@ impl PrivateTempDir {
 
     /// Observe only the exact expected leaf after removal fails. Missing roots
     /// stay unavailable: no new root-absence proof is implied by a failed open.
+    /// Windows retries only bounded sharing violations on the unchanged runtime leaf.
     pub(crate) fn close_with_residue(mut self, expected_leaf: &OsStr) -> io::Result<()> {
         let path = self.path.take().unwrap();
+        #[cfg(windows)]
+        {
+            let started = std::time::Instant::now();
+            self.remove_runtime_with(
+                &path,
+                expected_leaf,
+                |path| fs::remove_dir_all(path),
+                || started.elapsed(),
+                std::thread::sleep,
+            )
+        }
+        #[cfg(not(windows))]
         self.remove_with(&path, Some(expected_leaf), |path| fs::remove_dir_all(path))
     }
 
@@ -459,6 +472,162 @@ impl PrivateTempDir {
                 },
             )
         })
+    }
+
+    // Only the consumed runtime close may retry a sharing/lock violation. The
+    // generic close and original-cleanup trace deliberately remain single-call.
+    #[cfg(windows)]
+    fn remove_runtime_with(
+        &self,
+        path: &Path,
+        leaf: &OsStr,
+        mut remove: impl FnMut(&Path) -> io::Result<()>,
+        mut elapsed: impl FnMut() -> std::time::Duration,
+        mut pause: impl FnMut(std::time::Duration),
+    ) -> io::Result<()> {
+        use std::time::Duration;
+        const BUDGET: Duration = Duration::from_secs(2);
+        const INTERVAL: Duration = Duration::from_millis(50);
+        const MAX_CALLS: usize = 41;
+
+        let (canonical, parents) =
+            target(path).map_err(|error| cleanup_failure(CleanupStage::Target, error))?;
+        let pin = platform::open_directory(&canonical)
+            .map_err(|error| cleanup_failure(CleanupStage::OpenRoot, error))?;
+        if platform::identity(&pin)
+            .map_err(|error| cleanup_failure(CleanupStage::Identity, error))?
+            != self.identity
+        {
+            return Err(cleanup_failure(
+                CleanupStage::Identity,
+                refused("Temporary directory identity changed; retained"),
+            ));
+        }
+        platform::verify_private(&pin, true)
+            .map_err(|error| cleanup_failure(CleanupStage::Security, error))?;
+        // This snapshot only admits retries. An unavailable/unexpected inventory
+        // must not change the existing first removal attempt.
+        let original = self
+            .runtime_retry_stamp(&canonical, &parents, &pin, leaf)
+            .ok();
+        drop(pin);
+        let source = match remove(&canonical) {
+            Ok(()) => return Ok(()),
+            Err(error) => error,
+        };
+        let retryable = matches!(source.raw_os_error(), Some(32 | 33));
+        let residue = Some(
+            self.observe_residue(&canonical, &parents, leaf)
+                .unwrap_or_else(|_| CleanupResidue::unavailable()),
+        );
+        // Preserve the first actual removal error and its immediate observation.
+        // Later admission failures/errors never turn it into an absence claim or
+        // replace it with an error from metadata inspection.
+        let first = io::Error::new(
+            source.kind(),
+            CleanupFailure {
+                stage: CleanupStage::RemoveTree,
+                source,
+                residue,
+            },
+        );
+        let Some(original) = original.filter(|_| retryable) else {
+            return Err(first);
+        };
+        let mut last = Duration::ZERO;
+        for _ in 1..MAX_CALLS {
+            let before = elapsed();
+            if before < last || before >= BUDGET {
+                break;
+            }
+            pause(INTERVAL.min(BUDGET - before));
+            let after = elapsed();
+            if after < before || after >= BUDGET {
+                break;
+            }
+            let Ok(pin) = platform::open_directory(&canonical) else {
+                break;
+            };
+            if self
+                .runtime_retry_stamp(&canonical, &parents, &pin, leaf)
+                .ok()
+                != Some(original)
+            {
+                break;
+            }
+            let ready = elapsed();
+            if ready < after || ready >= BUDGET {
+                break;
+            }
+            last = ready;
+            // All ancestor pins remain live through every attempt and pause.
+            // The exact root pin must be released for std's non-following remove.
+            drop(pin);
+            match remove(&canonical) {
+                Ok(()) => return Ok(()),
+                Err(error) if matches!(error.raw_os_error(), Some(32 | 33)) => {}
+                Err(_) => break,
+            }
+        }
+        // This bounds retry admission, not the duration of a filesystem syscall.
+        // Consuming close has already disabled Drop; exhaustion remains sticky.
+        Err(first)
+    }
+
+    #[cfg(windows)]
+    fn runtime_retry_stamp(
+        &self,
+        path: &Path,
+        parents: &[File],
+        root: &File,
+        leaf: &OsStr,
+    ) -> io::Result<platform::ResidueStamp> {
+        platform::validate_name(leaf)?;
+        if Path::new(leaf).file_name() != Some(leaf) {
+            return Err(refused("Runtime leaf is not one exact name"));
+        }
+        let verify_root = || -> io::Result<()> {
+            if platform::identity(root)? != self.identity {
+                return Err(refused("Runtime cleanup root changed"));
+            }
+            platform::verify_residue_root(root, path)?;
+            let parent = path
+                .parent()
+                .ok_or_else(|| refused("Missing runtime parent"))?;
+            let (canonical, observed) = directory(parent)?;
+            if canonical != parent || observed.len() != parents.len() {
+                return Err(refused("Runtime cleanup ancestry changed"));
+            }
+            for (before, after) in parents.iter().zip(&observed) {
+                if platform::identity(before)? != platform::identity(after)? {
+                    return Err(refused("Runtime cleanup ancestry changed"));
+                }
+            }
+            Ok(())
+        };
+        let single_leaf = || -> io::Result<()> {
+            let mut entries = fs::read_dir(path)?;
+            let entry = entries
+                .next()
+                .ok_or_else(|| refused("Runtime leaf missing"))??;
+            if entry.file_name() != leaf || entries.next().is_some() {
+                return Err(refused("Runtime cleanup inventory changed"));
+            }
+            Ok(())
+        };
+        verify_root()?;
+        single_leaf()?;
+        let entry = path.join(leaf);
+        let (pin, stamp) = platform::residue_entry(&entry)?;
+        if stamp.kind != "regular_file" {
+            return Err(refused("Runtime leaf type or link count changed"));
+        }
+        single_leaf()?;
+        if platform::residue_stamp(&pin, &entry)? != stamp {
+            return Err(refused("Runtime leaf changed during inspection"));
+        }
+        verify_root()?;
+        Ok(stamp)
     }
 
     #[cfg(not(windows))]
@@ -1636,6 +1805,426 @@ mod tests {
         drop(owned);
         fs::rename(&parent, &moved_parent).unwrap();
         fs::remove_dir(&moved_parent).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn runtime_retry_releases_exact_held_file_after_observed_sharing_violation() {
+        use std::cell::Cell;
+        use std::time::Duration;
+        let root = tempfile::tempdir().unwrap();
+        let parent = root.path().join("parent");
+        let moved_parent = root.path().join("moved-parent");
+        create_dir(&parent).unwrap();
+        let mut owned = tempdir_in(&parent, "runtime-").unwrap();
+        let path = owned.path.take().unwrap();
+        let leaf = path.join("rclone.exe");
+        write(&leaf, b"synthetic runtime").unwrap();
+        let mut held = Some(open_stable_read(&leaf).unwrap());
+        let attempts = Cell::new(0);
+        let pauses = Cell::new(0);
+        let clock = Cell::new(Duration::ZERO);
+        owned
+            .remove_runtime_with(
+                &path,
+                OsStr::new("rclone.exe"),
+                |validated| {
+                    attempts.set(attempts.get() + 1);
+                    let parent_error = fs::rename(&parent, &moved_parent).unwrap_err();
+                    assert!(matches!(parent_error.raw_os_error(), Some(5 | 32)));
+                    let result = fs::remove_dir_all(validated);
+                    if attempts.get() == 1 {
+                        assert_eq!(result.as_ref().unwrap_err().raw_os_error(), Some(32));
+                    } else {
+                        assert_eq!(attempts.get(), 2);
+                        assert!(result.is_ok());
+                    }
+                    result
+                },
+                || clock.get(),
+                |duration| {
+                    assert_eq!(attempts.get(), 1); // actual OS32 was asserted first
+                    assert_eq!(duration, Duration::from_millis(50));
+                    pauses.set(pauses.get() + 1);
+                    assert_eq!(pauses.get(), 1);
+                    let parent_error = fs::rename(&parent, &moved_parent).unwrap_err();
+                    assert!(matches!(parent_error.raw_os_error(), Some(5 | 32)));
+                    drop(held.take().unwrap()); // exact blocking handle, no timing race
+                    clock.set(clock.get() + duration);
+                },
+            )
+            .unwrap();
+        assert_eq!(attempts.get(), 2);
+        assert_eq!(pauses.get(), 1);
+        assert!(!path.exists());
+        drop(owned);
+        fs::rename(&parent, &moved_parent).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn runtime_retry_permanent_hold_exhausts_admission_without_drop_retry() {
+        use std::cell::Cell;
+        use std::time::Duration;
+        // A progressing fake clock reaches the deadline; a stalled fake clock
+        // reaches the independent call cap. Neither control sleeps in real time.
+        for advance in [true, false] {
+            let root = tempfile::tempdir().unwrap();
+            let mut owned = tempdir_in(root.path(), "runtime-").unwrap();
+            let path = owned.path.take().unwrap();
+            let leaf = path.join("rclone.exe");
+            write(&leaf, b"synthetic runtime").unwrap();
+            let held = open_stable_read(&leaf).unwrap();
+            let attempts = Cell::new(0);
+            let pauses = Cell::new(0);
+            let clock = Cell::new(Duration::ZERO);
+            let error = owned
+                .remove_runtime_with(
+                    &path,
+                    OsStr::new("rclone.exe"),
+                    |validated| {
+                        attempts.set(attempts.get() + 1);
+                        let error = fs::remove_dir_all(validated).unwrap_err();
+                        assert_eq!(error.raw_os_error(), Some(32));
+                        Err(error)
+                    },
+                    || clock.get(),
+                    |duration| {
+                        assert_eq!(duration, Duration::from_millis(50));
+                        pauses.set(pauses.get() + 1);
+                        if advance {
+                            clock.set(clock.get() + duration);
+                        }
+                    },
+                )
+                .unwrap_err();
+            assert_eq!(attempts.get(), if advance { 40 } else { 41 });
+            assert_eq!(pauses.get(), 40);
+            let diagnostic = cleanup_diagnostic(&error).unwrap();
+            assert_eq!(diagnostic.os_code, Some(32));
+            let residue = diagnostic.residue().unwrap();
+            assert_eq!(residue.root, "same_private_directory");
+            assert_eq!(residue.executable, "regular_file");
+            assert!(residue.complete);
+            drop(held);
+            drop(owned); // consumed path cannot retry after the blocker closes
+            assert_eq!(fs::read(&leaf).unwrap(), b"synthetic runtime");
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn runtime_retry_rejects_expired_or_regressing_admission_clock() {
+        use std::cell::Cell;
+        use std::collections::VecDeque;
+        use std::time::Duration;
+        for (ticks, expected_calls, expected_pauses) in [
+            (vec![2000], 1, 0),         // deadline already reached after first failure
+            (vec![1990, 2000], 1, 1),   // sleep only the remaining ten milliseconds
+            (vec![0, 2100], 1, 1),      // overslept; no second syscall
+            (vec![0, 0, 2000], 1, 1),   // validation consumed the remaining budget
+            (vec![50, 49], 1, 1),       // clock regressed during the pause
+            (vec![0, 0, 50, 49], 2, 1), // clock regressed after a retry
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let mut owned = tempdir_in(root.path(), "runtime-").unwrap();
+            let path = owned.path.take().unwrap();
+            write(path.join("rclone.exe"), b"synthetic runtime").unwrap();
+            let mut ticks: VecDeque<_> = ticks.into();
+            let attempts = Cell::new(0);
+            let pauses = Cell::new(0);
+            let error = owned
+                .remove_runtime_with(
+                    &path,
+                    OsStr::new("rclone.exe"),
+                    |_| {
+                        attempts.set(attempts.get() + 1);
+                        Err(io::Error::from_raw_os_error(32))
+                    },
+                    || Duration::from_millis(ticks.pop_front().expect("unexpected clock read")),
+                    |duration| {
+                        assert!(duration > Duration::ZERO && duration <= Duration::from_millis(50));
+                        pauses.set(pauses.get() + 1);
+                    },
+                )
+                .unwrap_err();
+            assert!(ticks.is_empty());
+            assert_eq!(attempts.get(), expected_calls);
+            assert_eq!(pauses.get(), expected_pauses);
+            assert_eq!(cleanup_diagnostic(&error).unwrap().os_code, Some(32));
+            assert!(path.join("rclone.exe").is_file());
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn runtime_retry_stops_on_root_leaf_or_inventory_changes() {
+        use std::cell::Cell;
+        use std::time::Duration;
+        for change in [
+            "root",
+            "leaf",
+            "extra",
+            "missing_leaf",
+            "missing_root",
+            "hard_link",
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let mut owned = tempdir_in(root.path(), "runtime-").unwrap();
+            let path = owned.path.take().unwrap();
+            let leaf = path.join("rclone.exe");
+            let parked = root.path().join("original");
+            let extra = path.join("unrelated");
+            write(&leaf, b"original").unwrap();
+            let mut held = Some(open_stable_read(&leaf).unwrap());
+            let attempts = Cell::new(0);
+            let pauses = Cell::new(0);
+            let error = owned
+                .remove_runtime_with(
+                    &path,
+                    OsStr::new("rclone.exe"),
+                    |validated| {
+                        attempts.set(attempts.get() + 1);
+                        assert_eq!(attempts.get(), 1, "changed inventory reached removal");
+                        let error = fs::remove_dir_all(validated).unwrap_err();
+                        assert_eq!(error.raw_os_error(), Some(32));
+                        Err(error)
+                    },
+                    || Duration::ZERO,
+                    |_| {
+                        pauses.set(pauses.get() + 1);
+                        assert_eq!(pauses.get(), 1);
+                        drop(held.take().unwrap());
+                        match change {
+                            "root" => {
+                                fs::rename(&path, &parked).unwrap();
+                                create_dir(&path).unwrap();
+                                write(&leaf, b"original").unwrap();
+                            }
+                            "leaf" => {
+                                fs::rename(&leaf, &parked).unwrap();
+                                write(&leaf, b"original").unwrap();
+                            }
+                            "extra" => write(&extra, b"unrelated").unwrap(),
+                            "missing_leaf" => fs::remove_file(&leaf).unwrap(),
+                            "missing_root" => fs::remove_dir_all(&path).unwrap(),
+                            "hard_link" => fs::hard_link(&leaf, &parked).unwrap(),
+                            _ => unreachable!(),
+                        }
+                    },
+                )
+                .unwrap_err();
+            assert_eq!(attempts.get(), 1);
+            assert_eq!(pauses.get(), 1);
+            let diagnostic = cleanup_diagnostic(&error).unwrap();
+            assert_eq!(diagnostic.os_code, Some(32));
+            // This is the first failure's observation, before the deliberate change.
+            let residue = diagnostic.residue().unwrap();
+            assert!(residue.complete);
+            assert_eq!(residue.root, "same_private_directory");
+            assert_eq!(residue.executable, "regular_file");
+            assert_eq!(residue.other_files, Some(0));
+            drop(owned);
+            match change {
+                "root" => {
+                    assert_eq!(fs::read(parked.join("rclone.exe")).unwrap(), b"original");
+                    assert_eq!(fs::read(&leaf).unwrap(), b"original");
+                }
+                "leaf" | "hard_link" => {
+                    assert_eq!(fs::read(&parked).unwrap(), b"original");
+                    assert_eq!(fs::read(&leaf).unwrap(), b"original");
+                }
+                "extra" => assert_eq!(fs::read(&extra).unwrap(), b"unrelated"),
+                "missing_leaf" => {
+                    assert!(path.is_dir());
+                    assert!(!leaf.exists());
+                }
+                "missing_root" => assert!(!path.exists()),
+                _ => unreachable!(),
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn runtime_retry_initial_inventory_is_only_retry_eligibility() {
+        use std::cell::Cell;
+        use std::time::Duration;
+        for inventory in ["missing", "extra", "case_alias", "directory", "hard_link"] {
+            let root = tempfile::tempdir().unwrap();
+            let mut owned = tempdir_in(root.path(), "runtime-").unwrap();
+            let path = owned.path.take().unwrap();
+            let leaf = path.join("rclone.exe");
+            match inventory {
+                "missing" => {}
+                "case_alias" => write(path.join("RCLONE.EXE"), b"synthetic").unwrap(),
+                "directory" => create_dir(&leaf).unwrap(),
+                "extra" => {
+                    write(&leaf, b"synthetic").unwrap();
+                    write(path.join("other"), b"unrelated").unwrap();
+                }
+                "hard_link" => {
+                    write(&leaf, b"synthetic").unwrap();
+                    fs::hard_link(&leaf, root.path().join("link")).unwrap();
+                }
+                _ => unreachable!(),
+            }
+            let attempts = Cell::new(0);
+            let error = owned
+                .remove_runtime_with(
+                    &path,
+                    OsStr::new("rclone.exe"),
+                    |_| {
+                        attempts.set(attempts.get() + 1);
+                        Err(io::Error::from_raw_os_error(32))
+                    },
+                    || panic!("ineligible inventory must not enter retry admission"),
+                    |_| panic!("ineligible inventory must not wait"),
+                )
+                .unwrap_err();
+            assert_eq!(attempts.get(), 1);
+            assert_eq!(cleanup_diagnostic(&error).unwrap().os_code, Some(32));
+            assert!(path.is_dir());
+        }
+        // An ineligible inventory still gets the previous successful first call.
+        let root = tempfile::tempdir().unwrap();
+        let mut owned = tempdir_in(root.path(), "runtime-").unwrap();
+        let path = owned.path.take().unwrap();
+        write(path.join("other"), b"synthetic").unwrap();
+        let attempts = Cell::new(0);
+        owned
+            .remove_runtime_with(
+                &path,
+                OsStr::new("rclone.exe"),
+                |validated| {
+                    attempts.set(attempts.get() + 1);
+                    fs::remove_dir_all(validated)
+                },
+                || Duration::MAX,
+                |_| panic!("successful first call must not wait"),
+            )
+            .unwrap();
+        assert_eq!(attempts.get(), 1);
+        assert!(!path.exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn runtime_retry_requires_raw_removal_code_and_preserves_first_error() {
+        use std::cell::Cell;
+        use std::time::Duration;
+        for code in [2, 5, 145] {
+            let root = tempfile::tempdir().unwrap();
+            let mut owned = tempdir_in(root.path(), "runtime-").unwrap();
+            let path = owned.path.take().unwrap();
+            write(path.join("rclone.exe"), b"synthetic").unwrap();
+            let attempts = Cell::new(0);
+            let error = owned
+                .remove_runtime_with(
+                    &path,
+                    OsStr::new("rclone.exe"),
+                    |_| {
+                        attempts.set(attempts.get() + 1);
+                        Err(io::Error::from_raw_os_error(code))
+                    },
+                    || panic!("nonretryable error must not enter admission"),
+                    |_| panic!("nonretryable error must not wait"),
+                )
+                .unwrap_err();
+            assert_eq!(attempts.get(), 1);
+            assert_eq!(cleanup_diagnostic(&error).unwrap().os_code, Some(code));
+        }
+        let root = tempfile::tempdir().unwrap();
+        for wrapped in [true, false] {
+            let mut owned = tempdir_in(root.path(), "runtime-").unwrap();
+            let path = owned.path.take().unwrap();
+            write(path.join("rclone.exe"), b"synthetic").unwrap();
+            let attempts = Cell::new(0);
+            let pauses = Cell::new(0);
+            let error = owned
+                .remove_runtime_with(
+                    &path,
+                    OsStr::new("rclone.exe"),
+                    |_| {
+                        attempts.set(attempts.get() + 1);
+                        Err(if wrapped {
+                            io::Error::other(io::Error::from_raw_os_error(32))
+                        } else {
+                            io::Error::from_raw_os_error(if attempts.get() == 1 { 32 } else { 5 })
+                        })
+                    },
+                    || Duration::ZERO,
+                    |_| pauses.set(pauses.get() + 1),
+                )
+                .unwrap_err();
+            assert_eq!(attempts.get(), if wrapped { 1 } else { 2 });
+            assert_eq!(pauses.get(), if wrapped { 0 } else { 1 });
+            let diagnostic = cleanup_diagnostic(&error).unwrap();
+            assert_eq!(diagnostic.os_code, if wrapped { None } else { Some(32) });
+            assert_eq!(diagnostic.residue().unwrap().executable, "regular_file");
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn runtime_retry_accepts_injected_lock_violation_then_actual_removal() {
+        use std::cell::Cell;
+        use std::time::Duration;
+        let root = tempfile::tempdir().unwrap();
+        let mut owned = tempdir_in(root.path(), "runtime-").unwrap();
+        let path = owned.path.take().unwrap();
+        write(path.join("rclone.exe"), b"synthetic").unwrap();
+        let attempts = Cell::new(0);
+        let pauses = Cell::new(0);
+        owned
+            .remove_runtime_with(
+                &path,
+                OsStr::new("rclone.exe"),
+                |validated| {
+                    attempts.set(attempts.get() + 1);
+                    if attempts.get() == 1 {
+                        // Explicit injection: this does not claim a native OS33 fixture.
+                        Err(io::Error::from_raw_os_error(33))
+                    } else {
+                        fs::remove_dir_all(validated)
+                    }
+                },
+                || Duration::ZERO,
+                |duration| {
+                    assert_eq!(duration, Duration::from_millis(50));
+                    pauses.set(pauses.get() + 1);
+                },
+            )
+            .unwrap();
+        assert_eq!(attempts.get(), 2);
+        assert_eq!(pauses.get(), 1);
+        assert!(!path.exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn runtime_retry_initial_root_failure_never_reaches_removal() {
+        let root = tempfile::tempdir().unwrap();
+        let mut owned = tempdir_in(root.path(), "runtime-").unwrap();
+        let path = owned.path.take().unwrap();
+        let parked = root.path().join("original");
+        write(path.join("rclone.exe"), b"original").unwrap();
+        fs::rename(&path, &parked).unwrap();
+        create_dir(&path).unwrap();
+        write(path.join("rclone.exe"), b"replacement").unwrap();
+        let error = owned
+            .remove_runtime_with(
+                &path,
+                OsStr::new("rclone.exe"),
+                |_| panic!("changed root must not reach first removal"),
+                || panic!("changed root must not enter retry admission"),
+                |_| panic!("changed root must not wait"),
+            )
+            .unwrap_err();
+        assert_eq!(cleanup_diagnostic(&error).unwrap().stage.name(), "identity");
+        drop(owned);
+        assert_eq!(fs::read(path.join("rclone.exe")).unwrap(), b"replacement");
+        assert_eq!(fs::read(parked.join("rclone.exe")).unwrap(), b"original");
     }
 
     #[cfg(windows)]

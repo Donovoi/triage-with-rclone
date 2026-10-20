@@ -57,6 +57,46 @@ class FixtureTests(unittest.TestCase):
         for token in (base64.b64encode(KEY).decode(),base64.b64encode(WRONG).decode(),"127.0.0.1","SharedKey"):
             self.assertNotIn(token,json.dumps(s.snapshot()))
 
+    def test_authenticated_download_denial_commits_two_heads_then_empty_get403(self):
+        s=state("download_denial")
+        for role in ("stat","copy"):
+            wire=complete(s)
+            self.assertIn(b"200 OK",wire);self.assertTrue(wire.endswith(b"\r\n\r\n"))
+            self.assertEqual(s.events[-1][1],role)
+        wire=complete(s,"GET")
+        self.assertIn(b"403 Forbidden",wire);self.assertIn(b"x-ms-error-code: AuthorizationFailure",wire)
+        self.assertTrue(wire.endswith(b"\r\n\r\n"));self.assertNotIn(b"Nested synthetic payload.",wire)
+        self.assertEqual((s.requests,s.payload_bytes,len(s.events)),(3,0,3))
+        self.assertEqual([e[:3] for e in s.events],
+            [("head_authenticated","stat",200),("head_authenticated","copy",200),("download_denied","copy",403)])
+        with self.assertRaises(F.FixtureError):complete(s,"GET")
+
+    def test_download_denial_requires_correct_fresh_key_at_every_phase(self):
+        for phase in range(3):
+            for bad in ("wrong_key","missing_auth","stale","future"):
+                s=state("download_denial")
+                for _ in range(phase):complete(s)
+                method="GET" if phase==2 else "HEAD"
+                h=headers(method,WRONG if bad=="wrong_key" else KEY,
+                    date=format_datetime(NOW-timedelta(seconds=901 if bad=="stale" else -1),usegmt=True) if bad in {"stale","future"} else None)
+                if bad=="missing_auth":del h["authorization"]
+                with self.assertRaises(F.FixtureError):s.begin(method,F.TARGET,h)
+                self.assertEqual(len(s.events),phase);self.assertEqual(s.payload_bytes,0)
+
+    def test_download_get_cannot_precede_complete_head_commits(self):
+        for committed in (0,1):
+            s=state("download_denial")
+            for _ in range(committed):complete(s)
+            with self.assertRaises(F.FixtureError):s.begin("GET",F.TARGET,headers("GET"))
+            req=s.begin("HEAD",F.TARGET,headers());wire=s.response(req)
+            with self.assertRaises(F.FixtureError):s.begin("GET",F.TARGET,headers("GET"))
+            with self.assertRaises(F.FixtureError):s.commit(req,len(wire)-1)
+            self.assertEqual(len(s.events),committed)
+        s=state("download_denial");complete(s);complete(s)
+        req=s.begin("GET",F.TARGET,headers("GET"));wire=s.response(req)
+        with self.assertRaises(F.FixtureError):s.commit(req,len(wire)-1)
+        self.assertEqual(len(s.events),2);self.assertEqual(s.payload_bytes,0)
+
     def test_canonical_encoded_path_not_raw_alias_and_full_ranges_only(self):
         for target in (F.TARGET.replace("%2F","/"),F.TARGET.replace("%20"," "),F.TARGET+"?x=y","/other"):
             with self.assertRaises(F.FixtureError):state().begin("HEAD",target,headers(target=target))

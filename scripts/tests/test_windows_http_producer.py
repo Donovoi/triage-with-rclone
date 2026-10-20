@@ -1901,6 +1901,63 @@ class ProducerTests(unittest.TestCase):
             if not printing_failure:
                 self.assertEqual(json.loads(output.getvalue().split("=", 1)[1])["count_classification"], "multiple")
 
+    def test_process_observation_stage_vocabulary_matches_helper_and_is_failure_only(self):
+        expected = {"process_observation_stage_" + item for item in (
+            "pid_buffer_allocate", "pid_list_query", "pid_list_shape", "pid_value", "retained_child_wait",
+            "child_open", "child_membership", "child_exit_wait", "child_capacity", "child_created",
+            "child_handle_close", "pid_buffer_free", "job_accounting", "app_exit_wait", "app_exit_code", "unknown")}
+        self.assertEqual(P.PROCESS_OBSERVATION_ERRORS, expected)
+        source = (ROOT / "scripts/application-lab/HostedConPtySession.cs").read_text(encoding="utf-8")
+        self.assertEqual(set(P.re.findall(r'"(process_observation_stage_[a-z_]+)"', source)), expected)
+        for stage in expected:
+            value = dict(session("poll", final=True, exit_code=99), ok=False, forced_termination=True,
+                         errors=["process_observation_failed", stage, "forced_termination"])
+            with self.subTest(stage=stage), redirect_stdout(io.StringIO()) as output:
+                self.assertIs(P.validate_session(value, "poll"), value)
+                P.session_failure_diagnostic(value, "poll")
+            self.assertLessEqual(len(output.getvalue().encode("ascii")), 4096)
+            self.assertEqual(json.loads(output.getvalue().split("=", 1)[1])["errors"], value["errors"])
+        self.assertEqual(P.validate_session(session("poll"), "poll")["errors"], [])
+        legacy = dict(session("poll"), ok=False, errors=["process_observation_failed"])
+        self.assertIs(P.validate_session(legacy, "poll"), legacy)
+
+    def test_process_observation_stage_rejects_untrusted_or_inconsistent_evidence(self):
+        stage = "process_observation_stage_child_open"
+        value = dict(session("poll", final=True, exit_code=99), ok=False,
+                     errors=["process_observation_failed", stage])
+        for errors in ([stage], ["process_observation_failed", stage, "process_observation_stage_unknown"],
+                       ["process_observation_failed", stage, stage], ["process_observation_failed", None],
+                       ["process_observation_failed", stage + "\x00"], ["process_observation_failed", stage.upper()],
+                       ["process_observation_failed", "process_observation_stage_private-canary"],
+                       ["process_observation_failed"] * 25):
+            with self.subTest(errors=errors), redirect_stdout(io.StringIO()) as output, self.assertRaises(P.ProducerError):
+                P.session_failure_diagnostic(dict(value, errors=errors), "poll")
+            self.assertEqual(output.getvalue(), "")
+        for bad in (dict(value, ok=True), dict(value, native_error=87), dict(value, runtime_process_count=True),
+                    dict(value, runtime_process_count=65), dict(value, state="private-canary")):
+            with redirect_stdout(io.StringIO()) as output, self.assertRaises(P.ProducerError):
+                P.session_failure_diagnostic(bad, "poll")
+            self.assertEqual(output.getvalue(), "")
+
+    def test_process_observation_stage_bridge_preserves_original_failure_even_when_printing_fails(self):
+        failure = dict(session("poll", final=True, exit_code=99), ok=False, forced_termination=True,
+                       errors=["process_observation_failed", "process_observation_stage_pid_list_shape", "forced_termination"])
+        for fail_print in (False, True):
+            bridge = self.bare_bridge("poll-stage-" + str(fail_print))
+            self.reply_on_write(bridge)
+            bridge.command("ready")
+            self.reply_on_write(bridge, json.dumps(failure).encode())
+            with redirect_stdout(io.StringIO()) as output:
+                if fail_print:
+                    with mock.patch.object(P, "session_failure_diagnostic", side_effect=OSError("private-canary")):
+                        result = bridge.command("poll")
+                else:
+                    result = bridge.command("poll")
+            self.assertIs(result, bridge.last)
+            self.assertEqual(result, failure)
+            self.assertFalse(result["ok"])
+            self.assertNotIn("private-canary", output.getvalue())
+
     def test_fixed_pins_are_closed(self):
         path = self.root / "pins"
         content = ("RCLONE_VERSION=9.8.7\n" + "".join(key + "=" + "a" * 64 + "\n" for key in (
@@ -2109,7 +2166,7 @@ class ProducerTests(unittest.TestCase):
                     bridge.messages.get = mock.Mock(wraps=bridge.messages.get)
                     with mock.patch.object(P.time, "monotonic", return_value=0):
                         bridge.command(action)
-                    bridge.messages.get.assert_called_once_with(timeout=min(60 if action == "ready" else 35, remaining))
+                    bridge.messages.get.assert_called_once_with(timeout=min(90 if action == "ready" else 35, remaining))
                     self.assertEqual(bridge.deadline, remaining)
 
     def test_reader_duplicate_ready_and_late_unsolicited_reply_are_sticky(self):
@@ -2210,7 +2267,7 @@ class ProducerTests(unittest.TestCase):
             self.assertTrue(bridge.failed.is_set())
             self.assertNotIn("canary", output.getvalue())
             if failure == "timeout":
-                self.assertLessEqual(bridge.messages.get.call_args.kwargs["timeout"], 60)
+                self.assertLessEqual(bridge.messages.get.call_args.kwargs["timeout"], 90)
         for fields in (("private-canary", "wait", "timeout", None), ("ready", "private-canary", "timeout", None),
                        ("ready", "wait", "private-canary", None), ("ready", "wait", "timeout", "private-canary")):
             with redirect_stdout(io.StringIO()) as output, self.assertRaises(P.ProducerError):
@@ -2254,15 +2311,15 @@ class ProducerTests(unittest.TestCase):
             bridge = self.timing_bridge("timing-arrival-" + str(index))
             self.timing_stderr(bridge, chunks, times)
             bridge.messages.get = mock.Mock(side_effect=P.queue.Empty)
-            with mock.patch.object(P.time, "monotonic", side_effect=[50, 51, 111]) as clock, \
+            with mock.patch.object(P.time, "monotonic", side_effect=[50, 51, 141]) as clock, \
                  redirect_stdout(io.StringIO()) as output, self.assertRaisesRegex(P.ProducerError, "^session_failed$"):
                 bridge.command("ready")
             value = self.ready_timing_record(output)
             self.assertEqual(value["status"], "observed")
             self.assertEqual((value["compile_seen_ms"], value["compiled_seen_ms"]), expected)
-            self.assertEqual([value[key] for key in P.READY_TIMING_FIELDS[2:]], [50000, 51000, 60000, 111000])
+            self.assertEqual([value[key] for key in P.READY_TIMING_FIELDS[2:]], [50000, 51000, 90000, 141000])
             self.assertEqual(clock.call_count, 3)
-            bridge.messages.get.assert_called_once_with(timeout=60)
+            bridge.messages.get.assert_called_once_with(timeout=90)
             self.assertEqual(bridge.deadline, 165)
 
     def test_ready_timing_missing_markers_keep_known_wait_and_write(self):
@@ -2331,7 +2388,7 @@ class ProducerTests(unittest.TestCase):
                 self.assertNotIn("private-canary", json.dumps(value))
         for snapshot in ((0, -1, 2, 3, 4, 60, 64), (0, 3, 2, 3, 4, 60, 64), (0, 1, 2, 5, 4, 60, 64),
                          (0, None, 2, 3, 4, 60, 64), (0, 1, 2, None, 4, 60, 64),
-                         (0, 1, 2, 3, 4, 0.009, 64), (0, 1, 2, 3, 4, 60.001, 64)):
+                         (0, 1, 2, 3, 4, 0.009, 64), (0, 1, 2, 3, 4, 90.001, 94)):
             self.assertEqual(P.ready_timing_projection(snapshot, "wait", "timeout")["status"], "unavailable")
         for phase, outcome in (("private-canary", "timeout"), ("wait", "private-canary")):
             with self.assertRaises(P.ProducerError):
@@ -2397,7 +2454,7 @@ class ProducerTests(unittest.TestCase):
                  redirect_stdout(io.StringIO()) as output, self.assertRaisesRegex(P.ProducerError, "^session_failed$"):
                 bridge.command("ready")
             self.assertTrue(bridge.failed.is_set())
-            bridge.messages.get.assert_called_once_with(timeout=60)
+            bridge.messages.get.assert_called_once_with(timeout=90)
             self.assertNotIn("private-canary", output.getvalue())
             if mode == "write_clock":
                 self.assertEqual(self.ready_timing_record(output)["status"], "unavailable")
