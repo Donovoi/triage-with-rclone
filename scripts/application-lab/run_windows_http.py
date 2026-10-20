@@ -801,7 +801,7 @@ def ready_timing_projection(snapshot, phase, outcome):
             (second is None or first is not None and first <= second) and
             (waiting is None or written is not None and written <= waiting) and
             ((waiting is None and budget is None) or waiting is not None and
-             type(budget) in (int, float) and 0.01 <= budget <= 60)):
+             type(budget) in (int, float) and 0.01 <= budget <= 90)):
         return value
     if (phase in {"wait", "reply"} and (written is None or waiting is None) or
             phase not in {"wait", "reply"} and (written is not None or waiting is not None) or
@@ -944,7 +944,7 @@ class Bridge:
     script_name = "hosted_session.ps1"
     actions = BRIDGE_ACTIONS
     # Fixed subclass policies are reserved for the no-application calibration.
-    ready_wait_seconds = 60
+    ready_wait_seconds = 90
     ready_timing_type = _ReadyTiming
 
     def validate_session(self, value, action):

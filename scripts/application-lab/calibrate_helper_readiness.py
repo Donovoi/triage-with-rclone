@@ -87,7 +87,7 @@ class CalibrationTiming(H._ReadyTiming):
 
 
 class CalibrationBridge(H.Bridge):
-    # No runtime CLI/env knob; normal Bridge and all application paths stay at60.
+    # No runtime CLI/env knob; normal Bridge and all application paths stay at90.
     actions = frozenset({"ready", "close_ready", "close"})
     ready_wait_seconds = 120
     ready_timing_type = CalibrationTiming

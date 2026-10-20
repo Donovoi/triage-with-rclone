@@ -54,8 +54,8 @@ class CalibrationTests(unittest.TestCase):
         bridge.process.stdin.write.side_effect = write
 
     def test_distinct_ready_budget_uses_remaining_lifetime_without_reset(self):
-        for cls, cap in ((H.Bridge, 60), (C.CalibrationBridge, 120)):
-            for remaining in (165, 12.5):
+        for cls, cap in ((H.Bridge, 90), (C.CalibrationBridge, 120)):
+            for remaining in (165, 90, 89.5, 12.5):
                 with self.subTest(cls=cls.__name__, remaining=remaining):
                     bridge = self.bridge(cls)
                     bridge.deadline = remaining
@@ -65,15 +65,49 @@ class CalibrationTests(unittest.TestCase):
                         bridge.command("ready")
                     bridge.messages.get.assert_called_once_with(timeout=min(cap, remaining))
                     self.assertEqual(bridge.deadline, remaining)
-        bridge = self.bridge()
-        bridge.ready = True
-        bridge.calls = bridge.responses = 1
-        self.reply(bridge, "close_ready")
-        bridge.messages.get = mock.Mock(wraps=bridge.messages.get)
-        with mock.patch.object(H.time, "monotonic", return_value=0):
-            bridge.command("close_ready")
-        bridge.messages.get.assert_called_once_with(timeout=35)
-        self.assertTrue(bridge.closed_ready)
+        for cls in (H.Bridge, C.CalibrationBridge):
+            for remaining in (165, 35, 34.5, 12.5):
+                with self.subTest(cls=cls.__name__, later_remaining=remaining):
+                    bridge = self.bridge(cls)
+                    bridge.deadline = remaining
+                    bridge.ready = True
+                    bridge.calls = bridge.responses = 1
+                    self.reply(bridge, "close_ready")
+                    bridge.messages.get = mock.Mock(wraps=bridge.messages.get)
+                    with mock.patch.object(H.time, "monotonic", return_value=0):
+                        bridge.command("close_ready")
+                    bridge.messages.get.assert_called_once_with(timeout=min(35, remaining))
+                    self.assertEqual(bridge.deadline, remaining)
+                    self.assertTrue(bridge.closed_ready)
+
+    def test_normal_ninety_timeout_poison_cannot_be_reset_or_closed_as_success(self):
+        bridge = self.bridge(H.Bridge)
+        bridge.messages.get = mock.Mock(side_effect=queue.Empty)
+        with mock.patch.object(H.time, "monotonic", side_effect=[.01, .02, 90.02]), redirect_stdout(io.StringIO()):
+            with self.assertRaises(H.ProducerError):
+                bridge.command("ready")
+        bridge.messages.get.assert_called_once_with(timeout=90)
+        self.assertEqual(bridge.deadline, 165)
+        self.assertTrue(bridge.failed.is_set())
+        writes = bridge.process.stdin.write.call_count
+        bridge.ready_timing.stage(bytes(bridge.stage_bytes), False)
+        with redirect_stdout(io.StringIO()), self.assertRaises(H.ProducerError):
+            bridge.command("ready")
+        self.assertEqual(bridge.process.stdin.write.call_count, writes)
+        bridge.process.poll.return_value = 0
+        with redirect_stdout(io.StringIO()):
+            self.assertFalse(bridge.close())
+        bridge.process.mark_uncertain.assert_called_once()
+        self.assertEqual(bridge.deadline, 165)
+
+    def test_normal_timing_accepts_ninety_bound_but_not_calibration_allowance(self):
+        value = H.ready_timing_projection((0, .2, 59.266, .01, .02, 90, 90.02), "wait", "timeout")
+        self.assertEqual(value["status"], "observed")
+        self.assertEqual(value["wait_budget_ms"], 90000)
+        for budget in (90.001, 120, True):
+            with self.subTest(budget=budget):
+                value = H.ready_timing_projection((0, .2, 59.266, .01, .02, budget, 121), "wait", "timeout")
+                self.assertEqual(value["status"], "unavailable")
 
     def test_calibration_can_observe_ready_after_sixty_without_changing_normal_schema(self):
         bridge = self.bridge()
