@@ -12,7 +12,23 @@ A separate Windows x64 lab run downloaded all 10 synthetic files (66,804 bytes).
 
 This result applies to the [PR #130](https://github.com/Donovoi/triage-with-rclone/pull/130) test build `86a614a4f75644383c1e056ea3107bca258893ea`, executable SHA256 `5ede148d5cf9cef9f8f5de09d78bc8c1354224a75b993add8127b04571fe0238`, with rclone 1.75.2 runtime SHA256 `41eab3e118d264920b62c3327966c5ece0dc4dd715ee617d9e30450d8ead95a4`. It does not qualify a different nightly.
 
-This was a file-download and cleanup check. Refresh, denial, cancellation and a fresh before/after check of the source files remain untested on this build. The older preservation result above remains separate. The coverage ledger and full-provider status are unchanged.
+This was a file-download and cleanup check. It did not test refresh, denial, cancellation or a fresh before/after check of the source files. The older preservation result above remains separate. The coverage ledger and full-provider status are unchanged.
+
+### Automatic sign-in renewal
+
+A separate lab run on 20 October 2026 (UTC) passed one refresh-and-download check on the same PR #130 build and runtime listed above. An expired test copy of the saved settings caused one refresh request. The observer forwarded that request to Google and recorded a successful response. A separate check confirmed that the app's working settings held the returned access token and a future expiry. No replacement refresh token was returned, so refresh-token rotation remains untested.
+
+The app downloaded one 91-byte synthetic file with the independently expected SHA256 hash. Both runtime launches matched the pinned image; only one ran at a time. The app and helpers closed normally, temporary folders were empty, and the lab was shut down and disconnected. The original settings and expired test copy were preserved. Credentials and raw evidence remain private.
+
+This is evidence for one instrumented refresh and download on that build. It does not test a new login, denial, revocation or cancellation, or provide a fresh before/after check of the cloud source. It does not qualify another nightly. The coverage ledger and full-provider status are unchanged.
+
+### Rejected sign-in renewal
+
+On 20 October 2026 (UTC), a separate Windows x64 lab run tested a rejected refresh on the same PR #130 build and runtime listed above. A local observer returned `invalid_grant` for two valid refresh requests and forwarded neither request to Google. The app reported the failed file check and `invalid_grant`, returned exit code 1 and saved no downloaded files or bytes. The single runtime launch matched the pinned image.
+
+The app and helpers closed normally, no owned processes remained, and temporary folders were empty. The original settings and test copy were preserved. The lab was shut down and disconnected with its checkpoint intact. The independent final check joined the saved native process exits, application result, runtime observations and restoration records.
+
+This checks the app's response to a simulated refresh rejection. It does not test Google account revocation, consent denial, a new login, cancellation or source preservation, and it does not qualify another build. The coverage ledger and full-provider status are unchanged.
 
 ## Dropbox App Folder progress
 
