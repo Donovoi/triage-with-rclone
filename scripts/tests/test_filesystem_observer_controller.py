@@ -190,13 +190,54 @@ class ObservedControllerTests(unittest.TestCase):
         value.update(ok=False, errors=["debug_launch_limit"], system_helper_launch_count=3,
                      peak_system_helper_processes=3)
         self.validate(value)
-        for changes in (dict(runtime_launch_count=34), dict(runtime_launch_count=32, system_helper_launch_count=2),
+        for changes in (dict(runtime_launch_count=65), dict(runtime_launch_count=32, system_helper_launch_count=33),
                 dict(debug_event_count=4097), dict(debug_event_count=1), dict(peak_runtime_processes=0)):
             with self.subTest(changes=changes): self.reject(dict(value, **changes))
         for limit in (0, 33, True, "3"):
             with self.subTest(launch_limit=limit): self.reject(snapshot(), launches=limit)
         for limit in (0, 5, True):
             with self.subTest(concurrent_limit=limit): self.reject(snapshot(), concurrent=limit)
+
+    def test_four_worker_twenty_launch_finish_keeps_image_and_cleanup_proof(self):
+        value = snapshot("finish", True, helpers=20)
+        value.update(runtime_launch_count=20, peak_runtime_processes=4,
+                     peak_system_helper_processes=4, debug_event_count=123)
+        self.assertIs(self.validate(value, concurrent=4, launches=20), value)
+        for changes in (dict(peak_system_helper_processes=5), dict(system_helper_launch_count=21),
+                dict(runtime_launch_count=21), dict(launch_sha256="f" * 64),
+                dict(system_helper_sha256=None), dict(system_helper_image_observed=False),
+                dict(debug_event_count=122), dict(debug_events_drained=False),
+                dict(debug_pump_joined=False), dict(system_helper_reference_closed=False)):
+            with self.subTest(changes=changes):
+                self.reject(dict(value, **changes), concurrent=4, launches=20)
+        bridge = armed_bridge()
+        bridge.max_runtime_processes, bridge.max_runtime_launches = 4, 20
+        failed = dict(value, ok=False, errors=["debug_launch_limit"])
+        bridge.validate_session(failed, "finish")
+        with self.assertRaises(F.H.ProducerError):
+            bridge.validate_session(value, "finish")
+
+    def test_helper_overlap_budget_preserves_narrow_callers(self):
+        value = snapshot("finish", True, helpers=20)
+        value.update(runtime_launch_count=20, peak_runtime_processes=1, debug_event_count=123)
+        for concurrent, permitted in ((1, 2), (2, 2), (3, 3), (4, 4)):
+            with self.subTest(concurrent=concurrent):
+                self.validate(dict(value, peak_system_helper_processes=permitted),
+                              concurrent=concurrent, launches=20)
+                self.reject(dict(value, peak_system_helper_processes=permitted + 1),
+                            concurrent=concurrent, launches=20)
+
+    def test_failed_sixty_four_descendants_are_bounded_evidence_not_success(self):
+        value = snapshot("finish", True, helpers=32)
+        value.update(ok=False, errors=["debug_launch_limit"], runtime_launch_count=32,
+                     peak_runtime_processes=4, peak_system_helper_processes=4, debug_event_count=65)
+        self.assertIs(self.validate(value, concurrent=4, launches=20), value)
+        self.reject(dict(value, ok=True, errors=[]), concurrent=4, launches=20)
+        for changes in (dict(runtime_launch_count=65), dict(system_helper_launch_count=65),
+                dict(system_helper_launch_count=33), dict(runtime_launch_count=True),
+                dict(debug_event_count=64)):
+            with self.subTest(changes=changes):
+                self.reject(dict(value, **changes), concurrent=4, launches=20)
 
     def test_failed_startup_and_closed_error_vocabulary_are_retained(self):
         original_errors = F.DEBUG_ERRORS | F.SOURCE_ERRORS | (F.H.SESSION_ERRORS - F.H.PROCESS_OBSERVATION_ERRORS)

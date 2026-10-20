@@ -40,6 +40,33 @@ jobs:
             echo 'The requested commit does not match this workflow run.' >&2
             exit 1
           fi
+  helper-readiness-calibration:
+    name: First hosted helper readiness calibration
+    # Temporary PR-only diagnosis; it does not warm any application job or
+    # replace an application check, and is intentionally absent from main.
+    if: github.event_name == 'pull_request'
+    needs: revision
+    runs-on: windows-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - name: Observe first helper compilation and normal closure without an application
+        id: readiness
+        timeout-minutes: 5
+        run: python -B -I -S scripts/application-lab/calibrate_helper_readiness.py --report "${{ runner.temp }}/helper-readiness-calibration.json"
+      - name: Retain bounded helper calibration evidence
+        if: ${{ !cancelled() && (steps.readiness.outcome == 'success' || steps.readiness.outcome == 'failure') }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: helper-readiness-calibration-Windows
+          path: ${{ runner.temp }}/helper-readiness-calibration.json
+          if-no-files-found: warn
+          retention-days: 14
   audit:
     name: Dependency security audit
     needs: revision
