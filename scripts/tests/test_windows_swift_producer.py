@@ -643,6 +643,50 @@ class CancellationProducerTests(unittest.TestCase):
                 self.assertLess([a for a,_ in order].index("ready"),[a for a,_ in order].index("fixture"))
                 context.__exit__.assert_called_once();bridge.close.assert_called_once()
 
+    def test_slow_ready_does_not_reset_case_deadline_or_start_with_under_one_second(self):
+        for ready_seconds in (89.5, 90):
+            with self.subTest(ready_seconds=ready_seconds), tempfile.TemporaryDirectory() as directory, ExitStack() as mocks:
+                suite = Path(directory); app = suite / "input.bin"; app.write_bytes(b"inert")
+                app_sha = P.H.sha(b"inert"); now = [0.0]; calls = []
+                bridge = Mock(last=None); bridge.close.return_value = True
+                def command(action, **fields):
+                    calls.append(action)
+                    if action == "ready":
+                        now[0] += ready_seconds
+                        return dict(schema_version=1, action=action, ok=True, state="ready")
+                    self.assertEqual(action, "close_ready")
+                    return dict(schema_version=1, action=action, ok=True, state="closed")
+                bridge.command.side_effect = command
+                state = Mock(); state.snapshot.return_value = TEST.cancellation_receipt()["cases"]["cancellation"]["fixture"]
+                server = Mock(endpoint="http://127.0.0.1:1234/", deadline=200)
+                context = Mock(); context.__enter__ = Mock(return_value=server); context.__exit__ = Mock()
+                def prepare(parent, child, action="Create"):
+                    if action == "Create":
+                        (parent / child).mkdir()
+                        now[0] = 30.0  # Setup consumed part of the existing120s case.
+                def source(case):
+                    (case / "source").mkdir()
+                    return P.H.identity(case / "source")
+                for obj, key, value in ((P.time, "monotonic", lambda: now[0]), (P.H, "prepare", prepare),
+                        (P.H, "create_private_roots", lambda c: {}), (P.H, "private_directory", lambda c, n: (c/n).mkdir()),
+                        (P.H, "private_write", lambda c, n, b: (c/n).write_bytes(b)), (P, "create_source", source),
+                        (P.C, "SourceBridge", lambda c: bridge), (P.H, "application_roots_empty", Mock()),
+                        (P.H, "helper_baseline", lambda *a: {}), (P.H, "helper_cleanup_preserved", Mock()),
+                        (P, "cancellation_preserved", Mock()), (P.H, "remove_owned", Mock()),
+                        (P, "fixture_closed", lambda s: True), (P.F, "AppSwiftCancellationState", lambda *a: state),
+                        (P.F, "serve_swift_cancellation", lambda s: context), (P.secrets, "token_hex", lambda n: "a"*(2*n))):
+                    mocks.enter_context(patch.object(obj, key, value))
+                errors = []
+                item = P.execute_cancellation("cancellation", suite, app, app_sha, RUNTIME, errors)
+                self.assertEqual(calls, ["ready", "close_ready"])
+                self.assertEqual(errors, ["deadline_exceeded"])
+                self.assertEqual(item["record"]["status"], "failed")
+                self.assertIsNone(item["record"]["exit_code"])
+                self.assertFalse(item["record"]["checks"]["runtime_observed"])
+                self.assertTrue(all(item["record"]["checks"][key] for key in ("process_cleanup", "fixture_cleanup", "temp_cleanup")))
+                bridge.close.assert_called_once()
+                context.__exit__.assert_called_once()
+
     def test_cancellation_input_and_saved_artifact_preservation(self):
         case=Path("synthetic");config=b"inert config"
         item=dict(case=case,lease=(1,2),source=(2,3),config=config,artifact="a"*64,record=dict(checks=dict(configuration_preserved=True)))
