@@ -3271,6 +3271,33 @@ def filefabric_session_checks(runtime, root, row, expected):
                 caps[capability] = "passed"
 
 
+def checked_write_rejection_probe(backend, port, state):
+    """Keep write-probe failures specific without exporting exception details."""
+    try:
+        probe_write_rejection(backend, port, state)
+    except ConnectionResetError:
+        # RemoteDisconnected also inherits ConnectionResetError.
+        raise LabError("fixture_write_probe_connection_reset") from None
+    except TimeoutError:
+        raise LabError("fixture_write_probe_timeout") from None
+    except http.client.HTTPException:
+        raise LabError("fixture_write_probe_http_error") from None
+    except OSError:
+        raise LabError("fixture_write_probe_os_error") from None
+    except ValueError as error:
+        known = {
+            "unexpected_mutation_response": "fixture_write_probe_unexpected_response",
+            "mutation_not_rejected": "fixture_write_probe_not_rejected",
+            "mutation_rejection_not_observed": "fixture_write_probe_counter_mismatch",
+        }
+        code = "fixture_write_probe_value_error"
+        if len(error.args) == 1 and type(error.args[0]) is str:
+            code = known.get(error.args[0], code)
+        raise LabError(code) from None
+    except RuntimeError:
+        raise LabError("fixture_write_probe_runtime_error") from None
+
+
 def run_backend(runtime, backend, root):
     root.mkdir(mode=0o700)
     independent = backend in ("http", "webdav", "ftp", "swift", "b2", "azureblob", "azurefiles", "seafile", "koofr", "pixeldrain", "filefabric", "internetarchive", "netstorage", "pcloud", "gcs")
@@ -3383,7 +3410,7 @@ def run_backend(runtime, backend, root):
                 bad = config_file(root, "bad.conf", bad_opts)
                 common_checks(runtime, root, good, bad, "Synthetic:", row, state, expected=expected)
                 check(state.rejected_mutations == 0, "unexpected_mutation_attempt")
-                probe_write_rejection(backend, port, state)
+                checked_write_rejection_probe(backend, port, state)
                 row["capabilities"]["fixture_write_rejection"] = "passed"
         else:
             with rclone_server(runtime, backend, source if backend == "s3" else files_root, user, password) as (port, _):

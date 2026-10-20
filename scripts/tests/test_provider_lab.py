@@ -28,6 +28,137 @@ finally:
     sys.path.pop(0)
 
 
+class WriteProbeDiagnosticTests(unittest.TestCase):
+    def test_success_preserves_single_call_and_arguments(self):
+        state = object()
+        with mock.patch.object(LAB, "probe_write_rejection", return_value=None) as probe:
+            self.assertIsNone(LAB.checked_write_rejection_probe("webdav", 56789, state))
+        probe.assert_called_once_with("webdav", 56789, state)
+
+    def test_transport_errors_have_static_codes(self):
+        cases = (
+            (ConnectionResetError("synthetic private detail"), "fixture_write_probe_connection_reset"),
+            (TimeoutError("synthetic private detail"), "fixture_write_probe_timeout"),
+            (socket.timeout("synthetic private detail"), "fixture_write_probe_timeout"),
+            (http.client.HTTPException("synthetic private detail"), "fixture_write_probe_http_error"),
+            (http.client.BadStatusLine("synthetic private detail"), "fixture_write_probe_http_error"),
+            (http.client.RemoteDisconnected("synthetic private detail"), "fixture_write_probe_connection_reset"),
+            (OSError("synthetic private detail"), "fixture_write_probe_os_error"),
+            (RuntimeError("synthetic private detail"), "fixture_write_probe_runtime_error"),
+        )
+        for error, expected in cases:
+            with self.subTest(error_type=type(error).__name__):
+                with mock.patch.object(LAB, "probe_write_rejection", side_effect=error) as probe:
+                    with self.assertRaises(LAB.LabError) as caught:
+                        LAB.checked_write_rejection_probe("webdav", 56789, object())
+                self.assertEqual(str(caught.exception), expected)
+                self.assertTrue(caught.exception.__suppress_context__)
+                probe.assert_called_once()
+
+    def test_exact_known_value_errors_have_distinct_codes(self):
+        cases = {
+            "unexpected_mutation_response": "fixture_write_probe_unexpected_response",
+            "mutation_not_rejected": "fixture_write_probe_not_rejected",
+            "mutation_rejection_not_observed": "fixture_write_probe_counter_mismatch",
+        }
+        for original, expected in cases.items():
+            with self.subTest(original=original):
+                with mock.patch.object(LAB, "probe_write_rejection", side_effect=ValueError(original)) as probe:
+                    with self.assertRaises(LAB.LabError) as caught:
+                        LAB.checked_write_rejection_probe("webdav", 56789, object())
+                self.assertEqual(str(caught.exception), expected)
+                probe.assert_called_once()
+
+    def test_unknown_value_error_details_are_redacted(self):
+        cases = (
+            ValueError("synthetic private detail"),
+            ValueError("mutation_not_rejected: synthetic private detail"),
+            ValueError("mutation_not_rejected", "synthetic private detail"),
+            ValueError({"synthetic": "private detail"}),
+            ValueError(),
+        )
+        for index, error in enumerate(cases):
+            with self.subTest(case=index):
+                with mock.patch.object(LAB, "probe_write_rejection", side_effect=error):
+                    with self.assertRaises(LAB.LabError) as caught:
+                        LAB.checked_write_rejection_probe("webdav", 56789, object())
+                self.assertEqual(str(caught.exception), "fixture_write_probe_value_error")
+
+    def test_other_error_messages_are_not_formatted(self):
+        class UnprintableError(OSError):
+            def __str__(self):
+                raise AssertionError("exception text must not be read")
+
+        with mock.patch.object(LAB, "probe_write_rejection", side_effect=UnprintableError()):
+            with self.assertRaises(LAB.LabError) as caught:
+                LAB.checked_write_rejection_probe("webdav", 56789, object())
+        self.assertEqual(str(caught.exception), "fixture_write_probe_os_error")
+
+    def test_unexpected_exceptions_are_not_swallowed(self):
+        for error in (TypeError("synthetic programmer error"), KeyboardInterrupt()):
+            with self.subTest(error_type=type(error).__name__):
+                with mock.patch.object(LAB, "probe_write_rejection", side_effect=error) as probe:
+                    with self.assertRaises(type(error)) as caught:
+                        LAB.checked_write_rejection_probe("webdav", 56789, object())
+                self.assertIs(caught.exception, error)
+                probe.assert_called_once()
+
+    def _backend_with_mocked_probe(self, error=None, listener_closed=True):
+        root = mock.MagicMock()
+        runtime = mock.Mock()
+        runtime.run.return_value = (0, b"synthetic-obscured", b"")
+        state = mock.Mock(rejected_mutations=0)
+
+        @contextmanager
+        def fake_serve(backend, actual_state):
+            self.assertEqual(backend, "webdav")
+            self.assertIs(actual_state, state)
+            yield 56789
+
+        def completed_reads(_runtime, _root, _good, _bad, _target, row, _state, **_kwargs):
+            for capability in (
+                "listing", "download_hash", "missing_object_rejection",
+                "authentication_rejection", "truncated_download_rejection", "cancellation_cleanup",
+            ):
+                row["capabilities"][capability] = "passed"
+
+        with mock.patch.object(LAB, "State", return_value=state), \
+                mock.patch.object(LAB, "serve", fake_serve), \
+                mock.patch.object(LAB, "config_file", return_value="synthetic-config"), \
+                mock.patch.object(LAB, "common_checks", side_effect=completed_reads) as reads, \
+                mock.patch.object(LAB, "probe_write_rejection", return_value=None, side_effect=error) as probe, \
+                mock.patch.object(LAB, "served_source_unchanged", return_value=True) as preserved, \
+                mock.patch.object(LAB, "listener_closed", return_value=listener_closed) as closed:
+            row = LAB.run_backend(runtime, "webdav", root)
+        root.mkdir.assert_called_once_with(mode=0o700)
+        reads.assert_called_once()
+        probe.assert_called_once_with("webdav", 56789, state)
+        closed.assert_called_once_with(56789)
+        self.assertEqual(runtime.run.call_count, 2)
+        return row, preserved
+
+    def test_backend_probe_failure_preserves_unrun_checks_and_cleanup_result(self):
+        for clean in (True, False):
+            with self.subTest(listener_closed=clean):
+                row, preserved = self._backend_with_mocked_probe(
+                    ValueError("mutation_rejection_not_observed"), listener_closed=clean)
+                self.assertEqual(row["errors"], ["fixture_write_probe_counter_mismatch"] +
+                                 ([] if clean else ["listener_still_open"]))
+                self.assertEqual(row["capabilities"]["fixture_write_rejection"], "not_run")
+                self.assertEqual(row["capabilities"]["source_preservation"], "not_run")
+                self.assertEqual(row["capabilities"]["cancellation_cleanup"], "passed")
+                self.assertEqual(row["capabilities"]["cleanup"], "passed" if clean else "failed")
+                preserved.assert_not_called()
+
+    def test_backend_success_still_requires_source_and_cleanup_checks(self):
+        row, preserved = self._backend_with_mocked_probe()
+        self.assertEqual(row["errors"], [])
+        self.assertEqual(row["capabilities"]["fixture_write_rejection"], "passed")
+        self.assertEqual(row["capabilities"]["source_preservation"], "passed")
+        self.assertEqual(row["capabilities"]["cleanup"], "passed")
+        preserved.assert_called_once()
+
+
 class ProviderLabTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
