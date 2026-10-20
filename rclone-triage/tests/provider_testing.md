@@ -22,6 +22,14 @@ The app downloaded one 91-byte synthetic file with the independently expected SH
 
 This is evidence for one instrumented refresh and download on that build. It does not test a new login, denial, revocation or cancellation, or provide a fresh before/after check of the cloud source. It does not qualify another nightly. The coverage ledger and full-provider status are unchanged.
 
+### Rejected sign-in renewal
+
+On 20 October 2026 (UTC), a separate Windows x64 lab run tested a rejected refresh on the same PR #130 build and runtime listed above. A local observer returned `invalid_grant` for two valid refresh requests and forwarded neither request to Google. The app reported the failed file check and `invalid_grant`, returned exit code 1 and saved no downloaded files or bytes. The single runtime launch matched the pinned image.
+
+The app and helpers closed normally, no owned processes remained, and temporary folders were empty. The original settings and test copy were preserved. The lab was shut down and disconnected with its checkpoint intact. The independent final check joined the saved native process exits, application result, runtime observations and restoration records.
+
+This checks the app's response to a simulated refresh rejection. It does not test Google account revocation, consent denial, a new login, cancellation or source preservation, and it does not qualify another build. The coverage ledger and full-provider status are unchanged.
+
 ## Dropbox App Folder progress
 
 On 10 October 2026, the checked Windows x64 app passed these tests against a dedicated, read-only Dropbox App Folder in the isolated lab:
