@@ -136,9 +136,9 @@ def validate_observed_snapshot(value, action, expected_runtime_sha256, max_runti
     for key in ("launch_image_observed", "system_helper_image_observed", *OBSERVED_CLEANUP):
         H.need(type(value[key]) is bool, "session_failed")
     for key in ("runtime_launch_count", "peak_runtime_processes", "system_helper_launch_count", "peak_system_helper_processes"):
-        H.need(type(value[key]) is int and 0 <= value[key] <= 33, "session_failed")
+        H.need(type(value[key]) is int and 0 <= value[key] <= 64, "session_failed")
     launches, helpers = value["runtime_launch_count"], value["system_helper_launch_count"]
-    H.need(launches + helpers <= 33 and type(value["debug_event_count"]) is int and
+    H.need(launches + helpers <= 64 and type(value["debug_event_count"]) is int and
            0 <= value["debug_event_count"] <= 4096 and
            (launches + helpers == 0 or value["debug_event_count"] >= launches + helpers + 1), "session_failed")
     for count, peak in ((launches, value["peak_runtime_processes"]), (helpers, value["peak_system_helper_processes"])):
@@ -153,8 +153,8 @@ def validate_observed_snapshot(value, action, expected_runtime_sha256, max_runti
         H.need(value["ok"] is False and value["state"] == "finished", "session_failed")
     if value["ok"]:
         H.need(launches <= max_runtime_launches and value["peak_runtime_processes"] <= max_runtime_processes and
-               helpers <= launches and helpers <= max_runtime_launches and value["peak_system_helper_processes"] <= 2 and
-               1 + launches + helpers <= min(34, 1 + 2 * max_runtime_launches), "session_failed")
+               helpers <= launches and helpers <= max_runtime_launches and value["peak_system_helper_processes"] <= max(2, max_runtime_processes) and
+               1 + launches + helpers <= 1 + 2 * max_runtime_launches, "session_failed")
         if value["state"] == "finished":
             H.need(launches >= 1 and value["launch_image_observed"] and
                    (helpers == 0 or value["system_helper_image_observed"]) and
