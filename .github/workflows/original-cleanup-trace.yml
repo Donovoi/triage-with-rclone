@@ -5,7 +5,7 @@ on:
       mode:
         description: Separate calibration or unchanged original cleanup diagnostic
         required: true
-        default: original_cleanup
+        default: resource_use_calibration
         type: choice
         options: [original_cleanup, resource_use_calibration]
       expected_sha:
