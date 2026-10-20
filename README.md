@@ -28,7 +28,7 @@ A new nightly is published after each merged PR passes the required checks. Buil
 
 See [test status and known gaps](rclone-triage/tests/provider_testing.md) for the detailed results.
 
-Local-file and ZIP checks have passed, including cancellation and cleanup.
+Local files and local ZIP files have passed their required tests on Windows x64, including cancellation and cleanup.
 
 Dropbox and Swift download cancellation tests have passed. B2, Swift, WebDAV and Azure Blob download checks have passed using local test servers. These results apply to the tested Windows builds; tests with real Swift accounts are still pending.
 
