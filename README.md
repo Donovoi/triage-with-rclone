@@ -34,7 +34,7 @@ Dropbox and Swift download cancellation tests have passed. B2, Swift, WebDAV and
 
 Google Drive file lists and repeated downloads passed in a small read-only test folder. Login, refresh and other provider checks are still incomplete.
 
-Current work: test what happens when an Azure Blob download is refused, then continue tests for the remaining providers.
+Current work: finish Google Drive checks and find why file cleanup sometimes fails on Windows ARM64.
 
 ## What comes next
 
