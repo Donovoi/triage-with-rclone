@@ -546,5 +546,457 @@ class LoaderTests(unittest.TestCase):
                 self.assertEqual(native.calls, calls)
 
 
+class SetupQuiescenceTests(unittest.TestCase):
+    class Clock:
+        def __init__(self):
+            self.value, self.paces = 0.0, []
+        def monotonic(self):
+            return self.value
+        def sleep(self, seconds):
+            self.paces.append(seconds)
+            self.value += seconds
+
+    def make(self):
+        module, native, clock = owner_module(), Native(body=b"synthetic setup\n"), self.Clock()
+        module._native_factory = lambda: native
+        module.time = clock
+        original = native.create
+        def create(process, *args):
+            native.owner = process
+            original(process, *args)
+        native.create = create
+        return module, native, clock
+
+    def invoke(self, module, thread=InlineThread):
+        with mock.patch.object(module.threading, "Thread", thread):
+            return module.run_setup(["fixed", "Verify"], env={"FIXED": "value"})
+
+    def prepare(self, module):
+        process = module.spawn(["fixed"], env={"FIXED": "value"},
+            stdin=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        with mock.patch.object(module.threading, "Thread", InlineThread):
+            capture = module._Capture(process)
+            capture.start()
+            self.assertTrue(capture.join(20))
+        process.wait(0)
+        return process, capture, module._SetupQuiescence()
+
+    def diagnostic(self, output):
+        records = [json.loads(line.split("=", 1)[1]) for line in output.getvalue().splitlines()
+                   if line.startswith("application_helper_setup_quiescence=")]
+        self.assertEqual(len(records), 1)
+        record = records[0]
+        self.assertEqual(set(record), {"schema_version", "status", "queries", "active", "total", "deadline_expired"})
+        self.assertEqual(record["schema_version"], 1)
+        self.assertNotIn("private-canary", output.getvalue())
+        return record
+
+    def assert_retained(self, module, native, *, kills=0):
+        self.assertIs(module._active, native.owner)
+        self.assertTrue(module._poisoned)
+        self.assertTrue(native.owner.uncertain)
+        self.assertFalse(native.owner.final_result)
+        self.assertEqual(sum(row[0] == "kill" for row in native.calls), kills)
+        closes = [row[1] for row in native.calls if row[0] == "close"]
+        self.assertEqual(len(closes), len(set(closes)))
+
+    def test_parent_reference_released_before_immediate_zero_and_independent_final_proof(self):
+        module, native, clock = self.make()
+        observations = []
+        def accounting(handle):
+            observations.append((handle, native.owner.process.closed, module._active is native.owner))
+            native.calls.append(("accounting", handle))
+            return (0 if native.owner.process.closed is True else 1, 1)
+        native.accounting = accounting
+        with redirect_stdout(io.StringIO()) as output:
+            result = self.invoke(module)
+        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, b"synthetic setup\n", None))
+        self.assertEqual(output.getvalue(), "")
+        process = native.owner
+        self.assertEqual(observations, [(process.job.value, True, True)] * 2)
+        self.assertEqual(clock.paces, [])
+        self.assertEqual(native.calls.count(("close", process.process.value)), 1)
+        self.assertLess(native.calls.index(("close", process.process.value)), native.calls.index(("accounting", process.job.value)))
+        self.assertEqual(native.calls[-1], ("close", process.job.value))
+        self.assertTrue(process.final_result)
+        self.assertIsNone(module._active)
+        self.assertFalse(any(row[0] == "kill" for row in native.calls))
+
+    def test_pending_members_allow_active_and_cumulative_total_growth_then_zero(self):
+        module, native, clock = self.make()
+        samples = iter(((1, 2), (2, 3), (1, 3), (0, 3), (0, 3)))
+        seen = []
+        def accounting(handle):
+            value = next(samples); seen.append(value); return value
+        native.accounting = accounting
+        with redirect_stdout(io.StringIO()) as output:
+            self.invoke(module)
+        self.assertEqual(seen, [(1, 2), (2, 3), (1, 3), (0, 3), (0, 3)])
+        self.assertEqual(clock.paces, [0.05] * 3)
+        self.assertEqual(output.getvalue(), "")
+        self.assertTrue(native.owner.final_result)
+
+    def test_capture_and_parent_wait_consume_original_budget_with_residual_pacing(self):
+        module, native, clock = self.make()
+        joins, waits, queries = [], [], []
+        class CaptureTime(InlineThread):
+            def join(self, seconds):
+                joins.append(seconds); clock.value += 12
+        def wait(handle, seconds):
+            waits.append(seconds); clock.value += 7.98; return 0
+        native.wait = wait
+        def accounting(handle):
+            queries.append(clock.value)
+            return (1, 2) if len(queries) == 1 else (0, 2)
+        native.accounting = accounting
+        with redirect_stdout(io.StringIO()) as output, self.assertRaises(module.OwnershipError):
+            self.invoke(module, CaptureTime)
+        self.assertEqual(joins[0], 20)
+        self.assertEqual(waits, [8])
+        self.assertEqual(len(clock.paces), 1)
+        self.assertAlmostEqual(clock.paces[0], 0.02)
+        record = self.diagnostic(output)
+        self.assertEqual((record["status"], record["queries"]), ("deadline_exhausted", 1))
+        # Only the unchanged finalizer can query again, after poisoning.
+        self.assertEqual(len(queries), 2)
+        self.assert_retained(module, native)
+
+    def test_no_new_query_at_expiry_and_zero_completed_exactly_at_deadline_can_pass(self):
+        for mode in ("expired", "exact_zero", "late_zero"):
+            with self.subTest(mode=mode):
+                module, native, clock = self.make()
+                calls = []
+                def wait(handle, seconds):
+                    clock.value = 20 if mode == "expired" else 19.9
+                    return 0
+                native.wait = wait
+                def accounting(handle):
+                    calls.append(clock.value)
+                    if len(calls) == 1 and mode != "expired":
+                        clock.value = 20 if mode == "exact_zero" else 20.001
+                    return 0, 1
+                native.accounting = accounting
+                with redirect_stdout(io.StringIO()) as output:
+                    if mode == "exact_zero":
+                        self.invoke(module)
+                        self.assertTrue(native.owner.final_result)
+                        self.assertEqual(output.getvalue(), "")
+                    else:
+                        with self.assertRaises(module.OwnershipError): self.invoke(module)
+                        record = self.diagnostic(output)
+                        self.assertEqual(record["status"], "deadline_exhausted")
+                        self.assertEqual(record["queries"], 0 if mode == "expired" else 1)
+                        self.assertTrue(record["deadline_expired"])
+                        self.assert_retained(module, native)
+                self.assertEqual(len(calls), 1 if mode == "expired" else 2)
+                self.assertEqual(clock.paces, [])
+
+    def test_parent_handle_close_time_is_charged_before_first_query(self):
+        module, native, clock = self.make()
+        original = native.close
+        def close(handle):
+            original(handle)
+            if handle == native.owner.process.value: clock.value = 20.01
+        native.close = close
+        with redirect_stdout(io.StringIO()) as output, self.assertRaises(module.OwnershipError):
+            self.invoke(module)
+        record = self.diagnostic(output)
+        self.assertEqual((record["status"], record["queries"]), ("deadline_exhausted", 0))
+        self.assertEqual(sum(row[0] == "accounting" for row in native.calls), 1)
+        self.assert_retained(module, native)
+
+    def test_stalled_clock_caps_401_queries_and_400_paces_without_recovery(self):
+        module, native, clock = self.make()
+        clock.sleep = lambda seconds: clock.paces.append(seconds)
+        native.active = 1
+        with redirect_stdout(io.StringIO()) as output, self.assertRaises(module.OwnershipError):
+            self.invoke(module)
+        record = self.diagnostic(output)
+        self.assertEqual((record["status"], record["queries"], record["active"], record["total"]),
+                         ("observation_cap", 401, 1, 2))
+        self.assertEqual(clock.paces, [0.05] * 400)
+        self.assertEqual(sum(row[0] == "accounting" for row in native.calls), 402)
+        self.assert_retained(module, native)
+
+    def test_invalid_or_regressing_clocks_fail_before_further_polling(self):
+        for bad in (True, float("nan"), float("inf"), -1, "private-canary", 4.0):
+            with self.subTest(bad=bad):
+                module, native, clock = self.make()
+                process, capture, observation = self.prepare(module)
+                values = iter((5.0, bad))
+                clock.monotonic = lambda: next(values)
+                with self.assertRaises(module.OwnershipError): observation.observe(process, capture, 20)
+                self.assertEqual(observation.status, "clock_failed")
+                self.assertIsNone(observation.deadline_expired)
+                self.assertEqual(observation.queries, 0)
+                self.assertTrue(process.uncertain)
+                self.assertEqual(observation.last_clock, 5.0)
+                self.assertFalse(any(row[0] == "accounting" for row in native.calls))
+
+    def test_invalid_deadline_is_terminal_before_parent_close(self):
+        for bad in (True, float("nan"), float("inf"), "private-canary"):
+            module, native, clock = self.make()
+            process, capture, observation = self.prepare(module)
+            with self.subTest(bad=bad), self.assertRaises(module.OwnershipError):
+                observation.observe(process, capture, bad)
+            self.assertEqual(observation.status, "clock_failed")
+            self.assertFalse(process.process.attempted)
+            self.assertTrue(process.uncertain)
+
+    def test_query_failure_keeps_primary_and_stops_polling_despite_cleanup_zero(self):
+        module, native, clock = self.make()
+        first, calls = KeyboardInterrupt("private-canary"), []
+        def accounting(handle):
+            calls.append(handle)
+            if len(calls) == 1: raise first
+            return 0, 2
+        native.accounting = accounting
+        with redirect_stdout(io.StringIO()) as output, self.assertRaises(KeyboardInterrupt) as caught:
+            self.invoke(module)
+        self.assertIs(caught.exception, first)
+        self.assertEqual(len(calls), 2)
+        record = self.diagnostic(output)
+        self.assertEqual((record["status"], record["queries"], record["active"]), ("query_failed", 1, None))
+        self.assertEqual(clock.paces, [])
+        self.assert_retained(module, native)
+
+    def test_malformed_or_decreasing_counts_never_retry_a_later_polling_zero(self):
+        for invalid in ((True, 1), (0, True), (-1, 1), (2, 1), (0, 0), (0, 2**32), (0, 1), [0, 3], (0,), None):
+            with self.subTest(invalid=invalid):
+                module, native, clock = self.make()
+                values = iter(((1, 2), invalid, (0, 2)))
+                calls = []
+                def accounting(handle):
+                    value = next(values); calls.append(value); return value
+                native.accounting = accounting
+                with redirect_stdout(io.StringIO()) as output, self.assertRaises(module.OwnershipError):
+                    self.invoke(module)
+                record = self.diagnostic(output)
+                self.assertEqual((record["status"], record["queries"], record["active"], record["total"]),
+                                 ("invalid_accounting", 2, 1, 2))
+                self.assertEqual(len(calls), 3)
+                self.assertEqual(clock.paces, [0.05])
+                self.assert_retained(module, native)
+
+    def test_pace_failure_or_overshoot_is_terminal_and_keeps_last_valid_sample(self):
+        for mode in ("raise", "overshoot", "backward"):
+            module, native, clock = self.make()
+            first = SystemExit("private-canary")
+            native.active = 1
+            def pace(seconds):
+                clock.paces.append(seconds)
+                if mode == "raise": raise first
+                clock.value = 21 if mode == "overshoot" else -0.01
+            clock.sleep = pace
+            with self.subTest(mode=mode), redirect_stdout(io.StringIO()) as output:
+                with self.assertRaises(SystemExit if mode == "raise" else module.OwnershipError) as caught:
+                    self.invoke(module)
+                if mode == "raise": self.assertIs(caught.exception, first)
+            record = self.diagnostic(output)
+            self.assertEqual(record["status"], {"raise": "pace_failed", "overshoot": "deadline_exhausted", "backward": "clock_failed"}[mode])
+            self.assertEqual((record["queries"], record["active"], record["total"]), (1, 1, 2))
+            self.assertEqual(clock.paces, [0.05])
+            self.assertEqual(sum(row[0] == "accounting" for row in native.calls), 2)
+            self.assert_retained(module, native)
+
+    def test_parent_close_failure_is_once_only_and_never_authorizes_accounting(self):
+        module, native, clock = self.make()
+        first, original = KeyboardInterrupt("private-canary"), native.close
+        def close(handle):
+            original(handle)
+            if handle == native.owner.process.value: raise first
+        native.close = close
+        with redirect_stdout(io.StringIO()) as output, self.assertRaises(KeyboardInterrupt) as caught:
+            self.invoke(module)
+        self.assertIs(caught.exception, first)
+        record = self.diagnostic(output)
+        self.assertEqual((record["status"], record["queries"]), ("parent_close_failed", 0))
+        self.assertFalse(any(row[0] == "accounting" for row in native.calls))
+        self.assertEqual(native.calls.count(("close", native.owner.process.value)), 1)
+        self.assert_retained(module, native)
+
+    def test_zero_observation_cannot_override_failed_final_proof_or_job_close(self):
+        for mode in ("active", "job_close"):
+            module, native, clock = self.make()
+            calls, original = [], native.close
+            def accounting(handle):
+                calls.append(handle)
+                return (1 if mode == "active" and len(calls) == 2 else 0), 2
+            native.accounting = accounting
+            def close(handle):
+                original(handle)
+                if mode == "job_close" and handle == native.owner.job.value:
+                    raise OSError("private-canary")
+            native.close = close
+            with self.subTest(mode=mode), redirect_stdout(io.StringIO()) as output, self.assertRaises(module.OwnershipError):
+                self.invoke(module)
+            record = self.diagnostic(output)
+            self.assertEqual((record["status"], record["queries"], record["active"], record["total"]),
+                             ("zero_observed", 1, 0, 2))
+            self.assertEqual(len(calls), 2)
+            self.assert_retained(module, native)
+
+    def test_admission_rejects_incomplete_or_foreign_state_without_native_poll(self):
+        for mode in ("reader_live", "pipe_open", "foreign", "poisoned", "forced", "finalized", "ambiguous_close", "process_borrow", "job_borrow", "not_resumed", "exit_bool"):
+            with self.subTest(mode=mode):
+                module, native, clock = self.make()
+                process, capture, observation = self.prepare(module)
+                if mode == "reader_live": capture.thread.is_alive = lambda: True
+                elif mode == "pipe_open": process.parent[1].closed = False
+                elif mode == "foreign": module._active = object()
+                elif mode == "poisoned": module._poisoned = True
+                elif mode == "forced": process.forced = True
+                elif mode == "finalized": process.finalized = True
+                elif mode == "ambiguous_close": process.process.attempted = True
+                elif mode == "process_borrow": process.process.users = 1
+                elif mode == "job_borrow": process.job.users = 1
+                elif mode == "not_resumed": process.resumed = False
+                elif mode == "exit_bool": process.returncode = False
+                before, reservation = list(native.calls), module._active
+                with self.assertRaises(module.OwnershipError): observation.observe(process, capture, 20)
+                self.assertEqual(native.calls, before)
+                self.assertIs(module._active, reservation)
+                self.assertTrue(process.uncertain)
+                self.assertEqual((observation.status, observation.queries), ("admission_failed", 0))
+
+    def test_nonzero_exit_skips_success_observation_and_retains_old_finalizer_path(self):
+        module, native, clock = self.make()
+        native.wait = lambda *_: 7
+        module._SetupQuiescence = mock.Mock(side_effect=AssertionError("must not construct"))
+        with redirect_stdout(io.StringIO()) as output:
+            result = self.invoke(module)
+        self.assertEqual(result.returncode, 7)
+        self.assertEqual(result.stdout, b"synthetic setup\n")
+        self.assertEqual(sum(row[0] == "accounting" for row in native.calls), 1)
+        self.assertEqual(clock.paces, [])
+        self.assertEqual(output.getvalue(), "")
+        module._SetupQuiescence.assert_not_called()
+
+    def test_successful_exit_preserves_capture_limit_before_new_observation(self):
+        for length in (0, 4096, 4097):
+            with self.subTest(length=length):
+                module, native, clock = self.make()
+                native.body = b"x" * length
+                with redirect_stdout(io.StringIO()) as output:
+                    if length > 4096:
+                        with self.assertRaises(module.OwnershipError): self.invoke(module)
+                        self.assertEqual(sum(row[0] == "accounting" for row in native.calls), 1)
+                        self.assertNotIn("application_helper_setup_quiescence=", output.getvalue())
+                    else:
+                        result = self.invoke(module)
+                        self.assertEqual(result.stdout, b"x" * length)
+                        self.assertEqual(result.returncode, 0)
+                        self.assertEqual(sum(row[0] == "accounting" for row in native.calls), 2)
+                        self.assertIsNone(module._active)
+                        self.assertEqual(output.getvalue(), "")
+                self.assertEqual(clock.paces, [])
+
+    def test_closed_diagnostic_rejects_private_values_and_printer_failure_keeps_primary(self):
+        module, native, clock = self.make()
+        observation = module._SetupQuiescence()
+        for field, bad in (("status", "private-canary"), ("queries", 402), ("active", "private-canary"), ("deadline_expired", "private-canary")):
+            with self.subTest(field=field), mock.patch.object(observation, field, bad), redirect_stdout(io.StringIO()) as output:
+                observation.diagnostic()
+                self.assertEqual(output.getvalue(), "")
+        first = KeyboardInterrupt("private-canary")
+        native.accounting = mock.Mock(side_effect=[first, (0, 1)])
+        with mock.patch.object(module, "print", side_effect=SystemExit("printer"), create=True), self.assertRaises(KeyboardInterrupt) as caught:
+            self.invoke(module)
+        self.assertIs(caught.exception, first)
+        self.assert_retained(module, native)
+
+    def test_persistent_clock_failure_preserves_primary_and_always_finalizes_without_join(self):
+        for mode in ("raise", "nan", "inf", "bool"):
+            with self.subTest(mode=mode):
+                module, native, clock = self.make()
+                first, primary, waits, finalizations = KeyboardInterrupt("private-canary"), [], [], []
+                original_create, original_observe = native.create, module._SetupQuiescence.observe
+                def create(process, *args):
+                    original_create(process, *args)
+                    original_wait, original_finalize = process.wait, process.finalize
+                    def wait(timeout=None):
+                        waits.append(timeout); return original_wait(timeout)
+                    def finalize():
+                        finalizations.append(True); return original_finalize()
+                    process.wait, process.finalize = wait, finalize
+                native.create = create
+                def broken():
+                    if mode == "raise": raise first
+                    return {"nan": float("nan"), "inf": float("inf"), "bool": True}[mode]
+                def accounting(handle):
+                    native.calls.append(("accounting", handle))
+                    clock.monotonic = broken
+                    return 0, 1
+                native.accounting = accounting
+                def observe(observation, *args):
+                    try: return original_observe(observation, *args)
+                    except BaseException as error:
+                        primary.append(error); raise
+                with mock.patch.object(module._SetupQuiescence, "observe", observe), \
+                     mock.patch.object(module._Capture, "failure_close", side_effect=AssertionError("no timed join")), \
+                     redirect_stdout(io.StringIO()) as output, self.assertRaises(BaseException) as caught:
+                    self.invoke(module)
+                self.assertEqual(len(primary), 1)
+                self.assertIs(caught.exception, primary[0])
+                if mode == "raise": self.assertIs(caught.exception, first)
+                self.assertEqual(waits, [20, 0])
+                self.assertEqual(finalizations, [True])
+                self.assertEqual(clock.paces, [])
+                self.assertEqual(self.diagnostic(output)["status"], "clock_failed")
+                self.assert_retained(module, native)
+
+    def test_clockless_fallback_preserves_claimed_reader_or_revokes_unclaimed_start(self):
+        for claimed in (False, True):
+            with self.subTest(claimed=claimed):
+                module, native, clock = self.make()
+                first, captures, joins = SystemExit("private-canary"), [], []
+                def broken(): raise OSError("private-canary-clock")
+                class Interrupted(InlineThread):
+                    def start(self):
+                        capture = self.target.__self__
+                        capture.claimed = claimed
+                        captures.append(capture)
+                        clock.monotonic = broken
+                        raise first
+                    def join(self, seconds):
+                        joins.append(seconds); raise AssertionError("no join authority")
+                with redirect_stdout(io.StringIO()) as output, self.assertRaises(SystemExit) as caught:
+                    self.invoke(module, Interrupted)
+                self.assertIs(caught.exception, first)
+                self.assertEqual(joins, [])
+                capture, process = captures[0], native.owner
+                self.assertEqual(capture.revoked, not claimed)
+                self.assertTrue(capture.stop)
+                self.assertEqual(process.stdout.closed, not claimed)
+                self.assertTrue(process.finalized)
+                self.assertEqual([row for row in native.calls if row[0] == "wait"], [("wait", 0)])
+                if not claimed:
+                    before = list(native.calls); capture.run(); self.assertEqual(native.calls, before)
+                self.assertNotIn("application_helper_setup_quiescence=", output.getvalue())
+                self.assert_retained(module, native, kills=1)
+
+    def test_clockless_secondary_cleanup_errors_do_not_skip_finalization_or_replace_primary(self):
+        module, native, clock = self.make()
+        first, calls, original = KeyboardInterrupt("private-canary"), [], native.create
+        def fail(name):
+            def inner(*args, **kwargs):
+                calls.append(name); raise SystemExit("secondary")
+            return inner
+        def create(process, *args):
+            original(process, *args)
+            process.kill, process.wait, process.finalize = fail("kill"), fail("wait"), fail("finalize")
+        native.create = create
+        class Interrupted(InlineThread):
+            def start(self):
+                clock.monotonic = lambda: float("nan")
+                raise first
+        with redirect_stdout(io.StringIO()), self.assertRaises(KeyboardInterrupt) as caught:
+            self.invoke(module, Interrupted)
+        self.assertIs(caught.exception, first)
+        self.assertEqual(calls, ["kill", "wait", "finalize"])
+        self.assertTrue(module._poisoned)
+        self.assertIs(module._active, native.owner)
+
+
 if __name__ == "__main__":
     unittest.main()

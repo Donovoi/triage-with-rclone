@@ -28,11 +28,13 @@ A new nightly is published after each merged PR passes the required checks. Buil
 
 See [test status and known gaps](rclone-triage/tests/provider_testing.md) for the detailed results.
 
-Local-file and ZIP checks have passed, including cancellation and cleanup.
+Local files and local ZIP files have passed their required tests on Windows x64, including cancellation and cleanup.
 
-Dropbox and Swift download cancellation tests have passed. B2, Swift and WebDAV download checks have passed using local test servers. These results apply to the tested Windows builds; tests with real Swift accounts are still pending.
+Dropbox and Swift download cancellation tests have passed. B2, Swift, WebDAV and Azure Blob download checks have passed using local test servers. These results apply to the tested Windows builds; tests with real Swift accounts are still pending.
 
-Current work: fix Windows tests and spreadsheet reports. Azure Blob and other provider tests are next.
+Google Drive file lists and repeated downloads passed in a small read-only test folder. Login, refresh and other provider checks are still incomplete.
+
+Current work: test what happens when an Azure Blob download is refused, then continue tests for the remaining providers.
 
 ## What comes next
 
