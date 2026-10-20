@@ -40,6 +40,33 @@ jobs:
             echo 'The requested commit does not match this workflow run.' >&2
             exit 1
           fi
+  helper-readiness-calibration:
+    name: First hosted helper readiness calibration
+    # Temporary PR-only diagnosis; it does not warm any application job or
+    # replace an application check, and is intentionally absent from main.
+    if: github.event_name == 'pull_request'
+    needs: revision
+    runs-on: windows-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - name: Observe first helper compilation and normal closure without an application
+        id: readiness
+        timeout-minutes: 5
+        run: python -B -I -S scripts/application-lab/calibrate_helper_readiness.py --report "${{ runner.temp }}/helper-readiness-calibration.json"
+      - name: Retain bounded helper calibration evidence
+        if: ${{ !cancelled() && (steps.readiness.outcome == 'success' || steps.readiness.outcome == 'failure') }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: helper-readiness-calibration-Windows
+          path: ${{ runner.temp }}/helper-readiness-calibration.json
+          if-no-files-found: warn
+          retention-days: 14
   audit:
     name: Dependency security audit
     needs: revision
@@ -742,6 +769,51 @@ jobs:
           path: ${{ runner.temp }}/azureblob-validation.json
           if-no-files-found: error
           retention-days: 14
+      - name: Check Azure Blob known-byte acquisition and authenticated download denial
+        id: azureblob_download_denial_cases
+        timeout-minutes: 8
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:GITHUB_ACTIONS -cne 'true' -or $env:RUNNER_ENVIRONMENT -cne 'github-hosted') { throw 'azureblob_hosted_required' }
+          $application = (Resolve-Path "$env:RUNNER_TEMP/azureblob-build/rclone-triage/target/release/rclone-triage.exe").Path
+          $buildCommit = (& git rev-parse --verify HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $buildCommit -cnotmatch '^[0-9a-f]{40}$' -or $env:GITHUB_SHA -cne $buildCommit) { throw 'azureblob_build_binding_failed' }
+          $expectedPins = (Get-FileHash -LiteralPath rclone-version.env -Algorithm SHA256).Hash
+          if ((Get-FileHash -LiteralPath "$env:RUNNER_TEMP/azureblob-build/rclone-version.env" -Algorithm SHA256).Hash -cne $expectedPins) { throw 'azureblob_runtime_binding_failed' }
+          $applicationHash = (Get-FileHash -LiteralPath $application -Algorithm SHA256).Hash.ToLowerInvariant()
+          python -B scripts/application-lab/run_windows_azureblob.py `
+            --application $application --application-sha256 $applicationHash --build-commit $buildCommit `
+            --fixture-mode azureblob_sharedkey_download_denial_cli_v1 `
+            --report "$env:RUNNER_TEMP/azureblob-download-denial.private.json"
+          if ($LASTEXITCODE -ne 0) { throw 'azureblob_download_denial_cases_failed' }
+      - name: Independently validate Azure Blob download-denial experiment evidence
+        id: azureblob_download_denial_validation
+        if: ${{ !cancelled() && (steps.azureblob_download_denial_cases.outcome == 'success' || steps.azureblob_download_denial_cases.outcome == 'failure') }}
+        timeout-minutes: 3
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:GITHUB_ACTIONS -cne 'true' -or $env:RUNNER_ENVIRONMENT -cne 'github-hosted') { throw 'azureblob_hosted_required' }
+          $application = (Resolve-Path "$env:RUNNER_TEMP/azureblob-build/rclone-triage/target/release/rclone-triage.exe").Path
+          $buildCommit = (& git rev-parse --verify HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $buildCommit -cnotmatch '^[0-9a-f]{40}$' -or $env:GITHUB_SHA -cne $buildCommit) { throw 'azureblob_build_binding_failed' }
+          $expectedPins = (Get-FileHash -LiteralPath rclone-version.env -Algorithm SHA256).Hash
+          if ((Get-FileHash -LiteralPath "$env:RUNNER_TEMP/azureblob-build/rclone-version.env" -Algorithm SHA256).Hash -cne $expectedPins) { throw 'azureblob_runtime_binding_failed' }
+          python -B scripts/azureblob_application_evidence.py `
+            --receipt "$env:RUNNER_TEMP/azureblob-download-denial.private.json" --application $application `
+            --fixture-mode azureblob_sharedkey_download_denial_cli_v1 `
+            --build-commit $buildCommit --report "$env:RUNNER_TEMP/azureblob-download-denial-validation.json"
+          if ($LASTEXITCODE -ne 0) { throw 'azureblob_evidence_failed' }
+      - name: Retain only normalized Azure Blob download-denial experiment evidence
+        if: ${{ !cancelled() && (steps.azureblob_download_denial_validation.outcome == 'success' || steps.azureblob_download_denial_validation.outcome == 'failure') }}
+        timeout-minutes: 2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: azureblob-download-denial-experiment-Windows
+          path: ${{ runner.temp }}/azureblob-download-denial-validation.json
+          if-no-files-found: error
+          retention-days: 14
   windows-swift-cancellation:
     name: Windows Swift download cancellation experiment
     needs: test
@@ -800,6 +872,66 @@ jobs:
         with:
           name: swift-cancellation-experiment-Windows
           path: ${{ runner.temp }}/swift-cancellation-validation.json
+          if-no-files-found: error
+          retention-days: 14
+  windows-swift-listing:
+    name: Windows Swift account-root listing experiment
+    needs: test
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        timeout-minutes: 2
+        with:
+          name: rclone-triage-windows
+          path: ${{ runner.temp }}/swift-build
+      - name: Check Swift account-root listing with the Windows application
+        id: swift_listing_cases
+        timeout-minutes: 8
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:GITHUB_ACTIONS -cne 'true' -or $env:RUNNER_ENVIRONMENT -cne 'github-hosted') { throw 'swift_hosted_required' }
+          $application = (Resolve-Path "$env:RUNNER_TEMP/swift-build/rclone-triage/target/release/rclone-triage.exe").Path
+          $buildCommit = (& git rev-parse --verify HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $buildCommit -cnotmatch '^[0-9a-f]{40}$' -or $env:GITHUB_SHA -cne $buildCommit) { throw 'swift_build_binding_failed' }
+          $expectedPins = (Get-FileHash -LiteralPath rclone-version.env -Algorithm SHA256).Hash
+          if ((Get-FileHash -LiteralPath "$env:RUNNER_TEMP/swift-build/rclone-version.env" -Algorithm SHA256).Hash -cne $expectedPins) { throw 'swift_runtime_binding_failed' }
+          $applicationHash = (Get-FileHash -LiteralPath $application -Algorithm SHA256).Hash.ToLowerInvariant()
+          python -B scripts/application-lab/run_windows_swift.py --listing-only `
+            --application $application --application-sha256 $applicationHash --build-commit $buildCommit `
+            --report "$env:RUNNER_TEMP/swift-listing.private.json"
+          if ($LASTEXITCODE -ne 0) { throw 'swift_listing_cases_failed' }
+      - name: Independently validate Swift experiment evidence
+        id: swift_listing_validation
+        if: ${{ !cancelled() && (steps.swift_listing_cases.outcome == 'success' || steps.swift_listing_cases.outcome == 'failure') }}
+        timeout-minutes: 3
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:GITHUB_ACTIONS -cne 'true' -or $env:RUNNER_ENVIRONMENT -cne 'github-hosted') { throw 'swift_hosted_required' }
+          $application = (Resolve-Path "$env:RUNNER_TEMP/swift-build/rclone-triage/target/release/rclone-triage.exe").Path
+          $buildCommit = (& git rev-parse --verify HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $buildCommit -cnotmatch '^[0-9a-f]{40}$' -or $env:GITHUB_SHA -cne $buildCommit) { throw 'swift_build_binding_failed' }
+          $expectedPins = (Get-FileHash -LiteralPath rclone-version.env -Algorithm SHA256).Hash
+          if ((Get-FileHash -LiteralPath "$env:RUNNER_TEMP/swift-build/rclone-version.env" -Algorithm SHA256).Hash -cne $expectedPins) { throw 'swift_runtime_binding_failed' }
+          python -B scripts/swift_application_evidence.py --listing-only `
+            --receipt "$env:RUNNER_TEMP/swift-listing.private.json" --application $application `
+            --build-commit $buildCommit --report "$env:RUNNER_TEMP/swift-listing-validation.json"
+          if ($LASTEXITCODE -ne 0) { throw 'swift_evidence_failed' }
+      - name: Retain only normalized Swift experiment evidence
+        if: ${{ !cancelled() && (steps.swift_listing_validation.outcome == 'success' || steps.swift_listing_validation.outcome == 'failure') }}
+        timeout-minutes: 2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: swift-listing-experiment-Windows
+          path: ${{ runner.temp }}/swift-listing-validation.json
           if-no-files-found: error
           retention-days: 14
   windows-webdav-bearer:
@@ -1100,7 +1232,7 @@ jobs:
           retention-days: 14
   release:
     name: Publish Windows nightly
-    needs: [test, windows-filesystem, windows-b2, windows-swift, windows-azureblob, windows-swift-cancellation, windows-architectures, audit, python-audit, smb-protocol, linux-provider-evidence, pcloud-oauth-feasibility, pcloud-oauth-authentication, gcs-oauth-lifecycle, windows-webdav-bearer]
+    needs: [test, windows-filesystem, windows-b2, windows-swift, windows-azureblob, windows-swift-cancellation, windows-swift-listing, windows-architectures, audit, python-audit, smb-protocol, linux-provider-evidence, pcloud-oauth-feasibility, pcloud-oauth-authentication, gcs-oauth-lifecycle, windows-webdav-bearer]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:

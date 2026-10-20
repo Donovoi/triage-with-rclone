@@ -30,7 +30,7 @@ def _load(name, path):
 _http, loaded_http_source_sha256 = _load("azureblob_owned_http", _PATH)
 _signer, loaded_signer_source_sha256 = _load("azureblob_protocol_signer", _SIGNER_PATH)
 FixtureError = _http.FixtureError
-CASES = ("acquisition", "denial")
+CASES = ("acquisition", "denial", "download_denial")
 BODY = b"Nested synthetic payload.\n"
 ACCOUNT, CONTAINER = "syntheticaccount", "synthetic-container"
 MEMBER = "nested/space name.txt"
@@ -109,7 +109,7 @@ class AppAzureBlobState:
                     hmac.new(key, signed.encode("utf-8"), hashlib.sha256).digest()).decode("ascii")
                     for key in (self._key, self._wrong_key)]
                 authorization = headers.get("authorization", "")
-                expected = signatures[0 if self.case == "acquisition" else 1]
+                expected = signatures[1 if self.case == "denial" else 0]
                 if not hmac.compare_digest(authorization, expected):
                     raise ValueError("signature_invalid")
                 if self.case == "denial" and hmac.compare_digest(authorization, signatures[0]):
@@ -117,7 +117,7 @@ class AppAzureBlobState:
             except (ValueError, TypeError, OverflowError):
                 raise FixtureError("credentials_invalid") from None
             index = len(self.events)
-            expected_methods = ("HEAD", "HEAD", "GET") if self.case == "acquisition" else ("HEAD",)
+            expected_methods = ("HEAD",) if self.case == "denial" else ("HEAD", "HEAD", "GET")
             if index >= len(expected_methods) or method != expected_methods[index]:
                 raise FixtureError("sequence_invalid")
             ranged = headers.get("x-ms-range")
@@ -126,8 +126,9 @@ class AppAzureBlobState:
             etag = '"synthetic-' + hashlib.md5(BODY).hexdigest() + '"'
             if headers.get("if-match") not in (None, etag, "*"):
                 raise FixtureError("headers_invalid")
-            status = 403 if self.case == "denial" else 206 if ranged else 200
-            kind = "wrong_key_denied" if status == 403 else "head_authenticated" if method == "HEAD" else "content_authenticated"
+            status = 403 if self.case == "denial" or self.case == "download_denial" and method == "GET" else 206 if ranged else 200
+            kind = ("wrong_key_denied" if self.case == "denial" else "download_denied" if status == 403 else
+                    "head_authenticated" if method == "HEAD" else "content_authenticated")
             request = (method, kind, "stat" if index == 0 else "copy", status)
             self._pending = request
             return request
@@ -141,7 +142,7 @@ class AppAzureBlobState:
             if status == 403:
                 body = b""
                 size = 0
-                headers["x-ms-error-code"] = "AuthenticationFailed"
+                headers["x-ms-error-code"] = "AuthorizationFailure" if self.case == "download_denial" else "AuthenticationFailed"
             else:
                 body = BODY if method == "GET" else b""
                 size = len(BODY)

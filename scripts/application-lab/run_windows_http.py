@@ -673,7 +673,11 @@ def remove_owned(root, expected_identity):
 SESSION_KEYS = frozenset({"schema_version", "action", "ok", "state", "app_exit_code", "runtime_image_observed",
     "runtime_sha256", "runtime_process_count", "ctrl_c_sent", "output_bytes", "output_limit_exceeded", "forced_termination",
     "app_exited", "observed_children_exited", "job_zero_confirmed", "reader_joined", "conpty_closed", "errors"})
-SESSION_ERRORS = frozenset("protocol_invalid job_assignment_failed termination_failed deadline_exceeded start_failed "
+PROCESS_OBSERVATION_ERRORS = frozenset("process_observation_stage_" + stage for stage in (
+    "pid_buffer_allocate", "pid_list_query", "pid_list_shape", "pid_value", "retained_child_wait",
+    "child_open", "child_membership", "child_exit_wait", "child_capacity", "child_created",
+    "child_handle_close", "pid_buffer_free", "job_accounting", "app_exit_wait", "app_exit_code", "unknown"))
+SESSION_ERRORS = PROCESS_OBSERVATION_ERRORS | frozenset("protocol_invalid job_assignment_failed termination_failed deadline_exceeded start_failed "
     "output_limit_exceeded reader_failed job_query_failed process_observation_failed runtime_observation_failed "
     "ctrl_c_refused input_failed input_timeout forced_termination process_cleanup_failed input_cleanup_failed "
     "reader_cleanup_failed console_cleanup_failed console_cleanup_timeout".split())
@@ -696,6 +700,8 @@ def validate_session(value, action):
     errors = value["errors"]
     need(type(errors) is list and len(errors) <= 24 and all(type(e) is str and e in SESSION_ERRORS for e in errors)
          and len(set(errors)) == len(errors) and value["ok"] == (not errors), "session_failed")
+    stages = PROCESS_OBSERVATION_ERRORS.intersection(errors)
+    need(not stages or len(stages) == 1 and "process_observation_failed" in errors, "session_failed")
     return value
 
 
@@ -795,7 +801,7 @@ def ready_timing_projection(snapshot, phase, outcome):
             (second is None or first is not None and first <= second) and
             (waiting is None or written is not None and written <= waiting) and
             ((waiting is None and budget is None) or waiting is not None and
-             type(budget) in (int, float) and 0.01 <= budget <= 60)):
+             type(budget) in (int, float) and 0.01 <= budget <= 90)):
         return value
     if (phase in {"wait", "reply"} and (written is None or waiting is None) or
             phase not in {"wait", "reply"} and (written is not None or waiting is not None) or
@@ -937,6 +943,9 @@ class Bridge:
     """One owned hidden PS5 process; fixed JSON protocol and bounded pipe readers."""
     script_name = "hosted_session.ps1"
     actions = BRIDGE_ACTIONS
+    # Fixed subclass policies are reserved for the no-application calibration.
+    ready_wait_seconds = 90
+    ready_timing_type = _ReadyTiming
 
     def validate_session(self, value, action):
         return validate_session(value, action)
@@ -957,7 +966,7 @@ class Bridge:
         self.transport = {}
         origin = time.monotonic()
         self.deadline = origin + 165
-        self._startup_best_effort(lambda: setattr(self, "ready_timing", _ReadyTiming(origin)))
+        self._startup_best_effort(lambda: setattr(self, "ready_timing", self.ready_timing_type(origin)))
         env = environment(case / "helper-env")
         env.update(GITHUB_ACTIONS="true", RUNNER_OS="Windows", RUNNER_ENVIRONMENT="github-hosted")
         # PS5.1 writes this optional cache asynchronously after module imports.
@@ -1113,7 +1122,7 @@ class Bridge:
             phase = "wait"
             # The first reply includes cold helper compilation. It consumes the
             # existing lifetime budget; later commands keep their shorter cap.
-            response_seconds = 60 if action == "ready" else 35
+            response_seconds = self.ready_wait_seconds if action == "ready" else 35
             wait_started = time.monotonic()
             wait_seconds = max(0.01, min(response_seconds, self.deadline - wait_started))
             if action == "ready":

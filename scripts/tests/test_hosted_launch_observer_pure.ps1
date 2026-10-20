@@ -309,15 +309,101 @@ try {
     Check ($state.HelperPeak -eq 3 -and $state.HelperLaunches -eq 3 -and $state.VerifiedHelpers -eq 2 -and $state.Failure -ceq 'debug_launch_limit')
     foreach ($id in @(10,21,31,41)) { ExitProcess $state $id ($id * 10) }; Check $state.Drained
 
-    # The old absolute storage ceiling remains 34, even with a launch cap32.
+    # Four workers may each have one live verified helper. Twenty paired launches
+    # exercise the acquisition shape beyond the old 34-record ceiling; 32 tests
+    # the global maximum. Every role remains owned until its own EXIT event.
+    foreach ($count in @(4, 20, 32)) {
+        $state = State 4 $count; Create $state 10 100 $false; Breakpoint $state 10 100
+        for ($batch=0; $batch -lt $count; $batch+=4) {
+            for ($i=$batch; $i -lt $batch+4; $i++) {
+                $runtimePid = 100 + $i * 2; $helperPid = $runtimePid + 1
+                Create $state $runtimePid ($runtimePid * 10) $true; Breakpoint $state $runtimePid ($runtimePid * 10)
+                Helper $state $helperPid; Breakpoint $state $helperPid ($helperPid * 10)
+            }
+            Check ($state.Peak -eq 4 -and $state.HelperPeak -eq 4 -and -not $state.Drained)
+            for ($i=$batch; $i -lt $batch+4; $i++) {
+                $runtimePid = 100 + $i * 2; $helperPid = $runtimePid + 1
+                ExitProcess $state $runtimePid ($runtimePid * 10)
+                ExitProcess $state $helperPid ($helperPid * 10)
+            }
+        }
+        ExitProcess $state 10 100
+        Check ($state.Qualified -and $state.Drained -and $null -eq $state.Failure)
+        Check ($state.Launches -eq $count -and $state.VerifiedLaunches -eq $count)
+        Check ($state.HelperLaunches -eq $count -and $state.VerifiedHelpers -eq $count)
+    }
+    # Intermediate configured pools retain their own concurrent helper limits.
+    foreach ($concurrent in @(2, 3)) {
+        $state = State $concurrent $concurrent; Create $state 10 100 $false; Breakpoint $state 10 100
+        for ($i=0; $i -lt $concurrent; $i++) {
+            $runtimePid = 100 + $i * 2; $helperPid = $runtimePid + 1
+            Create $state $runtimePid ($runtimePid * 10) $true; Breakpoint $state $runtimePid ($runtimePid * 10)
+            Helper $state $helperPid; Breakpoint $state $helperPid ($helperPid * 10)
+        }
+        ExitProcess $state 10 100; Check (-not $state.Drained)
+        for ($i=0; $i -lt $concurrent; $i++) {
+            $runtimePid = 100 + $i * 2; $helperPid = $runtimePid + 1
+            ExitProcess $state $runtimePid ($runtimePid * 10); ExitProcess $state $helperPid ($helperPid * 10)
+        }
+        Check ($state.Qualified -and $state.Peak -eq $concurrent -and $state.HelperPeak -eq $concurrent)
+    }
+    # The broader storage bound never expands runtime concurrency or launches.
+    $state = State 4 20; Create $state 10 100 $false
+    foreach ($id in @(20,30,40,50)) { Create $state $id ($id * 10) $true }
+    $state.Begin(3,60,600); Reject { $state.Create([TriageApplicationLab.HostedLaunchRole]::Runtime) }; $state.Continued()
+    Check ($state.Failure -ceq 'debug_launch_limit' -and $state.Peak -eq 5 -and $state.VerifiedLaunches -eq 4)
+    foreach ($id in @(10,20,30,40,50,60)) { ExitProcess $state $id ($id * 10) }
+    Check ($state.Drained -and -not $state.Qualified)
+    $state = State 4 20; Create $state 10 100 $false
+    for ($id=100; $id -lt 120; $id++) { Create $state $id ($id * 10) $true; ExitProcess $state $id ($id * 10) }
+    $state.Begin(3,120,1200); Reject { $state.Create([TriageApplicationLab.HostedLaunchRole]::Runtime) }; $state.Continued()
+    ExitProcess $state 120 1200; ExitProcess $state 10 100
+    Check ($state.Launches -eq 21 -and $state.VerifiedLaunches -eq 20 -and $state.Failure -ceq 'debug_launch_limit' -and $state.Drained -and -not $state.Qualified)
+
+    # The fifth live helper exceeds four workers even after five runtimes have
+    # independently verified. The rejected classified record still drains.
+    $state = State 4 5; Create $state 10 100 $false
+    foreach ($id in @(20,30,40,50,60)) { Create $state $id ($id * 10) $true; ExitProcess $state $id ($id * 10) }
+    foreach ($id in @(21,31,41,51)) { Helper $state $id }
+    $state.Begin(3,61,610); Reject { $state.Create([TriageApplicationLab.HostedLaunchRole]::ConsoleHelper) }; $state.Continued()
+    Check ($state.Failure -ceq 'debug_launch_limit' -and $state.HelperPeak -eq 5 -and $state.VerifiedHelpers -eq 4)
+    foreach ($id in @(10,21,31,41,51,61)) { ExitProcess $state $id ($id * 10) }
+    Check ($state.Drained -and -not $state.Qualified -and $state.Failure -ceq 'debug_launch_limit')
+    # One-worker compatibility includes two overlapping helpers after sequential
+    # verified runtimes, but never invents another runtime or relaxes image proof.
+    $state = State 1 2; Create $state 10 100 $false; Breakpoint $state 10 100
+    foreach ($id in @(20,30)) { Create $state $id ($id * 10) $true; Breakpoint $state $id ($id * 10); ExitProcess $state $id ($id * 10) }
+    foreach ($id in @(21,31)) { Helper $state $id; Breakpoint $state $id ($id * 10) }
+    Check ($state.Peak -eq 1 -and $state.HelperPeak -eq 2)
+    foreach ($id in @(10,21,31)) { ExitProcess $state $id ($id * 10) }
+    Check $state.Qualified
+    # Four-worker admission never promotes a fake installed image. Model the
+    # native verifier's failure before Verified, then retain and drain that role.
+    $state = State 4 20; Create $state 10 100 $false; Create $state 20 200 $true
+    $state.Begin(3,21,210); $state.Create([TriageApplicationLab.HostedLaunchRole]::ConsoleHelper)
+    Check (-not [TriageApplicationLab.HostedLaunchState]::InstalledImageMatches($reference, $same, $fixed, 'C:\owned\conhost.exe', $hash, $hash))
+    $state.Fail('debug_image_invalid'); Reject { $state.Verified() }; $state.Continued()
+    ExitProcess $state 21 210; ExitProcess $state 20 200; ExitProcess $state 10 100
+    Check ($state.Drained -and -not $state.Qualified -and $state.VerifiedHelpers -eq 0 -and $state.Failure -ceq 'debug_image_invalid')
+
+    # Exactly 65 records fit the root + 32 runtimes + 32 helpers envelope.
+    # Record 66 cannot be reserved: the pending event remains uncertain, so it
+    # cannot be continued or relabelled as drained after storage exhaustion.
     $state = State 1 32; Create $state 10 100 $false
-    for ($id=20; $id -lt 52; $id++) { Create $state $id ($id * 10) $true; ExitProcess $state $id ($id * 10) }
-    Helper $state 60; ExitProcess $state 60 600
-    Reject { $state.Begin(3,61,610) }; Check ($state.Failure -ceq 'debug_launch_limit' -and -not $state.Qualified)
+    for ($i=0; $i -lt 32; $i++) {
+        $runtimePid = 100 + $i * 2; $helperPid = $runtimePid + 1
+        Create $state $runtimePid ($runtimePid * 10) $true; ExitProcess $state $runtimePid ($runtimePid * 10)
+        Helper $state $helperPid; ExitProcess $state $helperPid ($helperPid * 10)
+    }
+    Check ($state.Launches -eq 32 -and $state.HelperLaunches -eq 32 -and $null -eq $state.Failure)
+    Reject { $state.Begin(3,200,2000) }; Reject { $state.Continued() }
+    Check ($state.Failure -ceq 'debug_launch_limit' -and -not $state.Drained -and -not $state.Qualified)
     # Smaller configured budgets retain the derived root+runtime+helper ceiling.
     $state = State 1 1; Create $state 10 100 $false; Create $state 20 200 $true; Helper $state 21
     $state.Begin(3,22,220); Reject { $state.Create([TriageApplicationLab.HostedLaunchRole]::ConsoleHelper) }; $state.Continued()
     Check ($state.Failure -ceq 'debug_launch_limit' -and -not $state.Qualified)
+    foreach ($id in @(10,20,21,22)) { ExitProcess $state $id ($id * 10) }
+    Check ($state.Drained -and -not $state.Qualified -and $state.Failure -ceq 'debug_launch_limit')
     [pscustomobject]@{ scope='hosted_launch_observer_pure'; result='passed'; checks=$script:passed; native_session_executed=$false } | ConvertTo-Json -Compress
 } catch {
     [pscustomobject]@{ scope='hosted_launch_observer_pure'; result='failed'; checks=$script:passed; native_session_executed=$false } | ConvertTo-Json -Compress
