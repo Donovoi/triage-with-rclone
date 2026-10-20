@@ -943,6 +943,9 @@ class Bridge:
     """One owned hidden PS5 process; fixed JSON protocol and bounded pipe readers."""
     script_name = "hosted_session.ps1"
     actions = BRIDGE_ACTIONS
+    # Fixed subclass policies are reserved for the no-application calibration.
+    ready_wait_seconds = 60
+    ready_timing_type = _ReadyTiming
 
     def validate_session(self, value, action):
         return validate_session(value, action)
@@ -963,7 +966,7 @@ class Bridge:
         self.transport = {}
         origin = time.monotonic()
         self.deadline = origin + 165
-        self._startup_best_effort(lambda: setattr(self, "ready_timing", _ReadyTiming(origin)))
+        self._startup_best_effort(lambda: setattr(self, "ready_timing", self.ready_timing_type(origin)))
         env = environment(case / "helper-env")
         env.update(GITHUB_ACTIONS="true", RUNNER_OS="Windows", RUNNER_ENVIRONMENT="github-hosted")
         # PS5.1 writes this optional cache asynchronously after module imports.
@@ -1119,7 +1122,7 @@ class Bridge:
             phase = "wait"
             # The first reply includes cold helper compilation. It consumes the
             # existing lifetime budget; later commands keep their shorter cap.
-            response_seconds = 60 if action == "ready" else 35
+            response_seconds = self.ready_wait_seconds if action == "ready" else 35
             wait_started = time.monotonic()
             wait_seconds = max(0.01, min(response_seconds, self.deadline - wait_started))
             if action == "ready":
