@@ -32,9 +32,9 @@ Local files and local ZIP files have passed their required tests on Windows x64,
 
 Dropbox and Swift download cancellation tests have passed. B2, Swift, WebDAV and Azure Blob download checks have passed using local test servers. These results apply to the tested Windows builds; tests with real Swift accounts are still pending.
 
-Google Drive file lists and repeated downloads passed in a small read-only test folder. Login, refresh and other provider checks are still incomplete.
+Google Drive tests have checked file lists and repeated downloads. A newer test downloaded 10 small files with matching hashes and confirmed clean shutdown.
 
-Current work: finish Google Drive checks, then test the remaining providers.
+Current work: finish Google Drive sign-in and failure tests, then test the remaining providers.
 
 ## What comes next
 
