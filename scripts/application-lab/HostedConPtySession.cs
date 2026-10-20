@@ -879,7 +879,7 @@ namespace TriageApplicationLab {
             }
             void Create(DebugEvent value) {
                 CreateInfo info=value.info.create;
-                Require(info.process!=IntPtr.Zero && info.thread!=IntPtr.Zero && processes.Count<34);
+                Require(info.process!=IntPtr.Zero && info.thread!=IntPtr.Zero && processes.Count<65);
                 var owned=new OwnedProcess {handle=Duplicate(info.process,false)}; processes.Add(value.pid,owned);
                 owned.created=Created(owned.handle);
                 bool root=value.pid==initialPid;
@@ -1121,7 +1121,7 @@ namespace TriageApplicationLab {
                 // Reserve the rejected record before any fallible image/handle
                 // inspection. A failed CREATE can still receive its EXIT event.
                 // Exhausting the absolute storage cap retains the whole session.
-                Need(processes.Count<34,"debug_launch_limit");
+                Need(processes.Count<65,"debug_launch_limit");
                 processes.Add(pid,new Process {initialThread=tid,role=HostedLaunchRole.Rejected});
             }
         }
@@ -1133,10 +1133,10 @@ namespace TriageApplicationLab {
             if(role==HostedLaunchRole.Runtime) { Launches++; active++; Peak=Math.Max(Peak,active); }
             if(role==HostedLaunchRole.ConsoleHelper) { HelperLaunches++; helperActive++; HelperPeak=Math.Max(HelperPeak,helperActive); }
             Need(role!=HostedLaunchRole.Rejected,"debug_image_invalid");
-            // Two live helpers is a conservative qualification budget, not a
-            // Windows guarantee or a claim that a runtime parented each helper.
+            // Preserve the two-helper overlap allowance for one worker; larger
+            // pools admit one live helper per worker, never a parentage claim.
             Need(processes.Count<=1+2*maximumLaunches && Launches<=maximumLaunches && active<=maximumConcurrent && HelperLaunches<=maximumLaunches &&
-                HelperLaunches<=VerifiedLaunches && helperActive<=2,"debug_launch_limit");
+                HelperLaunches<=VerifiedLaunches && helperActive<=Math.Max(2,maximumConcurrent),"debug_launch_limit");
         }
         public void Verified() {
             Need(pending && code==3 && Failure==null,"debug_image_invalid");
