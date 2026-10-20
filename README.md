@@ -34,7 +34,7 @@ Dropbox and Swift download cancellation tests have passed. B2, Swift, WebDAV and
 
 Google Drive file lists and repeated downloads passed in a small read-only test folder. Login, refresh and other provider checks are still incomplete.
 
-Current work: finish Google Drive checks and find why file cleanup sometimes fails on Windows ARM64.
+Current work: finish Google Drive checks, then test the remaining providers.
 
 ## What comes next
 
