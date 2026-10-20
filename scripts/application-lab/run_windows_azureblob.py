@@ -41,10 +41,10 @@ CLEANUP_UNCERTAIN = frozenset({"termination_failed", "process_cleanup_failed", "
     "reader_cleanup_failed", "console_cleanup_failed", "console_cleanup_timeout", "source_directory_cleanup_failed",
     "debug_cleanup_failed", "source_directory_invalid"})
 # Existing generic HTTP private-directory names; no shared allowlist changes.
-CASE_DIRECTORIES = {"acquisition": "acquisition", "denial": "denial"}
+CASE_DIRECTORIES = {"acquisition": "acquisition", "denial": "denial", "download_denial": "denial"}
 
 
-def bindings(application, commit):
+def bindings(application, commit, mode=E.MODE):
     H.loaded_sources_preserved()
     W.bindings(application, commit)  # Includes W's loaded transitive dependencies.
     C.H.loaded_sources_preserved()
@@ -53,7 +53,7 @@ def bindings(application, commit):
     need(H.sha(H.read(Path(__file__), 512 * 1024)) == SELF_HASH, "preservation_failed")
     need(H.sha(H.read(F._PATH, 512 * 1024)) == F.loaded_http_source_sha256, "preservation_failed")
     need(H.sha(H.read(F._SIGNER_PATH, 512 * 1024)) == F.loaded_signer_source_sha256, "preservation_failed")
-    return E.compute_bindings(ROOT, application, commit)
+    return E.compute_bindings(ROOT, application, commit, mode)
 
 
 def failure(error):
@@ -149,7 +149,33 @@ def exact_stat_denial(value, endpoint):
             lines[1:]==expected and sum("NOTICE: Failed to rc:" in line for line in lines)==1)
 
 
+def exact_download_denial(value, endpoint):
+    """Pinned stderr grammar; the earlier progress/error block is stdout, not evidence here."""
+    if type(value) is not str or not 0 < len(value) <= 65536 or "\x00" in value or "\r" in value:
+        return False
+    if type(endpoint) is not str or not re.fullmatch(r"http://127\.0\.0\.1:[1-9][0-9]{0,4}/", endpoint):
+        return False
+    if not 1 <= int(endpoint.split(":")[-1][:-1]) <= 65535:
+        return False
+    lines = value.split("\n")
+    stamp = lines[0][:19]
+    if len(lines) != 7 or not re.fullmatch(r"[0-9]{4}/[0-9]{2}/[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}", stamp):
+        return False
+    try:
+        datetime.strptime(stamp, "%Y/%m/%d %H:%M:%S")
+    except ValueError:
+        return False
+    separator = "-" * 80
+    return lines == [
+        stamp + " NOTICE: Failed to rc: loopback: call failed: failed to open source object: "
+        "failed to open for download: GET " + endpoint + "syntheticaccount/synthetic-container/nested%2Fspace%20name.txt",
+        separator, "RESPONSE 403: 403 Forbidden", "ERROR CODE: AuthorizationFailure", separator,
+        "Response contained no body", separator,
+    ]
+
+
 def manifest(name, case, working, runtime, endpoint):
+    need(type(name) is str and name in E.EXPECTED_LAUNCHES, "manifest_invalid")
     f = E.fixture_manifest()
     base = case / "output" / H.CASE_NAME
     inventory = H.inventory(base)
@@ -182,7 +208,8 @@ def manifest(name, case, working, runtime, endpoint):
     else:
         need(result["success"] is False and result["integrity"] == "Failed" and
              all(result[k] is None for k in ("local_sha256", "size", "hash", "hash_type", "hash_verified", "hash_error")), "manifest_invalid")
-        need(exact_stat_denial(result["error"], endpoint), "denial_failed")
+        oracle = exact_download_denial if name == "download_denial" else exact_stat_denial
+        need(oracle(result["error"], endpoint), "denial_failed")
     wanted = {"Synthetic/" + f["member"]} if positive else set()
     need(set(H.output_files(base / "downloads")) == wanted, "outputs_invalid")
     files = {p for p, row in inventory.items() if not row[0]}
@@ -250,7 +277,7 @@ def execute(name, suite, application, app_sha, runtime, errors):
         correct = secrets.token_bytes(32)
         wrong = bytes(value ^ 1 for value in correct)
         state = F.AppAzureBlobState(name, base64.b64encode(correct).decode("ascii"), base64.b64encode(wrong).decode("ascii"))
-        key = base64.b64encode(correct if name == "acquisition" else wrong).decode("ascii")
+        key = base64.b64encode(wrong if name == "denial" else correct).decode("ascii")
         context = F.serve_azureblob(state)
         fixture_attempted = True
         server = context.__enter__()
@@ -315,7 +342,9 @@ def execute(name, suite, application, app_sha, runtime, errors):
             try:
                 E.fixture_observation(record["fixture"], name, successful=True)
                 checks.update(fixture_valid=True, source_preserved=True)
-                checks.update(dict(authenticated=True) if name == "acquisition" else dict(wrong_key_denied=True, no_payload=True))
+                checks.update(dict(authenticated=True) if name == "acquisition" else
+                    dict(authenticated_download_denied=True, no_payload=True) if name == "download_denial" else
+                    dict(wrong_key_denied=True, no_payload=True))
             except BaseException:
                 mark(record, "fixture_failed", errors)
         if item["lease"] is not None and all(checks[k] for k in ("process_cleanup", "fixture_cleanup")):
@@ -335,31 +364,35 @@ def execute(name, suite, application, app_sha, runtime, errors):
     return item
 
 
-def run(application, application_sha, commit):
+def run(application, application_sha, commit, mode=E.MODE):
     H.hosted_guard()
+    names = E.mode_cases(mode)
     application = Path(application).absolute()
-    runtime, bound = E.runtime_binding(ROOT), E.compute_bindings(ROOT, application, commit)
-    cases, group, errors, items = E.empty_cases(), E.empty_group(), [], []
+    runtime, bound = E.runtime_binding(ROOT), E.compute_bindings(ROOT, application, commit, mode)
+    cases, group, errors, items = E.empty_cases(mode), E.empty_group(), [], []
     suite = suite_id = None
     clean = False
     try:
-        need(bound["application_sha256"] == application_sha and os.environ.get("GITHUB_SHA") == commit and bindings(application, commit) == bound, "binding_failed")
+        need(bound["application_sha256"] == application_sha and os.environ.get("GITHUB_SHA") == commit and bindings(application, commit, mode) == bound, "binding_failed")
         parent = Path(os.environ["RUNNER_TEMP"]).absolute()
         suite = parent / ("app-http-" + uuid.uuid4().hex)
         H.prepare(parent, suite.name)
         suite_id = H.identity(suite)
         group.update(status="failed", checks=dict.fromkeys(E.GROUP_CHECKS, False))
-        for name in E.CASES:
+        for name in names:
             item = execute(name, suite, application, application_sha, runtime, errors)
             items.append(item)
             cases[name] = item["record"]
             if errors:
                 break
+            if mode == E.DOWNLOAD_DENIAL_MODE and name == "acquisition":
+                need(item["artifact"] is not None and item["record"]["failure_code"] is None and
+                     all(value is True for key, value in item["record"]["checks"].items() if key != "group_finalized"), "group_failed")
     except BaseException as error:
         errors.append(failure(error))
     finally:
         try:
-            need(bindings(application, commit) == bound and E.runtime_binding(ROOT) == runtime, "preservation_failed")
+            need(bindings(application, commit, mode) == bound and E.runtime_binding(ROOT) == runtime, "preservation_failed")
         except BaseException:
             errors.append("preservation_failed")
         if group["status"] != "not_run":
@@ -394,11 +427,11 @@ def run(application, application_sha, commit):
         for row in cases.values():
             if row["status"] != "not_run":
                 mark(row, row["failure_code"] or "group_failed", errors)
-    receipt = dict(schema_version=1, scope=E.SCOPE, fixture_mode=E.MODE, backend="azureblob", platform="windows",
+    receipt = dict(schema_version=1, scope=E.SCOPE, fixture_mode=mode, backend="azureblob", platform="windows",
         created_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), runtime=runtime, bindings=bound, cases=cases,
         experiment=group, authentication="static_shared_key", claims=dict.fromkeys(E.FALSE_CLAIMS, False), cleanup_complete=clean,
-        errors=errors, capabilities=E.derive_capabilities(cases, clean), result="passed" if success else "failed")
-    E.validate_receipt(receipt, runtime, bound)
+        errors=errors, capabilities=E.derive_capabilities(cases, clean, mode), result="passed" if success else "failed")
+    E.validate_receipt(receipt, runtime, bound, mode=mode)
     return receipt
 
 
@@ -406,6 +439,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser()
     for flag in ("application", "application-sha256", "build-commit", "report"):
         parser.add_argument("--" + flag, required=True)
+    parser.add_argument("--fixture-mode", choices=E.MODES, default=E.MODE)
     args = parser.parse_args(argv)
     descriptor = prior = None
     try:
@@ -416,7 +450,7 @@ def main(argv=None):
         path = Path(args.report).absolute()
         H.plain(path.parent, True)
         descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        receipt = run(args.application, args.application_sha256, args.build_commit)
+        receipt = run(args.application, args.application_sha256, args.build_commit, args.fixture_mode)
         with os.fdopen(descriptor, "wb") as stream:
             descriptor = None
             stream.write(E.compact(receipt) + b"\n")
