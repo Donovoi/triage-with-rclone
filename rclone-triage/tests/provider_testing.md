@@ -6,6 +6,14 @@ On 19 October 2026 (UTC), the Windows x64 app checked one dedicated, read-only G
 
 This result applies to build `8f412d39e1f36a3755714a836f598d2420da333c`, executable SHA256 `3e79ec968bb9a3010cf5ecd08503e3ad388a5b0096c8209a1d60885134302912`, with the pinned rclone 1.75.2 package. It checks the listed metadata and sampled bytes at those observations; it does not prove that the source never changed between them. The optional 16 MiB file was listed but not downloaded. This run did not test new login, refresh, denial, revocation or cancellation, independently observe the running rclone image, or qualify another build. The coverage ledger and full-provider status are unchanged.
 
+### New download and cleanup check
+
+A separate Windows x64 lab run downloaded all 10 synthetic files (66,804 bytes). Every file matched its independent expected SHA256 hash. The app and its helper processes closed cleanly, and the lab was shut down and disconnected. All 20 runtime launches were checked against the pinned runtime image; no more than four ran at once.
+
+This result applies to the [PR #130](https://github.com/Donovoi/triage-with-rclone/pull/130) test build `86a614a4f75644383c1e056ea3107bca258893ea`, executable SHA256 `5ede148d5cf9cef9f8f5de09d78bc8c1354224a75b993add8127b04571fe0238`, with rclone 1.75.2 runtime SHA256 `41eab3e118d264920b62c3327966c5ece0dc4dd715ee617d9e30450d8ead95a4`. It does not qualify a different nightly.
+
+This was a file-download and cleanup check. Refresh, denial, cancellation and a fresh before/after check of the source files remain untested on this build. The older preservation result above remains separate. The coverage ledger and full-provider status are unchanged.
+
 ## Dropbox App Folder progress
 
 On 10 October 2026, the checked Windows x64 app passed these tests against a dedicated, read-only Dropbox App Folder in the isolated lab:
