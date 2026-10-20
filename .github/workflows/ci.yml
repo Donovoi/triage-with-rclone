@@ -355,6 +355,14 @@ jobs:
         if: runner.os == 'Windows' && runner.arch == 'X64'
         timeout-minutes: 2
         run: python -B -I -S ../scripts/application-lab/qualify_helper_owner.py
+      - name: Check Windows content progress witness
+        if: runner.os == 'Windows' && runner.arch == 'X64'
+        timeout-minutes: 2
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & ../scripts/tests/test_content_progress_witness.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Check hosted Windows source folder ownership and cleanup
         if: runner.os == 'Windows'
         timeout-minutes: 2
