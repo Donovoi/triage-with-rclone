@@ -713,6 +713,77 @@ class _SetupQuiescence:
             pass
 
 
+
+class _SessionQuiescence(_SetupQuiescence):
+    """Clean three-pipe session only; uses the caller's existing absolute deadline."""
+    def observe(self, process, deadline):
+        try:
+            _registered()
+            need(self.status == "admission_failed" and self.queries == 0)
+            with _lock:
+                need(type(process) is HelperProcess and _active is process and not _poisoned)
+            need(not process.finalized and not process.forced and not process.uncertain and
+                 process.creation_resolved and process.created and process.resumed and
+                 type(process.returncode) is int and process.returncode == 0)
+            for index, pipe in enumerate((process.stdin, process.stdout, process.stderr)):
+                need(type(pipe) is _Pipe and pipe.owner is process and pipe.closed and
+                     pipe.handle is process.parent[index] and pipe.readable is (index != 0))
+            for cell in (*process.child, process.primary_thread, *process.parent):
+                with cell.lock:
+                    need(cell.owner is process and cell.users == 0 and
+                         (cell.value is None or cell.closed is True))
+            for cell in (process.process, process.job):
+                with cell.lock:
+                    need(cell.owner is process and cell.value is not None and cell.users == 0 and
+                         not cell.attempted and cell.closed is None)
+            self.clock(deadline, starting=True)
+            self.status = "parent_close_failed"
+            need(process.process.close() and process.process.closed is True)
+            self.clock(deadline)
+            while self.queries < 401:
+                self.clock(deadline, starting=True)
+                self.status = "query_failed"
+                self.queries += 1
+                with process.job.borrow() as handle:
+                    sample = process.api.accounting(handle)
+                self.status = "invalid_accounting"
+                need(type(sample) is tuple and len(sample) == 2)
+                active, total = sample
+                need(type(active) is int and type(total) is int and 0 <= active <= total < 2**32 and
+                     total >= 1 and (self.total is None or total >= self.total))
+                self.active, self.total = active, total
+                now = self.clock(deadline)
+                if active == 0:
+                    self.status = "zero_observed"
+                    return
+                if self.queries == 401:
+                    self.status = "observation_cap"
+                    raise OwnershipError("helper_ownership_failed")
+                now = self.clock(deadline, starting=True)
+                self.status = "pace_failed"
+                time.sleep(min(0.05, deadline - now))
+                self.clock(deadline)
+        except BaseException:
+            _retain_uncertainty(process)
+            raise
+
+    def diagnostic(self):
+        try:
+            statuses = {"admission_failed", "parent_close_failed", "query_failed", "invalid_accounting",
+                        "clock_failed", "deadline_exhausted", "observation_cap", "pace_failed", "zero_observed"}
+            need(type(self.status) is str and self.status in statuses and
+                 type(self.queries) is int and 0 <= self.queries <= 401)
+            need((self.active is None and self.total is None) or
+                 (type(self.active) is int and type(self.total) is int and
+                  0 <= self.active <= self.total < 2**32 and self.total >= 1))
+            need(self.deadline_expired is None or type(self.deadline_expired) is bool)
+            record = dict(schema_version=1, status=self.status, queries=self.queries,
+                          active=self.active, total=self.total, deadline_expired=self.deadline_expired)
+            print("application_helper_session_quiescence=" + json.dumps(record, separators=(",", ":")), flush=True)
+        except BaseException:
+            pass
+
+
 def run_setup(args, *, env, cwd=None, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
               stderr=subprocess.DEVNULL, timeout=20, check=False, failure_drain_seconds=5,
               capture_limit=4096, **hidden):

@@ -216,10 +216,11 @@ class Native:
                                    int(inherit), 2 if same_access else 0) != 0)
         return integer(output.value)
 
-    def stdout(self):
+    def stdout(self, *, character=False):
+        need(type(character) is bool)
         value = self.k.GetStdHandle((-11) & 0xffffffff)
         integer(value)
-        need(self.k.GetFileType(value) == 3)
+        need(self.k.GetFileType(value) == (2 if character else 3))
         return value
 
     def null(self, readable):
@@ -277,7 +278,7 @@ def close_known(api, handles):
     need(not failed, 'handle_close_failed')
 
 
-def parent(api, request_path):
+def parent(api, request_path, *, inherit_stdout=True):
     expected = request(record(request_path))
     source_identity(api, expected)
     owned, result, succeeded = [], api.PI(), False
@@ -290,9 +291,11 @@ def parent(api, request_path):
         ready = api.duplicate(controller, expected['ready'], local, 2, True); owned.append(ready)
         stdin = api.null(True); owned.append(stdin)
         stderr = api.null(False); owned.append(stderr)
-        stdout = api.duplicate(local, api.stdout(), local, 0, True, True); owned.append(stdout)
+        stdout = api.duplicate(local, api.stdout(), local, 0, True, True) if inherit_stdout else api.null(False)
+        owned.append(stdout)
         need(not api.wait(release, 0))
-        args = [expected['controller']['image'], '-B', '-I', '-S', str(HERE), 'child', str(request_path), str(release), str(ready)]
+        args = [expected['controller']['image'], '-B', '-I', '-S', str(HERE),
+                'child' if inherit_stdout else 'session_child', str(request_path), str(release), str(ready)]
         api.create_child(args, [stdin, stdout, stderr, release, ready], result)
         # Register only the actual returned handles; never reopen the child's PID.
         owned.extend([result.thread, result.process])
@@ -315,11 +318,14 @@ def parent(api, request_path):
     return 0
 
 
-def child(api, request_path, release, ready):
+def child(api, request_path, release, ready, *, session=False):
     expected = request(record(request_path))
     source_identity(api, expected)
     integer(release); integer(ready); need(release != ready)
-    api.stdout()
+    if session:
+        api.stdout(character=True)
+    else:
+        api.stdout()
     need(not api.wait(release, 0))
     result = 32
     try:
@@ -334,14 +340,16 @@ def main(argv=None):
     args = sys.argv[1:] if argv is None else argv
     try:
         need(type(args) is list and all(type(v) is str for v in args))
-        need(len(args) in (2, 4) and args[0] in ('parent', 'child'))
-        need(len(args) == (2 if args[0] == 'parent' else 4))
+        need(len(args) in (2, 4) and args[0] in ('parent', 'session_parent', 'child', 'session_child'))
+        need(len(args) == (4 if args[0] in ('child', 'session_child') else 2))
         path = Path(args[1]); need(path.is_absolute() and path.name == 'request.json')
         plain(path.parent, True)
         api = Native()
-        if args[0] == 'parent':
-            return parent(api, path)
+        if args[0] in ('parent', 'session_parent'):
+            return parent(api, path, inherit_stdout=args[0] == 'parent')
         need(all(re.fullmatch('[1-9][0-9]{0,19}', v) for v in args[2:]))
+        if args[0] == 'session_child':
+            return child(api, path, int(args[2]), int(args[3]), session=True)
         return child(api, path, int(args[2]), int(args[3]))
     except BaseException:
         return 31
