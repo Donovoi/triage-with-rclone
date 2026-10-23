@@ -61,6 +61,7 @@ def owned_ready_bridge():
     bridge.process = Mock(returncode=0); bridge.process.poll.return_value = None
     # The owner now supplies an explicit closed-handle/reservation result.
     bridge.process.finalize.return_value = True
+    bridge.process.finalized = False
     bridge.watchdog = Mock(); bridge.watchdog.is_alive.return_value = False
     bridge.threads = [Mock(), Mock()]
     for reader in bridge.threads:
@@ -81,6 +82,18 @@ class ProducerTests(unittest.TestCase):
     def setUp(self):
         for obj, name in ((subprocess, "Popen"), (socket, "socket"), (socket, "create_connection")):
             p = patch.object(obj, name, side_effect=AssertionError("forbidden")); p.start(); self.addCleanup(p.stop)
+        self.session_observer = Mock()
+        self.session_observer.observe.side_effect = lambda process, deadline: ProducerTests.session_quiescence(self, process, deadline)
+        p = patch.object(P.C.H.O, "_SessionQuiescence", return_value=self.session_observer)
+        self.session_observer_factory = p.start(); self.addCleanup(p.stop)
+
+    def session_quiescence(self, process, deadline):
+        # Keep the real Bridge.close ordering; only native Job observation is fake.
+        process.stdin.close.assert_called_once_with()
+        process.wait.assert_called_once_with(timeout=10)
+        process.stdout.close.assert_called_once_with()
+        process.stderr.close.assert_called_once_with()
+        self.assertIs(type(deadline), float)
 
     def test_host_guard_precedes_any_input_read_or_fixture(self):
         with patch.object(P.H, "hosted_guard", side_effect=P.ProducerError("binding_failed")), patch.object(P.E, "compute_bindings") as binding:
@@ -144,6 +157,7 @@ class ProducerTests(unittest.TestCase):
         self.assertFalse(original.close())  # Demonstrates the inherited failure.
         self.assertTrue(original.forced and original.failed.is_set())
         fixed = owned_ready_bridge(); fixed.command("ready")
+        original_deadline = fixed.deadline
         self.assertTrue(P.close_session(fixed, True, False, "token_replacement", RUNTIME))
         self.assertEqual([p["action"] for p in fixed.packets], ["ready", "close_ready"])
         self.assertFalse(fixed.forced or fixed.failed.is_set() or fixed.observer_started)
@@ -151,6 +165,8 @@ class ProducerTests(unittest.TestCase):
         fixed.watchdog.join.assert_called_once_with(1)
         for reader in fixed.threads:
             reader.join.assert_called_once_with(2)
+        self.session_observer.observe.assert_called_once_with(fixed.process, original_deadline)
+        self.assertEqual(fixed.deadline, original_deadline)
         fixed.process.finalize.assert_called_once_with()
         fixed.process.mark_uncertain.assert_not_called()
 
@@ -166,6 +182,7 @@ class ProducerTests(unittest.TestCase):
                         reader.join.assert_called_once_with(2)
                     bridge.process.stdout.close.assert_called_once_with()
                     bridge.process.stderr.close.assert_called_once_with()
+                    self.session_observer.observe.assert_called_with(bridge.process, bridge.deadline)
                     if bridge.process.finalize.call_count == 1:
                         bridge.process.mark_uncertain.assert_not_called()
                     else:
@@ -202,6 +219,17 @@ class ProducerTests(unittest.TestCase):
                 bridge.process.finalize.assert_called_once_with()
                 if failure == "reader":
                     bridge.process.stdout.close.assert_not_called()
+
+    def test_ready_close_rejects_failed_session_observation_even_if_finalizer_succeeds(self):
+        bridge = owned_ready_bridge(); bridge.command("ready")
+        original_deadline = bridge.deadline
+        self.session_observer.observe.side_effect = OSError("private canary")
+        self.assertFalse(P.close_session(bridge, True, False, "token_replacement", RUNTIME))
+        self.session_observer_factory.assert_called_once_with()
+        self.session_observer.observe.assert_called_once_with(bridge.process, original_deadline)
+        self.assertEqual(bridge.deadline, original_deadline)
+        bridge.process.finalize.assert_called_once_with()
+        self.assertFalse(bridge.observer_started)
 
     def test_ready_proof_never_covers_possible_start_or_bad_close_reply(self):
         bridge = owned_ready_bridge(); bridge.command("ready")

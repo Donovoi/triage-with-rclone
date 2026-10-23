@@ -345,5 +345,129 @@ class PartialStartContracts(unittest.TestCase):
         self.assertEqual(bridge.deadline, 20)
 
 
+class AccountingContracts(unittest.TestCase):
+    @staticmethod
+    def observed(queries, status="zero_observed", expired=False):
+        return types.SimpleNamespace(queries=queries, status=status, deadline_expired=expired)
+
+    def test_total_four_requires_observer_zero_and_independent_finalizer_zero(self):
+        control = S._ControlCounts()
+        for sample in ((2, 4), (0, 4), (0, 4)):
+            self.assertIs(control.record(sample), sample)
+        self.assertEqual(control.total, 4)
+        self.assertIsNone(control.verify("delayed_release", True, self.observed(2)))
+        native_restoration = (0, 4)
+        self.assertIs(control.restoration(native_restoration), native_restoration)
+        self.assertEqual(len(control.samples), 3)
+        for samples in (((2, 4), (0, 4)), ((2, 4), (0, 4), (1, 4))):
+            with self.subTest(samples=samples):
+                rejected = S._ControlCounts()
+                for sample in samples:
+                    rejected.record(sample)
+                with self.assertRaises(ValueError):
+                    rejected.verify("delayed_release", True, self.observed(len(samples) - 1))
+        with self.assertRaises(ValueError):
+            control.verify("delayed_release", False, self.observed(2))
+
+    def test_total_two_remains_a_valid_stable_baseline(self):
+        control = S._ControlCounts()
+        for sample in ((1, 2), (0, 2), (0, 2)):
+            control.record(sample)
+        self.assertIsNone(control.verify("delayed_release", True, self.observed(2)))
+        self.assertEqual(control.restoration((0, 2)), (0, 2))
+
+    def test_first_sample_requires_positive_active_and_at_least_two_total(self):
+        for sample in ((0, 4), (0, 2), (0, 0), (1, 1)):
+            with self.subTest(sample=sample):
+                control = S._ControlCounts()
+                with self.assertRaises(ValueError):
+                    control.record(sample)
+                self.assertIsNone(control.total)
+                self.assertEqual(control.samples, [])
+                self.assertTrue(control.failed)
+                with self.assertRaises(ValueError):
+                    control.record((2, 4))
+
+    def test_invalid_count_shapes_and_values_remain_failed(self):
+        for sample in (None, [1, 4], (1,), (1, 4, 4), (True, 4), (1, True),
+                       (-1, 4), (5, 4), (1, 2**32), (1.0, 4), (1, 4.0)):
+            with self.subTest(sample=sample):
+                control = S._ControlCounts()
+                control.record((2, 4))
+                with self.assertRaises(ValueError):
+                    control.record(sample)
+                self.assertEqual(control.samples, [(2, 4)])
+                self.assertEqual(control.total, 4)
+                self.assertTrue(control.failed)
+                with self.assertRaises(ValueError):
+                    control.record((0, 4))
+                with self.assertRaises(ValueError):
+                    control.restoration((0, 4))
+
+    def test_changing_total_in_observation_or_finalizer_is_sticky_failure(self):
+        for prefix in (((2, 4),), ((2, 4), (0, 4))):
+            for sample in ((1, 3), (1, 5), (0, 3), (0, 5)):
+                with self.subTest(prefix=prefix, sample=sample):
+                    control = S._ControlCounts()
+                    for value in prefix:
+                        control.record(value)
+                    with self.assertRaises(ValueError):
+                        control.record(sample)
+                    self.assertEqual(control.total, 4)
+                    self.assertEqual(control.samples, list(prefix))
+                    self.assertTrue(control.failed)
+                    with self.assertRaises(ValueError):
+                        control.record((0, 4))
+
+    def test_restoration_requires_zero_at_the_original_bound_total(self):
+        unbound = S._ControlCounts()
+        with self.assertRaises(ValueError):
+            unbound.restoration((0, 4))
+        for sample in ((0, 3), (0, 5), (True, 4), [0, 4]):
+            with self.subTest(sample=sample):
+                control = S._ControlCounts()
+                for value in ((2, 4), (0, 4), (0, 4)):
+                    control.record(value)
+                with self.assertRaises(ValueError):
+                    control.restoration(sample)
+                self.assertTrue(control.failed)
+                with self.assertRaises(ValueError):
+                    control.restoration((0, 4))
+        control = S._ControlCounts()
+        control.record((2, 4))
+        self.assertEqual(control.restoration((1, 4)), (1, 4))
+        self.assertNotEqual(control.restoration((1, 4)), (0, control.total))
+        self.assertEqual(control.restoration((0, 4)), (0, control.total))
+
+    def test_persistent_total_four_requires_failed_close_at_deadline_or_exact_cap(self):
+        for query_count, status, expired in ((2, "deadline_exhausted", True),
+                                             (401, "observation_cap", False)):
+            with self.subTest(status=status):
+                control = S._ControlCounts()
+                for number in range(query_count + 1):
+                    control.record((2 if number == 0 else 1, 4))
+                observed = self.observed(query_count, status, expired)
+                self.assertIsNone(control.verify("persistent_child", False, observed))
+                with self.assertRaises(ValueError):
+                    control.verify("persistent_child", True, observed)
+                with self.assertRaises(ValueError):
+                    control.verify("delayed_release", True, observed)
+
+    def test_query_failure_or_early_zero_cannot_pass_persistent_control(self):
+        for status, expired in (("query_failed", False), ("zero_observed", False),
+                                ("deadline_exhausted", False), ("observation_cap", False)):
+            with self.subTest(status=status, expired=expired):
+                control = S._ControlCounts()
+                for sample in ((2, 4), (1, 4), (1, 4)):
+                    control.record(sample)
+                with self.assertRaises(ValueError):
+                    control.verify("persistent_child", False, self.observed(2, status, expired))
+        control = S._ControlCounts()
+        for sample in ((2, 4), (0, 4), (0, 4)):
+            control.record(sample)
+        with self.assertRaises(ValueError):
+            control.verify("persistent_child", False, self.observed(2, "deadline_exhausted", True))
+
+
 if __name__ == "__main__":
     unittest.main()
