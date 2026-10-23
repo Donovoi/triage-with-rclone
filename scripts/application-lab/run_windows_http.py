@@ -1154,7 +1154,7 @@ class Bridge:
             raise ProducerError("session_failed") from None
 
     def close(self):
-        clean, waiting, owned = None, None, None
+        clean, waiting, owned, observation = None, None, None, None
         try:
             try:
                 if self.process.poll() is None and (self.last is None or self.last["state"] not in {"finished", "closed"}):
@@ -1206,6 +1206,15 @@ class Bridge:
                      all(not t.is_alive() for t in self.threads))
             if not clean:
                 self._startup_best_effort(self.process.mark_uncertain)
+            if clean and self.process.finalized is not True:
+                observation = O._SessionQuiescence()
+                try:
+                    observation.observe(self.process, self.deadline)
+                except Exception:
+                    clean = False
+                except BaseException:
+                    clean = False
+                    raise
             try:
                 owned = self.process.finalize()
             except BaseException:
@@ -1222,6 +1231,8 @@ class Bridge:
                 except BaseException:
                     pass
             if clean is not True:
+                if observation is not None:
+                    self._startup_best_effort(observation.diagnostic)
                 self._transport_diagnostic()
 
 

@@ -355,6 +355,16 @@ jobs:
         if: runner.os == 'Windows' && runner.arch == 'X64'
         timeout-minutes: 2
         run: python -B -I -S ../scripts/application-lab/qualify_helper_owner.py
+      - name: Check hosted x64 session descendant quiescence
+        if: runner.os == 'Windows' && runner.arch == 'X64'
+        timeout-minutes: 2
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -B -I -S ../scripts/application-lab/qualify_session_owner.py delayed_release
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -B -I -S ../scripts/application-lab/qualify_session_owner.py persistent_child
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Check Windows content progress witness
         if: runner.os == 'Windows' && runner.arch == 'X64'
         timeout-minutes: 2
