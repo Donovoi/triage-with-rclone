@@ -50,6 +50,58 @@ def drain(pipe, failed, counts, index):
         failed.set()
 
 
+class _ControlCounts:
+    """Bind native cumulative accounting without assuming how many processes exist."""
+    def __init__(self):
+        self.total, self.samples, self.failed = None, [], False
+
+    @staticmethod
+    def valid(value):
+        need(type(value) is tuple and len(value) == 2)
+        active, total = value
+        need(type(active) is int and type(total) is int and 0 <= active <= total < 2**32)
+        return value
+
+    def record(self, value):
+        try:
+            need(not self.failed and len(self.samples) < 402)
+            active, total = self.valid(value)
+            if self.total is None:
+                need(active > 0 and total >= 2)
+                self.total = total
+            else:
+                need(total == self.total)
+            self.samples.append(value)
+            return value  # Preserve the exact native tuple, never a substitute.
+        except BaseException:
+            self.failed = True
+            raise
+
+    def restoration(self, value):
+        try:
+            need(not self.failed and self.total is not None)
+            active, total = self.valid(value)
+            need(total == self.total)
+            return value
+        except BaseException:
+            self.failed = True
+            raise
+
+    def verify(self, mode, closed, observed):
+        need(not self.failed and self.total is not None and self.samples and
+             0 < self.samples[0][0] <= self.total and len(self.samples) == observed.queries + 1)
+        need(mode in MODES)
+        if mode == "delayed_release":
+            need(closed is True and len(self.samples) >= 3 and
+                 self.samples[-2:] == [(0, self.total), (0, self.total)])
+            need(observed.status == "zero_observed" and observed.deadline_expired is False)
+        else:
+            need(closed is False and all(0 < row[0] <= self.total for row in self.samples))
+            need((observed.status == "deadline_exhausted" and observed.deadline_expired is True) or
+                 (observed.status == "observation_cap" and observed.queries == 401 and
+                  observed.deadline_expired is False))
+
+
 class _ControlWorker:
     """Preregister a target before start; late unclaimed targets can be revoked."""
     def __init__(self, bridge, pipe=None, counts=None, index=None):
@@ -198,7 +250,8 @@ def main():
                   release_after_first_query=False, cleanup_complete=False)
     Q = F = H = api = process = bridge = directory = directory_identity = None
     release = ready = child = query_job = None
-    handles, hashes, samples = [], {}, []
+    control = _ControlCounts()
+    handles, hashes, samples = [], {}, control.samples
     closed_handles, child_closed = set(), False
     original_accounting = wrapped_accounting = original_observer = observer_factory = None
     observations = []
@@ -278,9 +331,9 @@ def main():
             # synthetic child after the first positive sample, never a guessed PID.
             Q.counts(value)
             need(len(samples) < 402 and handle == process.job.value and process.process.closed is True)
-            samples.append(value)
+            control.record(value)
             if len(samples) == 1:
-                need(0 < value[0] <= value[1] == 2 and not api.wait(child, 0))
+                need(not api.wait(child, 0))
                 report["parent_handle_closed_before_query"] = True
                 if mode == "delayed_release":
                     api.signal(release)
@@ -314,19 +367,16 @@ def main():
         report["clean_transport"] = (counts == [0, 0] and not bridge.failed.is_set() and not bridge.forced and
                                      not bridge.watchdog.is_alive() and all(not t.is_alive() for t in bridge.threads) and
                                      process.stdin.closed and process.stdout.closed and process.stderr.closed)
-        need(report["clean_transport"] and report["deadline_preserved"] and 0 < samples[0][0] <= samples[0][1] == 2)
+        need(report["clean_transport"] and report["deadline_preserved"])
         need(not process.forced and process.finalized and process.process.closed is True and process.job.closed is True)
         Q.owner_handles_closed(process)
+        control.verify(mode, closed, observed)
         if mode == "delayed_release":
             need(closed is True and process.final_result is True and not process.uncertain and H.O._active is None)
-            need(len(samples) >= 3 and samples[-2:] == [(0, 2), (0, 2)])
-            need(observed.status == "zero_observed" and observed.deadline_expired is False)
         else:
             need(closed is False and process.final_result is False and process.uncertain and H.O._active is process)
-            need(H.O._poisoned and not api.wait(child, 0) and all(0 < row[0] <= row[1] == 2 for row in samples))
+            need(H.O._poisoned and not api.wait(child, 0))
             need(not report["release_after_first_query"])
-            need((observed.status == "deadline_exhausted" and observed.deadline_expired is True) or
-                 (observed.status == "observation_cap" and observed.queries == 401 and observed.deadline_expired is False))
             # No native creation should be reached once this failed owner is retained.
             Q.admission(H.O, process, args, environment)
             need(process.finalize() is False)
@@ -414,11 +464,11 @@ def main():
             quiet = False
             for _ in range(101):
                 need(time.monotonic() < cleanup_deadline)
-                current_counts = Q.counts(original_accounting(query_job))
-                if current_counts == (0, 2):
+                current_counts = control.restoration(Q.counts(original_accounting(query_job)))
+                if current_counts == (0, control.total):
                     quiet = True
                     break
-                need(0 < current_counts[0] <= current_counts[1] == 2)
+                need(0 < current_counts[0] <= control.total)
                 time.sleep(min(0.05, max(0, cleanup_deadline - time.monotonic())))
             need(quiet)
         except BaseException:
