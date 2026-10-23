@@ -998,5 +998,289 @@ class SetupQuiescenceTests(unittest.TestCase):
         self.assertIs(module._active, native.owner)
 
 
+class SessionQuiescenceTests(unittest.TestCase):
+    """Fake three-pipe owners; no OS process, real clock, or native API."""
+    def make(self):
+        module, native, clock = owner_module(), Native(body=b""), SetupQuiescenceTests.Clock()
+        module._native_factory = lambda: native
+        module.time = clock
+        process = module.spawn(["fixed"], env={"FIXED": "value"})
+        for pipe in (process.stdin, process.stdout, process.stderr):
+            pipe.close()
+        process.wait(0)
+        return module, native, clock, process, module._SessionQuiescence()
+
+    def fail(self, module, native, process, observation, deadline=1, error_type=None):
+        with self.assertRaises(error_type or module.OwnershipError) as caught:
+            observation.observe(process, deadline)
+        with redirect_stdout(io.StringIO()):
+            self.assertFalse(process.finalize())
+            self.assertFalse(process.finalize())
+        self.assertIs(module._active, process)
+        self.assertTrue(module._poisoned)
+        self.assertTrue(process.uncertain)
+        before = list(native.calls)
+        with self.assertRaises(module.OwnershipError):
+            module.spawn(["later"], env={"FIXED": "value"})
+        self.assertEqual(native.calls, before)
+        self.assertFalse(any(row[0] == "kill" for row in native.calls))
+        return caught.exception
+
+    def test_parent_handle_closes_before_zero_and_finalizer_proves_zero_again(self):
+        module, native, clock, process, observation = self.make()
+        seen = []
+        def accounting(handle):
+            seen.append((process.process.closed, process.job.closed, module._active is process))
+            return 0, 1
+        native.accounting = accounting
+        observation.observe(process, 1)
+        self.assertEqual(observation.status, "zero_observed")
+        self.assertTrue(process.finalize())
+        self.assertEqual(seen, [(True, None, True)] * 2)
+        self.assertEqual(clock.paces, [])
+        self.assertEqual(native.calls.count(("close", process.process.value)), 1)
+        self.assertIsNone(module._active)
+
+    def test_active_and_total_may_grow_before_zero_with_bounded_pacing(self):
+        module, native, clock, process, observation = self.make()
+        samples = iter(((1, 2), (2, 3), (1, 3), (0, 3), (0, 3)))
+        native.accounting = lambda handle: next(samples)
+        observation.observe(process, 1)
+        self.assertEqual(observation.queries, 4)
+        self.assertEqual(clock.paces, [0.05] * 3)
+        self.assertTrue(process.finalize())
+
+    def test_original_residual_budget_is_never_restarted(self):
+        module, native, clock, process, observation = self.make()
+        clock.value = 0.98
+        native.active = 1
+        self.fail(module, native, process, observation, 1)
+        self.assertEqual(observation.status, "deadline_exhausted")
+        self.assertEqual(observation.queries, 1)
+        self.assertEqual(len(clock.paces), 1)
+        self.assertAlmostEqual(clock.paces[0], 0.02)
+        self.assertEqual(clock.value, 1)
+
+    def test_expired_deadline_rejects_before_parent_handle_or_accounting(self):
+        module, native, clock, process, observation = self.make()
+        clock.value = 1
+        with self.assertRaises(module.OwnershipError):
+            observation.observe(process, 1)
+        self.assertIsNone(process.process.closed)
+        self.assertEqual(observation.queries, 0)
+        self.assertEqual(clock.paces, [])
+
+    def test_zero_returned_after_deadline_cannot_succeed(self):
+        module, native, clock, process, observation = self.make()
+        def accounting(handle):
+            clock.value = 2
+            return 0, 1
+        native.accounting = accounting
+        self.fail(module, native, process, observation, 1)
+        self.assertEqual(observation.status, "deadline_exhausted")
+
+    def test_nonadvancing_clock_still_has_finite_observation_cap(self):
+        module, native, clock, process, observation = self.make()
+        native.active = 1
+        clock.sleep = lambda seconds: clock.paces.append(seconds)
+        self.fail(module, native, process, observation, 165)
+        self.assertEqual(observation.status, "observation_cap")
+        self.assertEqual(observation.queries, 401)
+        self.assertEqual(clock.paces, [0.05] * 400)
+
+    def test_malformed_or_decreasing_accounting_remains_failed(self):
+        for sample in ((True, 1), (0, True), (-1, 1), (2, 1), (0, 0), (0, 2**32), [0, 1], (0, 2)):
+            with self.subTest(sample=sample):
+                module, native, clock, process, observation = self.make()
+                samples = iter(((1, 3), sample))
+                native.accounting = lambda handle: next(samples)
+                self.fail(module, native, process, observation)
+                self.assertEqual(observation.status, "invalid_accounting")
+
+    def test_bad_clock_and_deadline_types_are_rejected(self):
+        for value in (True, float("nan"), float("inf"), "1"):
+            with self.subTest(value=value):
+                module, native, clock, process, observation = self.make()
+                self.fail(module, native, process, observation, value)
+                self.assertEqual(observation.status, "clock_failed")
+        module, native, clock, process, observation = self.make()
+        clock.monotonic = iter((0.5, 0.4)).__next__
+        self.fail(module, native, process, observation)
+        self.assertEqual(observation.status, "clock_failed")
+
+    def test_forced_uncertain_nonzero_and_open_pipes_are_not_admitted(self):
+        for mode in ("forced", "uncertain", "nonzero", "open_pipe", "borrowed_pipe", "wrong_owner", "poisoned"):
+            with self.subTest(mode=mode):
+                module, native, clock, process, observation = self.make()
+                if mode in ("forced", "uncertain"):
+                    setattr(process, mode, True)
+                elif mode == "nonzero":
+                    process.returncode = 1
+                elif mode == "open_pipe":
+                    process.stdout.handle.closed = None
+                elif mode == "borrowed_pipe":
+                    process.parent[1].users = 1
+                elif mode == "wrong_owner":
+                    process.stderr.owner = object()
+                else:
+                    module._poisoned = True
+                with self.assertRaises(module.OwnershipError):
+                    observation.observe(process, 1)
+                self.assertEqual(observation.queries, 0)
+                self.assertIsNone(process.process.closed)
+
+    def test_parent_handle_failure_is_not_retried_or_slept(self):
+        module, native, clock, process, observation = self.make()
+        original = native.close
+        error = OSError("private-canary")
+        def close(handle):
+            if handle == process.process.value:
+                native.calls.append(("failed_close", handle))
+                raise error
+            original(handle)
+        native.close = close
+        self.assertIs(self.fail(module, native, process, observation, error_type=OSError), error)
+        self.assertEqual(observation.status, "parent_close_failed")
+        self.assertEqual(native.calls.count(("failed_close", process.process.value)), 1)
+        self.assertEqual(clock.paces, [])
+
+    def test_query_exception_and_interrupt_keep_original_error_and_poison(self):
+        for error in (OSError("private-canary"), KeyboardInterrupt("private-canary")):
+            module, native, clock, process, observation = self.make()
+            native.accounting = mock.Mock(side_effect=error)
+            with self.assertRaises(type(error)) as caught:
+                observation.observe(process, 1)
+            self.assertIs(caught.exception, error)
+            self.assertTrue(process.uncertain)
+            self.assertTrue(module._poisoned)
+            self.assertEqual(observation.status, "query_failed")
+
+    def test_sleep_exception_is_sticky_and_diagnostic_is_closed(self):
+        module, native, clock, process, observation = self.make()
+        native.active = 1
+        clock.sleep = mock.Mock(side_effect=OSError("private-canary"))
+        with self.assertRaises(OSError):
+            observation.observe(process, 1)
+        with redirect_stdout(io.StringIO()) as output:
+            observation.diagnostic()
+        prefix = "application_helper_session_quiescence="
+        self.assertTrue(output.getvalue().startswith(prefix))
+        record = json.loads(output.getvalue()[len(prefix):])
+        self.assertEqual(set(record), {"schema_version", "status", "queries", "active", "total", "deadline_expired"})
+        self.assertEqual(record["status"], "pace_failed")
+        self.assertNotIn("private-canary", output.getvalue())
+        self.assertTrue(module._poisoned)
+
+    def test_successful_observation_does_not_replace_fresh_finalizer_accounting(self):
+        module, native, clock, process, observation = self.make()
+        native.accounting = mock.Mock(side_effect=[(0, 1), (1, 2)])
+        observation.observe(process, 1)
+        with redirect_stdout(io.StringIO()):
+            self.assertFalse(process.finalize())
+        self.assertTrue(process.uncertain)
+        self.assertIs(module._active, process)
+
+    def test_final_job_close_failure_stays_failed(self):
+        module, native, clock, process, observation = self.make()
+        observation.observe(process, 1)
+        original = native.close
+        def close(handle):
+            if handle == process.job.value:
+                raise OSError("private-canary")
+            original(handle)
+        native.close = close
+        with redirect_stdout(io.StringIO()):
+            self.assertFalse(process.finalize())
+        self.assertTrue(module._poisoned)
+
+
+class SessionBridgeQuiescenceTests(unittest.TestCase):
+    def setUp(self):
+        LoaderTests.setUp(self)
+        self.http = LoaderTests.load(self, HTTP)
+        self.native, self.clock = Native(body=b""), SetupQuiescenceTests.Clock()
+        self.http.O._native_factory = lambda: self.native
+        self.http.O.time = self.clock
+        self.process = self.http.O.spawn(["fixed"], env={"FIXED": "value"})
+        bridge = object.__new__(self.http.Bridge)
+        bridge.process, bridge.last = self.process, {"state": "finished"}
+        bridge.failed, bridge.done = self.http.threading.Event(), self.http.threading.Event()
+        bridge.response_lock = self.http.threading.Lock()
+        bridge.messages, bridge.transport = self.http.queue.Queue(), {}
+        bridge.calls = bridge.responses = 0
+        bridge.ready = bridge.forced = bridge.stage_invalid = False
+        bridge.stage_bytes = bytearray()
+        bridge.watchdog, bridge.threads = mock.Mock(), [mock.Mock(), mock.Mock()]
+        bridge.watchdog.is_alive.return_value = False
+        for thread in bridge.threads:
+            thread.is_alive.return_value = False
+        bridge.deadline = 1
+        self.bridge = bridge
+
+    def test_clean_close_waits_for_owned_job_then_releases(self):
+        self.native.accounting = mock.Mock(side_effect=[(1, 2), (0, 2), (0, 2)])
+        with redirect_stdout(io.StringIO()) as output:
+            self.assertTrue(self.bridge.close())
+        self.assertEqual(output.getvalue(), "")
+        self.assertEqual(self.clock.paces, [0.05])
+        self.assertEqual(self.bridge.deadline, 1)
+        self.assertIsNone(self.http.O._active)
+        self.assertFalse(self.process.forced)
+
+    def test_repeated_clean_close_keeps_cached_final_proof_without_new_observation(self):
+        with redirect_stdout(io.StringIO()):
+            self.assertTrue(self.bridge.close())
+        before = list(self.native.calls)
+        self.clock.value = 2
+        with mock.patch.object(self.http.O, "_SessionQuiescence") as observer, redirect_stdout(io.StringIO()):
+            self.assertTrue(self.bridge.close())
+        observer.assert_not_called()
+        self.assertEqual(self.native.calls, before)
+        self.assertIsNone(self.http.O._active)
+        self.assertFalse(self.http.O._poisoned)
+
+    def test_failed_transport_never_starts_quiescence(self):
+        self.bridge.failed.set()
+        with mock.patch.object(self.http.O, "_SessionQuiescence") as observer, redirect_stdout(io.StringIO()):
+            self.assertFalse(self.bridge.close())
+        observer.assert_not_called()
+        self.assertTrue(self.http.O._poisoned)
+        self.assertEqual(self.clock.paces, [])
+
+    def test_live_reader_never_starts_quiescence_or_closes_its_pipe(self):
+        self.bridge.threads[0].is_alive.return_value = True
+        with mock.patch.object(self.http.O, "_SessionQuiescence") as observer, redirect_stdout(io.StringIO()):
+            self.assertFalse(self.bridge.close())
+        observer.assert_not_called()
+        self.assertFalse(self.process.stdout.closed)
+        self.assertTrue(self.http.O._poisoned)
+
+    def test_close_work_consumes_original_deadline_without_new_window(self):
+        self.bridge.watchdog.join.side_effect = lambda seconds: setattr(self.clock, "value", 1)
+        with redirect_stdout(io.StringIO()) as output:
+            self.assertFalse(self.bridge.close())
+        self.assertIn('"status":"deadline_exhausted"', output.getvalue())
+        self.assertEqual(self.clock.paces, [])
+        self.assertEqual(self.bridge.deadline, 1)
+        self.assertTrue(self.http.O._poisoned)
+
+    def test_observation_interrupt_finalizes_without_hiding_interrupt(self):
+        first = KeyboardInterrupt("private-canary")
+        self.native.accounting = mock.Mock(side_effect=first)
+        with redirect_stdout(io.StringIO()) as output, self.assertRaises(KeyboardInterrupt) as caught:
+            self.bridge.close()
+        self.assertIs(caught.exception, first)
+        self.assertTrue(self.process.finalized)
+        self.assertTrue(self.http.O._poisoned)
+        self.assertNotIn("private-canary", output.getvalue())
+
+    def test_independent_final_proof_failure_is_not_converted_to_success(self):
+        self.native.accounting = mock.Mock(side_effect=[(0, 1), (1, 2)])
+        with redirect_stdout(io.StringIO()):
+            self.assertFalse(self.bridge.close())
+        self.assertTrue(self.http.O._poisoned)
+        self.assertTrue(self.process.uncertain)
+
+
 if __name__ == "__main__":
     unittest.main()

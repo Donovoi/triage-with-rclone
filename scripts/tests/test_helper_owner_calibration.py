@@ -209,6 +209,32 @@ class Contracts(unittest.TestCase):
         self.assertEqual([c[1] for c in calls if c[0] == 'close'], [201, 202, 107, 106, 105, 104, 103, 100])
         self.assertEqual(write.call_args.args[1], transfer())
 
+    def test_session_parent_child_has_only_null_streams_and_exact_transfer(self):
+        api = Parent()
+        api.next = iter((103, 104, 900))
+        nulls = iter((105, 106, 107))
+        def null(readable):
+            api.calls.append(('null', readable))
+            return next(nulls)
+        api.null = null
+        with mock.patch.object(F, 'record', return_value=request()), mock.patch.object(F, 'source_identity'), mock.patch.object(F, 'publish') as write:
+            self.assertEqual(F.parent(api, ROOT / 'request.json', inherit_stdout=False), 0)
+        created = next(c for c in api.calls if c[0] == 'create')
+        self.assertEqual(created[2], [105, 107, 106, 103, 104])
+        self.assertEqual([c for c in api.calls if c[0] == 'stdout'], [])
+        self.assertEqual([c for c in api.calls if c[0] == 'null'], [('null', True), ('null', False), ('null', False)])
+        self.assertEqual([c[1] for c in api.calls if c[0] == 'close'], [201, 202, 107, 106, 105, 104, 103, 100])
+        self.assertEqual(write.call_args.args[1], transfer())
+
+    def test_only_explicit_session_parent_mode_changes_stdout_inheritance(self):
+        for mode, inherit in (('parent', True), ('session_parent', False)):
+            with mock.patch.object(F, 'Native') as native, mock.patch.object(F, 'plain'), mock.patch.object(F, 'parent', return_value=0) as parent:
+                self.assertEqual(F.main([mode, str(ROOT / 'request.json')]), 0)
+                parent.assert_called_once_with(native.return_value, ROOT / 'request.json', inherit_stdout=inherit)
+        with mock.patch.object(F, 'Native') as native:
+            self.assertEqual(F.main(['unknown', str(ROOT / 'request.json')]), 31)
+            native.assert_not_called()
+
     def test_interrupted_creation_or_publication_never_returns_success_or_reopens_child(self):
         for boundary in ('create_child', 'publish'):
             api = Parent(); error = KeyboardInterrupt('private-canary')
