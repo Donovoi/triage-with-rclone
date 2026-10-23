@@ -2716,20 +2716,29 @@ class ProducerTests(unittest.TestCase):
     def test_transport_success_is_silent_and_existing_close_order_is_unchanged(self):
         bridge = self.transport_bridge("transport-success")
         calls = mock.Mock()
+        original_deadline = bridge.deadline
+        bridge.process.finalized = False
+        observer = mock.Mock()
         for name, method in (("poll", bridge.process.poll), ("stdin_close", bridge.process.stdin.close),
                 ("wait", bridge.process.wait), ("watchdog_join", bridge.watchdog.join),
                 ("stdout_join", bridge.threads[0].join), ("stderr_join", bridge.threads[1].join),
                 ("stdout_alive", bridge.threads[0].is_alive), ("stderr_alive", bridge.threads[1].is_alive),
                 ("stdout_close", bridge.process.stdout.close), ("stderr_close", bridge.process.stderr.close),
-                ("watchdog_alive", bridge.watchdog.is_alive)):
+                ("watchdog_alive", bridge.watchdog.is_alive),
+                ("observe", observer.observe), ("finalize", bridge.process.finalize)):
             calls.attach_mock(method, name)
-        with redirect_stdout(io.StringIO()) as output:
+        with mock.patch.object(P.O, "_SessionQuiescence", return_value=observer) as factory, redirect_stdout(io.StringIO()) as output:
             self.assertTrue(bridge.close())
+        factory.assert_called_once_with()
+        observer.observe.assert_called_once_with(bridge.process, original_deadline)
+        observer.diagnostic.assert_not_called()
+        self.assertEqual(bridge.deadline, original_deadline)
         self.assertEqual(output.getvalue(), "")
         self.assertEqual(calls.mock_calls, [mock.call.poll(), mock.call.stdin_close(), mock.call.wait(timeout=10),
             mock.call.watchdog_join(1), mock.call.stdout_join(2), mock.call.stderr_join(2),
             mock.call.stdout_alive(), mock.call.stdout_close(), mock.call.stderr_alive(), mock.call.stderr_close(),
-            mock.call.watchdog_alive(), mock.call.stdout_alive(), mock.call.stderr_alive()])
+            mock.call.watchdog_alive(), mock.call.stdout_alive(), mock.call.stderr_alive(),
+            mock.call.observe(bridge.process, original_deadline), mock.call.finalize()])
         bridge.process.kill.assert_not_called()
 
     def test_hosted_guard_rejects_self_hosted_before_setup(self):
