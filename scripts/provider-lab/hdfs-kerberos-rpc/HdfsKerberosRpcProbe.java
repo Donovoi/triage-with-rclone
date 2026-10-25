@@ -775,6 +775,12 @@ public final class HdfsKerberosRpcProbe {
         conf.set("dfs.namenode.http-bind-host", "127.0.0.1");
         conf.set("dfs.http.policy", "HTTP_ONLY");
         conf.set("hadoop.security.authentication", "kerberos");
+        // No defaults are loaded: secure HttpServer2 requires an explicit type.
+        // Its separate AuthFilter reads this prefix, not the dfs.web.* keys
+        // used below by the internal SPNEGO filter. Both use the owned HTTP key.
+        conf.set("hadoop.http.authentication.type", "kerberos");
+        conf.set("hadoop.http.authentication.kerberos.principal", "HTTP/127.0.0.1@" + realm);
+        conf.set("hadoop.http.authentication.kerberos.keytab", HTTP_KEYTAB.toString());
         // BlockManager requires tokens during secure NameNode formatting,
         // even when this experiment never starts a DataNode or transfers bytes.
         conf.set("dfs.block.access.token.enable", "true");
