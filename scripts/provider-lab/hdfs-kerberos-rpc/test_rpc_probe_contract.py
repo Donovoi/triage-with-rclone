@@ -519,6 +519,31 @@ class JavaSourceTests(unittest.TestCase):
         self.assertEqual(settings['ipc.client.fallback-to-simple-auth-allowed'], 'false')
         self.assertNotIn('DataNode.createDataNode', source)
 
+    def test_secure_http_type_is_explicit_with_private_spnego_credentials(self):
+        source = (HERE / "HdfsKerberosRpcProbe.java").read_text()
+        body = source[source.index('    private static Configuration configuration('):
+                      source.index('    private static void topology()')]
+        self.assertIn('new HdfsConfiguration(false)', body)
+        pairs = re.findall(r'conf\.set\("([^"\n]+)", "([^"\n]*)"\);', body)
+        settings = dict(pairs)
+        self.assertEqual(len(settings), len(pairs), 'duplicate configuration keys')
+        self.assertEqual(settings['hadoop.http.authentication.type'], 'kerberos')
+        self.assertEqual(settings['hadoop.security.authentication'], 'kerberos')
+        self.assertEqual(settings['dfs.http.policy'], 'HTTP_ONLY')
+        self.assertEqual(settings['dfs.namenode.http-bind-host'], '127.0.0.1')
+        self.assertEqual(settings['dfs.web.authentication.simple.anonymous.allowed'], 'false')
+        expressions = dict(re.findall(r'conf\.set\("([^"\n]+)", ([^\n]+)\);', body))
+        # The separate AuthFilter strips only hadoop.http.authentication.; the
+        # internal SPNEGO filter obtains its principal/keytab from DFSUtil keys.
+        auth = {key.removeprefix('hadoop.http.authentication.'): value
+                for key, value in expressions.items() if key.startswith('hadoop.http.authentication.')}
+        self.assertEqual(auth, {'type': '"kerberos"', 'kerberos.principal': '"HTTP/127.0.0.1@" + realm',
+                                'kerberos.keytab': 'HTTP_KEYTAB.toString()'})
+        self.assertEqual(auth['kerberos.principal'], expressions['dfs.namenode.kerberos.internal.spnego.principal'])
+        self.assertEqual(auth['kerberos.principal'], expressions['dfs.web.authentication.kerberos.principal'])
+        self.assertEqual(auth['kerberos.keytab'], expressions['dfs.web.authentication.kerberos.keytab'])
+        self.assertNotIn('conf.addResource(', body)
+
     def test_version_child_uses_explicit_private_home_and_null_config(self):
         source = (HERE / "HdfsKerberosRpcProbe.java").read_text()
         start = source.index('            stage = "rclone_version";')
