@@ -120,7 +120,9 @@ public final class HdfsKerberosRpcProbe {
         cache_invalid, ticket_time_mismatch, ticket_flags_mismatch,
         background_failure, io_failure, krb_failure, interrupted, unclassified,
         cleanup_failed, namenode_failed, child_failed, child_output_invalid, wire_invalid,
-        rclone_positive_failed, rclone_denial_mismatch, source_invalid, relay_invalid
+        rclone_positive_failed, rclone_denial_mismatch, source_invalid, relay_invalid,
+        child_descendant_found, child_reap_failed, child_streams_alive, child_process_drift,
+        rclone_version_nonzero, rclone_version_stderr, rclone_version_mismatch
     }
     private static final class Failure extends Exception {
         final Code code;
@@ -598,14 +600,14 @@ public final class HdfsKerberosRpcProbe {
         try {
             long remaining = Math.min(TimeUnit.SECONDS.toNanos(12), controlDeadline - System.nanoTime());
             need(remaining > 0 && process.waitFor(remaining, TimeUnit.NANOSECONDS), Code.deadline_exceeded);
-            need(process.descendants().findAny().isEmpty(), Code.child_failed);
+            need(process.descendants().findAny().isEmpty(), Code.child_descendant_found);
             return new Result(process.exitValue(), stdout.get(1, TimeUnit.SECONDS), stderr.get(1, TimeUnit.SECONDS));
         } finally {
             if (process.isAlive()) process.destroyForcibly();
-            need(process.waitFor(3, TimeUnit.SECONDS), Code.child_failed);
+            need(process.waitFor(3, TimeUnit.SECONDS), Code.child_reap_failed);
             process.getInputStream().close(); process.getErrorStream().close();
             out.join(1000); err.join(1000);
-            need(!out.isAlive() && !err.isAlive(), Code.child_failed);
+            need(!out.isAlive() && !err.isAlive(), Code.child_streams_alive);
         }
     }
     private static Result rclone(String reader, boolean authenticated) throws Exception {
@@ -702,7 +704,7 @@ public final class HdfsKerberosRpcProbe {
             && namenode.getHttpsAddress() == null && namenode.getAuxiliaryNameNodeAddresses().isEmpty()
             && UserGroupInformation.isSecurityEnabled(), Code.namenode_failed);
         listeners(true);
-        need(processIds().equals(processBaseline), Code.child_failed);
+        need(processIds().equals(processBaseline), Code.child_process_drift);
         need(ExitUtil.getFirstExitException() == null && ExitUtil.getFirstHaltException() == null, Code.namenode_failed);
     }
     private static void verifyMember() throws Exception {
@@ -789,10 +791,12 @@ public final class HdfsKerberosRpcProbe {
             // The version child uses the same pinned binary and bounded supervisor.
             controlDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(12);
             stage = "rclone_version";
-            Result version = child(List.of("/opt/rpc/rclone", "version"), Map.of("LANG", "C", "LC_ALL", "C"));
-            need(version.code == 0 && version.err.length == 0 &&
-                new String(version.out, StandardCharsets.US_ASCII).startsWith("rclone v1.75.2\n"), Code.child_failed);
-            need(processIds().equals(processBaseline), Code.child_failed);
+            Result version = child(List.of("/opt/rpc/rclone", "version", "--config", "/dev/null", "--log-level", "ERROR"),
+                Map.of("HOME", "/work/home", "PATH", "/usr/bin:/bin", "LANG", "C", "LC_ALL", "C"));
+            need(version.code == 0, Code.rclone_version_nonzero);
+            need(version.err.length == 0, Code.rclone_version_stderr);
+            need(new String(version.out, StandardCharsets.US_ASCII).startsWith("rclone v1.75.2\n"), Code.rclone_version_mismatch);
+            need(processIds().equals(processBaseline), Code.child_process_drift);
             baseline = threadIds();
             Files.createDirectory(ROOT, PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------")));
             rootCreated = true; rootKey = directory(ROOT, true); rootOwned = true; guardRoot();
