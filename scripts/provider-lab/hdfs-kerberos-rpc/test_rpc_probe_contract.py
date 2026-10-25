@@ -55,6 +55,14 @@ def projected():
     return value
 
 
+def empty_thread_matrix():
+    return {category: dict(kdc=0, owner_login=0, format=0, namenode=0, filesystem=0,
+                          reader=0, controls=0, shutdown=0, unattributed=0)
+            for category in ('probe_task', 'jdk_process_reaper', 'jdk_timer', 'jdk_executor', 'jdk_cleaner',
+                             'hadoop_metrics', 'hadoop_rpc', 'hadoop_fs', 'hadoop_namenode',
+                             'hadoop_blockmanagement', 'hadoop_util', 'jetty', 'kerby', 'other')}
+
+
 def positive():
     # Independent literal wire record, including deliberately narrow evidence label.
     return dict(schema_version=1, scope="hdfs_kerberos_rpc_feasibility", success=True,
@@ -71,6 +79,10 @@ def positive():
         remaining_threads=dict(probe_task=0, jdk_process_reaper=0, jdk_timer=0, jdk_executor=0,
             jdk_cleaner=0, hadoop_metrics=0, hadoop_rpc=0, hadoop_fs=0, hadoop_namenode=0,
             hadoop_blockmanagement=0, hadoop_util=0, jetty=0, kerby=0, other=0),
+        thread_observation_complete=True,
+        remaining_thread_intervals=dict(kdc=0, owner_login=0, format=0, namenode=0,
+            filesystem=0, reader=0, controls=0, shutdown=0, unattributed=0),
+        remaining_thread_matrix=empty_thread_matrix(),
         authentication_verified=False, hdfs_authenticated=False, renewal_verified=False,
         daemon_accepted=False, provider_accepted=False, application_accepted=False,
         vendor_accepted=False, vulnerability_audited=False)
@@ -166,6 +178,9 @@ class TicketTests(unittest.TestCase):
             diagnostic=dict(category="metrics_failure", origin="hadoop_metrics"))
         for key in value["checks"]: value["checks"][key] = key in ("environment", "endpoint_settings")
         value["remaining_threads"]["hadoop_metrics"] = 1
+        value["remaining_thread_intervals"]["unattributed"] = 1
+        value["remaining_thread_matrix"]["hadoop_metrics"]["unattributed"] = 1
+        value["thread_observation_complete"] = False
         value["cleanup"].update(threads_terminated=False, private_material_removed=False)
         return value
 
@@ -206,15 +221,21 @@ class TicketTests(unittest.TestCase):
         for category in positive()["remaining_threads"]:
             value = positive(); value["remaining_threads"][category] = 1; self.rejected(value)
         value = positive(); value["remaining_threads"] = None; self.rejected(value)
-        value = self.startup_failure(); value["remaining_threads"] = None
+        value = self.startup_failure(); value["remaining_threads"] = None; value["remaining_thread_intervals"] = None
+        value["remaining_thread_matrix"] = None
         self.assertFalse(F.validate_java(F.canonical(value), 1)["cleanup"]["threads_terminated"])
         value["remaining_threads"] = positive()["remaining_threads"]
+        value["remaining_thread_intervals"] = positive()["remaining_thread_intervals"]
+        value["remaining_thread_matrix"] = empty_thread_matrix()
         self.assertFalse(F.validate_java(F.canonical(value), 1)["cleanup"]["threads_terminated"])
 
     def test_new_thread_categories_only_subdivide_failing_residuals(self):
         for category in ('hadoop_fs', 'hadoop_namenode', 'hadoop_blockmanagement', 'hadoop_util', 'jdk_cleaner'):
             value = self.startup_failure(); value['remaining_threads'] = positive()['remaining_threads']
             value['remaining_threads'][category] = 3
+            value['remaining_thread_intervals']['unattributed'] = 3
+            value['remaining_thread_matrix'] = empty_thread_matrix()
+            value['remaining_thread_matrix'][category]['unattributed'] = 3
             result = F.validate_java(F.canonical(value), 1)
             self.assertEqual(sum(result['remaining_threads'].values()), 3)
             self.assertFalse(result['cleanup']['threads_terminated'])
@@ -226,6 +247,91 @@ class TicketTests(unittest.TestCase):
             value = positive(); value[field] = bad; self.rejected(value)
         value = positive(); value["cleanup"]["listeners_absent"] = False; self.rejected(value)
         value = positive(); value["checks"]["positive_tgt"] = False; self.rejected(value)
+
+    def test_thread_intervals_are_closed_bounded_and_sum_to_all_residuals(self):
+        for field in ('remaining_thread_intervals', 'thread_observation_complete'):
+            value = self.startup_failure(); del value[field]; self.rejected(value, 1)
+        for bad in (None, {}, [], {'private thread name': 1}):
+            value = self.startup_failure(); value['remaining_thread_intervals'] = bad; self.rejected(value, 1)
+        for bad in (True, -1, 129, 0.5, '1'):
+            value = self.startup_failure(); value['remaining_thread_intervals']['unattributed'] = bad
+            self.rejected(value, 1)
+        value = self.startup_failure(); value['remaining_thread_intervals']['unattributed'] = 0; self.rejected(value, 1)
+        value = self.startup_failure(); value['thread_observation_complete'] = 1; self.rejected(value, 1)
+        value = self.startup_failure(); value['remaining_threads'] = None; self.rejected(value, 1)
+        for phase in positive()['remaining_thread_intervals']:
+            value = self.startup_failure(); value['thread_observation_complete'] = True
+            value['remaining_thread_intervals'] = positive()['remaining_thread_intervals']
+            value['remaining_thread_intervals'][phase] = 1
+            value['remaining_thread_matrix'] = empty_thread_matrix()
+            value['remaining_thread_matrix']['hadoop_metrics'][phase] = 1
+            result = F.validate_java(F.canonical(value), 1)
+            self.assertEqual(sum(result['remaining_threads'].values()), sum(result['remaining_thread_intervals'].values()))
+            self.assertFalse(result['cleanup']['threads_terminated'])
+            self.assertFalse(result['success'])
+
+    def test_incomplete_observation_reports_unknown_and_never_passes(self):
+        value = self.startup_failure()
+        self.assertFalse(F.validate_java(F.canonical(value), 1)['thread_observation_complete'])
+        value['remaining_thread_intervals'].update(unattributed=0, kdc=1)
+        value['remaining_thread_matrix']['hadoop_metrics'].update(unattributed=0, kdc=1); self.rejected(value, 1)
+        value = positive(); value['thread_observation_complete'] = False; self.rejected(value)
+        value.update(success=False, error='cleanup_failed')
+        self.assertFalse(F.validate_java(F.canonical(value), 1)['success'])
+
+    def test_thread_matrix_preserves_joint_attribution_and_strict_cleanup(self):
+        value = positive(); value.update(success=False, error='cleanup_failed')
+        value['cleanup'].update(threads_terminated=False, private_material_removed=False)
+        expected = [('hadoop_fs', 'format'), ('hadoop_util', 'kdc'), ('jdk_timer', 'namenode')]
+        for category, phase in expected:
+            value['remaining_threads'][category] = 1
+            value['remaining_thread_intervals'][phase] = 1
+            value['remaining_thread_matrix'][category][phase] = 1
+        result = F.validate_java(F.canonical(value), 1)
+        self.assertEqual(sum(sum(row.values()) for row in result['remaining_thread_matrix'].values()), 3)
+        for category, phase in expected: self.assertEqual(result['remaining_thread_matrix'][category][phase], 1)
+        self.assertFalse(result['success']); self.assertFalse(result['cleanup']['threads_terminated'])
+        value['thread_observation_complete'] = False; self.rejected(value, 1)
+        value['remaining_thread_intervals'] = positive()['remaining_thread_intervals']
+        value['remaining_thread_intervals']['unattributed'] = 3
+        value['remaining_thread_matrix'] = empty_thread_matrix()
+        for category, _ in expected: value['remaining_thread_matrix'][category]['unattributed'] = 1
+        result = F.validate_java(F.canonical(value), 1)
+        self.assertFalse(result['success']); self.assertFalse(result['thread_observation_complete'])
+        self.assertEqual(result['remaining_thread_intervals']['unattributed'], 3)
+
+    def test_thread_matrix_rejects_row_column_and_total_mismatches(self):
+        value = self.startup_failure()
+        # Equal overall/column totals cannot conceal a different category.
+        value['remaining_thread_matrix']['hadoop_metrics']['unattributed'] = 0
+        value['remaining_thread_matrix']['hadoop_fs']['unattributed'] = 1
+        self.rejected(value, 1)
+        value = self.startup_failure(); value['thread_observation_complete'] = True
+        # Equal overall/row totals cannot conceal a different interval.
+        value['remaining_thread_matrix']['hadoop_metrics'].update(unattributed=0, kdc=1)
+        self.rejected(value, 1)
+        for count in (0, 2, 129):
+            value = self.startup_failure(); value['remaining_thread_matrix']['hadoop_metrics']['unattributed'] = count
+            self.rejected(value, 1)
+        value = self.startup_failure()
+        value['remaining_threads']['hadoop_metrics'] = 129
+        value['remaining_thread_intervals']['unattributed'] = 129
+        value['remaining_thread_matrix']['hadoop_metrics']['unattributed'] = 129
+        self.rejected(value, 1)
+
+    def test_thread_matrix_rejects_malformed_missing_unknown_or_raw_fields(self):
+        value = self.startup_failure(); del value['remaining_thread_matrix']; self.rejected(value, 1)
+        for bad in (None, {}, [], {'private thread': {}}, True):
+            value = self.startup_failure(); value['remaining_thread_matrix'] = bad; self.rejected(value, 1)
+        for bad in (None, {}, [], {'private interval': 1}):
+            value = self.startup_failure(); value['remaining_thread_matrix']['hadoop_metrics'] = bad; self.rejected(value, 1)
+        for bad in (True, -1, 1.0, '1', 'private stack', None):
+            value = self.startup_failure(); value['remaining_thread_matrix']['hadoop_metrics']['unattributed'] = bad
+            self.rejected(value, 1)
+        value = self.startup_failure(); value['remaining_thread_matrix']['extra'] = {}; self.rejected(value, 1)
+        value = self.startup_failure(); value['remaining_thread_matrix']['hadoop_metrics']['extra'] = 0; self.rejected(value, 1)
+        value = self.startup_failure(); value['remaining_threads'] = value['remaining_thread_intervals'] = None
+        self.rejected(value, 1)
 
     def test_fixed_real_runtime_selection_is_exact_and_ordered(self):
         runtime = F.RUNTIME.read_bytes()
@@ -489,6 +595,49 @@ class WireTests(unittest.TestCase):
 
 
 class JavaSourceTests(unittest.TestCase):
+    def test_thread_matrix_uses_the_same_single_residual_enumeration(self):
+        source = (HERE / 'HdfsKerberosRpcProbe.java').read_text()
+        body = source[source.index('    private static Map<String, Integer> remainingThreadCounts('):
+                      source.index('    private static void cleanup(')]
+        self.assertEqual(body.count('Thread.getAllStackTraces()'), 1)
+        self.assertEqual(body.count('for (Thread thread'), 1)
+        for text in ('for (String category : THREAD_CATEGORIES)', 'for (String phase : THREAD_PHASES)',
+                     'row.put(phase, row.get(phase) + 1)',
+                     'sum() == counts.get(category)', 'sum() == intervals.get(phase)',
+                     'remainingThreadMatrix = matrix'):
+            self.assertIn(text, body)
+        self.assertIn('remainingThreadIntervals = null; remainingThreadMatrix = null', source)
+        writer = source[source.index('    private static String threadMatrixJson('):
+                        source.index('    private static final class Relay')]
+        self.assertIn('for (String category : THREAD_CATEGORIES)', writer)
+        self.assertIn('threadCountsJson(remainingThreadMatrix.get(category), THREAD_PHASES)', writer)
+
+    def test_thread_intervals_retain_exact_identity_without_expanding_baseline(self):
+        source = (HERE / 'HdfsKerberosRpcProbe.java').read_text()
+        self.assertIn('Map<Thread, String> THREAD_ORIGINS = new java.util.IdentityHashMap<>()', source)
+        body = source[source.index('    private static void observeThreads('):
+                      source.index('    private static void cleanup(')]
+        for text in ('THREAD_PHASES.subList(0, 8).contains(phase)', 'OBSERVED_PHASES.add(phase)',
+                     'OBSERVED_PHASES.size() <= 8', 'need(++live <= 128', 'THREAD_ORIGINS.size() < 1024',
+                     'THREAD_ORIGINS.containsKey(thread)', 'THREAD_ORIGINS.put(thread, phase)',
+                     'THREAD_ORIGINS.getOrDefault(thread, "unattributed")',
+                     'intervals.values().stream().mapToInt(Integer::intValue).sum() == total'):
+            self.assertIn(text, body)
+        self.assertIn('threadObservationIncomplete = true', body)
+        self.assertIn('threadObservationsComplete() ? THREAD_ORIGINS.getOrDefault(thread, "unattributed") : "unattributed"', body)
+        for forbidden in ('getName(', 'System.out', 'System.err', '.interrupt(', '.stop(', 'baseline.add', 'baseline ='):
+            self.assertNotIn(forbidden, body)
+        self.assertEqual(source.count('baseline = threadIds();'), 2)
+        main = source[source.index('    public static void main('):]
+        phases = re.findall(r'observeThreads\("([a-z_]+)", baseline\)', main)
+        self.assertEqual(phases, ['kdc', 'owner_login', 'format', 'namenode', 'filesystem', 'reader', 'controls'])
+        self.assertLess(main.index('observeThreads("controls", baseline)'), main.index('stopServices();'))
+        self.assertIn('finally { THREAD_ORIGINS.clear(); }', main)
+        self.assertIn('observeThreads("shutdown", baseline);', source)
+        self.assertIn('deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(90)', main)
+        self.assertIn('controlDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(60)', main)
+        self.assertIn('long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(3)', source)
+
     def test_negative_output_accepts_only_zero_item_lsjson_shapes(self):
         source = (HERE / "HdfsKerberosRpcProbe.java").read_text()
         helper = source[source.index('    private static boolean emptyNegativeListing('):
@@ -522,6 +671,8 @@ class JavaSourceTests(unittest.TestCase):
             value['relay']['after_connections'] = 0
             value['cleanup'].update(threads_terminated=False, private_material_removed=False)
             value['remaining_threads']['jdk_timer'] = 1
+            value['remaining_thread_intervals']['unattributed'] = 1
+            value['remaining_thread_matrix']['jdk_timer']['unattributed'] = 1
             result = F.validate_java(F.canonical(value), 1)
             self.assertFalse(result['success'])
             self.assertEqual(result['rclone_wire_oracle']['category'], 'simple_disabled_kerberos_offered')
@@ -551,7 +702,8 @@ class JavaSourceTests(unittest.TestCase):
                       source.index('    private static String boolMap(')]
         self.assertIn('i < frames.length && i < 32', body)
         self.assertIn('if (!thread.isAlive() || baseline.contains(thread.getId())) continue;', body)
-        self.assertEqual(body.count('continue;'), 1)
+        counter = body[body.index('    private static Map<String, Integer> remainingThreadCounts('):]
+        self.assertEqual(counter.count('continue;'), 1)
         self.assertIn('need(++total <= 128, Code.cleanup_failed)', body)
         self.assertIn('remainingThreads.values().stream().allMatch(count -> count == 0)', body)
         self.assertIn('&& TASKS.stream().noneMatch(Thread::isAlive)', body)
@@ -660,7 +812,7 @@ class JavaSourceTests(unittest.TestCase):
 
     def test_private_cleanup_never_precedes_service_shutdown(self):
         source = (HERE / "HdfsKerberosRpcProbe.java").read_text()
-        final = source[source.index('        finally {\n            if (serialized'):]
+        final = source[source.index('        finally {\n            observeThreads("controls", baseline);'):]
         self.assertLess(final.index('stopServices();'), final.index('cleanup(server, baseline)'))
         self.assertIn('entry.getValue().verify(entry.getKey()); Files.delete(entry.getKey())', source)
         self.assertIn('"children_reaped", "relay_closed", "filesystem_closed", "namenode_stop_returned", "owner_logged_out"', source)
