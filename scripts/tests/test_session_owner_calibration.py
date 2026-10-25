@@ -19,6 +19,21 @@ F = load("session_fixture_test", ROOT / "scripts/application-lab/helper_owner_fi
 S = load("session_controller_test", ROOT / "scripts/application-lab/qualify_session_owner.py")
 
 
+class SessionSourcePinContracts(unittest.TestCase):
+    def test_actual_helper_qualifier_matches_its_exact_source_pin(self):
+        qualifier = S.load_qualifier()
+        self.assertEqual(qualifier.__file__, str(S.HERE / "qualify_helper_owner.py"))
+        self.assertEqual(len(qualifier.SOURCE_PINS), 10)
+        self.assertIn(".github/workflows/ci.yml", qualifier.SOURCE_PINS)
+
+    def test_changed_qualifier_is_rejected_before_module_execution(self):
+        raw = (S.HERE / "qualify_helper_owner.py").read_bytes()
+        with mock.patch.object(S.Path, "read_bytes", return_value=raw + b"\nchanged"), \
+                mock.patch.object(S.types, "ModuleType", side_effect=AssertionError("execution_forbidden")):
+            with self.assertRaises(ValueError):
+                S.load_qualifier()
+
+
 class SessionFixtureContracts(unittest.TestCase):
     def test_stdout_default_requires_pipe_and_session_requires_character(self):
         for file_type in (0, 1, 2, 3):
