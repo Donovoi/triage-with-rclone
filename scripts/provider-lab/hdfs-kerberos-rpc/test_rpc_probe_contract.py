@@ -72,8 +72,8 @@ def positive():
             wire_auth_boundary_rejection=True, listing_after=True, source_preserved=True, cache_preserved=True),
         cleanup=dict(children_reaped=True, relay_closed=True, filesystem_closed=True, namenode_stop_returned=True, owner_logged_out=True, kdc_stop_returned=True, threads_terminated=True, listeners_absent=True,
             private_material_removed=True, process_property_restored=True, cleanup_completed=True,
-            gc_monitor_reaped=True, fs_statistics_cleaner_reaped=True),
-        owned_thread_cleanup=dict(gc_monitor='terminated', fs_statistics_cleaner='terminated'),
+            gc_monitor_reaped=True, fs_statistics_cleaner_reaped=True, format_ssl_timer_reaped=True),
+        owned_thread_cleanup=dict(gc_monitor='terminated', fs_statistics_cleaner='terminated', format_ssl_timer='terminated'),
         cache_bytes=400, observed_lifetime_seconds=119, stage="completed", wire_hex=wire().hex(), rclone_wire_hex=wire().hex(),
         relay=dict(before_connections=1, negative_connections=1, after_connections=1, none_headers=1,
                    fatal_responses=1, unexpected_connections=0, bytes_forwarded_unchanged=True), error=None, ledger_eligible=False,
@@ -85,7 +85,7 @@ def positive():
         remaining_thread_intervals=dict(kdc=0, owner_login=0, format=0, namenode=0,
             filesystem=0, reader=0, controls=0, shutdown=0, unattributed=0),
         remaining_thread_matrix=empty_thread_matrix(),
-        remaining_timer_kinds=dict(namenode_metrics=0, rpc_idle=0, snapshot_gc=0, shell_timeout=0, unknown=0),
+        remaining_timer_kinds=dict(namenode_metrics=0, rpc_idle=0, snapshot_gc=0, shell_timeout=0, ssl_store=0, unknown=0),
         authentication_verified=False, hdfs_authenticated=False, renewal_verified=False,
         daemon_accepted=False, provider_accepted=False, application_accepted=False,
         vendor_accepted=False, vulnerability_audited=False)
@@ -341,7 +341,8 @@ class TicketTests(unittest.TestCase):
 
     def test_owned_helper_missing_ambiguous_late_and_shutdown_failures_never_pass(self):
         for helper, category, phase in (('gc_monitor', 'hadoop_util', 'namenode'),
-                                         ('fs_statistics_cleaner', 'hadoop_fs', 'filesystem')):
+                                         ('fs_statistics_cleaner', 'hadoop_fs', 'filesystem'),
+                                         ('format_ssl_timer', 'jdk_timer', 'format')):
             for state in F.OWNED_CLEANUP_STATES - {'terminated'}:
                 value = positive(); value.update(success=False, error='cleanup_failed')
                 value['owned_thread_cleanup'][helper] = state
@@ -350,6 +351,8 @@ class TicketTests(unittest.TestCase):
                 value['remaining_threads'][category] = 1
                 value['remaining_thread_intervals'][phase] = 1
                 value['remaining_thread_matrix'][category][phase] = 1
+                if helper == 'format_ssl_timer':
+                    value['remaining_timer_kinds']['ssl_store'] = 1
                 with self.subTest(helper=helper, state=state):
                     result = F.validate_java(F.canonical(value), 1)
                     self.assertFalse(result['success'])
@@ -366,13 +369,15 @@ class TicketTests(unittest.TestCase):
                     {'gc_monitor': 'terminated', 'fs_statistics_cleaner': 'terminated', 'extra': 'private'}):
             value = positive(); value['owned_thread_cleanup'] = bad; self.rejected(value)
         value = positive(); del value['owned_thread_cleanup']; self.rejected(value)
-        for helper in ('gc_monitor', 'fs_statistics_cleaner'):
+        for helper in ('gc_monitor', 'fs_statistics_cleaner', 'format_ssl_timer'):
+            for bad in ('private stack', 'unknown_state', True, None, 1):
+                value = positive(); value['owned_thread_cleanup'][helper] = bad; self.rejected(value)
             value = positive(); value['owned_thread_cleanup'][helper] = 'shutdown_failed'; self.rejected(value)
             value = positive(); value.update(success=False, error='cleanup_failed')
             value['cleanup'][helper + '_reaped'] = False; self.rejected(value, 1)
 
     def test_timer_hints_are_closed_exactly_counted_and_never_exempted(self):
-        for kind in ('namenode_metrics', 'rpc_idle', 'snapshot_gc', 'shell_timeout', 'unknown'):
+        for kind in ('namenode_metrics', 'rpc_idle', 'snapshot_gc', 'shell_timeout', 'ssl_store', 'unknown'):
             value = positive(); value.update(success=False, error='cleanup_failed')
             value['cleanup'].update(threads_terminated=False, private_material_removed=False)
             value['remaining_threads']['jdk_timer'] = 1
@@ -650,22 +655,77 @@ class WireTests(unittest.TestCase):
 
 
 class JavaSourceTests(unittest.TestCase):
+    def test_ssl_factory_is_captured_only_after_owned_format_not_initialized_during_cleanup(self):
+        source = (HERE / 'HdfsKerberosRpcProbe.java').read_text()
+        self.assertEqual(source.count('Util.connectionFactory'), 1)
+        main = source[source.index('            stage = "format";'):source.index('            stage = "namenode_start";')]
+        self.assertIn('try { NameNode.format(conf); formatSslFactory = Util.connectionFactory; }', main)
+        self.assertIn('finally { rememberOwner(); } return null; }, 15, deadline)', main)
+        self.assertLess(main.index('observeThreads("format", baseline)'), main.index('inspectFormatSslTimer(baseline, deadline, true)'))
+        self.assertEqual(source.count('formatSslFactory = '), 1)
+        cleanup = source[source.index('    private static OwnedCleanupState stopOwnedFormatSsl('):source.index('    private static String boolMap(')]
+        for forbidden in ('Util.connectionFactory', 'new URLConnectionFactory', 'new Timer(', 'SSLFactory(', 'getDeclaredField', 'setAccessible'):
+            self.assertNotIn(forbidden, cleanup)
+
+    def test_ssl_timer_capture_and_rescan_reject_wrong_identity_phase_type_and_ambiguity(self):
+        source = (HERE / 'HdfsKerberosRpcProbe.java').read_text()
+        body = source[source.index('    private static OwnedCleanupState inspectFormatSslTimer('):
+                      source.index('    private static OwnedCleanupState stopOwnedFormatSsl(')]
+        capture = body.index('formatSslThread = target;')
+        for condition in ('threadObservationIncomplete', '!OBSERVED_PHASES.contains("format")',
+                          'formatSslFactory == null', 'formatSslFactory.getClass() != URLConnectionFactory.class',
+                          'if (++live > 128)', 'System.nanoTime() >= until',
+                          '!thread.getName().equals("SSL Certificates Store Monitor")',
+                          '!thread.getClass().getName().equals("java.util.TimerThread")',
+                          'if (target != null) return OwnedCleanupState.ambiguous',
+                          'if (target == null) return OwnedCleanupState.missing',
+                          'baseline.contains(target.getId())', '!THREAD_ORIGINS.containsKey(target)',
+                          '!THREAD_ORIGINS.get(target).equals("format")', '!target.isDaemon()',
+                          'if (formatSslThread != null) return OwnedCleanupState.ambiguous'):
+            self.assertLess(body.index(condition), capture)
+        self.assertIn('else if (target != formatSslThread) return OwnedCleanupState.unobserved', body)
+        self.assertEqual(source.count('formatSslThread = target;'), 1)
+        for forbidden in ('.interrupt(', '.destroy(', '.cancel(', 'startsWith(', 'matches(', 'baseline.add', 'getDeclaredField'):
+            self.assertNotIn(forbidden, body)
+
+    def test_ssl_timer_uses_only_retained_factory_lifecycle_and_same_remaining_budget(self):
+        source = (HERE / 'HdfsKerberosRpcProbe.java').read_text()
+        body = source[source.index('    private static OwnedCleanupState stopOwnedFormatSsl('):
+                      source.index('    private static void cleanup(')]
+        action = body.index('formatSslFactory.destroy();')
+        for condition in ('if (sslCaptureFailure != null)', '!threadObservationsComplete()',
+                          'OwnedCleanupState.services_not_stopped',
+                          'inspectFormatSslTimer(baseline, until, false)', 'if (invalid != null) return invalid',
+                          'System.nanoTime() >= until'):
+            self.assertLess(body.index(condition), action)
+        for user in ('children_reaped', 'relay_closed', 'filesystem_closed', 'namenode_stop_returned',
+                     'owner_logged_out', 'kdc_stop_returned'):
+            self.assertLess(body.index('"' + user + '"'), action)
+        self.assertIn('long remaining = until - System.nanoTime()', body)
+        self.assertIn('formatSslThread.join(remaining / 1_000_000L, (int)(remaining % 1_000_000L))', body)
+        self.assertIn('formatSslThread.isAlive() ? OwnedCleanupState.still_alive : OwnedCleanupState.terminated', body)
+        self.assertIn('catch (Throwable ignored) { return OwnedCleanupState.shutdown_failed; }', body)
+        for forbidden in ('formatSslThread.interrupt(', '.stop(', '.cancel(', 'System.exit', 'TimeUnit.SECONDS',
+                          'DefaultMetricsSystem', 'getDeclaredField', 'setAccessible'):
+            self.assertNotIn(forbidden, body)
+
     def test_timer_classifier_publishes_only_exact_source_backed_enum_hints(self):
         source = (HERE / 'HdfsKerberosRpcProbe.java').read_text()
         body = source[source.index('    private static String timerKind('):source.index('    private static void observeThreads(')]
         pairs = re.findall(r'if \(name\.equals\("([^"\n]+)"\)\) return "([a-z_]+)";', body)
         self.assertEqual(dict(pairs), {"Timer for 'NameNode' metrics system": 'namenode_metrics',
             'IPC Server idle connection scanner for port 19000': 'rpc_idle',
-            'SnapshotDeletionGc': 'snapshot_gc', 'Shell command timeout': 'shell_timeout'})
+            'SnapshotDeletionGc': 'snapshot_gc', 'Shell command timeout': 'shell_timeout',
+            'SSL Certificates Store Monitor': 'ssl_store'})
         self.assertEqual(set(re.findall(r'return "([a-z_]+)";', body)),
-                         {'namenode_metrics', 'rpc_idle', 'snapshot_gc', 'shell_timeout', 'unknown'})
+                         {'namenode_metrics', 'rpc_idle', 'snapshot_gc', 'shell_timeout', 'ssl_store', 'unknown'})
         for forbidden in ('return name', 'System.', 'print', '.interrupt(', '.cancel(', 'startsWith(', 'matches('):
             self.assertNotIn(forbidden, body)
         self.assertIn('sum() == counts.get("jdk_timer")', source)
     def test_owned_cleanup_requires_exact_identity_type_phase_and_stopped_users(self):
         source = (HERE / 'HdfsKerberosRpcProbe.java').read_text()
         body = source[source.index('    private static OwnedCleanupState stopOwnedHelper('):
-                      source.index('    private static void cleanup(')]
+                      source.index('    private static OwnedCleanupState inspectFormatSslTimer(')]
         action = body.index('target.interrupt();')
         for condition in ('!threadObservationsComplete()', 'OwnedCleanupState.services_not_stopped',
                           'if (target != null) return OwnedCleanupState.ambiguous',
@@ -694,10 +754,11 @@ class JavaSourceTests(unittest.TestCase):
         self.assertEqual(body.count('TimeUnit.SECONDS.toNanos(3)'), 1)
         self.assertIn('gcCleanup = stopOwnedHelper(true, baseline, until)', body)
         self.assertIn('statisticsCleanup = stopOwnedHelper(false, baseline, until)', body)
+        self.assertIn('sslCleanup = stopOwnedFormatSsl(baseline, until)', body)
         self.assertLess(body.index('long until ='), body.index('stopOwnedHelper(true'))
         self.assertLess(body.index('stopOwnedHelper(false'), body.index('remainingThreadCounts(baseline)'))
         private_gate = body[body.index('if (rootOwned'):body.index('try {\n                guardRoot();')]
-        self.assertIn('"gc_monitor_reaped", "fs_statistics_cleaner_reaped"', private_gate)
+        self.assertIn('"gc_monitor_reaped", "fs_statistics_cleaner_reaped", "format_ssl_timer_reaped"', private_gate)
 
     def test_thread_matrix_uses_the_same_single_residual_enumeration(self):
         source = (HERE / 'HdfsKerberosRpcProbe.java').read_text()

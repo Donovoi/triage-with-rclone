@@ -38,10 +38,10 @@ DIAGNOSTIC_ORIGINS = frozenset("none namenode_constructor namenode_initialize na
 THREAD_CATEGORIES = frozenset("probe_task jdk_process_reaper jdk_timer jdk_executor jdk_cleaner hadoop_metrics hadoop_rpc hadoop_fs hadoop_namenode hadoop_blockmanagement hadoop_util jetty kerby other".split())
 THREAD_INTERVALS = frozenset("kdc owner_login format namenode filesystem reader controls shutdown unattributed".split())
 OWNED_CLEANUP_STATES = frozenset("not_attempted observation_incomplete services_not_stopped scan_failed missing ambiguous preexisting unobserved late not_daemon deadline shutdown_failed still_alive terminated".split())
-TIMER_KINDS = frozenset("namenode_metrics rpc_idle snapshot_gc shell_timeout unknown".split())
+TIMER_KINDS = frozenset("namenode_metrics rpc_idle snapshot_gc shell_timeout ssl_store unknown".split())
 BASE = "docker.io/library/eclipse-temurin@sha256:e1c09a9ee23feb81f94016547826c1e694086cd927356fb57fccc312fcc32f85"
 BASE_ID = "sha256:d0e6e16acb7f941e5206d99ec38e5bba18545c43462541958f84b22e0fc006e8"
-JAVA_SHA = "bb8af8e4e36c57a78f943181b282455f4dead8ba4e0c878d0fc709016ad8f2ef"
+JAVA_SHA = "8a5130a4db5c9266d6eff439d1574faec05a81339da0a5765596732c70f56bb0"
 RUNTIME_SHA = "8944f0db4899d9e8f166feb28ce56d99278321ce0d3b1a9b9b993b5c0d508c2a"
 ORDER_SHA = "a482109e5170b0a6885af7c52902e89600c226f6e1fe1487083d736c13187632"
 LOCK_SHA = "a62e2a60bbb3f6c8b95b849760ff597e4e05e1c93bf61987c175502c3fe2ac74"
@@ -56,7 +56,7 @@ JAVA_CHECKS = frozenset(("environment", "endpoint_settings", "positive_tgt", "fi
     "nonrenewable", "secure_namenode", "listing_before", "rclone_auth_boundary_rejection",
     "wire_auth_boundary_rejection", "listing_after", "source_preserved", "cache_preserved"))
 JAVA_CLEANUP = frozenset(("children_reaped", "relay_closed", "filesystem_closed", "namenode_stop_returned", "owner_logged_out", "kdc_stop_returned", "threads_terminated", "listeners_absent",
-    "private_material_removed", "process_property_restored", "cleanup_completed", "gc_monitor_reaped", "fs_statistics_cleaner_reaped"))
+    "private_material_removed", "process_property_restored", "cleanup_completed", "gc_monitor_reaped", "fs_statistics_cleaner_reaped", "format_ssl_timer_reaped"))
 JAVA_CODES = frozenset("""environment_invalid path_invalid source_changed unexpected_files
 listener_mismatch configuration_invalid deadline_exceeded positive_ticket_failed
 wrong_password_failure_mismatch wrong_principal_not_rejected cache_invalid ticket_time_mismatch
@@ -413,7 +413,7 @@ def validate_diagnostics(value, remaining, intervals, matrix, timers, observatio
 
 
 def validate_owned_cleanup(value, cleanup):
-    need(type(value) is dict and set(value) == {"gc_monitor", "fs_statistics_cleaner"}, "java_report_invalid")
+    need(type(value) is dict and set(value) == {"gc_monitor", "fs_statistics_cleaner", "format_ssl_timer"}, "java_report_invalid")
     for helper, state in value.items():
         need(type(state) is str and state in OWNED_CLEANUP_STATES
              and cleanup[helper + "_reaped"] is (state == "terminated"), "java_report_invalid")

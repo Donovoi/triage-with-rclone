@@ -28,6 +28,8 @@ import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.util.ExitUtil;
 import org.apache.hadoop.util.GcTimeMonitor;
 import org.apache.hadoop.util.concurrent.SubjectInheritingThread;
+import org.apache.hadoop.hdfs.server.common.Util;
+import org.apache.hadoop.hdfs.web.URLConnectionFactory;
 import org.apache.hadoop.ipc.protobuf.RpcHeaderProtos.RpcResponseHeaderProto;
 import org.apache.hadoop.ipc.protobuf.RpcHeaderProtos.RpcResponseHeaderProto.RpcStatusProto;
 import org.apache.hadoop.ipc.protobuf.RpcHeaderProtos.RpcResponseHeaderProto.RpcErrorCodeProto;
@@ -117,7 +119,7 @@ public final class HdfsKerberosRpcProbe {
     private static boolean threadObservationIncomplete;
     private static Map<String, Integer> remainingThreadIntervals;
     private static Map<String, Map<String, Integer>> remainingThreadMatrix;
-    private static final List<String> TIMER_KINDS = List.of("namenode_metrics", "rpc_idle", "snapshot_gc", "shell_timeout", "unknown");
+    private static final List<String> TIMER_KINDS = List.of("namenode_metrics", "rpc_idle", "snapshot_gc", "shell_timeout", "ssl_store", "unknown");
     private static Map<String, Integer> remainingTimerKinds;
     private enum OwnedCleanupState {
         not_attempted, observation_incomplete, services_not_stopped, scan_failed,
@@ -126,6 +128,10 @@ public final class HdfsKerberosRpcProbe {
     }
     private static OwnedCleanupState gcCleanup = OwnedCleanupState.not_attempted;
     private static OwnedCleanupState statisticsCleanup = OwnedCleanupState.not_attempted;
+    private static OwnedCleanupState sslCleanup = OwnedCleanupState.not_attempted;
+    private static OwnedCleanupState sslCaptureFailure = OwnedCleanupState.not_attempted;
+    private static URLConnectionFactory formatSslFactory;
+    private static Thread formatSslThread;
     private static final LinkOption NOFOLLOW = LinkOption.NOFOLLOW_LINKS;
     private static final int PORT = 19006, MAX_BYTES = 65536, LIFETIME_SECONDS = 120;
     private static final String CONF_PROPERTY = "java.security.krb5.conf";
@@ -488,6 +494,7 @@ public final class HdfsKerberosRpcProbe {
         if (name.equals("IPC Server idle connection scanner for port 19000")) return "rpc_idle";
         if (name.equals("SnapshotDeletionGc")) return "snapshot_gc";
         if (name.equals("Shell command timeout")) return "shell_timeout";
+        if (name.equals("SSL Certificates Store Monitor")) return "ssl_store";
         return "unknown";
     }
     private static void observeThreads(String phase, Set<Long> baseline) {
@@ -594,6 +601,57 @@ public final class HdfsKerberosRpcProbe {
             Thread.currentThread().interrupt(); return OwnedCleanupState.shutdown_failed;
         } catch (Throwable ignored) { return OwnedCleanupState.shutdown_failed; }
     }
+    private static OwnedCleanupState inspectFormatSslTimer(Set<Long> baseline, long until, boolean capture) {
+        // NameNode.format has already initialized Util through namespace URI conversion.
+        // Match the timer privately, retaining its exact object before any later service.
+        if (threadObservationIncomplete || !OBSERVED_PHASES.contains("format"))
+            return OwnedCleanupState.observation_incomplete;
+        if (formatSslFactory == null || formatSslFactory.getClass() != URLConnectionFactory.class)
+            return OwnedCleanupState.missing;
+        Thread target = null;
+        try {
+            int live = 0;
+            for (Thread thread : Thread.getAllStackTraces().keySet()) {
+                if (!thread.isAlive()) continue;
+                if (++live > 128) return OwnedCleanupState.scan_failed;
+                if (System.nanoTime() >= until) return OwnedCleanupState.deadline;
+                if (!thread.getName().equals("SSL Certificates Store Monitor")) continue;
+                if (!thread.getClass().getName().equals("java.util.TimerThread")) return OwnedCleanupState.scan_failed;
+                if (target != null) return OwnedCleanupState.ambiguous;
+                target = thread;
+            }
+            if (target == null) return OwnedCleanupState.missing;
+            if (baseline.contains(target.getId())) return OwnedCleanupState.preexisting;
+            if (!THREAD_ORIGINS.containsKey(target)) return OwnedCleanupState.unobserved;
+            if (!THREAD_ORIGINS.get(target).equals("format")) return OwnedCleanupState.late;
+            if (!target.isDaemon()) return OwnedCleanupState.not_daemon;
+            if (capture) {
+                if (formatSslThread != null) return OwnedCleanupState.ambiguous;
+                formatSslThread = target;
+            } else if (target != formatSslThread) return OwnedCleanupState.unobserved;
+            return null;
+        } catch (Throwable ignored) { return OwnedCleanupState.scan_failed; }
+    }
+    private static OwnedCleanupState stopOwnedFormatSsl(Set<Long> baseline, long until) {
+        if (sslCaptureFailure != null) return sslCaptureFailure;
+        if (!threadObservationsComplete()) return OwnedCleanupState.observation_incomplete;
+        if (!List.of("children_reaped", "relay_closed", "filesystem_closed", "namenode_stop_returned",
+            "owner_logged_out", "kdc_stop_returned").stream().allMatch(k -> Boolean.TRUE.equals(CLEANUP.get(k))))
+            return OwnedCleanupState.services_not_stopped;
+        OwnedCleanupState invalid = inspectFormatSslTimer(baseline, until, false);
+        if (invalid != null) return invalid;
+        try {
+            if (System.nanoTime() >= until) return OwnedCleanupState.deadline;
+            // Public lifecycle of this retained process-local factory; never interrupt a TimerThread.
+            formatSslFactory.destroy();
+            long remaining = until - System.nanoTime();
+            if (remaining <= 0) return OwnedCleanupState.deadline;
+            formatSslThread.join(remaining / 1_000_000L, (int)(remaining % 1_000_000L));
+            return formatSslThread.isAlive() ? OwnedCleanupState.still_alive : OwnedCleanupState.terminated;
+        } catch (InterruptedException ignored) {
+            Thread.currentThread().interrupt(); return OwnedCleanupState.shutdown_failed;
+        } catch (Throwable ignored) { return OwnedCleanupState.shutdown_failed; }
+    }
     private static void cleanup(SimpleKdcServer server, Set<Long> baseline) {
         boolean stopped = server == null;
         try {
@@ -616,6 +674,8 @@ public final class HdfsKerberosRpcProbe {
         CLEANUP.put("gc_monitor_reaped", gcCleanup == OwnedCleanupState.terminated);
         statisticsCleanup = stopOwnedHelper(false, baseline, until);
         CLEANUP.put("fs_statistics_cleaner_reaped", statisticsCleanup == OwnedCleanupState.terminated);
+        sslCleanup = stopOwnedFormatSsl(baseline, until);
+        CLEANUP.put("format_ssl_timer_reaped", sslCleanup == OwnedCleanupState.terminated);
         do {
             try { remainingThreads = remainingThreadCounts(baseline); }
             catch (Throwable ignored) { remainingThreads = null; remainingThreadIntervals = null; remainingThreadMatrix = null; remainingTimerKinds = null; break; }
@@ -630,7 +690,7 @@ public final class HdfsKerberosRpcProbe {
         try { listeners(false); noListeners = true; } catch (Throwable ignored) { }
         CLEANUP.put("listeners_absent", noListeners);
         boolean removed = !rootCreated;
-        if (rootOwned && stopped && threadsClean && noListeners && List.of("children_reaped", "relay_closed", "filesystem_closed", "namenode_stop_returned", "owner_logged_out", "gc_monitor_reaped", "fs_statistics_cleaner_reaped").stream().allMatch(k -> Boolean.TRUE.equals(CLEANUP.get(k)))) {
+        if (rootOwned && stopped && threadsClean && noListeners && List.of("children_reaped", "relay_closed", "filesystem_closed", "namenode_stop_returned", "owner_logged_out", "gc_monitor_reaped", "fs_statistics_cleaner_reaped", "format_ssl_timer_reaped").stream().allMatch(k -> Boolean.TRUE.equals(CLEANUP.get(k)))) {
             try {
                 guardRoot();
                 // stop() removes its config. No unknown/replaced file is deleted.
@@ -1048,7 +1108,7 @@ public final class HdfsKerberosRpcProbe {
                 "nonrenewable", "secure_namenode", "listing_before", "rclone_auth_boundary_rejection",
                 "wire_auth_boundary_rejection", "listing_after", "source_preserved", "cache_preserved")) CHECKS.put(name, false);
         for (String name : List.of("children_reaped", "relay_closed", "filesystem_closed", "namenode_stop_returned", "owner_logged_out",
-                "gc_monitor_reaped", "fs_statistics_cleaner_reaped",
+                "gc_monitor_reaped", "fs_statistics_cleaner_reaped", "format_ssl_timer_reaped",
                 "kdc_stop_returned", "threads_terminated", "listeners_absent", "private_material_removed",
                 "process_property_restored", "cleanup_completed")) CLEANUP.put(name, false);
         Set<Long> baseline = threadIds(); SimpleKdcServer server = null; Code error = null;
@@ -1093,8 +1153,10 @@ public final class HdfsKerberosRpcProbe {
             need(owner != null && owner.hasKerberosCredentials() && owner.isFromKeytab(), Code.namenode_failed);
             observeThreads("owner_login", baseline);
             stage = "format"; bounded(() -> {
-                try { NameNode.format(conf); } finally { rememberOwner(); } return null; }, 15, deadline);
+                try { NameNode.format(conf); formatSslFactory = Util.connectionFactory; }
+                finally { rememberOwner(); } return null; }, 15, deadline);
             observeThreads("format", baseline);
+            sslCaptureFailure = inspectFormatSslTimer(baseline, deadline, true);
             stage = "namenode_start"; bounded(() -> {
                 try { namenode = new NameNode(conf); } finally { rememberOwner(); } return null; }, 30, deadline);
             endpoint = namenode.getNameNodeAddress(); topology(); CHECKS.put("secure_namenode", true);
@@ -1159,7 +1221,8 @@ public final class HdfsKerberosRpcProbe {
             + ",\"remaining_thread_matrix\":" + threadMatrixJson()
             + ",\"remaining_timer_kinds\":" + threadCountsJson(remainingTimerKinds, TIMER_KINDS)
             + ",\"owned_thread_cleanup\":{\"gc_monitor\":\"" + gcCleanup.name()
-            + "\",\"fs_statistics_cleaner\":\"" + statisticsCleanup.name() + "\"}"
+            + "\",\"fs_statistics_cleaner\":\"" + statisticsCleanup.name()
+            + "\",\"format_ssl_timer\":\"" + sslCleanup.name() + "\"}"
             + ",\"rclone_wire_hex\":\"" + rcloneWireHex + "\",\"relay\":" + (relay == null ? "null" : relay.json())
             + ",\"ledger_eligible\":false,\"authentication_verified\":false,\"hdfs_authenticated\":false"
             + ",\"renewal_verified\":false,\"daemon_accepted\":false,\"provider_accepted\":false"
