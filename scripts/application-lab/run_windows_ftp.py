@@ -82,6 +82,30 @@ def denial_terminal_detail(terminal):
     return "other"
 
 
+def denial_reply_shape(terminal):
+    """Bounded comparisons to one fixed public reply; never return input text."""
+    if type(terminal) is not str or not 0 < len(terminal) <= 512:
+        return None
+    reply = "530 Login incorrect"
+    folded = re.sub(r"[ \t]+", " ", terminal).strip(" \t")
+    prefix = suffix = 0
+    for actual, expected in zip(terminal, reply):
+        if actual != expected:
+            break
+        prefix += 1
+    for actual, expected in zip(reversed(terminal), reversed(reply)):
+        if actual != expected:
+            break
+        suffix += 1
+    return dict(ascii_printable=all(32 <= ord(c) <= 126 for c in terminal),
+        casefold_equal=terminal.casefold() == reply.casefold(),
+        spacefold_equal=folded == reply,
+        case_spacefold_equal=folded.casefold() == reply.casefold(),
+        quoted_message_equal=terminal in ('530 "Login incorrect"', "530 'Login incorrect'"),
+        expected_message_present="Login incorrect" in terminal,
+        prefix_equal_chars=prefix, suffix_equal_chars=suffix)
+
+
 def denial_error_diagnostic(value, cause):
     """Failure-only shape observations; never publish the error or endpoint."""
     try:
@@ -92,7 +116,7 @@ def denial_error_diagnostic(value, cause):
             notice_count=None, final_notice_grammar=None, expected_cause_equal=None,
             expected_connection_prefix_equal=None, terminal_category=None,
             terminal_reply_prefix=None, terminal_contains_reply=None, terminal_length_relation=None,
-            terminal_detail=None)
+            terminal_detail=None, terminal_shape=None)
         if record["error_within_bound"]:
             record["error_text_valid"] = "\x00" not in value and "\r" not in value
             if record["error_text_valid"]:
@@ -123,6 +147,8 @@ def denial_error_diagnostic(value, cause):
                                             terminal_length_relation=("shorter" if len(terminal) < len(reply) else
                                                                       "equal" if len(terminal) == len(reply) else "longer"),
                                             terminal_detail=denial_terminal_detail(terminal))
+                                        if record["terminal_reply_prefix"] and not record["expected_cause_equal"]:
+                                            record["terminal_shape"] = denial_reply_shape(terminal)
         line = "application_ftp_denial_error=" + E.compact(record).decode("ascii")
         if len(line.encode("ascii")) + 1 <= 1024:
             print(line, flush=True)
