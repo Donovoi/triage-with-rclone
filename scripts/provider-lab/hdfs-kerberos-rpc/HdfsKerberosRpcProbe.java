@@ -666,6 +666,9 @@ public final class HdfsKerberosRpcProbe {
         conf.set("dfs.namenode.http-bind-host", "127.0.0.1");
         conf.set("dfs.http.policy", "HTTP_ONLY");
         conf.set("hadoop.security.authentication", "kerberos");
+        // BlockManager requires tokens during secure NameNode formatting,
+        // even when this experiment never starts a DataNode or transfers bytes.
+        conf.set("dfs.block.access.token.enable", "true");
         conf.set("hadoop.security.authorization", "true");
         conf.set("hadoop.kerberos.keytab.login.autorenewal.enabled", "false");
         conf.set("ipc.client.fallback-to-simple-auth-allowed", "false");
