@@ -69,7 +69,8 @@ def positive():
                    fatal_responses=1, unexpected_connections=0, bytes_forwarded_unchanged=True), error=None, ledger_eligible=False,
         diagnostic=dict(category="none", origin="none"),
         remaining_threads=dict(probe_task=0, jdk_process_reaper=0, jdk_timer=0, jdk_executor=0,
-            hadoop_metrics=0, hadoop_rpc=0, jetty=0, kerby=0, other=0),
+            jdk_cleaner=0, hadoop_metrics=0, hadoop_rpc=0, hadoop_fs=0, hadoop_namenode=0,
+            hadoop_blockmanagement=0, hadoop_util=0, jetty=0, kerby=0, other=0),
         authentication_verified=False, hdfs_authenticated=False, renewal_verified=False,
         daemon_accepted=False, provider_accepted=False, application_accepted=False,
         vendor_accepted=False, vulnerability_audited=False)
@@ -210,6 +211,15 @@ class TicketTests(unittest.TestCase):
         value["remaining_threads"] = positive()["remaining_threads"]
         self.assertFalse(F.validate_java(F.canonical(value), 1)["cleanup"]["threads_terminated"])
 
+    def test_new_thread_categories_only_subdivide_failing_residuals(self):
+        for category in ('hadoop_fs', 'hadoop_namenode', 'hadoop_blockmanagement', 'hadoop_util', 'jdk_cleaner'):
+            value = self.startup_failure(); value['remaining_threads'] = positive()['remaining_threads']
+            value['remaining_threads'][category] = 3
+            result = F.validate_java(F.canonical(value), 1)
+            self.assertEqual(sum(result['remaining_threads'].values()), 3)
+            self.assertFalse(result['cleanup']['threads_terminated'])
+            self.assertFalse(result['cleanup']['private_material_removed'])
+            value['cleanup']['threads_terminated'] = True; self.rejected(value, 1)
     def test_result_lifetime_cache_and_success_contradictions(self):
         for field, bad in (("cache_bytes", 100), ("cache_bytes", 65537), ("observed_lifetime_seconds", 109),
                            ("observed_lifetime_seconds", 121), ("success", False)):
@@ -479,6 +489,48 @@ class WireTests(unittest.TestCase):
 
 
 class JavaSourceTests(unittest.TestCase):
+    def test_negative_output_accepts_only_zero_item_lsjson_shapes(self):
+        source = (HERE / "HdfsKerberosRpcProbe.java").read_text()
+        helper = source[source.index('    private static boolean emptyNegativeListing('):
+                        source.index('    private static void negative(')]
+        literal = re.search(r'return output\.matches\(("(?:\\.|[^"\\])*")\);', helper).group(1)
+        expression = json.loads(literal)
+        self.assertIn('new String(stdout, StandardCharsets.US_ASCII)', helper)
+        self.assertNotIn('.trim()', helper)
+        for text in ('', '[\n', '[\n]\n'):
+            with self.subTest(valid=text): self.assertIsNotNone(re.fullmatch(expression, text, flags=re.ASCII))
+        for text in ('[', '[]', '[\n]', '[\r\n', '[\n\n', ' [\n', '[\n]\n ', '\n', '\t', '\x00',
+                     'null', '{}', '[{}]', '[0]', '["x"]', '[{', '[[', '][', '[]trailing', 'permission denied', '[\u00a0]'):
+            with self.subTest(invalid=text): self.assertIsNone(re.fullmatch(expression, text, flags=re.ASCII))
+        negative = source[source.index('    private static void negative('):source.index('    private static void wireOracle(')]
+        for requirement in ('need(result.code != 0, Code.rclone_denial_exit_zero)',
+                            'need(emptyNegativeListing(result.out), Code.rclone_denial_output_invalid)',
+                            'relay.counts[1] > 0', 'relay.noneHeaders == relay.counts[1]',
+                            'relay.fatalResponses == relay.counts[1]', '!rcloneWireHex.isEmpty()'):
+            self.assertIn(requirement, negative)
+        positive_body = source[source.index('    private static void positive('):
+                               source.index('    private static boolean emptyNegativeListing(')]
+        self.assertNotIn('emptyNegativeListing(', positive_body)
+        self.assertIn('result.code == 0 && result.err.length == 0', positive_body)
+
+    def test_finite_negative_result_errors_preserve_failure_and_cleanup(self):
+        for code in ('rclone_denial_exit_zero', 'rclone_denial_output_invalid', 'rclone_denial_mismatch'):
+            value = positive(); value.update(success=False, stage='rclone_none', error=code,
+                diagnostic=dict(category='assertion', origin='none'), wire_hex='')
+            value['checks'].update(rclone_auth_boundary_rejection=False, wire_auth_boundary_rejection=False,
+                listing_after=False, source_preserved=False, cache_preserved=False)
+            value['relay']['after_connections'] = 0
+            value['cleanup'].update(threads_terminated=False, private_material_removed=False)
+            value['remaining_threads']['jdk_timer'] = 1
+            result = F.validate_java(F.canonical(value), 1)
+            self.assertFalse(result['success'])
+            self.assertEqual(result['rclone_wire_oracle']['category'], 'simple_disabled_kerberos_offered')
+            self.assertFalse(result['checks']['rclone_auth_boundary_rejection'])
+            self.assertFalse(result['cleanup']['threads_terminated'])
+            self.assertFalse(result['cleanup']['private_material_removed'])
+            self.assertTrue(all(result[key] is False for key in F.JAVA_FALSE))
+            with self.assertRaises(F.ProbeError): F.validate_java(F.canonical(value), 0)
+
     def test_throwable_projection_preserves_causes_without_exporting_messages(self):
         source = (HERE / "HdfsKerberosRpcProbe.java").read_text()
         self.assertIn('Failure(Code value, Throwable cause) { super(value.name(), cause); code = value; }', source)
@@ -506,6 +558,12 @@ class JavaSourceTests(unittest.TestCase):
         self.assertIn('rootOwned && stopped && threadsClean && noListeners', body)
         self.assertNotIn('getName(', body)
         self.assertNotIn('printStackTrace(', body)
+        for category, marker in (('hadoop_fs', 'org.apache.hadoop.fs.'),
+                ('hadoop_namenode', 'org.apache.hadoop.hdfs.server.namenode.'),
+                ('hadoop_blockmanagement', 'org.apache.hadoop.hdfs.server.blockmanagement.'),
+                ('hadoop_util', 'org.apache.hadoop.util.'), ('jdk_cleaner', 'jdk.internal.ref.CleanerImpl')):
+            self.assertIn('"' + marker + '"', body)
+            self.assertIn('category = "' + category + '"', body)
 
     def test_secure_namenode_requires_block_tokens_without_datanode(self):
         source = (HERE / "HdfsKerberosRpcProbe.java").read_text()
