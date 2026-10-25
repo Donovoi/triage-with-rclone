@@ -419,4 +419,17 @@ mod tests {
         assert!(entries[0].remote_name.is_none());
         assert_eq!(entries[0].path, "file.txt");
     }
+
+    #[test]
+    fn malformed_xlsx_is_an_error_and_does_not_change_the_input() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("queue.xlsx");
+        for bytes in [b"not an XLSX workbook".as_slice(), b"PK\x03\x04".as_slice()] {
+            std::fs::write(&path, bytes).unwrap();
+            let error = read_download_queue(&path).unwrap_err();
+            assert!(error.to_string().starts_with("Failed to open XLSX queue:"));
+            assert_eq!(std::fs::read(&path).unwrap(), bytes);
+            assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+        }
+    }
 }

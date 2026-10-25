@@ -11,7 +11,7 @@ class FtpWorkflowTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
-        cls.job = cls.workflow.split("  windows-ftp:\n", 1)[1].split("  windows-filesystem:\n", 1)[0]
+        cls.job = cls.workflow.split("  windows-ftp:\n", 1)[1].split("  windows-b2:\n", 1)[0]
         cls.steps = re.split(r"(?m)^      - ", cls.job)[1:]
         cls.producer = next(step for step in cls.steps if "        id: ftp_cases\n" in step)
         cls.validator = next(step for step in cls.steps if "        id: ftp_validation\n" in step)
@@ -113,9 +113,11 @@ class FtpWorkflowTests(unittest.TestCase):
         needs = re.search(r"^    needs: \[([^\]]+)\]$", publication, re.MULTILINE)
         self.assertIsNotNone(needs)
         self.assertEqual([name.strip() for name in needs.group(1).split(",")],
-                         ["test", "windows-filesystem", "windows-ftp", "windows-architectures", "audit", "python-audit",
-                          "smb-protocol", "linux-provider-evidence", "pcloud-oauth-feasibility",
-                          "pcloud-oauth-authentication", "gcs-oauth-lifecycle"])
+                         ["test", "windows-filesystem", "windows-ftp", "windows-b2", "windows-swift",
+                          "windows-azureblob", "windows-swift-cancellation", "windows-swift-listing",
+                          "windows-architectures", "audit", "python-audit", "smb-protocol",
+                          "linux-provider-evidence", "pcloud-oauth-feasibility", "pcloud-oauth-authentication",
+                          "gcs-oauth-lifecycle", "windows-webdav-bearer"])
 
 
 if __name__ == "__main__":

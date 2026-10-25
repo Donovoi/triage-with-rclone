@@ -421,13 +421,16 @@ class WebdavApplicationEvidenceTests(unittest.TestCase):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(b"synthetic bytes\n")
         (root / "scripts/application_evidence.py").write_bytes(SOURCE.with_name("application_evidence.py").read_bytes())
+        (root / "scripts/application_source_snapshot.py").write_bytes(E.A._SOURCE_BYTES)
+        (root / "rclone-triage/Cargo.toml").write_text('[package]\nname="synthetic"\nversion="0.0.0"\n')
+        (root / "rclone-triage/.cargo/config.toml").write_text("")
 
     def test_each_fixed_harness_and_build_input_is_bound_without_loading_producer(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             self.prepare_tree(root)
             before = E.compute_bindings(root, root / "application.exe", "d" * 40)
-            self.assertEqual(len(E.HARNESS_FILES), 9)
+            self.assertEqual(len(E.HARNESS_FILES), 11)
             for name in E.HARNESS_FILES:
                 path = root / name
                 data = path.read_bytes()
@@ -435,6 +438,9 @@ class WebdavApplicationEvidenceTests(unittest.TestCase):
                 try:
                     if name == "scripts/application_evidence.py":
                         with self.assertRaisesRegex(E.ApplicationEvidenceError, "webdav_shared_contract_changed"):
+                            E.compute_bindings(root, root / "application.exe", "d" * 40)
+                    elif name == "scripts/application_source_snapshot.py":
+                        with self.assertRaisesRegex(E.ApplicationEvidenceError, "application_source_helper_changed"):
                             E.compute_bindings(root, root / "application.exe", "d" * 40)
                     else:
                         after = E.compute_bindings(root, root / "application.exe", "d" * 40)
@@ -447,7 +453,7 @@ class WebdavApplicationEvidenceTests(unittest.TestCase):
                               ("rclone-triage/src/main.rs", "application_source_sha256")):
                 path = root / name
                 data = path.read_bytes()
-                path.write_bytes(data + b"changed")
+                path.write_bytes(data + (b"# changed\n" if path.suffix == ".toml" else b"changed"))
                 self.assertNotEqual(E.compute_bindings(root, root / "application.exe", "d" * 40)[key], before[key])
                 path.write_bytes(data)
 

@@ -14,6 +14,56 @@ using System.Threading;
 using Microsoft.Win32.SafeHandles;
 
 namespace TriageApplicationLab {
+    // Pure diagnostic state. No exception/native values enter this vocabulary.
+    public enum HostedProcessObservationStage {
+        Unknown,PidBufferAllocate,PidListQuery,PidListShape,PidValue,RetainedChildWait,
+        ChildOpen,ChildMembership,ChildExitWait,ChildCapacity,ChildCreated,ChildHandleClose,
+        PidBufferFree,JobAccounting,AppExitWait,AppExitCode
+    }
+    public struct HostedProcessObservation {
+        bool active,failed;
+        HostedProcessObservationStage current,first;
+        public void Begin() { active=true; failed=false; current=HostedProcessObservationStage.Unknown; }
+        public void At(HostedProcessObservationStage value) { if(active) current=value; }
+        public void Capture() { if(active && !failed) { first=current; failed=true; } }
+        public void End() { active=false; }
+        // Project only a copied snapshot. Never consume a slot in the session's
+        // original error list or replace a later cleanup error at its 24-code cap.
+        public string[] Project(string[] original) {
+            string code=Code;
+            if(code==null || original==null || original.Length==0 || original.Length>=24) return original;
+            bool generic=false;
+            foreach(string value in original) {
+                if(String.Equals(value,"process_observation_failed",StringComparison.Ordinal)) generic=true;
+                if(value!=null && value.StartsWith("process_observation_stage_",StringComparison.Ordinal)) return original;
+            }
+            if(!generic) return original;
+            string[] projected=new string[original.Length+1];
+            Array.Copy(original,projected,original.Length); projected[original.Length]=code;
+            return projected;
+        }
+        public string Code { get {
+            if(!failed) return null;
+            switch(first) {
+                case HostedProcessObservationStage.PidBufferAllocate: return "process_observation_stage_pid_buffer_allocate";
+                case HostedProcessObservationStage.PidListQuery: return "process_observation_stage_pid_list_query";
+                case HostedProcessObservationStage.PidListShape: return "process_observation_stage_pid_list_shape";
+                case HostedProcessObservationStage.PidValue: return "process_observation_stage_pid_value";
+                case HostedProcessObservationStage.RetainedChildWait: return "process_observation_stage_retained_child_wait";
+                case HostedProcessObservationStage.ChildOpen: return "process_observation_stage_child_open";
+                case HostedProcessObservationStage.ChildMembership: return "process_observation_stage_child_membership";
+                case HostedProcessObservationStage.ChildExitWait: return "process_observation_stage_child_exit_wait";
+                case HostedProcessObservationStage.ChildCapacity: return "process_observation_stage_child_capacity";
+                case HostedProcessObservationStage.ChildCreated: return "process_observation_stage_child_created";
+                case HostedProcessObservationStage.ChildHandleClose: return "process_observation_stage_child_handle_close";
+                case HostedProcessObservationStage.PidBufferFree: return "process_observation_stage_pid_buffer_free";
+                case HostedProcessObservationStage.JobAccounting: return "process_observation_stage_job_accounting";
+                case HostedProcessObservationStage.AppExitWait: return "process_observation_stage_app_exit_wait";
+                case HostedProcessObservationStage.AppExitCode: return "process_observation_stage_app_exit_code";
+                default: return "process_observation_stage_unknown";
+            }
+        } }
+    }
     public sealed class HostedConPtySession : IDisposable {
         [StructLayout(LayoutKind.Sequential)] struct Coord { public short x,y; }
         [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)] struct Startup {
@@ -69,6 +119,7 @@ namespace TriageApplicationLab {
         readonly object api=new object(), errorLock=new object();
         readonly List<string> errors=new List<string>();
         readonly List<Child> children=new List<Child>();
+        HostedProcessObservation pollObservation;
         readonly Stopwatch elapsed=Stopwatch.StartNew();
         IntPtr process,job,console;
         FileStream input,output,transcript;
@@ -339,34 +390,63 @@ namespace TriageApplicationLab {
         }
         void ObserveChildren() {
             if(job==IntPtr.Zero) return;
+            pollObservation.At(HostedProcessObservationStage.PidBufferAllocate);
             const int maximum=64; int bytes=8+maximum*IntPtr.Size; IntPtr buffer=Marshal.AllocHGlobal(bytes);
             try {
                 uint returned;
+                pollObservation.At(HostedProcessObservationStage.PidListQuery);
                 if(!QueryInformationJobObject(job,3,buffer,(uint)bytes,out returned)) throw new Win32Exception();
+                pollObservation.At(HostedProcessObservationStage.PidListShape);
                 int assigned=Marshal.ReadInt32(buffer), count=Marshal.ReadInt32(buffer,4);
                 Require(count>=0 && count<=maximum && assigned<=maximum && assigned==count);
                 for(int i=0;i<count;i++) {
+                    pollObservation.At(HostedProcessObservationStage.PidValue);
                     long number=Marshal.ReadIntPtr(buffer,8+i*IntPtr.Size).ToInt64(); Require(number>0 && number<=UInt32.MaxValue);
                     uint pid=(uint)number; bool already=false;
+                    pollObservation.At(HostedProcessObservationStage.RetainedChildWait);
                     foreach(Child old in children) if(old.pid==pid && !Exited(old.handle)) { already=true; break; }
                     if(already) continue;
+                    pollObservation.At(HostedProcessObservationStage.ChildOpen);
                     IntPtr handle=OpenProcess(0x00101000,false,pid);
                     if(handle==IntPtr.Zero) { if(Marshal.GetLastWin32Error()==87) continue; throw new Win32Exception(); }
                     try {
+                        pollObservation.At(HostedProcessObservationStage.ChildMembership);
                         bool belongs; Require(IsProcessInJob(handle,job,out belongs));
+                        pollObservation.At(HostedProcessObservationStage.ChildExitWait);
                         if(!belongs && Exited(handle)) continue;
+                        pollObservation.At(HostedProcessObservationStage.ChildMembership);
                         Require(belongs);
+                        pollObservation.At(HostedProcessObservationStage.ChildCapacity);
                         if(children.Count>=128) throw new InvalidOperationException();
+                        pollObservation.At(HostedProcessObservationStage.ChildCreated);
                         children.Add(new Child {handle=handle,pid=pid,created=Created(handle)}); handle=IntPtr.Zero;
-                    } finally { if(handle!=IntPtr.Zero) CloseHandle(handle); }
+                    } catch { pollObservation.Capture(); throw; }
+                    finally { pollObservation.At(HostedProcessObservationStage.ChildHandleClose); if(handle!=IntPtr.Zero) CloseHandle(handle); }
                 }
-            } finally { Marshal.FreeHGlobal(buffer); }
+            } catch { pollObservation.Capture(); throw; }
+            finally { pollObservation.At(HostedProcessObservationStage.PidBufferFree); Marshal.FreeHGlobal(buffer); }
         }
         public Dictionary<string,object> Poll() {
             lock(api) {
                 if(!finished) {
-                    try { ObserveChildren(); RefreshJob(); if(process!=IntPtr.Zero && Exited(process)) { appExited=true; uint code; Require(GetExitCodeProcess(process,out code)); appExit=code; } }
-                    catch { Error("process_observation_failed"); return Finish(0); }
+                    pollObservation.Begin();
+                    try {
+                        ObserveChildren();
+                        pollObservation.At(HostedProcessObservationStage.JobAccounting);
+                        RefreshJob();
+                        pollObservation.At(HostedProcessObservationStage.AppExitWait);
+                        if(process!=IntPtr.Zero && Exited(process)) {
+                            appExited=true; uint code;
+                            pollObservation.At(HostedProcessObservationStage.AppExitCode);
+                            Require(GetExitCodeProcess(process,out code)); appExit=code;
+                        }
+                    }
+                    catch {
+                        pollObservation.Capture(); pollObservation.End();
+                        Error("process_observation_failed");
+                        return Finish(0);
+                    }
+                    pollObservation.End();
                     if(Deadline) { Error("deadline_exceeded"); return Finish(0); }
                 }
                 return Snapshot();
@@ -541,6 +621,8 @@ namespace TriageApplicationLab {
         }
         public Dictionary<string,object> Snapshot() {
             string[] current; lock(errorLock) current=errors.ToArray();
+            // Keep the unmodified copy if optional diagnostic projection fails.
+            try { current=pollObservation.Project(current); } catch { }
             return new Dictionary<string,object> {
                 {"schema_version",1},{"ok",current.Length==0},{"state",finished?"finished":"running"},
                 {"app_exit_code",appExit},{"runtime_image_observed",runtimeObserved},{"runtime_sha256",runtimeSha},{"runtime_process_count",runtimeProcessCount},
@@ -797,7 +879,7 @@ namespace TriageApplicationLab {
             }
             void Create(DebugEvent value) {
                 CreateInfo info=value.info.create;
-                Require(info.process!=IntPtr.Zero && info.thread!=IntPtr.Zero && processes.Count<34);
+                Require(info.process!=IntPtr.Zero && info.thread!=IntPtr.Zero && processes.Count<65);
                 var owned=new OwnedProcess {handle=Duplicate(info.process,false)}; processes.Add(value.pid,owned);
                 owned.created=Created(owned.handle);
                 bool root=value.pid==initialPid;
@@ -1039,7 +1121,7 @@ namespace TriageApplicationLab {
                 // Reserve the rejected record before any fallible image/handle
                 // inspection. A failed CREATE can still receive its EXIT event.
                 // Exhausting the absolute storage cap retains the whole session.
-                Need(processes.Count<34,"debug_launch_limit");
+                Need(processes.Count<65,"debug_launch_limit");
                 processes.Add(pid,new Process {initialThread=tid,role=HostedLaunchRole.Rejected});
             }
         }
@@ -1051,10 +1133,10 @@ namespace TriageApplicationLab {
             if(role==HostedLaunchRole.Runtime) { Launches++; active++; Peak=Math.Max(Peak,active); }
             if(role==HostedLaunchRole.ConsoleHelper) { HelperLaunches++; helperActive++; HelperPeak=Math.Max(HelperPeak,helperActive); }
             Need(role!=HostedLaunchRole.Rejected,"debug_image_invalid");
-            // Two live helpers is a conservative qualification budget, not a
-            // Windows guarantee or a claim that a runtime parented each helper.
+            // Preserve the two-helper overlap allowance for one worker; larger
+            // pools admit one live helper per worker, never a parentage claim.
             Need(processes.Count<=1+2*maximumLaunches && Launches<=maximumLaunches && active<=maximumConcurrent && HelperLaunches<=maximumLaunches &&
-                HelperLaunches<=VerifiedLaunches && helperActive<=2,"debug_launch_limit");
+                HelperLaunches<=VerifiedLaunches && helperActive<=Math.Max(2,maximumConcurrent),"debug_launch_limit");
         }
         public void Verified() {
             Need(pending && code==3 && Failure==null,"debug_image_invalid");

@@ -1010,7 +1010,7 @@ fn compute_file_hash_cancellable<F: Fn() -> bool>(
                 }
                 context.consume(&buffer[..read]);
             }
-            Ok(format!("{:x}", context.compute()))
+            Ok(format!("{:x}", context.finalize()))
         }
         "sha1" => {
             use sha1::{Digest as Sha1Digest, Sha1};
@@ -1025,7 +1025,7 @@ fn compute_file_hash_cancellable<F: Fn() -> bool>(
                 }
                 hasher.update(&buffer[..read]);
             }
-            Ok(format!("{:x}", hasher.finalize()))
+            Ok(hex::encode(hasher.finalize()))
         }
         _ => bail!("Unsupported hash type: {}", hash_type),
     }
@@ -1681,6 +1681,17 @@ mod tests {
     }
 
     #[test]
+    fn test_compute_file_hash_sha1_known_answer() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("sha1-vector.txt");
+        fs::write(&file_path, b"abc").unwrap();
+        assert_eq!(
+            compute_file_hash(&file_path, "sha1").unwrap(),
+            "a9993e364706816aba3e25717850c26c9cd0d89d"
+        );
+    }
+
+    #[test]
     fn test_compute_file_hash_md5() {
         let dir = tempdir().unwrap();
         let file_path = dir.path().join("test.txt");
@@ -1689,6 +1700,37 @@ mod tests {
         let hash = compute_file_hash(&file_path, "md5").unwrap();
         // MD5 of "hello world"
         assert_eq!(hash, "5eb63bbbe01eeed093cb22bb8f5acdc3");
+    }
+
+    #[test]
+    fn test_compute_file_hash_md5_independent_vectors() {
+        // Expected digests were derived independently with Python hashlib/OpenSSL.
+        // Cover padding boundaries and a file larger than the 1 MiB read buffer.
+        let vectors = [
+            (0usize, "d41d8cd98f00b204e9800998ecf8427e"),
+            (1, "93b885adfe0da089cdf634904fd59f71"),
+            (55, "6912ee65fff2d9f9ce2508cddf8bcda0"),
+            (56, "51fdd1acda72405dfdfa03fcb85896d7"),
+            (63, "48a6295221902e8e0938f773a7185e72"),
+            (64, "b2d3f56bc197fd985d5965079b5e7148"),
+            (65, "8bd7053801c768420faf816fadba971c"),
+            (119, "1c772251899a7ff007400b888d6b2042"),
+            (120, "b7ba1efc6022e9ed272f00b8831e26e6"),
+            (121, "b0b2d719a838db877b6d6571a39a1cdc"),
+            (1_048_589, "5a8baf04c7e0f370182c2c0d60647ede"),
+        ];
+        let dir = tempdir().unwrap();
+        for (length, expected) in vectors {
+            let data: Vec<u8> = (0..length).map(|index| (index % 251) as u8).collect();
+            let path = dir.path().join(format!("vector-{length}.bin"));
+            fs::write(&path, &data).unwrap();
+            assert_eq!(
+                compute_file_hash(&path, "MD-5").unwrap(),
+                expected,
+                "length {length}"
+            );
+            assert_eq!(fs::read(&path).unwrap(), data, "source length {length}");
+        }
     }
 
     #[cfg(windows)]

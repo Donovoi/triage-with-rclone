@@ -135,13 +135,25 @@ fn drain_mount_stderr(mut input: impl std::io::Read) -> std::io::Result<String> 
 fn download_and_install_winfsp() -> Result<bool> {
     use std::io::Write;
 
+    // Preserve the direct-connection, connect-timeout and redirect defaults from ureq 2.
+    // Keep a fresh agent for each request, as with the previous free-function calls.
+    let agent = || -> ureq::Agent {
+        ureq::Agent::config_builder()
+            .proxy(None)
+            .timeout_connect(Some(Duration::from_secs(30)))
+            .max_redirects(5)
+            .build()
+            .into()
+    };
+
     // 1. Query the GitHub releases API for the latest tag.
     let api_url = "https://api.github.com/repos/winfsp/winfsp/releases/latest";
-    let response = ureq::get(api_url)
-        .set("User-Agent", "rclone-triage")
-        .set("Accept", "application/vnd.github+json")
+    let response = agent()
+        .get(api_url)
+        .header("User-Agent", "rclone-triage")
+        .header("Accept", "application/vnd.github+json")
         .call()?;
-    let release: serde_json::Value = response.into_json()?;
+    let release: serde_json::Value = serde_json::from_reader(response.into_body().into_reader())?;
 
     // 2. Find the .msi asset URL from the release assets.
     let msi_url = release["assets"]
@@ -174,10 +186,11 @@ fn download_and_install_winfsp() -> Result<bool> {
     let tmp_dir = std::env::temp_dir();
     let msi_path = tmp_dir.join("winfsp-latest.msi");
 
-    let dl_response = ureq::get(&msi_url)
-        .set("User-Agent", "rclone-triage")
+    let dl_response = agent()
+        .get(&msi_url)
+        .header("User-Agent", "rclone-triage")
         .call()?;
-    let mut body = dl_response.into_reader();
+    let mut body = dl_response.into_body().into_reader();
     let mut file = std::fs::File::create(&msi_path)?;
     std::io::copy(&mut body, &mut file)?;
     file.flush()?;

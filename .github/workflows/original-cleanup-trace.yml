@@ -10,7 +10,7 @@ permissions:
   contents: read
 jobs:
   original-cleanup:
-    name: ARM64 original runtime removal diagnostic
+    name: ARM64 CLI acquisition runtime removal diagnostic
     runs-on: windows-11-arm
     timeout-minutes: 40
     defaults:
@@ -29,7 +29,7 @@ jobs:
           $actual = (git rev-parse HEAD).Trim()
           if ($LASTEXITCODE -ne 0 -or $env:EXPECTED_SHA -cnotmatch '\A[0-9a-f]{40}\z' -or $actual -cne $env:GITHUB_SHA -or $actual -cne $env:EXPECTED_SHA) { throw 'Revision mismatch' }
           Write-Output "tested_commit=$actual"
-      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
         with:
           toolchain: 1.95.0
           targets: aarch64-pc-windows-msvc
@@ -48,6 +48,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Trace lint failed' }
           cargo test --manifest-path tools/cleanup-trace/Cargo.toml --locked --lib model::tests
           if ($LASTEXITCODE -ne 0) { throw 'Pure correlation tests failed' }
+          cargo test --manifest-path tools/cleanup-trace/Cargo.toml --locked --lib schema_metadata::tests
+          if ($LASTEXITCODE -ne 0) { throw 'Pure schema tests failed' }
       - name: Prepare matching verified runtime
         run: ./scripts/download-rclone.ps1 -Architecture arm64
       - name: Compile the isolated diagnostic test
@@ -57,7 +59,14 @@ jobs:
           $PSNativeCommandUseErrorActionPreference = $false
           $cargoJson = Join-Path $env:RUNNER_TEMP 'original-cleanup-build.private.jsonl'
           $cargoErr = Join-Path $env:RUNNER_TEMP 'original-cleanup-build-stderr.private'
-          if ([IO.File]::Exists($cargoJson) -or [IO.File]::Exists($cargoErr)) { throw 'Private build log already exists' }
+          $sourceFile = Join-Path $env:RUNNER_TEMP 'original-cleanup-source.private.json'
+          if ([IO.File]::Exists($cargoJson) -or [IO.File]::Exists($cargoErr) -or [IO.File]::Exists($sourceFile)) { throw 'Private build record already exists' }
+          git diff --quiet HEAD --
+          if ($LASTEXITCODE -ne 0) { throw 'Source changed before build' }
+          $sourceTree = (git rev-parse 'HEAD^{tree}').Trim()
+          if ($LASTEXITCODE -ne 0 -or $sourceTree -cnotmatch '\A[0-9a-f]{40}\z') { throw 'Source tree unavailable' }
+          $source = [ordered]@{ commit = $env:GITHUB_SHA; source_tree = $sourceTree; application_source_sha256 = (Get-FileHash -LiteralPath 'src/main.rs' -Algorithm SHA256).Hash.ToLowerInvariant(); test_source_sha256 = (Get-FileHash -LiteralPath 'tests/cli_acquisition.rs' -Algorithm SHA256).Hash.ToLowerInvariant() }
+          $source | ConvertTo-Json -Compress | Set-Content -LiteralPath $sourceFile -Encoding utf8
           cargo test --locked --release --target aarch64-pc-windows-msvc --features runtime-cleanup-trace --test cli_acquisition --no-run --message-format=json > $cargoJson 2> $cargoErr
           if ($LASTEXITCODE -ne 0) { throw 'Diagnostic build failed' }
       - name: Observe the original cleanup once
@@ -69,27 +78,54 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $false
           $cargoJson = Join-Path $env:RUNNER_TEMP 'original-cleanup-build.private.jsonl'
-          $selectedJson = python -B ../tools/cleanup-trace/select_artifacts.py --cargo-json $cargoJson --project $PWD.Path
+          $selectedJson = python -B ../tools/cleanup-trace/select_artifacts.py --cargo-json $cargoJson --project $PWD.Path --cli-acquisition
           if ($LASTEXITCODE -ne 0) { throw 'Diagnostic artifact selection failed' }
           $selected = $selectedJson | ConvertFrom-Json
+          if ($selected.schema -ne 3 -or $selected.artifact_kind -cne 'cli_acquisition') { throw 'Acquisition test binding failed' }
           $application = $selected.application
           $harness = $selected.test_harness
+          $applicationHash = (Get-FileHash -LiteralPath $application -Algorithm SHA256).Hash.ToLowerInvariant()
           $harnessHash = (Get-FileHash -LiteralPath $harness -Algorithm SHA256).Hash.ToLowerInvariant()
           $cargoJsonHash = (Get-FileHash -LiteralPath $cargoJson -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($cargoJsonHash -cne $selected.cargo_json_sha256) { throw 'Build record changed' }
+          $sourceFile = Join-Path $env:RUNNER_TEMP 'original-cleanup-source.private.json'
+          $sourceFileHash = (Get-FileHash -LiteralPath $sourceFile -Algorithm SHA256).Hash.ToLowerInvariant()
+          $source = Get-Content -LiteralPath $sourceFile -Raw | ConvertFrom-Json
+          if ((@($source.PSObject.Properties.Name | Sort-Object) -join ',') -cne 'application_source_sha256,commit,source_tree,test_source_sha256' -or $source.commit -cne $env:GITHUB_SHA -or $source.source_tree -cnotmatch '\A[0-9a-f]{40}\z' -or $source.application_source_sha256 -cnotmatch '\A[0-9a-f]{64}\z' -or $source.test_source_sha256 -cnotmatch '\A[0-9a-f]{64}\z') { throw 'Source binding failed' }
+          git diff --quiet HEAD --
+          if ($LASTEXITCODE -ne 0) { throw 'Source changed after build' }
+          $actual = (git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $actual -cne $source.commit) { throw 'Built revision changed' }
+          $sourceTree = (git rev-parse 'HEAD^{tree}').Trim()
+          if ($LASTEXITCODE -ne 0 -or $sourceTree -cne $source.source_tree -or (Get-FileHash -LiteralPath 'src/main.rs' -Algorithm SHA256).Hash.ToLowerInvariant() -cne $source.application_source_sha256 -or (Get-FileHash -LiteralPath 'tests/cli_acquisition.rs' -Algorithm SHA256).Hash.ToLowerInvariant() -cne $source.test_source_sha256) { throw 'Built source changed' }
           $runtime = Join-Path $PWD 'assets/rclone.exe'
-          $applicationHash = (Get-FileHash -LiteralPath $application -Algorithm SHA256).Hash.ToLowerInvariant()
           $runtimeHash = (Get-FileHash -LiteralPath $runtime -Algorithm SHA256).Hash.ToLowerInvariant()
           $pins = @(Get-Content -LiteralPath ../rclone-version.env | Where-Object { $_ -cmatch '\ARCLONE_WINDOWS_ARM64_EXE_SHA256=[0-9a-f]{64}\z' })
           if ($pins.Count -ne 1 -or $pins[0].Substring(32) -cne $runtimeHash) { throw 'Runtime binding failed' }
+          $forwardOut = Join-Path $env:RUNNER_TEMP 'original-cleanup-forwarding-stdout.private'
+          $forwardErr = Join-Path $env:RUNNER_TEMP 'original-cleanup-forwarding-stderr.private'
+          if ([IO.File]::Exists($forwardOut) -or [IO.File]::Exists($forwardErr)) { throw 'Private forwarding log already exists' }
+          & $harness cleanup_diagnostics::tests:: --test-threads=1 > $forwardOut 2> $forwardErr
+          $forwardExit = $LASTEXITCODE
+          if ($forwardExit -ne 0 -or (Get-Item -LiteralPath $forwardOut).Length -gt 65536) { throw 'Pure forwarding tests failed' }
+          $forwardLines = @(Get-Content -LiteralPath $forwardOut)
+          $forwardNames = @('exact_caps_and_crlf_are_preserved_without_truncation', 'failure_does_not_duplicate_the_original_assertion_output', 'missing_duplicate_and_oversized_records_are_not_selected', 'success_forwards_only_the_pair', 'writer_failure_is_best_effort')
+          $forwardCases = @($forwardLines | Where-Object { $_ -cmatch '\Atest cleanup_diagnostics::tests::[a-z_]+ \.\.\. ok\z' } | Sort-Object)
+          $expectedForwardCases = @($forwardNames | ForEach-Object { 'test cleanup_diagnostics::tests::' + $_ + ' ... ok' } | Sort-Object)
+          if (($forwardCases -join "`n") -cne ($expectedForwardCases -join "`n") -or @($forwardLines | Where-Object { $_ -ceq 'running 5 tests' }).Count -ne 1 -or @($forwardLines | Where-Object { $_ -cmatch '\Atest result: ok\. 5 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out; finished in [0-9]+(?:\.[0-9]+)?s\z' }).Count -ne 1) { throw 'Pure forwarding execution binding failed' }
           $privateOut = Join-Path $env:RUNNER_TEMP 'original-cleanup-stdout.private'
           $privateErr = Join-Path $env:RUNNER_TEMP 'original-cleanup-stderr.private'
-          if ([IO.File]::Exists($privateOut) -or [IO.File]::Exists($privateErr)) { throw 'Private log already exists' }
-          & $harness cli_imported_listing_empty_remote_publishes_explicit_empty_csv_schema --exact --nocapture --test-threads=1 > $privateOut 2> $privateErr
+          $schemaResult = Join-Path $env:RUNNER_TEMP 'original-cleanup-schema.private.json'
+          if ([IO.File]::Exists($privateOut) -or [IO.File]::Exists($privateErr) -or [IO.File]::Exists($schemaResult)) { throw 'Private log already exists' }
+          & $harness cli_preserves_remote_identity_and_original_config --exact --nocapture --test-threads=1 > $privateOut 2> $privateErr
           $originalExit = $LASTEXITCODE
           Write-Output "test_native_exit=$originalExit"
-          if ((Get-FileHash -LiteralPath $harness -Algorithm SHA256).Hash.ToLowerInvariant() -cne $harnessHash -or (Get-FileHash -LiteralPath $cargoJson -Algorithm SHA256).Hash.ToLowerInvariant() -cne $cargoJsonHash -or (Get-FileHash -LiteralPath $application -Algorithm SHA256).Hash.ToLowerInvariant() -cne $applicationHash -or (Get-FileHash -LiteralPath $runtime -Algorithm SHA256).Hash.ToLowerInvariant() -cne $runtimeHash) { throw 'Tested bytes changed' }
-          python -B ../tools/cleanup-trace/validate_result.py --log $privateErr --test-exit $originalExit --runtime-sha256 $runtimeHash --application-sha256 $applicationHash --commit $env:GITHUB_SHA --test-stdout $privateOut --test-harness-sha256 $harnessHash --cargo-json-sha256 $cargoJsonHash
+          if ((Get-FileHash -LiteralPath $application -Algorithm SHA256).Hash.ToLowerInvariant() -cne $applicationHash -or (Get-FileHash -LiteralPath $harness -Algorithm SHA256).Hash.ToLowerInvariant() -cne $harnessHash -or (Get-FileHash -LiteralPath $cargoJson -Algorithm SHA256).Hash.ToLowerInvariant() -cne $cargoJsonHash -or (Get-FileHash -LiteralPath $runtime -Algorithm SHA256).Hash.ToLowerInvariant() -cne $runtimeHash -or (Get-FileHash -LiteralPath $sourceFile -Algorithm SHA256).Hash.ToLowerInvariant() -cne $sourceFileHash -or (Get-FileHash -LiteralPath 'src/main.rs' -Algorithm SHA256).Hash.ToLowerInvariant() -cne $source.application_source_sha256 -or (Get-FileHash -LiteralPath 'tests/cli_acquisition.rs' -Algorithm SHA256).Hash.ToLowerInvariant() -cne $source.test_source_sha256) { throw 'Tested bytes changed' }
+          git diff --quiet HEAD --
+          if ($LASTEXITCODE -ne 0) { throw 'Source changed during test' }
+          $actual = (git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $actual -cne $source.commit) { throw 'Tested revision changed' }
+          python -B ../tools/cleanup-trace/validate_result.py --log $privateErr --test-exit $originalExit --runtime-sha256 $runtimeHash --application-sha256 $applicationHash --commit $env:GITHUB_SHA --test-stdout $privateOut --test-harness-sha256 $harnessHash --cargo-json-sha256 $cargoJsonHash --cli-acquisition --application-source-sha256 $source.application_source_sha256 --test-source-sha256 $source.test_source_sha256 --source-tree $source.source_tree --schema-result $schemaResult
           $validationExit = $LASTEXITCODE
           if ($originalExit -ne 0) { exit $originalExit }
           exit $validationExit

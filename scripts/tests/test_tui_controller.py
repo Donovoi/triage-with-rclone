@@ -138,7 +138,9 @@ class ProtocolTests(unittest.TestCase):
             self.assertEqual(output.getvalue(), "")
 
     def test_tui_diagnostic_remains_bounded_at_all_static_limits(self):
-        value = dict(snapshot(), ok=False, errors=sorted(T.H.SESSION_ERRORS | T.TUI_ERRORS)[:24],
+        errors = sorted((T.H.SESSION_ERRORS - T.H.PROCESS_OBSERVATION_ERRORS) | T.TUI_ERRORS)[:23]
+        errors.append("process_observation_stage_unknown")
+        value = dict(snapshot(), ok=False, errors=errors,
                      runtime_process_count=64, forced_termination=True, output_bytes=8 * 1024 * 1024 + 65536,
                      **T.COUNTER_BOUNDS)
         self.bridge.last = value
@@ -147,6 +149,35 @@ class ProtocolTests(unittest.TestCase):
         with redirect_stdout(io.StringIO()) as output:
             self.bridge.failure_diagnostic(value, "start")
         self.assertLessEqual(len(output.getvalue().encode("ascii")), 4096)
+
+    def test_shared_poll_observation_stage_is_closed_and_never_promotes_tui_success(self):
+        for stage in T.H.PROCESS_OBSERVATION_ERRORS:
+            value = dict(snapshot("poll"), ok=False,
+                         errors=["process_observation_failed", stage, "forced_termination"], forced_termination=True)
+            self.bridge.last = None
+            self.bridge.last = self.bridge.validate_session(value, "poll")
+            with redirect_stdout(io.StringIO()) as output:
+                self.bridge.failure_diagnostic(value, "poll")
+            self.assertEqual(json.loads(output.getvalue().split("=", 1)[1])["errors"], value["errors"])
+            self.assertLessEqual(len(output.getvalue().encode("ascii")), 4096)
+        for errors in (["process_observation_stage_unknown"],
+                       ["process_observation_failed", "process_observation_stage_private-canary"],
+                       ["process_observation_failed", "process_observation_stage_unknown", "process_observation_stage_child_open"]):
+            self.bridge.last = None
+            self.rejects(dict(snapshot("poll"), ok=False, errors=errors), "poll")
+
+    def test_shared_poll_full_original_error_cap_keeps_cleanup_without_stage(self):
+        original = sorted((T.H.SESSION_ERRORS - T.H.PROCESS_OBSERVATION_ERRORS) | T.TUI_ERRORS)
+        self.assertEqual(len(original), 24)
+        self.assertIn("reader_cleanup_failed", original)
+        value = dict(snapshot("poll"), ok=False, errors=original, forced_termination=True)
+        self.bridge.last = self.bridge.validate_session(value, "poll")
+        with redirect_stdout(io.StringIO()) as output:
+            self.bridge.failure_diagnostic(value, "poll")
+        self.assertEqual(json.loads(output.getvalue().split("=", 1)[1])["errors"], original)
+        self.assertLessEqual(len(output.getvalue().encode("ascii")), 4096)
+        self.bridge.last = None
+        self.rejects(dict(value, errors=original + ["process_observation_stage_unknown"]), "poll")
 
     def test_command_emits_only_failure_and_printing_cannot_change_the_saved_response(self):
         for failure, print_failure in ((True, False), (True, True), (False, False)):
@@ -259,6 +290,9 @@ class ControllerFailureDiagnosticTests(unittest.TestCase):
         self.controller.resize_unproven = False
         self.controller.bridge = Mock()
         self.controller.transcript = Mock()
+        self.controller.main_menu_failure = T.MainMenuFailure()
+        self.controller.main_menu_tail_needed = False
+        self.controller.main_menu_tail_attempted = False
         self.controller.screen = Mock()
 
     def projected(self, output):
@@ -547,6 +581,219 @@ class ObservationTests(unittest.TestCase):
         self.assertTrue(controller.screen.ready)
         with self.assertRaises(T.H.ProducerError):
             controller.wait(lambda _: True)
+
+
+
+class MainMenuFailureTests(unittest.TestCase):
+    def record(self, operation="flow_reset", typed=False):
+        return dict(operation=operation, category="typed_runtime_cleanup" if typed else "unknown",
+                    cleanup=dict(stage="remove_tree", kind="other", os_code=32) if typed else None)
+
+    def wire(self, value=None):
+        return T.MainMenuFailure.PREFIX + json.dumps(self.record() if value is None else value,
+                    separators=(",", ":")).encode("ascii") + b"\r\n"
+
+    def test_both_operations_and_unknown_remain_exact(self):
+        for operation in ("flow_reset", "provider_refresh"):
+            for typed in (False, True):
+                value=self.record(operation, typed);reader=T.MainMenuFailure();reader.feed(self.wire(value))
+                self.assertEqual(reader.projection(),dict(status="observed",**value))
+
+    def test_every_split_and_single_byte_chunks_preserve_one_record(self):
+        wire=b"private-prefix\x1b[0m"+self.wire(self.record("provider_refresh",True))+b"\x1b[?25h"
+        for split in range(len(wire)+1):
+            reader=T.MainMenuFailure();reader.feed(wire[:split]);reader.feed(wire[split:])
+            self.assertEqual(reader.projection()["status"],"observed")
+        reader=T.MainMenuFailure()
+        for value in wire:reader.feed(bytes([value]))
+        self.assertEqual(reader.projection()["cleanup"]["os_code"],32)
+
+    def test_duplicate_records_are_ambiguous_without_selecting_one(self):
+        for wire in (self.wire()*2,self.wire()+self.wire(self.record("provider_refresh",True))):
+            reader=T.MainMenuFailure();reader.feed(wire)
+            self.assertEqual(reader.projection(),dict(status="ambiguous",operation=None,category=None,cleanup=None))
+
+    def test_duplicate_keys_private_canaries_and_unknown_fields_rejected(self):
+        raw=b'{"operation":"flow_reset","category":"unknown","cleanup":null,"operation":"provider_refresh"}'
+        variants=[raw,b'{',b'null',b'{"private":"canary"}',json.dumps(dict(self.record(),private="canary")).encode()]
+        for payload in variants:
+            reader=T.MainMenuFailure();reader.feed(reader.PREFIX+payload+b"\n")
+            self.assertEqual(reader.projection()["status"],"invalid")
+            self.assertNotIn("canary",json.dumps(reader.projection()))
+
+    def test_cleanup_types_bounds_and_conditional_fields_are_strict(self):
+        mutations=[dict(self.record(),operation="flow_reset\x00"),dict(self.record(),operation=True),
+                   dict(self.record(),category="remove_tree"),dict(self.record(),cleanup={}),
+                   dict(self.record(typed=True),cleanup=None)]
+        for key,val in (("stage","unknown"),("kind","canary"),("os_code",True),("os_code",-1),("os_code",65536),("os_code","32"),("extra","canary")):
+            value=self.record(typed=True);value["cleanup"][key]=val;mutations.append(value)
+        for value in mutations:
+            with self.assertRaises(ValueError):T.MainMenuFailure.parse(json.dumps(value).encode())
+        for code in (None,0,65535):
+            value=self.record(typed=True);value["cleanup"]["os_code"]=code
+            self.assertEqual(T.MainMenuFailure.parse(json.dumps(value).encode()),value)
+
+    def test_incomplete_and_oversized_record_never_observed(self):
+        for wire in (self.wire()[:-2],T.MainMenuFailure.PREFIX+b"x"*513,T.MainMenuFailure.PREFIX+b"x"*513+b"\n",b"x"*65537):
+            reader=T.MainMenuFailure();reader.feed(wire)
+            self.assertEqual(reader.projection()["status"],"invalid")
+            self.assertLessEqual(len(reader.buffer),512)
+
+    def test_large_unrelated_chunks_keep_only_bounded_prefix_tail(self):
+        reader=T.MainMenuFailure()
+        for _ in range(129):
+            reader.feed(b"private-canary"*4096)
+            self.assertLess(len(reader.buffer),len(reader.PREFIX))
+        self.assertEqual(reader.projection()["status"],"not_observed")
+        output=io.StringIO()
+        with redirect_stdout(output):reader.emit()
+        self.assertEqual(output.getvalue(),"")
+
+    def test_emit_once_is_finite_and_output_failure_is_not_retried(self):
+        reader=T.MainMenuFailure();reader.feed(self.wire(self.record("provider_refresh",True)))
+        output=io.StringIO()
+        with redirect_stdout(output):reader.emit();reader.emit()
+        lines=output.getvalue().splitlines();self.assertEqual(len(lines),1)
+        self.assertLess(len(lines[0])+1,1024)
+        self.assertTrue(lines[0].startswith("application_tui_main_menu_failure="))
+        reader=T.MainMenuFailure();reader.feed(self.wire())
+        with patch("builtins.print",side_effect=OSError("private-canary")) as printing:
+            reader.emit();reader.emit();self.assertEqual(printing.call_count,1)
+
+    def controller(self):
+        value=object.__new__(T.Controller);value.deadline=10**30
+        value.transcript=Mock();value.screen=Mock();value.main_menu_failure=T.MainMenuFailure()
+        value.main_menu_tail_needed=False;value.main_menu_tail_attempted=False
+        return value
+
+    def test_original_reads_and_screen_failure_remain_unchanged(self):
+        controller=self.controller();wire=self.wire()
+        controller.transcript.available.side_effect=[wire,b""]
+        controller.drain()
+        self.assertEqual(controller.transcript.available.call_count,2)
+        controller.screen.feed.assert_called_once_with(wire)
+        controller=self.controller();error=RuntimeError("original-screen-error")
+        controller.transcript.available.return_value=wire;controller.screen.feed.side_effect=error
+        with self.assertRaises(RuntimeError) as raised:controller.drain()
+        self.assertIs(raised.exception,error);controller.transcript.available.assert_called_once_with()
+        self.assertEqual(controller.main_menu_failure.projection()["status"],"observed")
+
+    def test_parser_failure_cannot_replace_screen_or_change_read_count(self):
+        controller=self.controller();error=RuntimeError("original-screen-error")
+        controller.transcript.available.return_value=b"data";controller.screen.feed.side_effect=error
+        controller.main_menu_failure=Mock();controller.main_menu_failure.feed.side_effect=ValueError("private-canary")
+        with self.assertRaises(RuntimeError) as raised:controller.drain()
+        self.assertIs(raised.exception,error);controller.transcript.available.assert_called_once_with()
+        controller.screen.feed.assert_called_once_with(b"data")
+
+    def test_close_failure_is_same_object_before_best_effort_emission(self):
+        controller=self.controller();events=[];error=OSError("original-close-error")
+        def close():events.append("close");raise error
+        def emit():events.append("emit");raise ValueError("private-canary")
+        controller.transcript.close.side_effect=close
+        controller.main_menu_failure=Mock();controller.main_menu_failure.emit.side_effect=emit
+        with self.assertRaises(OSError) as raised:controller.close()
+        self.assertIs(raised.exception,error);self.assertEqual(events,["close","emit"])
+        controller.transcript.available.assert_not_called()
+
+
+class MainMenuTailTests(unittest.TestCase):
+    record = MainMenuFailureTests.record
+    wire = MainMenuFailureTests.wire
+    controller = MainMenuFailureTests.controller
+
+    def test_failed_poll_retains_error_then_close_reads_without_screen_or_commands(self):
+        controller=self.controller();controller.bridge=Mock()
+        controller.bridge.command.return_value=dict(snapshot("poll"),app_exited=True,app_exit_code=1)
+        original=T.H.ProducerError("session_failed")
+        with patch.object(T.H,"need",side_effect=original),patch("builtins.print"):
+            with self.assertRaises(T.H.ProducerError) as raised:controller.poll()
+        self.assertIs(raised.exception,original)
+        controller.transcript.available.assert_not_called()
+        events=[]
+        def bridge_close():events.append("bridge_close")
+        controller.bridge.close.side_effect=bridge_close
+        def available():events.append("read");return self.wire() if events.count("read")==1 else b""
+        controller.transcript.available.side_effect=available
+        controller.transcript.close.side_effect=lambda:events.append("transcript_close")
+        controller.bridge.close()
+        with patch("builtins.print") as printing:controller.close()
+        self.assertEqual(events,["bridge_close","read","read","transcript_close"])
+        controller.bridge.command.assert_called_once_with("poll")
+        controller.screen.feed.assert_not_called()
+        self.assertIn('"status":"observed"',printing.call_args.args[0])
+
+    def test_every_tail_split_and_previously_drained_prefix(self):
+        wire=self.wire()
+        for split in range(1,len(wire)):
+            with self.subTest(split=split):
+                controller=self.controller();controller.main_menu_tail_needed=True
+                controller.main_menu_failure.feed(wire[:split])
+                controller.transcript.available.side_effect=[wire[split:],b""]
+                with patch("builtins.print"):controller.close()
+                self.assertEqual(controller.main_menu_failure.projection()["status"],"observed")
+                self.assertEqual(controller.transcript.available.call_count,2)
+                controller.screen.feed.assert_not_called()
+
+    def test_read_error_invalidates_previously_complete_record(self):
+        for error in (OSError("private-canary"),T.H.ProducerError("preservation_failed")):
+            controller=self.controller();controller.main_menu_tail_needed=True
+            controller.main_menu_failure.feed(self.wire())
+            controller.transcript.available.side_effect=error
+            with patch("builtins.print") as printing:controller.close()
+            self.assertEqual(controller.main_menu_failure.projection(),dict(status="invalid",operation=None,category=None,cleanup=None))
+            controller.transcript.close.assert_called_once_with()
+            self.assertNotIn("private-canary",printing.call_args.args[0])
+
+    def test_bad_tail_never_selects_partial_cause(self):
+        cases=[([self.wire(),self.wire(),b""],"ambiguous"),
+               ([self.wire()[:-2],b""],"invalid"),
+               ([T.MainMenuFailure.PREFIX+b"private-canary\n",b""],"invalid"),
+               ([b"x"*65537,b""],"invalid")]
+        for chunks,status in cases:
+            controller=self.controller();controller.main_menu_tail_needed=True
+            controller.transcript.available.side_effect=chunks
+            with patch("builtins.print") as printing:controller.close()
+            self.assertEqual(controller.main_menu_failure.projection(),dict(status=status,operation=None,category=None,cleanup=None))
+            self.assertNotIn("private-canary",printing.call_args.args[0])
+
+    def test_bound_is_consumed_once_and_invalidates_prior_record(self):
+        controller=self.controller();controller.main_menu_tail_needed=True
+        controller.main_menu_failure.feed(self.wire())
+        controller.transcript.available.return_value=b"x"
+        with patch("builtins.print") as printing:controller.close();controller.close()
+        self.assertEqual(controller.transcript.available.call_count,129)
+        self.assertEqual(controller.transcript.close.call_count,2)
+        self.assertEqual(printing.call_count,1)
+        self.assertEqual(controller.main_menu_failure.projection()["status"],"invalid")
+
+    def test_success_close_never_reads_and_empty_stops_immediately(self):
+        controller=self.controller()
+        with patch("builtins.print"):controller.close()
+        controller.transcript.available.assert_not_called()
+        controller=self.controller();controller.main_menu_tail_needed=True
+        controller.transcript.available.return_value=b""
+        with patch("builtins.print") as printing:controller.close();controller.close()
+        controller.transcript.available.assert_called_once_with();printing.assert_not_called()
+
+    def test_parser_and_close_errors_preserve_original_close_object(self):
+        controller=self.controller();controller.main_menu_tail_needed=True
+        controller.transcript.available.return_value=self.wire()
+        controller.main_menu_failure.feed=Mock(side_effect=ValueError("private-canary"))
+        original=OSError("original-close-error");controller.transcript.close.side_effect=original
+        with patch("builtins.print") as printing:
+            with self.assertRaises(OSError) as raised:controller.close()
+        self.assertIs(raised.exception,original)
+        controller.transcript.available.assert_called_once_with()
+        self.assertEqual(controller.main_menu_failure.projection()["status"],"invalid")
+        self.assertNotIn("private-canary",printing.call_args.args[0])
+
+    def test_no_clock_or_retry_when_original_deadline_already_elapsed(self):
+        controller=self.controller();controller.main_menu_tail_needed=True;controller.deadline=-1
+        controller.transcript.available.side_effect=[self.wire(),b""]
+        with patch.object(T.time,"monotonic",side_effect=AssertionError("new_clock")),patch.object(T.time,"sleep",side_effect=AssertionError("new_wait")),patch("builtins.print"):
+            controller.close()
+        self.assertEqual(controller.main_menu_failure.projection()["status"],"observed")
 
 
 if __name__ == "__main__":

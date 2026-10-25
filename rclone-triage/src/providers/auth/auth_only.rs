@@ -474,16 +474,22 @@ mod tests {
                                     fields["redirect_uri"].replace("localhost", "127.0.0.1");
                                 let state = fields["state"].clone();
                                 callback_worker = Some(std::thread::spawn(move || {
-                                    let response = ureq::AgentBuilder::new()
-                                        .timeout(Duration::from_secs(5))
+                                    let agent: ureq::Agent = ureq::Agent::config_builder()
+                                        // ureq 2 did not read proxy settings from the environment.
+                                        .proxy(None)
+                                        .timeout_connect(Some(Duration::from_secs(30)))
+                                        .timeout_global(Some(Duration::from_secs(5)))
+                                        .max_redirects(5)
                                         .build()
+                                        .into();
+                                    let response = agent
                                         .get(&format!(
                                             "{callback}?error=access_denied&state={state}"
                                         ))
                                         .call();
                                     assert!(matches!(
                                         response,
-                                        Ok(_) | Err(ureq::Error::Status(_, _))
+                                        Ok(_) | Err(ureq::Error::StatusCode(_))
                                     ));
                                 }));
                             } else {
