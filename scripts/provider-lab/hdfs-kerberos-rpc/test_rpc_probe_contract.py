@@ -5,6 +5,7 @@ from email.message import Message
 import importlib.util
 import io
 import json
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -422,6 +423,18 @@ class WireTests(unittest.TestCase):
 
 
 class JavaSourceTests(unittest.TestCase):
+    def test_secure_namenode_requires_block_tokens_without_datanode(self):
+        source = (HERE / "HdfsKerberosRpcProbe.java").read_text()
+        body = source[source.index('    private static Configuration configuration('):
+                      source.index('    private static void topology()')]
+        pairs = re.findall(r'conf\.set\("([^"\n]+)", "([^"\n]*)"\);', body)
+        settings = dict(pairs)
+        self.assertEqual(len(settings), len(pairs), 'duplicate configuration keys')
+        self.assertEqual(settings['hadoop.security.authentication'], 'kerberos')
+        self.assertEqual(settings['dfs.block.access.token.enable'], 'true')
+        self.assertEqual(settings['ipc.client.fallback-to-simple-auth-allowed'], 'false')
+        self.assertNotIn('DataNode.createDataNode', source)
+
     def test_version_child_uses_explicit_private_home_and_null_config(self):
         source = (HERE / "HdfsKerberosRpcProbe.java").read_text()
         start = source.index('            stage = "rclone_version";')
