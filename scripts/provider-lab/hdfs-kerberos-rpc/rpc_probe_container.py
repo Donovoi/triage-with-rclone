@@ -35,7 +35,7 @@ EXCEPTION = "org.apache.hadoop.security.AccessControlException"
 STAGES = frozenset("environment rclone_version kdc_init principals kdc_start owner_login format namenode_start relay_start seed reader_tgt listing_before rclone_none wire_none listing_after preservation completed".split())
 BASE = "docker.io/library/eclipse-temurin@sha256:e1c09a9ee23feb81f94016547826c1e694086cd927356fb57fccc312fcc32f85"
 BASE_ID = "sha256:d0e6e16acb7f941e5206d99ec38e5bba18545c43462541958f84b22e0fc006e8"
-JAVA_SHA = "9add5c7f3ce2898a513aa15057f758fab3d4f0959d89f3d1dcacd2735db69daf"
+JAVA_SHA = "9423d0b386d23ba796df66ad1838ac51b1b819cb451869bfe4f6bbbf6c1b9fd3"
 RUNTIME_SHA = "8944f0db4899d9e8f166feb28ce56d99278321ce0d3b1a9b9b993b5c0d508c2a"
 ORDER_SHA = "a482109e5170b0a6885af7c52902e89600c226f6e1fe1487083d736c13187632"
 LOCK_SHA = "a62e2a60bbb3f6c8b95b849760ff597e4e05e1c93bf61987c175502c3fe2ac74"
@@ -54,7 +54,9 @@ JAVA_CLEANUP = frozenset(("children_reaped", "relay_closed", "filesystem_closed"
 JAVA_CODES = frozenset("""environment_invalid path_invalid source_changed unexpected_files
 listener_mismatch configuration_invalid deadline_exceeded positive_ticket_failed
 wrong_password_failure_mismatch wrong_principal_not_rejected cache_invalid ticket_time_mismatch
-ticket_flags_mismatch background_failure io_failure krb_failure interrupted unclassified cleanup_failed namenode_failed child_failed child_output_invalid wire_invalid rclone_positive_failed rclone_denial_mismatch source_invalid relay_invalid""".split())
+ticket_flags_mismatch background_failure io_failure krb_failure interrupted unclassified cleanup_failed namenode_failed child_failed child_output_invalid wire_invalid rclone_positive_failed rclone_denial_mismatch source_invalid relay_invalid
+child_descendant_found child_reap_failed child_streams_alive child_process_drift
+rclone_version_nonzero rclone_version_stderr rclone_version_mismatch""".split())
 CODES = frozenset(("hosted_linux_required", "input_invalid", "input_changed", "unsafe_path", "download_failed",
     "download_cleanup_failed", "docker_failed", "command_cleanup_failed", "platform_invalid", "base_invalid",
     "image_invalid", "container_invalid", "wire_invalid", "java_report_invalid", "java_probe_failed", "interrupted",

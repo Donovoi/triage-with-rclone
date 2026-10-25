@@ -422,6 +422,36 @@ class WireTests(unittest.TestCase):
 
 
 class JavaSourceTests(unittest.TestCase):
+    def test_version_child_uses_explicit_private_home_and_null_config(self):
+        source = (HERE / "HdfsKerberosRpcProbe.java").read_text()
+        start = source.index('            stage = "rclone_version";')
+        end = source.index('            baseline = threadIds();', start)
+        version = source[start:end]
+        self.assertIn('List.of("/opt/rpc/rclone", "version", "--config", "/dev/null", "--log-level", "ERROR")', version)
+        self.assertIn('Map.of("HOME", "/work/home", "PATH", "/usr/bin:/bin", "LANG", "C", "LC_ALL", "C")', version)
+        self.assertNotIn('KRB5_', version)
+        for predicate, code in (
+            ('version.code == 0', 'rclone_version_nonzero'),
+            ('version.err.length == 0', 'rclone_version_stderr'),
+            ('startsWith("rclone v1.75.2\\n")', 'rclone_version_mismatch'),
+            ('processIds().equals(processBaseline)', 'child_process_drift')):
+            self.assertIn(predicate, version); self.assertIn('Code.' + code, version)
+        self.assertIn('builder.environment().clear()', source)
+
+    def test_finite_version_and_child_failures_remain_failures(self):
+        for code in ('rclone_version_nonzero', 'rclone_version_stderr', 'rclone_version_mismatch',
+                     'child_descendant_found', 'child_reap_failed', 'child_streams_alive', 'child_process_drift'):
+            value = positive(); value.update(success=False, error=code, stage='rclone_version')
+            for key in value['checks']:
+                value['checks'][key] = key == 'environment'
+            value.update(wire_hex='', rclone_wire_hex='', relay=None, cache_bytes=0, observed_lifetime_seconds=0)
+            value['cleanup']['threads_terminated'] = False
+            result = F.validate_java(F.canonical(value), 1)
+            self.assertFalse(result['success']); self.assertEqual(result['error'], code)
+            self.assertFalse(result['cleanup']['threads_terminated'])
+            self.assertTrue(all(result[key] is False for key in F.JAVA_FALSE))
+            with self.assertRaises(F.ProbeError): F.validate_java(F.canonical(value), 0)
+
     def test_java_source_pin_and_fixed_runtime(self):
         raw = (HERE / "HdfsKerberosRpcProbe.java").read_bytes()
         self.assertEqual(F.sha(raw), F.JAVA_SHA)
