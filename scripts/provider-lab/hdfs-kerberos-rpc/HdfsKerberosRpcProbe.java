@@ -30,6 +30,7 @@ import org.apache.hadoop.ipc.protobuf.RpcHeaderProtos.RpcResponseHeaderProto;
 import org.apache.hadoop.ipc.protobuf.RpcHeaderProtos.RpcResponseHeaderProto.RpcStatusProto;
 import org.apache.hadoop.ipc.protobuf.RpcHeaderProtos.RpcResponseHeaderProto.RpcErrorCodeProto;
 import java.io.IOException;
+import java.io.FileNotFoundException;
 import java.io.OutputStream;
 import java.io.PrintStream;
 import java.net.NetworkInterface;
@@ -62,6 +63,7 @@ import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.apache.kerby.KOptions;
+import org.apache.hadoop.metrics2.MetricsException;
 import org.apache.kerby.kerberos.kerb.KrbErrorCode;
 import org.apache.kerby.kerberos.kerb.KrbException;
 import org.apache.kerby.kerberos.kerb.client.KrbClient;
@@ -100,6 +102,10 @@ public final class HdfsKerberosRpcProbe {
     private static InetSocketAddress endpoint;
     private static long memberMtime = -1, memberAtime = -1;
     private static String memberGroup, configurationDigest;
+    private static String diagnosticCategory = "none", diagnosticOrigin = "none";
+    private static final List<String> THREAD_CATEGORIES = List.of("probe_task", "jdk_process_reaper", "jdk_timer",
+        "jdk_executor", "hadoop_metrics", "hadoop_rpc", "jetty", "kerby", "other");
+    private static Map<String, Integer> remainingThreads;
     private static final LinkOption NOFOLLOW = LinkOption.NOFOLLOW_LINKS;
     private static final int PORT = 19006, MAX_BYTES = 65536, LIFETIME_SECONDS = 120;
     private static final String CONF_PROPERTY = "java.security.krb5.conf";
@@ -127,6 +133,7 @@ public final class HdfsKerberosRpcProbe {
     private static final class Failure extends Exception {
         final Code code;
         Failure(Code value) { super(value.name()); code = value; }
+        Failure(Code value, Throwable cause) { super(value.name(), cause); code = value; }
     }
     private static void need(boolean value, Code code) throws Failure {
         if (!value) throw new Failure(code);
@@ -245,7 +252,8 @@ public final class HdfsKerberosRpcProbe {
         catch (ExecutionException e) {
             Throwable cause = e.getCause();
             if (cause instanceof Exception) throw (Exception) cause;
-            throw new Failure(Code.unclassified);
+            // Retain the cause only in memory for closed diagnostic projection.
+            throw new Failure(Code.unclassified, cause);
         } finally { thread.join(200); }
     }
     private static String random(SecureRandom source, int count) {
@@ -368,6 +376,95 @@ public final class HdfsKerberosRpcProbe {
         for (Thread thread : Thread.getAllStackTraces().keySet()) if (thread.isAlive()) ids.add(thread.getId());
         return ids;
     }
+    private static String originFrame(StackTraceElement frame) {
+        // Closed markers only; class names, method names and messages never leave this process.
+        return switch (frame.getClassName()) {
+            case "org.apache.hadoop.hdfs.server.namenode.NameNode" -> switch (frame.getMethodName()) {
+                case "<init>" -> "namenode_constructor";
+                case "initialize" -> "namenode_initialize";
+                case "loginAsNameNodeUser" -> "namenode_login";
+                case "format" -> "namenode_format";
+                default -> null;
+            };
+            case "org.apache.hadoop.hdfs.server.namenode.NameNodeHttpServer" -> "namenode_http";
+            case "org.apache.hadoop.http.HttpServer2", "org.apache.hadoop.http.HttpServer2$Builder" -> "hadoop_http";
+            case "org.apache.hadoop.metrics2.lib.DefaultMetricsSystem",
+                 "org.apache.hadoop.metrics2.impl.MetricsSystemImpl" -> "hadoop_metrics";
+            case "org.apache.hadoop.security.authentication.server.KerberosAuthenticationHandler",
+                 "org.apache.hadoop.security.authentication.server.AuthenticationFilter" -> "http_authentication";
+            case "org.apache.hadoop.security.UserGroupInformation" -> "ugi";
+            case "org.apache.hadoop.hdfs.server.blockmanagement.BlockManager" -> "block_manager";
+            case "org.apache.hadoop.hdfs.server.namenode.FSNamesystem" -> "namesystem";
+            default -> null;
+        };
+    }
+    private static void projectFailure(Throwable failure) {
+        // Same finite type approach as the existing SIMPLE fixture, extended to
+        // secure NameNode startup. Do not guess a cause from a generic code.
+        String selected = "unclassified", origin = "none";
+        int selectedRank = 99;
+        Set<Throwable> seen = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        try {
+            for (int depth = 0; failure != null && depth < 8 && seen.add(failure); depth++, failure = failure.getCause()) {
+                String category = "unclassified"; int rank = 99;
+                if (failure instanceof ExitUtil.ExitException) { category = "exit_requested"; rank = 0; }
+                else if (failure instanceof ExitUtil.HaltException) { category = "halt_requested"; rank = 0; }
+                else if (failure instanceof ClassNotFoundException || failure instanceof NoClassDefFoundError) {
+                    category = "missing_class"; rank = 1;
+                } else if (failure instanceof OutOfMemoryError || failure instanceof StackOverflowError) {
+                    category = "resource_failure"; rank = 2;
+                } else if (failure instanceof IllegalArgumentException) { category = "invalid_config"; rank = 3; }
+                else if (failure instanceof LinkageError) { category = "linkage_failure"; rank = 4; }
+                else if (failure instanceof MetricsException) { category = "metrics_failure"; rank = 5; }
+                else if (failure instanceof NullPointerException) { category = "null_state"; rank = 6; }
+                else if (failure instanceof IllegalStateException) { category = "illegal_state"; rank = 7; }
+                else if (failure instanceof UnsupportedOperationException) { category = "unsupported_operation"; rank = 8; }
+                else if (failure instanceof SecurityException) { category = "security_failure"; rank = 9; }
+                else if (failure instanceof KrbException) { category = "krb_failure"; rank = 10; }
+                else if (failure instanceof FileNotFoundException) { category = "file_missing"; rank = 11; }
+                else if (failure instanceof IOException) { category = "io_failure"; rank = 12; }
+                else if (failure instanceof InterruptedException) { category = "interrupted"; rank = 13; }
+                else if (failure instanceof Failure own && own.code != Code.unclassified) { category = "assertion"; rank = 14; }
+                if (rank < selectedRank) { selected = category; selectedRank = rank; }
+                StackTraceElement[] frames = failure.getStackTrace();
+                for (int i = 0; i < frames.length && i < 32; i++) {
+                    String marker = originFrame(frames[i]);
+                    if (marker != null) { origin = marker; break; }
+                }
+            }
+            diagnosticCategory = selected; diagnosticOrigin = origin;
+        } catch (Throwable ignored) { diagnosticCategory = "unclassified"; diagnosticOrigin = "none"; }
+    }
+    private static String threadCategory(Thread thread) {
+        if (TASKS.contains(thread)) return "probe_task";
+        String selected = "other"; int selectedRank = 99;
+        try {
+            StackTraceElement[] frames = thread.getStackTrace();
+            for (int i = 0; i < frames.length && i < 32; i++) {
+                String name = frames[i].getClassName(), category = "other"; int rank = 99;
+                if (name.startsWith("org.apache.hadoop.metrics2.")) { category = "hadoop_metrics"; rank = 0; }
+                else if (name.startsWith("org.apache.hadoop.ipc.")) { category = "hadoop_rpc"; rank = 1; }
+                else if (name.startsWith("org.eclipse.jetty.")) { category = "jetty"; rank = 2; }
+                else if (name.startsWith("org.apache.kerby.")) { category = "kerby"; rank = 3; }
+                else if (name.equals("java.lang.ProcessHandleImpl")) { category = "jdk_process_reaper"; rank = 4; }
+                else if (name.equals("java.util.TimerThread")) { category = "jdk_timer"; rank = 5; }
+                else if (name.startsWith("java.util.concurrent.")) { category = "jdk_executor"; rank = 6; }
+                if (rank < selectedRank) { selected = category; selectedRank = rank; }
+            }
+        } catch (Throwable ignored) { return "other"; }
+        return selected;
+    }
+    private static Map<String, Integer> remainingThreadCounts(Set<Long> baseline) throws Exception {
+        Map<String, Integer> counts = new LinkedHashMap<>();
+        for (String category : THREAD_CATEGORIES) counts.put(category, 0);
+        int total = 0;
+        for (Thread thread : Thread.getAllStackTraces().keySet()) {
+            if (!thread.isAlive() || baseline.contains(thread.getId())) continue;
+            need(++total <= 128, Code.cleanup_failed);
+            String category = threadCategory(thread); counts.put(category, counts.get(category) + 1);
+        }
+        return counts;
+    }
     private static void cleanup(SimpleKdcServer server, Set<Long> baseline) {
         boolean stopped = server == null;
         try {
@@ -386,8 +483,11 @@ public final class HdfsKerberosRpcProbe {
         boolean threadsClean = false;
         long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
         do {
-            Set<Long> remaining = threadIds(); remaining.removeAll(baseline);
-            threadsClean = remaining.isEmpty() && TASKS.stream().noneMatch(Thread::isAlive);
+            try { remainingThreads = remainingThreadCounts(baseline); }
+            catch (Throwable ignored) { remainingThreads = null; break; }
+            // Every residual thread still fails cleanup, including JDK/unknown categories.
+            threadsClean = remainingThreads.values().stream().allMatch(count -> count == 0)
+                && TASKS.stream().noneMatch(Thread::isAlive);
             if (threadsClean) break;
             try { Thread.sleep(25); } catch (InterruptedException e) { Thread.currentThread().interrupt(); break; }
         } while (System.nanoTime() < until);
@@ -425,6 +525,15 @@ public final class HdfsKerberosRpcProbe {
         StringBuilder out = new StringBuilder("{");
         for (var entry : values.entrySet()) {
             if (out.length() > 1) out.append(','); out.append('"').append(entry.getKey()).append("\":").append(entry.getValue());
+        }
+        return out.append('}').toString();
+    }
+    private static String threadCountsJson() {
+        if (remainingThreads == null) return "null";
+        StringBuilder out = new StringBuilder("{");
+        for (String category : THREAD_CATEGORIES) {
+            if (out.length() > 1) out.append(',');
+            out.append('"').append(category).append("\":").append(remainingThreads.get(category));
         }
         return out.append('}').toString();
     }
@@ -855,11 +964,14 @@ public final class HdfsKerberosRpcProbe {
             CHECKS.put("source_preserved", true);
             inventory(); topology(); need(!BACKGROUND_FAILURE.get(), Code.background_failure);
             CHECKS.put("cache_preserved", true); stage = "completed";
-        } catch (Failure failure) { error = failure.code; }
-        catch (KrbException failure) { error = Code.krb_failure; }
-        catch (IOException failure) { error = Code.io_failure; }
-        catch (InterruptedException failure) { Thread.currentThread().interrupt(); error = Code.interrupted; }
-        catch (Throwable failure) { error = Code.unclassified; }
+        } catch (Throwable failure) {
+            if (failure instanceof Failure owned) error = owned.code;
+            else if (failure instanceof KrbException) error = Code.krb_failure;
+            else if (failure instanceof IOException) error = Code.io_failure;
+            else if (failure instanceof InterruptedException) { Thread.currentThread().interrupt(); error = Code.interrupted; }
+            else error = Code.unclassified;
+            projectFailure(failure);
+        }
         finally {
             if (serialized != null) Arrays.fill(serialized, (byte) 0);
             try { stopServices(); } catch (Throwable ignored) { CLEANUP.put("cleanup_completed", false); }
@@ -874,6 +986,8 @@ public final class HdfsKerberosRpcProbe {
             + ",\"cleanup\":" + boolMap(CLEANUP) + ",\"cache_bytes\":" + cacheBytes
             + ",\"observed_lifetime_seconds\":" + observedLifetime + ",\"stage\":\"" + stage + "\",\"wire_hex\":\"" + wireHex + "\",\"error\":"
             + (error == null ? "null" : "\"" + error.name() + "\"")
+            + ",\"diagnostic\":{\"category\":\"" + diagnosticCategory + "\",\"origin\":\"" + diagnosticOrigin + "\"}"
+            + ",\"remaining_threads\":" + threadCountsJson()
             + ",\"rclone_wire_hex\":\"" + rcloneWireHex + "\",\"relay\":" + (relay == null ? "null" : relay.json())
             + ",\"ledger_eligible\":false,\"authentication_verified\":false,\"hdfs_authenticated\":false"
             + ",\"renewal_verified\":false,\"daemon_accepted\":false,\"provider_accepted\":false"

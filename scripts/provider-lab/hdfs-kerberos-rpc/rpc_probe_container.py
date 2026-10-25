@@ -33,9 +33,12 @@ RCLONE_SHA = "ed7ab1f17876bb006c3df3949a3044959671afd9112362dacaa5dd1647735bc1"
 DENIAL = "SIMPLE authentication is not enabled.  Available:[TOKEN, KERBEROS]"
 EXCEPTION = "org.apache.hadoop.security.AccessControlException"
 STAGES = frozenset("environment rclone_version kdc_init principals kdc_start owner_login format namenode_start relay_start seed reader_tgt listing_before rclone_none wire_none listing_after preservation completed".split())
+DIAGNOSTIC_CATEGORIES = frozenset("none unclassified assertion exit_requested halt_requested missing_class resource_failure invalid_config linkage_failure metrics_failure null_state illegal_state unsupported_operation security_failure krb_failure file_missing io_failure interrupted".split())
+DIAGNOSTIC_ORIGINS = frozenset("none namenode_constructor namenode_initialize namenode_login namenode_format namenode_http hadoop_http hadoop_metrics http_authentication ugi block_manager namesystem".split())
+THREAD_CATEGORIES = frozenset("probe_task jdk_process_reaper jdk_timer jdk_executor hadoop_metrics hadoop_rpc jetty kerby other".split())
 BASE = "docker.io/library/eclipse-temurin@sha256:e1c09a9ee23feb81f94016547826c1e694086cd927356fb57fccc312fcc32f85"
 BASE_ID = "sha256:d0e6e16acb7f941e5206d99ec38e5bba18545c43462541958f84b22e0fc006e8"
-JAVA_SHA = "9e0dd920d3c1b1c88b03d1639421cc0eb3ebe7915625e08994ced425899842c9"
+JAVA_SHA = "4619b813d62612325356d20618a455827c25a919523c1311fee8be39e2daf8e7"
 RUNTIME_SHA = "8944f0db4899d9e8f166feb28ce56d99278321ce0d3b1a9b9b993b5c0d508c2a"
 ORDER_SHA = "a482109e5170b0a6885af7c52902e89600c226f6e1fe1487083d736c13187632"
 LOCK_SHA = "a62e2a60bbb3f6c8b95b849760ff597e4e05e1c93bf61987c175502c3fe2ac74"
@@ -370,11 +373,29 @@ def validate_relay(value, complete):
              "java_report_invalid")
 
 
+def validate_diagnostics(value, remaining, error, cleanup, passed):
+    need(type(value) is dict and set(value) == {"category", "origin"}
+         and type(value["category"]) is str and value["category"] in DIAGNOSTIC_CATEGORIES
+         and type(value["origin"]) is str and value["origin"] in DIAGNOSTIC_ORIGINS, "java_report_invalid")
+    if error not in (None, "cleanup_failed", "background_failure"):
+        need(value["category"] != "none", "java_report_invalid")
+    if remaining is None:
+        need(not passed and cleanup["threads_terminated"] is False, "java_report_invalid")
+    else:
+        need(type(remaining) is dict and set(remaining) == THREAD_CATEGORIES
+             and all(type(count) is int and 0 <= count <= 128 for count in remaining.values())
+             and sum(remaining.values()) <= 128, "java_report_invalid")
+        if any(remaining.values()): need(cleanup["threads_terminated"] is False, "java_report_invalid")
+    if passed:
+        need(value == {"category": "none", "origin": "none"} and remaining is not None
+             and not any(remaining.values()), "java_report_invalid")
+
+
 def validate_java(raw, exit_code):
     try:
         value = parse(raw, 32768)
         keys = {"schema_version", "scope", "success", "expected_kerby_version", "runtime_binding_required", "checks",
-                "cleanup", "cache_bytes", "observed_lifetime_seconds", "stage", "wire_hex", "rclone_wire_hex", "relay", "error"} | JAVA_FALSE
+                "cleanup", "cache_bytes", "observed_lifetime_seconds", "stage", "wire_hex", "rclone_wire_hex", "relay", "error", "diagnostic", "remaining_threads"} | JAVA_FALSE
         need(type(value) is dict and set(value) == keys and type(value["schema_version"]) is int
              and value["schema_version"] == 1 and value["scope"] == "hdfs_kerberos_rpc_feasibility"
              and value["expected_kerby_version"] == "2.1.2" and value["runtime_binding_required"] is True
@@ -396,6 +417,7 @@ def validate_java(raw, exit_code):
              and exit_code == (0 if passed else 1), "java_report_invalid")
         if passed: need(100 < value["cache_bytes"] <= 65536 and 110 <= value["observed_lifetime_seconds"] <= 120, "java_report_invalid")
         validate_relay(value["relay"], passed)
+        validate_diagnostics(value["diagnostic"], value["remaining_threads"], value["error"], value["cleanup"], passed)
         if passed:
             need(value["stage"] == "completed" and value["wire_hex"] == value["rclone_wire_hex"], "java_report_invalid")
         del value["wire_hex"]  # Raw RPC bytes stay private; publish only finite categories.

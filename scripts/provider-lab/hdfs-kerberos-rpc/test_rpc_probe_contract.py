@@ -67,6 +67,9 @@ def positive():
         cache_bytes=400, observed_lifetime_seconds=119, stage="completed", wire_hex=wire().hex(), rclone_wire_hex=wire().hex(),
         relay=dict(before_connections=1, negative_connections=1, after_connections=1, none_headers=1,
                    fatal_responses=1, unexpected_connections=0, bytes_forwarded_unchanged=True), error=None, ledger_eligible=False,
+        diagnostic=dict(category="none", origin="none"),
+        remaining_threads=dict(probe_task=0, jdk_process_reaper=0, jdk_timer=0, jdk_executor=0,
+            hadoop_metrics=0, hadoop_rpc=0, jetty=0, kerby=0, other=0),
         authentication_verified=False, hdfs_authenticated=False, renewal_verified=False,
         daemon_accepted=False, provider_accepted=False, application_accepted=False,
         vendor_accepted=False, vulnerability_audited=False)
@@ -156,6 +159,57 @@ class TicketTests(unittest.TestCase):
         for raw in (b"{}\n{}", b'{"success":true,"success":false}', b'{"value":NaN}', b"x" * 16385, b"\xff"):
             with self.subTest(raw=raw[:20]), self.assertRaises(F.ProbeError): F.validate_java(raw, 0)
 
+    def startup_failure(self):
+        value = positive(); value.update(success=False, error="unclassified", stage="namenode_start",
+            wire_hex="", rclone_wire_hex="", relay=None, cache_bytes=0, observed_lifetime_seconds=0,
+            diagnostic=dict(category="metrics_failure", origin="hadoop_metrics"))
+        for key in value["checks"]: value["checks"][key] = key in ("environment", "endpoint_settings")
+        value["remaining_threads"]["hadoop_metrics"] = 1
+        value["cleanup"].update(threads_terminated=False, private_material_removed=False)
+        return value
+
+    def test_finite_startup_diagnostic_and_residual_threads_never_grant_credit(self):
+        value = self.startup_failure()
+        result = F.validate_java(F.canonical(value), 1)
+        self.assertEqual(result["diagnostic"], dict(category="metrics_failure", origin="hadoop_metrics"))
+        self.assertEqual(result["remaining_threads"]["hadoop_metrics"], 1)
+        self.assertFalse(result["success"])
+        for key in ("threads_terminated", "private_material_removed"):
+            self.assertIs(result["cleanup"][key], False)
+        self.assertTrue(all(result[key] is False for key in F.JAVA_FALSE))
+        self.rejected(value, 0)
+
+    def test_diagnostic_schema_rejects_raw_unknown_and_incomplete_values(self):
+        for bad in (None, {}, {"category": "metrics_failure"},
+                    {"category": "none", "origin": "none"},
+                    {"category": "private diagnostic", "origin": "none"},
+                    {"category": "metrics_failure", "origin": "org.example.Private.method"},
+                    {"category": True, "origin": "none"},
+                    {"category": "metrics_failure", "origin": "none", "message": "private"}):
+            value = self.startup_failure(); value["diagnostic"] = bad
+            with self.subTest(bad=bad): self.rejected(value, 1)
+        for field in ("diagnostic", "remaining_threads"):
+            value = self.startup_failure(); del value[field]; self.rejected(value, 1)
+        for category in F.DIAGNOSTIC_CATEGORIES - {"none"}:
+            value = self.startup_failure(); value["diagnostic"]["category"] = category
+            self.assertFalse(F.validate_java(F.canonical(value), 1)["success"])
+            value = positive(); value["diagnostic"]["category"] = category; self.rejected(value)
+
+    def test_thread_count_vector_is_closed_bounded_and_cannot_clear_cleanup_failure(self):
+        for bad in (True, -1, 129, 1.0, "1"):
+            value = self.startup_failure(); value["remaining_threads"]["other"] = bad
+            with self.subTest(bad=bad): self.rejected(value, 1)
+        for bad in ({}, [], {"private_thread_name": 1}):
+            value = self.startup_failure(); value["remaining_threads"] = bad; self.rejected(value, 1)
+        value = self.startup_failure(); value["remaining_threads"]["other"] = 128; self.rejected(value, 1)
+        for category in positive()["remaining_threads"]:
+            value = positive(); value["remaining_threads"][category] = 1; self.rejected(value)
+        value = positive(); value["remaining_threads"] = None; self.rejected(value)
+        value = self.startup_failure(); value["remaining_threads"] = None
+        self.assertFalse(F.validate_java(F.canonical(value), 1)["cleanup"]["threads_terminated"])
+        value["remaining_threads"] = positive()["remaining_threads"]
+        self.assertFalse(F.validate_java(F.canonical(value), 1)["cleanup"]["threads_terminated"])
+
     def test_result_lifetime_cache_and_success_contradictions(self):
         for field, bad in (("cache_bytes", 100), ("cache_bytes", 65537), ("observed_lifetime_seconds", 109),
                            ("observed_lifetime_seconds", 121), ("success", False)):
@@ -207,7 +261,8 @@ class TicketTests(unittest.TestCase):
             docker = FakeDocker(root, **kwargs); made.append(docker)
             if failure:
                 docker.java["checks"]["positive_tgt"] = False
-                docker.java.update(success=False, error="positive_ticket_failed"); docker.exit_code = 1
+                docker.java.update(success=False, error="positive_ticket_failed",
+                    diagnostic=dict(category="assertion", origin="none")); docker.exit_code = 1
             if action: docker.action = lambda d: action(d, helper)
             return docker
         real_mkdtemp = tempfile.mkdtemp
@@ -414,6 +469,7 @@ class WireTests(unittest.TestCase):
 
     def test_partial_failed_relay_preserves_finite_diagnostics_without_credit(self):
         value = positive(); value.update(success=False, error="relay_invalid", stage="rclone_none")
+        value["diagnostic"] = dict(category="assertion", origin="none")
         value["checks"]["listing_after"] = False
         value["relay"]["unexpected_connections"] = 1
         value["relay"]["bytes_forwarded_unchanged"] = False
@@ -423,6 +479,34 @@ class WireTests(unittest.TestCase):
 
 
 class JavaSourceTests(unittest.TestCase):
+    def test_throwable_projection_preserves_causes_without_exporting_messages(self):
+        source = (HERE / "HdfsKerberosRpcProbe.java").read_text()
+        self.assertIn('Failure(Code value, Throwable cause) { super(value.name(), cause); code = value; }', source)
+        self.assertIn('throw new Failure(Code.unclassified, cause);', source)
+        body = source[source.index('    private static String originFrame('):
+                      source.index('    private static String threadCategory(')]
+        self.assertIn('depth < 8 && seen.add(failure)', body)
+        self.assertIn('new java.util.IdentityHashMap<>()', body)
+        self.assertIn('i < frames.length && i < 32', body)
+        for forbidden in ('getMessage(', 'getLocalizedMessage(', 'toString(', 'printStackTrace(', 'System.out', 'System.err'):
+            self.assertNotIn(forbidden, body)
+        for marker in ('"missing_class"', '"metrics_failure"', '"namenode_http"', '"http_authentication"'):
+            self.assertIn(marker, body)
+
+    def test_thread_projection_counts_all_residuals_and_keeps_cleanup_gate(self):
+        source = (HERE / "HdfsKerberosRpcProbe.java").read_text()
+        body = source[source.index('    private static String threadCategory('):
+                      source.index('    private static String boolMap(')]
+        self.assertIn('i < frames.length && i < 32', body)
+        self.assertIn('if (!thread.isAlive() || baseline.contains(thread.getId())) continue;', body)
+        self.assertEqual(body.count('continue;'), 1)
+        self.assertIn('need(++total <= 128, Code.cleanup_failed)', body)
+        self.assertIn('remainingThreads.values().stream().allMatch(count -> count == 0)', body)
+        self.assertIn('&& TASKS.stream().noneMatch(Thread::isAlive)', body)
+        self.assertIn('rootOwned && stopped && threadsClean && noListeners', body)
+        self.assertNotIn('getName(', body)
+        self.assertNotIn('printStackTrace(', body)
+
     def test_secure_namenode_requires_block_tokens_without_datanode(self):
         source = (HERE / "HdfsKerberosRpcProbe.java").read_text()
         body = source[source.index('    private static Configuration configuration('):
@@ -455,6 +539,7 @@ class JavaSourceTests(unittest.TestCase):
         for code in ('rclone_version_nonzero', 'rclone_version_stderr', 'rclone_version_mismatch',
                      'child_descendant_found', 'child_reap_failed', 'child_streams_alive', 'child_process_drift'):
             value = positive(); value.update(success=False, error=code, stage='rclone_version')
+            value['diagnostic'] = dict(category='assertion', origin='none')
             for key in value['checks']:
                 value['checks'][key] = key == 'environment'
             value.update(wire_hex='', rclone_wire_hex='', relay=None, cache_bytes=0, observed_lifetime_seconds=0)
