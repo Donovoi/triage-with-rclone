@@ -71,7 +71,9 @@ def positive():
             nonrenewable=True, secure_namenode=True, listing_before=True, rclone_auth_boundary_rejection=True,
             wire_auth_boundary_rejection=True, listing_after=True, source_preserved=True, cache_preserved=True),
         cleanup=dict(children_reaped=True, relay_closed=True, filesystem_closed=True, namenode_stop_returned=True, owner_logged_out=True, kdc_stop_returned=True, threads_terminated=True, listeners_absent=True,
-            private_material_removed=True, process_property_restored=True, cleanup_completed=True),
+            private_material_removed=True, process_property_restored=True, cleanup_completed=True,
+            gc_monitor_reaped=True, fs_statistics_cleaner_reaped=True),
+        owned_thread_cleanup=dict(gc_monitor='terminated', fs_statistics_cleaner='terminated'),
         cache_bytes=400, observed_lifetime_seconds=119, stage="completed", wire_hex=wire().hex(), rclone_wire_hex=wire().hex(),
         relay=dict(before_connections=1, negative_connections=1, after_connections=1, none_headers=1,
                    fatal_responses=1, unexpected_connections=0, bytes_forwarded_unchanged=True), error=None, ledger_eligible=False,
@@ -83,6 +85,7 @@ def positive():
         remaining_thread_intervals=dict(kdc=0, owner_login=0, format=0, namenode=0,
             filesystem=0, reader=0, controls=0, shutdown=0, unattributed=0),
         remaining_thread_matrix=empty_thread_matrix(),
+        remaining_timer_kinds=dict(namenode_metrics=0, rpc_idle=0, snapshot_gc=0, shell_timeout=0, unknown=0),
         authentication_verified=False, hdfs_authenticated=False, renewal_verified=False,
         daemon_accepted=False, provider_accepted=False, application_accepted=False,
         vendor_accepted=False, vulnerability_audited=False)
@@ -223,10 +226,12 @@ class TicketTests(unittest.TestCase):
         value = positive(); value["remaining_threads"] = None; self.rejected(value)
         value = self.startup_failure(); value["remaining_threads"] = None; value["remaining_thread_intervals"] = None
         value["remaining_thread_matrix"] = None
+        value["remaining_timer_kinds"] = None
         self.assertFalse(F.validate_java(F.canonical(value), 1)["cleanup"]["threads_terminated"])
         value["remaining_threads"] = positive()["remaining_threads"]
         value["remaining_thread_intervals"] = positive()["remaining_thread_intervals"]
         value["remaining_thread_matrix"] = empty_thread_matrix()
+        value["remaining_timer_kinds"] = positive()["remaining_timer_kinds"]
         self.assertFalse(F.validate_java(F.canonical(value), 1)["cleanup"]["threads_terminated"])
 
     def test_new_thread_categories_only_subdivide_failing_residuals(self):
@@ -287,6 +292,7 @@ class TicketTests(unittest.TestCase):
             value['remaining_threads'][category] = 1
             value['remaining_thread_intervals'][phase] = 1
             value['remaining_thread_matrix'][category][phase] = 1
+        value['remaining_timer_kinds']['unknown'] = 1
         result = F.validate_java(F.canonical(value), 1)
         self.assertEqual(sum(sum(row.values()) for row in result['remaining_thread_matrix'].values()), 3)
         for category, phase in expected: self.assertEqual(result['remaining_thread_matrix'][category][phase], 1)
@@ -332,6 +338,55 @@ class TicketTests(unittest.TestCase):
         value = self.startup_failure(); value['remaining_thread_matrix']['hadoop_metrics']['extra'] = 0; self.rejected(value, 1)
         value = self.startup_failure(); value['remaining_threads'] = value['remaining_thread_intervals'] = None
         self.rejected(value, 1)
+
+    def test_owned_helper_missing_ambiguous_late_and_shutdown_failures_never_pass(self):
+        for helper, category, phase in (('gc_monitor', 'hadoop_util', 'namenode'),
+                                         ('fs_statistics_cleaner', 'hadoop_fs', 'filesystem')):
+            for state in F.OWNED_CLEANUP_STATES - {'terminated'}:
+                value = positive(); value.update(success=False, error='cleanup_failed')
+                value['owned_thread_cleanup'][helper] = state
+                value['cleanup'].update(threads_terminated=False, private_material_removed=False)
+                value['cleanup'][helper + '_reaped'] = False
+                value['remaining_threads'][category] = 1
+                value['remaining_thread_intervals'][phase] = 1
+                value['remaining_thread_matrix'][category][phase] = 1
+                with self.subTest(helper=helper, state=state):
+                    result = F.validate_java(F.canonical(value), 1)
+                    self.assertFalse(result['success'])
+                    self.assertFalse(result['cleanup'][helper + '_reaped'])
+                    self.assertFalse(result['cleanup']['threads_terminated'])
+                    self.assertFalse(result['cleanup']['private_material_removed'])
+                    self.assertTrue(all(result[key] is False for key in F.JAVA_FALSE))
+                    self.rejected(value, 0)
+
+    def test_owned_helper_report_rejects_raw_unknown_and_contradictory_success(self):
+        for bad in (None, {}, [], {'gc_monitor': 'terminated'},
+                    {'gc_monitor': 'private stack', 'fs_statistics_cleaner': 'terminated'},
+                    {'gc_monitor': True, 'fs_statistics_cleaner': 'terminated'},
+                    {'gc_monitor': 'terminated', 'fs_statistics_cleaner': 'terminated', 'extra': 'private'}):
+            value = positive(); value['owned_thread_cleanup'] = bad; self.rejected(value)
+        value = positive(); del value['owned_thread_cleanup']; self.rejected(value)
+        for helper in ('gc_monitor', 'fs_statistics_cleaner'):
+            value = positive(); value['owned_thread_cleanup'][helper] = 'shutdown_failed'; self.rejected(value)
+            value = positive(); value.update(success=False, error='cleanup_failed')
+            value['cleanup'][helper + '_reaped'] = False; self.rejected(value, 1)
+
+    def test_timer_hints_are_closed_exactly_counted_and_never_exempted(self):
+        for kind in ('namenode_metrics', 'rpc_idle', 'snapshot_gc', 'shell_timeout', 'unknown'):
+            value = positive(); value.update(success=False, error='cleanup_failed')
+            value['cleanup'].update(threads_terminated=False, private_material_removed=False)
+            value['remaining_threads']['jdk_timer'] = 1
+            value['remaining_thread_intervals']['format'] = 1
+            value['remaining_thread_matrix']['jdk_timer']['format'] = 1
+            value['remaining_timer_kinds'][kind] = 1
+            result = F.validate_java(F.canonical(value), 1)
+            self.assertFalse(result['success']); self.assertFalse(result['cleanup']['threads_terminated'])
+            value['remaining_timer_kinds'][kind] = 0; self.rejected(value, 1)
+        for bad in (None, {}, [], {'Timer-123': 1}, True):
+            value = positive(); value['remaining_timer_kinds'] = bad; self.rejected(value)
+        for bad in (True, -1, 129, 1.0, 'private name'):
+            value = positive(); value['remaining_timer_kinds']['unknown'] = bad; self.rejected(value)
+        value = positive(); del value['remaining_timer_kinds']; self.rejected(value)
 
     def test_fixed_real_runtime_selection_is_exact_and_ordered(self):
         runtime = F.RUNTIME.read_bytes()
@@ -595,10 +650,59 @@ class WireTests(unittest.TestCase):
 
 
 class JavaSourceTests(unittest.TestCase):
+    def test_timer_classifier_publishes_only_exact_source_backed_enum_hints(self):
+        source = (HERE / 'HdfsKerberosRpcProbe.java').read_text()
+        body = source[source.index('    private static String timerKind('):source.index('    private static void observeThreads(')]
+        pairs = re.findall(r'if \(name\.equals\("([^"\n]+)"\)\) return "([a-z_]+)";', body)
+        self.assertEqual(dict(pairs), {"Timer for 'NameNode' metrics system": 'namenode_metrics',
+            'IPC Server idle connection scanner for port 19000': 'rpc_idle',
+            'SnapshotDeletionGc': 'snapshot_gc', 'Shell command timeout': 'shell_timeout'})
+        self.assertEqual(set(re.findall(r'return "([a-z_]+)";', body)),
+                         {'namenode_metrics', 'rpc_idle', 'snapshot_gc', 'shell_timeout', 'unknown'})
+        for forbidden in ('return name', 'System.', 'print', '.interrupt(', '.cancel(', 'startsWith(', 'matches('):
+            self.assertNotIn(forbidden, body)
+        self.assertIn('sum() == counts.get("jdk_timer")', source)
+    def test_owned_cleanup_requires_exact_identity_type_phase_and_stopped_users(self):
+        source = (HERE / 'HdfsKerberosRpcProbe.java').read_text()
+        body = source[source.index('    private static OwnedCleanupState stopOwnedHelper('):
+                      source.index('    private static void cleanup(')]
+        action = body.index('target.interrupt();')
+        for condition in ('!threadObservationsComplete()', 'OwnedCleanupState.services_not_stopped',
+                          'if (target != null) return OwnedCleanupState.ambiguous',
+                          'if (target == null) return OwnedCleanupState.missing',
+                          'baseline.contains(target.getId())', 'THREAD_ORIGINS.containsKey(target)',
+                          'THREAD_ORIGINS.get(target).equals(gc ? "namenode" : "filesystem")',
+                          '!target.isDaemon()', 'System.nanoTime() >= until'):
+            self.assertLess(body.index(condition), action)
+        self.assertIn('thread.getClass() == GcTimeMonitor.class', body)
+        self.assertIn('thread.getClass() == SubjectInheritingThread.class && statisticsCleanerFrame(thread)', body)
+        self.assertIn('if (gc) ((GcTimeMonitor) target).shutdown();', body)
+        self.assertIn('target.join(remaining / 1_000_000L, (int)(remaining % 1_000_000L))', body)
+        self.assertIn('target.isAlive() ? OwnedCleanupState.still_alive : OwnedCleanupState.terminated', body)
+        self.assertIn('if (++live > 128)', body)
+        for forbidden in ('baseline.add', 'baseline =', 'target.stop(', 'DefaultMetricsSystem.shutdown', 'getName('):
+            self.assertNotIn(forbidden, body)
+        frame = source[source.index('    private static boolean statisticsCleanerFrame('):
+                       source.index('    private static OwnedCleanupState stopOwnedHelper(')]
+        self.assertIn('i < frames.length && i < 32', frame)
+        self.assertIn('equals("org.apache.hadoop.fs.FileSystem$Statistics$StatisticsDataReferenceCleaner")', frame)
+        self.assertIn('getMethodName().equals("run")', frame)
+
+    def test_owned_helpers_share_original_cleanup_deadline_and_private_gate(self):
+        source = (HERE / 'HdfsKerberosRpcProbe.java').read_text()
+        body = source[source.index('    private static void cleanup('):source.index('    private static String boolMap(')]
+        self.assertEqual(body.count('TimeUnit.SECONDS.toNanos(3)'), 1)
+        self.assertIn('gcCleanup = stopOwnedHelper(true, baseline, until)', body)
+        self.assertIn('statisticsCleanup = stopOwnedHelper(false, baseline, until)', body)
+        self.assertLess(body.index('long until ='), body.index('stopOwnedHelper(true'))
+        self.assertLess(body.index('stopOwnedHelper(false'), body.index('remainingThreadCounts(baseline)'))
+        private_gate = body[body.index('if (rootOwned'):body.index('try {\n                guardRoot();')]
+        self.assertIn('"gc_monitor_reaped", "fs_statistics_cleaner_reaped"', private_gate)
+
     def test_thread_matrix_uses_the_same_single_residual_enumeration(self):
         source = (HERE / 'HdfsKerberosRpcProbe.java').read_text()
         body = source[source.index('    private static Map<String, Integer> remainingThreadCounts('):
-                      source.index('    private static void cleanup(')]
+                      source.index('    private static boolean statisticsCleanerFrame(')]
         self.assertEqual(body.count('Thread.getAllStackTraces()'), 1)
         self.assertEqual(body.count('for (Thread thread'), 1)
         for text in ('for (String category : THREAD_CATEGORIES)', 'for (String phase : THREAD_PHASES)',
@@ -616,7 +720,7 @@ class JavaSourceTests(unittest.TestCase):
         source = (HERE / 'HdfsKerberosRpcProbe.java').read_text()
         self.assertIn('Map<Thread, String> THREAD_ORIGINS = new java.util.IdentityHashMap<>()', source)
         body = source[source.index('    private static void observeThreads('):
-                      source.index('    private static void cleanup(')]
+                      source.index('    private static boolean statisticsCleanerFrame(')]
         for text in ('THREAD_PHASES.subList(0, 8).contains(phase)', 'OBSERVED_PHASES.add(phase)',
                      'OBSERVED_PHASES.size() <= 8', 'need(++live <= 128', 'THREAD_ORIGINS.size() < 1024',
                      'THREAD_ORIGINS.containsKey(thread)', 'THREAD_ORIGINS.put(thread, phase)',
@@ -673,6 +777,7 @@ class JavaSourceTests(unittest.TestCase):
             value['remaining_threads']['jdk_timer'] = 1
             value['remaining_thread_intervals']['unattributed'] = 1
             value['remaining_thread_matrix']['jdk_timer']['unattributed'] = 1
+            value['remaining_timer_kinds']['unknown'] = 1
             result = F.validate_java(F.canonical(value), 1)
             self.assertFalse(result['success'])
             self.assertEqual(result['rclone_wire_oracle']['category'], 'simple_disabled_kerberos_offered')
@@ -702,13 +807,14 @@ class JavaSourceTests(unittest.TestCase):
                       source.index('    private static String boolMap(')]
         self.assertIn('i < frames.length && i < 32', body)
         self.assertIn('if (!thread.isAlive() || baseline.contains(thread.getId())) continue;', body)
-        counter = body[body.index('    private static Map<String, Integer> remainingThreadCounts('):]
+        counter = body[body.index('    private static Map<String, Integer> remainingThreadCounts('):
+                       body.index('    private static boolean statisticsCleanerFrame(')]
         self.assertEqual(counter.count('continue;'), 1)
         self.assertIn('need(++total <= 128, Code.cleanup_failed)', body)
         self.assertIn('remainingThreads.values().stream().allMatch(count -> count == 0)', body)
         self.assertIn('&& TASKS.stream().noneMatch(Thread::isAlive)', body)
         self.assertIn('rootOwned && stopped && threadsClean && noListeners', body)
-        self.assertNotIn('getName(', body)
+        self.assertNotIn('getName(', body[:body.index('    private static String timerKind(')])
         self.assertNotIn('printStackTrace(', body)
         for category, marker in (('hadoop_fs', 'org.apache.hadoop.fs.'),
                 ('hadoop_namenode', 'org.apache.hadoop.hdfs.server.namenode.'),

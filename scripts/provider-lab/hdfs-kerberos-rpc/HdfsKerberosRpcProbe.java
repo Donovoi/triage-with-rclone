@@ -26,6 +26,8 @@ import org.apache.hadoop.hdfs.protocol.HdfsConstants.SafeModeAction;
 import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.util.ExitUtil;
+import org.apache.hadoop.util.GcTimeMonitor;
+import org.apache.hadoop.util.concurrent.SubjectInheritingThread;
 import org.apache.hadoop.ipc.protobuf.RpcHeaderProtos.RpcResponseHeaderProto;
 import org.apache.hadoop.ipc.protobuf.RpcHeaderProtos.RpcResponseHeaderProto.RpcStatusProto;
 import org.apache.hadoop.ipc.protobuf.RpcHeaderProtos.RpcResponseHeaderProto.RpcErrorCodeProto;
@@ -115,6 +117,15 @@ public final class HdfsKerberosRpcProbe {
     private static boolean threadObservationIncomplete;
     private static Map<String, Integer> remainingThreadIntervals;
     private static Map<String, Map<String, Integer>> remainingThreadMatrix;
+    private static final List<String> TIMER_KINDS = List.of("namenode_metrics", "rpc_idle", "snapshot_gc", "shell_timeout", "unknown");
+    private static Map<String, Integer> remainingTimerKinds;
+    private enum OwnedCleanupState {
+        not_attempted, observation_incomplete, services_not_stopped, scan_failed,
+        missing, ambiguous, preexisting, unobserved, late, not_daemon, deadline,
+        shutdown_failed, still_alive, terminated
+    }
+    private static OwnedCleanupState gcCleanup = OwnedCleanupState.not_attempted;
+    private static OwnedCleanupState statisticsCleanup = OwnedCleanupState.not_attempted;
     private static final LinkOption NOFOLLOW = LinkOption.NOFOLLOW_LINKS;
     private static final int PORT = 19006, MAX_BYTES = 65536, LIFETIME_SECONDS = 120;
     private static final String CONF_PROPERTY = "java.security.krb5.conf";
@@ -469,6 +480,16 @@ public final class HdfsKerberosRpcProbe {
         } catch (Throwable ignored) { return "other"; }
         return selected;
     }
+    private static String timerKind(Thread thread) {
+        // Exact names from pinned source; diagnostic hints only, never ownership.
+        // No raw thread name leaves this process; unknown timers remain failures.
+        String name = thread.getName();
+        if (name.equals("Timer for 'NameNode' metrics system")) return "namenode_metrics";
+        if (name.equals("IPC Server idle connection scanner for port 19000")) return "rpc_idle";
+        if (name.equals("SnapshotDeletionGc")) return "snapshot_gc";
+        if (name.equals("Shell command timeout")) return "shell_timeout";
+        return "unknown";
+    }
     private static void observeThreads(String phase, Set<Long> baseline) {
         try {
             need(THREAD_PHASES.subList(0, 8).contains(phase) && OBSERVED_PHASES.add(phase)
@@ -492,6 +513,8 @@ public final class HdfsKerberosRpcProbe {
         for (String category : THREAD_CATEGORIES) counts.put(category, 0);
         Map<String, Integer> intervals = new LinkedHashMap<>();
         for (String phase : THREAD_PHASES) intervals.put(phase, 0);
+        Map<String, Integer> timers = new LinkedHashMap<>();
+        for (String kind : TIMER_KINDS) timers.put(kind, 0);
         Map<String, Map<String, Integer>> matrix = new LinkedHashMap<>();
         for (String category : THREAD_CATEGORIES) {
             Map<String, Integer> row = new LinkedHashMap<>();
@@ -503,6 +526,9 @@ public final class HdfsKerberosRpcProbe {
             if (!thread.isAlive() || baseline.contains(thread.getId())) continue;
             need(++total <= 128, Code.cleanup_failed);
             String category = threadCategory(thread); counts.put(category, counts.get(category) + 1);
+            if (category.equals("jdk_timer")) {
+                String kind = timerKind(thread); timers.put(kind, timers.get(kind) + 1);
+            }
             String phase = threadObservationsComplete() ? THREAD_ORIGINS.getOrDefault(thread, "unattributed") : "unattributed";
             intervals.put(phase, intervals.get(phase) + 1);
             Map<String, Integer> row = matrix.get(category); row.put(phase, row.get(phase) + 1);
@@ -516,7 +542,57 @@ public final class HdfsKerberosRpcProbe {
         }
         remainingThreadIntervals = intervals;
         remainingThreadMatrix = matrix;
+        need(timers.values().stream().mapToInt(Integer::intValue).sum() == counts.get("jdk_timer"), Code.cleanup_failed);
+        remainingTimerKinds = timers;
         return counts;
+    }
+    private static boolean statisticsCleanerFrame(Thread thread) {
+        StackTraceElement[] frames = thread.getStackTrace();
+        for (int i = 0; i < frames.length && i < 32; i++) {
+            if (frames[i].getClassName().equals("org.apache.hadoop.fs.FileSystem$Statistics$StatisticsDataReferenceCleaner")
+                && frames[i].getMethodName().equals("run")) return true;
+        }
+        return false;
+    }
+    private static OwnedCleanupState stopOwnedHelper(boolean gc, Set<Long> baseline, long until) {
+        // Private disposable JVM only: stop no shared/preexisting or ambiguous helper.
+        // All owned users must have closed before the process-wide statistics
+        // cleaner can use its pinned interrupt-and-exit lifecycle.
+        if (!threadObservationsComplete()) return OwnedCleanupState.observation_incomplete;
+        if (!List.of("children_reaped", "relay_closed", "filesystem_closed", "namenode_stop_returned",
+            "owner_logged_out", "kdc_stop_returned").stream().allMatch(k -> Boolean.TRUE.equals(CLEANUP.get(k))))
+            return OwnedCleanupState.services_not_stopped;
+        Thread target = null;
+        try {
+            int live = 0;
+            for (Thread thread : Thread.getAllStackTraces().keySet()) {
+                if (!thread.isAlive()) continue;
+                if (++live > 128) return OwnedCleanupState.scan_failed;
+                if (System.nanoTime() >= until) return OwnedCleanupState.deadline;
+                boolean matches = gc ? thread.getClass() == GcTimeMonitor.class
+                    : thread.getClass() == SubjectInheritingThread.class && statisticsCleanerFrame(thread);
+                if (!matches) continue;
+                if (target != null) return OwnedCleanupState.ambiguous;
+                target = thread;
+            }
+            if (target == null) return OwnedCleanupState.missing;
+            if (baseline.contains(target.getId())) return OwnedCleanupState.preexisting;
+            if (!THREAD_ORIGINS.containsKey(target)) return OwnedCleanupState.unobserved;
+            if (!THREAD_ORIGINS.get(target).equals(gc ? "namenode" : "filesystem")) return OwnedCleanupState.late;
+            if (!target.isDaemon()) return OwnedCleanupState.not_daemon;
+        } catch (Throwable ignored) { return OwnedCleanupState.scan_failed; }
+        try {
+            if (System.nanoTime() >= until) return OwnedCleanupState.deadline;
+            if (gc) ((GcTimeMonitor) target).shutdown();
+            // Both exact pinned work loops explicitly return on interruption.
+            target.interrupt();
+            long remaining = until - System.nanoTime();
+            if (remaining <= 0) return OwnedCleanupState.deadline;
+            target.join(remaining / 1_000_000L, (int)(remaining % 1_000_000L));
+            return target.isAlive() ? OwnedCleanupState.still_alive : OwnedCleanupState.terminated;
+        } catch (InterruptedException ignored) {
+            Thread.currentThread().interrupt(); return OwnedCleanupState.shutdown_failed;
+        } catch (Throwable ignored) { return OwnedCleanupState.shutdown_failed; }
     }
     private static void cleanup(SimpleKdcServer server, Set<Long> baseline) {
         boolean stopped = server == null;
@@ -536,9 +612,13 @@ public final class HdfsKerberosRpcProbe {
         observeThreads("shutdown", baseline);
         boolean threadsClean = false;
         long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+        gcCleanup = stopOwnedHelper(true, baseline, until);
+        CLEANUP.put("gc_monitor_reaped", gcCleanup == OwnedCleanupState.terminated);
+        statisticsCleanup = stopOwnedHelper(false, baseline, until);
+        CLEANUP.put("fs_statistics_cleaner_reaped", statisticsCleanup == OwnedCleanupState.terminated);
         do {
             try { remainingThreads = remainingThreadCounts(baseline); }
-            catch (Throwable ignored) { remainingThreads = null; remainingThreadIntervals = null; remainingThreadMatrix = null; break; }
+            catch (Throwable ignored) { remainingThreads = null; remainingThreadIntervals = null; remainingThreadMatrix = null; remainingTimerKinds = null; break; }
             // Every residual thread still fails cleanup, including JDK/unknown categories.
             threadsClean = remainingThreads.values().stream().allMatch(count -> count == 0)
                 && TASKS.stream().noneMatch(Thread::isAlive);
@@ -550,7 +630,7 @@ public final class HdfsKerberosRpcProbe {
         try { listeners(false); noListeners = true; } catch (Throwable ignored) { }
         CLEANUP.put("listeners_absent", noListeners);
         boolean removed = !rootCreated;
-        if (rootOwned && stopped && threadsClean && noListeners && List.of("children_reaped", "relay_closed", "filesystem_closed", "namenode_stop_returned", "owner_logged_out").stream().allMatch(k -> Boolean.TRUE.equals(CLEANUP.get(k)))) {
+        if (rootOwned && stopped && threadsClean && noListeners && List.of("children_reaped", "relay_closed", "filesystem_closed", "namenode_stop_returned", "owner_logged_out", "gc_monitor_reaped", "fs_statistics_cleaner_reaped").stream().allMatch(k -> Boolean.TRUE.equals(CLEANUP.get(k)))) {
             try {
                 guardRoot();
                 // stop() removes its config. No unknown/replaced file is deleted.
@@ -968,6 +1048,7 @@ public final class HdfsKerberosRpcProbe {
                 "nonrenewable", "secure_namenode", "listing_before", "rclone_auth_boundary_rejection",
                 "wire_auth_boundary_rejection", "listing_after", "source_preserved", "cache_preserved")) CHECKS.put(name, false);
         for (String name : List.of("children_reaped", "relay_closed", "filesystem_closed", "namenode_stop_returned", "owner_logged_out",
+                "gc_monitor_reaped", "fs_statistics_cleaner_reaped",
                 "kdc_stop_returned", "threads_terminated", "listeners_absent", "private_material_removed",
                 "process_property_restored", "cleanup_completed")) CLEANUP.put(name, false);
         Set<Long> baseline = threadIds(); SimpleKdcServer server = null; Code error = null;
@@ -1076,6 +1157,9 @@ public final class HdfsKerberosRpcProbe {
             + ",\"thread_observation_complete\":" + threadObservationsComplete()
             + ",\"remaining_thread_intervals\":" + threadCountsJson(remainingThreadIntervals, THREAD_PHASES)
             + ",\"remaining_thread_matrix\":" + threadMatrixJson()
+            + ",\"remaining_timer_kinds\":" + threadCountsJson(remainingTimerKinds, TIMER_KINDS)
+            + ",\"owned_thread_cleanup\":{\"gc_monitor\":\"" + gcCleanup.name()
+            + "\",\"fs_statistics_cleaner\":\"" + statisticsCleanup.name() + "\"}"
             + ",\"rclone_wire_hex\":\"" + rcloneWireHex + "\",\"relay\":" + (relay == null ? "null" : relay.json())
             + ",\"ledger_eligible\":false,\"authentication_verified\":false,\"hdfs_authenticated\":false"
             + ",\"renewal_verified\":false,\"daemon_accepted\":false,\"provider_accepted\":false"

@@ -37,9 +37,11 @@ DIAGNOSTIC_CATEGORIES = frozenset("none unclassified assertion exit_requested ha
 DIAGNOSTIC_ORIGINS = frozenset("none namenode_constructor namenode_initialize namenode_login namenode_format namenode_http hadoop_http hadoop_metrics http_authentication ugi block_manager namesystem".split())
 THREAD_CATEGORIES = frozenset("probe_task jdk_process_reaper jdk_timer jdk_executor jdk_cleaner hadoop_metrics hadoop_rpc hadoop_fs hadoop_namenode hadoop_blockmanagement hadoop_util jetty kerby other".split())
 THREAD_INTERVALS = frozenset("kdc owner_login format namenode filesystem reader controls shutdown unattributed".split())
+OWNED_CLEANUP_STATES = frozenset("not_attempted observation_incomplete services_not_stopped scan_failed missing ambiguous preexisting unobserved late not_daemon deadline shutdown_failed still_alive terminated".split())
+TIMER_KINDS = frozenset("namenode_metrics rpc_idle snapshot_gc shell_timeout unknown".split())
 BASE = "docker.io/library/eclipse-temurin@sha256:e1c09a9ee23feb81f94016547826c1e694086cd927356fb57fccc312fcc32f85"
 BASE_ID = "sha256:d0e6e16acb7f941e5206d99ec38e5bba18545c43462541958f84b22e0fc006e8"
-JAVA_SHA = "bdfe941ffe6cdfe5231ded0f9d7a7e3dae74175e89de00de3547543d98935fe7"
+JAVA_SHA = "bb8af8e4e36c57a78f943181b282455f4dead8ba4e0c878d0fc709016ad8f2ef"
 RUNTIME_SHA = "8944f0db4899d9e8f166feb28ce56d99278321ce0d3b1a9b9b993b5c0d508c2a"
 ORDER_SHA = "a482109e5170b0a6885af7c52902e89600c226f6e1fe1487083d736c13187632"
 LOCK_SHA = "a62e2a60bbb3f6c8b95b849760ff597e4e05e1c93bf61987c175502c3fe2ac74"
@@ -54,7 +56,7 @@ JAVA_CHECKS = frozenset(("environment", "endpoint_settings", "positive_tgt", "fi
     "nonrenewable", "secure_namenode", "listing_before", "rclone_auth_boundary_rejection",
     "wire_auth_boundary_rejection", "listing_after", "source_preserved", "cache_preserved"))
 JAVA_CLEANUP = frozenset(("children_reaped", "relay_closed", "filesystem_closed", "namenode_stop_returned", "owner_logged_out", "kdc_stop_returned", "threads_terminated", "listeners_absent",
-    "private_material_removed", "process_property_restored", "cleanup_completed"))
+    "private_material_removed", "process_property_restored", "cleanup_completed", "gc_monitor_reaped", "fs_statistics_cleaner_reaped"))
 JAVA_CODES = frozenset("""environment_invalid path_invalid source_changed unexpected_files
 listener_mismatch configuration_invalid deadline_exceeded positive_ticket_failed
 wrong_password_failure_mismatch wrong_principal_not_rejected cache_invalid ticket_time_mismatch
@@ -375,7 +377,7 @@ def validate_relay(value, complete):
              "java_report_invalid")
 
 
-def validate_diagnostics(value, remaining, intervals, matrix, observation_complete, error, cleanup, passed):
+def validate_diagnostics(value, remaining, intervals, matrix, timers, observation_complete, error, cleanup, passed):
     need(type(value) is dict and set(value) == {"category", "origin"}
          and type(value["category"]) is str and value["category"] in DIAGNOSTIC_CATEGORIES
          and type(value["origin"]) is str and value["origin"] in DIAGNOSTIC_ORIGINS, "java_report_invalid")
@@ -383,7 +385,7 @@ def validate_diagnostics(value, remaining, intervals, matrix, observation_comple
         need(value["category"] != "none", "java_report_invalid")
     need(type(observation_complete) is bool, "java_report_invalid")
     if remaining is None:
-        need(intervals is None and matrix is None and not passed and cleanup["threads_terminated"] is False, "java_report_invalid")
+        need(intervals is None and matrix is None and timers is None and not passed and cleanup["threads_terminated"] is False, "java_report_invalid")
     else:
         need(type(remaining) is dict and set(remaining) == THREAD_CATEGORIES
              and all(type(count) is int and 0 <= count <= 128 for count in remaining.values())
@@ -402,16 +404,26 @@ def validate_diagnostics(value, remaining, intervals, matrix, observation_comple
         need(all(sum(row[phase] for row in matrix.values()) == intervals[phase] for phase in THREAD_INTERVALS)
              and sum(sum(row.values()) for row in matrix.values()) == sum(remaining.values()) <= 128,
              "java_report_invalid")
+        need(type(timers) is dict and set(timers) == TIMER_KINDS
+             and all(type(count) is int and 0 <= count <= 128 for count in timers.values())
+             and sum(timers.values()) == remaining["jdk_timer"], "java_report_invalid")
     if passed:
         need(value == {"category": "none", "origin": "none"} and remaining is not None
              and not any(remaining.values()) and observation_complete, "java_report_invalid")
+
+
+def validate_owned_cleanup(value, cleanup):
+    need(type(value) is dict and set(value) == {"gc_monitor", "fs_statistics_cleaner"}, "java_report_invalid")
+    for helper, state in value.items():
+        need(type(state) is str and state in OWNED_CLEANUP_STATES
+             and cleanup[helper + "_reaped"] is (state == "terminated"), "java_report_invalid")
 
 
 def validate_java(raw, exit_code):
     try:
         value = parse(raw, 32768)
         keys = {"schema_version", "scope", "success", "expected_kerby_version", "runtime_binding_required", "checks",
-                "cleanup", "cache_bytes", "observed_lifetime_seconds", "stage", "wire_hex", "rclone_wire_hex", "relay", "error", "diagnostic", "remaining_threads", "remaining_thread_intervals", "remaining_thread_matrix", "thread_observation_complete"} | JAVA_FALSE
+                "cleanup", "cache_bytes", "observed_lifetime_seconds", "stage", "wire_hex", "rclone_wire_hex", "relay", "error", "diagnostic", "remaining_threads", "remaining_thread_intervals", "remaining_thread_matrix", "remaining_timer_kinds", "thread_observation_complete", "owned_thread_cleanup"} | JAVA_FALSE
         need(type(value) is dict and set(value) == keys and type(value["schema_version"]) is int
              and value["schema_version"] == 1 and value["scope"] == "hdfs_kerberos_rpc_feasibility"
              and value["expected_kerby_version"] == "2.1.2" and value["runtime_binding_required"] is True
@@ -434,7 +446,8 @@ def validate_java(raw, exit_code):
         if passed: need(100 < value["cache_bytes"] <= 65536 and 110 <= value["observed_lifetime_seconds"] <= 120, "java_report_invalid")
         validate_relay(value["relay"], passed)
         validate_diagnostics(value["diagnostic"], value["remaining_threads"], value["remaining_thread_intervals"],
-                             value["remaining_thread_matrix"], value["thread_observation_complete"], value["error"], value["cleanup"], passed)
+                             value["remaining_thread_matrix"], value["remaining_timer_kinds"], value["thread_observation_complete"], value["error"], value["cleanup"], passed)
+        validate_owned_cleanup(value["owned_thread_cleanup"], value["cleanup"])
         if passed:
             need(value["stage"] == "completed" and value["wire_hex"] == value["rclone_wire_hex"], "java_report_invalid")
         del value["wire_hex"]  # Raw RPC bytes stay private; publish only finite categories.
