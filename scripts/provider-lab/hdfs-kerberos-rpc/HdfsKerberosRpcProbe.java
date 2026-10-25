@@ -107,6 +107,14 @@ public final class HdfsKerberosRpcProbe {
         "jdk_executor", "jdk_cleaner", "hadoop_metrics", "hadoop_rpc", "hadoop_fs", "hadoop_namenode",
         "hadoop_blockmanagement", "hadoop_util", "jetty", "kerby", "other");
     private static Map<String, Integer> remainingThreads;
+    // These are first-observed intervals, never creation/ownership evidence.
+    private static final List<String> THREAD_PHASES = List.of("kdc", "owner_login", "format", "namenode",
+        "filesystem", "reader", "controls", "shutdown", "unattributed");
+    private static final Map<Thread, String> THREAD_ORIGINS = new java.util.IdentityHashMap<>();
+    private static final Set<String> OBSERVED_PHASES = new java.util.HashSet<>();
+    private static boolean threadObservationIncomplete;
+    private static Map<String, Integer> remainingThreadIntervals;
+    private static Map<String, Map<String, Integer>> remainingThreadMatrix;
     private static final LinkOption NOFOLLOW = LinkOption.NOFOLLOW_LINKS;
     private static final int PORT = 19006, MAX_BYTES = 65536, LIFETIME_SECONDS = 120;
     private static final String CONF_PROPERTY = "java.security.krb5.conf";
@@ -461,15 +469,53 @@ public final class HdfsKerberosRpcProbe {
         } catch (Throwable ignored) { return "other"; }
         return selected;
     }
+    private static void observeThreads(String phase, Set<Long> baseline) {
+        try {
+            need(THREAD_PHASES.subList(0, 8).contains(phase) && OBSERVED_PHASES.add(phase)
+                && OBSERVED_PHASES.size() <= 8, Code.cleanup_failed);
+            int live = 0;
+            for (Thread thread : Thread.getAllStackTraces().keySet()) {
+                if (!thread.isAlive() || baseline.contains(thread.getId())) continue;
+                need(++live <= 128, Code.cleanup_failed);
+                if (!THREAD_ORIGINS.containsKey(thread)) {
+                    need(THREAD_ORIGINS.size() < 1024, Code.cleanup_failed);
+                    THREAD_ORIGINS.put(thread, phase);
+                }
+            }
+        } catch (Throwable ignored) { threadObservationIncomplete = true; }
+    }
+    private static boolean threadObservationsComplete() {
+        return !threadObservationIncomplete && OBSERVED_PHASES.size() == 8;
+    }
     private static Map<String, Integer> remainingThreadCounts(Set<Long> baseline) throws Exception {
         Map<String, Integer> counts = new LinkedHashMap<>();
         for (String category : THREAD_CATEGORIES) counts.put(category, 0);
+        Map<String, Integer> intervals = new LinkedHashMap<>();
+        for (String phase : THREAD_PHASES) intervals.put(phase, 0);
+        Map<String, Map<String, Integer>> matrix = new LinkedHashMap<>();
+        for (String category : THREAD_CATEGORIES) {
+            Map<String, Integer> row = new LinkedHashMap<>();
+            for (String phase : THREAD_PHASES) row.put(phase, 0);
+            matrix.put(category, row);
+        }
         int total = 0;
         for (Thread thread : Thread.getAllStackTraces().keySet()) {
             if (!thread.isAlive() || baseline.contains(thread.getId())) continue;
             need(++total <= 128, Code.cleanup_failed);
             String category = threadCategory(thread); counts.put(category, counts.get(category) + 1);
+            String phase = threadObservationsComplete() ? THREAD_ORIGINS.getOrDefault(thread, "unattributed") : "unattributed";
+            intervals.put(phase, intervals.get(phase) + 1);
+            Map<String, Integer> row = matrix.get(category); row.put(phase, row.get(phase) + 1);
         }
+        need(intervals.values().stream().mapToInt(Integer::intValue).sum() == total, Code.cleanup_failed);
+        for (String category : THREAD_CATEGORIES) {
+            need(matrix.get(category).values().stream().mapToInt(Integer::intValue).sum() == counts.get(category), Code.cleanup_failed);
+        }
+        for (String phase : THREAD_PHASES) {
+            need(matrix.values().stream().mapToInt(row -> row.get(phase)).sum() == intervals.get(phase), Code.cleanup_failed);
+        }
+        remainingThreadIntervals = intervals;
+        remainingThreadMatrix = matrix;
         return counts;
     }
     private static void cleanup(SimpleKdcServer server, Set<Long> baseline) {
@@ -487,11 +533,12 @@ public final class HdfsKerberosRpcProbe {
             stopped = true;
         } catch (Throwable ignored) { stopped = false; }
         CLEANUP.put("kdc_stop_returned", stopped);
+        observeThreads("shutdown", baseline);
         boolean threadsClean = false;
         long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
         do {
             try { remainingThreads = remainingThreadCounts(baseline); }
-            catch (Throwable ignored) { remainingThreads = null; break; }
+            catch (Throwable ignored) { remainingThreads = null; remainingThreadIntervals = null; remainingThreadMatrix = null; break; }
             // Every residual thread still fails cleanup, including JDK/unknown categories.
             threadsClean = remainingThreads.values().stream().allMatch(count -> count == 0)
                 && TASKS.stream().noneMatch(Thread::isAlive);
@@ -535,12 +582,22 @@ public final class HdfsKerberosRpcProbe {
         }
         return out.append('}').toString();
     }
-    private static String threadCountsJson() {
-        if (remainingThreads == null) return "null";
+    private static String threadCountsJson(Map<String, Integer> values, List<String> keys) {
+        if (values == null) return "null";
+        StringBuilder out = new StringBuilder("{");
+        for (String category : keys) {
+            if (out.length() > 1) out.append(',');
+            out.append('"').append(category).append("\":").append(values.get(category));
+        }
+        return out.append('}').toString();
+    }
+    private static String threadMatrixJson() {
+        if (remainingThreadMatrix == null) return "null";
         StringBuilder out = new StringBuilder("{");
         for (String category : THREAD_CATEGORIES) {
             if (out.length() > 1) out.append(',');
-            out.append('"').append(category).append("\":").append(remainingThreads.get(category));
+            out.append('"').append(category).append("\":")
+                .append(threadCountsJson(remainingThreadMatrix.get(category), THREAD_PHASES));
         }
         return out.append('}').toString();
     }
@@ -944,6 +1001,7 @@ public final class HdfsKerberosRpcProbe {
             exportKey(server, "HTTP/127.0.0.1@" + realm, HTTP_KEYTAB);
             stage = "kdc_start"; bounded(() -> { ownedServer.start(); return null; }, 10, deadline);
             listeners(true); CHECKS.put("endpoint_settings", true);
+            observeThreads("kdc", baseline);
             ExitUtil.disableSystemExit(); ExitUtil.disableSystemHalt();
             Configuration conf = configuration(realm, reader);
             UserGroupInformation.setConfiguration(conf);
@@ -952,17 +1010,21 @@ public final class HdfsKerberosRpcProbe {
             bounded(() -> { UserGroupInformation.loginUserFromKeytab(ownerPrincipal, KEYTAB.toString());
                 rememberOwner(); return null; }, 10, deadline);
             need(owner != null && owner.hasKerberosCredentials() && owner.isFromKeytab(), Code.namenode_failed);
+            observeThreads("owner_login", baseline);
             stage = "format"; bounded(() -> {
                 try { NameNode.format(conf); } finally { rememberOwner(); } return null; }, 15, deadline);
+            observeThreads("format", baseline);
             stage = "namenode_start"; bounded(() -> {
                 try { namenode = new NameNode(conf); } finally { rememberOwner(); } return null; }, 30, deadline);
             endpoint = namenode.getNameNodeAddress(); topology(); CHECKS.put("secure_namenode", true);
+            observeThreads("namenode", baseline);
             stage = "relay_start"; relay = new Relay(); topology();
             stage = "seed"; bounded(() -> {
                 filesystem = new DistributedFileSystem(); filesystem.initialize(URI.create("hdfs://127.0.0.1:19000"), conf);
                 filesystem.setSafeMode(SafeModeAction.SAFEMODE_LEAVE);
                 need(filesystem.mkdirs(new org.apache.hadoop.fs.Path(MEMBER), new FsPermission((short)0755)), Code.source_invalid);
                 verifyMember(); return null; }, 10, deadline);
+            observeThreads("filesystem", baseline);
             configurationDigest = configurationDigest();
             stage = "reader_tgt";
             KrbClient client = server.getKrbClient(); long before = System.currentTimeMillis() / 1000;
@@ -973,6 +1035,7 @@ public final class HdfsKerberosRpcProbe {
             try { new CredentialCache(tgt).store(buffer); serialized = buffer.toByteArray(); } finally { buffer.erase(); }
             inspectCache(serialized, realm, reader, before, after); publishCache(serialized);
             CHECKS.put("file_cache_v3", true); CHECKS.put("nonrenewable", true);
+            observeThreads("reader", baseline);
             controlDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(60);
             stage = "listing_before"; positive(reader, 0); CHECKS.put("listing_before", true);
             stage = "rclone_none"; negative(reader); CHECKS.put("rclone_auth_boundary_rejection", true);
@@ -992,12 +1055,15 @@ public final class HdfsKerberosRpcProbe {
             projectFailure(failure);
         }
         finally {
+            observeThreads("controls", baseline);
             if (serialized != null) Arrays.fill(serialized, (byte) 0);
             try { stopServices(); } catch (Throwable ignored) { CLEANUP.put("cleanup_completed", false); }
             try { cleanup(server, baseline); } catch (Throwable ignored) { CLEANUP.put("cleanup_completed", false); }
+            finally { THREAD_ORIGINS.clear(); }
         }
         boolean clean = CLEANUP.values().stream().allMatch(Boolean.TRUE::equals);
         if (!clean && error == null) error = Code.cleanup_failed;
+        if (!threadObservationsComplete() && error == null) error = Code.cleanup_failed;
         if (BACKGROUND_FAILURE.get() && error == null) error = Code.background_failure;
         boolean success = error == null && CHECKS.values().stream().allMatch(Boolean.TRUE::equals) && clean;
         report.println("{\"schema_version\":1,\"scope\":\"hdfs_kerberos_rpc_feasibility\",\"success\":" + success
@@ -1006,7 +1072,10 @@ public final class HdfsKerberosRpcProbe {
             + ",\"observed_lifetime_seconds\":" + observedLifetime + ",\"stage\":\"" + stage + "\",\"wire_hex\":\"" + wireHex + "\",\"error\":"
             + (error == null ? "null" : "\"" + error.name() + "\"")
             + ",\"diagnostic\":{\"category\":\"" + diagnosticCategory + "\",\"origin\":\"" + diagnosticOrigin + "\"}"
-            + ",\"remaining_threads\":" + threadCountsJson()
+            + ",\"remaining_threads\":" + threadCountsJson(remainingThreads, THREAD_CATEGORIES)
+            + ",\"thread_observation_complete\":" + threadObservationsComplete()
+            + ",\"remaining_thread_intervals\":" + threadCountsJson(remainingThreadIntervals, THREAD_PHASES)
+            + ",\"remaining_thread_matrix\":" + threadMatrixJson()
             + ",\"rclone_wire_hex\":\"" + rcloneWireHex + "\",\"relay\":" + (relay == null ? "null" : relay.json())
             + ",\"ledger_eligible\":false,\"authentication_verified\":false,\"hdfs_authenticated\":false"
             + ",\"renewal_verified\":false,\"daemon_accepted\":false,\"provider_accepted\":false"
