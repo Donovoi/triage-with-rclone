@@ -1,0 +1,57 @@
+name: Isolated HDFS Kerberos RPC experiment
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/hdfs-kerberos-rpc.yml
+      - scripts/provider-lab/hdfs-kerberos-rpc/**
+      - scripts/provider-lab/hdfs-kerberos-ticket/runtime-classpath.json
+      - scripts/provider-lab/hdfs-discovery/artifact-lock-kerberos.json
+      - scripts/provider-lab/hdfs-discovery/bootstrap_material.py
+      - scripts/provider-lab/hdfs-discovery/graph_export.py
+      - scripts/provider-lab/hdfs-discovery/offline_cache.py
+      - scripts/provider-lab/hdfs-discovery/resolver_discovery.py
+      - scripts/download-rclone.sh
+      - rclone-version.env
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hdfs-kerberos-rpc-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rpc:
+    name: Check synthetic Kerberos RPC in a network-none container
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - name: Check pure source contracts without native tools
+        run: python -I -S -B scripts/provider-lab/hdfs-kerberos-rpc/run_pure_tests.py
+      - name: Prepare the verified rclone binary
+        run: bash scripts/download-rclone.sh --linux "$RUNNER_TEMP/rclone-hdfs-rpc"
+      # Public hash-locked preparation precedes network-none compilation/execution.
+      # Synthetic keytabs and the reader FILEv3 TGT remain in private tmpfs.
+      # NameNode RPC only; no DataNode, file transfer or provider coverage credit.
+      - name: Check authenticated controls, RPC rejection and cleanup
+        run: >-
+          python -I -S -B scripts/provider-lab/hdfs-kerberos-rpc/rpc_probe_container.py
+          --rclone "${{ runner.temp }}/rclone-hdfs-rpc"
+          --report "${{ runner.temp }}/hdfs-kerberos-rpc-experiment.json"
+      - name: Retain only the sanitized result
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: hdfs-kerberos-rpc-experiment
+          path: ${{ runner.temp }}/hdfs-kerberos-rpc-experiment.json
+          if-no-files-found: warn
+          retention-days: 14
