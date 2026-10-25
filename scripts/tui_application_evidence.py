@@ -14,6 +14,7 @@ from pathlib import Path
 import re
 import stat
 import sys
+import types
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -41,9 +42,9 @@ FAILURE_PHASES = frozenset({"case_setup", "fixture_start", "session_start", "mai
 LIMITATIONS = ("no_vendor_acceptance", "no_oauth_or_refresh", "no_listing_cancel_recovery",
     "no_resize_acceptance", "no_mount_or_webgui", "no_all_provider_qualification")
 CLI_HARNESS_FILES = (
-    "scripts/application_evidence.py", "scripts/application-lab/fixture_http.py",
+    "scripts/application_evidence.py", "scripts/application_source_snapshot.py", "scripts/application-lab/fixture_http.py",
     "scripts/application-lab/HostedConPtySession.cs", "scripts/application-lab/hosted_session.ps1",
-    "scripts/application-lab/prepare_case.ps1", "scripts/application-lab/run_windows_http.py",
+    "scripts/application-lab/prepare_case.ps1", "scripts/application-lab/run_windows_http.py", "scripts/application-lab/owned_helper_process.py",
 )
 HARNESS_FILES = tuple(sorted(CLI_HARNESS_FILES + (
     "scripts/tui_application_evidence.py", "scripts/application-lab/run_windows_tui.py",
@@ -136,28 +137,27 @@ def _file(path, limit, *, content=False):
         raise TuiEvidenceError("input_unreadable") from None
 
 
-def _source_names(root):
-    source = root / "rclone-triage/src"
-    _path_state(source, True)
-    names = ["rclone-triage/Cargo.toml", "rclone-triage/Cargo.lock", "rclone-triage/build.rs",
-             "rclone-triage/.cargo/config.toml"]
-    stack, seen = [source], 0
-    while stack:
-        parent = stack.pop()
-        with os.scandir(parent) as entries:
-            for entry in entries:
-                seen += 1
-                need(seen <= MAX_SOURCE_FILES, "input_limit")
-                info = entry.stat(follow_symlinks=False)
-                need(not stat.S_ISLNK(info.st_mode) and not getattr(info, "st_file_attributes", 0) & 0x400,
-                     "input_invalid")
-                if stat.S_ISDIR(info.st_mode):
-                    stack.append(Path(entry.path))
-                else:
-                    need(stat.S_ISREG(info.st_mode), "input_invalid")
-                    names.append(Path(entry.path).relative_to(root).as_posix())
-    need(len(names) > 4, "bindings_invalid")
-    return tuple(sorted(names))
+_SOURCE_PATH = Path(__file__).absolute().with_name("application_source_snapshot.py")
+_SOURCE_BYTES = _file(_SOURCE_PATH, 128 * 1024, content=True)
+_SOURCE_SHA = hashlib.sha256(_SOURCE_BYTES).hexdigest()
+SOURCE = types.ModuleType("tui_declared_source_policy")
+SOURCE.__file__ = str(_SOURCE_PATH)
+exec(compile(_SOURCE_BYTES, str(_SOURCE_PATH), "exec"), SOURCE.__dict__)
+
+
+def source_helper_preserved(root):
+    need(_file(_SOURCE_PATH, 128 * 1024) == _SOURCE_SHA and
+         _file(Path(root) / "scripts/application_source_snapshot.py", 128 * 1024) == _SOURCE_SHA, "input_changed")
+
+
+def application_source_hash(root):
+    source_helper_preserved(root)
+    try:
+        rows = SOURCE.source_rows(root, reader=_file)
+    except SOURCE.SourceSnapshotError:
+        raise TuiEvidenceError("input_changed") from None
+    source_helper_preserved(root)
+    return hashlib.sha256(compact(rows)).hexdigest()
 
 
 def tree_hash(root, names):
@@ -180,17 +180,21 @@ def compute_bindings(root, application, build_commit):
     need(type(build_commit) is str and re.fullmatch(r"[0-9a-f]{40}", build_commit), "bindings_invalid")
     root = Path(root).absolute()
     try:
-        names = _source_names(root)
+        source_helper_preserved(root)
+        source = SOURCE.Snapshot(root, reader=_file)
         result = dict(application_sha256=_file(application, 512 * 1024 * 1024),
-            application_source_sha256=tree_hash(root, names), build_commit=build_commit,
+            application_source_sha256=hashlib.sha256(compact(source.rows)).hexdigest(), build_commit=build_commit,
             build_target="x86_64-pc-windows-msvc", build_profile="release",
             cargo_lock_sha256=_file(root / "rclone-triage/Cargo.lock", 2 * 1024 * 1024),
             runtime_manifest_sha256=_file(root / "rclone-version.env", 4096),
             harness_sha256=tree_hash(root, CLI_HARNESS_FILES),
             fixture_manifest_sha256=hashlib.sha256(compact(fixture_manifest())).hexdigest(),
             tui_harness_sha256=tree_hash(root, HARNESS_FILES))
-        need(names == _source_names(root), "input_changed")
+        source_helper_preserved(root)
+        source.assert_current()
         return result
+    except SOURCE.SourceSnapshotError:
+        raise TuiEvidenceError("input_changed") from None
     except OSError:
         raise TuiEvidenceError("input_unreadable") from None
 

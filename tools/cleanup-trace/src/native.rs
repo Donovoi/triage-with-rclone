@@ -1,4 +1,8 @@
 use crate::model::{self, CallbackStorage, Counts, End, Start, MAX_ENDS, MAX_STARTS};
+use crate::ownership::{
+    self, Buffer as OwnershipBuffer, Event as OwnershipEvent, Reason as OwnershipReason,
+};
+use crate::schema_metadata;
 use std::{
     env,
     fs::File,
@@ -151,6 +155,8 @@ struct Collector {
     error: Option<&'static str>,
     schema_rejection: Option<SchemaRejection>,
     ready: Option<mpsc::SyncSender<()>>,
+    ownership: OwnershipBuffer,
+    metadata: schema_metadata::Capture,
 }
 impl Collector {
     fn new(path: Vec<u16>) -> Result<Self, &'static str> {
@@ -162,13 +168,16 @@ impl Collector {
             error: None,
             schema_rejection: None,
             ready: None,
+            ownership: OwnershipBuffer::default(),
+            metadata: schema_metadata::Capture::new(),
         };
         x.starts
             .try_reserve_exact(MAX_STARTS)
-            .map_err(|_| "budget_exceeded")?;
+            .map_err(|_| "start_reservation_failed")?;
         x.ends
             .try_reserve_exact(MAX_ENDS)
-            .map_err(|_| "budget_exceeded")?;
+            .map_err(|_| "end_reservation_failed")?;
+        x.ownership.reserve(); // Supplemental allocation failure cannot replace the original gate.
         Ok(x)
     }
     fn reject(
@@ -268,7 +277,7 @@ unsafe fn consume(e: *const EVENT_RECORD, s: &mut Collector) -> Outcome {
     }
     if h.EventDescriptor.Opcode == 76 {
         if s.ends.len() == MAX_ENDS {
-            return Err("budget_exceeded");
+            return Err("end_capacity_reached");
         }
         let end = End {
             qpc: h.TimeStamp,
@@ -300,7 +309,7 @@ unsafe fn consume(e: *const EVENT_RECORD, s: &mut Collector) -> Outcome {
             return Ok(()); // Other paths are discarded; never printed or retained.
         }
         if s.starts.len() == MAX_STARTS {
-            return Err("budget_exceeded");
+            return Err("target_start_capacity_reached");
         }
         let start = Start {
             qpc: h.TimeStamp,
@@ -311,6 +320,72 @@ unsafe fn consume(e: *const EVENT_RECORD, s: &mut Collector) -> Outcome {
         s.starts.push(start);
     }
     Ok(())
+}
+// Only additional begin events need TDH calls. Selected Creates and all Ends
+// reuse the original decoder's values. This error channel never calls s.reject.
+unsafe fn ownership_irp(e: *const EVENT_RECORD) -> Result<u64, OwnershipReason> {
+    let property = PROPERTY_DATA_DESCRIPTOR {
+        PropertyName: KnownProperty::IrpPtr.name() as u64,
+        ArrayIndex: u32::MAX,
+        Reserved: 0,
+    };
+    ownership::read_irp(
+        || {
+            let mut length = 0;
+            if TdhGetPropertySize(e, 0, ptr::null(), 1, &property, &mut length) == 0 {
+                Ok(length)
+            } else {
+                Err(())
+            }
+        },
+        |out| {
+            if TdhGetProperty(e, 0, ptr::null(), 1, &property, 8, out.as_mut_ptr()) == 0 {
+                Ok(())
+            } else {
+                Err(())
+            }
+        },
+    )
+}
+unsafe fn consume_ownership(
+    e: *const EVENT_RECORD,
+    s: &mut Collector,
+    prior_starts: usize,
+    prior_ends: usize,
+) {
+    let h = &(*e).EventHeader;
+    if !s.ownership.active() || !same_guid(h.ProviderId, FileIoGuid) {
+        return;
+    }
+    let result = (|| {
+        let Some(kind) =
+            ownership::kind(h.EventDescriptor.Opcode, h.EventDescriptor.Version, h.Flags)?
+        else {
+            return Ok(());
+        };
+        let irp = if h.EventDescriptor.Opcode == 64 && s.starts.len() > prior_starts {
+            s.starts[prior_starts].irp
+        } else if h.EventDescriptor.Opcode == 76 && s.ends.len() > prior_ends {
+            s.ends[prior_ends].irp
+        } else if h.EventDescriptor.Opcode == 76 {
+            return Err(OwnershipReason::Schema);
+        } else {
+            ownership_irp(e)?
+        };
+        s.ownership.push(OwnershipEvent {
+            ordinal: s.callbacks,
+            qpc: h.TimeStamp,
+            irp,
+            kind,
+        });
+        Ok(())
+    })();
+    if let Err(reason) = result {
+        s.ownership.reject(reason);
+        if matches!(reason, OwnershipReason::UnsupportedOpcode { .. }) {
+            s.metadata.observe(e);
+        }
+    }
 }
 unsafe extern "system" fn on_event(e: *mut EVENT_RECORD) {
     if e.is_null() || (*e).UserContext.is_null() {
@@ -325,11 +400,15 @@ unsafe extern "system" fn on_event(e: *mut EVENT_RECORD) {
     }
     s.callbacks += 1;
     if s.callbacks > MAX_CALLBACKS {
-        s.error = Some("budget_exceeded");
+        s.error = Some("callback_limit_exceeded");
         return;
     }
+    let prior_starts = s.starts.len();
+    let prior_ends = s.ends.len();
     if let Err(reason) = consume(e, s) {
         s.error = Some(reason);
+    } else {
+        consume_ownership(e, s, prior_starts, prior_ends);
     }
 }
 unsafe extern "system" fn on_buffer(log: *mut EVENT_TRACE_LOGFILEW) -> u32 {
@@ -518,7 +597,7 @@ impl Trace {
             return Err("session_configuration_mismatch");
         }
         if !self.proof.bounded {
-            return Err("budget_exceeded");
+            return Err("initial_session_bounds_unverified");
         }
         if !self.proof.lossless {
             return Err("event_loss");
@@ -691,8 +770,11 @@ impl Trace {
         let consumer = self.shutdown();
         let mut counts = None;
         let mut rejection = None;
+        let mut ownership = None;
+        let mut metadata = None;
         if let Some(c) = consumer {
             rejection = c.state.schema_rejection.map(SchemaRejection::json);
+            metadata = c.state.metadata.observation;
             if c.state.error == Some("event_loss") {
                 self.proof.lossless = false;
             }
@@ -706,6 +788,14 @@ impl Trace {
                     Ok(v) => counts = Some(v),
                     Err(e) => self.reason = Some(e),
                 }
+            }
+            if self.reason == Some("correlation_end_multiple") {
+                ownership = Some(c.state.ownership.report(
+                    &c.state.starts,
+                    &c.state.ends,
+                    window,
+                    self.reason,
+                ));
             }
             if !self.proof.closed {
                 std::mem::forget(c);
@@ -723,7 +813,7 @@ impl Trace {
             self.reason = Some("event_loss");
         }
         if self.reason.is_none() && !self.proof.bounded {
-            self.reason = Some("budget_exceeded");
+            self.reason = Some("final_bounds_proof_unverified");
         }
         if original == Some(false) && !self.proof.identity && self.reason.is_none() {
             self.reason = Some("identity_unavailable");
@@ -758,9 +848,39 @@ impl Trace {
                 )
             },
         );
-        let record=format!("{{\"schema\":1,\"scope\":\"original_runtime_remove_tree\",\"status\":\"{}\",\"reason\":\"{}\",\"original_ok\":{},\"os_code\":{},\"operation_us\":{},\"runtime_sha256\":\"{}\",\"target_identity_verified\":{},\"session_started\":{},\"settings_verified\":{},\"bounded\":{},\"zero_loss\":{},\"stop_succeeded\":{},\"session_absent\":{},\"consumer_completed\":{},\"consumer_closed\":{},\"worker_joined\":{},\"counts\":{},\"schema_rejection\":{}}}",status,self.reason.unwrap_or("none"),original.map_or_else(||"null".into(),|v|v.to_string()),nullable(os_code.map(u64::from)),nullable(duration),self.runtime_sha256,self.proof.identity,self.proof.started,self.proof.settings,self.proof.bounded,self.proof.lossless,self.proof.stopped,self.proof.absent,self.proof.completed,self.proof.closed,self.proof.joined,counted,rejection.unwrap_or_else(||"null".into()));
+        let ownership = if self.reason != Some("correlation_end_multiple") {
+            "null".into()
+        } else {
+            let observed = if !cleanup || !self.proof.started || !self.proof.settings {
+                ownership::Report::Unavailable(OwnershipReason::Teardown)
+            } else if !self.proof.lossless {
+                ownership::Report::Unavailable(OwnershipReason::EventLoss)
+            } else if !self.proof.bounded {
+                ownership::Report::Unavailable(OwnershipReason::Budget)
+            } else if duration.is_none() {
+                ownership::Report::Unavailable(OwnershipReason::Window)
+            } else {
+                ownership.unwrap_or(ownership::Report::Unavailable(OwnershipReason::Teardown))
+            };
+            observed.json()
+        };
+        let record=format!("{{\"schema\":3,\"scope\":\"original_runtime_remove_tree\",\"status\":\"{}\",\"reason\":\"{}\",\"original_ok\":{},\"os_code\":{},\"operation_us\":{},\"runtime_sha256\":\"{}\",\"target_identity_verified\":{},\"session_started\":{},\"settings_verified\":{},\"bounded\":{},\"zero_loss\":{},\"stop_succeeded\":{},\"session_absent\":{},\"consumer_completed\":{},\"consumer_closed\":{},\"worker_joined\":{},\"counts\":{},\"schema_rejection\":{},\"ownership\":{}}}",status,self.reason.unwrap_or("none"),original.map_or_else(||"null".into(),|v|v.to_string()),nullable(os_code.map(u64::from)),nullable(duration),self.runtime_sha256,self.proof.identity,self.proof.started,self.proof.settings,self.proof.bounded,self.proof.lossless,self.proof.stopped,self.proof.absent,self.proof.completed,self.proof.closed,self.proof.joined,counted,rejection.unwrap_or_else(||"null".into()),ownership);
         if record.len() <= 4096 {
             let _ = writeln!(io::stderr().lock(), "runtime_cleanup_trace={record}");
+        }
+        // Separate metadata never supplies original counts/reasons or cleanup proof.
+        let schema = schema_metadata::json(
+            metadata,
+            cleanup
+                && self.proof.started
+                && self.proof.settings
+                && self.proof.bounded
+                && self.proof.lossless
+                && duration.is_some(),
+            &self.runtime_sha256,
+        );
+        if schema.len() <= 8192 {
+            let _ = writeln!(io::stderr().lock(), "runtime_cleanup_schema={schema}");
         }
     }
 }

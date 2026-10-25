@@ -495,8 +495,16 @@ mod tests {
             let mut worker = None;
             let error = flow.run_with_opener("https://example.invalid/authorize?state=synthetic-state", |_| {
                 worker = Some(std::thread::spawn(move || {
-                    let response = ureq::get(&format!("http://127.0.0.1:{port}/?state=synthetic-state&error={code}&error_description=PRIVATE_DESCRIPTION"))
-                        .timeout(std::time::Duration::from_secs(3)).call().unwrap().into_string().unwrap();
+                    let agent: ureq::Agent = ureq::Agent::config_builder()
+                        // ureq 2 did not read proxy settings from the environment.
+                        .proxy(None)
+                        .timeout_connect(Some(std::time::Duration::from_secs(30)))
+                        .timeout_global(Some(std::time::Duration::from_secs(3)))
+                        .max_redirects(5)
+                        .build()
+                        .into();
+                    let response = agent.get(&format!("http://127.0.0.1:{port}/?state=synthetic-state&error={code}&error_description=PRIVATE_DESCRIPTION"))
+                        .call().unwrap().body_mut().read_to_string().unwrap();
                     assert!(!response.contains("PRIVATE_"));
                 }));
                 Ok(())
