@@ -104,7 +104,8 @@ public final class HdfsKerberosRpcProbe {
     private static String memberGroup, configurationDigest;
     private static String diagnosticCategory = "none", diagnosticOrigin = "none";
     private static final List<String> THREAD_CATEGORIES = List.of("probe_task", "jdk_process_reaper", "jdk_timer",
-        "jdk_executor", "hadoop_metrics", "hadoop_rpc", "jetty", "kerby", "other");
+        "jdk_executor", "jdk_cleaner", "hadoop_metrics", "hadoop_rpc", "hadoop_fs", "hadoop_namenode",
+        "hadoop_blockmanagement", "hadoop_util", "jetty", "kerby", "other");
     private static Map<String, Integer> remainingThreads;
     private static final LinkOption NOFOLLOW = LinkOption.NOFOLLOW_LINKS;
     private static final int PORT = 19006, MAX_BYTES = 65536, LIFETIME_SECONDS = 120;
@@ -126,7 +127,8 @@ public final class HdfsKerberosRpcProbe {
         cache_invalid, ticket_time_mismatch, ticket_flags_mismatch,
         background_failure, io_failure, krb_failure, interrupted, unclassified,
         cleanup_failed, namenode_failed, child_failed, child_output_invalid, wire_invalid,
-        rclone_positive_failed, rclone_denial_mismatch, source_invalid, relay_invalid,
+        rclone_positive_failed, rclone_denial_mismatch, rclone_denial_exit_zero, rclone_denial_output_invalid,
+        source_invalid, relay_invalid,
         child_descendant_found, child_reap_failed, child_streams_alive, child_process_drift,
         rclone_version_nonzero, rclone_version_stderr, rclone_version_mismatch
     }
@@ -446,9 +448,14 @@ public final class HdfsKerberosRpcProbe {
                 else if (name.startsWith("org.apache.hadoop.ipc.")) { category = "hadoop_rpc"; rank = 1; }
                 else if (name.startsWith("org.eclipse.jetty.")) { category = "jetty"; rank = 2; }
                 else if (name.startsWith("org.apache.kerby.")) { category = "kerby"; rank = 3; }
-                else if (name.equals("java.lang.ProcessHandleImpl")) { category = "jdk_process_reaper"; rank = 4; }
-                else if (name.equals("java.util.TimerThread")) { category = "jdk_timer"; rank = 5; }
-                else if (name.startsWith("java.util.concurrent.")) { category = "jdk_executor"; rank = 6; }
+                else if (name.startsWith("org.apache.hadoop.fs.")) { category = "hadoop_fs"; rank = 4; }
+                else if (name.startsWith("org.apache.hadoop.hdfs.server.namenode.")) { category = "hadoop_namenode"; rank = 5; }
+                else if (name.startsWith("org.apache.hadoop.hdfs.server.blockmanagement.")) { category = "hadoop_blockmanagement"; rank = 6; }
+                else if (name.startsWith("org.apache.hadoop.util.")) { category = "hadoop_util"; rank = 7; }
+                else if (name.equals("jdk.internal.ref.CleanerImpl")) { category = "jdk_cleaner"; rank = 8; }
+                else if (name.equals("java.lang.ProcessHandleImpl")) { category = "jdk_process_reaper"; rank = 9; }
+                else if (name.equals("java.util.TimerThread")) { category = "jdk_timer"; rank = 10; }
+                else if (name.startsWith("java.util.concurrent.")) { category = "jdk_executor"; rank = 11; }
                 if (rank < selectedRank) { selected = category; selectedRank = rank; }
             }
         } catch (Throwable ignored) { return "other"; }
@@ -740,14 +747,20 @@ public final class HdfsKerberosRpcProbe {
             Code.rclone_positive_failed);
         inventory(); topology();
     }
+    private static boolean emptyNegativeListing(byte[] stdout) {
+        // Pinned lsjson prints '[' before ListJSON and returns on error before
+        // printing ']'. This finite prefix contains no item and is not auth proof.
+        String output = new String(stdout, StandardCharsets.US_ASCII);
+        return output.matches("(?:|\\[\\n|\\[\\n\\]\\n)");
+    }
     private static void negative(String reader) throws Exception {
         relay.begin(1); Result result = rclone(reader, false); relay.end(1);
         // Pinned Go transport checks callId=-1 before status, discarding the fatal
         // category. Stderr is not an oracle. Require the actual NONE connections'
-        // unchanged fatal wire response; [] is serialization only, zero objects.
-        String output = new String(result.out, StandardCharsets.US_ASCII).trim();
-        need(result.code != 0 && (output.isEmpty() || output.matches("\\[\\s*\\]"))
-            && relay.counts[1] > 0 && relay.noneHeaders == relay.counts[1]
+        // unchanged fatal wire response; empty serialization never grants credit.
+        need(result.code != 0, Code.rclone_denial_exit_zero);
+        need(emptyNegativeListing(result.out), Code.rclone_denial_output_invalid);
+        need(relay.counts[1] > 0 && relay.noneHeaders == relay.counts[1]
             && relay.fatalResponses == relay.counts[1] && !rcloneWireHex.isEmpty(), Code.rclone_denial_mismatch);
         inventory(); topology();
     }
