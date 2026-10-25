@@ -283,7 +283,7 @@ class DenialDiagnosticTests(unittest.TestCase):
             line_limit_ok=True, notice_count=1, final_notice_grammar=True, expected_cause_equal=True,
             expected_connection_prefix_equal=True, terminal_category="login_incorrect",
             terminal_reply_prefix=True, terminal_contains_reply=True, terminal_length_relation="equal",
-            terminal_detail="login_incorrect"))
+            terminal_detail="login_incorrect", terminal_shape=None))
         for value, changed in (
             (self.value.replace(":2121", ":2122"), {"expected_cause_equal": False,
                                                    "expected_connection_prefix_equal": False, "terminal_category": None}),
@@ -598,6 +598,70 @@ class DenialDiagnosticTests(unittest.TestCase):
                     self.assertEqual(record["availability_reason"], "available")
                     self.assertEqual(record["counts"]["denied_a"], 1)
 
+
+
+    def test_shape_projection_distinguishes_formatting_without_accepting_it(self):
+        variants = (
+            ("530 login incorrect", "casefold_equal"),
+            ("530  Login incorrect", "spacefold_equal"),
+            ("530 \tLogin   incorrect ", "spacefold_equal"),
+            ("530  login INCORRECT", "case_spacefold_equal"),
+            ('530 "Login incorrect"', "quoted_message_equal"),
+            ("530 'Login incorrect'", "quoted_message_equal"),
+        )
+        for terminal, marker in variants:
+            with self.subTest(marker=marker, terminal=terminal):
+                value = self.value.replace("530 Login incorrect", terminal)
+                projected = self.projected(P.denial_error_diagnostic, value, self.cause)
+                self.assertTrue(projected["terminal_shape"][marker])
+                self.assertFalse(projected["expected_cause_equal"])
+                self.assertFalse(P.W.exact_rc_error(value, self.cause, stat=True))
+                with tempfile.TemporaryDirectory() as directory:
+                    case = Path(directory)
+                    working = self.negative_manifest(case, value)
+                    with patch("builtins.print"), self.assertRaisesRegex(P.ProducerError, "^denial_failed$"):
+                        P.manifest("revoked_a", case, working, RUNTIME, ("127.0.0.1", 2121))
+
+    def test_shape_projection_is_closed_bounded_and_never_returns_private_text(self):
+        keys = {"ascii_printable", "casefold_equal", "spacefold_equal", "case_spacefold_equal",
+                "quoted_message_equal", "expected_message_present", "prefix_equal_chars", "suffix_equal_chars"}
+        for terminal in ("530 PRIVATE_CANARY", "530 " + "p" * 508, "530 \u2603PRIVATE_CANARY", "530 \x1bPRIVATE_CANARY"):
+            result = P.denial_reply_shape(terminal)
+            self.assertEqual(set(result), keys)
+            self.assertNotIn("PRIVATE_CANARY", json.dumps(result))
+            self.assertEqual(result["prefix_equal_chars"], 4)
+            self.assertTrue(all(type(v) is bool for k, v in result.items() if not k.endswith("_chars")))
+            self.assertTrue(all(type(result[k]) is int and 0 <= result[k] <= 19 for k in keys if k.endswith("_chars")))
+            self.projected(P.denial_error_diagnostic, self.value.replace("530 Login incorrect", terminal), self.cause)
+        class Private:
+            def __str__(self):
+                raise AssertionError("PRIVATE_CANARY")
+        for terminal in (None, True, [], {"PRIVATE_CANARY": 1}, Private(), "", "530 " + "p" * 509):
+            self.assertIsNone(P.denial_reply_shape(terminal))
+
+    def test_shape_requires_unique_bound_notice_and_mismatching530_terminal(self):
+        for value in (self.value, self.value.replace("530", "531"), self.value.replace(":2121", ":2122"),
+                      self.notice + self.cause, self.value + self.notice + self.cause,
+                      self.value.replace("NOTICE", "PRIVATE_CANARY")):
+            self.assertIsNone(self.projected(P.denial_error_diagnostic, value, self.cause)["terminal_shape"])
+        value = self.value.replace("530 Login incorrect", "530 " + "p" * 509)
+        self.assertIsNone(self.projected(P.denial_error_diagnostic, value, self.cause)["terminal_shape"])
+
+    def test_shape_failure_cannot_change_original_denial_or_run_on_success(self):
+        value = self.value.replace("530 Login incorrect", "530 PRIVATE_CANARY")
+        with tempfile.TemporaryDirectory() as directory:
+            case = Path(directory)
+            working = self.negative_manifest(case, value)
+            original = P.ProducerError("denial_failed")
+            with patch.object(P.W, "exact_rc_error", side_effect=original), \
+                    patch.object(P, "denial_reply_shape", side_effect=RuntimeError("PRIVATE_CANARY")), \
+                    patch("builtins.print"):
+                with self.assertRaises(P.ProducerError) as caught:
+                    P.manifest("revoked_a", case, working, RUNTIME, ("127.0.0.1", 2121))
+            self.assertIs(caught.exception, original)
+            working = self.negative_manifest(case, self.value)
+            with patch.object(P, "denial_reply_shape", side_effect=AssertionError("must stay silent")):
+                P.manifest("revoked_a", case, working, RUNTIME, ("127.0.0.1", 2121))
 
     def test_source_pinned_terminal_details_are_observations_never_accepted_causes(self):
         cases = {
