@@ -38,6 +38,14 @@ KERBEROS_INPUT_HASHES = {
     "settings.xml": "73c88f4d9660338f35a6e56978f8567f89f5a85641d5338f189fc489440b364c",
     "global-settings.xml": "aeb786c97c2a0103b71c04ab1b29508d7ec1c402a9d36e22301407b23670edf2",
 }
+# This prospective graph has no reviewed cache lock. It is online discovery
+# only; neither old lock may be used to prepare or replay its cache.
+REMEDIATION_PROFILE = "kerberos-remediation"
+REMEDIATION_INPUT_HASHES = {
+    "global-settings.xml": "aeb786c97c2a0103b71c04ab1b29508d7ec1c402a9d36e22301407b23670edf2",
+    "pom.xml": "c6d407169f2700ec59d298e26e9e9367cc31d2372fbbdc4b3852f7cd7b037eae",
+    "settings.xml": "73c88f4d9660338f35a6e56978f8567f89f5a85641d5338f189fc489440b364c"
+}
 MAVEN_SHA512 = "831a8591fe20c8243b1dbe7d71e3244f31d1665b0804b2e825e38cbbe5ce0cafb8338851f90780735568773e0a6cd07bbec107cda0b896b008b861075358b6f6"
 HASH = re.compile(r"[a-f0-9]{64}\Z")
 COMPONENT = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.+-]{0,127}\Z")
@@ -132,7 +140,9 @@ def json_value(raw):
 
 
 def candidate_hashes(profile):
-    need(type(profile) is str and profile in {"hdfs", "kerberos"}, "candidate_invalid")
+    need(type(profile) is str and profile in {"hdfs", "kerberos", REMEDIATION_PROFILE}, "candidate_invalid")
+    if profile == REMEDIATION_PROFILE:
+        return dict(REMEDIATION_INPUT_HASHES)
     return dict(INPUT_HASHES if profile == "hdfs" else KERBEROS_INPUT_HASHES)
 
 
@@ -516,6 +526,20 @@ def validate_profile_manifest(manifest, profile):
          "artifact_semantics_invalid")
 
 
+def validate_remediation_versions(manifest):
+    selected = [r for r in manifest["artifacts"] if r["selected_runtime"] is True]
+    families = (
+        (lambda r: r["group"].startswith("com.fasterxml.jackson"), "2.18.12"),
+        (lambda r: r["group"] == "io.netty", "4.1.139.Final"),
+        (lambda r: (r["group"], r["artifact"]) ==
+         ("org.apache.commons", "commons-configuration2"), "2.15.1"),
+        (lambda r: r["group"] == "org.bouncycastle", "1.86"),
+    )
+    for matches, version in families:
+        rows = [r for r in selected if matches(r)]
+        need(rows and all(r["version"] == version for r in rows), "classpath_invalid")
+
+
 def hosted_guard():
     need(sys.platform == "linux" and os.environ.get("GITHUB_ACTIONS") == "true"
          and os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted" and os.environ.get("RUNNER_OS") == "Linux",
@@ -527,17 +551,21 @@ def discover(candidate, bootstrap, archive, output_parent, *, runner_factory=Doc
     """One fresh hosted discovery; raw logs/archive stay private, never uploaded here."""
     hosted_guard()
     hashes = candidate_hashes(candidate_profile)
+    prospective = candidate_profile == REMEDIATION_PROFILE
+    need(not prospective or (cache_destination is None and seed_cache is None), "offline_cache_invalid")
     started_utc = datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
     started_clock = time.monotonic()
     supervisor_sha = file_hash(Path(__file__).resolve())
     exporter_source = Path(graph_export.__file__).absolute()
     exporter_sha = file_hash(exporter_source)
     cache_source = Path(offline_cache.__file__).absolute()
-    cache_lock = offline_cache.lock_path(candidate_profile)
-    cache_source_sha, cache_lock_sha = file_hash(cache_source), file_hash(cache_lock)
-    expected_lock_sha = (offline_cache.LOCK_SHA256 if candidate_profile == "hdfs"
-                         else offline_cache.KERBEROS_LOCK_SHA256)
-    need(cache_lock_sha == expected_lock_sha, "offline_cache_invalid")
+    cache_source_sha = file_hash(cache_source)
+    cache_lock = None if prospective else offline_cache.lock_path(candidate_profile)
+    cache_lock_sha = None if prospective else file_hash(cache_lock)
+    if not prospective:
+        expected_lock_sha = (offline_cache.LOCK_SHA256 if candidate_profile == "hdfs"
+                             else offline_cache.KERBEROS_LOCK_SHA256)
+        need(cache_lock_sha == expected_lock_sha, "offline_cache_invalid")
     inputs = candidate_inputs(candidate, candidate_profile)
     bootstrap = validate_bootstrap(bootstrap, archive)
     parent = Path(output_parent).absolute()
@@ -631,6 +659,8 @@ def discover(candidate, bootstrap, archive, output_parent, *, runner_factory=Doc
             raise DiscoveryError("container_failed")
         report["manifest"] = artifact_manifest(result.stdout)
         validate_profile_manifest(report["manifest"], candidate_profile)
+        if prospective:
+            validate_remediation_versions(report["manifest"])
         if cache_destination is not None:
             report["cache_preparation"] = offline_cache.prepare_cache(result.stdout, cache_destination,
                                                                        profile=candidate_profile)
@@ -691,7 +721,8 @@ def discover(candidate, bootstrap, archive, output_parent, *, runner_factory=Doc
                  and file_hash(archive) == bootstrap["maven_archive_sha256"]
                  and file_hash(Path(__file__).resolve()) == supervisor_sha
                  and file_hash(exporter_source) == exporter_sha
-                 and file_hash(cache_source) == cache_source_sha and file_hash(cache_lock) == cache_lock_sha, "source_changed")
+                 and file_hash(cache_source) == cache_source_sha
+                 and (cache_lock is None if prospective else file_hash(cache_lock) == cache_lock_sha), "source_changed")
             need(validate_bootstrap(bootstrap, archive) == bootstrap, "source_changed")
             if offline:
                 need(offline_cache.verify_cache(seed_cache, profile=candidate_profile) == seed_receipt, "source_changed")
