@@ -417,7 +417,7 @@ class TicketTests(unittest.TestCase):
         self.assertIn(b"--kill-after=5s 180s", files["driver.sh"])
         self.assertIn(b"-Duser.home=/work/home", files["driver.sh"])
 
-    def fake_run(self, action=None, failure=None):
+    def fake_run(self, action=None, failure=None, *, profile="kerberos", real_helpers=False):
         here = self.root / "input"; discovery = self.root / "discovery"
         here.mkdir(); discovery.mkdir()
         java = b"inert Java source"
@@ -427,11 +427,14 @@ class TicketTests(unittest.TestCase):
         pin = here / "rclone-version.env"
         pin.write_text("RCLONE_VERSION=1.75.2\nRCLONE_LINUX_EXE_SHA256=" + F.sha(b"inert rclone") + "\n")
         (discovery / "artifact-lock-kerberos.json").write_bytes(b"{}")
+        (discovery / "artifact-lock-kerberos-remediation.json").write_bytes(b"{}")
         helper = discovery / "helper.py"; helper.write_bytes(b"# inert helper\n")
         rows = [dict(size=3, sha256=F.sha(b"jar"))]
         made = []
         def loader(): return types.SimpleNamespace(DiscoveryError=F.ProbeError), {helper: F.file_hash(helper)}
-        def downloader(context, rows):
+        def downloader(context, rows, *, profile):
+            self.assertEqual(profile, selected_profile)
+            self.assertTrue((context / F.profile_settings(profile)["lock"].name).is_file())
             (context / "jars").mkdir(); (context / "jars" / "000.jar").write_bytes(b"jar")
         def factory(root, **kwargs):
             docker = FakeDocker(root, **kwargs); made.append(docker)
@@ -442,11 +445,16 @@ class TicketTests(unittest.TestCase):
             if action: docker.action = lambda d: action(d, helper)
             return docker
         real_mkdtemp = tempfile.mkdtemp
-        with patch.multiple(F, HERE=here, DISCOVERY=discovery, JAVA_SHA=F.sha(java), RUNTIME=here / "runtime-classpath.json", PIN_FILE=pin, RCLONE_SHA=F.sha(b"inert rclone")), \
+        selected_profile = profile
+        chosen_discovery = F.DISCOVERY if real_helpers else discovery
+        with patch.multiple(F, HERE=here, DISCOVERY=chosen_discovery, JAVA_SHA=F.sha(java),
+             RUNTIME=here / "runtime-classpath.json", REMEDIATION_RUNTIME=here / "runtime-classpath.json",
+             PIN_FILE=pin, RCLONE_SHA=F.sha(b"inert rclone")), \
              patch.object(F, "hosted_guard"), patch.object(F, "runtime_rows", return_value=rows), \
              patch.object(F.shutil, "disk_usage", return_value=types.SimpleNamespace(free=1024**3)), \
              patch.object(F.tempfile, "mkdtemp", side_effect=lambda **kw: real_mkdtemp(prefix=kw["prefix"], dir=self.root)):
-            report = F.run(binary, loader=loader, downloader=downloader, runner_factory=factory)
+            report = F.run(binary, loader=F.load_helpers if real_helpers else loader,
+                           downloader=downloader, runner_factory=factory, profile=profile)
         return report, made[0]
 
     def test_full_mock_success_binds_context_and_cleans(self):
@@ -508,6 +516,7 @@ class TicketTests(unittest.TestCase):
         args, kwargs = launch.call_args
         self.assertEqual(args[0][1:4], ["-I", "-S", "-B"])
         self.assertEqual(args[0][5], "--download-worker")
+        self.assertEqual(args[0][-1], "kerberos")
         self.assertTrue(kwargs["start_new_session"])
         self.assertEqual(kwargs["stdout"], subprocess.DEVNULL)
         self.assertEqual(kwargs["stderr"], subprocess.DEVNULL)
@@ -568,6 +577,208 @@ class TicketTests(unittest.TestCase):
                 if value is None: sys.modules.pop(name, None)
                 else: sys.modules[name] = value
 
+
+
+class ProfileTests(unittest.TestCase):
+    def setUp(self):
+        TicketTests.setUp(self)
+        self.sequence = 0
+
+    tearDown = TicketTests.tearDown
+
+    def invoke(self, **kwargs):
+        self.sequence += 1
+        saved = self.root
+        self.root = saved / str(self.sequence); self.root.mkdir()
+        try: return TicketTests.fake_run(self, **kwargs)
+        finally: self.root = saved
+
+    def test_real_profiles_validate_only_their_own_exact_runtime_and_lock(self):
+        material = {}
+        for profile, total in (("kerberos", 74090067), ("kerberos-remediation", 73004295)):
+            pins = F.profile_settings(profile)
+            runtime, lock = pins["runtime"].read_bytes(), pins["lock"].read_bytes()
+            rows = F.runtime_rows(runtime, lock, profile=profile)
+            self.assertEqual(len(rows), 142)
+            self.assertEqual(sum(row["size"] for row in rows), total)
+            self.assertEqual(sum(row["group"] == "org.apache.kerby" for row in rows), 15)
+            self.assertEqual(F.sha(runtime), pins["runtime_sha256"])
+            self.assertEqual(F.sha(F.canonical(rows)), pins["order_sha256"])
+            material[profile] = runtime, lock
+        for profile, (runtime, lock) in material.items():
+            other = "kerberos-remediation" if profile == "kerberos" else "kerberos"
+            wrong_runtime, wrong_lock = material[other]
+            for pair in ((wrong_runtime, lock), (runtime, wrong_lock), (wrong_runtime, wrong_lock)):
+                with self.subTest(profile=profile), self.assertRaises(F.ProbeError):
+                    F.runtime_rows(*pair, profile=profile)
+        self.assertEqual(F.runtime_rows(*material["kerberos"]), F.runtime_rows(*material["kerberos"], profile="kerberos"))
+
+    def test_closed_profiles_fail_before_reads_workers_or_host_access(self):
+        for bad in (None, True, 1, [], {}, "", "Kerberos", "kerberos/../kerberos-remediation", "PRIVATE_CANARY"):
+            with self.subTest(kind=type(bad).__name__), \
+                    patch.object(F, "directory") as directory, patch.object(F, "read") as read, \
+                    patch.object(F, "file_hash") as hashed, patch.object(F, "hosted_guard") as host:
+                with self.assertRaises(F.ProbeError): F.runtime_rows(b"", b"", profile=bad)
+                with self.assertRaises(F.ProbeError): F.download(self.root / "context", [], profile=bad)
+                loader = Mock(side_effect=AssertionError("helper forbidden"))
+                report = F.run(profile=bad, loader=loader)
+                self.assertFalse(report["success"])
+                self.assertEqual(report["errors"], ["input_invalid"])
+                self.assertIsNone(report["candidate_profile"])
+                self.assertNotIn("PRIVATE_CANARY", json.dumps(report))
+                for mocked in (directory, read, hashed, host, loader): mocked.assert_not_called()
+
+    def test_order_count_and_membership_still_fail_after_outer_hash_rebinding(self):
+        profile = "kerberos-remediation"
+        pins = F.profile_settings(profile)
+        original = json.loads(pins["runtime"].read_bytes()); lock = pins["lock"].read_bytes()
+        changes = (lambda x: x["entries"].reverse(), lambda x: x["entries"].pop(),
+                   lambda x: x["entries"].append(copy.deepcopy(x["entries"][0])),
+                   lambda x: x["entries"].__setitem__(1, copy.deepcopy(x["entries"][0])))
+        for index, change in enumerate(changes):
+            value = copy.deepcopy(original); change(value)
+            if index == 3:
+                value["normalized_sha256"] = F.sha(F.canonical(value["entries"]))
+            raw = F.canonical(value)
+            with self.subTest(index=index), patch.object(F, "REMEDIATION_RUNTIME_SHA", F.sha(raw)), \
+                    patch.object(F, "REMEDIATION_ORDER_SHA", value["normalized_sha256"] if index == 3 else pins["order_sha256"]):
+                with self.assertRaises(F.ProbeError): F.runtime_rows(raw, lock, profile=profile)
+
+    def test_download_child_argv_has_explicit_selected_profile_and_same_bounds(self):
+        for profile in F.PROFILES:
+            context = self.root / profile / "context"; context.mkdir(parents=True)
+            process = Mock(pid=456); process.wait.return_value = 0; process.poll.return_value = 0
+            with patch.object(F.subprocess, "Popen", return_value=process) as launch, patch.object(F, "verify_jars") as verify:
+                F.download(context, [], profile=profile)
+            argv, options = launch.call_args.args[0], launch.call_args.kwargs
+            self.assertEqual(argv[5], "--download-worker")
+            self.assertEqual(argv[-1], profile)
+            self.assertEqual(len(argv[5:]), 6)
+            self.assertEqual([call.kwargs["timeout"] for call in process.wait.call_args_list], [300, 3])
+            self.assertTrue(options["start_new_session"])
+            verify.assert_called_once_with(context, [])
+
+    def test_worker_rejects_missing_extra_or_unknown_profile_before_file_io(self):
+        prefix = ["--download-worker", str(self.root / "context"), "1", "2", "a" * 64]
+        cases = (prefix, prefix + ["kerberos", "extra"], prefix + ["PRIVATE_CANARY"], prefix + [None])
+        for args in cases:
+            with patch.object(F, "hosted_guard") as host, patch.object(F, "directory") as directory, \
+                    patch.object(F, "file_hash") as hashed, patch.object(F, "read") as read, \
+                    patch.object(F, "download_rows") as download:
+                self.assertEqual(F.main(args), 1)
+                for mocked in (host, directory, hashed, read, download): mocked.assert_not_called()
+
+    def test_worker_uses_exact_profile_basename_and_rejects_crossed_bytes(self):
+        for profile in F.PROFILES:
+            pins = F.profile_settings(profile)
+            other = F.profile_settings("kerberos-remediation" if profile == "kerberos" else "kerberos")
+            for wrong in (False, True):
+                selected = other if wrong else pins
+                runtime, lock = selected["runtime"].read_bytes(), selected["lock"].read_bytes()
+                context = self.root / "context"
+                paths = []
+                def read(path, maximum):
+                    self.assertEqual(maximum, 512 * 1024)
+                    paths.append(path)
+                    if path == context / "runtime-classpath.json": return runtime
+                    self.assertEqual(path, context / pins["lock"].name)
+                    return lock
+                with patch.object(F, "hosted_guard"), patch.object(F, "directory"), \
+                        patch.object(F, "file_hash", return_value="a" * 64), patch.object(F, "read", side_effect=read), \
+                        patch.object(F, "download_rows") as download:
+                    code = F.main(["--download-worker", str(context), "1", "2", "a" * 64, profile])
+                self.assertEqual(code, 1 if wrong else 0)
+                self.assertEqual(paths, [context / "runtime-classpath.json", context / pins["lock"].name])
+                if wrong: download.assert_not_called()
+                else:
+                    download.assert_called_once()
+                    self.assertEqual(len(download.call_args.args[1]), 142)
+
+    def test_fake_profiles_with_real_helpers_bind_distinct_receipts_and_clean(self):
+        receipts = {}
+        for profile in F.PROFILES:
+            report, docker = self.invoke(profile=profile, real_helpers=True)
+            self.assertTrue(report["success"], report["errors"])
+            self.assertTrue(all(report["cleanup"].values()))
+            self.assertFalse(docker.root.exists())
+            pins = F.profile_settings(profile)
+            self.assertEqual(report["candidate_profile"], profile)
+            self.assertEqual(report["inputs"]["candidate_profile"], profile)
+            self.assertEqual(report["inputs"]["lock_sha256"], pins["lock_sha256"])
+            self.assertEqual(report["inputs"]["runtime_file_sha256"], pins["runtime_sha256"])
+            self.assertEqual(report["inputs"]["runtime_classpath_sha256"], pins["order_sha256"])
+            self.assertIn(pins["lock"].name, report["inputs"]["source_sha256"])
+            for name in F.HELPERS:
+                self.assertEqual(report["inputs"]["source_sha256"][name + ".py"], F.sha((F.DISCOVERY / (name + ".py")).read_bytes()))
+            for claim in F.FALSE_CLAIMS: self.assertIs(report[claim], False)
+            self.assertLess(len(F.canonical(report)), 65536)
+            receipts[profile] = report
+        self.assertNotEqual(receipts["kerberos"]["inputs"]["lock_sha256"], receipts["kerberos-remediation"]["inputs"]["lock_sha256"])
+        self.assertNotEqual(receipts["kerberos"]["inputs"]["runtime_classpath_sha256"], receipts["kerberos-remediation"]["inputs"]["runtime_classpath_sha256"])
+
+    def test_new_profile_never_promotes_failed_controls_or_changed_sources(self):
+        report, _ = self.invoke(profile="kerberos-remediation", failure=True)
+        self.assertFalse(report["success"])
+        self.assertIn("java_probe_failed", report["errors"])
+        self.assertTrue(all(report["cleanup"].values()))
+        report, _ = self.invoke(profile="kerberos-remediation", action=lambda docker, source: source.write_bytes(b"# changed\n"))
+        self.assertFalse(report["success"])
+        self.assertIn("input_changed", report["errors"])
+
+    def test_new_profile_keeps_foreign_resource_and_uncertain_reap_failures(self):
+        def foreign(docker, source): docker.container["Config"]["Labels"] = {F.LABEL: "foreign"}
+        def uncertain(docker, source): raise F.ProbeError("command_cleanup_failed")
+        for action in (foreign, uncertain):
+            report, docker = self.invoke(profile="kerberos-remediation", action=action)
+            self.assertFalse(report["success"])
+            self.assertFalse(report["cleanup"]["raw_evidence_removed"])
+            self.assertTrue(docker.root.exists())
+
+    def test_new_profile_selected_lock_and_runtime_are_rechecked_after_execution(self):
+        def change_lock(docker, source):
+            (source.parent / "artifact-lock-kerberos-remediation.json").write_bytes(b"changed lock")
+        def change_runtime(docker, source):
+            (source.parent.parent / "input/runtime-classpath.json").write_bytes(b"changed runtime")
+        for action in (change_lock, change_runtime):
+            report, _ = self.invoke(profile="kerberos-remediation", action=action)
+            self.assertFalse(report["success"])
+            self.assertIn("input_changed", report["errors"])
+            self.assertTrue(all(report["cleanup"].values()))
+
+    def test_cli_defaults_old_and_passes_explicit_new_profile(self):
+        for profile in F.PROFILES:
+            report = self.root / (profile + ".json")
+            args = ["--rclone", str(self.root / "rclone"), "--report", str(report)]
+            if profile != "kerberos": args += ["--profile", profile]
+            with patch.object(F, "hosted_guard"), patch.object(F, "directory"), \
+                    patch.object(F, "run", return_value=dict(success=True, candidate_profile=profile)) as run:
+                self.assertEqual(F.main(args), 0)
+            run.assert_called_once_with(self.root / "rclone", profile=profile)
+            self.assertEqual(json.loads(report.read_bytes())["candidate_profile"], profile)
+
+    def test_receipt_limit_is_unchanged_for_remediation_profile(self):
+        report = self.root / "oversize.json"
+        with patch.object(F, "hosted_guard"), patch.object(F, "directory"), \
+                patch.object(F, "run", return_value=dict(success=True, candidate_profile="kerberos-remediation", private="x" * 65536)), \
+                patch.object(F.sys, "stderr", io.StringIO()) as error:
+            self.assertEqual(F.main(["--rclone", str(self.root / "rclone"), "--report", str(report),
+                                     "--profile", "kerberos-remediation"]), 1)
+        self.assertEqual(error.getvalue(), "rpc_probe_failed\n")
+        self.assertEqual(report.read_bytes(), b"")
+
+    def test_new_workflow_is_separate_and_explicitly_selects_the_new_profile(self):
+        workflows = HERE.parents[2] / ".github/workflows"
+        new = (workflows / "hdfs-kerberos-rpc-remediation.yml").read_text()
+        old = (workflows / "hdfs-kerberos-rpc.yml").read_text()
+        self.assertIn("--profile kerberos-remediation", new)
+        self.assertNotIn("--profile kerberos-remediation", old)
+        for text in (old, new):
+            self.assertIn("persist-credentials: false", text)
+            self.assertIn("contents: read", text)
+            self.assertIn("ref: ${{ github.event.pull_request.head.sha || github.sha }}", text)
+            self.assertIn("timeout-minutes: 20", text)
+        self.assertIn("artifact-lock-kerberos-remediation.json", new)
+        self.assertIn("name: hdfs-kerberos-rpc-remediation-experiment", new)
 
 
 class WireTests(unittest.TestCase):
