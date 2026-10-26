@@ -151,6 +151,21 @@ neither is changed. Live certificate reload/rotation is unverified. The prior
 addresses the independently proven source lifecycle defect and still requires
 all unchanged native identity and cleanup gates.
 
+The initial seed/verification task exports a closed `seed_checkpoint` operation
+and file role (`none`, `empty`, `small`, `payload`, or `unknown`). It records the
+last entered operation group, not an inner exception cause or completed control.
+Directory setup includes data-buffer preparation; metadata and listing groups
+include their existing assertions. An immutable pair is published through one
+volatile reference. The main failure handler snapshots that pair before error
+classification and cleanup, so later worker activity cannot change the failure
+record. Normal resource closing has its own checkpoint; a body exception retains
+the body checkpoint and the existing suppressed-close behavior. Later source
+preservation does not overwrite the initial seed checkpoint. `complete` is set
+inside the existing bounded task after both seed and independent verification;
+all original success, byte, authentication and cleanup predicates remain decisive.
+No paths, exception text, stacks or private material are exported. Unknown roles
+and incomplete checkpoints cannot support successful seed controls.
+
 Run the pure suite with:
 
 ```

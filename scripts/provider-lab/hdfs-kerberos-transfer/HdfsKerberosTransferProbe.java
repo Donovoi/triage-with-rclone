@@ -143,6 +143,17 @@ public final class HdfsKerberosTransferProbe {
         scan_bound, ambiguous, wrong_thread_type, preexisting, wrong_interval, not_daemon, missing, captured
     }
     private static DataNodeSslCapture datanodeSslCapture = DataNodeSslCapture.not_attempted;
+    private enum SeedOperation {
+        not_attempted, registration_wait, registration_check, safe_mode_leave, directory_setup,
+        file_path, existence_check, create, write, sync, close, file_times,
+        directory_permission, directory_times, verify_registration, verify_recursive_list,
+        verify_root_list, verify_nested_list, verify_missing, verify_metadata,
+        verify_read_open, verify_read, verify_read_close, verify_hash, verify_blocks, complete
+    }
+    private enum SeedRole { none, empty, small, payload, unknown }
+    private record SeedCheckpoint(SeedOperation operation, SeedRole role) { }
+    private static volatile SeedCheckpoint seedCheckpoint = new SeedCheckpoint(SeedOperation.not_attempted, SeedRole.none);
+    private static SeedCheckpoint failedSeedCheckpoint;
     private static URLConnectionFactory formatSslFactory;
     private static Thread formatSslThread;
     private static final LinkOption NOFOLLOW = LinkOption.NOFOLLOW_LINKS;
@@ -1417,6 +1428,23 @@ public final class HdfsKerberosTransferProbe {
         listeners(true); need(processIds().equals(processBaseline), Code.child_process_drift);
         need(ExitUtil.getFirstExitException() == null && ExitUtil.getFirstHaltException() == null, Code.namenode_failed);
     }
+    private static SeedRole seedRole(int index) {
+        return switch (index) { case 0 -> SeedRole.empty; case 1 -> SeedRole.small; case 2 -> SeedRole.payload; default -> SeedRole.unknown; };
+    }
+    private static SeedRole seedRole(String name) {
+        if ("".equals(name) || "nested".equals(name)) return SeedRole.none;
+        if ("empty.bin".equals(name)) return SeedRole.empty;
+        if ("nested/space name.bin".equals(name)) return SeedRole.small;
+        if ("payload.bin".equals(name)) return SeedRole.payload;
+        return SeedRole.unknown;
+    }
+    private static void seedStep(SeedOperation operation, SeedRole role) {
+        if ("seed".equals(stage)) seedCheckpoint = new SeedCheckpoint(operation, role);
+    }
+    private static String seedCheckpointJson() {
+        SeedCheckpoint value = failedSeedCheckpoint != null ? failedSeedCheckpoint : seedCheckpoint;
+        return "{\"operation\":\"" + value.operation().name() + "\",\"role\":\"" + value.role().name() + "\"}";
+    }
     private static org.apache.hadoop.fs.Path sourcePath(String name) { return new org.apache.hadoop.fs.Path(MEMBER + "/" + name); }
     private static void registered() throws Exception {
         var nodes = filesystem.getDataNodeStats(org.apache.hadoop.hdfs.protocol.HdfsConstants.DatanodeReportType.LIVE);
@@ -1427,6 +1455,7 @@ public final class HdfsKerberosTransferProbe {
         need(dnUuid.equals(nodes[0].getDatanodeUuid()), Code.datanode_failed);
     }
     private static void seed() throws Exception {
+        seedStep(SeedOperation.registration_wait, SeedRole.none);
         while (true) {
             need(System.nanoTime() < deadline, Code.deadline_exceeded);
             var nodes = filesystem.getDataNodeStats(org.apache.hadoop.hdfs.protocol.HdfsConstants.DatanodeReportType.LIVE);
@@ -1434,33 +1463,56 @@ public final class HdfsKerberosTransferProbe {
             if (nodes.length == 1 && nodes[0].getCapacity() > 0) break;
             Thread.sleep(50);
         }
-        registered(); filesystem.setSafeMode(SafeModeAction.SAFEMODE_LEAVE);
+        seedStep(SeedOperation.registration_check, SeedRole.none);
+        registered();
+        seedStep(SeedOperation.safe_mode_leave, SeedRole.none);
+        filesystem.setSafeMode(SafeModeAction.SAFEMODE_LEAVE);
+        seedStep(SeedOperation.directory_setup, SeedRole.none);
         need(filesystem.mkdirs(new org.apache.hadoop.fs.Path(MEMBER + "/nested"), new FsPermission((short)0755)), Code.source_invalid);
         byte[] data = new byte[4096]; for (int i=0; i<data.length; i++) data[i]=(byte)i;
         for (int i=0; i<NAMES.length; i++) {
-            var path = sourcePath(NAMES[i]); need(!filesystem.exists(path), Code.source_invalid);
+            SeedRole role = seedRole(i);
+            seedStep(SeedOperation.file_path, role);
+            var path = sourcePath(NAMES[i]);
+            seedStep(SeedOperation.existence_check, role);
+            need(!filesystem.exists(path), Code.source_invalid);
+            seedStep(SeedOperation.create, role);
             try (var output = filesystem.create(path, new FsPermission((short)0644), false, 4096, (short)1, 1048576, null)) {
+                seedStep(SeedOperation.write, role);
                 for (int offset=0; offset<SIZES[i]; offset+=data.length) {
                     need(System.nanoTime() < deadline, Code.deadline_exceeded);
                     output.write(data, 0, Math.min(data.length, SIZES[i]-offset));
                 }
+                seedStep(SeedOperation.sync, role);
                 output.hsync();
+                seedStep(SeedOperation.close, role);
             }
+            seedStep(SeedOperation.file_times, role);
             filesystem.setTimes(path, 1704067200000L, 1704067200000L);
         }
         Arrays.fill(data, (byte)0);
+        seedStep(SeedOperation.directory_permission, SeedRole.none);
         filesystem.setPermission(new org.apache.hadoop.fs.Path(MEMBER), new FsPermission((short)0755));
+        seedStep(SeedOperation.directory_times, SeedRole.none);
         for (String dir : List.of(MEMBER, MEMBER + "/nested")) filesystem.setTimes(new org.apache.hadoop.fs.Path(dir), 1704067200000L, 1704067200000L);
     }
     private static void verifyMember() throws Exception {
-        registered(); Set<String> found = new HashSet<>(); var iterator = filesystem.listFiles(new org.apache.hadoop.fs.Path(MEMBER), true);
+        seedStep(SeedOperation.verify_registration, SeedRole.none);
+        registered(); Set<String> found = new HashSet<>();
+        seedStep(SeedOperation.verify_recursive_list, SeedRole.none);
+        var iterator = filesystem.listFiles(new org.apache.hadoop.fs.Path(MEMBER), true);
         while (iterator.hasNext()) { var entry = iterator.next(); need(found.size() < 3 && found.add(entry.getPath().toUri().getPath()), Code.source_invalid); }
         need(found.equals(Set.of(MEMBER+"/"+NAMES[0], MEMBER+"/"+NAMES[1], MEMBER+"/"+NAMES[2])), Code.source_invalid);
+        seedStep(SeedOperation.verify_root_list, SeedRole.none);
         var rootRows = filesystem.listStatus(new org.apache.hadoop.fs.Path(MEMBER));
+        seedStep(SeedOperation.verify_nested_list, SeedRole.none);
         var nestedRows = filesystem.listStatus(sourcePath("nested"));
+        seedStep(SeedOperation.verify_missing, SeedRole.none);
         need(rootRows.length == 3 && nestedRows.length == 1 && !filesystem.exists(sourcePath("missing-synthetic.bin")), Code.source_invalid);
         List<String> paths = new ArrayList<>(List.of("", "nested")); paths.addAll(List.of(NAMES));
         for (String name : paths) {
+            SeedRole role = seedRole(name);
+            seedStep(SeedOperation.verify_metadata, role);
             var path = name.isEmpty() ? new org.apache.hadoop.fs.Path(MEMBER) : sourcePath(name); var info=filesystem.getFileStatus(path);
             boolean dir = name.isEmpty() || name.equals("nested");
             need(!info.isSymlink() && info.isDirectory() == dir && info.getOwner().equals("hdfs")
@@ -1471,14 +1523,19 @@ public final class HdfsKerberosTransferProbe {
             if (dir) continue;
             int index=List.of(NAMES).indexOf(name); need(info.getLen()==SIZES[index] && info.getReplication()==1 && info.getBlockSize()==1048576, Code.source_invalid);
             MessageDigest digest=MessageDigest.getInstance("SHA-256"); byte[] buffer=new byte[4096]; int count=0;
+            seedStep(SeedOperation.verify_read_open, role);
             try (var input=filesystem.open(path, 4096)) {
+                seedStep(SeedOperation.verify_read, role);
                 int n; while((n=input.read(buffer))!=-1) {
                     need(System.nanoTime()<totalDeadline && count+n<=SIZES[index], Code.source_invalid);
                     for(int k=0;k<n;k++) need(buffer[k]==(byte)(count+k), Code.source_invalid);
                     count+=n; digest.update(buffer,0,n);
                 }
+                seedStep(SeedOperation.verify_read_close, role);
             } finally { Arrays.fill(buffer,(byte)0); }
+            seedStep(SeedOperation.verify_hash, role);
             need(count==SIZES[index] && java.util.HexFormat.of().formatHex(digest.digest()).equals(HASHES[index]), Code.source_invalid);
+            seedStep(SeedOperation.verify_blocks, role);
             var blocks=filesystem.getFileBlockLocations(info,0,info.getLen());
             need(blocks.length==(index==2?2:index==1?1:0), Code.source_invalid); long length=0;
             for(var block:blocks) {
@@ -1694,7 +1751,7 @@ public final class HdfsKerberosTransferProbe {
             need(datanode != null, Code.datanode_failed); observeThreads("datanode", baseline);
             captureDatanodeSsl(baseline); topology(); CHECKS.put("secure_datanode", true);
             stage = "tls_endpoints"; verifyTlsEndpoint(19003); verifyTlsEndpoint(19004); CHECKS.put("tls_endpoints", true);
-            stage = "seed"; bounded(() -> { seed(); verifyMember(); return null; }, 20, deadline);
+            stage = "seed"; bounded(() -> { seed(); verifyMember(); seedStep(SeedOperation.complete, SeedRole.none); return null; }, 20, deadline);
             CHECKS.put("registered_datanode", true); CHECKS.put("seed_hashes", true);
             configurationDigest = configurationDigest();
             stage = "reader_tgt";
@@ -1724,6 +1781,7 @@ public final class HdfsKerberosTransferProbe {
             inventory(); topology(); need(!BACKGROUND_FAILURE.get(), Code.background_failure);
             CHECKS.put("cache_preserved", true); stage = "completed";
         } catch (Throwable failure) {
+            failedSeedCheckpoint = seedCheckpoint;
             if (failure instanceof Failure owned) error = owned.code;
             else if (failure instanceof KrbException) error = Code.krb_failure;
             else if (failure instanceof IOException) error = Code.io_failure;
@@ -1747,7 +1805,7 @@ public final class HdfsKerberosTransferProbe {
         boolean success = error == null && CHECKS.values().stream().allMatch(Boolean.TRUE::equals) && clean;
         report.println("{\"schema_version\":1,\"scope\":\"hdfs_kerberos_transfer_feasibility\",\"success\":" + success
             + ",\"expected_kerby_version\":\"2.1.2\",\"runtime_binding_required\":true,\"checks\":" + boolMap(CHECKS)
-            + ",\"cleanup\":" + boolMap(CLEANUP) + ",\"metrics_mode\":" + metricsModeJson() + ",\"ssl_capture\":" + sslCaptureJson() + ",\"cache_bytes\":" + cacheBytes
+            + ",\"cleanup\":" + boolMap(CLEANUP) + ",\"metrics_mode\":" + metricsModeJson() + ",\"ssl_capture\":" + sslCaptureJson() + ",\"seed_checkpoint\":" + seedCheckpointJson() + ",\"cache_bytes\":" + cacheBytes
             + ",\"child_count\":" + CHILDREN.size() + ",\"acquired_bytes\":" + acquiredBytes + ",\"acquisitions\":" + acquisitionsJson()
             + ",\"missing_category\":\"" + (Boolean.TRUE.equals(CHECKS.get("missing_path_rejected")) ? "directory_not_found" : "not_observed") + "\""
             + ",\"observed_lifetime_seconds\":" + observedLifetime + ",\"stage\":\"" + stage + "\",\"wire_hex\":\"" + wireHex + "\",\"error\":"
