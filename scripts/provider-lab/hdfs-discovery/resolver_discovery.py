@@ -38,8 +38,8 @@ KERBEROS_INPUT_HASHES = {
     "settings.xml": "73c88f4d9660338f35a6e56978f8567f89f5a85641d5338f189fc489440b364c",
     "global-settings.xml": "aeb786c97c2a0103b71c04ab1b29508d7ec1c402a9d36e22301407b23670edf2",
 }
-# This prospective graph has no reviewed cache lock. It is online discovery
-# only; neither old lock may be used to prepare or replay its cache.
+# The proposed updates have a separate byte-verified cache lock. Neither old
+# lock may prepare or replay this profile; byte identity is not a security audit.
 REMEDIATION_PROFILE = "kerberos-remediation"
 REMEDIATION_INPUT_HASHES = {
     "global-settings.xml": "aeb786c97c2a0103b71c04ab1b29508d7ec1c402a9d36e22301407b23670edf2",
@@ -552,7 +552,6 @@ def discover(candidate, bootstrap, archive, output_parent, *, runner_factory=Doc
     hosted_guard()
     hashes = candidate_hashes(candidate_profile)
     prospective = candidate_profile == REMEDIATION_PROFILE
-    need(not prospective or (cache_destination is None and seed_cache is None), "offline_cache_invalid")
     started_utc = datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
     started_clock = time.monotonic()
     supervisor_sha = file_hash(Path(__file__).resolve())
@@ -560,12 +559,9 @@ def discover(candidate, bootstrap, archive, output_parent, *, runner_factory=Doc
     exporter_sha = file_hash(exporter_source)
     cache_source = Path(offline_cache.__file__).absolute()
     cache_source_sha = file_hash(cache_source)
-    cache_lock = None if prospective else offline_cache.lock_path(candidate_profile)
-    cache_lock_sha = None if prospective else file_hash(cache_lock)
-    if not prospective:
-        expected_lock_sha = (offline_cache.LOCK_SHA256 if candidate_profile == "hdfs"
-                             else offline_cache.KERBEROS_LOCK_SHA256)
-        need(cache_lock_sha == expected_lock_sha, "offline_cache_invalid")
+    cache_lock = offline_cache.lock_path(candidate_profile)
+    cache_lock_sha = file_hash(cache_lock)
+    need(cache_lock_sha == offline_cache.lock_sha256(candidate_profile), "offline_cache_invalid")
     inputs = candidate_inputs(candidate, candidate_profile)
     bootstrap = validate_bootstrap(bootstrap, archive)
     parent = Path(output_parent).absolute()
@@ -722,7 +718,7 @@ def discover(candidate, bootstrap, archive, output_parent, *, runner_factory=Doc
                  and file_hash(Path(__file__).resolve()) == supervisor_sha
                  and file_hash(exporter_source) == exporter_sha
                  and file_hash(cache_source) == cache_source_sha
-                 and (cache_lock is None if prospective else file_hash(cache_lock) == cache_lock_sha), "source_changed")
+                 and file_hash(cache_lock) == cache_lock_sha, "source_changed")
             need(validate_bootstrap(bootstrap, archive) == bootstrap, "source_changed")
             if offline:
                 need(offline_cache.verify_cache(seed_cache, profile=candidate_profile) == seed_receipt, "source_changed")

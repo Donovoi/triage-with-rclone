@@ -458,12 +458,12 @@ class ResolverTests(unittest.TestCase):
         if offline:
             seed.write_bytes(b"synthetic seed, never executed")
         def factory(root):
-            obj=FakeDocker(root,failure,kerberos=candidate_profile == "kerberos"); instances.append(obj); return obj
+            obj=FakeDocker(root,failure,kerberos=candidate_profile != "hdfs"); instances.append(obj); return obj
         with patch.object(D,"hosted_guard"), patch.object(D,"validate_bootstrap",return_value=bootstrap), \
              patch.object(D.uuid,"uuid4",return_value=types.SimpleNamespace(hex=RUN)), patch.object(D.stat,"S_IMODE",return_value=0o700):
             with patch.object(D.offline_cache, "verify_cache", return_value={"sha256": "1" * 64}, side_effect=verify_effect) as verify, \
                     patch.object(D.offline_cache, "prepare_cache", return_value={"sha256": "1" * 64}, side_effect=prepare_effect) as prepare_call:
-                candidate = CANDIDATE if candidate_profile == "hdfs" else HERE / "candidate-kerberos"
+                candidate = CANDIDATE if candidate_profile == "hdfs" else HERE / ("candidate-" + candidate_profile)
                 result=D.discover(candidate,bootstrap,archive,self.root,runner_factory=factory,
                                   cache_destination=seed if prepare else None,
                                   seed_cache=seed if offline else None, candidate_profile=candidate_profile)

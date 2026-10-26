@@ -71,19 +71,16 @@ class RemediationTests(unittest.TestCase):
         (altered / original.name).write_bytes(original.read_bytes() + b"\n")
         with self.assertRaises(D.DiscoveryError): D.candidate_inputs(altered, PROFILE)
 
-    def test_cache_or_offline_requests_fail_before_any_resource_or_bootstrap_access(self):
+    def test_wrong_lock_fails_before_any_resource_or_bootstrap_access(self):
         for kwargs in ({"cache_destination": self.root / "offline-seed.tar"},
                        {"seed_cache": self.root / "offline-seed.tar"}):
             with self.subTest(kwargs=kwargs), patch.object(D, "hosted_guard"), \
-                    patch.object(D, "file_hash") as hashed, patch.object(D, "validate_bootstrap") as bootstrap, \
-                    patch.object(D.offline_cache, "lock_path") as lock:
+                    patch.object(D, "file_hash", return_value=D.offline_cache.KERBEROS_LOCK_SHA256), \
+                    patch.object(D, "validate_bootstrap") as bootstrap, \
+                    patch.object(D, "candidate_inputs") as inputs:
                 with self.assertRaisesRegex(D.DiscoveryError, "offline_cache_invalid"):
                     D.discover(None, None, None, None, candidate_profile=PROFILE, **kwargs)
-                hashed.assert_not_called(); bootstrap.assert_not_called(); lock.assert_not_called()
-        with patch.object(H.D, "hosted_guard") as guard:
-            with self.assertRaisesRegex(ValueError, "mode_invalid"):
-                H.run(None, None, "repeat", profile=PROFILE)
-            guard.assert_not_called()
+                bootstrap.assert_not_called(); inputs.assert_not_called()
 
     def test_every_updated_family_must_be_present_and_no_old_selected_member_survives(self):
         rows = selected_rows()
@@ -98,16 +95,16 @@ class RemediationTests(unittest.TestCase):
             stale = dict(changed[i], selected_runtime=False)
             D.validate_remediation_versions({"artifacts": [*rows, stale]})
 
-    def test_prospective_source_binding_omits_old_lock_but_keeps_verified_tools(self):
+    def test_source_binding_selects_new_lock_and_keeps_verified_tools(self):
         verifier = self.root / "verify_bootstrap.py"; verifier.write_bytes(b"synthetic verifier")
-        with patch.object(H.B, "VERIFIER_SHA256", hashlib.sha256(verifier.read_bytes()).hexdigest()), \
-                patch.object(D.offline_cache, "lock_path", side_effect=AssertionError("old lock forbidden")):
+        with patch.object(H.B, "VERIFIER_SHA256", hashlib.sha256(verifier.read_bytes()).hexdigest()):
             sources = H.source_bindings(verifier, PROFILE)
             self.assertNotIn("artifact-lock-kerberos.json", sources)
+            self.assertEqual(sources["artifact-lock-kerberos-remediation.json"], D.offline_cache.REMEDIATION_LOCK_SHA256)
             self.assertIn("offline_cache.py", sources)
             self.assertIn("resolver_discovery.py", sources)
 
-    def test_mock_resolution_has_no_lock_or_cache_and_preserves_cleanup(self):
+    def test_mock_online_resolution_binds_new_lock_and_preserves_cleanup(self):
         archive = self.root / "inert-bootstrap.tar.gz"; archive.write_bytes(b"not executed")
         bootstrap = dict(jdk_image=F.BASE, jdk_image_id=F.BASE_ID,
                          maven_archive_sha256=hashlib.sha256(archive.read_bytes()).hexdigest(),
@@ -124,14 +121,13 @@ class RemediationTests(unittest.TestCase):
         with patch.object(D, "hosted_guard"), patch.object(D, "validate_bootstrap", return_value=bootstrap), \
                 patch.object(D.uuid, "uuid4", return_value=types.SimpleNamespace(hex=F.RUN)), \
                 patch.object(D.stat, "S_IMODE", return_value=0o700), patch.object(F, "make_tar", side_effect=make_tar), \
-                patch.object(D.offline_cache, "lock_path", side_effect=AssertionError("old lock forbidden")), \
                 patch.object(D.offline_cache, "prepare_cache", side_effect=AssertionError("cache forbidden")), \
                 patch.object(D.subprocess, "Popen", side_effect=AssertionError("native forbidden")):
             result = D.discover(HERE / "candidate-kerberos-remediation", bootstrap, archive, self.root,
                                 runner_factory=factory, candidate_profile=PROFILE)
         self.assertTrue(result["success"], result["errors"])
         self.assertTrue(all(result["cleanup"].values()))
-        self.assertIsNone(result["inputs"]["cache_lock_sha256"])
+        self.assertEqual(result["inputs"]["cache_lock_sha256"], D.offline_cache.REMEDIATION_LOCK_SHA256)
         self.assertIsNone(result["inputs"]["seed_cache"])
         self.assertIsNone(result["cache_preparation"])
         for key in ("offline_reproduced", "ledger_eligible", "daemon_accepted"):
@@ -155,9 +151,7 @@ class HostedRemediationTests(unittest.TestCase):
     def test_stale_graph_lock_and_same_wrong_source_binding_are_rejected(self):
         for key, value in (("cache_lock_sha256", D.offline_cache.KERBEROS_LOCK_SHA256),
                            ("supervisor_sha256", "9" * 64), ("candidate_profile", "kerberos")):
-            result = T.discovery()
-            result["inputs"]["candidate_profile"] = PROFILE
-            result["inputs"]["cache_lock_sha256"] = None
+            result = T.discovery(profile=PROFILE)
             result["inputs"][key] = value
             with self.subTest(key=key):
                 report, _, _ = self.invoke(profile=PROFILE, result=result)

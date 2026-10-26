@@ -18,7 +18,7 @@ concurrency:
 
 jobs:
   prepare:
-    name: Resolve the proposed dependency updates
+    name: Resolve and replay the proposed dependency updates
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -33,15 +33,16 @@ jobs:
         run: python -B -m unittest discover -s scripts/provider-lab/hdfs-discovery -p 'test_*.py'
       # This runs networked build tools, not Hadoop or a KDC. The container has
       # no host mounts, credentials or published ports. The first stage's network
-      # destinations are not confined by Maven settings. This candidate has no
-      # reviewed cache lock: offline preparation/replay is rejected. The old
-      # graph and locks are unchanged. No security or provider pass is awarded.
-      - name: Resolve the proposed graph without offline acceptance
+      # destinations are not confined by Maven settings. The second stage uses
+      # a fresh image/container, the isolated pinned seed, --network none and
+      # Maven offline mode. The old graph and locks are unchanged. Remaining
+      # advisories are unresolved; no security or provider pass is awarded.
+      - name: Compare the proposed graph with a fresh offline replay
         run: >-
           python -B scripts/provider-lab/hdfs-discovery/hosted_kerberos_discovery.py
           --candidate scripts/provider-lab/hdfs-discovery/candidate-kerberos-remediation
           --verifier scripts/provider-lab/hdfs-bootstrap/verify_bootstrap.py
-          --mode online
+          --mode repeat
           --profile kerberos-remediation
           --report "${{ runner.temp }}/hdfs-remediation-discovery.json"
       # Only sanitized facts are retained. Raw archives, POMs and logs stay
