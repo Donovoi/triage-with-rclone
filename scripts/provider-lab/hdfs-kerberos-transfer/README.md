@@ -46,6 +46,15 @@ FSNamesystem and BlockManager paths found no extra explicit initialize call.
 This is bounded source accounting, not native proof of final reference counts:
 all existing residual-thread, timer, listener and stop predicates remain required.
 
+SSL timer capture exports two closed diagnostic states. The format state reports
+the existing capture result. The DataNode state records the first false ownership
+predicate through a primitive Boolean identity helper: each original expression
+is evaluated once, in the same short-circuit order, and the same assertion still
+throws `cleanup_failed`. A `checking` state denotes incomplete evaluation rather
+than a known failed predicate. Both states must be `captured` before a successful
+receipt; capture alone never substitutes for later stop and cleanup evidence.
+No thread names, identities, stacks or private exception text are exported.
+
 Eight IPv4 loopback ports are preflighted and checked as an exact listener set:
 19000 NameNode RPC, 19001 DataNode SASL transfer, 19002 DataNode IPC, 19003 NameNode
 HTTPS, 19004 DataNode HTTPS, 19005 DataNode's private internal HTTP proxy, 19006
