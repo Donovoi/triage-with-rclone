@@ -159,7 +159,7 @@ public final class HdfsKerberosTransferProbe {
         background_failure, io_failure, krb_failure, interrupted, unclassified,
         cleanup_failed, namenode_failed, child_failed, child_output_invalid, wire_invalid,
         rclone_positive_failed, rclone_denial_mismatch, rclone_denial_exit_zero, rclone_denial_output_invalid,
-        source_invalid, relay_invalid, tls_invalid, datanode_failed, missing_path_mismatch, acquisition_invalid,
+        source_invalid, relay_invalid, tls_invalid, tls_keytool_exit_invalid, tls_store_shape_invalid, tls_certificate_key_invalid, tls_certificate_signature_invalid, tls_certificate_lifetime_invalid, tls_certificate_san_invalid, tls_resource_missing, tls_resource_identity_invalid, tls_resource_ambiguous, datanode_failed, missing_path_mismatch, acquisition_invalid,
         child_descendant_found, child_reap_failed, child_streams_alive, child_process_drift,
         rclone_version_nonzero, rclone_version_stderr, rclone_version_mismatch
     }
@@ -1505,19 +1505,19 @@ public final class HdfsKerberosTransferProbe {
                 "-keyalg", "RSA", "-keysize", "2048", "-sigalg", "SHA256withRSA", "-validity", "1",
                 "-dname", "CN=127.0.0.1", "-ext", "SAN=ip:127.0.0.1", "-storetype", "PKCS12",
                 "-keystore", STORE.toString(), "-storepass:file", PASSWORD.toString(), "-keypass:file", PASSWORD.toString()), plainEnvironment());
-            need(keytool.code == 0, Code.tls_invalid);
-            Arrays.fill(keytool.out, (byte)0); Arrays.fill(keytool.err, (byte)0);
+            try { need(keytool.code == 0, Code.tls_keytool_exit_invalid); }
+            finally { Arrays.fill(keytool.out, (byte)0); Arrays.fill(keytool.err, (byte)0); }
             OWNED_FILES.put(STORE, new FileState(STORE));
             java.security.KeyStore store = java.security.KeyStore.getInstance("PKCS12");
             try (var input = Files.newInputStream(STORE, NOFOLLOW)) { store.load(input, password); }
-            need(store.size() == 1 && store.isKeyEntry("owned"), Code.tls_invalid);
+            need(store.size() == 1 && store.isKeyEntry("owned"), Code.tls_store_shape_invalid);
             var cert = (java.security.cert.X509Certificate) store.getCertificate("owned"); cert.checkValidity();
             need(cert.getPublicKey() instanceof java.security.interfaces.RSAPublicKey
-                && ((java.security.interfaces.RSAPublicKey)cert.getPublicKey()).getModulus().bitLength() == 2048
-                && cert.getSigAlgName().equalsIgnoreCase("SHA256withRSA")
-                && cert.getNotAfter().getTime() - cert.getNotBefore().getTime() == 86400000L
-                && cert.getSubjectAlternativeNames().size() == 1
-                && cert.getSubjectAlternativeNames().contains(List.of(7, "127.0.0.1")), Code.tls_invalid);
+                && ((java.security.interfaces.RSAPublicKey)cert.getPublicKey()).getModulus().bitLength() == 2048, Code.tls_certificate_key_invalid);
+            need(cert.getSigAlgName().equalsIgnoreCase("SHA256withRSA"), Code.tls_certificate_signature_invalid);
+            need(cert.getNotAfter().getTime() - cert.getNotBefore().getTime() == 86400000L, Code.tls_certificate_lifetime_invalid);
+            need(cert.getSubjectAlternativeNames().size() == 1
+                && cert.getSubjectAlternativeNames().contains(List.of(7, "127.0.0.1")), Code.tls_certificate_san_invalid);
             java.security.KeyStore trust = java.security.KeyStore.getInstance("PKCS12"); trust.load(null, password);
             trust.setCertificateEntry("owned", cert);
             LimitedBuffer buffer = new LimitedBuffer();
@@ -1531,7 +1531,9 @@ public final class HdfsKerberosTransferProbe {
             try { ssl.writeXml(xml); privateBytes(SSL_XML, xml.toByteArray()); } finally { xml.erase(); }
             // Relative resource resolves only this one private XML after immutable classes/JARs.
             var urls = HdfsKerberosTransferProbe.class.getClassLoader().getResources("owned-ssl-server.xml");
-            need(urls.hasMoreElements() && urls.nextElement().toURI().equals(SSL_XML.toUri()) && !urls.hasMoreElements(), Code.tls_invalid);
+            need(urls.hasMoreElements(), Code.tls_resource_missing);
+            need(urls.nextElement().toURI().equals(SSL_XML.toUri()), Code.tls_resource_identity_invalid);
+            need(!urls.hasMoreElements(), Code.tls_resource_ambiguous);
             var tm = javax.net.ssl.TrustManagerFactory.getInstance(javax.net.ssl.TrustManagerFactory.getDefaultAlgorithm()); tm.init(trust);
             tlsContext = javax.net.ssl.SSLContext.getInstance("TLS"); tlsContext.init(null, tm.getTrustManagers(), null);
             inventory();
