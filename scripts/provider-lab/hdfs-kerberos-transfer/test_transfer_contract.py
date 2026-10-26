@@ -1482,6 +1482,38 @@ class MetricsModeLifecycleTests(unittest.TestCase):
             self.assertIn(bound,source)
 
 
+class RealSourceAdmissionTests(unittest.TestCase):
+    def test_actual_java_fits_unchanged_preflight_cap_and_pinned_hash(self):
+        import ast
+        driver = ast.parse((HERE / "transfer_container.py").read_text())
+        calls = [node for node in ast.walk(driver) if isinstance(node, ast.Call)
+                 and isinstance(node.func, ast.Name) and node.func.id == "read"
+                 and node.args and isinstance(node.args[0], ast.Name)
+                 and node.args[0].id == "java_path"]
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(len(calls[0].args), 2)
+        self.assertEqual(ast.dump(calls[0].args[1]),
+                         ast.dump(ast.parse("128 * 1024", mode="eval").body))
+        path = (HERE / "HdfsKerberosTransferProbe.java").resolve()
+        raw = F.read(path, 128 * 1024)
+        self.assertGreater(len(raw), 0)
+        self.assertLessEqual(len(raw), 131072)
+        self.assertEqual(raw, path.read_bytes())
+        self.assertEqual(F.sha(raw), F.JAVA_SHA)
+
+    def test_real_source_at_cap_admitted_and_one_byte_over_rejected(self):
+        raw = (HERE / "HdfsKerberosTransferProbe.java").read_bytes()
+        self.assertLessEqual(len(raw), 131072)
+        at_cap = raw + b" " * (131072 - len(raw))
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary).resolve() / "HdfsKerberosTransferProbe.java"
+            path.write_bytes(at_cap)
+            self.assertEqual(F.read(path, 128 * 1024), at_cap)
+            path.write_bytes(at_cap + b" ")
+            with self.assertRaisesRegex(F.ProbeError, "^unsafe_path$"):
+                F.read(path, 128 * 1024)
+
+
 class SeedCheckpointTests(unittest.TestCase):
     SEED = 'registration_wait registration_check safe_mode_leave directory_setup file_path existence_check create write sync close file_times directory_permission directory_times'.split()
     VERIFY = 'verify_registration verify_recursive_list verify_root_list verify_nested_list verify_missing verify_metadata verify_read_open verify_read verify_read_close verify_hash verify_blocks'.split()
