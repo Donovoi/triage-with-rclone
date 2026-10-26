@@ -748,7 +748,7 @@ class TransferTests(unittest.TestCase):
     def test_exact_new_graph_and_cross_profile_rejection_before_reads(self):
         self.assertEqual(F.PROFILES,('kerberos-remediation',))
         p=F.profile_settings('kerberos-remediation');rows=F.runtime_rows(p['runtime'].read_bytes(),p['lock'].read_bytes())
-        self.assertEqual((len(rows),sum(x['size'] for x in rows)),(142,73004295))
+        self.assertEqual((len(rows),sum(x['size'] for x in rows)),(142,73104651))
         old=(HERE.parent/'hdfs-kerberos-ticket/runtime-classpath.json').read_bytes()
         with self.assertRaises(F.ProbeError):F.runtime_rows(old,p['lock'].read_bytes())
         for profile in ('kerberos','simple','',None,True,{},'../kerberos-remediation'):
@@ -1327,3 +1327,20 @@ class ConfigurationCallsiteTests(unittest.TestCase):
         self.assertLess(method.index('if (rank < selectedRank)'),method.index('failure.getStackTrace()'))
         for forbidden in ('getMessage','getLocalizedMessage','printStackTrace','Class.forName'):
             self.assertNotIn(forbidden,method)
+
+
+class CommonsIoRuntimePinTests(unittest.TestCase):
+    def test_exact_io_selection_and_rebound_stale_descriptor_cannot_use_new_lock(self):
+        pins=F.profile_settings('kerberos-remediation')
+        descriptor=json.loads(pins['runtime'].read_bytes());lock=pins['lock'].read_bytes()
+        rows=F.runtime_rows(pins['runtime'].read_bytes(),lock,profile='kerberos-remediation')
+        selected=[row for row in rows if (row['group'],row['artifact'])==('commons-io','commons-io')]
+        self.assertEqual(len(selected),1)
+        self.assertEqual((selected[0]['version'],selected[0]['size'],selected[0]['sha256']),
+            ('2.22.0',609182,'2b9a7b1f726fb86216dbd2c8321eabe0221dbd5b1be81c18e1cb53811b104758'))
+        stale=json.loads(pins['runtime'].read_bytes())
+        io=next(row for row in stale['entries'] if (row['group'],row['artifact'])==('commons-io','commons-io'))
+        io.update(version='2.16.1',size=508826,sha256='f41f7baacd716896447ace9758621f62c1c6b0a91d89acee488da26fc477c84f')
+        stale['normalized_sha256']=F.sha(F.canonical(stale['entries']));raw=F.canonical(stale)
+        with patch.object(F,'REMEDIATION_RUNTIME_SHA',F.sha(raw)),patch.object(F,'REMEDIATION_ORDER_SHA',stale['normalized_sha256']):
+            with self.assertRaises(F.ProbeError):F.runtime_rows(raw,lock,profile='kerberos-remediation')

@@ -16,16 +16,17 @@ The default `kerberos` profile preserves that original graph and workflow.
 The separate remediation workflow selects `--profile kerberos-remediation`,
 using `runtime-classpath-remediation.json` and
 `hdfs-discovery/artifact-lock-kerberos-remediation.json`. Its 142 JARs total
-73,004,295 bytes, with ordered runtime SHA256
-`dbed8ddb36a8286af785cc4eace07f335b033cbb0b37f02683db901c6066e14c`.
+73,104,651 bytes, with ordered runtime SHA256
+`74206f7ff8e05475fd310648003cd570c620e92cf670ee1965c66b96eb3ba15d`.
 The supervisor and owned downloader both require the same closed profile and
 exact runtime/lock bytes; no custom paths or fallback graph are accepted.
 Receipts identify the selected profile, runtime file, ordered rows and lock.
 
-The remediation graph has a verified dependency-only offline replay. That
-does not establish RPC compatibility: its separate exact-head native result
-must pass every control and cleanup check below. Old-graph successes cannot
-qualify this profile. Four Jetty advisory matches and incomplete dependency
+This graph includes Commons IO 2.22.0 to supply the method required by
+Commons Configuration 2.15.1. Its online inventory is verified; fresh offline
+replay and exact-head RPC validation are still required after this pin update.
+Earlier remediation replay/RPC results bind the earlier hashes and cannot
+qualify this corrected graph. Four Jetty advisory matches and incomplete dependency
 semantics remain; all security, provider, application, vendor and ledger
 acceptance flags remain false. The Java probe and all service/resource bounds
 are identical between the two profiles.

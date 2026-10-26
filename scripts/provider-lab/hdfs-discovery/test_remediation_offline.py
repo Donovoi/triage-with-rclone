@@ -26,12 +26,12 @@ class RemediationCacheTests(unittest.TestCase):
         m = C.m
         rows = m._load_lock(PROFILE)
         self.assertEqual(m.sha(m.lock_path(PROFILE).read_bytes()),
-                         "56b33e3c897e02c9c487b66799666de4fc9eb51d8675dad2d4d42f69bb8a2a9c")
+                         "a0fc4edc8ea5fa9df5c26cac0be9f638650c7a657260b9da5eaad16195746e95")
         self.assertEqual(m.sha(m.encoded(rows)),
-                         "34001696b5afebbe59f34f9505ccd0abb20b02b7cd96ca965606b532f91e479a")
-        self.assertEqual(m._counts(rows), dict(artifacts=643, poms=445, selected_runtime_jars=142,
-                                             other_jars=56, artifact_bytes=97948330))
-        self.assertEqual(len({m._artifact_path(row) for row in rows}), 643)
+                         "d411690d9c923494ebbc85eace1ff890d62d9e2c39b62e25749a361f122ffa46")
+        self.assertEqual(m._counts(rows), dict(artifacts=641, poms=444, selected_runtime_jars=142,
+                                             other_jars=55, artifact_bytes=97419881))
+        self.assertEqual(len({m._artifact_path(row) for row in rows}), 641)
         lock = json.loads(m.lock_path(PROFILE).read_bytes())
         self.assertTrue(lock["advisory_work_pending"])
         self.assertTrue(lock["claims"] and all(value is False for value in lock["claims"].values()))

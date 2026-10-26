@@ -193,23 +193,28 @@ class CommonsIoLinkageCorrectionTests(unittest.TestCase):
                 D.validate_remediation_versions({"artifacts": changed})
         D.validate_remediation_versions({"artifacts": [*rows, dict(good, version="2.16.1", selected_runtime=False)]})
 
-    def test_preserved_old_lock_cannot_qualify_corrected_runtime(self):
+    def test_corrected_lock_rejects_a_stale_selected_io_row(self):
         lock = json.loads(D.offline_cache.lock_path(PROFILE).read_bytes())
         selected = [row for row in lock["artifacts"] if row["selected_runtime"] is True
                     and (row["group"], row["artifact"]) == ("commons-io", "commons-io")]
-        self.assertEqual([row["version"] for row in selected], ["2.16.1"])
+        self.assertEqual([row["version"] for row in selected], ["2.22.0"])
+        D.validate_remediation_versions(lock)
+        stale = copy.deepcopy(lock)
+        row = next(row for row in stale["artifacts"] if row["selected_runtime"] is True
+                   and (row["group"], row["artifact"]) == ("commons-io", "commons-io"))
+        row["version"] = "2.16.1"
         with self.assertRaisesRegex(D.DiscoveryError, "classpath_invalid"):
-            D.validate_remediation_versions(lock)
+            D.validate_remediation_versions(stale)
         self.assertTrue(lock["claims"] and all(value is False for value in lock["claims"].values()))
 
-    def test_discovery_workflow_stays_online_until_new_lock_is_reviewed(self):
+    def test_repeat_workflow_requires_new_lock_and_exact_source(self):
         workflow = (HERE.parents[2] / ".github/workflows/hdfs-remediation-discovery.yml").read_text()
-        self.assertEqual(workflow.count("--mode online"), 1)
-        self.assertNotIn("--mode repeat", workflow)
+        self.assertEqual(workflow.count("--mode repeat"), 1)
+        self.assertNotIn("--mode online", workflow)
         for required in ("workflow_dispatch:", "pull_request:", "contents: read", "persist-credentials: false",
                          "ref: ${{ github.event.pull_request.head.sha || github.sha }}", "--profile kerberos-remediation",
                          "--candidate scripts/provider-lab/hdfs-discovery/candidate-kerberos-remediation",
-                         "The old", "remediation lock remains preserved", "if: always()"):
+                         "reviewed Commons IO correction", "fresh", "if: always()"):
             self.assertIn(required, workflow)
 
 
