@@ -111,6 +111,7 @@ def positive():
         metrics_mode=dict(attempted=True, captured=True, prior_enabled=False, enable_attempted=True,
                           enable_verified=True, restore_attempted=True, restore_verified=True, transition_failed=False),
         ssl_capture=dict(format='captured',datanode='captured'),
+        seed_checkpoint=dict(operation='complete',role='none'),
         owned_thread_cleanup=dict(gc_monitor='terminated', fs_statistics_cleaner='terminated', format_ssl_timer='terminated'),
         child_count=10, acquired_bytes=2109442, missing_category="directory_not_found",
         acquisitions=dict(empty=dict(bytes=0,sha256="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"),
@@ -1002,6 +1003,7 @@ class TlsDiagnosticTests(unittest.TestCase):
         value['checks']={key:key=='environment' for key in value['checks']}
         value['metrics_mode']={key:False for key in value['metrics_mode']}
         value['ssl_capture']=dict(format='not_attempted',datanode='not_attempted')
+        value['seed_checkpoint']=dict(operation='not_attempted',role='none')
         value['acquisitions']={key:None for key in value['acquisitions']}
         for helper in ('gc_monitor','fs_statistics_cleaner','format_ssl_timer'):
             value['cleanup'][helper+'_reaped']=False
@@ -1478,6 +1480,158 @@ class MetricsModeLifecycleTests(unittest.TestCase):
                       'bounded(() -> { datanode.shutdown(); return null; }, 35, dnUntil)',
                       'Math.min(cleanupDeadline, System.nanoTime() + TimeUnit.SECONDS.toNanos(3))'):
             self.assertIn(bound,source)
+
+
+class SeedCheckpointTests(unittest.TestCase):
+    SEED = 'registration_wait registration_check safe_mode_leave directory_setup file_path existence_check create write sync close file_times directory_permission directory_times'.split()
+    VERIFY = 'verify_registration verify_recursive_list verify_root_list verify_nested_list verify_missing verify_metadata verify_read_open verify_read verify_read_close verify_hash verify_blocks'.split()
+    OPERATIONS = {'not_attempted', 'complete'} | set(SEED + VERIFY)
+    FILE_OPERATIONS = set('file_path existence_check create write sync close file_times verify_read_open verify_read verify_read_close verify_hash verify_blocks'.split())
+    ROLES = {'none', 'empty', 'small', 'payload', 'unknown'}
+
+    def source(self):
+        return (HERE / 'HdfsKerberosTransferProbe.java').read_text()
+
+    def failure(self, operation='create', role='empty'):
+        value = SslCaptureDiagnosticTests().failure('captured')
+        value.update(stage='seed', error='unclassified', diagnostic=dict(category='invalid_config', origin='none'))
+        value['checks'].update(secure_datanode=True, tls_endpoints=True)
+        value['cleanup']['datanode_ssl_timer_reaped'] = True
+        value['remaining_threads'].update(jdk_timer=1, jdk_executor=2)
+        value['remaining_thread_intervals']['unattributed'] = 6
+        for category, count in value['remaining_threads'].items():
+            value['remaining_thread_matrix'][category]['unattributed'] = count
+        value['remaining_timer_kinds']['ssl_store'] = 1
+        value['seed_checkpoint'] = dict(operation=operation, role=role)
+        return value
+
+    def test_source_closed_enums_atomic_pair_snapshot_and_phase_guard(self):
+        source = self.source()
+        for name, expected in (('SeedOperation', self.OPERATIONS), ('SeedRole', self.ROLES)):
+            enum = re.search(r'private enum ' + name + r' \{([^}]+)\}', source).group(1)
+            self.assertEqual(set(re.findall(r'[a-z_]+', enum)), expected)
+        self.assertIn('private record SeedCheckpoint(SeedOperation operation, SeedRole role) { }', source)
+        self.assertIn('private static volatile SeedCheckpoint seedCheckpoint = new SeedCheckpoint(SeedOperation.not_attempted, SeedRole.none);', source)
+        helper = source[source.index('private static void seedStep('):source.index('private static String seedCheckpointJson()')]
+        self.assertEqual(' '.join(helper.split()), 'private static void seedStep(SeedOperation operation, SeedRole role) { if ("seed".equals(stage)) seedCheckpoint = new SeedCheckpoint(operation, role); }')
+        self.assertEqual(source.count('failedSeedCheckpoint = seedCheckpoint;'), 1)
+        capture = source.index('failedSeedCheckpoint = seedCheckpoint;')
+        self.assertLess(capture, source.index('projectFailure(failure);', capture))
+        self.assertLess(capture, source.index('stopServices();', capture))
+        self.assertIn('SeedCheckpoint value = failedSeedCheckpoint != null ? failedSeedCheckpoint : seedCheckpoint;', source)
+        role_helper = source[source.index('private static SeedRole seedRole(int'):source.index('private static void seedStep(')]
+        for index, role in enumerate(('empty', 'small', 'payload')):
+            self.assertIn('case ' + str(index) + ' -> SeedRole.' + role, role_helper)
+        self.assertNotIn('filesystem.', role_helper)
+        self.assertNotIn('getMessage', role_helper)
+
+    def test_source_operation_order_and_normal_close_boundaries(self):
+        source = self.source()
+        seed = source[source.index('private static void seed()'):source.index('private static void verifyMember()')]
+        verify = source[source.index('private static void verifyMember()'):source.index('private static String configurationDigest()')]
+        pattern = r'seedStep\(SeedOperation\.([a-z_]+), (?:SeedRole\.none|role)\);'
+        self.assertEqual(re.findall(pattern, seed), self.SEED)
+        self.assertEqual(re.findall(pattern, verify), self.VERIFY)
+        self.assertRegex(seed, r'seedStep\(SeedOperation.create, role\);\s*try \(var output = filesystem.create\(')
+        self.assertRegex(seed, r'output.hsync\(\);\s*seedStep\(SeedOperation.close, role\);\s*}\s*seedStep\(SeedOperation.file_times, role\);')
+        self.assertRegex(verify, r'seedStep\(SeedOperation.verify_read_open, role\);\s*try \(var input=filesystem.open\(path, 4096\)\) \{\s*seedStep\(SeedOperation.verify_read, role\);')
+        self.assertRegex(verify, r'seedStep\(SeedOperation.verify_read_close, role\);\s*} finally \{ Arrays.fill\(buffer,\(byte\)0\); }')
+        self.assertIn('stage = "seed"; bounded(() -> { seed(); verifyMember(); seedStep(SeedOperation.complete, SeedRole.none); return null; }, 20, deadline);', source)
+        self.assertIn('stage = "preservation"; bounded(() -> { verifyMember(); return null; }, 5, controlDeadline);', source)
+
+    def test_inert_resource_failure_model_keeps_original_calls_and_suppression(self):
+        self.test_source_operation_order_and_normal_close_boundaries()
+        def run(marked, fail, close_fails):
+            calls = []; checkpoint = None; primary = None; suppressed = []
+            def step(name):
+                nonlocal checkpoint
+                if marked: checkpoint = name
+            def invoke(name):
+                calls.append(name)
+                if name == fail or name == 'close' and close_fails: raise ValueError(name)
+            step('create')
+            try: invoke('create')
+            except ValueError as error: primary = error
+            else:
+                try:
+                    step('write'); invoke('write')
+                    step('sync'); invoke('sync')
+                    step('close')
+                except ValueError as error: primary = error
+                finally:
+                    try: invoke('close')
+                    except ValueError as error:
+                        if primary is None: primary = error
+                        else: suppressed.append(str(error))
+            return calls, str(primary) if primary else None, suppressed, checkpoint
+        for fail in (None, 'create', 'write', 'sync', 'close'):
+            for close_fails in (False, True):
+                with self.subTest(fail=fail, close_fails=close_fails):
+                    old = run(False, fail, close_fails); new = run(True, fail, close_fails)
+                    self.assertEqual(old[:3], new[:3])
+                    self.assertEqual(new[0].count('close'), 0 if fail == 'create' else 1)
+                    if new[1]: self.assertEqual(new[3], new[1])
+
+    def test_immutable_failure_snapshot_survives_late_worker_and_preservation(self):
+        current = ('not_attempted', 'none')
+        def step(stage, operation, role):
+            nonlocal current
+            if stage == 'seed': current = (operation, role)
+        step('seed', 'write', 'small'); failure_snapshot = current
+        step('seed', 'close', 'small')
+        self.assertEqual(failure_snapshot, ('write', 'small'))
+        self.assertEqual(current, ('close', 'small'))
+        step('seed', 'complete', 'none'); complete = current
+        step('preservation', 'verify_read', 'payload')
+        self.assertEqual(current, complete)
+        self.assertEqual(failure_snapshot, ('write', 'small'))
+
+    def test_closed_operation_role_matrix_preserves_failed_controls(self):
+        for operation in self.OPERATIONS:
+            allowed = self.ROLES - {'none'} if operation in self.FILE_OPERATIONS else self.ROLES if operation == 'verify_metadata' else {'none'}
+            for role in self.ROLES:
+                value = self.failure(operation, role)
+                with self.subTest(operation=operation, role=role):
+                    if role not in allowed:
+                        with self.assertRaises(F.ProbeError): F.validate_java(F.canonical(value), 1)
+                    else:
+                        observed = F.validate_java(F.canonical(value), 1)
+                        self.assertEqual(observed['seed_checkpoint'], value['seed_checkpoint'])
+                        self.assertFalse(observed['success'])
+                        self.assertEqual(observed['cleanup'], value['cleanup'])
+                        self.assertEqual(observed['remaining_threads'], value['remaining_threads'])
+        self.assertTrue(F.validate_java(F.canonical(positive()), 0)['success'])
+        for operation in self.OPERATIONS - {'complete'}:
+            value = positive(); value['seed_checkpoint'] = dict(operation=operation, role='empty' if operation in self.FILE_OPERATIONS else 'none')
+            with self.assertRaises(F.ProbeError): F.validate_java(F.canonical(value), 0)
+
+    def test_malformed_unknown_and_private_checkpoint_values_are_rejected(self):
+        for key in ('operation', 'role'):
+            for bad in (None, True, 0, [], {}, '', 'PRIVATE_SYNTHETIC_CANARY', 'x' * 65536):
+                value = self.failure(); value['seed_checkpoint'][key] = bad
+                with self.subTest(key=key), self.assertRaises(F.ProbeError): F.validate_java(F.canonical(value), 1)
+        for bad in ({}, None, [], dict(operation='create'), dict(operation='create', role='empty', path='PRIVATE_SYNTHETIC_CANARY')):
+            value = self.failure(); value['seed_checkpoint'] = bad
+            with self.assertRaises(F.ProbeError): F.validate_java(F.canonical(value), 1)
+        for check in ('registered_datanode', 'seed_hashes'):
+            value = self.failure(); value['checks'][check] = True
+            with self.assertRaises(F.ProbeError): F.validate_java(F.canonical(value), 1)
+
+    def test_fake_seed_errors_keep_inner_failures_and_outer_cleanup(self):
+        for operation, role in (('create', 'empty'), ('sync', 'small'), ('verify_read', 'payload'), ('create', 'unknown')):
+            receipt = self.failure(operation, role); original = FakeDocker.__init__
+            def initialize(fake, root, *, max_calls):
+                original(fake, root, max_calls=max_calls); fake.java = copy.deepcopy(receipt); fake.exit_code = 1
+            helper = TicketTests(methodName='test_full_mock_success_binds_context_and_cleans'); helper.setUp()
+            try:
+                with patch.object(FakeDocker, '__init__', initialize): report, docker = helper.fake_run()
+                self.assertFalse(report['success']); self.assertEqual(report['errors'], ['java_probe_failed'])
+                for key in ('seed_checkpoint', 'diagnostic', 'error', 'cleanup', 'remaining_threads'):
+                    self.assertEqual(report['result'][key], receipt[key])
+                self.assertEqual(report['result']['acquired_bytes'], 0)
+                self.assertTrue(all(report['cleanup'].values())); self.assertFalse(docker.root.exists())
+                for claim in F.FALSE_CLAIMS: self.assertIs(report[claim], False)
+            finally: helper.tearDown()
 
 
 class FixedCertificateHttpMonitorTests(unittest.TestCase):

@@ -41,7 +41,7 @@ OWNED_CLEANUP_STATES = frozenset("not_attempted observation_incomplete services_
 TIMER_KINDS = frozenset("namenode_metrics rpc_idle snapshot_gc shell_timeout ssl_store unknown".split())
 BASE = "docker.io/library/eclipse-temurin@sha256:e1c09a9ee23feb81f94016547826c1e694086cd927356fb57fccc312fcc32f85"
 BASE_ID = "sha256:d0e6e16acb7f941e5206d99ec38e5bba18545c43462541958f84b22e0fc006e8"
-JAVA_SHA = "c5b432daa73cde30221946760f25731434ba99e6abca1960c3a4b734f29bfb80"
+JAVA_SHA = "c2937147312a5da7d8efdd7472820db02353d85f5b680d9aae7d959cf57faac1"
 REMEDIATION_RUNTIME_SHA = "01095cf92c20a65a479aafdcd52538e11313610230c17b011a5e5146a81bb127"
 REMEDIATION_ORDER_SHA = "74206f7ff8e05475fd310648003cd570c620e92cf670ee1965c66b96eb3ba15d"
 REMEDIATION_LOCK_SHA = "a0fc4edc8ea5fa9df5c26cac0be9f638650c7a657260b9da5eaad16195746e95"
@@ -501,11 +501,23 @@ def validate_ssl_capture(value, checks, cleanup, error):
          and (not cleanup["datanode_ssl_timer_reaped"] or dn in {"not_attempted", "captured"}), "java_report_invalid")
 
 
+def validate_seed_checkpoint(value, checks):
+    operations = set("not_attempted registration_wait registration_check safe_mode_leave directory_setup file_path existence_check create write sync close file_times directory_permission directory_times verify_registration verify_recursive_list verify_root_list verify_nested_list verify_missing verify_metadata verify_read_open verify_read verify_read_close verify_hash verify_blocks complete".split())
+    file_operations = set("file_path existence_check create write sync close file_times verify_read_open verify_read verify_read_close verify_hash verify_blocks".split())
+    file_roles = {"empty", "small", "payload", "unknown"}
+    need(type(value) is dict and set(value) == {"operation", "role"}
+         and type(value["operation"]) is str and value["operation"] in operations
+         and type(value["role"]) is str and value["role"] in file_roles | {"none"}, "java_report_invalid")
+    operation, role = value["operation"], value["role"]
+    need(role in (file_roles if operation in file_operations else file_roles | {"none"} if operation == "verify_metadata" else {"none"}), "java_report_invalid")
+    need(not (checks["registered_datanode"] or checks["seed_hashes"]) or operation == "complete", "java_report_invalid")
+
+
 def validate_java(raw, exit_code):
     try:
         value = parse(raw, 32768)
         keys = {"schema_version", "scope", "success", "expected_kerby_version", "runtime_binding_required", "checks",
-                "cleanup", "metrics_mode", "ssl_capture", "cache_bytes", "child_count", "acquired_bytes", "acquisitions", "missing_category", "observed_lifetime_seconds", "stage", "wire_hex", "rclone_wire_hex", "relay", "error", "diagnostic", "remaining_threads", "remaining_thread_intervals", "remaining_thread_matrix", "remaining_timer_kinds", "thread_observation_complete", "owned_thread_cleanup"} | JAVA_FALSE
+                "cleanup", "metrics_mode", "ssl_capture", "seed_checkpoint", "cache_bytes", "child_count", "acquired_bytes", "acquisitions", "missing_category", "observed_lifetime_seconds", "stage", "wire_hex", "rclone_wire_hex", "relay", "error", "diagnostic", "remaining_threads", "remaining_thread_intervals", "remaining_thread_matrix", "remaining_timer_kinds", "thread_observation_complete", "owned_thread_cleanup"} | JAVA_FALSE
         need(type(value) is dict and set(value) == keys and type(value["schema_version"]) is int
              and value["schema_version"] == 1 and value["scope"] == "hdfs_kerberos_transfer_feasibility"
              and value["expected_kerby_version"] == "2.1.2" and value["runtime_binding_required"] is True
@@ -515,6 +527,7 @@ def validate_java(raw, exit_code):
                  and all(type(x) is bool for x in value[key].values()), "java_report_invalid")
         validate_metrics_mode(value["metrics_mode"], value["checks"], value["cleanup"])
         validate_ssl_capture(value["ssl_capture"], value["checks"], value["cleanup"], value["error"])
+        validate_seed_checkpoint(value["seed_checkpoint"], value["checks"])
         need(type(value["cache_bytes"]) is int and 0 <= value["cache_bytes"] <= 65536
              and type(value["observed_lifetime_seconds"]) is int and 0 <= value["observed_lifetime_seconds"] <= 120
              and (value["error"] is None or type(value["error"]) is str and value["error"] in JAVA_CODES), "java_report_invalid")
