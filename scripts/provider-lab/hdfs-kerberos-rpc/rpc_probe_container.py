@@ -222,13 +222,18 @@ def download_rows(context, rows, *, opener=None, clock=time.monotonic):
                     while True:
                         need(clock() < deadline, "download_failed")
                         chunk = response.read(min(65536, row["size"] - count + 1))
+                        # This is an acceptance deadline, not cancellation of blocking I/O.
+                        # The owned worker retains its separate 300s kill/reap bound.
+                        need(clock() < deadline, "download_failed")
                         if not chunk: break
                         count += len(chunk); need(count <= row["size"], "download_failed")
                         output.write(chunk); digest.update(chunk)
-            need(count == row["size"] and digest.hexdigest() == row["sha256"], "download_failed")
+            observed_digest = digest.hexdigest()
+            need(clock() < deadline and count == row["size"] and observed_digest == row["sha256"], "download_failed")
         except (OSError, urllib.error.URLError, ValueError):
             raise ProbeError("download_failed") from None
     directory(context, context_id); directory(jars, jar_id)
+    need(clock() < deadline, "download_failed")
 
 
 def download(context, rows, *, profile="kerberos"):
