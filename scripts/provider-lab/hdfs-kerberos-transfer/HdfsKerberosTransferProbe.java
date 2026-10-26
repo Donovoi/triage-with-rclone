@@ -189,6 +189,21 @@ public final class HdfsKerberosTransferProbe {
         }
         return a.fileKey();
     }
+    // The exclusive driver mkdir precedes JVM classpath URL construction.
+    // Adopt only its empty private directory and retain the exact identity.
+    private static void adoptResourceDirectory() throws Exception {
+        guardRoot();
+        need(System.nanoTime() < deadline, Code.deadline_exceeded);
+        need(!PRIVATE_DIRS.containsKey(RESOURCES), Code.source_changed);
+        Object key = directory(RESOURCES, true);
+        try (DirectoryStream<Path> stream = Files.newDirectoryStream(RESOURCES)) {
+            need(!stream.iterator().hasNext(), Code.unexpected_files);
+        }
+        guardRoot();
+        need(key.equals(directory(RESOURCES, true)), Code.source_changed);
+        need(System.nanoTime() < deadline, Code.deadline_exceeded);
+        PRIVATE_DIRS.put(RESOURCES, key);
+    }
     private static void guardRoot() throws Exception {
         need(workKey.equals(directory(WORK, true)) && rootKey.equals(directory(ROOT, true)), Code.source_changed);
     }
@@ -722,8 +737,9 @@ public final class HdfsKerberosTransferProbe {
         boolean noListeners = false;
         try { listeners(false); noListeners = true; } catch (Throwable ignored) { }
         CLEANUP.put("listeners_absent", noListeners);
-        boolean removed = !rootCreated;
-        if (rootOwned && stopped && threadsClean && noListeners && List.of("children_reaped", "relay_closed", "filesystem_closed", "namenode_stop_returned", "owner_logged_out", "gc_monitor_reaped", "fs_statistics_cleaner_reaped", "format_ssl_timer_reaped", "datanode_stop_returned", "datanode_ssl_timer_reaped").stream().allMatch(k -> Boolean.TRUE.equals(CLEANUP.get(k)))) {
+        // The driver creates RESOURCES before Java; unknown adoption cannot prove removal.
+        boolean removed = false;
+        if (rootOwned && PRIVATE_DIRS.containsKey(RESOURCES) && stopped && threadsClean && noListeners && List.of("children_reaped", "relay_closed", "filesystem_closed", "namenode_stop_returned", "owner_logged_out", "gc_monitor_reaped", "fs_statistics_cleaner_reaped", "format_ssl_timer_reaped", "datanode_stop_returned", "datanode_ssl_timer_reaped").stream().allMatch(k -> Boolean.TRUE.equals(CLEANUP.get(k)))) {
             try {
                 materialDeadline = cap(2); guardRoot();
                 // stop() removes its config. No unknown/replaced file is deleted.
@@ -1368,7 +1384,8 @@ public final class HdfsKerberosTransferProbe {
             baseline = threadIds();
             Files.createDirectory(ROOT, PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------")));
             rootCreated = true; rootKey = directory(ROOT, true); rootOwned = true; PRIVATE_DIRS.put(ROOT, rootKey);
-            for (Path path : List.of(TLS, RESOURCES, ACQUIRED)) { Files.createDirectory(path, PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------"))); PRIVATE_DIRS.put(path, directory(path, true)); }
+            adoptResourceDirectory();
+            for (Path path : List.of(TLS, ACQUIRED)) { Files.createDirectory(path, PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------"))); PRIVATE_DIRS.put(path, directory(path, true)); }
             guardRoot(); stage = "tls"; makeTls(); CHECKS.put("tls_material", true); observeThreads("tls", baseline);
             SecureRandom random = new SecureRandom();
             String realm = "SYNTHETIC" + random(random, 12).toUpperCase(java.util.Locale.ROOT) + ".INVALID";

@@ -1045,3 +1045,70 @@ class TlsDiagnosticTests(unittest.TestCase):
         method=source[source.index('private static void makeTls()'):source.index('private static void verifyTlsEndpoint(')]
         for forbidden in ('new String(keytool.','getMessage()','printStackTrace','System.out','System.err','report.'):
             self.assertNotIn(forbidden,method)
+
+class ResourceDirectoryStartupTests(unittest.TestCase):
+    def test_generated_driver_creates_exclusive_private_classpath_directory_before_java(self):
+        files=F.build_files([dict(sha256='a'*64)])
+        lines=files['driver.sh'].decode().splitlines()
+        # Strict mkdir without -p must reject a preexisting file, link or directory.
+        self.assertEqual(lines[:4],['#!/bin/sh','set -eu','umask 077',
+            'mkdir /work/home /work/tmp /work/tls-resources'])
+        self.assertEqual(len(lines),5)
+        self.assertTrue(lines[4].startswith('exec /usr/bin/timeout --signal=TERM --kill-after=5s 185s /opt/java/openjdk/bin/java '))
+        self.assertTrue(files['classpath'].endswith(b':/work/tls-resources\n'))
+        self.assertEqual(files['classpath'].count(b'/work/'),1)
+        checks=dict(line.split(b'  ',1)[::-1] for line in files['checksums'].splitlines())
+        self.assertEqual(checks[b'/opt/transfer/driver.sh'],F.sha(files['driver.sh']).encode())
+        self.assertEqual(checks[b'/opt/transfer/classpath'],F.sha(files['classpath']).encode())
+
+    def test_resource_adoption_rejects_nonempty_changed_or_unowned_directory(self):
+        source=(HERE/'HdfsKerberosTransferProbe.java').read_text()
+        adopt=source[source.index('private static void adoptResourceDirectory()'):source.index('private static void guardRoot()')]
+        ordered=['guardRoot();','need(System.nanoTime() < deadline, Code.deadline_exceeded);',
+            'need(!PRIVATE_DIRS.containsKey(RESOURCES), Code.source_changed);',
+            'Object key = directory(RESOURCES, true);','try (DirectoryStream<Path> stream = Files.newDirectoryStream(RESOURCES))',
+            'need(!stream.iterator().hasNext(), Code.unexpected_files);','guardRoot();',
+            'need(key.equals(directory(RESOURCES, true)), Code.source_changed);',
+            'need(System.nanoTime() < deadline, Code.deadline_exceeded);','PRIVATE_DIRS.put(RESOURCES, key);']
+        offset=0
+        for required in ordered:offset=adopt.index(required,offset)+len(required)
+        self.assertEqual(adopt.count('PRIVATE_DIRS.put('),1)
+        for forbidden in ('createDirectory','Files.delete','setAttribute','catch (','new ArrayList','toList('):
+            self.assertNotIn(forbidden,adopt)
+        directory=source[source.index('private static Object directory('):source.index('// The exclusive driver mkdir')]
+        for required in ('BasicFileAttributes.class, NOFOLLOW','a.isDirectory() && !a.isSymbolicLink() && a.fileKey() != null',
+            '"unix:uid", NOFOLLOW)).intValue() == 10001','"unix:gid", NOFOLLOW)).intValue() == 10001',
+            '"unix:mode", NOFOLLOW)).intValue() & 07777) == 0700'):
+            self.assertIn(required,directory)
+        main=source[source.index('public static void main('):source.index('private static void privateBytes(')]
+        self.assertEqual(main.count('adoptResourceDirectory();'),1)
+        self.assertLess(main.index('PRIVATE_DIRS.put(ROOT, rootKey)'),main.index('adoptResourceDirectory();'))
+        self.assertLess(main.index('adoptResourceDirectory();'),main.index('makeTls();'))
+        self.assertIn('for (Path path : List.of(TLS, ACQUIRED))',main)
+        self.assertNotIn('List.of(TLS, RESOURCES, ACQUIRED)',main)
+
+    def test_precreated_resource_prevents_false_early_cleanup_credit(self):
+        source=(HERE/'HdfsKerberosTransferProbe.java').read_text()
+        cleanup=source[source.index('// The driver creates RESOURCES before Java'):source.index('CLEANUP.put("private_material_removed"')]
+        self.assertIn('boolean removed = false;',cleanup)
+        self.assertNotIn('!rootCreated',cleanup)
+        self.assertIn('if (rootOwned && PRIVATE_DIRS.containsKey(RESOURCES) && stopped && threadsClean && noListeners &&',cleanup)
+        self.assertEqual(cleanup.count('removed ='),3)
+        ordered=['PRIVATE_DIRS.containsKey(RESOURCES)','materialDeadline = cap(2); guardRoot();','inventory();',
+            'need(PRIVATE_DIRS.get(path).equals(directory(path, true)), Code.source_changed);',
+            'need(!stream.iterator().hasNext(), Code.unexpected_files);','Files.delete(path);',
+            'removed = System.nanoTime() < materialDeadline && PRIVATE_DIRS.keySet().stream().noneMatch(p -> Files.exists(p, NOFOLLOW));',
+            'catch (Throwable ignored) { removed = false; }']
+        positions=[cleanup.index(s) for s in ordered];self.assertEqual(positions,sorted(positions))
+
+    def test_adoption_failures_keep_finite_errors_and_incomplete_cleanup(self):
+        for code in ('path_invalid','source_changed','unexpected_files','deadline_exceeded'):
+            with self.subTest(code=code):
+                value=TlsDiagnosticTests().failed_tls(code)
+                value.update(stage='rclone_version',child_count=1)
+                result=F.validate_java(F.canonical(value),1)
+                self.assertFalse(result['success']);self.assertEqual(result['error'],code)
+                self.assertFalse(result['cleanup']['private_material_removed'])
+                self.assertFalse(result['thread_observation_complete'])
+                self.assertTrue(all(result[key] is False for key in F.JAVA_FALSE))
+                with self.assertRaises(F.ProbeError):F.validate_java(F.canonical(value),0)
