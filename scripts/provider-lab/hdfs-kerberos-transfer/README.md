@@ -26,6 +26,26 @@ downloads remain digest/size pinned and isolated from the credential-bearing run
 The pinned Temurin JDK image, Hadoop 3.5.0, Kerby 2.1.2 and rclone 1.75.2 identities
 are recorded in the supervisor and receipt.
 
+The disposable fixture shares one JVM between its two daemons. It captures the
+public Hadoop metrics mini-cluster mode before format/start, requires the prior
+value to be false, enables and verifies the mode, and retains it through the
+owned DataNode and NameNode stop attempts. A `finally` step restores and verifies
+the captured value under the unchanged cleanup deadline. The receipt exports
+eight finite transition booleans, an enable check, and an explicit restoration
+cleanup predicate. Failed capture, preexisting mode, failed enable, late or
+failed restoration cannot receive cleanup credit, even if a later restore works.
+No metrics sources are unregistered and no additional global shutdown is called.
+
+Pinned Hadoop uses this mode for multiple daemons sharing its metrics singleton.
+It also changes duplicate MBean naming and repeated-initialization reference
+counting. This fixture retains direct NameNode construction (which bypasses the
+NameNode factory's explicit metrics initialize call) and the existing owned
+shutdown order. DataNode instantiation explicitly initializes metrics; both
+daemon stop paths call their own metrics shutdown. Inspection of the format,
+FSNamesystem and BlockManager paths found no extra explicit initialize call.
+This is bounded source accounting, not native proof of final reference counts:
+all existing residual-thread, timer, listener and stop predicates remain required.
+
 Eight IPv4 loopback ports are preflighted and checked as an exact listener set:
 19000 NameNode RPC, 19001 DataNode SASL transfer, 19002 DataNode IPC, 19003 NameNode
 HTTPS, 19004 DataNode HTTPS, 19005 DataNode's private internal HTTP proxy, 19006

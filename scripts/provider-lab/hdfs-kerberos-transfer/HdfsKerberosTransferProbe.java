@@ -12,6 +12,7 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hdfs.HdfsConfiguration;
 import org.apache.hadoop.hdfs.DistributedFileSystem;
 import org.apache.hadoop.hdfs.server.namenode.NameNode;
+import org.apache.hadoop.metrics2.lib.DefaultMetricsSystem;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants.SafeModeAction;
 import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.security.UserGroupInformation;
@@ -1506,6 +1507,58 @@ public final class HdfsKerberosTransferProbe {
         }
     }
     private static long cap(int seconds) { return Math.min(cleanupDeadline, System.nanoTime() + TimeUnit.SECONDS.toNanos(seconds)); }
+    private static boolean metricsModeAttempted, metricsModeCaptured, metricsModePrior,
+        metricsModeEnableAttempted, metricsModeEnableVerified, metricsModeRestoreAttempted,
+        metricsModeRestoreVerified, metricsModeTransitionFailed;
+
+    private static void enableMetricsMode() throws Exception {
+        metricsModeAttempted = true;
+        try {
+            need(System.nanoTime() < deadline, Code.deadline_exceeded);
+            metricsModePrior = DefaultMetricsSystem.inMiniClusterMode();
+            metricsModeCaptured = true;
+            need(!metricsModePrior, Code.configuration_invalid);
+            need(System.nanoTime() < deadline, Code.deadline_exceeded);
+            // Pinned Hadoop exposes this mode for multiple daemons in one JVM.
+            // Record the attempt before the setter, including a write-then-throw.
+            metricsModeEnableAttempted = true;
+            DefaultMetricsSystem.setMiniClusterMode(true);
+            boolean enabled = DefaultMetricsSystem.inMiniClusterMode();
+            need(System.nanoTime() < deadline, Code.deadline_exceeded);
+            need(enabled, Code.configuration_invalid);
+            metricsModeEnableVerified = true;
+            CHECKS.put("metrics_mode_enabled", true);
+        } catch (Throwable failure) {
+            metricsModeTransitionFailed = true;
+            throw failure;
+        }
+    }
+
+    private static void restoreMetricsMode() {
+        if (!metricsModeAttempted) { CLEANUP.put("metrics_mode_restored", true); return; }
+        if (metricsModeCaptured) {
+            metricsModeRestoreAttempted = true;
+            try {
+                need(System.nanoTime() < cleanupDeadline, Code.deadline_exceeded);
+                if (metricsModeEnableAttempted) DefaultMetricsSystem.setMiniClusterMode(metricsModePrior);
+                boolean restored = DefaultMetricsSystem.inMiniClusterMode() == metricsModePrior;
+                need(System.nanoTime() < cleanupDeadline, Code.deadline_exceeded);
+                need(restored, Code.configuration_invalid);
+                metricsModeRestoreVerified = true;
+            } catch (Throwable ignored) { metricsModeTransitionFailed = true; }
+        }
+        // A failed capture/enable transition remains a failure even after restoration.
+        CLEANUP.put("metrics_mode_restored", metricsModeCaptured && !metricsModePrior
+            && metricsModeEnableVerified && metricsModeRestoreVerified && !metricsModeTransitionFailed);
+    }
+
+    private static String metricsModeJson() {
+        return "{\"attempted\":" + metricsModeAttempted + ",\"captured\":" + metricsModeCaptured
+            + ",\"prior_enabled\":" + metricsModePrior + ",\"enable_attempted\":" + metricsModeEnableAttempted
+            + ",\"enable_verified\":" + metricsModeEnableVerified + ",\"restore_attempted\":" + metricsModeRestoreAttempted
+            + ",\"restore_verified\":" + metricsModeRestoreVerified + ",\"transition_failed\":" + metricsModeTransitionFailed + "}";
+    }
+
     private static void stopServices() {
         long until = cap(4); boolean children = true;
         for (Process child : CHILDREN) {
@@ -1556,13 +1609,13 @@ public final class HdfsKerberosTransferProbe {
         System.setOut(new PrintStream(OutputStream.nullOutputStream()));
         System.setErr(new PrintStream(OutputStream.nullOutputStream()));
         Thread.setDefaultUncaughtExceptionHandler((thread, error) -> BACKGROUND_FAILURE.set(true));
-        for (String name : List.of("environment", "endpoint_settings", "positive_tgt", "file_cache_v3",
+        for (String name : List.of("environment", "metrics_mode_enabled", "endpoint_settings", "positive_tgt", "file_cache_v3",
                 "nonrenewable", "secure_namenode", "secure_datanode", "tls_material", "tls_endpoints", "registered_datanode", "seed_hashes", "listing_before", "empty_acquired", "small_acquired", "missing_path_rejected", "payload_before", "payload_after", "rclone_auth_boundary_rejection",
                 "wire_auth_boundary_rejection", "listing_after", "source_preserved", "cache_preserved")) CHECKS.put(name, false);
         for (String name : List.of("children_reaped", "relay_closed", "filesystem_closed", "namenode_stop_returned", "owner_logged_out",
                 "datanode_stop_returned", "datanode_ssl_timer_reaped", "gc_monitor_reaped", "fs_statistics_cleaner_reaped", "format_ssl_timer_reaped",
                 "kdc_stop_returned", "threads_terminated", "listeners_absent", "private_material_removed",
-                "process_property_restored", "cleanup_completed")) CLEANUP.put(name, false);
+                "process_property_restored", "metrics_mode_restored", "cleanup_completed")) CLEANUP.put(name, false);
         Set<Long> baseline = threadIds(); SimpleKdcServer server = null; Code error = null;
         totalDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(185);
         deadline = Math.min(totalDeadline, System.nanoTime() + TimeUnit.SECONDS.toNanos(70));
@@ -1608,6 +1661,7 @@ public final class HdfsKerberosTransferProbe {
                 rememberOwner(); return null; }, 10, deadline);
             need(owner != null && owner.hasKerberosCredentials() && owner.isFromKeytab(), Code.namenode_failed);
             observeThreads("owner_login", baseline);
+            stage = "metrics_mode"; enableMetricsMode();
             stage = "format"; bounded(() -> {
                 try { NameNode.format(conf); formatSslFactory = Util.connectionFactory; }
                 finally { rememberOwner(); } return null; }, 15, deadline);
@@ -1670,6 +1724,7 @@ public final class HdfsKerberosTransferProbe {
             cleanupDeadline = Math.min(totalDeadline, System.nanoTime() + TimeUnit.SECONDS.toNanos(60));
             if (serialized != null) Arrays.fill(serialized, (byte) 0);
             try { stopServices(); } catch (Throwable ignored) { CLEANUP.put("cleanup_completed", false); }
+            finally { restoreMetricsMode(); }
             try { cleanup(server, baseline); } catch (Throwable ignored) { CLEANUP.put("cleanup_completed", false); }
             finally { THREAD_ORIGINS.clear(); }
         }
@@ -1680,7 +1735,7 @@ public final class HdfsKerberosTransferProbe {
         boolean success = error == null && CHECKS.values().stream().allMatch(Boolean.TRUE::equals) && clean;
         report.println("{\"schema_version\":1,\"scope\":\"hdfs_kerberos_transfer_feasibility\",\"success\":" + success
             + ",\"expected_kerby_version\":\"2.1.2\",\"runtime_binding_required\":true,\"checks\":" + boolMap(CHECKS)
-            + ",\"cleanup\":" + boolMap(CLEANUP) + ",\"cache_bytes\":" + cacheBytes
+            + ",\"cleanup\":" + boolMap(CLEANUP) + ",\"metrics_mode\":" + metricsModeJson() + ",\"cache_bytes\":" + cacheBytes
             + ",\"child_count\":" + CHILDREN.size() + ",\"acquired_bytes\":" + acquiredBytes + ",\"acquisitions\":" + acquisitionsJson()
             + ",\"missing_category\":\"" + (Boolean.TRUE.equals(CHECKS.get("missing_path_rejected")) ? "directory_not_found" : "not_observed") + "\""
             + ",\"observed_lifetime_seconds\":" + observedLifetime + ",\"stage\":\"" + stage + "\",\"wire_hex\":\"" + wireHex + "\",\"error\":"

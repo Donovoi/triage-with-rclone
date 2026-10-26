@@ -32,7 +32,7 @@ RCLONE_VERSION = "1.75.2"
 RCLONE_SHA = "ed7ab1f17876bb006c3df3949a3044959671afd9112362dacaa5dd1647735bc1"
 DENIAL = "SIMPLE authentication is not enabled.  Available:[TOKEN, KERBEROS]"
 EXCEPTION = "org.apache.hadoop.security.AccessControlException"
-STAGES = frozenset("environment tls filesystem datanode_start tls_endpoints empty small missing payload_before payload_after rclone_version kdc_init principals kdc_start owner_login format namenode_start relay_start seed reader_tgt listing_before rclone_none wire_none listing_after preservation completed".split())
+STAGES = frozenset("environment tls filesystem datanode_start tls_endpoints empty small missing payload_before payload_after rclone_version kdc_init principals kdc_start owner_login metrics_mode format namenode_start relay_start seed reader_tgt listing_before rclone_none wire_none listing_after preservation completed".split())
 DIAGNOSTIC_CATEGORIES = frozenset("none unclassified assertion exit_requested halt_requested missing_class resource_failure invalid_config linkage_failure linkage_no_such_method linkage_no_such_field linkage_abstract_method linkage_illegal_access linkage_instantiation linkage_incompatible_class linkage_initializer linkage_bootstrap linkage_circularity linkage_class_format linkage_class_version linkage_native linkage_verify metrics_failure null_state illegal_state unsupported_operation security_failure krb_failure file_missing io_failure interrupted".split())
 DIAGNOSTIC_ORIGINS = frozenset("none namenode_constructor namenode_initialize namenode_login namenode_format namenode_http hadoop_http hadoop_metrics default_metrics_get_impl default_metrics_init default_metrics_shutdown_instance default_metrics_set_impl metrics_system_constructor metrics_system_init metrics_system_start metrics_system_stop metrics_system_unregister_source metrics_system_register_sink metrics_system_get_proxy_for_callback metrics_system_start_metrics_mbeans metrics_system_stop_metrics_mbeans metrics_system_current_config metrics_system_start_timer metrics_system_on_timer_event metrics_system_publish_metrics_now metrics_system_sample_metrics metrics_system_snapshot_metrics metrics_system_publish_metrics metrics_system_stop_timer metrics_system_stop_sources metrics_system_stop_sinks metrics_system_configure metrics_system_configure_system metrics_system_configure_sinks metrics_system_new_sink metrics_system_configure_sources metrics_system_clear_configs metrics_system_get_hostname metrics_system_register_system_source metrics_system_get_metrics metrics_system_init_system_mbean metrics_system_shutdown metrics_system_get_source metrics_system_get_source_adapter metrics_system_get_sink_adapter metrics_system_init_mode default_metrics_initialize default_metrics_instance default_metrics_shutdown default_metrics_set_instance default_metrics_set_mini_cluster_mode default_metrics_in_mini_cluster_mode default_metrics_new_mbean_name default_metrics_remove_mbean_name default_metrics_remove_source_name default_metrics_source_name default_metrics_new_object_name default_metrics_remove_object_name default_metrics_remove_source default_metrics_new_source_name metrics_system_register metrics_system_register_source datanode_metrics_constructor datanode_metrics_create metrics_source_builder_constructor metrics_source_builder_registry metrics_source_builder_add metrics_source_builder_build metrics_source_builder_info metrics_factory_field metrics_factory_method metrics_factory_info metrics_factory_name metrics_annotations_builder method_metric_constructor jvm_metrics_create jvm_metrics_register metrics_registry_counter metrics_registry_gauge metrics_registry_rate metrics_registry_rates_aggregation metrics_registry_stat metrics_registry_rolling metrics_registry_quantiles http_authentication ugi block_manager namesystem metrics_config_constructor metrics_config_static_initializer metrics_config_create metrics_config_load_first metrics_config_subset metrics_config_get_instance_configs metrics_config_get_class_name metrics_config_get_plugin metrics_config_get_plugin_loader metrics_config_get_filter metrics_config_get_property_internal metrics_config_to_string metrics_config_keys config_properties_constructor config_properties_static_initializer config_properties_create_layout config_properties_install_layout config_properties_read config_abstract_constructor config_abstract_init_logger config_abstract_install_default_interpolator config_abstract_install_interpolator config_abstract_interpolate config_abstract_interpolated_configuration config_file_constructor config_file_static_initializer config_file_load config_file_load_from_reader config_file_load_from_stream config_file_load_from_stream_directly config_file_load_from_transformed_stream config_interpolator_constructor config_interpolator_static_initializer config_interpolator_create_interpolator config_interpolator_from_specification config_interpolator_get_default_prefix_lookups config_interpolator_init_substitutor config_interpolator_interpolate config_interpolator_resolve config_interpolator_resolve_single_variable config_lookup_holder_constructor config_lookup_holder_static_initializer config_lookup_holder_add_lookup config_lookup_holder_create_default_lookups config_lookup_holder_parse_lookups config_lookup_holder_get_default_prefix_lookups config_default_lookups_constructor config_default_lookups_static_initializer config_subset_constructor config_subset_init_interpolator".split())
 THREAD_CATEGORIES = frozenset("probe_task jdk_process_reaper jdk_timer jdk_executor jdk_cleaner hadoop_metrics hadoop_rpc hadoop_fs hadoop_namenode hadoop_blockmanagement hadoop_util jetty kerby other".split())
@@ -41,7 +41,7 @@ OWNED_CLEANUP_STATES = frozenset("not_attempted observation_incomplete services_
 TIMER_KINDS = frozenset("namenode_metrics rpc_idle snapshot_gc shell_timeout ssl_store unknown".split())
 BASE = "docker.io/library/eclipse-temurin@sha256:e1c09a9ee23feb81f94016547826c1e694086cd927356fb57fccc312fcc32f85"
 BASE_ID = "sha256:d0e6e16acb7f941e5206d99ec38e5bba18545c43462541958f84b22e0fc006e8"
-JAVA_SHA = "b60c7febcde39efd32cce476bd083b9c3fd54516515a2a50a40dc689ff11cad8"
+JAVA_SHA = "33e7ce7d29129306e5ef42729998f1637e34b207feff5da307906993c34d426d"
 REMEDIATION_RUNTIME_SHA = "01095cf92c20a65a479aafdcd52538e11313610230c17b011a5e5146a81bb127"
 REMEDIATION_ORDER_SHA = "74206f7ff8e05475fd310648003cd570c620e92cf670ee1965c66b96eb3ba15d"
 REMEDIATION_LOCK_SHA = "a0fc4edc8ea5fa9df5c26cac0be9f638650c7a657260b9da5eaad16195746e95"
@@ -53,11 +53,11 @@ FALSE_CLAIMS = dict(ledger_eligible=False, authentication_verified=False, hdfs_a
     renewal_verified=False, daemon_accepted=False, provider_accepted=False, application_accepted=False,
     vendor_accepted=False, vulnerability_audited=False, publisher_audit_completed=False)
 JAVA_FALSE = set(FALSE_CLAIMS) - {"publisher_audit_completed"}
-JAVA_CHECKS = frozenset(("environment", "endpoint_settings", "positive_tgt", "file_cache_v3",
+JAVA_CHECKS = frozenset(("environment", "metrics_mode_enabled", "endpoint_settings", "positive_tgt", "file_cache_v3",
     "nonrenewable", "secure_namenode", "secure_datanode", "tls_material", "tls_endpoints", "registered_datanode", "seed_hashes", "empty_acquired", "small_acquired", "missing_path_rejected", "payload_before", "payload_after", "listing_before", "rclone_auth_boundary_rejection",
     "wire_auth_boundary_rejection", "listing_after", "source_preserved", "cache_preserved"))
 JAVA_CLEANUP = frozenset(("children_reaped", "relay_closed", "filesystem_closed", "namenode_stop_returned", "owner_logged_out", "kdc_stop_returned", "threads_terminated", "listeners_absent",
-    "private_material_removed", "process_property_restored", "cleanup_completed", "gc_monitor_reaped", "fs_statistics_cleaner_reaped", "format_ssl_timer_reaped", "datanode_stop_returned", "datanode_ssl_timer_reaped"))
+    "private_material_removed", "process_property_restored", "metrics_mode_restored", "cleanup_completed", "gc_monitor_reaped", "fs_statistics_cleaner_reaped", "format_ssl_timer_reaped", "datanode_stop_returned", "datanode_ssl_timer_reaped"))
 JAVA_CODES = frozenset("""environment_invalid path_invalid source_changed unexpected_files
 listener_mismatch configuration_invalid deadline_exceeded positive_ticket_failed
 wrong_password_failure_mismatch wrong_principal_not_rejected cache_invalid ticket_time_mismatch
@@ -467,11 +467,27 @@ def validate_owned_cleanup(value, cleanup):
              and cleanup[helper + "_reaped"] is (state == "terminated"), "java_report_invalid")
 
 
+def validate_metrics_mode(value, checks, cleanup):
+    keys = {"attempted", "captured", "prior_enabled", "enable_attempted", "enable_verified",
+            "restore_attempted", "restore_verified", "transition_failed"}
+    need(type(value) is dict and set(value) == keys and all(type(x) is bool for x in value.values()), "java_report_invalid")
+    attempted, captured, prior = value["attempted"], value["captured"], value["prior_enabled"]
+    enabling, enabled = value["enable_attempted"], value["enable_verified"]
+    restoring, restored, failed = value["restore_attempted"], value["restore_verified"], value["transition_failed"]
+    need((not captured or attempted) and (not prior or captured)
+         and (not enabling or captured and not prior) and (not enabled or enabling)
+         and restoring is captured and (not restored or restoring), "java_report_invalid")
+    need((attempted or not any(value.values()))
+         and (not attempted or failed or captured and not prior and enabled and restored), "java_report_invalid")
+    clean = not attempted or captured and not prior and enabled and restored and not failed
+    need(checks["metrics_mode_enabled"] is enabled and cleanup["metrics_mode_restored"] is clean, "java_report_invalid")
+
+
 def validate_java(raw, exit_code):
     try:
         value = parse(raw, 32768)
         keys = {"schema_version", "scope", "success", "expected_kerby_version", "runtime_binding_required", "checks",
-                "cleanup", "cache_bytes", "child_count", "acquired_bytes", "acquisitions", "missing_category", "observed_lifetime_seconds", "stage", "wire_hex", "rclone_wire_hex", "relay", "error", "diagnostic", "remaining_threads", "remaining_thread_intervals", "remaining_thread_matrix", "remaining_timer_kinds", "thread_observation_complete", "owned_thread_cleanup"} | JAVA_FALSE
+                "cleanup", "metrics_mode", "cache_bytes", "child_count", "acquired_bytes", "acquisitions", "missing_category", "observed_lifetime_seconds", "stage", "wire_hex", "rclone_wire_hex", "relay", "error", "diagnostic", "remaining_threads", "remaining_thread_intervals", "remaining_thread_matrix", "remaining_timer_kinds", "thread_observation_complete", "owned_thread_cleanup"} | JAVA_FALSE
         need(type(value) is dict and set(value) == keys and type(value["schema_version"]) is int
              and value["schema_version"] == 1 and value["scope"] == "hdfs_kerberos_transfer_feasibility"
              and value["expected_kerby_version"] == "2.1.2" and value["runtime_binding_required"] is True
@@ -479,6 +495,7 @@ def validate_java(raw, exit_code):
         for key, expected in (("checks", JAVA_CHECKS), ("cleanup", JAVA_CLEANUP)):
             need(type(value[key]) is dict and set(value[key]) == expected
                  and all(type(x) is bool for x in value[key].values()), "java_report_invalid")
+        validate_metrics_mode(value["metrics_mode"], value["checks"], value["cleanup"])
         need(type(value["cache_bytes"]) is int and 0 <= value["cache_bytes"] <= 65536
              and type(value["observed_lifetime_seconds"]) is int and 0 <= value["observed_lifetime_seconds"] <= 120
              and (value["error"] is None or type(value["error"]) is str and value["error"] in JAVA_CODES), "java_report_invalid")

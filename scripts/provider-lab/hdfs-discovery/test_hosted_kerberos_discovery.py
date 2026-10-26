@@ -37,8 +37,8 @@ def profile_receipt(scope, profile="kerberos"):
     remediation = profile == H.D.REMEDIATION_PROFILE
     return dict(schema_version=1, scope=scope, candidate_profile=profile,
                 lock_sha256=H.D.offline_cache.REMEDIATION_LOCK_SHA256 if remediation else LOCK_SHA,
-                counts=dict(artifacts=643, poms=445, selected_runtime_jars=142, other_jars=56,
-                            artifact_bytes=97948330) if remediation else dict(COUNTS),
+                counts=dict(artifacts=641, poms=444, selected_runtime_jars=142, other_jars=55,
+                            artifact_bytes=97419881) if remediation else dict(COUNTS),
                 success=True, preparation_only=True, advisory_work_pending=True,
                 **FALSE)
 
@@ -46,8 +46,8 @@ def profile_receipt(scope, profile="kerberos"):
 def seed_receipt(profile="kerberos"):
     remediation = profile == H.D.REMEDIATION_PROFILE
     return dict(profile_receipt("hdfs_offline_cache_preparation", profile), sha256="1" * 64, size=20480,
-                seed_regular_files=1731 if remediation else 1737, sha1_files=643 if remediation else 645,
-                repository_tracking_files=445 if remediation else 447,
+                seed_regular_files=1726 if remediation else 1737, sha1_files=641 if remediation else 645,
+                repository_tracking_files=444 if remediation else 447,
                 metadata_reconstructed=True, original_auxiliary_copied=False)
 
 

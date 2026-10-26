@@ -102,12 +102,14 @@ def positive():
     # Independent literal wire record, including deliberately narrow evidence label.
     return dict(schema_version=1, scope="hdfs_kerberos_transfer_feasibility", success=True,
         expected_kerby_version="2.1.2", runtime_binding_required=True,
-        checks=dict(environment=True, endpoint_settings=True, positive_tgt=True, file_cache_v3=True,
+        checks=dict(environment=True, metrics_mode_enabled=True, endpoint_settings=True, positive_tgt=True, file_cache_v3=True,
             nonrenewable=True, secure_namenode=True, secure_datanode=True, tls_material=True, tls_endpoints=True, registered_datanode=True, seed_hashes=True, empty_acquired=True, small_acquired=True, missing_path_rejected=True, payload_before=True, payload_after=True, listing_before=True, rclone_auth_boundary_rejection=True,
             wire_auth_boundary_rejection=True, listing_after=True, source_preserved=True, cache_preserved=True),
         cleanup=dict(children_reaped=True, relay_closed=True, filesystem_closed=True, namenode_stop_returned=True, owner_logged_out=True, kdc_stop_returned=True, threads_terminated=True, listeners_absent=True,
-            private_material_removed=True, process_property_restored=True, cleanup_completed=True,
+            private_material_removed=True, process_property_restored=True, metrics_mode_restored=True, cleanup_completed=True,
             gc_monitor_reaped=True, fs_statistics_cleaner_reaped=True, format_ssl_timer_reaped=True, datanode_stop_returned=True, datanode_ssl_timer_reaped=True),
+        metrics_mode=dict(attempted=True, captured=True, prior_enabled=False, enable_attempted=True,
+                          enable_verified=True, restore_attempted=True, restore_verified=True, transition_failed=False),
         owned_thread_cleanup=dict(gc_monitor='terminated', fs_statistics_cleaner='terminated', format_ssl_timer='terminated'),
         child_count=10, acquired_bytes=2109442, missing_category="directory_not_found",
         acquisitions=dict(empty=dict(bytes=0,sha256="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"),
@@ -221,7 +223,7 @@ class TicketTests(unittest.TestCase):
         value = positive(); value.update(success=False, error="unclassified", stage="namenode_start",
             wire_hex="", rclone_wire_hex="", relay=None, cache_bytes=0, observed_lifetime_seconds=0,
             diagnostic=dict(category="metrics_failure", origin="hadoop_metrics"))
-        for key in value["checks"]: value["checks"][key] = key in ("environment", "endpoint_settings")
+        for key in value["checks"]: value["checks"][key] = key in ("environment", "endpoint_settings", "metrics_mode_enabled")
         value["acquisitions"] = {key: None for key in value["acquisitions"]}
         value["acquired_bytes"] = 0; value["missing_category"] = "not_observed"
         value["remaining_threads"]["hadoop_metrics"] = 1
@@ -996,6 +998,7 @@ class TlsDiagnosticTests(unittest.TestCase):
             missing_category='not_observed',cache_bytes=0,observed_lifetime_seconds=0,wire_hex='',rclone_wire_hex='',relay=None,
             diagnostic=dict(category='assertion',origin='none'),thread_observation_complete=False)
         value['checks']={key:key=='environment' for key in value['checks']}
+        value['metrics_mode']={key:False for key in value['metrics_mode']}
         value['acquisitions']={key:None for key in value['acquisitions']}
         for helper in ('gc_monitor','fs_statistics_cleaner','format_ssl_timer'):
             value['cleanup'][helper+'_reaped']=False
@@ -1133,6 +1136,7 @@ class LinkageDiagnosticTests(unittest.TestCase):
     def failure(self,category='linkage_no_such_method',origin='metrics_source_builder_add'):
         value=TlsDiagnosticTests().failed_tls('unclassified')
         value.update(stage='datanode_start',diagnostic=dict(category=category,origin=origin))
+        value['metrics_mode']=positive()['metrics_mode'];value['checks']['metrics_mode_enabled']=True
         value['cleanup'].update(datanode_stop_returned=False,datanode_ssl_timer_reaped=False,
             threads_terminated=False,private_material_removed=False)
         return value
@@ -1344,3 +1348,129 @@ class CommonsIoRuntimePinTests(unittest.TestCase):
         stale['normalized_sha256']=F.sha(F.canonical(stale['entries']));raw=F.canonical(stale)
         with patch.object(F,'REMEDIATION_RUNTIME_SHA',F.sha(raw)),patch.object(F,'REMEDIATION_ORDER_SHA',stale['normalized_sha256']):
             with self.assertRaises(F.ProbeError):F.runtime_rows(raw,lock,profile='kerberos-remediation')
+
+
+class MetricsModeLifecycleTests(unittest.TestCase):
+    FIELDS=('attempted','captured','prior_enabled','enable_attempted','enable_verified',
+            'restore_attempted','restore_verified','transition_failed')
+    # Final observations from acquisition prefixes and restoration outcomes.
+    # These are finite receipt cases, not a claim that Java executed locally.
+    VALID={'00000000','10000001','11100101','11100111','11000101','11000111',
+           '11010101','11010111','11011101','11011110','11011111'}
+
+    def mode(self,bits):
+        return dict(zip(self.FIELDS,(char=='1' for char in bits)))
+
+    def failed(self,bits):
+        value=TlsDiagnosticTests().failed_tls('configuration_invalid')
+        value['stage']='metrics_mode';value['metrics_mode']=self.mode(bits)
+        value['checks']['metrics_mode_enabled']=value['metrics_mode']['enable_verified']
+        value['cleanup']['metrics_mode_restored']=bits in ('00000000','11011110')
+        return value
+
+    def test_all_256_state_records_have_only_closed_final_lifecycle_outcomes(self):
+        for number in range(256):
+            bits=f'{number:08b}';mode=self.mode(bits)
+            for enabled in (False,True):
+                for restored in (False,True):
+                    allowed=(bits in self.VALID and enabled is mode['enable_verified']
+                             and restored is (bits in ('00000000','11011110')))
+                    with self.subTest(bits=bits,enabled=enabled,restored=restored):
+                        if allowed:
+                            F.validate_metrics_mode(mode,{'metrics_mode_enabled':enabled},{'metrics_mode_restored':restored})
+                        else:
+                            with self.assertRaises(F.ProbeError):
+                                F.validate_metrics_mode(mode,{'metrics_mode_enabled':enabled},{'metrics_mode_restored':restored})
+
+    def test_mode_shape_and_types_cannot_hide_missing_or_private_fields(self):
+        for field in self.FIELDS:
+            for replacement in (None,0,1,'true',{},[]):
+                mode=self.mode('11011110');mode[field]=replacement
+                with self.subTest(field=field,value=replacement),self.assertRaises(F.ProbeError):
+                    F.validate_metrics_mode(mode,{'metrics_mode_enabled':True},{'metrics_mode_restored':True})
+            for mutation in ('missing','extra'):
+                value=positive()
+                if mutation=='missing':del value['metrics_mode'][field]
+                else:value['metrics_mode']['private_detail']='PRIVATE_SYNTHETIC_CANARY'
+                with self.assertRaises(F.ProbeError):F.validate_java(F.canonical(value),0)
+
+    def test_acquisition_failure_cannot_receive_cleanup_even_after_successful_restore(self):
+        for bits in ('10000001','11100111','11000111','11010111','11011111'):
+            value=self.failed(bits)
+            with self.subTest(bits=bits):
+                result=F.validate_java(F.canonical(value),1)
+                self.assertFalse(result['success'] or result['cleanup']['metrics_mode_restored'])
+                value['cleanup']['metrics_mode_restored']=True
+                with self.assertRaises(F.ProbeError):F.validate_java(F.canonical(value),1)
+
+    def test_restore_throw_mismatch_or_late_completion_cannot_promote_enabled_mode(self):
+        value=self.failed('11011101')
+        result=F.validate_java(F.canonical(value),1)
+        self.assertTrue(result['checks']['metrics_mode_enabled'])
+        self.assertFalse(result['cleanup']['metrics_mode_restored'])
+        for change in ('claim_success','clear_failure','omit_restore'):
+            bad=copy.deepcopy(value)
+            if change=='claim_success':bad.update(success=True,error=None)
+            elif change=='clear_failure':bad['metrics_mode']['transition_failed']=False
+            else:bad['metrics_mode']['restore_attempted']=False
+            with self.subTest(change=change),self.assertRaises(F.ProbeError):F.validate_java(F.canonical(bad),1)
+
+    def test_early_unattempted_mode_is_distinct_from_failed_capture(self):
+        before=TlsDiagnosticTests().failed_tls('tls_resource_missing')
+        result=F.validate_java(F.canonical(before),1)
+        self.assertEqual(result['metrics_mode'],self.mode('00000000'))
+        self.assertTrue(result['cleanup']['metrics_mode_restored'])
+        captured=self.failed('10000001')
+        self.assertFalse(F.validate_java(F.canonical(captured),1)['cleanup']['metrics_mode_restored'])
+
+    def test_fake_container_retains_failed_mode_and_all_outer_cleanup(self):
+        for bits in ('10000001','11100111','11010111','11011101'):
+            original=FakeDocker.__init__;receipt=self.failed(bits)
+            def initialize(fake,root,*,max_calls):
+                original(fake,root,max_calls=max_calls);fake.java=copy.deepcopy(receipt);fake.exit_code=1
+            helper=TicketTests(methodName='test_full_mock_success_binds_context_and_cleans');helper.setUp()
+            try:
+                with patch.object(FakeDocker,'__init__',initialize):report,docker=helper.fake_run()
+                self.assertFalse(report['success']);self.assertEqual(report['errors'],['java_probe_failed'])
+                self.assertEqual(report['result']['metrics_mode'],receipt['metrics_mode'])
+                self.assertFalse(report['result']['cleanup']['metrics_mode_restored'])
+                self.assertTrue(all(report['cleanup'].values()));self.assertFalse(docker.root.exists())
+                for claim in F.FALSE_CLAIMS:self.assertIs(report[claim],False)
+            finally:helper.tearDown()
+
+    def test_source_capture_attempt_flags_and_restoration_failure_are_sticky(self):
+        source=(HERE/'HdfsKerberosTransferProbe.java').read_text()
+        enable=source[source.index('private static void enableMetricsMode()'):source.index('private static void restoreMetricsMode()')]
+        ordered=('metricsModeAttempted = true;','metricsModePrior = DefaultMetricsSystem.inMiniClusterMode();',
+                 'metricsModeCaptured = true;','need(!metricsModePrior, Code.configuration_invalid);',
+                 'metricsModeEnableAttempted = true;','DefaultMetricsSystem.setMiniClusterMode(true);',
+                 'boolean enabled = DefaultMetricsSystem.inMiniClusterMode();','need(enabled, Code.configuration_invalid);',
+                 'metricsModeEnableVerified = true;','CHECKS.put("metrics_mode_enabled", true);')
+        self.assertEqual([enable.index(x) for x in ordered],sorted(enable.index(x) for x in ordered))
+        self.assertEqual(enable.count('need(System.nanoTime() < deadline, Code.deadline_exceeded);'),3)
+        self.assertIn('metricsModeTransitionFailed = true;\n            throw failure;',enable)
+        restore=source[source.index('private static void restoreMetricsMode()'):source.index('private static String metricsModeJson()')]
+        self.assertIn('if (metricsModeCaptured)',restore)
+        self.assertIn('if (metricsModeEnableAttempted) DefaultMetricsSystem.setMiniClusterMode(metricsModePrior);',restore)
+        self.assertEqual(restore.count('need(System.nanoTime() < cleanupDeadline, Code.deadline_exceeded);'),2)
+        self.assertLess(restore.index('metricsModeRestoreAttempted = true;'),restore.index('try {'))
+        self.assertLess(restore.index('need(restored, Code.configuration_invalid);'),restore.index('metricsModeRestoreVerified = true;'))
+        self.assertIn('metricsModeEnableVerified && metricsModeRestoreVerified && !metricsModeTransitionFailed',restore)
+
+    def test_source_keeps_mode_through_owned_stops_and_preserves_existing_bounds(self):
+        source=(HERE/'HdfsKerberosTransferProbe.java').read_text()
+        main=source[source.index('public static void main('):]
+        self.assertLess(main.index('Set<Long> baseline = threadIds()'),main.index('enableMetricsMode();'))
+        self.assertLess(main.index('enableMetricsMode();'),main.index('NameNode.format(conf)'))
+        self.assertIn('namenode = new NameNode(conf)',main)
+        self.assertIn('try { stopServices(); } catch (Throwable ignored) { CLEANUP.put("cleanup_completed", false); }\n            finally { restoreMetricsMode(); }',main)
+        self.assertLess(main.index('finally { restoreMetricsMode(); }'),main.index('cleanup(server, baseline)'))
+        stop=source[source.index('private static void stopServices()'):source.index('public static void main(')]
+        self.assertLess(stop.index('datanode.shutdown()'),stop.index('namenode.stop()'))
+        self.assertNotIn('setMiniClusterMode',stop)
+        self.assertNotIn('DefaultMetricsSystem.shutdown(',source)
+        self.assertNotIn('unregisterSource(',source)
+        for bound in ('TimeUnit.SECONDS.toNanos(185)','TimeUnit.SECONDS.toNanos(70)','TimeUnit.SECONDS.toNanos(60)',
+                      'bounded(() -> { datanode.shutdown(); return null; }, 35, dnUntil)',
+                      'Math.min(cleanupDeadline, System.nanoTime() + TimeUnit.SECONDS.toNanos(3))'):
+            self.assertIn(bound,source)
