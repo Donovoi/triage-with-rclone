@@ -25,25 +25,27 @@ FALSE_CLAIMS = dict(ledger_eligible=False, authentication_verified=False,
                     publisher_audit_completed=False)
 
 
-def candidate_binding(candidate):
-    contents = D.candidate_inputs(candidate, "kerberos")
+def candidate_binding(candidate, profile="kerberos"):
+    contents = D.candidate_inputs(candidate, profile)
     actual = {name: hashlib.sha256(data).hexdigest() for name, data in contents.items()}
-    if actual != D.candidate_hashes("kerberos"):
+    if actual != D.candidate_hashes(profile):
         raise ValueError("candidate_invalid")
     return actual
 
 
-def source_bindings(verifier):
+def source_bindings(verifier, profile="kerberos"):
+    D.candidate_hashes(profile)
     paths = [Path(__file__).absolute(), Path(verifier).absolute()]
     paths.extend(Path(module.__file__).absolute()
                  for module in (B, J, D, R, D.graph_export, D.offline_cache))
-    paths.append(D.offline_cache.lock_path("kerberos"))
+    lock = D.offline_cache.lock_path(profile)
+    paths.append(lock)
     if len({path.name for path in paths}) != len(paths):
         raise ValueError("source_invalid")
     result = {path.name: D.file_hash(path, maximum=256 * 1024) for path in paths}
     if result[Path(verifier).name] != B.VERIFIER_SHA256:
         raise ValueError("source_invalid")
-    if result["artifact-lock-kerberos.json"] != D.offline_cache.KERBEROS_LOCK_SHA256:
+    if result[lock.name] != D.offline_cache.lock_sha256(profile):
         raise ValueError("source_invalid")
     return result
 
@@ -62,17 +64,18 @@ def clean_discovery(value):
         return False
 
 
-def discovery_matches(value, candidate, *, mode="online", seed=None, prepare=False):
+def discovery_matches(value, candidate, *, mode="online", seed=None, prepare=False, profile="kerberos"):
     return (type(value) is dict and value.get("success") is True
             and value.get("errors") == [] and value.get("mode") == mode
             and value.get("ledger_eligible") is False
             and value.get("offline_reproduced") is False
             and value.get("daemon_accepted") is False
-            and (cache_matches(value.get("cache_preparation")) if prepare
+            and (cache_matches(value.get("cache_preparation"), profile) if prepare
                  else value.get("cache_preparation") is None)
             and type(value.get("manifest")) is dict
             and type(value.get("inputs")) is dict
-            and value["inputs"].get("candidate_profile") == "kerberos"
+            and value["inputs"].get("candidate_profile") == profile
+            and value["inputs"].get("cache_lock_sha256") == D.offline_cache.lock_sha256(profile)
             and value["inputs"].get("candidate_sha256") == candidate
             and value["inputs"].get("seed_cache") == seed
             and clean_discovery(value))
@@ -80,14 +83,19 @@ def discovery_matches(value, candidate, *, mode="online", seed=None, prepare=Fal
 
 COUNTS = dict(artifacts=645, poms=447, selected_runtime_jars=142, other_jars=56,
               artifact_bytes=98990688)
+REMEDIATION_COUNTS = dict(artifacts=643, poms=445, selected_runtime_jars=142, other_jars=56,
+                         artifact_bytes=97948330)
 
 
-def profile_receipt_matches(value, scope):
+def profile_receipt_matches(value, scope, profile="kerberos"):
+    if profile not in ("kerberos", D.REMEDIATION_PROFILE):
+        return False
+    counts = REMEDIATION_COUNTS if profile == D.REMEDIATION_PROFILE else COUNTS
     return (type(value) is dict and value.get("scope") == scope
             and type(value.get("schema_version")) is int and value["schema_version"] == 1
-            and value.get("candidate_profile") == "kerberos"
-            and value.get("lock_sha256") == D.offline_cache.KERBEROS_LOCK_SHA256
-            and type(value.get("counts")) is dict and value["counts"] == COUNTS
+            and value.get("candidate_profile") == profile
+            and value.get("lock_sha256") == D.offline_cache.lock_sha256(profile)
+            and type(value.get("counts")) is dict and value["counts"] == counts
             and all(type(item) is int for item in value["counts"].values())
             and value.get("success") is True and value.get("preparation_only") is True
             and value.get("advisory_work_pending") is True
@@ -96,20 +104,20 @@ def profile_receipt_matches(value, scope):
                      "application_accepted", "vendor_accepted")))
 
 
-def cache_matches(value):
-    return (profile_receipt_matches(value, "hdfs_offline_cache_preparation")
+def cache_matches(value, profile="kerberos"):
+    return (profile_receipt_matches(value, "hdfs_offline_cache_preparation", profile)
             and type(value.get("sha256")) is str and re.fullmatch(r"[0-9a-f]{64}", value["sha256"]) is not None
             and type(value.get("size")) is int and 0 < value["size"] <= D.offline_cache.MAX_ARCHIVE
             and value.get("metadata_reconstructed") is True
             and value.get("original_auxiliary_copied") is False)
 
 
-def stage_inputs_match(value, candidate, sources, material, seed):
+def stage_inputs_match(value, candidate, sources, material, seed, profile="kerberos"):
     try:
         expected = dict(supervisor_sha256=sources["resolver_discovery.py"],
             graph_export_sha256=sources["graph_export.py"], cache_source_sha256=sources["offline_cache.py"],
-            cache_lock_sha256=sources["artifact-lock-kerberos.json"], seed_cache=seed,
-            candidate_profile="kerberos", candidate_sha256=candidate,
+            cache_lock_sha256=sources[D.offline_cache.lock_path(profile).name], seed_cache=seed,
+            candidate_profile=profile, candidate_sha256=candidate,
             maven=dict(version=material["maven_version"], archive_sha256=material["maven_archive_sha256"],
                        archive_sha512=material["maven_archive_sha512"]),
             jdk=dict(manifest=material["jdk_image"], config_id=material["jdk_image_id"]),
@@ -119,9 +127,9 @@ def stage_inputs_match(value, candidate, sources, material, seed):
         return False
 
 
-def comparison_matches(value, manifest):
+def comparison_matches(value, manifest, profile="kerberos"):
     try:
-        return (profile_receipt_matches(value, "hdfs_offline_manifest_comparison")
+        return (profile_receipt_matches(value, "hdfs_offline_manifest_comparison", profile)
                 and value.get("artifact_runtime_graph_match") is True
                 and value.get("auxiliary_cache_identity_claimed") is False
                 and value.get("runtime_classpath_sha256") == manifest["runtime_classpath"]["normalized_sha256"]
@@ -131,12 +139,14 @@ def comparison_matches(value, manifest):
         return False
 
 
-def run(candidate, verifier, mode="online"):
+def run(candidate, verifier, mode="online", *, profile="kerberos"):
+    if profile not in ("kerberos", D.REMEDIATION_PROFILE):
+        raise ValueError("profile_invalid")
     if mode not in ("online", "repeat"):
         raise ValueError("mode_invalid")
     started = time.monotonic()
     report = dict(schema_version=1, scope="hdfs_kerberos_dependency_discovery",
-                  candidate_profile="kerberos", mode=mode, review_status="quarantined",
+                  candidate_profile=profile, mode=mode, review_status="quarantined",
                   success=False, errors=[], started_utc=R.utc_now(), finished_utc=None,
                   duration_seconds=None, source_sha256={}, candidate_sha256={},
                   metadata=None, bootstrap=None, discovery=None, offline_discovery=None, comparison=None,
@@ -148,8 +158,8 @@ def run(candidate, verifier, mode="online"):
     old_umask = os.umask(0o077)
     try:
         D.hosted_guard()
-        report["candidate_sha256"] = candidate_binding(candidate)
-        report["source_sha256"] = source_bindings(verifier)
+        report["candidate_sha256"] = candidate_binding(candidate, profile)
+        report["source_sha256"] = source_bindings(verifier, profile)
         stage = "metadata_failed"
         metadata = J.JdkMetadataLease()
         with metadata:
@@ -169,30 +179,34 @@ def run(candidate, verifier, mode="online"):
                 seed = root / "offline-seed.tar"
                 report["discovery"] = D.discover(
                     candidate, copy.deepcopy(material), bootstrap.root / "maven.tar.gz", root,
-                    candidate_profile="kerberos", **({"cache_destination": seed} if mode == "repeat" else {}))
-                if not discovery_matches(report["discovery"], report["candidate_sha256"], prepare=mode == "repeat"):
+                    candidate_profile=profile, **({"cache_destination": seed} if mode == "repeat" else {}))
+                if (not discovery_matches(report["discovery"], report["candidate_sha256"],
+                                          prepare=mode == "repeat", profile=profile)
+                        or (profile == D.REMEDIATION_PROFILE and not stage_inputs_match(
+                            report["discovery"], report["candidate_sha256"], report["source_sha256"],
+                            material, None, profile=profile))):
                     report["errors"].append("discovery_failed")
                 elif mode == "repeat":
                     if not stage_inputs_match(report["discovery"], report["candidate_sha256"],
-                                              report["source_sha256"], material, None):
+                                              report["source_sha256"], material, None, profile=profile):
                         raise ValueError("online_inputs_changed")
                     stage = "offline_discovery_failed"
                     offline_started = True
                     report["offline_discovery"] = D.discover(
                         candidate, copy.deepcopy(material), bootstrap.root / "maven.tar.gz", root,
-                        candidate_profile="kerberos", seed_cache=seed)
+                        candidate_profile=profile, seed_cache=seed)
                     seed_receipt = report["discovery"]["cache_preparation"]
                     if (not discovery_matches(report["offline_discovery"], report["candidate_sha256"],
-                                              mode="offline", seed=seed_receipt)
+                                              mode="offline", seed=seed_receipt, profile=profile)
                             or not stage_inputs_match(report["offline_discovery"], report["candidate_sha256"],
-                                                      report["source_sha256"], material, seed_receipt)
+                                                      report["source_sha256"], material, seed_receipt, profile=profile)
                             or not R.matching_stage_inputs(report["discovery"], report["offline_discovery"])):
                         report["errors"].append("offline_discovery_failed")
                     else:
                         stage = "offline_comparison_failed"
                         report["comparison"] = D.offline_cache.compare_manifests(
-                            report["discovery"]["manifest"], report["offline_discovery"]["manifest"], profile="kerberos")
-                        if not comparison_matches(report["comparison"], report["discovery"]["manifest"]):
+                            report["discovery"]["manifest"], report["offline_discovery"]["manifest"], profile=profile)
+                        if not comparison_matches(report["comparison"], report["discovery"]["manifest"], profile):
                             report["errors"].append("offline_comparison_failed")
                 if bootstrap.material != material:
                     report["errors"].append("bootstrap_changed")
@@ -230,13 +244,13 @@ def run(candidate, verifier, mode="online"):
         os.umask(old_umask)
     if report["source_sha256"]:
         try:
-            if source_bindings(verifier) != report["source_sha256"]:
+            if source_bindings(verifier, profile) != report["source_sha256"]:
                 raise ValueError("source_changed")
         except BaseException:
             report["errors"].append("source_changed")
     if report["candidate_sha256"]:
         try:
-            if candidate_binding(candidate) != report["candidate_sha256"]:
+            if candidate_binding(candidate, profile) != report["candidate_sha256"]:
                 raise ValueError("candidate_changed")
         except BaseException:
             report["errors"].append("candidate_changed")
@@ -244,12 +258,12 @@ def run(candidate, verifier, mode="online"):
         not report["errors"] and report["cleanup"]["raw_evidence_removed"] is True
         and clean_lease(report["metadata"]) and report["metadata"].get("success") is True
         and clean_lease(report["bootstrap"]) and report["bootstrap"].get("success") is True
-        and discovery_matches(report["discovery"], report["candidate_sha256"], prepare=mode == "repeat"))
+        and discovery_matches(report["discovery"], report["candidate_sha256"], prepare=mode == "repeat", profile=profile))
     if mode == "repeat":
         report["success"] = (report["success"]
             and discovery_matches(report["offline_discovery"], report["candidate_sha256"], mode="offline",
-                                  seed=report["discovery"]["cache_preparation"])
-            and comparison_matches(report["comparison"], report["discovery"]["manifest"]))
+                                  seed=report["discovery"]["cache_preparation"], profile=profile)
+            and comparison_matches(report["comparison"], report["discovery"]["manifest"], profile))
         report["offline_reproduced"] = report["success"]
     report["finished_utc"] = R.utc_now()
     report["duration_seconds"] = round(time.monotonic() - started, 6)
@@ -266,6 +280,7 @@ def main(argv=None):
     for name in ("candidate", "verifier", "report"):
         parser.add_argument("--" + name, type=Path, required=True)
     parser.add_argument("--mode", choices=("online", "repeat"), default="online")
+    parser.add_argument("--profile", choices=("kerberos", D.REMEDIATION_PROFILE), default="kerberos")
     args = parser.parse_args(argv)
     previous = signal.getsignal(signal.SIGTERM)
     def interrupted(_signal, _frame):
@@ -279,7 +294,7 @@ def main(argv=None):
             return 1
         try:
             with os.fdopen(fd, "w", encoding="ascii", newline="\n") as stream:
-                result = run(args.candidate, args.verifier, args.mode)
+                result = run(args.candidate, args.verifier, args.mode, profile=args.profile)
                 json.dump(result, stream, sort_keys=True, indent=2)
                 stream.write("\n"); stream.flush(); os.fsync(stream.fileno())
         except BaseException:
