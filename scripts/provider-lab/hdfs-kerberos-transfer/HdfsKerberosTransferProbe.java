@@ -483,6 +483,80 @@ public final class HdfsKerberosTransferProbe {
             };
             case "org.apache.hadoop.hdfs.server.namenode.NameNodeHttpServer" -> "namenode_http";
             case "org.apache.hadoop.http.HttpServer2", "org.apache.hadoop.http.HttpServer2$Builder" -> "hadoop_http";
+            case "org.apache.hadoop.metrics2.impl.MetricsConfig" -> switch (frame.getMethodName()) {
+                case "<init>" -> "metrics_config_constructor";
+                case "<clinit>" -> "metrics_config_static_initializer";
+                case "create" -> "metrics_config_create";
+                case "loadFirst" -> "metrics_config_load_first";
+                case "subset" -> "metrics_config_subset";
+                case "getInstanceConfigs" -> "metrics_config_get_instance_configs";
+                case "getClassName" -> "metrics_config_get_class_name";
+                case "getPlugin" -> "metrics_config_get_plugin";
+                case "getPluginLoader" -> "metrics_config_get_plugin_loader";
+                case "getFilter" -> "metrics_config_get_filter";
+                case "getPropertyInternal" -> "metrics_config_get_property_internal";
+                case "toString" -> "metrics_config_to_string";
+                case "keys" -> "metrics_config_keys";
+                default -> null;
+            };
+            case "org.apache.commons.configuration2.PropertiesConfiguration" -> switch (frame.getMethodName()) {
+                case "<init>" -> "config_properties_constructor";
+                case "<clinit>" -> "config_properties_static_initializer";
+                case "createLayout" -> "config_properties_create_layout";
+                case "installLayout" -> "config_properties_install_layout";
+                case "read" -> "config_properties_read";
+                default -> null;
+            };
+            case "org.apache.commons.configuration2.AbstractConfiguration" -> switch (frame.getMethodName()) {
+                case "<init>" -> "config_abstract_constructor";
+                case "initLogger" -> "config_abstract_init_logger";
+                case "installDefaultInterpolator" -> "config_abstract_install_default_interpolator";
+                case "installInterpolator" -> "config_abstract_install_interpolator";
+                case "interpolate" -> "config_abstract_interpolate";
+                case "interpolatedConfiguration" -> "config_abstract_interpolated_configuration";
+                default -> null;
+            };
+            case "org.apache.commons.configuration2.io.FileHandler" -> switch (frame.getMethodName()) {
+                case "<init>" -> "config_file_constructor";
+                case "<clinit>" -> "config_file_static_initializer";
+                case "load" -> "config_file_load";
+                case "loadFromReader" -> "config_file_load_from_reader";
+                case "loadFromStream" -> "config_file_load_from_stream";
+                case "loadFromStreamDirectly" -> "config_file_load_from_stream_directly";
+                case "loadFromTransformedStream" -> "config_file_load_from_transformed_stream";
+                default -> null;
+            };
+            case "org.apache.commons.configuration2.interpol.ConfigurationInterpolator" -> switch (frame.getMethodName()) {
+                case "<init>" -> "config_interpolator_constructor";
+                case "<clinit>" -> "config_interpolator_static_initializer";
+                case "createInterpolator" -> "config_interpolator_create_interpolator";
+                case "fromSpecification" -> "config_interpolator_from_specification";
+                case "getDefaultPrefixLookups" -> "config_interpolator_get_default_prefix_lookups";
+                case "initSubstitutor" -> "config_interpolator_init_substitutor";
+                case "interpolate" -> "config_interpolator_interpolate";
+                case "resolve" -> "config_interpolator_resolve";
+                case "resolveSingleVariable" -> "config_interpolator_resolve_single_variable";
+                default -> null;
+            };
+            case "org.apache.commons.configuration2.interpol.ConfigurationInterpolator$DefaultPrefixLookupsHolder" -> switch (frame.getMethodName()) {
+                case "<init>" -> "config_lookup_holder_constructor";
+                case "<clinit>" -> "config_lookup_holder_static_initializer";
+                case "addLookup" -> "config_lookup_holder_add_lookup";
+                case "createDefaultLookups" -> "config_lookup_holder_create_default_lookups";
+                case "parseLookups" -> "config_lookup_holder_parse_lookups";
+                case "getDefaultPrefixLookups" -> "config_lookup_holder_get_default_prefix_lookups";
+                default -> null;
+            };
+            case "org.apache.commons.configuration2.interpol.DefaultLookups" -> switch (frame.getMethodName()) {
+                case "<init>" -> "config_default_lookups_constructor";
+                case "<clinit>" -> "config_default_lookups_static_initializer";
+                default -> null;
+            };
+            case "org.apache.commons.configuration2.SubsetConfiguration" -> switch (frame.getMethodName()) {
+                case "<init>" -> "config_subset_constructor";
+                case "initInterpolator" -> "config_subset_init_interpolator";
+                default -> null;
+            };
             case "org.apache.hadoop.metrics2.lib.DefaultMetricsSystem" -> switch (frame.getMethodName()) {
                 case "getImpl" -> "default_metrics_get_impl";
                 case "init" -> "default_metrics_init";

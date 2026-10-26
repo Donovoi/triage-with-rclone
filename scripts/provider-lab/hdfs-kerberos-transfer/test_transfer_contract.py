@@ -1258,3 +1258,72 @@ class RemainingMetricsCallsiteTests(unittest.TestCase):
             for label in methods.values():
                 value=positive();value['diagnostic']=dict(category='linkage_no_such_method',origin=label)
                 with self.subTest(label=label),self.assertRaises(F.ProbeError):F.validate_java(F.canonical(value),0)
+
+
+class ConfigurationCallsiteTests(unittest.TestCase):
+    METHODS = {'org.apache.hadoop.metrics2.impl.MetricsConfig': {'<init>': 'metrics_config_constructor', '<clinit>': 'metrics_config_static_initializer', 'create': 'metrics_config_create', 'loadFirst': 'metrics_config_load_first', 'subset': 'metrics_config_subset', 'getInstanceConfigs': 'metrics_config_get_instance_configs', 'getClassName': 'metrics_config_get_class_name', 'getPlugin': 'metrics_config_get_plugin', 'getPluginLoader': 'metrics_config_get_plugin_loader', 'getFilter': 'metrics_config_get_filter', 'getPropertyInternal': 'metrics_config_get_property_internal', 'toString': 'metrics_config_to_string', 'keys': 'metrics_config_keys'}, 'org.apache.commons.configuration2.PropertiesConfiguration': {'<init>': 'config_properties_constructor', '<clinit>': 'config_properties_static_initializer', 'createLayout': 'config_properties_create_layout', 'installLayout': 'config_properties_install_layout', 'read': 'config_properties_read'}, 'org.apache.commons.configuration2.AbstractConfiguration': {'<init>': 'config_abstract_constructor', 'initLogger': 'config_abstract_init_logger', 'installDefaultInterpolator': 'config_abstract_install_default_interpolator', 'installInterpolator': 'config_abstract_install_interpolator', 'interpolate': 'config_abstract_interpolate', 'interpolatedConfiguration': 'config_abstract_interpolated_configuration'}, 'org.apache.commons.configuration2.io.FileHandler': {'<init>': 'config_file_constructor', '<clinit>': 'config_file_static_initializer', 'load': 'config_file_load', 'loadFromReader': 'config_file_load_from_reader', 'loadFromStream': 'config_file_load_from_stream', 'loadFromStreamDirectly': 'config_file_load_from_stream_directly', 'loadFromTransformedStream': 'config_file_load_from_transformed_stream'}, 'org.apache.commons.configuration2.interpol.ConfigurationInterpolator': {'<init>': 'config_interpolator_constructor', '<clinit>': 'config_interpolator_static_initializer', 'createInterpolator': 'config_interpolator_create_interpolator', 'fromSpecification': 'config_interpolator_from_specification', 'getDefaultPrefixLookups': 'config_interpolator_get_default_prefix_lookups', 'initSubstitutor': 'config_interpolator_init_substitutor', 'interpolate': 'config_interpolator_interpolate', 'resolve': 'config_interpolator_resolve', 'resolveSingleVariable': 'config_interpolator_resolve_single_variable'}, 'org.apache.commons.configuration2.interpol.ConfigurationInterpolator$DefaultPrefixLookupsHolder': {'<init>': 'config_lookup_holder_constructor', '<clinit>': 'config_lookup_holder_static_initializer', 'addLookup': 'config_lookup_holder_add_lookup', 'createDefaultLookups': 'config_lookup_holder_create_default_lookups', 'parseLookups': 'config_lookup_holder_parse_lookups', 'getDefaultPrefixLookups': 'config_lookup_holder_get_default_prefix_lookups'}, 'org.apache.commons.configuration2.interpol.DefaultLookups': {'<init>': 'config_default_lookups_constructor', '<clinit>': 'config_default_lookups_static_initializer'}, 'org.apache.commons.configuration2.SubsetConfiguration': {'<init>': 'config_subset_constructor', 'initInterpolator': 'config_subset_init_interpolator'}}
+
+    def mappings(self):
+        source=(HERE/'HdfsKerberosTransferProbe.java').read_text()
+        origin=source[source.index('private static String originFrame('):source.index('private static void projectFailure(')]
+        result={}
+        for cls,expected in self.METHODS.items():
+            pattern=r'case "'+re.escape(cls)+r'" -> switch \(frame.getMethodName\(\)\) \{(.*?)\n            \};'
+            found=re.findall(pattern,origin,re.S);self.assertEqual(len(found),1)
+            pairs=re.findall(r'case "([A-Za-z<>]+)" -> "([a-z_]+)";',found[0])
+            self.assertEqual(len(pairs),len(expected));self.assertEqual(dict(pairs),expected)
+            self.assertIn('default -> null;',found[0]);result[cls]=dict(pairs)
+        return result
+
+    def test_exact_bounded_configuration_callsites_and_closed_allowlist(self):
+        mappings=self.mappings();labels=[v for m in mappings.values() for v in m.values()]
+        self.assertEqual(len(mappings),8);self.assertEqual(len(labels),50);self.assertEqual(len(set(labels)),50)
+        self.assertLessEqual(set(labels),F.DIAGNOSTIC_ORIGINS)
+        self.assertEqual(mappings['org.apache.hadoop.metrics2.impl.MetricsConfig']['loadFirst'],'metrics_config_load_first')
+        self.assertEqual(mappings['org.apache.commons.configuration2.interpol.DefaultLookups']['<clinit>'],'config_default_lookups_static_initializer')
+
+    def test_unknown_methods_and_unselected_classes_do_not_gain_a_marker(self):
+        mappings=self.mappings()
+        for cls,methods in mappings.items():
+            for method in ('unknown','configure(private)','lambda$private$0','write','save'):
+                self.assertIsNone(methods.get(method))
+            self.assertNotIn(cls+'$Unselected',mappings)
+        source=(HERE/'HdfsKerberosTransferProbe.java').read_text()
+        origin=source[source.index('private static String originFrame('):source.index('private static void projectFailure(')]
+        for forbidden in ('getMessage','getLocalizedMessage','getLineNumber','startsWith','substring','toString()','Class.forName'):
+            self.assertNotIn(forbidden,origin)
+
+    def test_all_configuration_markers_keep_failure_and_cleanup_evidence(self):
+        for methods in self.mappings().values():
+            for method,label in methods.items():
+                with self.subTest(method=method,label=label):
+                    value=LinkageDiagnosticTests().failure(origin=label);result=F.validate_java(F.canonical(value),1)
+                    self.assertEqual(result['diagnostic'],dict(category='linkage_no_such_method',origin=label))
+                    self.assertFalse(result['success']);self.assertFalse(result['thread_observation_complete'])
+                    for key in ('datanode_stop_returned','datanode_ssl_timer_reaped','threads_terminated','private_material_removed'):
+                        self.assertIs(result['cleanup'][key],False)
+                    self.assertTrue(all(result[k] is False for k in F.JAVA_FALSE))
+                    with self.assertRaises(F.ProbeError):F.validate_java(F.canonical(value),0)
+                    good=positive();good['diagnostic']=dict(category='linkage_no_such_method',origin=label)
+                    with self.assertRaises(F.ProbeError):F.validate_java(F.canonical(good),0)
+
+    def test_raw_unmapped_targets_and_additional_fields_are_rejected(self):
+        for label in ('metrics_config_private','config_file_save','config_interpolator_resolve(private)',
+            'org.apache.commons.configuration2.PropertiesConfiguration.<init>','java.lang.NoSuchMethodError: private',True):
+            value=LinkageDiagnosticTests().failure(origin=label)
+            with self.subTest(label=label),self.assertRaises(F.ProbeError):F.validate_java(F.canonical(value),1)
+        for key in ('message','target','descriptor','stack'):
+            value=LinkageDiagnosticTests().failure(origin='metrics_config_load_first');value['diagnostic'][key]='private'
+            with self.subTest(key=key),self.assertRaises(F.ProbeError):F.validate_java(F.canonical(value),1)
+
+    def test_selected_throwable_and_original_stack_bounds_remain_correlated(self):
+        source=(HERE/'HdfsKerberosTransferProbe.java').read_text()
+        method=source[source.index('private static void projectFailure('):source.index('private static String threadCategory(')]
+        for required in ('depth < 8 && seen.add(failure)','failure = failure.getCause()',
+            'if (rank < selectedRank)', 'selected = category; selectedRank = rank; origin = "none";',
+            'StackTraceElement[] frames = failure.getStackTrace();','i < frames.length && i < 32',
+            'String marker = originFrame(frames[i]);','if (marker != null) { origin = marker; break; }'):
+            self.assertIn(required,method)
+        self.assertLess(method.index('if (rank < selectedRank)'),method.index('failure.getStackTrace()'))
+        for forbidden in ('getMessage','getLocalizedMessage','printStackTrace','Class.forName'):
+            self.assertNotIn(forbidden,method)
