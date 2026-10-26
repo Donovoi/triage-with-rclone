@@ -71,7 +71,9 @@ def validate(text, cancellation=False, listing=False):
     require(scalar(job, "needs", 4) == "test" and scalar(job, "runs-on", 4) == "windows-latest", "checked_hosted_build")
     require(not re.search(r"^    (?:if|services|permissions):", job, re.MULTILINE) and
         "continue-on-error" not in job and "secrets." not in job, "mandatory_unprivileged_job")
-    require(action_refs(job) == action_refs(definitions["windows-b2"]) and len(action_refs(job)) == 4, "shared_pinned_actions")
+    shared = action_refs(definitions["windows-b2"])
+    require(len(shared) == 5 and shared[-1] == shared[-2] and
+        action_refs(job) == shared[:4], "shared_pinned_actions")
     require("persist-credentials: false" in chain[0], "no_persisted_credentials")
     downloads = [part for part in chain if "uses: actions/download-artifact@" in part]
     require(len(downloads) == 1, "one_checked_download")
