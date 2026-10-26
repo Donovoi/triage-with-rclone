@@ -137,6 +137,20 @@ GC monitor/statistics-cleaner guards remain. Ten snapshots retain at most 1280
 Thread identities; live residual count is capped at 128. First-observed intervals
 are diagnostics, not creation ownership proof. Every residual still fails.
 
+The fixture uses fixed certificate and truststore files. It sets the literal
+`ssl.{0}.stores.reload.interval` option to zero and verifies it in the NameNode
+topology check. Pinned Hadoop 3.5.0 HttpServer2 otherwise creates an optional
+certificate-file monitor after the server has copied the builder's empty monitor
+reference, leaving public stop unable to cancel that monitor. Zero suppresses
+only this optional NameNode HTTPS reload timer. HTTPS, key/trust configuration,
+endpoint certificate validation, and both retained SSLFactory timer lifecycles
+remain required. SSLFactory uses the separate mode-resolved
+`ssl.client.stores.reload.interval` and `ssl.server.stores.reload.interval` keys;
+neither is changed. Live certificate reload/rotation is unverified. The prior
+`wrong_interval` receipt did not identify its native timer owner; this correction
+addresses the independently proven source lifecycle defect and still requires
+all unchanged native identity and cleanup gates.
+
 Run the pure suite with:
 
 ```

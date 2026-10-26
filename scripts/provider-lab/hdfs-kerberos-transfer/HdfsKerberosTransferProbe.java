@@ -1320,6 +1320,11 @@ public final class HdfsKerberosTransferProbe {
         conf.set("dfs.namenode.http-address", "127.0.0.1:19003");
         conf.set("dfs.namenode.http-bind-host", "127.0.0.1");
         conf.set("dfs.http.policy", "HTTPS_ONLY");
+        // Pinned HttpServer2 reads this literal template key. Its builder creates
+        // the reload Timer after the server copies the empty owner reference.
+        // This fixture keeps certificates fixed; skip only that optional monitor.
+        // SSLFactory CLIENT/SERVER use distinct mode-resolved keys and are unchanged.
+        conf.setLong("ssl.{0}.stores.reload.interval", 0);
         conf.set("dfs.namenode.https-address", "127.0.0.1:19003");
         conf.set("dfs.namenode.https-bind-host", "127.0.0.1");
         conf.set("dfs.datanode.address", "127.0.0.1:19001");
@@ -1388,7 +1393,8 @@ public final class HdfsKerberosTransferProbe {
             && endpoint.getPort() == 19000 && endpoint.getAddress().getHostAddress().equals("127.0.0.1")
             && namenode.getHttpAddress() == null && namenode.getHttpsAddress().getPort() == 19003
             && namenode.getHttpsAddress().getAddress().getHostAddress().equals("127.0.0.1")
-            && namenode.getAuxiliaryNameNodeAddresses().isEmpty() && UserGroupInformation.isSecurityEnabled(), Code.namenode_failed);
+            && namenode.getAuxiliaryNameNodeAddresses().isEmpty() && UserGroupInformation.isSecurityEnabled()
+            && namenode.getConf().getLong("ssl.{0}.stores.reload.interval", -1) == 0, Code.namenode_failed);
         if (datanode != null) {
             var dn = datanode.getDnConf(); var resolver = dn.getTrustedChannelResolver();
             need(datanode.getXferAddress().getPort() == 19001 && datanode.getXferAddress().getAddress().getHostAddress().equals("127.0.0.1")

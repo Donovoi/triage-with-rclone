@@ -1480,6 +1480,44 @@ class MetricsModeLifecycleTests(unittest.TestCase):
             self.assertIn(bound,source)
 
 
+class FixedCertificateHttpMonitorTests(unittest.TestCase):
+    def test_literal_option_is_set_once_and_checked_before_datanode_topology(self):
+        source = (HERE / 'HdfsKerberosTransferProbe.java').read_text()
+        configuration = source[source.index('    private static Configuration configuration('):
+                               source.index('    private static void topology()')]
+        topology = source[source.index('    private static void topology()'):
+                          source.index('    private static org.apache.hadoop.fs.Path sourcePath(')]
+        assignments = re.findall(r'conf\.setLong\("([^"\n]+)",\s*(-?\d+)\);', configuration)
+        self.assertEqual([row for row in assignments if 'stores.reload.interval' in row[0]],
+                         [('ssl.{0}.stores.reload.interval', '0')])
+        guard = 'namenode.getConf().getLong("ssl.{0}.stores.reload.interval", -1) == 0'
+        self.assertEqual(topology.count(guard), 1)
+        self.assertLess(topology.index(guard), topology.index('if (datanode != null)'))
+        self.assertIn('conf.set("dfs.http.policy", "HTTPS_ONLY");', configuration)
+        self.assertIn('conf.set("hadoop.ssl.server.conf", "owned-ssl-server.xml");', configuration)
+        self.assertNotIn('"ssl.client.stores.reload.interval"', source)
+        self.assertNotIn('"ssl.server.stores.reload.interval"', source)
+        self.assertIn('params.setEndpointIdentificationAlgorithm("HTTPS")', source)
+
+    def test_raw_option_cannot_be_replaced_with_a_mode_specific_key(self):
+        # Distinct literal configuration keys are the pinned consumer boundary.
+        # This inert model does not execute or qualify the Java implementation.
+        source = (HERE / 'HdfsKerberosTransferProbe.java').read_text()
+        match = re.search(r'conf\.setLong\("(ssl\.[^"\n]+\.stores\.reload\.interval)",\s*(\d+)\);', source)
+        self.assertIsNotNone(match)
+        raw, value = match.group(1), int(match.group(2))
+        self.assertEqual((raw, value), ('ssl.{0}.stores.reload.interval', 0))
+        for key in (raw, 'ssl.client.stores.reload.interval', 'ssl.server.stores.reload.interval'):
+            with self.subTest(key=key):
+                configuration = {key: value}
+                http_interval = configuration.get('ssl.{0}.stores.reload.interval', 10000)
+                mode_intervals = [configuration.get('ssl.' + mode + '.stores.reload.interval', 10000)
+                                  for mode in ('client', 'server')]
+                self.assertEqual(http_interval == 0 and mode_intervals == [10000, 10000], key == raw)
+        for missing_or_unsafe in ({}, {raw: -1}, {raw: 1}, {raw: 10000}):
+            self.assertNotEqual(missing_or_unsafe.get(raw, -1), 0)
+
+
 class SslCaptureDiagnosticTests(unittest.TestCase):
     GROUPS=(
         (('!threadObservationIncomplete','observation_incomplete'),
