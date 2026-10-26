@@ -985,3 +985,63 @@ class DownloadDeadlineTests(unittest.TestCase):
     def test_arrival_before_original_deadline_remains_valid_without_extension(self):
         for late in ('final_data','eof','close','digest','return'):
             with self.subTest(late=late):self.download_at(late,269.999)
+
+class TlsDiagnosticTests(unittest.TestCase):
+    CODES=('tls_keytool_exit_invalid','tls_store_shape_invalid','tls_certificate_key_invalid',
+           'tls_certificate_signature_invalid','tls_certificate_lifetime_invalid','tls_certificate_san_invalid',
+           'tls_resource_missing','tls_resource_identity_invalid','tls_resource_ambiguous')
+
+    def failed_tls(self,code):
+        value=positive();value.update(success=False,error=code,stage='tls',child_count=2,acquired_bytes=0,
+            missing_category='not_observed',cache_bytes=0,observed_lifetime_seconds=0,wire_hex='',rclone_wire_hex='',relay=None,
+            diagnostic=dict(category='assertion',origin='none'),thread_observation_complete=False)
+        value['checks']={key:key=='environment' for key in value['checks']}
+        value['acquisitions']={key:None for key in value['acquisitions']}
+        for helper in ('gc_monitor','fs_statistics_cleaner','format_ssl_timer'):
+            value['cleanup'][helper+'_reaped']=False
+            value['owned_thread_cleanup'][helper]='observation_incomplete'
+        value['cleanup']['private_material_removed']=False
+        return value
+
+    def test_each_fixed_tls_label_preserves_failure_and_partial_cleanup(self):
+        for code in self.CODES:
+            value=self.failed_tls(code)
+            with self.subTest(code=code):
+                output=F.validate_java(F.canonical(value),1)
+                self.assertEqual(output['error'],code)
+                self.assertFalse(output['success']);self.assertFalse(output['cleanup']['private_material_removed'])
+                self.assertFalse(output['thread_observation_complete'])
+                self.assertTrue(all(output[key] is False for key in F.JAVA_FALSE))
+                with self.assertRaises(F.ProbeError):F.validate_java(F.canonical(value),0)
+
+    def test_tls_diagnostics_cannot_publish_text_or_promote_success(self):
+        for bad in ('tls_private_detail',{'message':'private'},'tls_resource_missing: file:///private',True):
+            value=self.failed_tls('tls_resource_missing');value['error']=bad
+            with self.assertRaises(F.ProbeError):F.validate_java(F.canonical(value),1)
+        value=self.failed_tls('tls_resource_missing');value['private_error']='private'
+        with self.assertRaises(F.ProbeError):F.validate_java(F.canonical(value),1)
+        for code in self.CODES:
+            value=positive();value['error']=code
+            with self.assertRaises(F.ProbeError):F.validate_java(F.canonical(value),0)
+
+    def test_tls_assertions_keep_exact_original_success_requirements(self):
+        source=(HERE/'HdfsKerberosTransferProbe.java').read_text()
+        method=source[source.index('private static void makeTls()'):source.index('private static void verifyTlsEndpoint(')]
+        for predicate in ('keytool.code == 0','store.size() == 1 && store.isKeyEntry("owned")',
+            'cert.checkValidity()','cert.getPublicKey() instanceof java.security.interfaces.RSAPublicKey',
+            'getModulus().bitLength() == 2048','cert.getSigAlgName().equalsIgnoreCase("SHA256withRSA")',
+            'cert.getNotAfter().getTime() - cert.getNotBefore().getTime() == 86400000L',
+            'cert.getSubjectAlternativeNames().size() == 1','cert.getSubjectAlternativeNames().contains(List.of(7, "127.0.0.1"))',
+            'urls.hasMoreElements()','urls.nextElement().toURI().equals(SSL_XML.toUri())','!urls.hasMoreElements()'):
+            self.assertIn(predicate,method)
+        for code in self.CODES:self.assertEqual(method.count('Code.'+code),1)
+        self.assertNotIn('Code.tls_invalid',method)
+
+    def test_keytool_buffers_are_erased_in_finally_before_store_inspection(self):
+        source=(HERE/'HdfsKerberosTransferProbe.java').read_text()
+        exact='try { need(keytool.code == 0, Code.tls_keytool_exit_invalid); }\n            finally { Arrays.fill(keytool.out, (byte)0); Arrays.fill(keytool.err, (byte)0); }'
+        self.assertIn(exact,source)
+        self.assertLess(source.index(exact),source.index('OWNED_FILES.put(STORE, new FileState(STORE))'))
+        method=source[source.index('private static void makeTls()'):source.index('private static void verifyTlsEndpoint(')]
+        for forbidden in ('new String(keytool.','getMessage()','printStackTrace','System.out','System.err','report.'):
+            self.assertNotIn(forbidden,method)
