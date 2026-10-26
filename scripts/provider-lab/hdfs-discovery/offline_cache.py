@@ -19,6 +19,8 @@ LOCK_SHA256 = "e0c4a34dc8999bc0b53ec5d8fc5d4d5fd2b72400424b4e110d45e70f8ab780e6"
 ARTIFACTS_SHA256 = "c360e17bfb67c21a71304fb38b72ff249d28b232eb353985626017c54685bc3b"
 KERBEROS_LOCK_SHA256 = "a62e2a60bbb3f6c8b95b849760ff597e4e05e1c93bf61987c175502c3fe2ac74"
 KERBEROS_ARTIFACTS_SHA256 = "a2152c3451b85c3f5e2093a4086c6b28db64e394e355401f8e4b5b93de5ad638"
+REMEDIATION_LOCK_SHA256 = "56b33e3c897e02c9c487b66799666de4fc9eb51d8675dad2d4d42f69bb8a2a9c"
+REMEDIATION_ARTIFACTS_SHA256 = "34001696b5afebbe59f34f9505ccd0abb20b02b7cd96ca965606b532f91e479a"
 MAX_ARCHIVE = 1024 * 1024 * 1024
 MAX_MEMBERS = 12000
 MAX_FILE = 128 * 1024 * 1024
@@ -69,14 +71,20 @@ def sha(data):
 
 
 def _profile(profile):
-    need(type(profile) is str and profile in {"hdfs", "kerberos"}, "profile_invalid")
+    need(type(profile) is str and profile in {"hdfs", "kerberos", "kerberos-remediation"}, "profile_invalid")
     if profile == "hdfs":
         return "artifact-lock.json", LOCK_SHA256, ARTIFACTS_SHA256, 605
-    return "artifact-lock-kerberos.json", KERBEROS_LOCK_SHA256, KERBEROS_ARTIFACTS_SHA256, 645
+    if profile == "kerberos":
+        return "artifact-lock-kerberos.json", KERBEROS_LOCK_SHA256, KERBEROS_ARTIFACTS_SHA256, 645
+    return "artifact-lock-kerberos-remediation.json", REMEDIATION_LOCK_SHA256, REMEDIATION_ARTIFACTS_SHA256, 643
 
 
 def lock_path(profile="hdfs"):
     return Path(__file__).with_name(_profile(profile)[0])
+
+
+def lock_sha256(profile="hdfs"):
+    return _profile(profile)[1]
 
 
 def _load_lock(profile="hdfs"):
@@ -127,7 +135,7 @@ def _profile_receipt(profile):
     _profile(profile)
     if profile == "hdfs":
         return {}
-    return {"candidate_profile": "kerberos", "authentication_verified": False,
+    return {"candidate_profile": profile, "authentication_verified": False,
             "application_accepted": False, "vendor_accepted": False}
 
 

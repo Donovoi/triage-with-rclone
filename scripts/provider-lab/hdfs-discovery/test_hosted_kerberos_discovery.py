@@ -33,15 +33,21 @@ DEFAULT = object()
 CANARY = "PRIVATE_SYNTHETIC_CANARY"
 
 
-def profile_receipt(scope):
-    return dict(schema_version=1, scope=scope, candidate_profile="kerberos", lock_sha256=LOCK_SHA,
-                counts=dict(COUNTS), success=True, preparation_only=True, advisory_work_pending=True,
+def profile_receipt(scope, profile="kerberos"):
+    remediation = profile == H.D.REMEDIATION_PROFILE
+    return dict(schema_version=1, scope=scope, candidate_profile=profile,
+                lock_sha256=H.D.offline_cache.REMEDIATION_LOCK_SHA256 if remediation else LOCK_SHA,
+                counts=dict(artifacts=643, poms=445, selected_runtime_jars=142, other_jars=56,
+                            artifact_bytes=97948330) if remediation else dict(COUNTS),
+                success=True, preparation_only=True, advisory_work_pending=True,
                 **FALSE)
 
 
-def seed_receipt():
-    return dict(profile_receipt("hdfs_offline_cache_preparation"), sha256="1" * 64, size=20480,
-                seed_regular_files=1737, sha1_files=645, repository_tracking_files=447,
+def seed_receipt(profile="kerberos"):
+    remediation = profile == H.D.REMEDIATION_PROFILE
+    return dict(profile_receipt("hdfs_offline_cache_preparation", profile), sha256="1" * 64, size=20480,
+                seed_regular_files=1731 if remediation else 1737, sha1_files=643 if remediation else 645,
+                repository_tracking_files=445 if remediation else 447,
                 metadata_reconstructed=True, original_auxiliary_copied=False)
 
 
@@ -56,24 +62,24 @@ def json_sha(value):
                                     ensure_ascii=True, allow_nan=False).encode("ascii")).hexdigest()
 
 
-def comparison_receipt():
+def comparison_receipt(profile="kerberos"):
     value=manifest()
-    return dict(profile_receipt("hdfs_offline_manifest_comparison"),
+    return dict(profile_receipt("hdfs_offline_manifest_comparison", profile),
                 artifact_runtime_graph_match=True, auxiliary_cache_identity_claimed=False,
                 runtime_classpath_sha256="2" * 64,
                 graph_outputs_sha256=json_sha(value["graph_outputs"]),
                 dependency_semantics_sha256=json_sha(value["dependency_semantics"]))
 
 
-def discovery(*, offline=False, prepare=False):
-    seed=seed_receipt() if offline else None
+def discovery(*, offline=False, prepare=False, profile="kerberos"):
+    seed=seed_receipt(profile) if offline else None
     return dict(success=True, errors=[], mode="offline" if offline else "online", ledger_eligible=False,
                 daemon_accepted=False, offline_reproduced=False,
-                cache_preparation=seed_receipt() if prepare else None,
-                inputs={"candidate_profile": "kerberos", "candidate_sha256": dict(CANDIDATE),
+                cache_preparation=seed_receipt(profile) if prepare else None,
+                inputs={"candidate_profile": profile, "candidate_sha256": dict(CANDIDATE),
                         "seed_cache": seed, "supervisor_sha256": "8" * 64,
                         "graph_export_sha256": "a" * 64, "cache_source_sha256": "b" * 64,
-                        "cache_lock_sha256": LOCK_SHA,
+                        "cache_lock_sha256": H.D.offline_cache.lock_sha256(profile),
                         "maven": {"version": "3.9.16", "archive_sha256": "c" * 64,
                                   "archive_sha512": "d" * 128},
                         "jdk": {"manifest": "synthetic-jdk@sha256:" + "e" * 64,
@@ -126,17 +132,22 @@ class HostedKerberosTests(unittest.TestCase):
     def invoke(self, *, result=None, failure=None, metadata_failure=None, bootstrap_failure=None,
                guard_error=None, candidate_error=None, candidate_after=None, sources_after=None,
                replace_root=False, remove_failure=False, mode="online", offline_result=None,
-               offline_failure=None, comparison=DEFAULT, comparison_failure=None):
+               offline_failure=None, comparison=DEFAULT, comparison_failure=None, profile="kerberos"):
         self.sequence += 1
         output = self.root / ("owned-%02d" % self.sequence)
         events = []
         metadata = FakeLease("metadata", events, self.root, metadata_failure)
         bootstrap = FakeLease("bootstrap", events, self.root, bootstrap_failure)
-        chosen = discovery(prepare=mode == "repeat") if result is None else result
-        chosen_offline = discovery(offline=True) if offline_result is None else offline_result
+        chosen = discovery(prepare=mode == "repeat", profile=profile) if result is None else result
+        selected_sources = dict(SOURCES)
+        if profile == H.D.REMEDIATION_PROFILE:
+            selected_sources.pop("artifact-lock-kerberos.json")
+            selected_sources["artifact-lock-kerberos-remediation.json"] = H.D.offline_cache.REMEDIATION_LOCK_SHA256
+        chosen_offline = discovery(offline=True, profile=profile) if offline_result is None else offline_result
         discovery_calls = 0
         candidate_calls = source_calls = 0
-        def candidate_binding(candidate):
+        def candidate_binding(candidate, actual_profile="kerberos"):
+            self.assertEqual(actual_profile, profile)
             nonlocal candidate_calls
             self.assertEqual(candidate, self.root / "candidate")
             events.append("candidate")
@@ -144,12 +155,13 @@ class HostedKerberosTests(unittest.TestCase):
             if candidate_error:
                 raise candidate_error
             return dict(candidate_after if candidate_calls > 1 and candidate_after is not None else CANDIDATE)
-        def source_binding(verifier):
+        def source_binding(verifier, actual_profile="kerberos"):
+            self.assertEqual(actual_profile, profile)
             nonlocal source_calls
             self.assertEqual(verifier, self.root / "verify_bootstrap.py")
             events.append("sources")
             source_calls += 1
-            return dict(sources_after if source_calls > 1 and sources_after is not None else SOURCES)
+            return dict(sources_after if source_calls > 1 and sources_after is not None else selected_sources)
         def mkdir(**kwargs):
             self.assertEqual(kwargs, {"prefix": "hdfs-kerberos-discovery-", "dir": "/tmp"})
             output.mkdir()
@@ -169,7 +181,7 @@ class HostedKerberosTests(unittest.TestCase):
             self.assertFalse(metadata.exited or bootstrap.exited)
             self.assertEqual(args, (self.root / "candidate", bootstrap.material,
                                     bootstrap.root / "maven.tar.gz", output))
-            self.assertEqual(kwargs, {"candidate_profile": "kerberos",
+            self.assertEqual(kwargs, {"candidate_profile": profile,
                 **({"seed_cache" if offline else "cache_destination": output / "offline-seed.tar"}
                    if mode == "repeat" else {})})
             if replace_root:
@@ -182,11 +194,11 @@ class HostedKerberosTests(unittest.TestCase):
             return copy.deepcopy(chosen_offline if offline else chosen)
         def compare(*args, **kwargs):
             events.append("compare")
-            self.assertEqual(kwargs, {"profile": "kerberos"})
+            self.assertEqual(kwargs, {"profile": profile})
             self.assertEqual(args, (chosen["manifest"], chosen_offline["manifest"]))
             if comparison_failure:
                 raise comparison_failure
-            return copy.deepcopy(comparison_receipt() if comparison is DEFAULT else comparison)
+            return copy.deepcopy(comparison_receipt(profile) if comparison is DEFAULT else comparison)
         with contextlib.ExitStack() as stack:
             stack.enter_context(patch.object(H.D, "hosted_guard", side_effect=guard_error))
             stack.enter_context(patch.object(H, "candidate_binding", side_effect=candidate_binding))
@@ -200,7 +212,7 @@ class HostedKerberosTests(unittest.TestCase):
             stack.enter_context(patch.object(H.D.offline_cache, "compare_manifests", side_effect=compare))
             if remove_failure:
                 stack.enter_context(patch.object(H.shutil, "rmtree", side_effect=OSError(CANARY)))
-            report = H.run(self.root / "candidate", self.root / "verify_bootstrap.py", mode=mode)
+            report = H.run(self.root / "candidate", self.root / "verify_bootstrap.py", mode=mode, profile=profile)
         self.assertNotIn(CANARY, json.dumps(report))
         self.assertLessEqual(native.call_count, 2 if mode == "repeat" else 1)
         return report, output, events
