@@ -41,7 +41,7 @@ OWNED_CLEANUP_STATES = frozenset("not_attempted observation_incomplete services_
 TIMER_KINDS = frozenset("namenode_metrics rpc_idle snapshot_gc shell_timeout ssl_store unknown".split())
 BASE = "docker.io/library/eclipse-temurin@sha256:e1c09a9ee23feb81f94016547826c1e694086cd927356fb57fccc312fcc32f85"
 BASE_ID = "sha256:d0e6e16acb7f941e5206d99ec38e5bba18545c43462541958f84b22e0fc006e8"
-JAVA_SHA = "309d02422bc5a63061d44df6442794c73648014a261d259ddf21c511aafed459"
+JAVA_SHA = "39ec896b8df178d6ea9b1f2905424664ffd90462aeff58b2a912d9705f93985d"
 REMEDIATION_RUNTIME_SHA = "0107937fb84e4cac5a87f0da7c53b1ea4a0a9f341f7b07a95f6033f8946de057"
 REMEDIATION_ORDER_SHA = "dbed8ddb36a8286af785cc4eace07f335b033cbb0b37f02683db901c6066e14c"
 REMEDIATION_LOCK_SHA = "56b33e3c897e02c9c487b66799666de4fc9eb51d8675dad2d4d42f69bb8a2a9c"
@@ -278,7 +278,7 @@ def webapp_resources():
 
 def build_files(rows):
     cp = ":".join("/opt/transfer/jars/%03d.jar" % i for i in range(len(rows)))
-    driver = ("#!/bin/sh\nset -eu\numask 077\nmkdir /work/home /work/tmp\n"
+    driver = ("#!/bin/sh\nset -eu\numask 077\nmkdir /work/home /work/tmp /work/tls-resources\n"
         "exec /usr/bin/timeout --signal=TERM --kill-after=5s 185s /opt/java/openjdk/bin/java "
         "-Xmx512m -Djava.net.preferIPv4Stack=true -Djava.io.tmpdir=/work/tmp -Duser.home=/work/home "
         "-cp \"$(cat /opt/transfer/classpath)\" HdfsKerberosTransferProbe\n")
