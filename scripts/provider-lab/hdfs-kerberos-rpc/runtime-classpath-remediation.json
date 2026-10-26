@@ -130,10 +130,10 @@
       "artifact": "commons-io",
       "classifier": "",
       "group": "commons-io",
-      "sha256": "f41f7baacd716896447ace9758621f62c1c6b0a91d89acee488da26fc477c84f",
-      "size": 508826,
+      "sha256": "2b9a7b1f726fb86216dbd2c8321eabe0221dbd5b1be81c18e1cb53811b104758",
+      "size": 609182,
       "type": "jar",
-      "version": "2.16.1"
+      "version": "2.22.0"
     },
     {
       "artifact": "commons-net",
@@ -1279,6 +1279,6 @@
       "version": "2.3.6.Final"
     }
   ],
-  "normalized_sha256": "dbed8ddb36a8286af785cc4eace07f335b033cbb0b37f02683db901c6066e14c",
+  "normalized_sha256": "74206f7ff8e05475fd310648003cd570c620e92cf670ee1965c66b96eb3ba15d",
   "schema_version": 1
 }

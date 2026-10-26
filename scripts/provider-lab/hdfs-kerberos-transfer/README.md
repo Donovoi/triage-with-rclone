@@ -9,12 +9,14 @@ No native result is implied by the pure tests.
 The only dependency profile is `kerberos-remediation`: the existing immutable
 142-JAR runtime descriptor in `hdfs-kerberos-rpc/runtime-classpath-remediation.json`
 and `hdfs-discovery/artifact-lock-kerberos-remediation.json`. The descriptor SHA-256
-is `0107937fb84e4cac5a87f0da7c53b1ea4a0a9f341f7b07a95f6033f8946de057`, ordered
-entry SHA-256 `dbed8ddb36a8286af785cc4eace07f335b033cbb0b37f02683db901c6066e14c`,
-and lock SHA-256 `56b33e3c897e02c9c487b66799666de4fc9eb51d8675dad2d4d42f69bb8a2a9c`.
-There are 73,004,295 runtime bytes. Four Jetty advisory matches remain. The
-separate new-profile offline replay and RPC results do not qualify this transfer
-experiment. The old graph is neither selected nor modified here.
+is `01095cf92c20a65a479aafdcd52538e11313610230c17b011a5e5146a81bb127`, ordered
+entry SHA-256 `74206f7ff8e05475fd310648003cd570c620e92cf670ee1965c66b96eb3ba15d`,
+and lock SHA-256 `a0fc4edc8ea5fa9df5c26cac0be9f638650c7a657260b9da5eaad16195746e95`.
+There are 73,104,651 runtime bytes. Four Jetty advisory matches remain. The
+corrected graph selects Commons IO 2.22.0; its verified online inventory still
+requires fresh offline replay, RPC and transfer validation. Earlier remediation
+results bind older hashes and do not qualify this corrected transfer runtime.
+The original SIMPLE and Kerberos graphs remain unchanged.
 
 The workflow checks out the exact PR head with read-only contents permission and
 no persisted credentials. The container is network-none, UID/GID 10001, read-only

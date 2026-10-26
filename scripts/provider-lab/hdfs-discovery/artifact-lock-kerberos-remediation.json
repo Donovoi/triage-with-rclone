@@ -886,28 +886,6 @@
       "classifier": "",
       "group": "commons-io",
       "origin": "unverified_private_cache",
-      "selected_runtime": true,
-      "sha256": "f41f7baacd716896447ace9758621f62c1c6b0a91d89acee488da26fc477c84f",
-      "size": 508826,
-      "type": "jar",
-      "version": "2.16.1"
-    },
-    {
-      "artifact": "commons-io",
-      "classifier": "",
-      "group": "commons-io",
-      "origin": "unverified_private_cache",
-      "selected_runtime": false,
-      "sha256": "5777d292251c7895c04a4c57015683ec3b353a12486c9b3e7178e9b0b3c38fff",
-      "size": 19623,
-      "type": "pom",
-      "version": "2.16.1"
-    },
-    {
-      "artifact": "commons-io",
-      "classifier": "",
-      "group": "commons-io",
-      "origin": "unverified_private_cache",
       "selected_runtime": false,
       "sha256": "484a939fff5310b8cb5c6b9029c2dcf155d3f93b8b8d6285f3f56bb2ba09fc49",
       "size": 20031,
@@ -952,7 +930,7 @@
       "classifier": "",
       "group": "commons-io",
       "origin": "unverified_private_cache",
-      "selected_runtime": false,
+      "selected_runtime": true,
       "sha256": "2b9a7b1f726fb86216dbd2c8321eabe0221dbd5b1be81c18e1cb53811b104758",
       "size": 609182,
       "type": "jar",
@@ -7075,7 +7053,7 @@
       "version": "1.1.10.4"
     }
   ],
-  "artifacts_sha256": "34001696b5afebbe59f34f9505ccd0abb20b02b7cd96ca965606b532f91e479a",
+  "artifacts_sha256": "d411690d9c923494ebbc85eace1ff890d62d9e2c39b62e25749a361f122ffa46",
   "claims": {
     "application_accepted": false,
     "authentication_verified": false,
@@ -7090,15 +7068,15 @@
     "vulnerability_audited": false
   },
   "counts": {
-    "artifacts": 643,
-    "bytes": 97948330,
-    "other_jars": 56,
-    "poms": 445,
+    "artifacts": 641,
+    "bytes": 97419881,
+    "other_jars": 55,
+    "poms": 444,
     "selected_runtime_jars": 142
   },
-  "hosted_discovery_report_sha256": "834e7cbeadcdb38ef9800c8868379acaa9f06a7c4e738bde04ad61901ac6794e",
+  "hosted_discovery_report_sha256": "5ceb82f4a785a45d04a7ffd269b98be750afb7d42004f83a5d2a24bd4bb9bf62",
   "repository": "https://repo.maven.apache.org/maven2/",
   "schema_version": 1,
   "scope": "hdfs_kerberos_remediation_central_artifact_lock",
-  "source_receipt_sha256": "9415ade7b44d0ed260ae19ba9d3f5aab19cc16097f79c6953cb426cd35fb7174"
+  "source_receipt_sha256": "313f2234012d2b7d0e38eecb77ae87a7e459d39182f5924ff7bc440a925364ed"
 }

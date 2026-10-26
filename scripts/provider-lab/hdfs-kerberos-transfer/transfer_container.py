@@ -42,9 +42,9 @@ TIMER_KINDS = frozenset("namenode_metrics rpc_idle snapshot_gc shell_timeout ssl
 BASE = "docker.io/library/eclipse-temurin@sha256:e1c09a9ee23feb81f94016547826c1e694086cd927356fb57fccc312fcc32f85"
 BASE_ID = "sha256:d0e6e16acb7f941e5206d99ec38e5bba18545c43462541958f84b22e0fc006e8"
 JAVA_SHA = "b60c7febcde39efd32cce476bd083b9c3fd54516515a2a50a40dc689ff11cad8"
-REMEDIATION_RUNTIME_SHA = "0107937fb84e4cac5a87f0da7c53b1ea4a0a9f341f7b07a95f6033f8946de057"
-REMEDIATION_ORDER_SHA = "dbed8ddb36a8286af785cc4eace07f335b033cbb0b37f02683db901c6066e14c"
-REMEDIATION_LOCK_SHA = "56b33e3c897e02c9c487b66799666de4fc9eb51d8675dad2d4d42f69bb8a2a9c"
+REMEDIATION_RUNTIME_SHA = "01095cf92c20a65a479aafdcd52538e11313610230c17b011a5e5146a81bb127"
+REMEDIATION_ORDER_SHA = "74206f7ff8e05475fd310648003cd570c620e92cf670ee1965c66b96eb3ba15d"
+REMEDIATION_LOCK_SHA = "a0fc4edc8ea5fa9df5c26cac0be9f638650c7a657260b9da5eaad16195746e95"
 PROFILES = ("kerberos-remediation",)
 LABEL = "org.openai.triage.kerberos-transfer"
 TMPFS = "rw,nosuid,nodev,noexec,size=128m,mode=0700,uid=10001,gid=10001"

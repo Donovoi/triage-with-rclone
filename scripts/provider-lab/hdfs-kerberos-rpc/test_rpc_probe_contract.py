@@ -595,7 +595,7 @@ class ProfileTests(unittest.TestCase):
 
     def test_real_profiles_validate_only_their_own_exact_runtime_and_lock(self):
         material = {}
-        for profile, total in (("kerberos", 74090067), ("kerberos-remediation", 73004295)):
+        for profile, total in (("kerberos", 74090067), ("kerberos-remediation", 73104651)):
             pins = F.profile_settings(profile)
             runtime, lock = pins["runtime"].read_bytes(), pins["lock"].read_bytes()
             rows = F.runtime_rows(runtime, lock, profile=profile)
@@ -1211,5 +1211,82 @@ class JavaSourceTests(unittest.TestCase):
         self.assertIn('Arrays.fill(buffer, (byte)0)', source)
 
 
+class DownloadDeadlineTests(unittest.TestCase):
+    def download_at(self, late, when=270.0):
+        clock=types.SimpleNamespace(now=0.0)
+        class Response(io.BytesIO):
+            status=200
+            url='https://repo.maven.apache.org/maven2/synthetic/bytes/1/bytes-1.jar'
+            def __init__(self):
+                super().__init__(b'jar');self.headers=Message();self.headers['Content-Length']='3'
+            def read(self,n=-1):
+                value=super().read(n)
+                if (late=='final_data' and value) or (late=='eof' and not value):clock.now=when
+                return value
+            def __exit__(self,*args):
+                value=super().__exit__(*args)
+                if late=='close':clock.now=when
+                return value
+        response=Response();opener=Mock();opener.open.return_value=response
+        real_hash=F.hashlib.sha256
+        class Digest:
+            def __init__(self):self.inner=real_hash()
+            def update(self,value):self.inner.update(value)
+            def hexdigest(self):
+                value=self.inner.hexdigest()
+                if late=='digest':clock.now=when
+                return value
+        real_directory=F.directory;visits=[]
+        def directory(path,identity=None):
+            result=real_directory(path,identity);visits.append(path.name)
+            if late=='return' and len(visits)==6:clock.now=when
+            return result
+        row=dict(group='synthetic',artifact='bytes',version='1',type='jar',classifier='',size=3,sha256=real_hash(b'jar').hexdigest())
+        with tempfile.TemporaryDirectory() as temp:
+            context=Path(temp)
+            with patch.object(F.hashlib,'sha256',Digest),patch.object(F,'directory',side_effect=directory):
+                if when>=270:
+                    with self.assertRaisesRegex(F.ProbeError,'^download_failed$'):
+                        F.download_rows(context,[row],opener=opener,clock=lambda:clock.now)
+                else:
+                    F.download_rows(context,[row],opener=opener,clock=lambda:clock.now)
+            self.assertTrue(response.closed)
+            opener.open.assert_called_once()
+            self.assertEqual((context/'jars/000.jar').read_bytes(),b'' if late=='final_data' and when>=270 else b'jar')
+
+    def test_late_final_data_is_rejected_before_writing_it(self):
+        self.download_at('final_data')
+        self.download_at('final_data',271)
+
+    def test_late_eof_is_rejected_even_after_exact_size_and_hash(self):
+        self.download_at('eof')
+        self.download_at('eof',271)
+
+    def test_close_digest_and_final_identity_work_cannot_outlive_acceptance(self):
+        for late in ('close','digest','return'):
+            with self.subTest(late=late):self.download_at(late)
+
+    def test_arrival_before_original_deadline_remains_valid_without_extension(self):
+        for late in ('final_data','eof','close','digest','return'):
+            with self.subTest(late=late):self.download_at(late,269.999)
+
+
 if __name__ == "__main__":
     unittest.main()
+
+
+class CommonsIoRuntimePinTests(unittest.TestCase):
+    def test_exact_io_selection_and_rebound_stale_descriptor_cannot_use_new_lock(self):
+        pins=F.profile_settings('kerberos-remediation')
+        descriptor=json.loads(pins['runtime'].read_bytes());lock=pins['lock'].read_bytes()
+        rows=F.runtime_rows(pins['runtime'].read_bytes(),lock,profile='kerberos-remediation')
+        selected=[row for row in rows if (row['group'],row['artifact'])==('commons-io','commons-io')]
+        self.assertEqual(len(selected),1)
+        self.assertEqual((selected[0]['version'],selected[0]['size'],selected[0]['sha256']),
+            ('2.22.0',609182,'2b9a7b1f726fb86216dbd2c8321eabe0221dbd5b1be81c18e1cb53811b104758'))
+        stale=json.loads(pins['runtime'].read_bytes())
+        io=next(row for row in stale['entries'] if (row['group'],row['artifact'])==('commons-io','commons-io'))
+        io.update(version='2.16.1',size=508826,sha256='f41f7baacd716896447ace9758621f62c1c6b0a91d89acee488da26fc477c84f')
+        stale['normalized_sha256']=F.sha(F.canonical(stale['entries']));raw=F.canonical(stale)
+        with patch.object(F,'REMEDIATION_RUNTIME_SHA',F.sha(raw)),patch.object(F,'REMEDIATION_ORDER_SHA',stale['normalized_sha256']):
+            with self.assertRaises(F.ProbeError):F.runtime_rows(raw,lock,profile='kerberos-remediation')
