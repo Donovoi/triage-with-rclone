@@ -41,7 +41,7 @@ CLEANUP_UNCERTAIN = frozenset({"termination_failed", "process_cleanup_failed", "
     "reader_cleanup_failed", "console_cleanup_failed", "console_cleanup_timeout", "source_directory_cleanup_failed",
     "debug_cleanup_failed", "source_directory_invalid"})
 # Existing generic HTTP private-directory names; no shared allowlist changes.
-CASE_DIRECTORIES = {"acquisition": "acquisition", "denial": "denial", "download_denial": "denial"}
+CASE_DIRECTORIES = {"acquisition": "acquisition", "denial": "denial", "download_denial": "denial", "listing": "listing"}
 
 
 def bindings(application, commit, mode=E.MODE):
@@ -226,8 +226,11 @@ def manifest(name, case, working, runtime, endpoint):
 def preserved(item, app_sha, *, before_start=False):
     case = item["case"]
     need(H.identity(case) == item["lease"] and H.identity(case / "source") == item["source"] and not H.inventory(case / "source") and
-         H.sha(H.read(case / "application.exe", 512 * 1024 * 1024)) == app_sha and
-         H.read(case / "queue.csv", 8192) == queue_bytes(), "preservation_failed")
+         H.sha(H.read(case / "application.exe", 512 * 1024 * 1024)) == app_sha, "preservation_failed")
+    if item["name"] == "listing":
+        need("queue.csv" not in H.inventory(case), "preservation_failed")
+    else:
+        need(H.read(case / "queue.csv", 8192) == queue_bytes(), "preservation_failed")
     if before_start and not item["config_written"]:
         need("source.conf" not in H.inventory(case), "preservation_failed")
     else:
@@ -245,6 +248,41 @@ def fixture_closed(server):
         return False
     value = server.transport_snapshot()
     return value["cleanup_complete"] is True and value["active"] == value["workers_alive"] == 0 and value["watchdog_alive"] is False and value["acceptor_alive"] is False
+
+
+def listing_csv(data):
+    need(type(data) is bytes and 0 < len(data) <= 16384 and data.startswith(b"\xef\xbb\xbf"), "listing_invalid")
+    try:
+        rows = list(csv.reader(io.StringIO(data.decode("utf-8-sig"), newline=""), strict=True))
+    except (UnicodeError, csv.Error):
+        raise ProducerError("listing_invalid") from None
+    # Literal schema/oracle belongs to the independent evidence module. No
+    # apostrophe stripping, case folding, path normalization or hash borrowing.
+    need(rows and rows[0] == H.HEADERS and sorted(rows[1:]) == sorted(E.listing_rows()), "listing_invalid")
+    return True
+
+
+def listing_output(case):
+    base = case / "output" / H.CASE_NAME
+    listing_csv(H.read(base / "listings/inventory.csv", 16384))
+    W.output_inventory("listing", case)
+    need(not H.inventory(base / "downloads"), "outputs_invalid")
+    return dict.fromkeys(("inventory_exact", "listing_complete", "outputs_exact", "no_download_outputs"), True)
+
+
+
+def listing_committed(state, deadline):
+    # Bytes received by the client may precede the worker's sendall/commit return.
+    # Teardown must not turn that scheduling window into a fabricated failure.
+    while True:
+        need(time.monotonic() < deadline, "deadline_exceeded")
+        value = E.listing_fixture(state.snapshot())
+        need(not value["errors"] and value["source_preserved"] and len(value["events"]) <= 2, "fixture_failed")
+        if len(value["events"]) == 2:
+            E.listing_fixture(value, successful=True)
+            need(time.monotonic() < deadline, "deadline_exceeded")
+            return
+        time.sleep(min(0.02, max(0, deadline - time.monotonic())))
 
 
 def execute(name, suite, application, app_sha, runtime, errors):
@@ -265,7 +303,8 @@ def execute(name, suite, application, app_sha, runtime, errors):
         body = H.read(application, 512 * 1024 * 1024, allow_hardlinks=True)
         need(H.sha(body) == app_sha, "binding_failed")
         H.private_write(case, "application.exe", body)
-        H.private_write(case, "queue.csv", queue_bytes())
+        if name != "listing":
+            H.private_write(case, "queue.csv", queue_bytes())
         bridge = C.ObservedSourceBridge(case)
         H.validate_ready(bridge.command("ready"))
         ready = True
@@ -276,9 +315,10 @@ def execute(name, suite, application, app_sha, runtime, errors):
         # Fresh fixture starts after readiness, inside the original case deadline.
         correct = secrets.token_bytes(32)
         wrong = bytes(value ^ 1 for value in correct)
-        state = F.AppAzureBlobState(name, base64.b64encode(correct).decode("ascii"), base64.b64encode(wrong).decode("ascii"))
+        credentials = (base64.b64encode(correct).decode("ascii"), base64.b64encode(wrong).decode("ascii"))
+        state = F.AppAzureBlobListingState(*credentials) if name == "listing" else F.AppAzureBlobState(name, *credentials)
         key = base64.b64encode(wrong if name == "denial" else correct).decode("ascii")
-        context = F.serve_azureblob(state)
+        context = F.serve_azureblob_listing(state) if name == "listing" else F.serve_azureblob(state)
         fixture_attempted = True
         server = context.__enter__()
         entered = True
@@ -293,7 +333,7 @@ def execute(name, suite, application, app_sha, runtime, errors):
         remaining = int((deadline - time.monotonic()) * 1000)
         need(1000 <= remaining <= 120000, "deadline_exceeded")
         start_fields = dict(app_path=str(case / "application.exe"), app_sha256=app_sha,
-            args=H.app_args("acquisition", case), case_root=str(case), environment=H.environment(case),
+            args=H.app_args("listing" if name == "listing" else "acquisition", case), case_root=str(case), environment=H.environment(case),
             transcript_path=str(case / "transcript.private"), max_output_bytes=8 * 1024 * 1024,
             deadline_ms=remaining, max_runtime_processes=1, expected_runtime_sha256=runtime["sha256"], max_runtime_launches=E.EXPECTED_LAUNCHES[name])
         start_attempted = True  # A possibly issued start never uses ready-only cleanup.
@@ -312,12 +352,16 @@ def execute(name, suite, application, app_sha, runtime, errors):
         record["exit_code"] = response["app_exit_code"]
         record["runtime_sha256"] = runtime["sha256"]
         checks.update(runtime_observed=True, orderly_exit=True)
-        positive = name == "acquisition"
+        positive = name in {"acquisition", "listing"}
         need(type(record["exit_code"]) is int and record["exit_code"] == (0 if positive else 1), "session_failed")
         checks["exit_success" if positive else "exit_failure"] = True
         working = H.configuration_preserved(case, config)
         checks["configuration_preserved"] = True
-        checks.update(manifest(name, case, working, runtime, server.endpoint))
+        if name == "listing":
+            listing_committed(state, deadline)
+            checks.update(listing_output(case))
+        else:
+            checks.update(manifest(name, case, working, runtime, server.endpoint))
         item["artifact"] = W.fingerprint(case)
     except BaseException as error:
         mark(record, failure(error), errors)
@@ -342,7 +386,8 @@ def execute(name, suite, application, app_sha, runtime, errors):
             try:
                 E.fixture_observation(record["fixture"], name, successful=True)
                 checks.update(fixture_valid=True, source_preserved=True)
-                checks.update(dict(authenticated=True) if name == "acquisition" else
+                checks.update(dict(authenticated=True, no_payload=True) if name == "listing" else
+                    dict(authenticated=True) if name == "acquisition" else
                     dict(authenticated_download_denied=True, no_payload=True) if name == "download_denial" else
                     dict(wrong_key_denied=True, no_payload=True))
             except BaseException:
@@ -396,8 +441,8 @@ def run(application, application_sha, commit, mode=E.MODE):
         except BaseException:
             errors.append("preservation_failed")
         if group["status"] != "not_run":
-            group["checks"].update(configs_preserved=len(items) == 2 and all(i["record"]["checks"]["configuration_preserved"] for i in items),
-                artifacts_preserved=len(items) == 2 and all(i["artifact"] is not None and i["record"]["checks"]["temp_cleanup"] for i in items),
+            group["checks"].update(configs_preserved=len(items) == len(names) and all(i["record"]["checks"]["configuration_preserved"] for i in items),
+                artifacts_preserved=len(items) == len(names) and all(i["artifact"] is not None and i["record"]["checks"]["temp_cleanup"] for i in items),
                 all_processes_reaped=bool(items) and all(i["record"]["checks"]["process_cleanup"] for i in items),
                 fixture_cleanup=bool(items) and all(i["record"]["checks"]["fixture_cleanup"] for i in items))
         if suite_id is not None:
@@ -416,7 +461,7 @@ def run(application, application_sha, commit, mode=E.MODE):
         else:
             errors.append("cleanup_failed")
     errors = list(dict.fromkeys(errors))
-    success = len(items) == 2 and not errors and clean and all(group["checks"].values()) and all(
+    success = len(items) == len(names) and not errors and clean and all(group["checks"].values()) and all(
         all(v for k, v in i["record"]["checks"].items() if k != "group_finalized") for i in items)
     if success:
         group["status"] = "passed"
@@ -429,7 +474,7 @@ def run(application, application_sha, commit, mode=E.MODE):
                 mark(row, row["failure_code"] or "group_failed", errors)
     receipt = dict(schema_version=1, scope=E.SCOPE, fixture_mode=mode, backend="azureblob", platform="windows",
         created_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), runtime=runtime, bindings=bound, cases=cases,
-        experiment=group, authentication="static_shared_key", claims=dict.fromkeys(E.FALSE_CLAIMS, False), cleanup_complete=clean,
+        experiment=group, authentication="static_shared_key", claims=dict.fromkeys(E.false_claims(mode), False), cleanup_complete=clean,
         errors=errors, capabilities=E.derive_capabilities(cases, clean, mode), result="passed" if success else "failed")
     E.validate_receipt(receipt, runtime, bound, mode=mode)
     return receipt
