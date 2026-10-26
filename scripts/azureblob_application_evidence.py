@@ -17,22 +17,34 @@ compact, fail, valid_hash = A.compact, A.fail, A.valid_hash
 read_bounded, parse_receipt, runtime_binding = W.read_bounded, W.parse_receipt, W.runtime_binding
 SCOPE, MODE = "windows_hosted_application", "azureblob_sharedkey_acquisition_cli_v1"
 DOWNLOAD_DENIAL_MODE = "azureblob_sharedkey_download_denial_cli_v1"
-MODES = (MODE, DOWNLOAD_DENIAL_MODE)
+LIST_MODE = "azureblob_sharedkey_listing_cli_v1"
+MODES = (MODE, DOWNLOAD_DENIAL_MODE, LIST_MODE)
 CASES = ("acquisition", "denial")
-MODE_CASES = {MODE: CASES, DOWNLOAD_DENIAL_MODE: ("acquisition", "download_denial")}
-EXPECTED_LAUNCHES = {"acquisition": 2, "denial": 1, "download_denial": 2}
+MODE_CASES = {MODE: CASES, DOWNLOAD_DENIAL_MODE: ("acquisition", "download_denial"), LIST_MODE: ("listing",)}
+EXPECTED_LAUNCHES = {"acquisition": 2, "denial": 1, "download_denial": 2, "listing": 1}
 COMMON = frozenset({"runtime_observed", "configuration_preserved", "source_preserved", "orderly_exit",
     "fixture_valid", "process_cleanup", "fixture_cleanup", "temp_cleanup", "group_finalized", "manifest_exact"})
 CHECKS = {"acquisition": COMMON | {"exit_success", "output_hash_exact", "outputs_exact", "authenticated"},
     "denial": COMMON | {"exit_failure", "wrong_key_denied", "no_payload", "no_download_outputs"},
     "download_denial": COMMON | {"exit_failure", "authenticated_download_denied", "no_payload", "no_download_outputs"}}
+CHECKS["listing"] = (COMMON - {"manifest_exact"}) | {"exit_success", "inventory_exact", "listing_complete",
+    "outputs_exact", "no_download_outputs", "authenticated", "no_payload"}
 MODE_CAPABILITIES = {
+    LIST_MODE: ("configured_account_listing", "inventory_export", "shared_key_authentication", "cleanup"),
     MODE: ("configured_acquisition", "shared_key_authentication", "wrong_key_rejection", "cleanup"),
     DOWNLOAD_DENIAL_MODE: ("configured_acquisition", "shared_key_authentication", "authenticated_download_rejection", "cleanup"),
 }
 GROUP_CHECKS = frozenset({"configs_preserved", "artifacts_preserved", "all_processes_reaped", "fixture_cleanup", "temp_cleanup"})
 FALSE_CLAIMS = frozenset({"provider_accepted", "vendor_accepted", "full_application_accepted", "ledger_eligible",
     "credential_renewal_verified", "revocation_verified", "listing_verified", "cancellation_verified", "tls_verified", "remote_vendor_verified"})
+LIST_FALSE_CLAIMS = (FALSE_CLAIMS - {"listing_verified"}) | {"content_acquisition_verified"}
+
+
+def false_claims(mode):
+    mode_cases(mode)
+    return LIST_FALSE_CLAIMS if mode == LIST_MODE else FALSE_CLAIMS
+
+
 FAILURE_CODES = A.FAILURE_CODES | {"denial_failed", "group_failed"}
 OBSERVATION_KEYS = frozenset({"runtime_launch_count", "peak_runtime_processes", "system_helper_sha256",
     "system_helper_launch_count", "peak_system_helper_processes", "debug_event_count"})
@@ -54,6 +66,8 @@ def mode_cases(mode):
 def fixture_manifest(mode=MODE):
     # Independent literal expected values; no fixture or producer import.
     mode_cases(mode)
+    if mode == LIST_MODE:
+        return listing_manifest()
     return dict(transport="plain_http_ipv4_loopback", remote="Synthetic", member="synthetic-container/nested/space name.txt",
         size=26, sha256="e019c52fe70badce27affda5e408659399ff764985f07104029a42ade38125bd",
         md5="371d24ba264bcaac3332a3ed564a93f8", request_cap=128, event_cap=512, response_cap=524288,
@@ -102,6 +116,8 @@ def observation(value, name):
 
 def fixture_observation(value, name, *, successful=False):
     need(type(name) is str and name in EXPECTED_LAUNCHES)
+    if name == "listing":
+        return listing_fixture(value, successful=successful)
     need(type(value) is dict and set(value) == {"case", "requests", "payload_bytes", "response_bytes", "source_preserved", "errors", "events"}
          and value["case"] == name and type(value["source_preserved"]) is bool)
     for key, limit in (("requests",128),("payload_bytes",26),("response_bytes",524288)):
@@ -156,7 +172,7 @@ def validate_receipt(receipt, expected_runtime, expected_bindings, now=None, max
         fail("azureblob_receipt_invalid")
     now = now or datetime.now(timezone.utc)
     need(now - timedelta(hours=max_age_hours) <= stamp <= now + timedelta(minutes=5))
-    need(type(receipt["claims"]) is dict and set(receipt["claims"]) == FALSE_CLAIMS and
+    need(type(receipt["claims"]) is dict and set(receipt["claims"]) == false_claims(mode) and
          all(v is False for v in receipt["claims"].values()) and type(receipt["cleanup_complete"]) is bool)
     errors = receipt["errors"]
     need(type(errors) is list and all(type(e) is str and e in FAILURE_CODES for e in errors) and len(set(errors)) == len(errors))
@@ -186,7 +202,7 @@ def validate_receipt(receipt, expected_runtime, expected_bindings, now=None, max
         if r["status"] == "passed":
             need(r["failure_code"] is None and all(r["checks"].values()) and r["observation"] is not None and
                  r["fixture"] is not None and
-                 type(r["exit_code"]) is int and (r["exit_code"] == 0 if name == "acquisition" else r["exit_code"] == 1))
+                 type(r["exit_code"]) is int and (r["exit_code"] == 0 if name in {"acquisition", "listing"} else r["exit_code"] == 1))
         else:
             need(type(r["failure_code"]) is str and r["failure_code"] in errors)
     attempted = any(r["status"] != "not_run" for r in cases.values())
@@ -209,6 +225,52 @@ def validate_receipt(receipt, expected_runtime, expected_bindings, now=None, max
     need(receipt["result"] == ("passed" if passed else "failed") and receipt["capabilities"] == derive_capabilities(cases, receipt["cleanup_complete"], mode) and
          (receipt["cleanup_complete"] or "cleanup_failed" in errors))
     return receipt
+
+
+def listing_manifest():
+    # Literal independent oracle. Flat Blob XML includes an explicit zero-byte
+    # nested/ marker; rclone assigns its fixed default directory timestamp.
+    # Omitting the marker would synthesize a current-time directory instead.
+    return dict(transport="plain_http_ipv4_loopback", remote="Synthetic", container="synthetic-container",
+        directory_marker="nested/", members=[dict(name="README-synthetic.txt", size=20), dict(name="empty.txt", size=0),
+                 dict(name="nested/space name.txt", size=26)], rows=5,
+        container_modified="2024-01-01T00:00:00+00:00", directory_modified="2000-01-01T00:00:00+00:00",
+        file_modified="2024-01-01T00:00:00+00:00", exported_hashes=False,
+        request_cap=128, event_cap=512, response_cap=524288, fixture_seconds=60, request_seconds=3,
+        authentication="explicit_emulator_shared_key", listing="account_then_complete_flat_container_no_continuation")
+
+
+def listing_rows():
+    f = listing_manifest()
+    return [["excel-safe-v1", "Synthetic", f["container"], "", f["container_modified"], "true", "", ""],
+            ["excel-safe-v1", "Synthetic", f["container"] + "/nested", "", f["directory_modified"], "true", "", ""]] + [
+        ["excel-safe-v1", "Synthetic", f["container"] + "/" + row["name"], str(row["size"]),
+         f["file_modified"], "false", "", ""] for row in f["members"]]
+
+
+def listing_fixture(value, *, successful=False):
+    need(type(value) is dict and set(value) == {"case", "requests", "payload_bytes", "response_bytes", "source_preserved", "errors", "events"}
+         and value["case"] == "listing" and type(value["source_preserved"]) is bool)
+    for key, limit in (("requests",128),("payload_bytes",0),("response_bytes",524288)):
+        need(type(value[key]) is int and 0 <= value[key] <= limit)
+    codes={"input_invalid","event_limit","thread_start_failed","accept_failed","admission_limit","lifetime_limit",
+        "request_timeout","socket_unowned","unexpected_input","client_aborted","request_invalid","headers_invalid",
+        "method_rejected","route_invalid","byte_limit","source_changed","request_limit","cancel_replayed",
+        "request_body_rejected","connection_failed","worker_failed","cleanup_failed","credentials_invalid","sequence_invalid"}
+    need(type(value["errors"]) is list and len(value["errors"]) <= len(codes) and
+         all(type(e) is str and e in codes for e in value["errors"]) and len(set(value["errors"])) == len(value["errors"]))
+    events=value["events"]
+    need(type(events) is list and len(events) <= 512)
+    expected=[("account_authenticated","account"),("listing_authenticated","flat")]
+    for ordinal,row in enumerate(events,1):
+        need(type(row) is dict and set(row)=={"ordinal","kind","role","status","object_bytes"} and
+             type(row["ordinal"]) is int and row["ordinal"]==ordinal and type(row["kind"]) is str and type(row["role"]) is str and
+             (row["kind"],row["role"]) in expected and type(row["status"]) is int and row["status"]==200 and
+             type(row["object_bytes"]) is int and row["object_bytes"]==0)
+    if successful:
+        need(not value["errors"] and value["source_preserved"] and value["requests"]==2 and
+             0<value["response_bytes"]<=524288 and [(r["kind"],r["role"]) for r in events]==expected)
+    return value
 
 
 def main(argv=None):
