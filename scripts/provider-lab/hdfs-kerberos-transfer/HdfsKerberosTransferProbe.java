@@ -490,201 +490,201 @@ public final class HdfsKerberosTransferProbe {
         };
     }
     private static String originFrame(StackTraceElement frame) {
-        // Closed markers only; class names, method names and messages never leave this process.
-        return switch (frame.getClassName()) {
-            case "org.apache.hadoop.hdfs.server.namenode.NameNode" -> switch (frame.getMethodName()) {
-                case "<init>" -> "namenode_constructor";
-                case "initialize" -> "namenode_initialize";
-                case "loginAsNameNodeUser" -> "namenode_login";
-                case "format" -> "namenode_format";
-                default -> null;
+		// Closed markers only; class names, method names and messages never leave this process.
+		return switch (frame.getClassName()) {
+			case "org.apache.hadoop.hdfs.server.namenode.NameNode" -> switch (frame.getMethodName()) {
+				case "<init>" -> "namenode_constructor";
+				case "initialize" -> "namenode_initialize";
+				case "loginAsNameNodeUser" -> "namenode_login";
+				case "format" -> "namenode_format";
+				default -> null;
             };
-            case "org.apache.hadoop.hdfs.server.namenode.NameNodeHttpServer" -> "namenode_http";
-            case "org.apache.hadoop.http.HttpServer2", "org.apache.hadoop.http.HttpServer2$Builder" -> "hadoop_http";
-            case "org.apache.hadoop.metrics2.impl.MetricsConfig" -> switch (frame.getMethodName()) {
-                case "<init>" -> "metrics_config_constructor";
-                case "<clinit>" -> "metrics_config_static_initializer";
-                case "create" -> "metrics_config_create";
-                case "loadFirst" -> "metrics_config_load_first";
-                case "subset" -> "metrics_config_subset";
-                case "getInstanceConfigs" -> "metrics_config_get_instance_configs";
-                case "getClassName" -> "metrics_config_get_class_name";
-                case "getPlugin" -> "metrics_config_get_plugin";
-                case "getPluginLoader" -> "metrics_config_get_plugin_loader";
-                case "getFilter" -> "metrics_config_get_filter";
-                case "getPropertyInternal" -> "metrics_config_get_property_internal";
-                case "toString" -> "metrics_config_to_string";
-                case "keys" -> "metrics_config_keys";
-                default -> null;
+			case "org.apache.hadoop.hdfs.server.namenode.NameNodeHttpServer" -> "namenode_http";
+			case "org.apache.hadoop.http.HttpServer2", "org.apache.hadoop.http.HttpServer2$Builder" -> "hadoop_http";
+			case "org.apache.hadoop.metrics2.impl.MetricsConfig" -> switch (frame.getMethodName()) {
+				case "<init>" -> "metrics_config_constructor";
+				case "<clinit>" -> "metrics_config_static_initializer";
+				case "create" -> "metrics_config_create";
+				case "loadFirst" -> "metrics_config_load_first";
+				case "subset" -> "metrics_config_subset";
+				case "getInstanceConfigs" -> "metrics_config_get_instance_configs";
+				case "getClassName" -> "metrics_config_get_class_name";
+				case "getPlugin" -> "metrics_config_get_plugin";
+				case "getPluginLoader" -> "metrics_config_get_plugin_loader";
+				case "getFilter" -> "metrics_config_get_filter";
+				case "getPropertyInternal" -> "metrics_config_get_property_internal";
+				case "toString" -> "metrics_config_to_string";
+				case "keys" -> "metrics_config_keys";
+				default -> null;
             };
-            case "org.apache.commons.configuration2.PropertiesConfiguration" -> switch (frame.getMethodName()) {
-                case "<init>" -> "config_properties_constructor";
-                case "<clinit>" -> "config_properties_static_initializer";
-                case "createLayout" -> "config_properties_create_layout";
-                case "installLayout" -> "config_properties_install_layout";
-                case "read" -> "config_properties_read";
-                default -> null;
+			case "org.apache.commons.configuration2.PropertiesConfiguration" -> switch (frame.getMethodName()) {
+				case "<init>" -> "config_properties_constructor";
+				case "<clinit>" -> "config_properties_static_initializer";
+				case "createLayout" -> "config_properties_create_layout";
+				case "installLayout" -> "config_properties_install_layout";
+				case "read" -> "config_properties_read";
+				default -> null;
             };
-            case "org.apache.commons.configuration2.AbstractConfiguration" -> switch (frame.getMethodName()) {
-                case "<init>" -> "config_abstract_constructor";
-                case "initLogger" -> "config_abstract_init_logger";
-                case "installDefaultInterpolator" -> "config_abstract_install_default_interpolator";
-                case "installInterpolator" -> "config_abstract_install_interpolator";
-                case "interpolate" -> "config_abstract_interpolate";
-                case "interpolatedConfiguration" -> "config_abstract_interpolated_configuration";
-                default -> null;
+			case "org.apache.commons.configuration2.AbstractConfiguration" -> switch (frame.getMethodName()) {
+				case "<init>" -> "config_abstract_constructor";
+				case "initLogger" -> "config_abstract_init_logger";
+				case "installDefaultInterpolator" -> "config_abstract_install_default_interpolator";
+				case "installInterpolator" -> "config_abstract_install_interpolator";
+				case "interpolate" -> "config_abstract_interpolate";
+				case "interpolatedConfiguration" -> "config_abstract_interpolated_configuration";
+				default -> null;
             };
-            case "org.apache.commons.configuration2.io.FileHandler" -> switch (frame.getMethodName()) {
-                case "<init>" -> "config_file_constructor";
-                case "<clinit>" -> "config_file_static_initializer";
-                case "load" -> "config_file_load";
-                case "loadFromReader" -> "config_file_load_from_reader";
-                case "loadFromStream" -> "config_file_load_from_stream";
-                case "loadFromStreamDirectly" -> "config_file_load_from_stream_directly";
-                case "loadFromTransformedStream" -> "config_file_load_from_transformed_stream";
-                default -> null;
+			case "org.apache.commons.configuration2.io.FileHandler" -> switch (frame.getMethodName()) {
+				case "<init>" -> "config_file_constructor";
+				case "<clinit>" -> "config_file_static_initializer";
+				case "load" -> "config_file_load";
+				case "loadFromReader" -> "config_file_load_from_reader";
+				case "loadFromStream" -> "config_file_load_from_stream";
+				case "loadFromStreamDirectly" -> "config_file_load_from_stream_directly";
+				case "loadFromTransformedStream" -> "config_file_load_from_transformed_stream";
+				default -> null;
             };
-            case "org.apache.commons.configuration2.interpol.ConfigurationInterpolator" -> switch (frame.getMethodName()) {
-                case "<init>" -> "config_interpolator_constructor";
-                case "<clinit>" -> "config_interpolator_static_initializer";
-                case "createInterpolator" -> "config_interpolator_create_interpolator";
-                case "fromSpecification" -> "config_interpolator_from_specification";
-                case "getDefaultPrefixLookups" -> "config_interpolator_get_default_prefix_lookups";
-                case "initSubstitutor" -> "config_interpolator_init_substitutor";
-                case "interpolate" -> "config_interpolator_interpolate";
-                case "resolve" -> "config_interpolator_resolve";
-                case "resolveSingleVariable" -> "config_interpolator_resolve_single_variable";
-                default -> null;
+			case "org.apache.commons.configuration2.interpol.ConfigurationInterpolator" -> switch (frame.getMethodName()) {
+				case "<init>" -> "config_interpolator_constructor";
+				case "<clinit>" -> "config_interpolator_static_initializer";
+				case "createInterpolator" -> "config_interpolator_create_interpolator";
+				case "fromSpecification" -> "config_interpolator_from_specification";
+				case "getDefaultPrefixLookups" -> "config_interpolator_get_default_prefix_lookups";
+				case "initSubstitutor" -> "config_interpolator_init_substitutor";
+				case "interpolate" -> "config_interpolator_interpolate";
+				case "resolve" -> "config_interpolator_resolve";
+				case "resolveSingleVariable" -> "config_interpolator_resolve_single_variable";
+				default -> null;
             };
-            case "org.apache.commons.configuration2.interpol.ConfigurationInterpolator$DefaultPrefixLookupsHolder" -> switch (frame.getMethodName()) {
-                case "<init>" -> "config_lookup_holder_constructor";
-                case "<clinit>" -> "config_lookup_holder_static_initializer";
-                case "addLookup" -> "config_lookup_holder_add_lookup";
-                case "createDefaultLookups" -> "config_lookup_holder_create_default_lookups";
-                case "parseLookups" -> "config_lookup_holder_parse_lookups";
-                case "getDefaultPrefixLookups" -> "config_lookup_holder_get_default_prefix_lookups";
-                default -> null;
+			case "org.apache.commons.configuration2.interpol.ConfigurationInterpolator$DefaultPrefixLookupsHolder" -> switch (frame.getMethodName()) {
+				case "<init>" -> "config_lookup_holder_constructor";
+				case "<clinit>" -> "config_lookup_holder_static_initializer";
+				case "addLookup" -> "config_lookup_holder_add_lookup";
+				case "createDefaultLookups" -> "config_lookup_holder_create_default_lookups";
+				case "parseLookups" -> "config_lookup_holder_parse_lookups";
+				case "getDefaultPrefixLookups" -> "config_lookup_holder_get_default_prefix_lookups";
+				default -> null;
             };
-            case "org.apache.commons.configuration2.interpol.DefaultLookups" -> switch (frame.getMethodName()) {
-                case "<init>" -> "config_default_lookups_constructor";
-                case "<clinit>" -> "config_default_lookups_static_initializer";
-                default -> null;
+			case "org.apache.commons.configuration2.interpol.DefaultLookups" -> switch (frame.getMethodName()) {
+				case "<init>" -> "config_default_lookups_constructor";
+				case "<clinit>" -> "config_default_lookups_static_initializer";
+				default -> null;
             };
-            case "org.apache.commons.configuration2.SubsetConfiguration" -> switch (frame.getMethodName()) {
-                case "<init>" -> "config_subset_constructor";
-                case "initInterpolator" -> "config_subset_init_interpolator";
-                default -> null;
+			case "org.apache.commons.configuration2.SubsetConfiguration" -> switch (frame.getMethodName()) {
+				case "<init>" -> "config_subset_constructor";
+				case "initInterpolator" -> "config_subset_init_interpolator";
+				default -> null;
             };
-            case "org.apache.hadoop.metrics2.lib.DefaultMetricsSystem" -> switch (frame.getMethodName()) {
-                case "getImpl" -> "default_metrics_get_impl";
-                case "init" -> "default_metrics_init";
-                case "shutdownInstance" -> "default_metrics_shutdown_instance";
-                case "setImpl" -> "default_metrics_set_impl";
-                case "initialize" -> "default_metrics_initialize";
-                case "instance" -> "default_metrics_instance";
-                case "shutdown" -> "default_metrics_shutdown";
-                case "setInstance" -> "default_metrics_set_instance";
-                case "setMiniClusterMode" -> "default_metrics_set_mini_cluster_mode";
-                case "inMiniClusterMode" -> "default_metrics_in_mini_cluster_mode";
-                case "newMBeanName" -> "default_metrics_new_mbean_name";
-                case "removeMBeanName" -> "default_metrics_remove_mbean_name";
-                case "removeSourceName" -> "default_metrics_remove_source_name";
-                case "sourceName" -> "default_metrics_source_name";
-                case "newObjectName" -> "default_metrics_new_object_name";
-                case "removeObjectName" -> "default_metrics_remove_object_name";
-                case "removeSource" -> "default_metrics_remove_source";
-                case "newSourceName" -> "default_metrics_new_source_name";
-                default -> "hadoop_metrics";
+			case "org.apache.hadoop.metrics2.lib.DefaultMetricsSystem" -> switch (frame.getMethodName()) {
+				case "getImpl" -> "default_metrics_get_impl";
+				case "init" -> "default_metrics_init";
+				case "shutdownInstance" -> "default_metrics_shutdown_instance";
+				case "setImpl" -> "default_metrics_set_impl";
+				case "initialize" -> "default_metrics_initialize";
+				case "instance" -> "default_metrics_instance";
+				case "shutdown" -> "default_metrics_shutdown";
+				case "setInstance" -> "default_metrics_set_instance";
+				case "setMiniClusterMode" -> "default_metrics_set_mini_cluster_mode";
+				case "inMiniClusterMode" -> "default_metrics_in_mini_cluster_mode";
+				case "newMBeanName" -> "default_metrics_new_mbean_name";
+				case "removeMBeanName" -> "default_metrics_remove_mbean_name";
+				case "removeSourceName" -> "default_metrics_remove_source_name";
+				case "sourceName" -> "default_metrics_source_name";
+				case "newObjectName" -> "default_metrics_new_object_name";
+				case "removeObjectName" -> "default_metrics_remove_object_name";
+				case "removeSource" -> "default_metrics_remove_source";
+				case "newSourceName" -> "default_metrics_new_source_name";
+				default -> "hadoop_metrics";
             };
-            case "org.apache.hadoop.metrics2.impl.MetricsSystemImpl" -> switch (frame.getMethodName()) {
-                case "<init>" -> "metrics_system_constructor";
-                case "init" -> "metrics_system_init";
-                case "start" -> "metrics_system_start";
-                case "stop" -> "metrics_system_stop";
-                case "register" -> "metrics_system_register";
-                case "unregisterSource" -> "metrics_system_unregister_source";
-                case "registerSource" -> "metrics_system_register_source";
-                case "registerSink" -> "metrics_system_register_sink";
-                case "getProxyForCallback" -> "metrics_system_get_proxy_for_callback";
-                case "startMetricsMBeans" -> "metrics_system_start_metrics_mbeans";
-                case "stopMetricsMBeans" -> "metrics_system_stop_metrics_mbeans";
-                case "currentConfig" -> "metrics_system_current_config";
-                case "startTimer" -> "metrics_system_start_timer";
-                case "onTimerEvent" -> "metrics_system_on_timer_event";
-                case "publishMetricsNow" -> "metrics_system_publish_metrics_now";
-                case "sampleMetrics" -> "metrics_system_sample_metrics";
-                case "snapshotMetrics" -> "metrics_system_snapshot_metrics";
-                case "publishMetrics" -> "metrics_system_publish_metrics";
-                case "stopTimer" -> "metrics_system_stop_timer";
-                case "stopSources" -> "metrics_system_stop_sources";
-                case "stopSinks" -> "metrics_system_stop_sinks";
-                case "configure" -> "metrics_system_configure";
-                case "configureSystem" -> "metrics_system_configure_system";
-                case "configureSinks" -> "metrics_system_configure_sinks";
-                case "newSink" -> "metrics_system_new_sink";
-                case "configureSources" -> "metrics_system_configure_sources";
-                case "clearConfigs" -> "metrics_system_clear_configs";
-                case "getHostname" -> "metrics_system_get_hostname";
-                case "registerSystemSource" -> "metrics_system_register_system_source";
-                case "getMetrics" -> "metrics_system_get_metrics";
-                case "initSystemMBean" -> "metrics_system_init_system_mbean";
-                case "shutdown" -> "metrics_system_shutdown";
-                case "getSource" -> "metrics_system_get_source";
-                case "getSourceAdapter" -> "metrics_system_get_source_adapter";
-                case "getSinkAdapter" -> "metrics_system_get_sink_adapter";
-                case "initMode" -> "metrics_system_init_mode";
-                default -> "hadoop_metrics";
+			case "org.apache.hadoop.metrics2.impl.MetricsSystemImpl" -> switch (frame.getMethodName()) {
+				case "<init>" -> "metrics_system_constructor";
+				case "init" -> "metrics_system_init";
+				case "start" -> "metrics_system_start";
+				case "stop" -> "metrics_system_stop";
+				case "register" -> "metrics_system_register";
+				case "unregisterSource" -> "metrics_system_unregister_source";
+				case "registerSource" -> "metrics_system_register_source";
+				case "registerSink" -> "metrics_system_register_sink";
+				case "getProxyForCallback" -> "metrics_system_get_proxy_for_callback";
+				case "startMetricsMBeans" -> "metrics_system_start_metrics_mbeans";
+				case "stopMetricsMBeans" -> "metrics_system_stop_metrics_mbeans";
+				case "currentConfig" -> "metrics_system_current_config";
+				case "startTimer" -> "metrics_system_start_timer";
+				case "onTimerEvent" -> "metrics_system_on_timer_event";
+				case "publishMetricsNow" -> "metrics_system_publish_metrics_now";
+				case "sampleMetrics" -> "metrics_system_sample_metrics";
+				case "snapshotMetrics" -> "metrics_system_snapshot_metrics";
+				case "publishMetrics" -> "metrics_system_publish_metrics";
+				case "stopTimer" -> "metrics_system_stop_timer";
+				case "stopSources" -> "metrics_system_stop_sources";
+				case "stopSinks" -> "metrics_system_stop_sinks";
+				case "configure" -> "metrics_system_configure";
+				case "configureSystem" -> "metrics_system_configure_system";
+				case "configureSinks" -> "metrics_system_configure_sinks";
+				case "newSink" -> "metrics_system_new_sink";
+				case "configureSources" -> "metrics_system_configure_sources";
+				case "clearConfigs" -> "metrics_system_clear_configs";
+				case "getHostname" -> "metrics_system_get_hostname";
+				case "registerSystemSource" -> "metrics_system_register_system_source";
+				case "getMetrics" -> "metrics_system_get_metrics";
+				case "initSystemMBean" -> "metrics_system_init_system_mbean";
+				case "shutdown" -> "metrics_system_shutdown";
+				case "getSource" -> "metrics_system_get_source";
+				case "getSourceAdapter" -> "metrics_system_get_source_adapter";
+				case "getSinkAdapter" -> "metrics_system_get_sink_adapter";
+				case "initMode" -> "metrics_system_init_mode";
+				default -> "hadoop_metrics";
             };
-            case "org.apache.hadoop.hdfs.server.datanode.metrics.DataNodeMetrics" -> switch (frame.getMethodName()) {
-                case "<init>" -> "datanode_metrics_constructor";
-                case "create" -> "datanode_metrics_create";
-                default -> null;
+			case "org.apache.hadoop.hdfs.server.datanode.metrics.DataNodeMetrics" -> switch (frame.getMethodName()) {
+				case "<init>" -> "datanode_metrics_constructor";
+				case "create" -> "datanode_metrics_create";
+				default -> null;
             };
-            case "org.apache.hadoop.metrics2.lib.MetricsSourceBuilder" -> switch (frame.getMethodName()) {
-                case "<init>" -> "metrics_source_builder_constructor";
-                case "initRegistry" -> "metrics_source_builder_registry";
-                case "add" -> "metrics_source_builder_add";
-                case "build" -> "metrics_source_builder_build";
-                case "info" -> "metrics_source_builder_info";
-                default -> null;
+			case "org.apache.hadoop.metrics2.lib.MetricsSourceBuilder" -> switch (frame.getMethodName()) {
+				case "<init>" -> "metrics_source_builder_constructor";
+				case "initRegistry" -> "metrics_source_builder_registry";
+				case "add" -> "metrics_source_builder_add";
+				case "build" -> "metrics_source_builder_build";
+				case "info" -> "metrics_source_builder_info";
+				default -> null;
             };
-            case "org.apache.hadoop.metrics2.lib.MutableMetricsFactory" -> switch (frame.getMethodName()) {
-                case "newForField" -> "metrics_factory_field";
-                case "newForMethod" -> "metrics_factory_method";
-                case "getInfo" -> "metrics_factory_info";
-                case "getName" -> "metrics_factory_name";
-                default -> null;
+			case "org.apache.hadoop.metrics2.lib.MutableMetricsFactory" -> switch (frame.getMethodName()) {
+				case "newForField" -> "metrics_factory_field";
+				case "newForMethod" -> "metrics_factory_method";
+				case "getInfo" -> "metrics_factory_info";
+				case "getName" -> "metrics_factory_name";
+				default -> null;
             };
-            case "org.apache.hadoop.metrics2.lib.MetricsAnnotations" -> switch (frame.getMethodName()) {
-                case "newSourceBuilder" -> "metrics_annotations_builder";
-                default -> null;
+			case "org.apache.hadoop.metrics2.lib.MetricsAnnotations" -> switch (frame.getMethodName()) {
+				case "newSourceBuilder" -> "metrics_annotations_builder";
+				default -> null;
             };
-            case "org.apache.hadoop.metrics2.lib.MethodMetric" -> switch (frame.getMethodName()) {
-                case "<init>" -> "method_metric_constructor";
-                default -> null;
+			case "org.apache.hadoop.metrics2.lib.MethodMetric" -> switch (frame.getMethodName()) {
+				case "<init>" -> "method_metric_constructor";
+				default -> null;
             };
-            case "org.apache.hadoop.metrics2.source.JvmMetrics" -> switch (frame.getMethodName()) {
-                case "create" -> "jvm_metrics_create";
-                case "registerIfNeeded" -> "jvm_metrics_register";
-                default -> null;
+			case "org.apache.hadoop.metrics2.source.JvmMetrics" -> switch (frame.getMethodName()) {
+				case "create" -> "jvm_metrics_create";
+				case "registerIfNeeded" -> "jvm_metrics_register";
+				default -> null;
             };
-            case "org.apache.hadoop.metrics2.lib.MetricsRegistry" -> switch (frame.getMethodName()) {
-                case "newCounter" -> "metrics_registry_counter";
-                case "newGauge" -> "metrics_registry_gauge";
-                case "newRate" -> "metrics_registry_rate";
-                case "newRatesWithAggregation" -> "metrics_registry_rates_aggregation";
-                case "newStat" -> "metrics_registry_stat";
-                case "newMutableRollingAverages" -> "metrics_registry_rolling";
-                case "newQuantiles" -> "metrics_registry_quantiles";
-                default -> null;
+			case "org.apache.hadoop.metrics2.lib.MetricsRegistry" -> switch (frame.getMethodName()) {
+				case "newCounter" -> "metrics_registry_counter";
+				case "newGauge" -> "metrics_registry_gauge";
+				case "newRate" -> "metrics_registry_rate";
+				case "newRatesWithAggregation" -> "metrics_registry_rates_aggregation";
+				case "newStat" -> "metrics_registry_stat";
+				case "newMutableRollingAverages" -> "metrics_registry_rolling";
+				case "newQuantiles" -> "metrics_registry_quantiles";
+				default -> null;
             };
-            case "org.apache.hadoop.security.authentication.server.KerberosAuthenticationHandler",
-                 "org.apache.hadoop.security.authentication.server.AuthenticationFilter" -> "http_authentication";
-            case "org.apache.hadoop.security.UserGroupInformation" -> "ugi";
-            case "org.apache.hadoop.hdfs.server.blockmanagement.BlockManager" -> "block_manager";
-            case "org.apache.hadoop.hdfs.server.namenode.FSNamesystem" -> "namesystem";
-            default -> null;
-        };
+			case "org.apache.hadoop.security.authentication.server.KerberosAuthenticationHandler",
+				 "org.apache.hadoop.security.authentication.server.AuthenticationFilter" -> "http_authentication";
+			case "org.apache.hadoop.security.UserGroupInformation" -> "ugi";
+			case "org.apache.hadoop.hdfs.server.blockmanagement.BlockManager" -> "block_manager";
+			case "org.apache.hadoop.hdfs.server.namenode.FSNamesystem" -> "namesystem";
+			default -> null;
+		};
     }
     private static void projectFailure(Throwable failure) {
         // Same finite type approach as the existing SIMPLE fixture, extended to
