@@ -31,6 +31,49 @@ fn oauth_agent() -> ureq::Agent {
         .into()
 }
 
+// Classify only typed variants into fixed labels. Never format, retain, or
+// traverse the underlying error: it may contain URLs, headers, or credentials.
+// A category identifies ureq's error surface, not a proven root cause.
+fn token_exchange_transport_error(error: ureq::Error) -> anyhow::Error {
+    let category: &'static str = match error {
+        ureq::Error::Timeout(timeout) => match timeout {
+            ureq::Timeout::Global => "timeout-global",
+            ureq::Timeout::PerCall => "timeout-per-call",
+            ureq::Timeout::Resolve => "timeout-resolve",
+            ureq::Timeout::Connect => "timeout-connect",
+            ureq::Timeout::SendRequest => "timeout-send-request",
+            ureq::Timeout::SendBody => "timeout-send-body",
+            ureq::Timeout::RecvResponse => "timeout-recv-response",
+            ureq::Timeout::RecvBody => "timeout-recv-body",
+            _ => "timeout",
+        },
+        ureq::Error::HostNotFound => "host-not-found",
+        ureq::Error::ConnectionFailed => "connection",
+        ureq::Error::Io(io) => match io.kind() {
+            std::io::ErrorKind::TimedOut => "io-timeout",
+            std::io::ErrorKind::ConnectionRefused => "io-refused",
+            std::io::ErrorKind::ConnectionReset => "io-reset",
+            std::io::ErrorKind::HostUnreachable | std::io::ErrorKind::NetworkUnreachable => {
+                "io-unreachable"
+            }
+            std::io::ErrorKind::PermissionDenied => "io-permission",
+            std::io::ErrorKind::InvalidData => "io-invalid-data",
+            std::io::ErrorKind::UnexpectedEof => "io-unexpected-eof",
+            _ => "io-other",
+        },
+        ureq::Error::Tls(_)
+        | ureq::Error::Rustls(_)
+        | ureq::Error::Pem(_)
+        | ureq::Error::TlsRequired => "tls",
+        ureq::Error::Http(_) | ureq::Error::BadUri(_) | ureq::Error::RequireHttpsOnly(_) => "request",
+        ureq::Error::Protocol(_) => "protocol",
+        ureq::Error::RedirectFailed | ureq::Error::TooManyRedirects => "redirect",
+        ureq::Error::BodyExceedsLimit(_) | ureq::Error::LargeResponseHeader(_, _) => "size-limit",
+        _ => "other",
+    };
+    anyhow::anyhow!("Token exchange transport failed ({category})")
+}
+
 const MAX_OAUTH_RESPONSE_BYTES: u64 = 64 * 1024;
 
 pub(super) fn read_oauth_response<T: serde::de::DeserializeOwned>(
@@ -296,7 +339,7 @@ pub(super) fn exchange_code_for_token_with_policy(
         Err(ureq::Error::StatusCode(code)) => {
             bail!("Token exchange failed (HTTP {})", code);
         }
-        Err(_) => bail!("Token exchange transport failed"),
+        Err(error) => return Err(token_exchange_transport_error(error)),
     };
     if !(200..300).contains(&response.status().as_u16()) {
         bail!(
@@ -598,6 +641,125 @@ fn urlencoded(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn token_exchange_transport_categories_are_bounded_and_discard_payloads() {
+        const CANARY: &str = "SYNTHETIC_PRIVATE_URL_HEADER_CERT_ACCOUNT_CODE_SECRET";
+        let http_error = ureq::http::Response::builder()
+            .header("invalid\nheader", CANARY)
+            .body(())
+            .unwrap_err();
+        for (input, category) in [
+            (ureq::Error::HostNotFound, "host-not-found"),
+            (ureq::Error::ConnectionFailed, "connection"),
+            (ureq::Error::Io(std::io::Error::other(CANARY)), "io-other"),
+            (ureq::Error::Tls(CANARY), "tls"),
+            (ureq::Error::TlsRequired, "tls"),
+            (ureq::Error::Http(http_error), "request"),
+            (ureq::Error::BadUri(CANARY.into()), "request"),
+            (ureq::Error::RequireHttpsOnly(CANARY.into()), "request"),
+            (ureq::Error::RedirectFailed, "redirect"),
+            (ureq::Error::TooManyRedirects, "redirect"),
+            (ureq::Error::BodyExceedsLimit(u64::MAX), "size-limit"),
+            (ureq::Error::LargeResponseHeader(123, 100), "size-limit"),
+            (ureq::Error::ConnectProxyFailed(CANARY.into()), "other"),
+            (
+                ureq::Error::Other(Box::new(std::io::Error::other(CANARY))),
+                "other",
+            ),
+        ] {
+            let error = token_exchange_transport_error(input);
+            let expected = format!("Token exchange transport failed ({category})");
+            assert_eq!(error.to_string(), expected);
+            assert_eq!(format!("{error:#}"), expected);
+            assert!(!format!("{error:?}").contains(CANARY));
+            assert_eq!(error.chain().count(), 1);
+            assert!(error.to_string().len() <= 60);
+        }
+    }
+
+    #[test]
+    fn token_exchange_transport_io_uses_only_fixed_kind_labels() {
+        const CANARY: &str = "SYNTHETIC_PRIVATE_IO_MESSAGE";
+        for (kind, category) in [
+            (std::io::ErrorKind::TimedOut, "io-timeout"),
+            (std::io::ErrorKind::ConnectionRefused, "io-refused"),
+            (std::io::ErrorKind::ConnectionReset, "io-reset"),
+            (std::io::ErrorKind::HostUnreachable, "io-unreachable"),
+            (std::io::ErrorKind::NetworkUnreachable, "io-unreachable"),
+            (std::io::ErrorKind::PermissionDenied, "io-permission"),
+            (std::io::ErrorKind::InvalidData, "io-invalid-data"),
+            (std::io::ErrorKind::UnexpectedEof, "io-unexpected-eof"),
+            (std::io::ErrorKind::Other, "io-other"),
+            (std::io::ErrorKind::NotFound, "io-other"),
+        ] {
+            let error = token_exchange_transport_error(ureq::Error::Io(std::io::Error::new(
+                kind, CANARY,
+            )));
+            assert_eq!(
+                format!("{error:#}"),
+                format!("Token exchange transport failed ({category})")
+            );
+            assert!(!format!("{error:?}").contains(CANARY));
+            assert_eq!(error.chain().count(), 1);
+            assert!(error.to_string().len() <= 60);
+        }
+    }
+
+    #[test]
+    fn token_exchange_transport_timeouts_use_only_fixed_phase_labels() {
+        for (timeout, category) in [
+            (ureq::Timeout::Global, "timeout-global"),
+            (ureq::Timeout::PerCall, "timeout-per-call"),
+            (ureq::Timeout::Resolve, "timeout-resolve"),
+            (ureq::Timeout::Connect, "timeout-connect"),
+            (ureq::Timeout::SendRequest, "timeout-send-request"),
+            (ureq::Timeout::SendBody, "timeout-send-body"),
+            (ureq::Timeout::RecvResponse, "timeout-recv-response"),
+            (ureq::Timeout::RecvBody, "timeout-recv-body"),
+            (ureq::Timeout::Await100, "timeout"),
+        ] {
+            let error = token_exchange_transport_error(ureq::Error::Timeout(timeout));
+            assert_eq!(
+                error.to_string(),
+                format!("Token exchange transport failed ({category})")
+            );
+            assert_eq!(error.chain().count(), 1);
+            assert!(error.to_string().len() <= 60);
+        }
+    }
+
+    #[test]
+    fn token_exchange_transport_does_not_format_or_traverse_private_errors() {
+        struct PrivateError;
+        impl std::fmt::Debug for PrivateError {
+            fn fmt(&self, _: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                panic!("private Debug must not be called");
+            }
+        }
+        impl std::fmt::Display for PrivateError {
+            fn fmt(&self, _: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                panic!("private Display must not be called");
+            }
+        }
+        impl std::error::Error for PrivateError {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                panic!("private source must not be called");
+            }
+        }
+        for (input, category) in [
+            (ureq::Error::Io(std::io::Error::other(PrivateError)), "io-other"),
+            (ureq::Error::Other(Box::new(PrivateError)), "other"),
+        ] {
+            let error = token_exchange_transport_error(input);
+            assert_eq!(
+                format!("{error:#}"),
+                format!("Token exchange transport failed ({category})")
+            );
+            let _ = format!("{error:?}");
+            assert_eq!(error.chain().count(), 1);
+        }
+    }
 
     #[test]
     fn ureq3_oauth_reader_accepts_exact_limit_and_rejects_one_byte_over() {
