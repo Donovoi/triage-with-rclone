@@ -1112,3 +1112,91 @@ class ResourceDirectoryStartupTests(unittest.TestCase):
                 self.assertFalse(result['thread_observation_complete'])
                 self.assertTrue(all(result[key] is False for key in F.JAVA_FALSE))
                 with self.assertRaises(F.ProbeError):F.validate_java(F.canonical(value),0)
+
+class LinkageDiagnosticTests(unittest.TestCase):
+    TYPES={
+        'NoSuchMethodError':'linkage_no_such_method','NoSuchFieldError':'linkage_no_such_field',
+        'AbstractMethodError':'linkage_abstract_method','IllegalAccessError':'linkage_illegal_access',
+        'InstantiationError':'linkage_instantiation','IncompatibleClassChangeError':'linkage_incompatible_class',
+        'ExceptionInInitializerError':'linkage_initializer','BootstrapMethodError':'linkage_bootstrap',
+        'ClassCircularityError':'linkage_circularity','ClassFormatError':'linkage_class_format',
+        'UnsupportedClassVersionError':'linkage_class_version','UnsatisfiedLinkError':'linkage_native',
+        'VerifyError':'linkage_verify'}
+    SITES={'metrics_system_register','metrics_system_register_source','datanode_metrics_constructor',
+        'datanode_metrics_create','metrics_source_builder_constructor','metrics_source_builder_registry',
+        'metrics_source_builder_add','metrics_source_builder_build','metrics_source_builder_info',
+        'metrics_factory_field','metrics_factory_method','metrics_factory_info','metrics_factory_name',
+        'metrics_annotations_builder','method_metric_constructor','jvm_metrics_create','jvm_metrics_register',
+        'metrics_registry_counter','metrics_registry_gauge','metrics_registry_rate','metrics_registry_rates_aggregation',
+        'metrics_registry_stat','metrics_registry_rolling','metrics_registry_quantiles'}
+
+    def failure(self,category='linkage_no_such_method',origin='metrics_source_builder_add'):
+        value=TlsDiagnosticTests().failed_tls('unclassified')
+        value.update(stage='datanode_start',diagnostic=dict(category=category,origin=origin))
+        value['cleanup'].update(datanode_stop_returned=False,datanode_ssl_timer_reaped=False,
+            threads_terminated=False,private_material_removed=False)
+        return value
+
+    def test_exact_linkage_classes_have_finite_labels_and_unknown_fallback(self):
+        source=(HERE/'HdfsKerberosTransferProbe.java').read_text()
+        method=source[source.index('private static String linkageCategory('):source.index('private static String originFrame(')]
+        observed=dict(re.findall(r'case "java\.lang\.([A-Za-z]+)" -> "([a-z_]+)";',method))
+        self.assertEqual(observed,self.TYPES)
+        self.assertIn('switch (failure.getClass().getName())',method)
+        self.assertIn('default -> "linkage_failure";',method)
+        for forbidden in ('getMessage','getLocalizedMessage','toString()','print','instanceof','Class.forName'):
+            self.assertNotIn(forbidden,method)
+        self.assertLessEqual(set(self.TYPES.values()),F.DIAGNOSTIC_CATEGORIES)
+
+    def test_known_callsites_are_exact_markers_not_private_target_text(self):
+        source=(HERE/'HdfsKerberosTransferProbe.java').read_text()
+        method=source[source.index('private static String originFrame('):source.index('private static void projectFailure(')]
+        self.assertLessEqual(self.SITES,F.DIAGNOSTIC_ORIGINS)
+        for label in self.SITES:self.assertEqual(method.count('-> "'+label+'";'),1)
+        for exact in ('"org.apache.hadoop.metrics2.lib.MetricsSourceBuilder"','"org.apache.hadoop.metrics2.lib.MutableMetricsFactory"',
+            '"org.apache.hadoop.metrics2.lib.MethodMetric"','"org.apache.hadoop.hdfs.server.datanode.metrics.DataNodeMetrics"',
+            'case "newSourceBuilder" -> "metrics_annotations_builder";',
+            'case "newForField" -> "metrics_factory_field";',
+            'case "registerSource" -> "metrics_system_register_source";'):
+            self.assertIn(exact,method)
+        self.assertIn('default -> null;',method)
+        for forbidden in ('getMessage','getLineNumber','startsWith','substring','toString()','Class.forName'):
+            self.assertNotIn(forbidden,method)
+
+    def test_selected_cause_owns_marker_and_existing_bounds_priorities_remain(self):
+        source=(HERE/'HdfsKerberosTransferProbe.java').read_text()
+        method=source[source.index('private static void projectFailure('):source.index('private static String threadCategory(')]
+        self.assertIn('depth < 8 && seen.add(failure)',method)
+        self.assertIn('frames.length && i < 32',method)
+        self.assertIn('selected = category; selectedRank = rank; origin = "none";',method)
+        self.assertEqual(method.count('failure.getStackTrace()'),1)
+        self.assertLess(method.index('if (rank < selectedRank) {'),method.index('failure.getStackTrace()'))
+        self.assertLess(method.index('failure instanceof ClassNotFoundException || failure instanceof NoClassDefFoundError'),
+            method.index('failure instanceof LinkageError'))
+        self.assertIn('category = linkageCategory((LinkageError) failure); rank = 4;',method)
+        self.assertIn('A callsite identifies a frame, never the unresolved linkage target.',method)
+        for forbidden in ('getMessage','getLocalizedMessage','printStackTrace','Class.forName','new Thread','interrupt('):
+            self.assertNotIn(forbidden,method)
+
+    def test_each_linkage_class_and_callsite_preserves_failed_cleanup(self):
+        for category,origin in [(label,'metrics_system_register') for label in self.TYPES.values()]+[('linkage_no_such_method',label) for label in self.SITES]:
+            with self.subTest(category=category,origin=origin):
+                value=self.failure(category,origin);result=F.validate_java(F.canonical(value),1)
+                self.assertEqual(result['diagnostic'],dict(category=category,origin=origin))
+                self.assertFalse(result['success']);self.assertFalse(result['thread_observation_complete'])
+                for key in ('datanode_stop_returned','datanode_ssl_timer_reaped','threads_terminated','private_material_removed'):
+                    self.assertIs(result['cleanup'][key],False)
+                self.assertTrue(all(result[key] is False for key in F.JAVA_FALSE))
+                with self.assertRaises(F.ProbeError):F.validate_java(F.canonical(value),0)
+
+    def test_raw_unknown_symbol_or_success_promotion_is_rejected(self):
+        for diagnostic in (dict(category='java.lang.NoSuchMethodError',origin='metrics_system_register'),
+            dict(category='linkage_no_such_method',origin='org.example.Private.method'),
+            dict(category='linkage_no_such_method: private',origin='none'),
+            dict(category='linkage_no_such_method',origin='metrics_system_register',symbol='private'),
+            dict(category='linkage_no_such_method',origin='metrics_factory_field',message='private')):
+            value=self.failure();value['diagnostic']=diagnostic
+            with self.subTest(diagnostic=diagnostic),self.assertRaises(F.ProbeError):F.validate_java(F.canonical(value),1)
+        for origin in self.SITES:
+            value=positive();value['diagnostic']=dict(category='linkage_no_such_method',origin=origin)
+            with self.subTest(origin=origin),self.assertRaises(F.ProbeError):F.validate_java(F.canonical(value),0)
