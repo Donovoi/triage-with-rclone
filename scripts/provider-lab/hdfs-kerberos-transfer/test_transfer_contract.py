@@ -110,6 +110,7 @@ def positive():
             gc_monitor_reaped=True, fs_statistics_cleaner_reaped=True, format_ssl_timer_reaped=True, datanode_stop_returned=True, datanode_ssl_timer_reaped=True),
         metrics_mode=dict(attempted=True, captured=True, prior_enabled=False, enable_attempted=True,
                           enable_verified=True, restore_attempted=True, restore_verified=True, transition_failed=False),
+        ssl_capture=dict(format='captured',datanode='captured'),
         owned_thread_cleanup=dict(gc_monitor='terminated', fs_statistics_cleaner='terminated', format_ssl_timer='terminated'),
         child_count=10, acquired_bytes=2109442, missing_category="directory_not_found",
         acquisitions=dict(empty=dict(bytes=0,sha256="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"),
@@ -224,6 +225,7 @@ class TicketTests(unittest.TestCase):
             wire_hex="", rclone_wire_hex="", relay=None, cache_bytes=0, observed_lifetime_seconds=0,
             diagnostic=dict(category="metrics_failure", origin="hadoop_metrics"))
         for key in value["checks"]: value["checks"][key] = key in ("environment", "endpoint_settings", "metrics_mode_enabled")
+        value['ssl_capture']['datanode']='not_attempted'
         value["acquisitions"] = {key: None for key in value["acquisitions"]}
         value["acquired_bytes"] = 0; value["missing_category"] = "not_observed"
         value["remaining_threads"]["hadoop_metrics"] = 1
@@ -999,6 +1001,7 @@ class TlsDiagnosticTests(unittest.TestCase):
             diagnostic=dict(category='assertion',origin='none'),thread_observation_complete=False)
         value['checks']={key:key=='environment' for key in value['checks']}
         value['metrics_mode']={key:False for key in value['metrics_mode']}
+        value['ssl_capture']=dict(format='not_attempted',datanode='not_attempted')
         value['acquisitions']={key:None for key in value['acquisitions']}
         for helper in ('gc_monitor','fs_statistics_cleaner','format_ssl_timer'):
             value['cleanup'][helper+'_reaped']=False
@@ -1137,6 +1140,7 @@ class LinkageDiagnosticTests(unittest.TestCase):
         value=TlsDiagnosticTests().failed_tls('unclassified')
         value.update(stage='datanode_start',diagnostic=dict(category=category,origin=origin))
         value['metrics_mode']=positive()['metrics_mode'];value['checks']['metrics_mode_enabled']=True
+        value['ssl_capture']=dict(format='captured',datanode='not_attempted')
         value['cleanup'].update(datanode_stop_returned=False,datanode_ssl_timer_reaped=False,
             threads_terminated=False,private_material_removed=False)
         return value
@@ -1474,3 +1478,165 @@ class MetricsModeLifecycleTests(unittest.TestCase):
                       'bounded(() -> { datanode.shutdown(); return null; }, 35, dnUntil)',
                       'Math.min(cleanupDeadline, System.nanoTime() + TimeUnit.SECONDS.toNanos(3))'):
             self.assertIn(bound,source)
+
+
+class SslCaptureDiagnosticTests(unittest.TestCase):
+    GROUPS=(
+        (('!threadObservationIncomplete','observation_incomplete'),
+         ('OBSERVED_PHASES.contains("datanode")','phase_unobserved'),
+         ('formatSslThread != null','format_timer_missing'),
+         ('formatSslThread.isAlive()','format_timer_ended'),
+         ('sslCaptureFailure == null','format_capture_failed'),
+         ('datanode != null','datanode_missing')),
+        (('++seen <= 128','scan_bound'),),
+        (('datanodeSslThread == null','ambiguous'),
+         ('thread.getClass().getName().equals("java.util.TimerThread")','wrong_thread_type'),
+         ('!baseline.contains(thread.getId())','preexisting'),
+         ('"datanode".equals(THREAD_ORIGINS.get(thread))','wrong_interval'),
+         ('thread.isDaemon()','not_daemon')),
+        (('datanodeSslThread != null','missing'),))
+
+    def parsed_predicates(self):
+        source=(HERE/'HdfsKerberosTransferProbe.java').read_text()
+        method=source[source.index('private static void captureDatanodeSsl('):]
+        calls=[];cursor=0;token='sslCapturePredicate('
+        while (start:=method.find(token,cursor))>=0:
+            pos=start+len(token);begin=pos;depth=1
+            while depth:
+                if method[pos]=='(':depth+=1
+                elif method[pos]==')':depth-=1
+                pos+=1
+            expr,label=method[begin:pos-1].rsplit(', DataNodeSslCapture.',1)
+            self.assertRegex(label,r'^[a-z_]+$');calls.append((expr.strip(),label));cursor=pos
+        return source,method,calls
+
+    def test_source_wraps_every_original_predicate_once_with_boolean_identity(self):
+        source,method,calls=self.parsed_predicates()
+        self.assertEqual(calls,[row for group in self.GROUPS for row in group])
+        helper=source[source.index('private static boolean sslCapturePredicate('):source.index('private static String sslCaptureJson()')]
+        self.assertEqual(' '.join(helper.split()),'private static boolean sslCapturePredicate(boolean value, DataNodeSslCapture failure) { if (!value) datanodeSslCapture = failure; return value; }')
+        self.assertEqual(method.count('Code.cleanup_failed'),4)
+        self.assertEqual(method.count('need('),4)
+        for expr,_ in calls:self.assertEqual(method.count(expr),1)
+        self.assertLess(method.index('DataNodeSslCapture.checking'),method.index('need('))
+        self.assertLess(method.index('datanodeSslCaptured = true;'),method.index('DataNodeSslCapture.captured;'))
+        enum=re.search(r'private enum DataNodeSslCapture \{([^}]+)\}',source).group(1)
+        self.assertEqual(set(re.findall(r'[a-z_]+',enum)),{label for _,label in calls}|{'not_attempted','checking','captured'})
+
+    def test_all_boolean_combinations_preserve_counts_short_circuit_and_first_failure(self):
+        import itertools
+        self.parsed_predicates()  # Source binding is checked independently above.
+        for group in self.GROUPS:
+            for values in itertools.product((False,True),repeat=len(group)):
+                def evaluate(instrumented):
+                    counts=[0]*len(group);record=[]
+                    def predicate(i):
+                        counts[i]+=1;self.assertEqual(counts[i],1);return values[i]
+                    def marker(value,label):
+                        if not value:record.append(label)
+                        return value
+                    result=all(marker(predicate(i),group[i][1]) if instrumented else predicate(i) for i in range(len(group)))
+                    return result,counts,record
+                plain,counts,_=evaluate(False);marked,marked_counts,record=evaluate(True)
+                stop=next((i for i,v in enumerate(values) if not v),len(values)-1)
+                with self.subTest(group=group,values=values):
+                    self.assertIs(marked,plain);self.assertEqual(marked_counts,counts)
+                    self.assertEqual(counts,[int(i<=stop) for i in range(len(group))])
+                    self.assertEqual(record,[] if all(values) else [group[stop][1]])
+
+    def test_throwing_predicate_is_not_reread_or_misreported_as_false(self):
+        for group in self.GROUPS:
+            for position in range(len(group)):
+                sentinel=RuntimeError('synthetic getter failure');runs=[]
+                for instrumented in (False,True):
+                    counts=[0]*len(group);record=[]
+                    def predicate(i):
+                        counts[i]+=1
+                        if i==position:raise sentinel
+                        return True
+                    def marker(value,label):
+                        if not value:record.append(label)
+                        return value
+                    with self.assertRaises(RuntimeError) as caught:
+                        all(marker(predicate(i),group[i][1]) if instrumented else predicate(i) for i in range(len(group)))
+                    self.assertIs(caught.exception,sentinel);self.assertEqual(record,[]);runs.append(counts)
+                self.assertEqual(runs[0],runs[1]);self.assertEqual(runs[0],[int(i<=position) for i in range(len(group))])
+
+    def failure(self,label,fmt='captured'):
+        value=TlsDiagnosticTests().failed_tls('cleanup_failed')
+        value['stage']='datanode_start';value['metrics_mode']=positive()['metrics_mode']
+        value['checks'].update(metrics_mode_enabled=True,endpoint_settings=True,secure_namenode=True,tls_material=True)
+        value['ssl_capture']=dict(format=fmt,datanode=label)
+        value['cleanup'].update(datanode_ssl_timer_reaped=False,threads_terminated=False)
+        value['remaining_threads'].update(hadoop_fs=1,hadoop_util=2,jdk_timer=2)
+        value['remaining_thread_intervals']['unattributed']=5
+        for category,count in value['remaining_threads'].items():value['remaining_thread_matrix'][category]['unattributed']=count
+        value['remaining_timer_kinds']['ssl_store']=2
+        return value
+
+    def test_success_requires_both_capture_states_and_all_original_cleanup(self):
+        self.assertTrue(F.validate_java(F.canonical(positive()),0)['success'])
+        for field in ('format','datanode'):
+            for state in ('not_attempted','checking','missing','captured_private','observation_incomplete'):
+                value=positive();value['ssl_capture'][field]=state
+                with self.subTest(field=field,state=state),self.assertRaises(F.ProbeError):F.validate_java(F.canonical(value),0)
+        value=positive();value.update(success=False,error='cleanup_failed');value['cleanup']['threads_terminated']=False
+        self.assertFalse(F.validate_java(F.canonical(value),1)['success'])
+
+    def test_closed_capture_shape_types_and_unknown_values_are_rejected(self):
+        for key in ('format','datanode'):
+            for invalid in (None,False,0,[],{},'PRIVATE_SYNTHETIC_CANARY','terminated',''):
+                value=positive();value['ssl_capture'][key]=invalid
+                with self.assertRaises(F.ProbeError):F.validate_java(F.canonical(value),0)
+            value=positive();del value['ssl_capture'][key]
+            with self.assertRaises(F.ProbeError):F.validate_java(F.canonical(value),0)
+        for invalid in (None,[],{},dict(format='captured',datanode='captured',thread_id=1)):
+            value=positive();value['ssl_capture']=invalid
+            with self.assertRaises(F.ProbeError):F.validate_java(F.canonical(value),0)
+
+    def test_each_predicate_failure_preserves_cleanup_failed_and_zero_acquisition(self):
+        for _,label in [row for group in self.GROUPS for row in group]:
+            fmt='late' if label=='format_capture_failed' else 'captured'
+            value=self.failure(label,fmt)
+            with self.subTest(label=label):
+                result=F.validate_java(F.canonical(value),1)
+                self.assertEqual(result['ssl_capture'],dict(format=fmt,datanode=label))
+                self.assertEqual(result['error'],'cleanup_failed');self.assertEqual(result['acquired_bytes'],0)
+                self.assertFalse(result['success'] or result['cleanup']['datanode_ssl_timer_reaped'])
+                for claim in F.JAVA_FALSE:self.assertIs(result[claim],False)
+                value['cleanup']['datanode_ssl_timer_reaped']=True
+                with self.assertRaises(F.ProbeError):F.validate_java(F.canonical(value),1)
+
+    def test_contradictory_format_state_and_nonassertion_error_cannot_claim_predicate_reason(self):
+        for label in ('datanode_missing','scan_bound','ambiguous','wrong_thread_type','preexisting','wrong_interval','not_daemon','missing','captured'):
+            value=self.failure(label,'missing')
+            with self.assertRaises(F.ProbeError):F.validate_java(F.canonical(value),1)
+        value=self.failure('format_capture_failed','captured')
+        with self.assertRaises(F.ProbeError):F.validate_java(F.canonical(value),1)
+        for error in ('unclassified','io_failure',None):
+            value=self.failure('ambiguous');value['error']=error
+            with self.assertRaises(F.ProbeError):F.validate_java(F.canonical(value),1)
+
+    def test_unattempted_or_checking_are_partial_observations_never_success(self):
+        early=TlsDiagnosticTests().failed_tls('tls_resource_missing')
+        self.assertEqual(F.validate_java(F.canonical(early),1)['ssl_capture'],dict(format='not_attempted',datanode='not_attempted'))
+        checking=self.failure('checking');checking['error']='unclassified'
+        self.assertFalse(F.validate_java(F.canonical(checking),1)['success'])
+        checking['checks']['secure_datanode']=True
+        with self.assertRaises(F.ProbeError):F.validate_java(F.canonical(checking),1)
+
+    def test_fake_capture_failures_keep_all_failure_evidence_and_outer_cleanup(self):
+        for label,fmt in (('format_capture_failed','late'),('observation_incomplete','captured'),('ambiguous','captured'),('wrong_interval','captured')):
+            receipt=self.failure(label,fmt);original=FakeDocker.__init__
+            def initialize(fake,root,*,max_calls):
+                original(fake,root,max_calls=max_calls);fake.java=copy.deepcopy(receipt);fake.exit_code=1
+            helper=TicketTests(methodName='test_full_mock_success_binds_context_and_cleans');helper.setUp()
+            try:
+                with patch.object(FakeDocker,'__init__',initialize):report,docker=helper.fake_run()
+                self.assertFalse(report['success']);self.assertEqual(report['errors'],['java_probe_failed'])
+                self.assertEqual(report['result']['ssl_capture'],receipt['ssl_capture'])
+                self.assertEqual(report['result']['error'],'cleanup_failed')
+                self.assertEqual(report['result']['remaining_threads'],receipt['remaining_threads'])
+                self.assertEqual(report['result']['cleanup'],receipt['cleanup'])
+                self.assertTrue(all(report['cleanup'].values()));self.assertFalse(docker.root.exists())
+            finally:helper.tearDown()

@@ -137,6 +137,12 @@ public final class HdfsKerberosTransferProbe {
     private static OwnedCleanupState statisticsCleanup = OwnedCleanupState.not_attempted;
     private static OwnedCleanupState sslCleanup = OwnedCleanupState.not_attempted;
     private static OwnedCleanupState sslCaptureFailure = OwnedCleanupState.not_attempted;
+    private enum DataNodeSslCapture {
+        not_attempted, checking, observation_incomplete, phase_unobserved,
+        format_timer_missing, format_timer_ended, format_capture_failed, datanode_missing,
+        scan_bound, ambiguous, wrong_thread_type, preexisting, wrong_interval, not_daemon, missing, captured
+    }
+    private static DataNodeSslCapture datanodeSslCapture = DataNodeSslCapture.not_attempted;
     private static URLConnectionFactory formatSslFactory;
     private static Thread formatSslThread;
     private static final LinkOption NOFOLLOW = LinkOption.NOFOLLOW_LINKS;
@@ -1735,7 +1741,7 @@ public final class HdfsKerberosTransferProbe {
         boolean success = error == null && CHECKS.values().stream().allMatch(Boolean.TRUE::equals) && clean;
         report.println("{\"schema_version\":1,\"scope\":\"hdfs_kerberos_transfer_feasibility\",\"success\":" + success
             + ",\"expected_kerby_version\":\"2.1.2\",\"runtime_binding_required\":true,\"checks\":" + boolMap(CHECKS)
-            + ",\"cleanup\":" + boolMap(CLEANUP) + ",\"metrics_mode\":" + metricsModeJson() + ",\"cache_bytes\":" + cacheBytes
+            + ",\"cleanup\":" + boolMap(CLEANUP) + ",\"metrics_mode\":" + metricsModeJson() + ",\"ssl_capture\":" + sslCaptureJson() + ",\"cache_bytes\":" + cacheBytes
             + ",\"child_count\":" + CHILDREN.size() + ",\"acquired_bytes\":" + acquiredBytes + ",\"acquisitions\":" + acquisitionsJson()
             + ",\"missing_category\":\"" + (Boolean.TRUE.equals(CHECKS.get("missing_path_rejected")) ? "directory_not_found" : "not_observed") + "\""
             + ",\"observed_lifetime_seconds\":" + observedLifetime + ",\"stage\":\"" + stage + "\",\"wire_hex\":\"" + wireHex + "\",\"error\":"
@@ -1819,19 +1825,36 @@ public final class HdfsKerberosTransferProbe {
             } return null;
         }, 3, deadline);
     }
+    private static boolean sslCapturePredicate(boolean value, DataNodeSslCapture failure) {
+        if (!value) datanodeSslCapture = failure;
+        return value;
+    }
+    private static String sslCaptureJson() {
+        return "{\"format\":\"" + (sslCaptureFailure == null ? "captured" : sslCaptureFailure.name())
+            + "\",\"datanode\":\"" + datanodeSslCapture.name() + "\"}";
+    }
     private static void captureDatanodeSsl(Set<Long> baseline) throws Exception {
-        need(!threadObservationIncomplete && OBSERVED_PHASES.contains("datanode") && formatSslThread != null
-            && formatSslThread.isAlive() && sslCaptureFailure == null && datanode != null, Code.cleanup_failed);
+        datanodeSslCapture = DataNodeSslCapture.checking;
+        need(sslCapturePredicate(!threadObservationIncomplete, DataNodeSslCapture.observation_incomplete)
+            && sslCapturePredicate(OBSERVED_PHASES.contains("datanode"), DataNodeSslCapture.phase_unobserved)
+            && sslCapturePredicate(formatSslThread != null, DataNodeSslCapture.format_timer_missing)
+            && sslCapturePredicate(formatSslThread.isAlive(), DataNodeSslCapture.format_timer_ended)
+            && sslCapturePredicate(sslCaptureFailure == null, DataNodeSslCapture.format_capture_failed)
+            && sslCapturePredicate(datanode != null, DataNodeSslCapture.datanode_missing), Code.cleanup_failed);
         int seen = 0;
         for (Thread thread : Thread.getAllStackTraces().keySet()) {
             if (!thread.isAlive()) continue;
-            need(++seen <= 128, Code.cleanup_failed);
+            need(sslCapturePredicate(++seen <= 128, DataNodeSslCapture.scan_bound), Code.cleanup_failed);
             if (!thread.getName().equals("SSL Certificates Store Monitor") || thread == formatSslThread) continue;
-            need(datanodeSslThread == null && thread.getClass().getName().equals("java.util.TimerThread")
-                && !baseline.contains(thread.getId()) && "datanode".equals(THREAD_ORIGINS.get(thread)) && thread.isDaemon(), Code.cleanup_failed);
+            need(sslCapturePredicate(datanodeSslThread == null, DataNodeSslCapture.ambiguous)
+                && sslCapturePredicate(thread.getClass().getName().equals("java.util.TimerThread"), DataNodeSslCapture.wrong_thread_type)
+                && sslCapturePredicate(!baseline.contains(thread.getId()), DataNodeSslCapture.preexisting)
+                && sslCapturePredicate("datanode".equals(THREAD_ORIGINS.get(thread)), DataNodeSslCapture.wrong_interval)
+                && sslCapturePredicate(thread.isDaemon(), DataNodeSslCapture.not_daemon), Code.cleanup_failed);
             datanodeSslThread = thread;
         }
-        need(datanodeSslThread != null, Code.cleanup_failed); datanodeSslCaptured = true;
+        need(sslCapturePredicate(datanodeSslThread != null, DataNodeSslCapture.missing), Code.cleanup_failed); datanodeSslCaptured = true;
+        datanodeSslCapture = DataNodeSslCapture.captured;
     }
 
 }

@@ -41,7 +41,7 @@ OWNED_CLEANUP_STATES = frozenset("not_attempted observation_incomplete services_
 TIMER_KINDS = frozenset("namenode_metrics rpc_idle snapshot_gc shell_timeout ssl_store unknown".split())
 BASE = "docker.io/library/eclipse-temurin@sha256:e1c09a9ee23feb81f94016547826c1e694086cd927356fb57fccc312fcc32f85"
 BASE_ID = "sha256:d0e6e16acb7f941e5206d99ec38e5bba18545c43462541958f84b22e0fc006e8"
-JAVA_SHA = "33e7ce7d29129306e5ef42729998f1637e34b207feff5da307906993c34d426d"
+JAVA_SHA = "e47239adbfd1aa1006e2554054a8dfa2c03bbf74af2b21a6372d7f27f18e2d45"
 REMEDIATION_RUNTIME_SHA = "01095cf92c20a65a479aafdcd52538e11313610230c17b011a5e5146a81bb127"
 REMEDIATION_ORDER_SHA = "74206f7ff8e05475fd310648003cd570c620e92cf670ee1965c66b96eb3ba15d"
 REMEDIATION_LOCK_SHA = "a0fc4edc8ea5fa9df5c26cac0be9f638650c7a657260b9da5eaad16195746e95"
@@ -483,11 +483,29 @@ def validate_metrics_mode(value, checks, cleanup):
     need(checks["metrics_mode_enabled"] is enabled and cleanup["metrics_mode_restored"] is clean, "java_report_invalid")
 
 
+def validate_ssl_capture(value, checks, cleanup, error):
+    format_states = {"not_attempted", "captured", "observation_incomplete", "missing", "scan_failed",
+                     "deadline", "ambiguous", "preexisting", "unobserved", "late", "not_daemon"}
+    predicates = {"observation_incomplete", "phase_unobserved", "format_timer_missing", "format_timer_ended",
+                  "format_capture_failed", "datanode_missing", "scan_bound", "ambiguous", "wrong_thread_type",
+                  "preexisting", "wrong_interval", "not_daemon", "missing"}
+    later = {"datanode_missing", "scan_bound", "ambiguous", "wrong_thread_type", "preexisting", "wrong_interval", "not_daemon", "missing", "captured"}
+    need(type(value) is dict and set(value) == {"format", "datanode"}
+         and type(value["format"]) is str and value["format"] in format_states
+         and type(value["datanode"]) is str and value["datanode"] in predicates | {"not_attempted", "checking", "captured"}, "java_report_invalid")
+    fmt, dn = value["format"], value["datanode"]
+    need((dn not in later or fmt == "captured") and (dn != "format_capture_failed" or fmt != "captured"), "java_report_invalid")
+    need((dn not in predicates or error == "cleanup_failed")
+         and (not checks["secure_datanode"] or dn == fmt == "captured")
+         and (not cleanup["format_ssl_timer_reaped"] or fmt == "captured")
+         and (not cleanup["datanode_ssl_timer_reaped"] or dn in {"not_attempted", "captured"}), "java_report_invalid")
+
+
 def validate_java(raw, exit_code):
     try:
         value = parse(raw, 32768)
         keys = {"schema_version", "scope", "success", "expected_kerby_version", "runtime_binding_required", "checks",
-                "cleanup", "metrics_mode", "cache_bytes", "child_count", "acquired_bytes", "acquisitions", "missing_category", "observed_lifetime_seconds", "stage", "wire_hex", "rclone_wire_hex", "relay", "error", "diagnostic", "remaining_threads", "remaining_thread_intervals", "remaining_thread_matrix", "remaining_timer_kinds", "thread_observation_complete", "owned_thread_cleanup"} | JAVA_FALSE
+                "cleanup", "metrics_mode", "ssl_capture", "cache_bytes", "child_count", "acquired_bytes", "acquisitions", "missing_category", "observed_lifetime_seconds", "stage", "wire_hex", "rclone_wire_hex", "relay", "error", "diagnostic", "remaining_threads", "remaining_thread_intervals", "remaining_thread_matrix", "remaining_timer_kinds", "thread_observation_complete", "owned_thread_cleanup"} | JAVA_FALSE
         need(type(value) is dict and set(value) == keys and type(value["schema_version"]) is int
              and value["schema_version"] == 1 and value["scope"] == "hdfs_kerberos_transfer_feasibility"
              and value["expected_kerby_version"] == "2.1.2" and value["runtime_binding_required"] is True
@@ -496,6 +514,7 @@ def validate_java(raw, exit_code):
             need(type(value[key]) is dict and set(value[key]) == expected
                  and all(type(x) is bool for x in value[key].values()), "java_report_invalid")
         validate_metrics_mode(value["metrics_mode"], value["checks"], value["cleanup"])
+        validate_ssl_capture(value["ssl_capture"], value["checks"], value["cleanup"], value["error"])
         need(type(value["cache_bytes"]) is int and 0 <= value["cache_bytes"] <= 65536
              and type(value["observed_lifetime_seconds"]) is int and 0 <= value["observed_lifetime_seconds"] <= 120
              and (value["error"] is None or type(value["error"]) is str and value["error"] in JAVA_CODES), "java_report_invalid")
