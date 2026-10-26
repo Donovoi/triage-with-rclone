@@ -12,6 +12,8 @@ import socket
 import threading
 import time
 import types
+from urllib.parse import parse_qsl, urlsplit
+import xml.etree.ElementTree as ET
 
 _PATH = Path(__file__).absolute().with_name("fixture_http.py")
 _SIGNER_PATH = _PATH.parent.parent / "provider-lab/fixture_servers.py"
@@ -196,6 +198,9 @@ class _Server(_http._Server):
         self._close_attempted = True
         super().close()
 
+    def _target_allowed(self, target):
+        return target == TARGET
+
     def _parse(self, stream):
         line = stream.readline(4097)
         if not re.fullmatch(rb"(?:GET|HEAD) /[^\x00-\x20\x7f-\xff]{1,2048} HTTP/1\.[01]\r\n", line):
@@ -220,7 +225,7 @@ class _Server(_http._Server):
             raise FixtureError("headers_invalid")
         allowed = {"host", "user-agent", "accept", "accept-encoding", "connection", "content-length", "authorization",
                    "x-ms-date", "x-ms-version", "x-ms-client-request-id", "x-ms-range", "if-match"}
-        if (set(headers) - allowed or headers.get("host") != f"127.0.0.1:{self.port}" or target != TARGET or
+        if (set(headers) - allowed or headers.get("host") != f"127.0.0.1:{self.port}" or not self._target_allowed(target) or
                 headers.get("content-length", "0") != "0" or "authorization" not in headers or
                 headers.get("accept-encoding", "identity") not in {"identity", "gzip"} or
                 headers.get("connection", "close").lower() not in {"close", "keep-alive"}):
@@ -324,6 +329,133 @@ def serve_azureblob(state):
     state._served = True
     server = _Server(state)
     state._transport = server
+    try:
+        server.start()
+        yield server
+    finally:
+        server.close()
+
+
+LIST_FILES = (("README-synthetic.txt", b"Azure listing root.\n"), ("empty.txt", b""),
+              ("nested/space name.txt", BODY))
+LIST_BLOBS = LIST_FILES + (("nested/", b""),)
+
+
+def listing_route(target):
+    """One complete flat page only; never hide omitted rows behind an empty marker."""
+    try:
+        url = urlsplit(target)
+        if url.scheme or url.netloc or url.fragment or url.path not in {"/" + ACCOUNT, "/" + ACCOUNT + "/", "/" + ACCOUNT + "/" + CONTAINER}:
+            raise ValueError("path")
+        pairs = parse_qsl(url.query, keep_blank_values=True, strict_parsing=True, max_num_fields=8)
+        query = dict(pairs)
+        if len(query) != len(pairs) or query.get("comp") != "list" or query.get("marker", "") != "":
+            raise ValueError("query")
+        limit = query.get("maxresults", "5000")
+        if not re.fullmatch(r"[0-9]+", limit) or not 1 <= int(limit) <= 5000:
+            raise ValueError("limit")
+        if url.path in {"/" + ACCOUNT, "/" + ACCOUNT + "/"}:
+            if set(query) - {"comp", "include", "maxresults", "marker"} or query.get("include") != "deleted,metadata":
+                raise ValueError("account")
+            return "account"
+        if (set(query) - {"restype", "comp", "delimiter", "prefix", "marker", "maxresults", "include"}
+                or query.get("restype") != "container" or query.get("include") != "metadata"
+                or query.get("delimiter", "") != "" or query.get("prefix", "") != "" or int(limit) < len(LIST_BLOBS)):
+            raise ValueError("flat_page")
+        return "flat"
+    except (ValueError, UnicodeError):
+        raise FixtureError("route_invalid") from None
+
+
+class AppAzureBlobListingState(AppAzureBlobState):
+    def __init__(self, key, wrong_key, utc_now=None):
+        super().__init__("acquisition", key, wrong_key, utc_now)
+        self.case = "listing"
+        self._original = (self.case, self._key, self._wrong_key)
+        self._files = dict(LIST_BLOBS)
+
+    def source_preserved(self):
+        return (super().source_preserved() and type(self._files) is dict and set(self._files)=={n for n,_ in LIST_BLOBS}
+                and all(type(self._files[n]) is bytes and self._files[n]==b for n,b in LIST_BLOBS))
+
+    def begin(self, method, target, headers):
+        with self.lock:
+            if self.errors or not self.source_preserved():
+                raise FixtureError("source_changed")
+            if self._pending is not None:
+                raise FixtureError("sequence_invalid")
+            self.requests += 1
+            if self.requests > 128:
+                raise FixtureError("request_limit")
+            role = listing_route(target)
+            if method != "GET" or any(k in headers for k in ("x-ms-range", "if-match")):
+                raise FixtureError("route_invalid")
+            try:
+                signed = _signer.azure_string_to_sign(ACCOUNT, method, target, headers.items())
+                date = headers.get("x-ms-date", "")
+                instant = parsedate_to_datetime(date)
+                version = headers.get("x-ms-version", "")
+                datetime.strptime(version, "%Y-%m-%d")
+                age = (self.utc_now() - instant).total_seconds()
+                expected = "SharedKey " + ACCOUNT + ":" + base64.b64encode(hmac.new(self._key, signed.encode("utf-8"), hashlib.sha256).digest()).decode("ascii")
+                if (instant.tzinfo is None or instant.utcoffset().total_seconds()!=0 or format_datetime(instant,usegmt=True)!=date
+                        or not 0<=age<=900 or not re.fullmatch(r"\d{4}-\d{2}-\d{2}",version)
+                        or not hmac.compare_digest(headers.get("authorization", ""), expected)):
+                    raise ValueError("authentication")
+            except (ValueError, TypeError, OverflowError, UnicodeError):
+                raise FixtureError("credentials_invalid") from None
+            expected_role = ("account", "flat")[len(self.events)] if len(self.events)<2 else None
+            if role != expected_role:
+                raise FixtureError("sequence_invalid")
+            self._pending = (method, "account_authenticated" if role=="account" else "listing_authenticated", role, 200)
+            return self._pending
+
+    def response(self, request):
+        with self.lock:
+            if self.errors or not self.source_preserved() or self._pending is not request or self._reply is not None:
+                raise FixtureError("sequence_invalid")
+            root = ET.Element("EnumerationResults")
+            if request[2] == "account":
+                entry = ET.SubElement(ET.SubElement(root,"Containers"),"Container")
+                ET.SubElement(entry,"Name").text=CONTAINER
+                props=ET.SubElement(entry,"Properties")
+                ET.SubElement(props,"Last-Modified").text=STAMP
+                ET.SubElement(props,"Etag").text='"synthetic-container"'
+            else:
+                blobs=ET.SubElement(root,"Blobs")
+                for name,body in LIST_BLOBS:
+                    entry=ET.SubElement(blobs,"Blob")
+                    ET.SubElement(entry,"Name").text=name
+                    props=ET.SubElement(entry,"Properties")
+                    for key,value in {"Content-Length":str(len(body)),"Content-Type":"application/octet-stream",
+                            "Content-MD5":base64.b64encode(hashlib.md5(body).digest()).decode("ascii"),
+                            "Last-Modified":STAMP,"Etag":'"synthetic-'+hashlib.md5(body).hexdigest()+'"',"BlobType":"BlockBlob"}.items():
+                        ET.SubElement(props,key).text=value
+                    ET.SubElement(ET.SubElement(entry,"Metadata"),"mtime").text="2024-01-01T00:00:00Z"
+            ET.SubElement(root,"NextMarker")
+            body=ET.tostring(root,encoding="utf-8",xml_declaration=True)
+            wire=(f"HTTP/1.1 200 OK\r\nContent-Length: {len(body)}\r\nConnection: close\r\nContent-Type: application/xml\r\nx-ms-request-id: synthetic-request\r\n\r\n").encode("ascii")+body
+            if len(wire)>16384 or self.response_bytes+len(wire)>524288:
+                raise FixtureError("byte_limit")
+            # XML bytes are metadata, never source-object payload.
+            self._reply=(len(wire),0)
+            return wire
+
+
+class _ListingServer(_Server):
+    def _target_allowed(self, target):
+        listing_route(target)
+        return True
+
+
+@contextmanager
+
+def serve_azureblob_listing(state):
+    if type(state) is not AppAzureBlobListingState or state._served:
+        raise ValueError("input_invalid")
+    state._served=True
+    server=_ListingServer(state)
+    state._transport=server
     try:
         server.start()
         yield server
