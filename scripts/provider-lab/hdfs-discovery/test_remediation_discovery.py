@@ -21,6 +21,7 @@ FAMILIES = (
     ("io.netty", "netty-handler", "4.1.139.Final"),
     ("io.netty", "netty-buffer", "4.1.139.Final"),
     ("org.apache.commons", "commons-configuration2", "2.15.1"),
+    ("commons-io", "commons-io", "2.22.0"),
     ("org.bouncycastle", "bcprov-jdk18on", "1.86"),
 )
 
@@ -163,6 +164,53 @@ class HostedRemediationTests(unittest.TestCase):
         self.assertFalse(report["success"]); self.assertTrue(root.exists())
         report, _, _ = self.invoke(profile=PROFILE, candidate_after={"pom.xml": "9" * 64})
         self.assertFalse(report["success"]); self.assertIn("candidate_changed", report["errors"])
+
+
+class CommonsIoLinkageCorrectionTests(unittest.TestCase):
+    def test_exact_declared_io_override_and_candidate_hash(self):
+        import xml.etree.ElementTree as ET
+        candidate = HERE / "candidate-kerberos-remediation"
+        raw = (candidate / "pom.xml").read_bytes()
+        self.assertEqual(hashlib.sha256(raw).hexdigest(), D.REMEDIATION_INPUT_HASHES["pom.xml"])
+        root = ET.fromstring(raw); ns = {"m": "http://maven.apache.org/POM/4.0.0"}
+        self.assertEqual(root.findtext("m:properties/m:commons.io.version", namespaces=ns), "2.22.0")
+        deps = [node for node in root.findall("m:dependencyManagement/m:dependencies/m:dependency", ns)
+                if node.findtext("m:groupId", namespaces=ns) == "commons-io"
+                and node.findtext("m:artifactId", namespaces=ns) == "commons-io"]
+        self.assertEqual(len(deps), 1)
+        self.assertEqual(deps[0].findtext("m:version", namespaces=ns), "${commons.io.version}")
+
+    def test_missing_old_mixed_and_spoofed_selected_io_are_rejected(self):
+        rows = selected_rows(); good = next(r for r in rows if r["group"] == "commons-io")
+        without = [r for r in rows if r is not good]
+        cases = [without, [*without, dict(good, version="2.16.1")],
+                 [*rows, dict(good, version="2.16.1")],
+                 [*without, dict(good, group="org.apache.commons")],
+                 [*without, dict(good, artifact="commons-io-private")],
+                 [*without, dict(good, selected_runtime=False)]]
+        for changed in cases:
+            with self.subTest(rows=changed), self.assertRaisesRegex(D.DiscoveryError, "classpath_invalid"):
+                D.validate_remediation_versions({"artifacts": changed})
+        D.validate_remediation_versions({"artifacts": [*rows, dict(good, version="2.16.1", selected_runtime=False)]})
+
+    def test_preserved_old_lock_cannot_qualify_corrected_runtime(self):
+        lock = json.loads(D.offline_cache.lock_path(PROFILE).read_bytes())
+        selected = [row for row in lock["artifacts"] if row["selected_runtime"] is True
+                    and (row["group"], row["artifact"]) == ("commons-io", "commons-io")]
+        self.assertEqual([row["version"] for row in selected], ["2.16.1"])
+        with self.assertRaisesRegex(D.DiscoveryError, "classpath_invalid"):
+            D.validate_remediation_versions(lock)
+        self.assertTrue(lock["claims"] and all(value is False for value in lock["claims"].values()))
+
+    def test_discovery_workflow_stays_online_until_new_lock_is_reviewed(self):
+        workflow = (HERE.parents[2] / ".github/workflows/hdfs-remediation-discovery.yml").read_text()
+        self.assertEqual(workflow.count("--mode online"), 1)
+        self.assertNotIn("--mode repeat", workflow)
+        for required in ("workflow_dispatch:", "pull_request:", "contents: read", "persist-credentials: false",
+                         "ref: ${{ github.event.pull_request.head.sha || github.sha }}", "--profile kerberos-remediation",
+                         "--candidate scripts/provider-lab/hdfs-discovery/candidate-kerberos-remediation",
+                         "The old", "remediation lock remains preserved", "if: always()"):
+            self.assertIn(required, workflow)
 
 
 if __name__ == "__main__":
