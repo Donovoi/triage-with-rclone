@@ -1200,3 +1200,61 @@ class LinkageDiagnosticTests(unittest.TestCase):
         for origin in self.SITES:
             value=positive();value['diagnostic']=dict(category='linkage_no_such_method',origin=origin)
             with self.subTest(origin=origin),self.assertRaises(F.ProbeError):F.validate_java(F.canonical(value),0)
+
+class RemainingMetricsCallsiteTests(unittest.TestCase):
+    METHODS={
+        'org.apache.hadoop.metrics2.lib.DefaultMetricsSystem':set('getImpl init shutdownInstance setImpl initialize instance shutdown setInstance setMiniClusterMode inMiniClusterMode newMBeanName removeMBeanName removeSourceName sourceName newObjectName removeObjectName removeSource newSourceName'.split()),
+        'org.apache.hadoop.metrics2.impl.MetricsSystemImpl':set('<init> init start stop register unregisterSource registerSource registerSink getProxyForCallback startMetricsMBeans stopMetricsMBeans currentConfig startTimer onTimerEvent publishMetricsNow sampleMetrics snapshotMetrics publishMetrics stopTimer stopSources stopSinks configure configureSystem configureSinks newSink configureSources clearConfigs getHostname registerSystemSource getMetrics initSystemMBean shutdown getSource getSourceAdapter getSinkAdapter initMode'.split())}
+
+    def mappings(self):
+        source=(HERE/'HdfsKerberosTransferProbe.java').read_text()
+        origin=source[source.index('private static String originFrame('):source.index('private static void projectFailure(')]
+        out={}
+        for cls,methods in self.METHODS.items():
+            pattern=r'case "'+re.escape(cls)+r'" -> switch \(frame.getMethodName\(\)\) \{(.*?)\n            \};'
+            match=re.search(pattern,origin,re.S);self.assertIsNotNone(match)
+            pairs=re.findall(r'case "([A-Za-z<>]+)" -> "([a-z_]+)";',match.group(1))
+            self.assertEqual(len(pairs),len(methods));self.assertEqual({p[0] for p in pairs},methods)
+            self.assertIn('default -> "hadoop_metrics";',match.group(1))
+            out[cls]=dict(pairs)
+        return out
+
+    def test_only_declared_known_metrics_methods_are_exported_as_fixed_markers(self):
+        mappings=self.mappings();labels=[label for m in mappings.values() for label in m.values()]
+        self.assertEqual(len(labels),54);self.assertEqual(len(labels),len(set(labels)))
+        self.assertLessEqual(set(labels),F.DIAGNOSTIC_ORIGINS)
+        self.assertEqual(mappings['org.apache.hadoop.metrics2.lib.DefaultMetricsSystem']['newSourceName'],'default_metrics_new_source_name')
+        self.assertEqual(mappings['org.apache.hadoop.metrics2.impl.MetricsSystemImpl']['getProxyForCallback'],'metrics_system_get_proxy_for_callback')
+        self.assertEqual(mappings['org.apache.hadoop.metrics2.impl.MetricsSystemImpl']['configure'],'metrics_system_configure')
+        self.assertEqual(mappings['org.apache.hadoop.metrics2.impl.MetricsSystemImpl']['register'],'metrics_system_register')
+
+    def test_unknown_methods_keep_generic_fallback_without_prefix_or_text_matching(self):
+        self.mappings()
+        source=(HERE/'HdfsKerberosTransferProbe.java').read_text()
+        origin=source[source.index('private static String originFrame('):source.index('private static void projectFailure(')]
+        self.assertEqual(origin.count('default -> "hadoop_metrics";'),2)
+        for forbidden in ('getMessage','getLocalizedMessage','getLineNumber','startsWith','substring','toString()','Class.forName'):
+            self.assertNotIn(forbidden,origin)
+        for cls in self.METHODS:self.assertEqual(origin.count('case "'+cls+'"'),1)
+
+    def test_every_refined_method_preserves_the_failed_native_boundary(self):
+        for methods in self.mappings().values():
+            for method,label in methods.items():
+                with self.subTest(method=method,label=label):
+                    value=LinkageDiagnosticTests().failure(origin=label)
+                    result=F.validate_java(F.canonical(value),1)
+                    self.assertEqual(result['diagnostic'],dict(category='linkage_no_such_method',origin=label))
+                    self.assertFalse(result['success']);self.assertFalse(result['thread_observation_complete'])
+                    self.assertFalse(result['cleanup']['datanode_stop_returned']);self.assertFalse(result['cleanup']['private_material_removed'])
+                    self.assertTrue(all(result[k] is False for k in F.JAVA_FALSE))
+                    with self.assertRaises(F.ProbeError):F.validate_java(F.canonical(value),0)
+
+    def test_unmapped_private_symbols_and_success_promotion_are_rejected(self):
+        for label in ('default_metrics_private','metrics_system_private','default_metrics_initialize(private)',
+            'org.apache.hadoop.metrics2.impl.MetricsSystemImpl.configure','getProxyForCallback',True):
+            value=LinkageDiagnosticTests().failure(origin=label)
+            with self.subTest(label=label),self.assertRaises(F.ProbeError):F.validate_java(F.canonical(value),1)
+        for methods in self.mappings().values():
+            for label in methods.values():
+                value=positive();value['diagnostic']=dict(category='linkage_no_such_method',origin=label)
+                with self.subTest(label=label),self.assertRaises(F.ProbeError):F.validate_java(F.canonical(value),0)
