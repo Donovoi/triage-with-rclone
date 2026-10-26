@@ -27,6 +27,7 @@ import uuid
 HERE = Path(__file__).resolve().parent
 DISCOVERY = HERE.parent / "hdfs-discovery"
 RUNTIME = HERE.parent / "hdfs-kerberos-ticket" / "runtime-classpath.json"
+REMEDIATION_RUNTIME = HERE / "runtime-classpath-remediation.json"
 PIN_FILE = HERE.parents[2] / "rclone-version.env"
 RCLONE_VERSION = "1.75.2"
 RCLONE_SHA = "ed7ab1f17876bb006c3df3949a3044959671afd9112362dacaa5dd1647735bc1"
@@ -45,6 +46,10 @@ JAVA_SHA = "8a5130a4db5c9266d6eff439d1574faec05a81339da0a5765596732c70f56bb0"
 RUNTIME_SHA = "8944f0db4899d9e8f166feb28ce56d99278321ce0d3b1a9b9b993b5c0d508c2a"
 ORDER_SHA = "a482109e5170b0a6885af7c52902e89600c226f6e1fe1487083d736c13187632"
 LOCK_SHA = "a62e2a60bbb3f6c8b95b849760ff597e4e05e1c93bf61987c175502c3fe2ac74"
+REMEDIATION_RUNTIME_SHA = "0107937fb84e4cac5a87f0da7c53b1ea4a0a9f341f7b07a95f6033f8946de057"
+REMEDIATION_ORDER_SHA = "dbed8ddb36a8286af785cc4eace07f335b033cbb0b37f02683db901c6066e14c"
+REMEDIATION_LOCK_SHA = "56b33e3c897e02c9c487b66799666de4fc9eb51d8675dad2d4d42f69bb8a2a9c"
+PROFILES = ("kerberos", "kerberos-remediation")
 LABEL = "org.openai.triage.kerberos-rpc"
 TMPFS = "rw,nosuid,nodev,noexec,size=128m,mode=0700,uid=10001,gid=10001"
 HELPERS = ("bootstrap_material", "graph_export", "offline_cache", "resolver_discovery")
@@ -145,8 +150,20 @@ def hosted_guard():
          "hosted_linux_required")
 
 
-def runtime_rows(runtime_raw, lock_raw):
-    need(sha(runtime_raw) == RUNTIME_SHA and sha(lock_raw) == LOCK_SHA, "input_invalid")
+def profile_settings(profile):
+    """Closed identities; no caller-supplied paths or digest overrides."""
+    need(type(profile) is str and profile in PROFILES, "input_invalid")
+    if profile == "kerberos":
+        return dict(profile=profile, runtime=RUNTIME, runtime_sha256=RUNTIME_SHA,
+                    order_sha256=ORDER_SHA, lock=DISCOVERY / "artifact-lock-kerberos.json", lock_sha256=LOCK_SHA)
+    return dict(profile=profile, runtime=REMEDIATION_RUNTIME, runtime_sha256=REMEDIATION_RUNTIME_SHA,
+                order_sha256=REMEDIATION_ORDER_SHA, lock=DISCOVERY / "artifact-lock-kerberos-remediation.json",
+                lock_sha256=REMEDIATION_LOCK_SHA)
+
+
+def runtime_rows(runtime_raw, lock_raw, *, profile="kerberos"):
+    pins = profile_settings(profile)
+    need(sha(runtime_raw) == pins["runtime_sha256"] and sha(lock_raw) == pins["lock_sha256"], "input_invalid")
     runtime, lock = parse(runtime_raw), parse(lock_raw)
     need(type(runtime) is dict and set(runtime) == {"schema_version", "entries", "normalized_sha256"}
          and type(runtime["schema_version"]) is int and runtime["schema_version"] == 1, "input_invalid")
@@ -154,7 +171,7 @@ def runtime_rows(runtime_raw, lock_raw):
     selected = [{key: row[key] for key in ("group", "artifact", "version", "type", "classifier", "size", "sha256")}
                 for row in lock["artifacts"] if row["selected_runtime"]]
     need(type(rows) is list and len(rows) == 142 and len(selected) == 142
-         and sha(canonical(rows)) == runtime["normalized_sha256"] == ORDER_SHA
+         and sha(canonical(rows)) == runtime["normalized_sha256"] == pins["order_sha256"]
          and sorted(map(canonical, rows)) == sorted(map(canonical, selected)), "input_invalid")
     need(sum(row["group"] == "org.apache.kerby" for row in rows) == 15
          and all(row["version"] == "2.1.2" for row in rows if row["group"] == "org.apache.kerby"), "input_invalid")
@@ -214,13 +231,14 @@ def download_rows(context, rows, *, opener=None, clock=time.monotonic):
     directory(context, context_id); directory(jars, jar_id)
 
 
-def download(context, rows):
+def download(context, rows, *, profile="kerberos"):
+    profile_settings(profile)
     process = None; context_id = directory(context); source = Path(__file__).resolve()
     source_hash = file_hash(source, 512 * 1024)
     environment = {key: os.environ[key] for key in ("PATH", "LANG", "LC_ALL", "GITHUB_ACTIONS", "RUNNER_ENVIRONMENT", "RUNNER_OS") if key in os.environ}
     try:
         process = subprocess.Popen([sys.executable, "-I", "-S", "-B", str(source), "--download-worker",
-            str(context), str(context_id[0]), str(context_id[1]), source_hash], stdin=subprocess.DEVNULL,
+            str(context), str(context_id[0]), str(context_id[1]), source_hash, profile], stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, cwd=context, env=environment, start_new_session=True)
         try: code = process.wait(timeout=300)
         except subprocess.TimeoutExpired: raise ProbeError("download_failed") from None
@@ -468,11 +486,11 @@ def tree_hashes(root):
     return result
 
 
-def run(rclone=None, *, loader=load_helpers, downloader=download, runner_factory=None):
+def run(rclone=None, *, loader=load_helpers, downloader=download, runner_factory=None, profile="kerberos"):
     started = time.monotonic()
     report = dict(schema_version=1, scope="hdfs_kerberos_rpc_container_feasibility", success=False,
         started_utc=datetime.now(timezone.utc).isoformat(), finished_utc=None, duration_seconds=None,
-        stage="preflight", inputs=None, result=None, errors=[], cleanup=dict(container_removed=False,
+        stage="preflight", candidate_profile=None, inputs=None, result=None, errors=[], cleanup=dict(container_removed=False,
         image_removed=False, context_removed=False, raw_evidence_removed=False),
         cleanup_excludes=["shared_base_image", "shared_build_cache"], **FALSE_CLAIMS)
     root = context = root_id = context_id = docker = D = None
@@ -480,29 +498,32 @@ def run(rclone=None, *, loader=load_helpers, downloader=download, runner_factory
     run_id = uuid.uuid4().hex; tag = name = "kerberos-rpc-" + run_id
     old_umask = os.umask(0o077)
     try:
+        pins = profile_settings(profile)
+        report["candidate_profile"] = profile
         hosted_guard()
         D, source_hashes = loader()
-        java_path, runtime_path = HERE / "HdfsKerberosRpcProbe.java", RUNTIME
-        lock_path = DISCOVERY / "artifact-lock-kerberos.json"
+        java_path, runtime_path = HERE / "HdfsKerberosRpcProbe.java", pins["runtime"]
+        lock_path = pins["lock"]
         java, runtime_raw, lock_raw = read(java_path, 128 * 1024), read(runtime_path, 512 * 1024), read(lock_path, 512 * 1024)
-        need(sha(java) == JAVA_SHA, "input_invalid"); rows = runtime_rows(runtime_raw, lock_raw)
-        pins = read(PIN_FILE, 4096).decode("ascii").splitlines()
-        need("RCLONE_VERSION=" + RCLONE_VERSION in pins and "RCLONE_LINUX_EXE_SHA256=" + RCLONE_SHA in pins, "input_invalid")
+        need(sha(java) == JAVA_SHA, "input_invalid"); rows = runtime_rows(runtime_raw, lock_raw, profile=profile)
+        rclone_pins = read(PIN_FILE, 4096).decode("ascii").splitlines()
+        need("RCLONE_VERSION=" + RCLONE_VERSION in rclone_pins and "RCLONE_LINUX_EXE_SHA256=" + RCLONE_SHA in rclone_pins, "input_invalid")
         rclone = Path(rclone); binary = read(rclone, 128 * 1024 * 1024)
         need(sha(binary) == RCLONE_SHA, "input_invalid")
         source_hashes[rclone] = RCLONE_SHA; source_hashes[PIN_FILE] = sha(read(PIN_FILE, 4096))
         for path, raw in ((java_path, java), (runtime_path, runtime_raw), (lock_path, lock_raw),
                 (Path(__file__).resolve(), read(Path(__file__).resolve(), 512 * 1024))): source_hashes[path] = sha(raw)
-        report["inputs"] = dict(source_sha256={p.name: h for p, h in source_hashes.items()}, jdk_manifest=BASE,
+        report["inputs"] = dict(candidate_profile=profile, source_sha256={p.name: h for p, h in source_hashes.items()}, jdk_manifest=BASE,
             jdk_config_id=BASE_ID, hadoop_version="3.5.0", kerby_version="2.1.2",
             runtime_jars=142, runtime_bytes=sum(row["size"] for row in rows),
-            runtime_classpath_sha256=ORDER_SHA, lock_sha256=LOCK_SHA, rclone_version=RCLONE_VERSION, rclone_sha256=RCLONE_SHA, context_sha256=None, image_id=None, container_id=None)
+            runtime_file_sha256=pins["runtime_sha256"], runtime_classpath_sha256=pins["order_sha256"],
+            lock_sha256=pins["lock_sha256"], rclone_version=RCLONE_VERSION, rclone_sha256=RCLONE_SHA, context_sha256=None, image_id=None, container_id=None)
         need(shutil.disk_usage("/tmp").free >= 512 * 1024**2, "unsafe_path")
         root = Path(tempfile.mkdtemp(prefix="kerberos-rpc-", dir="/tmp")); root_id = directory(root)
         context = root / "context"; context.mkdir(mode=0o700); context_id = directory(context)
         (context / "runtime-classpath.json").write_bytes(runtime_raw)
-        (context / "artifact-lock-kerberos.json").write_bytes(lock_raw)
-        report["stage"] = "download"; downloader(context, rows); verify_jars(context, rows)
+        (context / lock_path.name).write_bytes(lock_raw)
+        report["stage"] = "download"; downloader(context, rows, profile=profile); verify_jars(context, rows)
         (context / "HdfsKerberosRpcProbe.java").write_bytes(java)
         (context / "rclone").write_bytes(binary)
         need(file_hash(context / "rclone") == RCLONE_SHA, "input_changed")
@@ -602,16 +623,19 @@ def main(argv=None):
     args = sys.argv[1:] if argv is None else argv
     if args and args[0] == "--download-worker":
         try:
-            hosted_guard(); need(len(args) == 5, "input_invalid")
+            need(len(args) == 6, "input_invalid")
+            profile = args[5]; pins = profile_settings(profile)
+            hosted_guard()
             context = Path(args[1]); need(context.is_absolute() and context.name == "context", "unsafe_path")
             directory(context, (int(args[2]), int(args[3])))
             need(file_hash(Path(__file__).resolve(), 512 * 1024) == args[4], "input_changed")
             rows = runtime_rows(read(context / "runtime-classpath.json", 512 * 1024),
-                                read(context / "artifact-lock-kerberos.json", 512 * 1024))
+                                read(context / pins["lock"].name, 512 * 1024), profile=profile)
             download_rows(context, rows); return 0
         except BaseException: return 1
     parser = argparse.ArgumentParser(description=__doc__); parser.add_argument("--report", type=Path, required=True)
     parser.add_argument("--rclone", type=Path, required=True)
+    parser.add_argument("--profile", choices=PROFILES, default="kerberos")
     parsed = parser.parse_args(args)
     previous = signal.getsignal(signal.SIGTERM)
     signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
@@ -621,7 +645,7 @@ def main(argv=None):
         for parent in path.parents: directory(parent)
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
         with os.fdopen(fd, "wb") as stream:
-            result = run(parsed.rclone); data = canonical(result) + b"\n"; need(len(data) <= 65536, "report_failed")
+            result = run(parsed.rclone, profile=parsed.profile); data = canonical(result) + b"\n"; need(len(data) <= 65536, "report_failed")
             stream.write(data); stream.flush(); os.fsync(stream.fileno())
         return 0 if result["success"] else 1
     except BaseException:

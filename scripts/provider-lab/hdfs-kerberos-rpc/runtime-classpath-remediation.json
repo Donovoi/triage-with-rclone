@@ -1,0 +1,1284 @@
+{
+  "entries": [
+    {
+      "artifact": "hadoop-common",
+      "classifier": "",
+      "group": "org.apache.hadoop",
+      "sha256": "dad07af66b59454e71b046a2fce0c0fddb9c522eadd146075e6add82aad86ce6",
+      "size": 4862416,
+      "type": "jar",
+      "version": "3.5.0"
+    },
+    {
+      "artifact": "hadoop-shaded-protobuf_3_25",
+      "classifier": "",
+      "group": "org.apache.hadoop.thirdparty",
+      "sha256": "b3182ff49abd6c3ee0f0504bcea027434e7f2dfd7b5cc7111c6292ba3e9f3b8e",
+      "size": 1953000,
+      "type": "jar",
+      "version": "1.5.0"
+    },
+    {
+      "artifact": "hadoop-annotations",
+      "classifier": "",
+      "group": "org.apache.hadoop",
+      "sha256": "f2291ae546bb40bc30d1ea5c527b48b3277b51bfeb3dbd2941a7d6f98c5f37bf",
+      "size": 36376,
+      "type": "jar",
+      "version": "3.5.0"
+    },
+    {
+      "artifact": "hadoop-shaded-guava",
+      "classifier": "",
+      "group": "org.apache.hadoop.thirdparty",
+      "sha256": "70d5c152622df6fffbf8836af7833215dc7acdd5d9c881af11b8c0fbf30cdc0a",
+      "size": 3501106,
+      "type": "jar",
+      "version": "1.5.0"
+    },
+    {
+      "artifact": "guava",
+      "classifier": "",
+      "group": "com.google.guava",
+      "sha256": "f3d7f57f67fd622f4d468dfdd692b3a5e3909246c28017ac3263405f0fe617ed",
+      "size": 3023797,
+      "type": "jar",
+      "version": "33.4.8-jre"
+    },
+    {
+      "artifact": "failureaccess",
+      "classifier": "",
+      "group": "com.google.guava",
+      "sha256": "cbfc3906b19b8f55dd7cfd6dfe0aa4532e834250d7f080bd8d211a3e246b59cb",
+      "size": 10763,
+      "type": "jar",
+      "version": "1.0.3"
+    },
+    {
+      "artifact": "listenablefuture",
+      "classifier": "",
+      "group": "com.google.guava",
+      "sha256": "b372a037d4230aa57fbeffdef30fd6123f9c0c2db85d0aced00c91b974f33f99",
+      "size": 2199,
+      "type": "jar",
+      "version": "9999.0-empty-to-avoid-conflict-with-guava"
+    },
+    {
+      "artifact": "jspecify",
+      "classifier": "",
+      "group": "org.jspecify",
+      "sha256": "1fad6e6be7557781e4d33729d49ae1cdc8fdda6fe477bb0cc68ce351eafdfbab",
+      "size": 3819,
+      "type": "jar",
+      "version": "1.0.0"
+    },
+    {
+      "artifact": "j2objc-annotations",
+      "classifier": "",
+      "group": "com.google.j2objc",
+      "sha256": "88241573467ddca44ffd4d74aa04c2bbfd11bf7c17e0c342c94c9de7a70a7c64",
+      "size": 12467,
+      "type": "jar",
+      "version": "3.0.0"
+    },
+    {
+      "artifact": "commons-cli",
+      "classifier": "",
+      "group": "commons-cli",
+      "sha256": "d3d530d0f28fd0fbbffe2b0b338f70e8cb96f1605579e2e3abd4db29cac24e69",
+      "size": 75479,
+      "type": "jar",
+      "version": "1.9.0"
+    },
+    {
+      "artifact": "commons-math3",
+      "classifier": "",
+      "group": "org.apache.commons",
+      "sha256": "1e56d7b058d28b65abd256b8458e3885b674c1d588fa43cd7d1cbb9c7ef2b308",
+      "size": 2213560,
+      "type": "jar",
+      "version": "3.6.1"
+    },
+    {
+      "artifact": "httpclient",
+      "classifier": "",
+      "group": "org.apache.httpcomponents",
+      "sha256": "6fe9026a566c6a5001608cf3fc32196641f6c1e5e1986d1037ccdbd5f31ef743",
+      "size": 780321,
+      "type": "jar",
+      "version": "4.5.13"
+    },
+    {
+      "artifact": "commons-logging",
+      "classifier": "",
+      "group": "commons-logging",
+      "sha256": "daddea1ea0be0f56978ab3006b8ac92834afeefbd9b7e4e6316fca57df0fa636",
+      "size": 61829,
+      "type": "jar",
+      "version": "1.2"
+    },
+    {
+      "artifact": "commons-codec",
+      "classifier": "",
+      "group": "commons-codec",
+      "sha256": "b3e9f6d63a790109bf0d056611fbed1cf69055826defeb9894a71369d246ed63",
+      "size": 353793,
+      "type": "jar",
+      "version": "1.15"
+    },
+    {
+      "artifact": "commons-io",
+      "classifier": "",
+      "group": "commons-io",
+      "sha256": "f41f7baacd716896447ace9758621f62c1c6b0a91d89acee488da26fc477c84f",
+      "size": 508826,
+      "type": "jar",
+      "version": "2.16.1"
+    },
+    {
+      "artifact": "commons-net",
+      "classifier": "",
+      "group": "commons-net",
+      "sha256": "e3c1566f821b84489308cd933f57e8c00dd8714dc96b898bef844386510d3461",
+      "size": 316431,
+      "type": "jar",
+      "version": "3.9.0"
+    },
+    {
+      "artifact": "commons-collections4",
+      "classifier": "",
+      "group": "org.apache.commons",
+      "sha256": "1df8b9430b5c8ed143d7815e403e33ef5371b2400aadbe9bda0883762e0846d1",
+      "size": 751914,
+      "type": "jar",
+      "version": "4.4"
+    },
+    {
+      "artifact": "jakarta.servlet.jsp-api",
+      "classifier": "",
+      "group": "jakarta.servlet.jsp",
+      "sha256": "e915fa9db7245592460dfaf1a2df9cdfe800cc3976562ed492870db56369dde9",
+      "size": 53683,
+      "type": "jar",
+      "version": "2.3.6"
+    },
+    {
+      "artifact": "jakarta.ws.rs-api",
+      "classifier": "",
+      "group": "jakarta.ws.rs",
+      "sha256": "4cea299c846c8a6e6470cbfc2f7c391bc29b9caa2f9264ac1064ba91691f4adf",
+      "size": 140376,
+      "type": "jar",
+      "version": "2.1.6"
+    },
+    {
+      "artifact": "jersey-server",
+      "classifier": "",
+      "group": "org.glassfish.jersey.core",
+      "sha256": "4e79f6cac34a675798e4626c2517dcc6179dd84ff2ed9165ddec7b8b113256e3",
+      "size": 964550,
+      "type": "jar",
+      "version": "2.46"
+    },
+    {
+      "artifact": "jersey-client",
+      "classifier": "",
+      "group": "org.glassfish.jersey.core",
+      "sha256": "97318a81535314bf9a3ef7ed92ccdd62d42000971fea74807f3668afc95aa694",
+      "size": 311826,
+      "type": "jar",
+      "version": "2.46"
+    },
+    {
+      "artifact": "jakarta.annotation-api",
+      "classifier": "",
+      "group": "jakarta.annotation",
+      "sha256": "85fb03fc054cdf4efca8efd9b6712bbb418e1ab98241c4539c8585bbc23e1b8a",
+      "size": 25058,
+      "type": "jar",
+      "version": "1.3.5"
+    },
+    {
+      "artifact": "jakarta.inject",
+      "classifier": "",
+      "group": "org.glassfish.hk2.external",
+      "sha256": "5e88c123b3e41bca788b2683118867d9b6dec714247ea91c588aed46a36ee24f",
+      "size": 18140,
+      "type": "jar",
+      "version": "2.6.1"
+    },
+    {
+      "artifact": "jakarta.validation-api",
+      "classifier": "",
+      "group": "jakarta.validation",
+      "sha256": "b42d42428f3d922c892a909fa043287d577c0c5b165ad9b7d568cebf87fc9ea4",
+      "size": 91930,
+      "type": "jar",
+      "version": "2.0.2"
+    },
+    {
+      "artifact": "jersey-container-servlet",
+      "classifier": "",
+      "group": "org.glassfish.jersey.containers",
+      "sha256": "1953e27fa86b95ebc16caa393ce0c3ba3e7c445f2b2793ad5c4bc7d4c0f63a46",
+      "size": 32929,
+      "type": "jar",
+      "version": "2.46"
+    },
+    {
+      "artifact": "jersey-container-servlet-core",
+      "classifier": "",
+      "group": "org.glassfish.jersey.containers",
+      "sha256": "e9be12ee694f541f4acfe29b45b22f03568a2f28fc644f968399186590f8180b",
+      "size": 75742,
+      "type": "jar",
+      "version": "2.46"
+    },
+    {
+      "artifact": "jersey-hk2",
+      "classifier": "",
+      "group": "org.glassfish.jersey.inject",
+      "sha256": "1f5973286b514d758ea1b447aaf844c1cab0d50b77509d123f2bc8fd6db23886",
+      "size": 80272,
+      "type": "jar",
+      "version": "2.46"
+    },
+    {
+      "artifact": "hk2-locator",
+      "classifier": "",
+      "group": "org.glassfish.hk2",
+      "sha256": "febc668deb9f2000c76bd4918d8086c0a4c74d07bd0c60486b72c6bd38b62874",
+      "size": 203358,
+      "type": "jar",
+      "version": "2.6.1"
+    },
+    {
+      "artifact": "aopalliance-repackaged",
+      "classifier": "",
+      "group": "org.glassfish.hk2.external",
+      "sha256": "bad77f9278d753406360af9e4747bd9b3161554ea9cd3d62411a0ae1f2c141fd",
+      "size": 27006,
+      "type": "jar",
+      "version": "2.6.1"
+    },
+    {
+      "artifact": "hk2-api",
+      "classifier": "",
+      "group": "org.glassfish.hk2",
+      "sha256": "c2cb80a01e58440ae57d5ee59af4d4d94e5180e04aff112b0cb611c07d61e773",
+      "size": 200223,
+      "type": "jar",
+      "version": "2.6.1"
+    },
+    {
+      "artifact": "hk2-utils",
+      "classifier": "",
+      "group": "org.glassfish.hk2",
+      "sha256": "30727f79086452fdefdab08451d982c2082aa239d9f75cdeb1ba271e3c887036",
+      "size": 131590,
+      "type": "jar",
+      "version": "2.6.1"
+    },
+    {
+      "artifact": "javassist",
+      "classifier": "",
+      "group": "org.javassist",
+      "sha256": "eba37290994b5e4868f3af98ff113f6244a6b099385d9ad46881307d3cb01aaf",
+      "size": 794714,
+      "type": "jar",
+      "version": "3.30.2-GA"
+    },
+    {
+      "artifact": "jakarta.activation-api",
+      "classifier": "",
+      "group": "jakarta.activation",
+      "sha256": "8b0a0f52fa8b05c5431921a063ed866efaa41dadf2e3a7ee3e1961f2b0d9645b",
+      "size": 44399,
+      "type": "jar",
+      "version": "1.2.1"
+    },
+    {
+      "artifact": "jetty-server",
+      "classifier": "",
+      "group": "org.eclipse.jetty",
+      "sha256": "608dbd3e1c4184374f02c70704e5d1c9daaded45e6a31d07824f40dac6083ba9",
+      "size": 749129,
+      "type": "jar",
+      "version": "9.4.58.v20250814"
+    },
+    {
+      "artifact": "javax.servlet-api",
+      "classifier": "",
+      "group": "javax.servlet",
+      "sha256": "af456b2dd41c4e82cf54f3e743bc678973d9fe35bd4d3071fa05c7e5333b8482",
+      "size": 95806,
+      "type": "jar",
+      "version": "3.1.0"
+    },
+    {
+      "artifact": "jetty-http",
+      "classifier": "",
+      "group": "org.eclipse.jetty",
+      "sha256": "8f49b8583fc8dbbfe3a0ba80a04c97df64ebabca2981b56ee403c989aba9d4da",
+      "size": 253267,
+      "type": "jar",
+      "version": "9.4.58.v20250814"
+    },
+    {
+      "artifact": "jetty-io",
+      "classifier": "",
+      "group": "org.eclipse.jetty",
+      "sha256": "f55b2cc7c05244fd7b1773e99979b740002b0186e45b8a688243d89c7006fe21",
+      "size": 184953,
+      "type": "jar",
+      "version": "9.4.58.v20250814"
+    },
+    {
+      "artifact": "jetty-util",
+      "classifier": "",
+      "group": "org.eclipse.jetty",
+      "sha256": "8d591679d318d20c8fb2b1e83900562b3c4571ff7a189696be700293e0204146",
+      "size": 595403,
+      "type": "jar",
+      "version": "9.4.58.v20250814"
+    },
+    {
+      "artifact": "jetty-servlet",
+      "classifier": "",
+      "group": "org.eclipse.jetty",
+      "sha256": "1c6bb17326147e642c8a41e4657b32bca5057c8958db4da770d09c0904aefcff",
+      "size": 147612,
+      "type": "jar",
+      "version": "9.4.58.v20250814"
+    },
+    {
+      "artifact": "jetty-security",
+      "classifier": "",
+      "group": "org.eclipse.jetty",
+      "sha256": "301548ebf008551a3a4312b04df0ea0468acc2780f863b83cc9cf0d668e62252",
+      "size": 119718,
+      "type": "jar",
+      "version": "9.4.58.v20250814"
+    },
+    {
+      "artifact": "jetty-webapp",
+      "classifier": "",
+      "group": "org.eclipse.jetty",
+      "sha256": "3f58ac238deb2218140ffa446661c1d1323752bc4b4ae01653d9500c3fca38aa",
+      "size": 141935,
+      "type": "jar",
+      "version": "9.4.58.v20250814"
+    },
+    {
+      "artifact": "jetty-xml",
+      "classifier": "",
+      "group": "org.eclipse.jetty",
+      "sha256": "2fc7f7364ec009fe2bbae574554994cef16c4230de170bd6be51ecd6f6bb95d3",
+      "size": 69507,
+      "type": "jar",
+      "version": "9.4.58.v20250814"
+    },
+    {
+      "artifact": "reload4j",
+      "classifier": "",
+      "group": "ch.qos.reload4j",
+      "sha256": "222f90d3e69541218ef6e70547749d693bd4c1846817e5bd7949b3e28950f99f",
+      "size": 332398,
+      "type": "jar",
+      "version": "1.2.22"
+    },
+    {
+      "artifact": "commons-configuration2",
+      "classifier": "",
+      "group": "org.apache.commons",
+      "sha256": "61ba5eaab8a17087042fe3d6811573bb85ccbdd6bd9d21ad464e6e20559dd1e8",
+      "size": 689129,
+      "type": "jar",
+      "version": "2.15.1"
+    },
+    {
+      "artifact": "commons-lang3",
+      "classifier": "",
+      "group": "org.apache.commons",
+      "sha256": "4eeeae8d20c078abb64b015ec158add383ac581571cddc45c68f0c9ae0230720",
+      "size": 702952,
+      "type": "jar",
+      "version": "3.18.0"
+    },
+    {
+      "artifact": "commons-text",
+      "classifier": "",
+      "group": "org.apache.commons",
+      "sha256": "121fce2282910c8f0c3ba793a5436b31beb710423cbe2d574a3fb7a73c508e92",
+      "size": 259876,
+      "type": "jar",
+      "version": "1.14.0"
+    },
+    {
+      "artifact": "slf4j-api",
+      "classifier": "",
+      "group": "org.slf4j",
+      "sha256": "d3ef575e3e4979678dc01bf1dcce51021493b4d11fb7f1be8ad982877c16a1c0",
+      "size": 41125,
+      "type": "jar",
+      "version": "1.7.36"
+    },
+    {
+      "artifact": "slf4j-reload4j",
+      "classifier": "",
+      "group": "org.slf4j",
+      "sha256": "ae6fdd5c9547896114d5ec7fa7503733b7d2890573d3886fb548b3119c4d3f67",
+      "size": 9824,
+      "type": "jar",
+      "version": "1.7.36"
+    },
+    {
+      "artifact": "avro",
+      "classifier": "",
+      "group": "org.apache.avro",
+      "sha256": "b3c55da4c58304f823f4a2161a308888b9e7b8bc1c7387a4fa3ca1cd48617f93",
+      "size": 652576,
+      "type": "jar",
+      "version": "1.11.5"
+    },
+    {
+      "artifact": "re2j",
+      "classifier": "",
+      "group": "com.google.re2j",
+      "sha256": "24ada84d1b5de584e3e84b06f0c7dd562cee6eafe8dea8083bd8eb123823bbe7",
+      "size": 128414,
+      "type": "jar",
+      "version": "1.1"
+    },
+    {
+      "artifact": "gson",
+      "classifier": "",
+      "group": "com.google.code.gson",
+      "sha256": "c96d60551331a196dac54b745aa642cd078ef89b6f267146b705f2c2cbef052d",
+      "size": 249277,
+      "type": "jar",
+      "version": "2.9.0"
+    },
+    {
+      "artifact": "hadoop-auth",
+      "classifier": "",
+      "group": "org.apache.hadoop",
+      "sha256": "dd3f8552262124fa13e8b16962d75dc84a6761a3356faf40505af480accc17ad",
+      "size": 114791,
+      "type": "jar",
+      "version": "3.5.0"
+    },
+    {
+      "artifact": "nimbus-jose-jwt",
+      "classifier": "",
+      "group": "com.nimbusds",
+      "sha256": "6f13f3480ddc53d820d276f582f54843cff1daf5c6e35e534947e9de7723b46b",
+      "size": 809605,
+      "type": "jar",
+      "version": "10.4"
+    },
+    {
+      "artifact": "curator-framework",
+      "classifier": "",
+      "group": "org.apache.curator",
+      "sha256": "9a6b6ec713bd4145fa6912f2197a1f642806c10d4ba87561dfec551f6eaec4f1",
+      "size": 336384,
+      "type": "jar",
+      "version": "5.2.0"
+    },
+    {
+      "artifact": "kerb-util",
+      "classifier": "",
+      "group": "org.apache.kerby",
+      "sha256": "b8c4ed7f1bac6aadadf0307b49f41e05dca5c61dbe2b1772df37e7225d9f08fe",
+      "size": 36421,
+      "type": "jar",
+      "version": "2.1.2"
+    },
+    {
+      "artifact": "kerb-crypto",
+      "classifier": "",
+      "group": "org.apache.kerby",
+      "sha256": "1acbbf33346c644535e19db9b1f0fd8fa043aab6ee1b73eeb0ad25b5c95dc6c8",
+      "size": 115742,
+      "type": "jar",
+      "version": "2.1.2"
+    },
+    {
+      "artifact": "jsch",
+      "classifier": "",
+      "group": "com.jcraft",
+      "sha256": "d492b15a6d2ea3f1cc39c422c953c40c12289073dbe8360d98c0f6f9ec74fc44",
+      "size": 282591,
+      "type": "jar",
+      "version": "0.1.55"
+    },
+    {
+      "artifact": "curator-client",
+      "classifier": "",
+      "group": "org.apache.curator",
+      "sha256": "345ec409bc026e114e8fd471a9273f631a3a494f0e091b092c1ac94499ddee4f",
+      "size": 2983237,
+      "type": "jar",
+      "version": "5.2.0"
+    },
+    {
+      "artifact": "curator-recipes",
+      "classifier": "",
+      "group": "org.apache.curator",
+      "sha256": "45e755b95763c9db8b8c465098ec72a33ee7c82132145a32dc9844d699c5b7f3",
+      "size": 315569,
+      "type": "jar",
+      "version": "5.2.0"
+    },
+    {
+      "artifact": "jsr305",
+      "classifier": "",
+      "group": "com.google.code.findbugs",
+      "sha256": "766ad2a0783f2687962c8ad74ceecc38a28b9f72a2d085ee438b7813e928d0c7",
+      "size": 19936,
+      "type": "jar",
+      "version": "3.0.2"
+    },
+    {
+      "artifact": "zookeeper",
+      "classifier": "",
+      "group": "org.apache.zookeeper",
+      "sha256": "a00943a87b9c83379267ebda487be1ddb83e9997a03e59f9199338a033b71ed7",
+      "size": 1330347,
+      "type": "jar",
+      "version": "3.8.6"
+    },
+    {
+      "artifact": "zookeeper-jute",
+      "classifier": "",
+      "group": "org.apache.zookeeper",
+      "sha256": "640777a745364b617d05a0309cd2edc5d725d76f9d93e2b29f07561da9575efb",
+      "size": 254983,
+      "type": "jar",
+      "version": "3.8.6"
+    },
+    {
+      "artifact": "audience-annotations",
+      "classifier": "",
+      "group": "org.apache.yetus",
+      "sha256": "ffb101fc066360ff3c77457c927fd7967fb096a6ee9e046ab7071447d8208efc",
+      "size": 20891,
+      "type": "jar",
+      "version": "0.12.0"
+    },
+    {
+      "artifact": "netty-handler",
+      "classifier": "",
+      "group": "io.netty",
+      "sha256": "ff85f00781b956d618b20f33da076c839a5e43e0084108b07bab0c19737168ec",
+      "size": 590894,
+      "type": "jar",
+      "version": "4.1.139.Final"
+    },
+    {
+      "artifact": "netty-common",
+      "classifier": "",
+      "group": "io.netty",
+      "sha256": "50372d86e27b4b1cf0810d75eb534795966a199049a1e85a0c41bbd2bb97f519",
+      "size": 740560,
+      "type": "jar",
+      "version": "4.1.139.Final"
+    },
+    {
+      "artifact": "netty-resolver",
+      "classifier": "",
+      "group": "io.netty",
+      "sha256": "562a5388c88325b7d6ed05e8168736871ce0e64ab01e0ce52ea7710760b9b457",
+      "size": 37907,
+      "type": "jar",
+      "version": "4.1.139.Final"
+    },
+    {
+      "artifact": "netty-buffer",
+      "classifier": "",
+      "group": "io.netty",
+      "sha256": "48d805b74e56dc5f92b1f288858185abc86db16d293e8da183542df6243427f2",
+      "size": 365480,
+      "type": "jar",
+      "version": "4.1.139.Final"
+    },
+    {
+      "artifact": "netty-transport",
+      "classifier": "",
+      "group": "io.netty",
+      "sha256": "be7bff8b6274e7fae12bbad3c565777539e9b069517e0b3acc06d9ac2cd6ec05",
+      "size": 524190,
+      "type": "jar",
+      "version": "4.1.139.Final"
+    },
+    {
+      "artifact": "netty-transport-native-unix-common",
+      "classifier": "",
+      "group": "io.netty",
+      "sha256": "8e660ac8a485fc8d8b47d87d04ea33d19902dc6fc5a113e9353b762188b3f333",
+      "size": 44326,
+      "type": "jar",
+      "version": "4.1.139.Final"
+    },
+    {
+      "artifact": "netty-codec",
+      "classifier": "",
+      "group": "io.netty",
+      "sha256": "ad43f07219dfb757a87b9c2b4765002be478c5401971379954e3d182f285fe6b",
+      "size": 363020,
+      "type": "jar",
+      "version": "4.1.139.Final"
+    },
+    {
+      "artifact": "netty-transport-native-epoll",
+      "classifier": "",
+      "group": "io.netty",
+      "sha256": "f094d849f39ad2a0ffe5c05867d464a2601657185cb795ff98d1e0d8135a1400",
+      "size": 6408,
+      "type": "jar",
+      "version": "4.1.139.Final"
+    },
+    {
+      "artifact": "netty-transport-classes-epoll",
+      "classifier": "",
+      "group": "io.netty",
+      "sha256": "99ea06d67e3e2792cc93521b686223c78da2561bfdf98533ebb29fed1729cce4",
+      "size": 147765,
+      "type": "jar",
+      "version": "4.1.139.Final"
+    },
+    {
+      "artifact": "metrics-core",
+      "classifier": "",
+      "group": "io.dropwizard.metrics",
+      "sha256": "a083e3f3bdf4173d7065cdd4521964394a840d586bf8653676203d18354a6d2c",
+      "size": 136314,
+      "type": "jar",
+      "version": "3.2.4"
+    },
+    {
+      "artifact": "commons-compress",
+      "classifier": "",
+      "group": "org.apache.commons",
+      "sha256": "27bb5d40f37c3bb7205b4a0540247df057715e9f6cbbd97d626ab8b50318bb04",
+      "size": 1079377,
+      "type": "jar",
+      "version": "1.26.1"
+    },
+    {
+      "artifact": "bcprov-jdk18on",
+      "classifier": "",
+      "group": "org.bouncycastle",
+      "sha256": "2af190b300cbb0b35e248ccf5f4a06b6072030aeb3da7a98ec73abe5b4cb371f",
+      "size": 7224011,
+      "type": "jar",
+      "version": "1.86"
+    },
+    {
+      "artifact": "kerb-core",
+      "classifier": "",
+      "group": "org.apache.kerby",
+      "sha256": "7eca4bad352f15e9e0cb28636138ed41a917c640c25dfe178c5bbb3e9114ef9a",
+      "size": 226784,
+      "type": "jar",
+      "version": "2.1.2"
+    },
+    {
+      "artifact": "kerby-pkix",
+      "classifier": "",
+      "group": "org.apache.kerby",
+      "sha256": "cd165285f84a1baef1dca4a21a27ffe88b5ff35d86f83c81e06d45d752ecb844",
+      "size": 204665,
+      "type": "jar",
+      "version": "2.1.2"
+    },
+    {
+      "artifact": "kerby-asn1",
+      "classifier": "",
+      "group": "org.apache.kerby",
+      "sha256": "aece8c08d4decff1bcf7cd06c9d43f30ec3bfc01ad8d57428443e9f037e06896",
+      "size": 104692,
+      "type": "jar",
+      "version": "2.1.2"
+    },
+    {
+      "artifact": "kerby-util",
+      "classifier": "",
+      "group": "org.apache.kerby",
+      "sha256": "05ff4b1c6864b2660e9451a22dd58010c2a29dd1b296c41d0c3a82078db9c4b9",
+      "size": 40840,
+      "type": "jar",
+      "version": "2.1.2"
+    },
+    {
+      "artifact": "jackson-databind",
+      "classifier": "",
+      "group": "com.fasterxml.jackson.core",
+      "sha256": "02b62d64819bc1dbad7f1195c805f950ab3dceef1a479d0e9c55d99b7a04c255",
+      "size": 1670082,
+      "type": "jar",
+      "version": "2.18.12"
+    },
+    {
+      "artifact": "stax2-api",
+      "classifier": "",
+      "group": "org.codehaus.woodstox",
+      "sha256": "678567e48b51a42c65c699f266539ad3d676d4b1a5b0ad7d89ece8b9d5772579",
+      "size": 195909,
+      "type": "jar",
+      "version": "4.2.1"
+    },
+    {
+      "artifact": "woodstox-core",
+      "classifier": "",
+      "group": "com.fasterxml.woodstox",
+      "sha256": "dbb958cb89f1d45238b061e146249494ff887f5f42b671a3956e98956e0d5c53",
+      "size": 522679,
+      "type": "jar",
+      "version": "5.4.0"
+    },
+    {
+      "artifact": "dnsjava",
+      "classifier": "",
+      "group": "dnsjava",
+      "sha256": "f9def222ef5c0406216663ca45ca0950781541e22558b217aa779f36fbd24ab5",
+      "size": 583996,
+      "type": "jar",
+      "version": "3.6.1"
+    },
+    {
+      "artifact": "snappy-java",
+      "classifier": "",
+      "group": "org.xerial.snappy",
+      "sha256": "55b30c94e5c4cc2d4b6976916098d0678a8a6cc7427fa8c875621bd94e731ac8",
+      "size": 2112099,
+      "type": "jar",
+      "version": "1.1.10.4"
+    },
+    {
+      "artifact": "jaxb-runtime",
+      "classifier": "",
+      "group": "org.glassfish.jaxb",
+      "sha256": "ba88e5bde7c0d878c3e1f2ec2fcabaf51d201eaf93b3bb9cfecfc1f11b2304d4",
+      "size": 1019097,
+      "type": "jar",
+      "version": "2.3.9"
+    },
+    {
+      "artifact": "txw2",
+      "classifier": "",
+      "group": "org.glassfish.jaxb",
+      "sha256": "973018b87af911ecf6e6d861dd0d6a477e4d8ae6a883ec5d073d3df1330b87f0",
+      "size": 72007,
+      "type": "jar",
+      "version": "2.3.9"
+    },
+    {
+      "artifact": "istack-commons-runtime",
+      "classifier": "",
+      "group": "com.sun.istack",
+      "sha256": "27d85fc134c9271d5c79d3300fc4669668f017e72409727c428f54f2417f04cd",
+      "size": 29807,
+      "type": "jar",
+      "version": "3.0.12"
+    },
+    {
+      "artifact": "jakarta.activation",
+      "classifier": "",
+      "group": "com.sun.activation",
+      "sha256": "02156773e4ae9d048d14a56ad35d644bee9f1052a791d072df3ded3c656e6e1a",
+      "size": 68453,
+      "type": "jar",
+      "version": "1.2.2"
+    },
+    {
+      "artifact": "hadoop-hdfs-client",
+      "classifier": "",
+      "group": "org.apache.hadoop",
+      "sha256": "cf51412f4019259e3bbeb6fcdb23cfd0afd4d38704b82ef14b6dfcc0b1855880",
+      "size": 5525968,
+      "type": "jar",
+      "version": "3.5.0"
+    },
+    {
+      "artifact": "httpcore",
+      "classifier": "",
+      "group": "org.apache.httpcomponents",
+      "sha256": "e06e89d40943245fcfa39ec537cdbfce3762aecde8f9c597780d2b00c2b43424",
+      "size": 328593,
+      "type": "jar",
+      "version": "4.4.13"
+    },
+    {
+      "artifact": "jackson-annotations",
+      "classifier": "",
+      "group": "com.fasterxml.jackson.core",
+      "sha256": "143b94dd8caa3d5eb4417672f7d00472cec33626cbcb0fd35f0616de0dbccabf",
+      "size": 78414,
+      "type": "jar",
+      "version": "2.18.12"
+    },
+    {
+      "artifact": "hadoop-hdfs",
+      "classifier": "",
+      "group": "org.apache.hadoop",
+      "sha256": "1267508c98bc560e52b62785417c1618b1b1ce9f8552d0fbef823f26b9b6b651",
+      "size": 6459571,
+      "type": "jar",
+      "version": "3.5.0"
+    },
+    {
+      "artifact": "jetty-util-ajax",
+      "classifier": "",
+      "group": "org.eclipse.jetty",
+      "sha256": "185430a2eafcdffba18204dbf51cb18436ab4ca09b74d97c1dc13abbadd9704b",
+      "size": 67215,
+      "type": "jar",
+      "version": "9.4.58.v20250814"
+    },
+    {
+      "artifact": "jersey-common",
+      "classifier": "",
+      "group": "org.glassfish.jersey.core",
+      "sha256": "a2e2aae5e63c4bb55f47508702ebecc3598802e758de75d92c7bda985bc6415f",
+      "size": 1267957,
+      "type": "jar",
+      "version": "2.46"
+    },
+    {
+      "artifact": "osgi-resource-locator",
+      "classifier": "",
+      "group": "org.glassfish.hk2",
+      "sha256": "aab5d7849f7cfcda2cc7c541ba1bd365151d42276f151c825387245dfde3dd74",
+      "size": 19479,
+      "type": "jar",
+      "version": "1.0.3"
+    },
+    {
+      "artifact": "jakarta.xml.bind-api",
+      "classifier": "",
+      "group": "jakarta.xml.bind",
+      "sha256": "c04539f472e9a6dd0c7685ea82d677282269ab8e7baca2e14500e381e0c6cec5",
+      "size": 115638,
+      "type": "jar",
+      "version": "2.3.3"
+    },
+    {
+      "artifact": "commons-daemon",
+      "classifier": "",
+      "group": "commons-daemon",
+      "sha256": "fd63b583fd3e8baeae22efacbd5a4f91c1fd97f56248e62e2615efa7b81daeaa",
+      "size": 24239,
+      "type": "jar",
+      "version": "1.0.13"
+    },
+    {
+      "artifact": "jakarta.servlet-api",
+      "classifier": "",
+      "group": "jakarta.servlet",
+      "sha256": "586e27706c21258f5882f43be06904f49b02db9ac54e345d393fe4a32494d127",
+      "size": 82973,
+      "type": "jar",
+      "version": "4.0.4"
+    },
+    {
+      "artifact": "netty-all",
+      "classifier": "",
+      "group": "io.netty",
+      "sha256": "3b920191507ec64216ea2830bf0e0f8fdfac8ba3a0f4f21e4b73bbfafceeac3e",
+      "size": 4537,
+      "type": "jar",
+      "version": "4.1.139.Final"
+    },
+    {
+      "artifact": "netty-codec-dns",
+      "classifier": "",
+      "group": "io.netty",
+      "sha256": "e044715cfd72e4717a06e41f4614dea0246ac20059d3aa72f36f16be20bc623c",
+      "size": 69369,
+      "type": "jar",
+      "version": "4.1.139.Final"
+    },
+    {
+      "artifact": "netty-codec-haproxy",
+      "classifier": "",
+      "group": "io.netty",
+      "sha256": "3109e099f34523799479c70b12b7d3731b9bb891acc8654a145eefd189a63472",
+      "size": 38857,
+      "type": "jar",
+      "version": "4.1.139.Final"
+    },
+    {
+      "artifact": "netty-codec-http",
+      "classifier": "",
+      "group": "io.netty",
+      "sha256": "627cfdac2cd5dbd8a33af85977fb81fa6b46f0c00389ab4c8677a415f0f85480",
+      "size": 696776,
+      "type": "jar",
+      "version": "4.1.139.Final"
+    },
+    {
+      "artifact": "netty-codec-http2",
+      "classifier": "",
+      "group": "io.netty",
+      "sha256": "4cb8bc95386112f3a9da935272781d577d9e70ca4c56cf0eef603a45e9526e02",
+      "size": 514136,
+      "type": "jar",
+      "version": "4.1.139.Final"
+    },
+    {
+      "artifact": "netty-codec-memcache",
+      "classifier": "",
+      "group": "io.netty",
+      "sha256": "067ea3dd05b514b89a5682f680879fd29220e47d9cd9863e8f88297c4fafb534",
+      "size": 45128,
+      "type": "jar",
+      "version": "4.1.139.Final"
+    },
+    {
+      "artifact": "netty-codec-mqtt",
+      "classifier": "",
+      "group": "io.netty",
+      "sha256": "ece1a417c0109181d0167dfe752e19cf22974546cb938a6cac1dba9996a0af93",
+      "size": 115823,
+      "type": "jar",
+      "version": "4.1.139.Final"
+    },
+    {
+      "artifact": "netty-codec-redis",
+      "classifier": "",
+      "group": "io.netty",
+      "sha256": "70dbbf78531e2579d1901870e2ad65b503cf6b6ebfb5cf7a49ebfc9deb19f40d",
+      "size": 47707,
+      "type": "jar",
+      "version": "4.1.139.Final"
+    },
+    {
+      "artifact": "netty-codec-smtp",
+      "classifier": "",
+      "group": "io.netty",
+      "sha256": "1592a82936a75f39eb201a260cfb0288f8e6e989b066554e4da78d944c7d3fff",
+      "size": 22714,
+      "type": "jar",
+      "version": "4.1.139.Final"
+    },
+    {
+      "artifact": "netty-codec-socks",
+      "classifier": "",
+      "group": "io.netty",
+      "sha256": "94d6800d5f717b40db5d0bf42a77b448d472cd9033735e69e7b18311bd902f23",
+      "size": 121927,
+      "type": "jar",
+      "version": "4.1.139.Final"
+    },
+    {
+      "artifact": "netty-codec-stomp",
+      "classifier": "",
+      "group": "io.netty",
+      "sha256": "2ace2c88440320744d4abb056ac4b50a2dc36972c9086bc23b914c28ed47241e",
+      "size": 35986,
+      "type": "jar",
+      "version": "4.1.139.Final"
+    },
+    {
+      "artifact": "netty-codec-xml",
+      "classifier": "",
+      "group": "io.netty",
+      "sha256": "9ea614bbd8647a7d79f16042f2543e703bcd4a16505f28f83d7db34b973e859d",
+      "size": 20051,
+      "type": "jar",
+      "version": "4.1.139.Final"
+    },
+    {
+      "artifact": "netty-handler-proxy",
+      "classifier": "",
+      "group": "io.netty",
+      "sha256": "9c92c2407b6fd3c120ab5efb900475a1fe40ce099703d2500c8679d3c75a90cb",
+      "size": 25962,
+      "type": "jar",
+      "version": "4.1.139.Final"
+    },
+    {
+      "artifact": "netty-handler-ssl-ocsp",
+      "classifier": "",
+      "group": "io.netty",
+      "sha256": "b3b1d44dfdf55e7c42172e02e35dfec10f31a4005565c24478f1c066df6b0d22",
+      "size": 34819,
+      "type": "jar",
+      "version": "4.1.139.Final"
+    },
+    {
+      "artifact": "netty-resolver-dns",
+      "classifier": "",
+      "group": "io.netty",
+      "sha256": "15feeffd0cbc2987ba35b798ca5b05fa1bc10cb880b8aa13e9bd81af3d483525",
+      "size": 188939,
+      "type": "jar",
+      "version": "4.1.139.Final"
+    },
+    {
+      "artifact": "netty-transport-rxtx",
+      "classifier": "",
+      "group": "io.netty",
+      "sha256": "4ee063d507ad007d5e6e02079ee70d253ada95e805dd9dcbcf48b8e4b3d0ec43",
+      "size": 18239,
+      "type": "jar",
+      "version": "4.1.139.Final"
+    },
+    {
+      "artifact": "netty-transport-sctp",
+      "classifier": "",
+      "group": "io.netty",
+      "sha256": "792f8d4f901427602099f7c99cba21106859c61b888febbdc1f429921edce524",
+      "size": 52094,
+      "type": "jar",
+      "version": "4.1.139.Final"
+    },
+    {
+      "artifact": "netty-transport-udt",
+      "classifier": "",
+      "group": "io.netty",
+      "sha256": "2bcb8b157964489ce220f0eb069ba1aed20839c84884ec111567af4e1700b596",
+      "size": 32188,
+      "type": "jar",
+      "version": "4.1.139.Final"
+    },
+    {
+      "artifact": "netty-transport-classes-kqueue",
+      "classifier": "",
+      "group": "io.netty",
+      "sha256": "c836d6be2db641ba4fcccc53e06984e1d2aeee670dcfb232d1f32db9817a27a8",
+      "size": 112740,
+      "type": "jar",
+      "version": "4.1.139.Final"
+    },
+    {
+      "artifact": "netty-resolver-dns-classes-macos",
+      "classifier": "",
+      "group": "io.netty",
+      "sha256": "b630d53736cfd1d467f6ccf43d29610e0e399b64e7c1ded717e94256f335e233",
+      "size": 9210,
+      "type": "jar",
+      "version": "4.1.139.Final"
+    },
+    {
+      "artifact": "netty-transport-native-epoll",
+      "classifier": "linux-x86_64",
+      "group": "io.netty",
+      "sha256": "696fff4fb645d64fec6bc54fae27d9b643d64814e9be3bf42cbd94a608e2bcd0",
+      "size": 41362,
+      "type": "jar",
+      "version": "4.1.139.Final"
+    },
+    {
+      "artifact": "netty-transport-native-epoll",
+      "classifier": "linux-aarch_64",
+      "group": "io.netty",
+      "sha256": "039c9ce3bef089dfde34987cac3c928466cb71d54d3df79c0068fd17ee166e51",
+      "size": 42834,
+      "type": "jar",
+      "version": "4.1.139.Final"
+    },
+    {
+      "artifact": "netty-transport-native-epoll",
+      "classifier": "linux-riscv64",
+      "group": "io.netty",
+      "sha256": "e8306dc1c7ff03124c012fadfeadbe980d0c5def07b1f148080b17b9cd2a51e0",
+      "size": 37162,
+      "type": "jar",
+      "version": "4.1.139.Final"
+    },
+    {
+      "artifact": "netty-transport-native-kqueue",
+      "classifier": "osx-x86_64",
+      "group": "io.netty",
+      "sha256": "0bf978520412145046077a8d6dba0fda887c9d0a09f8cc12e3fbc806daeeaef2",
+      "size": 27757,
+      "type": "jar",
+      "version": "4.1.139.Final"
+    },
+    {
+      "artifact": "netty-transport-native-kqueue",
+      "classifier": "osx-aarch_64",
+      "group": "io.netty",
+      "sha256": "8190865156b56e81b7e7aba5cdbcef4a5497ef6112be8a3e4a4185620b267438",
+      "size": 28545,
+      "type": "jar",
+      "version": "4.1.139.Final"
+    },
+    {
+      "artifact": "netty-resolver-dns-native-macos",
+      "classifier": "osx-x86_64",
+      "group": "io.netty",
+      "sha256": "475bb4fe22fbb93473f53420bb3c6d9fe412e2bd011f4bf1493614bca96e94d2",
+      "size": 19919,
+      "type": "jar",
+      "version": "4.1.139.Final"
+    },
+    {
+      "artifact": "netty-resolver-dns-native-macos",
+      "classifier": "osx-aarch_64",
+      "group": "io.netty",
+      "sha256": "6fc3ce2d6ead36ddf26773f67aa5fb850880d505c0396ce843af88a044fc6f42",
+      "size": 20274,
+      "type": "jar",
+      "version": "4.1.139.Final"
+    },
+    {
+      "artifact": "leveldbjni-all",
+      "classifier": "",
+      "group": "org.fusesource.leveldbjni",
+      "sha256": "c297213b0e6f9392305952753f3099a4c02e70b3656266fe01867e7b6c160ffe",
+      "size": 1045744,
+      "type": "jar",
+      "version": "1.8"
+    },
+    {
+      "artifact": "jackson-core",
+      "classifier": "",
+      "group": "com.fasterxml.jackson.core",
+      "sha256": "367afb4be3efa8a1636200b5faefb67d7d0a1b730f64ec55a971229cb673bc23",
+      "size": 588750,
+      "type": "jar",
+      "version": "2.18.12"
+    },
+    {
+      "artifact": "kerb-simplekdc",
+      "classifier": "",
+      "group": "org.apache.kerby",
+      "sha256": "82d97d6ecf363afe8bad8b53beb79bf35ca6165127b109993e9edee788a27451",
+      "size": 20424,
+      "type": "jar",
+      "version": "2.1.2"
+    },
+    {
+      "artifact": "kerb-client",
+      "classifier": "",
+      "group": "org.apache.kerby",
+      "sha256": "5d1f5c38cff9b4094f84e84cf868fe45b578f94c77abd20fe73f857d84c4b8c0",
+      "size": 116568,
+      "type": "jar",
+      "version": "2.1.2"
+    },
+    {
+      "artifact": "kerby-config",
+      "classifier": "",
+      "group": "org.apache.kerby",
+      "sha256": "c46c030b082aa13d2e7ba3c837caf24d015e4fad675bb163c00d72672a5822da",
+      "size": 30261,
+      "type": "jar",
+      "version": "2.1.2"
+    },
+    {
+      "artifact": "kerb-common",
+      "classifier": "",
+      "group": "org.apache.kerby",
+      "sha256": "d3bf1364e7caa508d8d3abdae70259b2ad255b9edf38879e57899307f84e48f0",
+      "size": 71865,
+      "type": "jar",
+      "version": "2.1.2"
+    },
+    {
+      "artifact": "token-provider",
+      "classifier": "",
+      "group": "org.apache.kerby",
+      "sha256": "97ab492207fbc9aa21ac3bceccdafdbb566ad1456ad6ec2d9f3ab0b39c24d640",
+      "size": 19529,
+      "type": "jar",
+      "version": "2.1.2"
+    },
+    {
+      "artifact": "kerb-admin",
+      "classifier": "",
+      "group": "org.apache.kerby",
+      "sha256": "e190c812e7846b6413a940f64dead36b7b336ad6c99a19765a6af5e861e7dff7",
+      "size": 102172,
+      "type": "jar",
+      "version": "2.1.2"
+    },
+    {
+      "artifact": "kerb-server",
+      "classifier": "",
+      "group": "org.apache.kerby",
+      "sha256": "9e388fa3246a964ad4ae42ee9d6271fa86040c9f6b60552c01f76de09136148b",
+      "size": 86674,
+      "type": "jar",
+      "version": "2.1.2"
+    },
+    {
+      "artifact": "kerb-identity",
+      "classifier": "",
+      "group": "org.apache.kerby",
+      "sha256": "ac26c413abaf3657868e4fcd355ef23737b7722f8f2451819cc84fde2342a30e",
+      "size": 17888,
+      "type": "jar",
+      "version": "2.1.2"
+    },
+    {
+      "artifact": "kerby-xdr",
+      "classifier": "",
+      "group": "org.apache.kerby",
+      "sha256": "9dabb5c0e53ac9e60839a23fa9b15f27c8dd23b36ee305f0a09757141d450be5",
+      "size": 31024,
+      "type": "jar",
+      "version": "2.1.2"
+    },
+    {
+      "artifact": "jline",
+      "classifier": "",
+      "group": "org.jline",
+      "sha256": "bbc6c97167105a0aba2de65513c7ca4ca8fb78c0cb2875bde44ff15101dc4efa",
+      "size": 1505052,
+      "type": "jar",
+      "version": "3.30.6"
+    },
+    {
+      "artifact": "xnio-api",
+      "classifier": "",
+      "group": "org.jboss.xnio",
+      "sha256": "ff029182888438b0cf1decb8fb34566b29725ff5184b512e4f5d1bc1ecc8423d",
+      "size": 588695,
+      "type": "jar",
+      "version": "3.8.17.Final"
+    },
+    {
+      "artifact": "wildfly-common",
+      "classifier": "",
+      "group": "org.wildfly.common",
+      "sha256": "9fda3caf8bd528dec56ebc70daf78f5a9ff5d0bfcea8b3e41ab7ae838747e46a",
+      "size": 284642,
+      "type": "jar",
+      "version": "1.5.4.Final"
+    },
+    {
+      "artifact": "wildfly-client-config",
+      "classifier": "",
+      "group": "org.wildfly.client",
+      "sha256": "80a4e963ce94ebb043ecb0f2c0e77d327f23dc87d81350b863752eedfa2c3bb3",
+      "size": 47396,
+      "type": "jar",
+      "version": "1.0.1.Final"
+    },
+    {
+      "artifact": "jboss-logging",
+      "classifier": "",
+      "group": "org.jboss.logging",
+      "sha256": "9f7d8b884370763b131bf48a0fc91edec89ad80e0e40c47658098a686a905bb2",
+      "size": 66023,
+      "type": "jar",
+      "version": "3.3.1.Final"
+    },
+    {
+      "artifact": "jboss-threads",
+      "classifier": "",
+      "group": "org.jboss.threads",
+      "sha256": "357e6be0f3e4ca28fa96b780c0ad1735176319215261da176ca6fa438aaaa206",
+      "size": 167834,
+      "type": "jar",
+      "version": "2.3.6.Final"
+    }
+  ],
+  "normalized_sha256": "dbed8ddb36a8286af785cc4eace07f335b033cbb0b37f02683db901c6066e14c",
+  "schema_version": 1
+}

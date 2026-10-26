@@ -12,6 +12,24 @@ runs one unprivileged network-none container. It uses the existing Kerberos
 1.75.2. No additional runtime dependency is introduced. Dependency pinning is
 integrity evidence; the existing lock still has advisory work pending.
 
+The default `kerberos` profile preserves that original graph and workflow.
+The separate remediation workflow selects `--profile kerberos-remediation`,
+using `runtime-classpath-remediation.json` and
+`hdfs-discovery/artifact-lock-kerberos-remediation.json`. Its 142 JARs total
+73,004,295 bytes, with ordered runtime SHA256
+`dbed8ddb36a8286af785cc4eace07f335b033cbb0b37f02683db901c6066e14c`.
+The supervisor and owned downloader both require the same closed profile and
+exact runtime/lock bytes; no custom paths or fallback graph are accepted.
+Receipts identify the selected profile, runtime file, ordered rows and lock.
+
+The remediation graph has a verified dependency-only offline replay. That
+does not establish RPC compatibility: its separate exact-head native result
+must pass every control and cleanup check below. Old-graph successes cannot
+qualify this profile. Four Jetty advisory matches and incomplete dependency
+semantics remain; all security, provider, application, vendor and ledger
+acceptance flags remain false. The Java probe and all service/resource bounds
+are identical between the two profiles.
+
 The fixed loopback services are NameNode RPC `19000`, NameNode HTTP/SPNEGO
 scaffolding `19003`, synthetic TCP KDC `19006`, and owned relay `19007`. All
 three rclone operations use the same relay endpoint and reader. The HTTP
