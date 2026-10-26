@@ -33,15 +33,21 @@ DEFAULT = object()
 CANARY = "PRIVATE_SYNTHETIC_CANARY"
 
 
-def profile_receipt(scope):
-    return dict(schema_version=1, scope=scope, candidate_profile="kerberos", lock_sha256=LOCK_SHA,
-                counts=dict(COUNTS), success=True, preparation_only=True, advisory_work_pending=True,
+def profile_receipt(scope, profile="kerberos"):
+    remediation = profile == H.D.REMEDIATION_PROFILE
+    return dict(schema_version=1, scope=scope, candidate_profile=profile,
+                lock_sha256=H.D.offline_cache.REMEDIATION_LOCK_SHA256 if remediation else LOCK_SHA,
+                counts=dict(artifacts=643, poms=445, selected_runtime_jars=142, other_jars=56,
+                            artifact_bytes=97948330) if remediation else dict(COUNTS),
+                success=True, preparation_only=True, advisory_work_pending=True,
                 **FALSE)
 
 
-def seed_receipt():
-    return dict(profile_receipt("hdfs_offline_cache_preparation"), sha256="1" * 64, size=20480,
-                seed_regular_files=1737, sha1_files=645, repository_tracking_files=447,
+def seed_receipt(profile="kerberos"):
+    remediation = profile == H.D.REMEDIATION_PROFILE
+    return dict(profile_receipt("hdfs_offline_cache_preparation", profile), sha256="1" * 64, size=20480,
+                seed_regular_files=1731 if remediation else 1737, sha1_files=643 if remediation else 645,
+                repository_tracking_files=445 if remediation else 447,
                 metadata_reconstructed=True, original_auxiliary_copied=False)
 
 
@@ -56,24 +62,24 @@ def json_sha(value):
                                     ensure_ascii=True, allow_nan=False).encode("ascii")).hexdigest()
 
 
-def comparison_receipt():
+def comparison_receipt(profile="kerberos"):
     value=manifest()
-    return dict(profile_receipt("hdfs_offline_manifest_comparison"),
+    return dict(profile_receipt("hdfs_offline_manifest_comparison", profile),
                 artifact_runtime_graph_match=True, auxiliary_cache_identity_claimed=False,
                 runtime_classpath_sha256="2" * 64,
                 graph_outputs_sha256=json_sha(value["graph_outputs"]),
                 dependency_semantics_sha256=json_sha(value["dependency_semantics"]))
 
 
-def discovery(*, offline=False, prepare=False):
-    seed=seed_receipt() if offline else None
+def discovery(*, offline=False, prepare=False, profile="kerberos"):
+    seed=seed_receipt(profile) if offline else None
     return dict(success=True, errors=[], mode="offline" if offline else "online", ledger_eligible=False,
                 daemon_accepted=False, offline_reproduced=False,
-                cache_preparation=seed_receipt() if prepare else None,
-                inputs={"candidate_profile": "kerberos", "candidate_sha256": dict(CANDIDATE),
+                cache_preparation=seed_receipt(profile) if prepare else None,
+                inputs={"candidate_profile": profile, "candidate_sha256": dict(CANDIDATE),
                         "seed_cache": seed, "supervisor_sha256": "8" * 64,
                         "graph_export_sha256": "a" * 64, "cache_source_sha256": "b" * 64,
-                        "cache_lock_sha256": LOCK_SHA,
+                        "cache_lock_sha256": H.D.offline_cache.lock_sha256(profile),
                         "maven": {"version": "3.9.16", "archive_sha256": "c" * 64,
                                   "archive_sha512": "d" * 128},
                         "jdk": {"manifest": "synthetic-jdk@sha256:" + "e" * 64,
@@ -132,14 +138,12 @@ class HostedKerberosTests(unittest.TestCase):
         events = []
         metadata = FakeLease("metadata", events, self.root, metadata_failure)
         bootstrap = FakeLease("bootstrap", events, self.root, bootstrap_failure)
-        chosen = discovery(prepare=mode == "repeat") if result is None else result
+        chosen = discovery(prepare=mode == "repeat", profile=profile) if result is None else result
         selected_sources = dict(SOURCES)
         if profile == H.D.REMEDIATION_PROFILE:
             selected_sources.pop("artifact-lock-kerberos.json")
-            if result is None:
-                chosen["inputs"]["candidate_profile"] = profile
-                chosen["inputs"]["cache_lock_sha256"] = None
-        chosen_offline = discovery(offline=True) if offline_result is None else offline_result
+            selected_sources["artifact-lock-kerberos-remediation.json"] = H.D.offline_cache.REMEDIATION_LOCK_SHA256
+        chosen_offline = discovery(offline=True, profile=profile) if offline_result is None else offline_result
         discovery_calls = 0
         candidate_calls = source_calls = 0
         def candidate_binding(candidate, actual_profile="kerberos"):
@@ -190,11 +194,11 @@ class HostedKerberosTests(unittest.TestCase):
             return copy.deepcopy(chosen_offline if offline else chosen)
         def compare(*args, **kwargs):
             events.append("compare")
-            self.assertEqual(kwargs, {"profile": "kerberos"})
+            self.assertEqual(kwargs, {"profile": profile})
             self.assertEqual(args, (chosen["manifest"], chosen_offline["manifest"]))
             if comparison_failure:
                 raise comparison_failure
-            return copy.deepcopy(comparison_receipt() if comparison is DEFAULT else comparison)
+            return copy.deepcopy(comparison_receipt(profile) if comparison is DEFAULT else comparison)
         with contextlib.ExitStack() as stack:
             stack.enter_context(patch.object(H.D, "hosted_guard", side_effect=guard_error))
             stack.enter_context(patch.object(H, "candidate_binding", side_effect=candidate_binding))
