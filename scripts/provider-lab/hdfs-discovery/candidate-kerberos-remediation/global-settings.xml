@@ -1,0 +1,3 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Pass explicitly with -gs; never inherit the runner's global settings. -->
+<settings xmlns="http://maven.apache.org/SETTINGS/1.2.0"/>
