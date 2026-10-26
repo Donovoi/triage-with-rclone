@@ -43,7 +43,7 @@ KERBEROS_INPUT_HASHES = {
 REMEDIATION_PROFILE = "kerberos-remediation"
 REMEDIATION_INPUT_HASHES = {
     "global-settings.xml": "aeb786c97c2a0103b71c04ab1b29508d7ec1c402a9d36e22301407b23670edf2",
-    "pom.xml": "c6d407169f2700ec59d298e26e9e9367cc31d2372fbbdc4b3852f7cd7b037eae",
+    "pom.xml": "834df5c2b94de5b7d99ed70807c7d31c6fdbd6272a9f75672f59865da049c0e0",
     "settings.xml": "73c88f4d9660338f35a6e56978f8567f89f5a85641d5338f189fc489440b364c"
 }
 MAVEN_SHA512 = "831a8591fe20c8243b1dbe7d71e3244f31d1665b0804b2e825e38cbbe5ce0cafb8338851f90780735568773e0a6cd07bbec107cda0b896b008b861075358b6f6"
@@ -533,6 +533,7 @@ def validate_remediation_versions(manifest):
         (lambda r: r["group"] == "io.netty", "4.1.139.Final"),
         (lambda r: (r["group"], r["artifact"]) ==
          ("org.apache.commons", "commons-configuration2"), "2.15.1"),
+        (lambda r: (r["group"], r["artifact"]) == ("commons-io", "commons-io"), "2.22.0"),
         (lambda r: r["group"] == "org.bouncycastle", "1.86"),
     )
     for matches, version in families:

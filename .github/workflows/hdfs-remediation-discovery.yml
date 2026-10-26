@@ -18,7 +18,7 @@ concurrency:
 
 jobs:
   prepare:
-    name: Resolve and replay the proposed dependency updates
+    name: Resolve and replay the corrected dependency graph
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -35,7 +35,8 @@ jobs:
       # no host mounts, credentials or published ports. The first stage's network
       # destinations are not confined by Maven settings. The second stage uses
       # a fresh image/container, the isolated pinned seed, --network none and
-      # Maven offline mode. The old graph and locks are unchanged. Remaining
+      # Maven offline mode. The selected graph includes the reviewed Commons IO correction.
+      # Original SIMPLE/Kerberos graphs and locks are unchanged. Remaining
       # advisories are unresolved; no security or provider pass is awarded.
       - name: Compare the proposed graph with a fresh offline replay
         run: >-
