@@ -452,6 +452,25 @@ public final class HdfsKerberosTransferProbe {
         for (Thread thread : Thread.getAllStackTraces().keySet()) if (thread.isAlive()) ids.add(thread.getId());
         return ids;
     }
+    private static String linkageCategory(LinkageError failure) {
+        // Exact JDK classes only; no exception message or unknown class name is exported.
+        return switch (failure.getClass().getName()) {
+            case "java.lang.NoSuchMethodError" -> "linkage_no_such_method";
+            case "java.lang.NoSuchFieldError" -> "linkage_no_such_field";
+            case "java.lang.AbstractMethodError" -> "linkage_abstract_method";
+            case "java.lang.IllegalAccessError" -> "linkage_illegal_access";
+            case "java.lang.InstantiationError" -> "linkage_instantiation";
+            case "java.lang.IncompatibleClassChangeError" -> "linkage_incompatible_class";
+            case "java.lang.ExceptionInInitializerError" -> "linkage_initializer";
+            case "java.lang.BootstrapMethodError" -> "linkage_bootstrap";
+            case "java.lang.ClassCircularityError" -> "linkage_circularity";
+            case "java.lang.ClassFormatError" -> "linkage_class_format";
+            case "java.lang.UnsupportedClassVersionError" -> "linkage_class_version";
+            case "java.lang.UnsatisfiedLinkError" -> "linkage_native";
+            case "java.lang.VerifyError" -> "linkage_verify";
+            default -> "linkage_failure";
+        };
+    }
     private static String originFrame(StackTraceElement frame) {
         // Closed markers only; class names, method names and messages never leave this process.
         return switch (frame.getClassName()) {
@@ -464,8 +483,55 @@ public final class HdfsKerberosTransferProbe {
             };
             case "org.apache.hadoop.hdfs.server.namenode.NameNodeHttpServer" -> "namenode_http";
             case "org.apache.hadoop.http.HttpServer2", "org.apache.hadoop.http.HttpServer2$Builder" -> "hadoop_http";
-            case "org.apache.hadoop.metrics2.lib.DefaultMetricsSystem",
-                 "org.apache.hadoop.metrics2.impl.MetricsSystemImpl" -> "hadoop_metrics";
+            case "org.apache.hadoop.metrics2.lib.DefaultMetricsSystem" -> "hadoop_metrics";
+            case "org.apache.hadoop.metrics2.impl.MetricsSystemImpl" -> switch (frame.getMethodName()) {
+                case "register" -> "metrics_system_register";
+                case "registerSource" -> "metrics_system_register_source";
+                default -> "hadoop_metrics";
+            };
+            case "org.apache.hadoop.hdfs.server.datanode.metrics.DataNodeMetrics" -> switch (frame.getMethodName()) {
+                case "<init>" -> "datanode_metrics_constructor";
+                case "create" -> "datanode_metrics_create";
+                default -> null;
+            };
+            case "org.apache.hadoop.metrics2.lib.MetricsSourceBuilder" -> switch (frame.getMethodName()) {
+                case "<init>" -> "metrics_source_builder_constructor";
+                case "initRegistry" -> "metrics_source_builder_registry";
+                case "add" -> "metrics_source_builder_add";
+                case "build" -> "metrics_source_builder_build";
+                case "info" -> "metrics_source_builder_info";
+                default -> null;
+            };
+            case "org.apache.hadoop.metrics2.lib.MutableMetricsFactory" -> switch (frame.getMethodName()) {
+                case "newForField" -> "metrics_factory_field";
+                case "newForMethod" -> "metrics_factory_method";
+                case "getInfo" -> "metrics_factory_info";
+                case "getName" -> "metrics_factory_name";
+                default -> null;
+            };
+            case "org.apache.hadoop.metrics2.lib.MetricsAnnotations" -> switch (frame.getMethodName()) {
+                case "newSourceBuilder" -> "metrics_annotations_builder";
+                default -> null;
+            };
+            case "org.apache.hadoop.metrics2.lib.MethodMetric" -> switch (frame.getMethodName()) {
+                case "<init>" -> "method_metric_constructor";
+                default -> null;
+            };
+            case "org.apache.hadoop.metrics2.source.JvmMetrics" -> switch (frame.getMethodName()) {
+                case "create" -> "jvm_metrics_create";
+                case "registerIfNeeded" -> "jvm_metrics_register";
+                default -> null;
+            };
+            case "org.apache.hadoop.metrics2.lib.MetricsRegistry" -> switch (frame.getMethodName()) {
+                case "newCounter" -> "metrics_registry_counter";
+                case "newGauge" -> "metrics_registry_gauge";
+                case "newRate" -> "metrics_registry_rate";
+                case "newRatesWithAggregation" -> "metrics_registry_rates_aggregation";
+                case "newStat" -> "metrics_registry_stat";
+                case "newMutableRollingAverages" -> "metrics_registry_rolling";
+                case "newQuantiles" -> "metrics_registry_quantiles";
+                default -> null;
+            };
             case "org.apache.hadoop.security.authentication.server.KerberosAuthenticationHandler",
                  "org.apache.hadoop.security.authentication.server.AuthenticationFilter" -> "http_authentication";
             case "org.apache.hadoop.security.UserGroupInformation" -> "ugi";
@@ -490,7 +556,7 @@ public final class HdfsKerberosTransferProbe {
                 } else if (failure instanceof OutOfMemoryError || failure instanceof StackOverflowError) {
                     category = "resource_failure"; rank = 2;
                 } else if (failure instanceof IllegalArgumentException) { category = "invalid_config"; rank = 3; }
-                else if (failure instanceof LinkageError) { category = "linkage_failure"; rank = 4; }
+                else if (failure instanceof LinkageError) { category = linkageCategory((LinkageError) failure); rank = 4; }
                 else if (failure instanceof MetricsException) { category = "metrics_failure"; rank = 5; }
                 else if (failure instanceof NullPointerException) { category = "null_state"; rank = 6; }
                 else if (failure instanceof IllegalStateException) { category = "illegal_state"; rank = 7; }
@@ -501,11 +567,15 @@ public final class HdfsKerberosTransferProbe {
                 else if (failure instanceof IOException) { category = "io_failure"; rank = 12; }
                 else if (failure instanceof InterruptedException) { category = "interrupted"; rank = 13; }
                 else if (failure instanceof Failure own && own.code != Code.unclassified) { category = "assertion"; rank = 14; }
-                if (rank < selectedRank) { selected = category; selectedRank = rank; }
-                StackTraceElement[] frames = failure.getStackTrace();
-                for (int i = 0; i < frames.length && i < 32; i++) {
-                    String marker = originFrame(frames[i]);
-                    if (marker != null) { origin = marker; break; }
+                if (rank < selectedRank) {
+                    selected = category; selectedRank = rank; origin = "none";
+                    // The known callsite belongs to this selected throwable, not another cause.
+                    // A callsite identifies a frame, never the unresolved linkage target.
+                    StackTraceElement[] frames = failure.getStackTrace();
+                    for (int i = 0; i < frames.length && i < 32; i++) {
+                        String marker = originFrame(frames[i]);
+                        if (marker != null) { origin = marker; break; }
+                    }
                 }
             }
             diagnosticCategory = selected; diagnosticOrigin = origin;
