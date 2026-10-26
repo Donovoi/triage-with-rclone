@@ -65,7 +65,9 @@ fn token_exchange_transport_error(error: ureq::Error) -> anyhow::Error {
         | ureq::Error::Rustls(_)
         | ureq::Error::Pem(_)
         | ureq::Error::TlsRequired => "tls",
-        ureq::Error::Http(_) | ureq::Error::BadUri(_) | ureq::Error::RequireHttpsOnly(_) => "request",
+        ureq::Error::Http(_) | ureq::Error::BadUri(_) | ureq::Error::RequireHttpsOnly(_) => {
+            "request"
+        }
         ureq::Error::Protocol(_) => "protocol",
         ureq::Error::RedirectFailed | ureq::Error::TooManyRedirects => "redirect",
         ureq::Error::BodyExceedsLimit(_) | ureq::Error::LargeResponseHeader(_, _) => "size-limit",
@@ -693,9 +695,8 @@ mod tests {
             (std::io::ErrorKind::Other, "io-other"),
             (std::io::ErrorKind::NotFound, "io-other"),
         ] {
-            let error = token_exchange_transport_error(ureq::Error::Io(std::io::Error::new(
-                kind, CANARY,
-            )));
+            let error =
+                token_exchange_transport_error(ureq::Error::Io(std::io::Error::new(kind, CANARY)));
             assert_eq!(
                 format!("{error:#}"),
                 format!("Token exchange transport failed ({category})")
@@ -748,7 +749,10 @@ mod tests {
             }
         }
         for (input, category) in [
-            (ureq::Error::Io(std::io::Error::other(PrivateError)), "io-other"),
+            (
+                ureq::Error::Io(std::io::Error::other(PrivateError)),
+                "io-other",
+            ),
             (ureq::Error::Other(Box::new(PrivateError)), "other"),
         ] {
             let error = token_exchange_transport_error(input);
