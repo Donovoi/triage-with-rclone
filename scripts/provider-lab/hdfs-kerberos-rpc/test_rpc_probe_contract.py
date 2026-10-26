@@ -1211,5 +1211,65 @@ class JavaSourceTests(unittest.TestCase):
         self.assertIn('Arrays.fill(buffer, (byte)0)', source)
 
 
+class DownloadDeadlineTests(unittest.TestCase):
+    def download_at(self, late, when=270.0):
+        clock=types.SimpleNamespace(now=0.0)
+        class Response(io.BytesIO):
+            status=200
+            url='https://repo.maven.apache.org/maven2/synthetic/bytes/1/bytes-1.jar'
+            def __init__(self):
+                super().__init__(b'jar');self.headers=Message();self.headers['Content-Length']='3'
+            def read(self,n=-1):
+                value=super().read(n)
+                if (late=='final_data' and value) or (late=='eof' and not value):clock.now=when
+                return value
+            def __exit__(self,*args):
+                value=super().__exit__(*args)
+                if late=='close':clock.now=when
+                return value
+        response=Response();opener=Mock();opener.open.return_value=response
+        real_hash=F.hashlib.sha256
+        class Digest:
+            def __init__(self):self.inner=real_hash()
+            def update(self,value):self.inner.update(value)
+            def hexdigest(self):
+                value=self.inner.hexdigest()
+                if late=='digest':clock.now=when
+                return value
+        real_directory=F.directory;visits=[]
+        def directory(path,identity=None):
+            result=real_directory(path,identity);visits.append(path.name)
+            if late=='return' and len(visits)==6:clock.now=when
+            return result
+        row=dict(group='synthetic',artifact='bytes',version='1',type='jar',classifier='',size=3,sha256=real_hash(b'jar').hexdigest())
+        with tempfile.TemporaryDirectory() as temp:
+            context=Path(temp)
+            with patch.object(F.hashlib,'sha256',Digest),patch.object(F,'directory',side_effect=directory):
+                if when>=270:
+                    with self.assertRaisesRegex(F.ProbeError,'^download_failed$'):
+                        F.download_rows(context,[row],opener=opener,clock=lambda:clock.now)
+                else:
+                    F.download_rows(context,[row],opener=opener,clock=lambda:clock.now)
+            self.assertTrue(response.closed)
+            opener.open.assert_called_once()
+            self.assertEqual((context/'jars/000.jar').read_bytes(),b'' if late=='final_data' and when>=270 else b'jar')
+
+    def test_late_final_data_is_rejected_before_writing_it(self):
+        self.download_at('final_data')
+        self.download_at('final_data',271)
+
+    def test_late_eof_is_rejected_even_after_exact_size_and_hash(self):
+        self.download_at('eof')
+        self.download_at('eof',271)
+
+    def test_close_digest_and_final_identity_work_cannot_outlive_acceptance(self):
+        for late in ('close','digest','return'):
+            with self.subTest(late=late):self.download_at(late)
+
+    def test_arrival_before_original_deadline_remains_valid_without_extension(self):
+        for late in ('final_data','eof','close','digest','return'):
+            with self.subTest(late=late):self.download_at(late,269.999)
+
+
 if __name__ == "__main__":
     unittest.main()
