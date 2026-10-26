@@ -753,6 +753,49 @@ jobs:
           path: ${{ runner.temp }}/b2-validation.json
           if-no-files-found: error
           retention-days: 14
+      - name: Check B2 account and alias nested listing with the Windows application
+        id: b2_listing_cases
+        timeout-minutes: 8
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:GITHUB_ACTIONS -cne 'true' -or $env:RUNNER_ENVIRONMENT -cne 'github-hosted') { throw 'b2_hosted_required' }
+          $application = (Resolve-Path "$env:RUNNER_TEMP/b2-build/rclone-triage/target/release/rclone-triage.exe").Path
+          $buildCommit = (& git rev-parse --verify HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $buildCommit -cnotmatch '^[0-9a-f]{40}$' -or $env:GITHUB_SHA -cne $buildCommit) { throw 'b2_build_binding_failed' }
+          $expectedPins = (Get-FileHash -LiteralPath rclone-version.env -Algorithm SHA256).Hash
+          if ((Get-FileHash -LiteralPath "$env:RUNNER_TEMP/b2-build/rclone-version.env" -Algorithm SHA256).Hash -cne $expectedPins) { throw 'b2_runtime_binding_failed' }
+          $applicationHash = (Get-FileHash -LiteralPath $application -Algorithm SHA256).Hash.ToLowerInvariant()
+          python -B scripts/application-lab/run_windows_b2_listing.py `
+            --application $application --application-sha256 $applicationHash --build-commit $buildCommit `
+            --report "$env:RUNNER_TEMP/b2-listing.private.json"
+          if ($LASTEXITCODE -ne 0) { throw 'b2_listing_cases_failed' }
+      - name: Independently validate B2 listing experiment evidence
+        id: b2_listing_validation
+        if: ${{ !cancelled() && (steps.b2_listing_cases.outcome == 'success' || steps.b2_listing_cases.outcome == 'failure') }}
+        timeout-minutes: 3
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:GITHUB_ACTIONS -cne 'true' -or $env:RUNNER_ENVIRONMENT -cne 'github-hosted') { throw 'b2_hosted_required' }
+          $application = (Resolve-Path "$env:RUNNER_TEMP/b2-build/rclone-triage/target/release/rclone-triage.exe").Path
+          $buildCommit = (& git rev-parse --verify HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $buildCommit -cnotmatch '^[0-9a-f]{40}$' -or $env:GITHUB_SHA -cne $buildCommit) { throw 'b2_build_binding_failed' }
+          $expectedPins = (Get-FileHash -LiteralPath rclone-version.env -Algorithm SHA256).Hash
+          if ((Get-FileHash -LiteralPath "$env:RUNNER_TEMP/b2-build/rclone-version.env" -Algorithm SHA256).Hash -cne $expectedPins) { throw 'b2_runtime_binding_failed' }
+          python -B scripts/b2_listing_application_evidence.py `
+            --receipt "$env:RUNNER_TEMP/b2-listing.private.json" --application $application `
+            --build-commit $buildCommit --report "$env:RUNNER_TEMP/b2-listing-validation.json"
+          if ($LASTEXITCODE -ne 0) { throw 'b2_evidence_failed' }
+      - name: Retain only validated B2 listing experiment evidence
+        if: ${{ !cancelled() && (steps.b2_listing_validation.outcome == 'success' || steps.b2_listing_validation.outcome == 'failure') }}
+        timeout-minutes: 2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: b2-listing-experiment-Windows
+          path: ${{ runner.temp }}/b2-listing-validation.json
+          if-no-files-found: error
+          retention-days: 14
   windows-swift:
     name: Windows Swift token replacement experiment
     needs: test

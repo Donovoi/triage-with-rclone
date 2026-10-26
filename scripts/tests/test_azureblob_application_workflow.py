@@ -56,7 +56,8 @@ def validate(text):
     require(not re.search(r"^    (?:if|services|permissions):", job, re.MULTILINE) and
         "continue-on-error" not in job and "secrets." not in job, "mandatory_unprivileged_job")
     shared = action_refs(definitions["windows-b2"])
-    require(len(shared) == 4 and action_refs(job) == shared + [shared[-1], shared[-1]], "shared_pinned_actions")
+    require(len(shared) == 5 and shared[-1] == shared[-2] and
+        action_refs(job) == shared + [shared[-1]], "shared_pinned_actions")
     require("persist-credentials: false" in chain[0], "no_persisted_credentials")
     downloads = [part for part in chain if "uses: actions/download-artifact@" in part]
     require(len(downloads) == 1, "one_checked_download")
