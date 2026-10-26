@@ -216,5 +216,95 @@ class RemediationHostedReplayTests(unittest.TestCase):
             self.assertFalse(report["success"] or report["offline_reproduced"])
 
 
+class HostedReviewedLockCountTests(unittest.TestCase):
+    """Bridge actual pinned rows to wrapper predicates, independently of fake counts."""
+    setUp = T.HostedKerberosTests.setUp
+    invoke = T.HostedKerberosTests.invoke
+
+    def reviewed_counts(self):
+        raw = D.offline_cache.lock_path(PROFILE).read_bytes()
+        self.assertEqual(D.offline_cache.sha(raw), D.offline_cache.REMEDIATION_LOCK_SHA256)
+        lock = json.loads(raw); rows = lock["artifacts"]
+        counts = dict(artifacts=len(rows), poms=sum(r["type"] == "pom" for r in rows),
+                      selected_runtime_jars=sum(r["type"] == "jar" and r["selected_runtime"] is True for r in rows),
+                      other_jars=sum(r["type"] == "jar" and r["selected_runtime"] is False for r in rows),
+                      artifact_bytes=sum(r["size"] for r in rows))
+        self.assertEqual(lock["counts"]["bytes"], counts["artifact_bytes"])
+        self.assertEqual({k: v for k, v in counts.items() if k != "artifact_bytes"},
+                         {k: v for k, v in lock["counts"].items() if k != "bytes"})
+        return counts
+
+    def test_wrapper_and_fake_seed_match_independently_counted_reviewed_rows(self):
+        counts = self.reviewed_counts()
+        self.assertEqual(H.REMEDIATION_COUNTS, counts)
+        seed = T.seed_receipt(PROFILE)
+        self.assertEqual(seed["counts"], counts)
+        self.assertEqual(seed["sha1_files"], counts["artifacts"])
+        self.assertEqual(seed["repository_tracking_files"], counts["poms"])
+        self.assertEqual(seed["seed_regular_files"], 2 * counts["artifacts"] + counts["poms"])
+        self.assertEqual(H.COUNTS, T.COUNTS)
+
+    def test_reviewed_counts_pass_both_cache_and_comparison_predicates(self):
+        counts = self.reviewed_counts()
+        seed = T.seed_receipt(PROFILE); seed["counts"] = counts
+        comparison = T.comparison_receipt(PROFILE); comparison["counts"] = counts
+        self.assertTrue(H.cache_matches(seed, PROFILE))
+        self.assertTrue(H.comparison_matches(comparison, T.manifest(), PROFILE))
+        self.assertFalse(H.cache_matches(seed, "kerberos"))
+        self.assertFalse(H.comparison_matches(comparison, T.manifest(), "kerberos"))
+
+    def test_stale_full_or_individual_count_rejected_by_both_predicates(self):
+        counts = self.reviewed_counts()
+        stale = dict(artifacts=643, poms=445, selected_runtime_jars=142, other_jars=56,
+                     artifact_bytes=97948330)
+        cases = [stale, T.COUNTS]
+        cases += [dict(counts, **{key: value}) for key, value in stale.items() if value != counts[key]]
+        for value in cases:
+            with self.subTest(counts=value):
+                seed = T.seed_receipt(PROFILE); seed["counts"] = value
+                comparison = T.comparison_receipt(PROFILE); comparison["counts"] = value
+                self.assertFalse(H.cache_matches(seed, PROFILE))
+                self.assertFalse(H.comparison_matches(comparison, T.manifest(), PROFILE))
+
+    def test_missing_extra_and_wrong_typed_counts_are_rejected(self):
+        counts = self.reviewed_counts()
+        for key in counts:
+            cases = [{k: v for k, v in counts.items() if k != key}, dict(counts, unexpected=0)]
+            cases += [dict(counts, **{key: value}) for value in (True, float(counts[key]), str(counts[key]), None)]
+            for value in cases:
+                with self.subTest(key=key, counts=value):
+                    seed = T.seed_receipt(PROFILE); seed["counts"] = value
+                    comparison = T.comparison_receipt(PROFILE); comparison["counts"] = value
+                    self.assertFalse(H.cache_matches(seed, PROFILE))
+                    self.assertFalse(H.comparison_matches(comparison, T.manifest(), PROFILE))
+
+    def test_fake_repeat_uses_actual_lock_counts_in_both_stages_and_comparison(self):
+        counts = self.reviewed_counts()
+        online = T.discovery(prepare=True, profile=PROFILE)
+        offline = T.discovery(offline=True, profile=PROFILE)
+        online["cache_preparation"]["counts"] = counts
+        offline["inputs"]["seed_cache"]["counts"] = counts
+        comparison = T.comparison_receipt(PROFILE); comparison["counts"] = counts
+        report, root, events = self.invoke(mode="repeat", profile=PROFILE, result=online,
+                                         offline_result=offline, comparison=comparison)
+        self.assertTrue(report["success"] and report["offline_reproduced"])
+        self.assertLess(events.index("discover"), events.index("offline_discover"))
+        self.assertEqual(events.count("offline_discover"), 1)
+        self.assertFalse(root.exists())
+        for claim in H.FALSE_CLAIMS:
+            if claim != "offline_reproduced": self.assertIs(report[claim], False)
+
+    def test_stale_wrapper_never_starts_offline_with_actual_lock_seed(self):
+        online = T.discovery(prepare=True, profile=PROFILE)
+        online["cache_preparation"]["counts"] = self.reviewed_counts()
+        stale = dict(artifacts=643, poms=445, selected_runtime_jars=142, other_jars=56,
+                     artifact_bytes=97948330)
+        with patch.object(H, "REMEDIATION_COUNTS", stale):
+            report, root, events = self.invoke(mode="repeat", profile=PROFILE, result=online)
+        self.assertFalse(report["success"] or report["offline_reproduced"])
+        self.assertNotIn("offline_discover", events)
+        self.assertFalse(root.exists())
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -83,8 +83,8 @@ def discovery_matches(value, candidate, *, mode="online", seed=None, prepare=Fal
 
 COUNTS = dict(artifacts=645, poms=447, selected_runtime_jars=142, other_jars=56,
               artifact_bytes=98990688)
-REMEDIATION_COUNTS = dict(artifacts=643, poms=445, selected_runtime_jars=142, other_jars=56,
-                         artifact_bytes=97948330)
+REMEDIATION_COUNTS = dict(artifacts=641, poms=444, selected_runtime_jars=142, other_jars=55,
+                         artifact_bytes=97419881)
 
 
 def profile_receipt_matches(value, scope, profile="kerberos"):
