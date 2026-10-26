@@ -63,9 +63,10 @@ def mark(record, code, errors):
 
 
 def denial_terminal_detail(terminal):
-    # Text observations only; never accepted causes. Pinned Go 1.26 io/context,
+    # Text observations only; never accepted causes. Pinned Go 1.26.9 io/context,
     # internal/poll, net.OpError and textproto reader; jlaffaye/ftp 6602e981 Login.
-    exact = {"530 Login incorrect": "login_incorrect", "530 Login required": "login_required",
+    exact = {'530 "Login incorrect"': "login_incorrect", '530 "Login required"': "login_required",
+             "530 Login incorrect": "login_incorrect", "530 Login required": "login_required",
              "Login incorrect": "login_message_only", "context canceled": "context_canceled_text",
              "context deadline exceeded": "context_deadline_text"}
     if terminal in exact:
@@ -132,16 +133,17 @@ def denial_error_diagnostic(value, cause):
                         if match is not None and type(cause) is str and 0 < len(cause) <= 512:
                             record["expected_cause_equal"] = match[1] == cause
                             connection = re.fullmatch(
-                                r'(NewFs: failed to make FTP connection to "127\.0\.0\.1:([1-9][0-9]{0,4})": )530 Login incorrect', cause)
+                                r'(NewFs: failed to make FTP connection to "127\.0\.0\.1:([1-9][0-9]{0,4})": )530 "Login incorrect"', cause)
                             if connection is not None and int(connection[2]) <= 65535:
                                 record["expected_connection_prefix_equal"] = match[1].startswith(connection[1])
                                 if record["expected_connection_prefix_equal"]:
-                                    # Exact replies emitted by the fixed fixture, not a generic status-code matcher.
+                                    # Exact client presentations of the fixed fixture replies, not a generic status-code matcher.
                                     terminal = match[1][len(connection[1]):]
-                                    record["terminal_category"] = {"530 Login incorrect": "login_incorrect",
+                                    record["terminal_category"] = {'530 "Login incorrect"': "login_incorrect",
+                                        '530 "Login required"': "login_required", "530 Login incorrect": "login_incorrect",
                                         "530 Login required": "login_required"}.get(terminal, "other")
                                     if record["notice_count"] == 1:
-                                        reply = "530 Login incorrect"
+                                        reply = '530 "Login incorrect"'
                                         record.update(terminal_reply_prefix=terminal.startswith("530 "),
                                             terminal_contains_reply=reply in terminal,
                                             terminal_length_relation=("shorter" if len(terminal) < len(reply) else
@@ -359,7 +361,9 @@ def manifest(name, case, working, runtime, endpoint):
     else:
         need(result["success"] is False and result["integrity"] == "Failed" and
              all(result[k] is None for k in ("local_sha256", "size", "hash", "hash_type", "hash_verified", "hash_error")), "manifest_invalid")
-        cause = f'NewFs: failed to make FTP connection to "127.0.0.1:{endpoint[1]}": 530 Login incorrect'
+        # The pinned rclone binary uses Go 1.26.9: textproto.Error formats code/message
+        # as "%03d %q". The fixture wire reply remains b"530 Login incorrect\r\n".
+        cause = f'NewFs: failed to make FTP connection to "127.0.0.1:{endpoint[1]}": 530 "Login incorrect"'
         try:
             need(W.exact_rc_error(result["error"], cause, stat=True), "denial_failed")
         except ProducerError:

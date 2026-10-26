@@ -261,7 +261,8 @@ class ProducerTests(unittest.TestCase):
 class DenialDiagnosticTests(unittest.TestCase):
     def setUp(self):
         ProducerTests.setUp(self)
-        self.cause = 'NewFs: failed to make FTP connection to "127.0.0.1:2121": 530 Login incorrect'
+        self.reply = '530 "Login incorrect"'
+        self.cause = 'NewFs: failed to make FTP connection to "127.0.0.1:2121": ' + self.reply
         self.notice = "2026/10/12 10:55:00 NOTICE: Failed to rc: loopback: call failed: "
         self.value = "Cannot stat source: " + self.notice + self.cause + "\n"
 
@@ -287,7 +288,7 @@ class DenialDiagnosticTests(unittest.TestCase):
         for value, changed in (
             (self.value.replace(":2121", ":2122"), {"expected_cause_equal": False,
                                                    "expected_connection_prefix_equal": False, "terminal_category": None}),
-            (self.value.replace("530 Login", "531 Login"), {"expected_cause_equal": False, "terminal_category": "other",
+            (self.value.replace("530", "531", 1), {"expected_cause_equal": False, "terminal_category": "other",
                 "terminal_reply_prefix": False, "terminal_contains_reply": False,
                 "terminal_length_relation": "equal", "terminal_detail": "other"}),
             ("Cannot stat source: " + self.notice + "PRIVATE_CANARY\n" + self.notice + self.cause,
@@ -310,6 +311,27 @@ class DenialDiagnosticTests(unittest.TestCase):
                 expected.update(changed)
                 self.assertEqual(self.projected(P.denial_error_diagnostic, value, self.cause), expected)
 
+    def test_pinned_go_double_quotes_are_the_only_accepted_denial_presentation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            case = Path(directory)
+            working = self.negative_manifest(case, self.value)
+            with patch("builtins.print") as output:
+                self.assertEqual(P.manifest("revoked_a", case, working, RUNTIME, ("127.0.0.1", 2121)),
+                                 {"manifest_exact": True, "no_download_outputs": True})
+            output.assert_not_called()
+        for terminal in ("530 Login incorrect", "530 'Login incorrect'", "530 PRIVATE_CANARY",
+                         '531 "Login incorrect"', '530 "Login required"', '530 "login incorrect"',
+                         '530  "Login incorrect"', '530 "Login incorrect" ',
+                         '530 "Login incorrect" PRIVATE_CANARY', 'PRIVATE_CANARY 530 "Login incorrect"',
+                         '530 "Login incorrect', '530 Login incorrect"', '530 "Login incorrect\\n"'):
+            with self.subTest(terminal=terminal), tempfile.TemporaryDirectory() as directory:
+                value = self.value.replace(self.reply, terminal)
+                self.assertFalse(P.W.exact_rc_error(value, self.cause, stat=True))
+                case = Path(directory)
+                working = self.negative_manifest(case, value)
+                with patch("builtins.print"), self.assertRaisesRegex(P.ProducerError, "^denial_failed$"):
+                    P.manifest("revoked_a", case, working, RUNTIME, ("127.0.0.1", 2121))
+
     def test_error_type_bounds_and_private_objects_are_not_stringified(self):
         class Private:
             def __str__(self):
@@ -328,15 +350,16 @@ class DenialDiagnosticTests(unittest.TestCase):
                 self.assertIsNone(record["terminal_category"])
 
     def test_exact_prefix_and_whole_terminal_categories_do_not_relax_denial(self):
-        for terminal, category in (("530 Login incorrect", "login_incorrect"), ("530 Login required", "login_required"),
+        for terminal, category in ((self.reply, "login_incorrect"), ("530 Login incorrect", "login_incorrect"),
+                                   ("530 Login required", "login_required"),
                                    ("530 Login incorrect ", "other"), ("530 Login incorrect PRIVATE_CANARY", "other"),
                                    ("530 login incorrect", "other"), ("PRIVATE_CANARY", "other"),
                                    ("530 Login incorrect\t", "other")):
-            value = self.value.replace("530 Login incorrect", terminal)
+            value = self.value.replace(self.reply, terminal)
             record = self.projected(P.denial_error_diagnostic, value, self.cause)
             self.assertIs(record["expected_connection_prefix_equal"], True)
             self.assertEqual(record["terminal_category"], category)
-            if terminal != "530 Login incorrect":
+            if terminal != self.reply:
                 self.assertFalse(P.W.exact_rc_error(value, self.cause, stat=True))
         for old, new in (("127.0.0.1", "127.0.0.2"), (":2121", ":2122"), ("NewFs", "newfs"),
                          ('"127.0.0.1:2121"', '"PRIVATE_CANARY"')):
@@ -606,12 +629,11 @@ class DenialDiagnosticTests(unittest.TestCase):
             ("530  Login incorrect", "spacefold_equal"),
             ("530 \tLogin   incorrect ", "spacefold_equal"),
             ("530  login INCORRECT", "case_spacefold_equal"),
-            ('530 "Login incorrect"', "quoted_message_equal"),
             ("530 'Login incorrect'", "quoted_message_equal"),
         )
         for terminal, marker in variants:
             with self.subTest(marker=marker, terminal=terminal):
-                value = self.value.replace("530 Login incorrect", terminal)
+                value = self.value.replace(self.reply, terminal)
                 projected = self.projected(P.denial_error_diagnostic, value, self.cause)
                 self.assertTrue(projected["terminal_shape"][marker])
                 self.assertFalse(projected["expected_cause_equal"])
@@ -632,7 +654,7 @@ class DenialDiagnosticTests(unittest.TestCase):
             self.assertEqual(result["prefix_equal_chars"], 4)
             self.assertTrue(all(type(v) is bool for k, v in result.items() if not k.endswith("_chars")))
             self.assertTrue(all(type(result[k]) is int and 0 <= result[k] <= 19 for k in keys if k.endswith("_chars")))
-            self.projected(P.denial_error_diagnostic, self.value.replace("530 Login incorrect", terminal), self.cause)
+            self.projected(P.denial_error_diagnostic, self.value.replace(self.reply, terminal), self.cause)
         class Private:
             def __str__(self):
                 raise AssertionError("PRIVATE_CANARY")
@@ -644,11 +666,11 @@ class DenialDiagnosticTests(unittest.TestCase):
                       self.notice + self.cause, self.value + self.notice + self.cause,
                       self.value.replace("NOTICE", "PRIVATE_CANARY")):
             self.assertIsNone(self.projected(P.denial_error_diagnostic, value, self.cause)["terminal_shape"])
-        value = self.value.replace("530 Login incorrect", "530 " + "p" * 509)
+        value = self.value.replace(self.reply, "530 " + "p" * 509)
         self.assertIsNone(self.projected(P.denial_error_diagnostic, value, self.cause)["terminal_shape"])
 
     def test_shape_failure_cannot_change_original_denial_or_run_on_success(self):
-        value = self.value.replace("530 Login incorrect", "530 PRIVATE_CANARY")
+        value = self.value.replace(self.reply, "530 PRIVATE_CANARY")
         with tempfile.TemporaryDirectory() as directory:
             case = Path(directory)
             working = self.negative_manifest(case, value)
@@ -665,6 +687,7 @@ class DenialDiagnosticTests(unittest.TestCase):
 
     def test_source_pinned_terminal_details_are_observations_never_accepted_causes(self):
         cases = {
+            self.reply: "login_incorrect", '530 "Login required"': "login_required",
             "530 Login incorrect": "login_incorrect", "530 Login required": "login_required",
             "Login incorrect": "login_message_only", "EOF": "eof_text", "unexpected EOF": "unexpected_eof_text",
             "i/o timeout": "io_timeout_text", "use of closed network connection": "closed_connection_text",
@@ -681,14 +704,14 @@ class DenialDiagnosticTests(unittest.TestCase):
             cases["read tcp PRIVATE_CANARY: " + text] = detail
         for terminal, detail in cases.items():
             with self.subTest(detail=detail):
-                value = self.value.replace("530 Login incorrect", terminal)
+                value = self.value.replace(self.reply, terminal)
                 record = self.projected(P.denial_error_diagnostic, value, self.cause)
                 self.assertEqual(record["terminal_detail"], detail)
                 self.assertIs(record["terminal_reply_prefix"], terminal.startswith("530 "))
-                self.assertIs(record["terminal_contains_reply"], "530 Login incorrect" in terminal)
-                self.assertEqual(record["terminal_length_relation"], "shorter" if len(terminal) < 19 else
-                                 "equal" if len(terminal) == 19 else "longer")
-                self.assertIs(P.W.exact_rc_error(value, self.cause, stat=True), terminal == "530 Login incorrect")
+                self.assertIs(record["terminal_contains_reply"], self.reply in terminal)
+                self.assertEqual(record["terminal_length_relation"], "shorter" if len(terminal) < len(self.reply) else
+                                 "equal" if len(terminal) == len(self.reply) else "longer")
+                self.assertIs(P.W.exact_rc_error(value, self.cause, stat=True), terminal == self.reply)
 
     def test_new_terminal_fields_stay_unknown_without_unique_bound_notice(self):
         for value in (self.notice + self.cause, self.value.replace(":2121", ":2122"),
@@ -733,7 +756,7 @@ class DenialDiagnosticTests(unittest.TestCase):
         decision = state.events[-1]
         state._denial_send = (2, decision["ordinal"], decision["session"], True, False)
         self.projected(P.denial_fixture_diagnostic, state, False)
-        self.projected(P.denial_error_diagnostic, self.value.replace("530 Login incorrect", "invalid response code: PRIVATE_CANARY"), self.cause)
+        self.projected(P.denial_error_diagnostic, self.value.replace(self.reply, "invalid response code: PRIVATE_CANARY"), self.cause)
         class BrokenState(P.F.AppFtpState):
             pass
         # Exact type checking rejects foreign state; invalid private cache never stringifies.
