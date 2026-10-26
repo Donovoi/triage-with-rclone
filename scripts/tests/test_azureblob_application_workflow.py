@@ -56,7 +56,7 @@ def validate(text):
     require(not re.search(r"^    (?:if|services|permissions):", job, re.MULTILINE) and
         "continue-on-error" not in job and "secrets." not in job, "mandatory_unprivileged_job")
     shared = action_refs(definitions["windows-b2"])
-    require(len(shared) == 4 and action_refs(job) == shared + [shared[-1]], "shared_pinned_actions")
+    require(len(shared) == 4 and action_refs(job) == shared + [shared[-1], shared[-1]], "shared_pinned_actions")
     require("persist-credentials: false" in chain[0], "no_persisted_credentials")
     downloads = [part for part in chain if "uses: actions/download-artifact@" in part]
     require(len(downloads) == 1, "one_checked_download")
@@ -68,11 +68,11 @@ def validate(text):
     require(len(checked) == 1 and all(path in checked[0] for path in
         ("rclone-triage/target/release/rclone-triage.exe", "rclone-triage/target/release/dependencies.json", "rclone-version.env")), "checked_artifact_layout")
     runs = [part for part in chain if "        run:" in part]
-    ids = ["azureblob_cases", "azureblob_validation", "azureblob_download_denial_cases", "azureblob_download_denial_validation"]
-    require(len(runs) == 4 and [scalar(part, "id", 8) for part in runs] == ids, "distinct_ordered_steps")
+    ids = ["azureblob_cases", "azureblob_validation", "azureblob_download_denial_cases", "azureblob_download_denial_validation", "azureblob_listing_cases", "azureblob_listing_validation"]
+    require(len(runs) == 6 and [scalar(part, "id", 8) for part in runs] == ids, "distinct_ordered_steps")
     uploads = [part for part in chain if "uses: actions/upload-artifact@" in part]
-    require(len(uploads) == 2, "two_distinct_normalized_uploads")
-    for index, stem in enumerate(("azureblob", "azureblob-download-denial")):
+    require(len(uploads) == 3, "three_distinct_normalized_uploads")
+    for index, stem in enumerate(("azureblob", "azureblob-download-denial", "azureblob-listing")):
         first, second = runs[index * 2:index * 2 + 2]; upload = uploads[index]
         require(not re.search(r"^        if:", first, re.MULTILINE), "producer_not_optional")
         producer, p = bound_command(first); _, v = bound_command(second)
@@ -84,12 +84,12 @@ def validate(text):
         else:
             for args in (p, v):
                 require(args.count("--fixture-mode") == 1 and args[args.index("--fixture-mode") + 1] ==
-                    "azureblob_sharedkey_download_denial_cli_v1", "explicit_download_denial_mode")
+                    ("azureblob_sharedkey_download_denial_cli_v1" if index == 1 else "azureblob_sharedkey_listing_cli_v1"), "explicit_experiment_mode")
         require(p[p.index("--report") + 1] == v[v.index("--receipt") + 1] == "$env:RUNNER_TEMP/" + stem + ".private.json" and
             v[v.index("--report") + 1] == "$env:RUNNER_TEMP/" + stem + "-validation.json", "private_input_normalized_output")
         after_either_outcome(second, ids[index * 2]); after_either_outcome(upload, ids[index * 2 + 1])
         require(chain.index(first) < chain.index(second) < chain.index(upload) and
-            (index == 0 or chain.index(uploads[0]) < chain.index(first)), "retained_evidence_before_next_mode")
+            (index == 0 or chain.index(uploads[index - 1]) < chain.index(first)), "retained_evidence_before_next_mode")
         require(scalar(upload, "path", 10) == "${{ runner.temp }}/" + stem + "-validation.json" and
             scalar(upload, "if-no-files-found", 10) == "error", "normalized_only_upload")
         require(scalar(upload, "name", 10) == stem + "-experiment-Windows", "distinct_normalized_artifact")
@@ -156,7 +156,7 @@ class AzureBlobWorkflowTests(unittest.TestCase):
 
     def test_new_mode_and_evidence_cannot_replay_original_mode(self):
         chain = steps(jobs(self.text)["windows-azureblob"])
-        for region in [part for part in chain if "        run:" in part][2:]:
+        for region in [part for part in chain if "        run:" in part][2:4]:
             self.reject((("--fixture-mode azureblob_sharedkey_download_denial_cli_v1", ""),
                 ("--fixture-mode azureblob_sharedkey_download_denial_cli_v1", "--fixture-mode azureblob_sharedkey_acquisition_cli_v1"),
                 ("azureblob-download-denial.private.json", "azureblob.private.json")), region)
