@@ -14,6 +14,11 @@ on:
         required: false
         type: boolean
         default: false
+      webdav_command_experiment:
+        description: Run one unqualified WebDAV command protocol experiment
+        required: false
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:
@@ -31,9 +36,14 @@ jobs:
           EXPECTED_SHA: ${{ inputs.expected_sha }}
           ACTUAL_SHA: ${{ github.sha }}
           GCS_OAUTH_EXPERIMENT: ${{ inputs.gcs_oauth_experiment }}
+          WEBDAV_COMMAND_EXPERIMENT: ${{ inputs.webdav_command_experiment }}
         run: |
           if [[ "$GCS_OAUTH_EXPERIMENT" == 'true' && -z "$EXPECTED_SHA" ]]; then
             echo 'An exact expected_sha is required for the GCS experiment.' >&2
+            exit 1
+          fi
+          if [[ "$WEBDAV_COMMAND_EXPERIMENT" == 'true' && -z "$EXPECTED_SHA" ]]; then
+            echo 'An exact expected_sha is required for the WebDAV command experiment.' >&2
             exit 1
           fi
           if [[ -n "$EXPECTED_SHA" ]] && { [[ ! "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]] || [[ "$EXPECTED_SHA" != "$ACTUAL_SHA" ]]; }; then
@@ -239,6 +249,41 @@ jobs:
         with:
           name: gcs-oauth-experiment
           path: ${{ runner.temp }}/gcs-oauth-experiment.json
+          if-no-files-found: error
+          retention-days: 14
+  webdav-command-experiment:
+    name: Isolated WebDAV command protocol experiment (unqualified)
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.webdav_command_experiment }}
+    needs: [revision, test, python-audit]
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - name: Prepare verified Linux runtime
+        id: prepare
+        shell: bash
+        run: bash scripts/download-rclone.sh --linux "$RUNNER_TEMP/rclone-webdav-command"
+      - name: Observe default WebDAV command protocol once
+        shell: bash
+        run: |
+          python -B scripts/provider-lab/webdav-command/run_container.py             --rclone "$RUNNER_TEMP/rclone-webdav-command"             --report "$RUNNER_TEMP/webdav-command-experiment.json" --revision "$GITHUB_SHA"
+      - name: Independently validate the normalized protocol result
+        if: ${{ always() && steps.prepare.outcome == 'success' }}
+        shell: bash
+        run: |
+          python -B scripts/provider-lab/webdav-command/run_container.py             --rclone "$RUNNER_TEMP/rclone-webdav-command"             --report "$RUNNER_TEMP/webdav-command-experiment.json" --revision "$GITHUB_SHA" --validate-only
+      # No ledger import, credentials, transcripts, images or executable upload.
+      - name: Retain the normalized WebDAV command experiment
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: webdav-command-experiment
+          path: ${{ runner.temp }}/webdav-command-experiment.json
           if-no-files-found: error
           retention-days: 14
   gcs-oauth-lifecycle:
