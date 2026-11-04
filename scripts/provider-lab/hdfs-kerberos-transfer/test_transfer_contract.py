@@ -1447,7 +1447,7 @@ class MetricsModeLifecycleTests(unittest.TestCase):
 
     def test_source_capture_attempt_flags_and_restoration_failure_are_sticky(self):
         source=(HERE/'HdfsKerberosTransferProbe.java').read_text()
-        enable=source[source.index('private static void enableMetricsMode()'):source.index('private static void restoreMetricsMode()')]
+        enable=source[source.index('private static void enableMetricsMode()'):source.index('private static void restoreMetricsMode()')].expandtabs(4)
         ordered=('metricsModeAttempted = true;','metricsModePrior = DefaultMetricsSystem.inMiniClusterMode();',
                  'metricsModeCaptured = true;','need(!metricsModePrior, Code.configuration_invalid);',
                  'metricsModeEnableAttempted = true;','DefaultMetricsSystem.setMiniClusterMode(true);',
@@ -1456,7 +1456,7 @@ class MetricsModeLifecycleTests(unittest.TestCase):
         self.assertEqual([enable.index(x) for x in ordered],sorted(enable.index(x) for x in ordered))
         self.assertEqual(enable.count('need(System.nanoTime() < deadline, Code.deadline_exceeded);'),3)
         self.assertIn('metricsModeTransitionFailed = true;\n            throw failure;',enable)
-        restore=source[source.index('private static void restoreMetricsMode()'):source.index('private static String metricsModeJson()')]
+        restore=source[source.index('private static void restoreMetricsMode()'):source.index('private static String metricsModeJson()')].expandtabs(4)
         self.assertIn('if (metricsModeCaptured)',restore)
         self.assertIn('if (metricsModeEnableAttempted) DefaultMetricsSystem.setMiniClusterMode(metricsModePrior);',restore)
         self.assertEqual(restore.count('need(System.nanoTime() < cleanupDeadline, Code.deadline_exceeded);'),2)
@@ -1947,6 +1947,7 @@ class BaseAdmissionTests(unittest.TestCase):
 class SeedOriginDiagnostics(unittest.TestCase):
     SITES = {
         "org.apache.hadoop.hdfs.DataStreamer": "data_streamer",
+        "org.apache.hadoop.hdfs.protocol.datatransfer.DataTransferProtoUtil": "data_block_status",
         "org.apache.hadoop.hdfs.protocol.datatransfer.sasl.SaslDataTransferClient": "data_sasl_client",
         "org.apache.hadoop.hdfs.protocol.datatransfer.sasl.SaslParticipant": "data_sasl_participant",
     }
@@ -1957,7 +1958,14 @@ class SeedOriginDiagnostics(unittest.TestCase):
         source=raw.decode();start=source.index('private static String originFrame(')
         method=source[start:source.index('private static void projectFailure(',start)]
         for cls,label in self.SITES.items():
-            self.assertIn('case "'+cls+'" -> "'+label+'";',method)
+            if cls == "org.apache.hadoop.hdfs.DataStreamer":
+                marker = method[method.index('case "'+cls+'" -> switch'):]; marker = marker[:marker.index("};")]
+                self.assertIn('default -> "data_streamer";', marker)
+                for call, code in (("createSocketForPipeline", "data_socket_create"), ("createBlockOutputStream", "data_block_stream"), ("setupPipelineForCreate", "data_pipeline_create")):
+                    self.assertIn('case "'+call+'" -> "'+code+'";', marker)
+                    self.assertIn(code, F.DIAGNOSTIC_ORIGINS)
+            else:
+                self.assertIn('case "'+cls+'" -> "'+label+'";',method)
             self.assertIn(label,F.DIAGNOSTIC_ORIGINS)
         self.assertNotIn('getMessage(',method)
 
@@ -2058,7 +2066,7 @@ class PipelineObservationTests(unittest.TestCase):
 
     def test_only_closed_origins_survive_and_failed_cleanup_stays_failed(self):
         helper = TicketTests(methodName="test_finite_startup_diagnostic_and_residual_threads_never_grant_credit")
-        for label in ("not_observed", "none", "data_streamer", "data_sasl_client", "data_sasl_participant"):
+        for label in ("not_observed", "none", "data_streamer", "data_sasl_client", "data_sasl_participant", "data_socket_create", "data_block_stream", "data_pipeline_create", "data_block_status"):
             value = helper.startup_failure(); value["pipeline_origin"] = label
             value["cleanup"]["pipeline_observer_detached"] = False
             result = F.validate_java(F.canonical(value), 1)
