@@ -1889,7 +1889,7 @@ class BaseObservationTests(unittest.TestCase):
                 self.assertFalse(F.base_observation(dict(Config=config))["java_options_absent"])
         self.assertFalse(F.base_observation(None)["config_present"])
 
-    def test_manifest_diagnostic_does_not_relax_existing_admission(self):
+    def test_manifest_identity_runs_the_same_contained_transfer(self):
         original = FakeDocker.inspect
         def changed(fake, kind, reference, allow_missing=False):
             result = original(fake, kind, reference, allow_missing)
@@ -1899,8 +1899,41 @@ class BaseObservationTests(unittest.TestCase):
         helper = TicketTests(methodName="test_full_mock_success_binds_context_and_cleans"); helper.setUp()
         try:
             with patch.object(FakeDocker, "inspect", changed): report, docker = helper.fake_run()
-            self.assertFalse(report["success"]); self.assertEqual(report["errors"], ["base_invalid"])
+            self.assertTrue(report["success"]); self.assertEqual(report["errors"], [])
             self.assertEqual(report["inputs"]["base_observation"]["id_kind"], "manifest_digest")
+            self.assertEqual(report["result"], projected()); self.assertTrue(all(report["cleanup"].values()))
+            self.assertTrue(any(args[0] == "start" for args, _ in docker.calls))
+            self.assertFalse(report["provider_accepted"]); self.assertFalse(report["application_accepted"])
+        finally: helper.tearDown()
+
+
+class BaseAdmissionTests(unittest.TestCase):
+    def test_both_exact_digest_forms_have_identical_platform_and_options_requirements(self):
+        for identity in (F.BASE_ID, F.BASE.rsplit("@", 1)[1]):
+            good = dict(Id=identity, Os="linux", Architecture="amd64", Config=dict(Env=["JAVA_HOME=/opt/java/openjdk"]))
+            self.assertTrue(F.validate_base(good)["java_options_absent"])
+            for field, value in (("Id", "sha256:" + "a" * 64), ("Id", identity.upper()),
+                                 ("Os", "windows"), ("Architecture", "arm64"),
+                                 ("Config", None), ("Config", dict(Env="JAVA_HOME=private")),
+                                 ("Config", dict(Env=[1])),
+                                 ("Config", dict(Env=["JAVA_TOOL_OPTIONS=private"])),
+                                 ("Config", dict(Env=["_JAVA_OPTIONS=private"])),
+                                 ("Config", dict(Env=["JDK_JAVA_OPTIONS=private"]))):
+                bad = copy.deepcopy(good); bad[field] = value
+                with self.subTest(identity=identity, field=field, value=value), self.assertRaisesRegex(F.ProbeError, "^base_invalid$"):
+                    F.validate_base(bad)
+
+    def test_unrecognized_image_never_reaches_build_and_keeps_cleanup(self):
+        original = FakeDocker.inspect
+        def changed(fake, kind, reference, allow_missing=False):
+            result = original(fake, kind, reference, allow_missing)
+            if kind == "image" and reference == F.BASE: result["Id"] = "sha256:" + "a" * 64
+            return result
+        helper = TicketTests(methodName="test_full_mock_success_binds_context_and_cleans"); helper.setUp()
+        try:
+            with patch.object(FakeDocker, "inspect", changed): report, docker = helper.fake_run()
+            self.assertFalse(report["success"]); self.assertEqual(report["errors"], ["base_invalid"])
+            self.assertEqual(report["inputs"]["base_observation"]["id_kind"], "unrecognized")
             self.assertIsNone(report["result"]); self.assertTrue(all(report["cleanup"].values()))
             self.assertFalse(any(args[0] in ("build", "create", "start") for args, _ in docker.calls))
         finally: helper.tearDown()

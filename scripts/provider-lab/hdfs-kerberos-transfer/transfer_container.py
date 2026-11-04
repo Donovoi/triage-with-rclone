@@ -582,6 +582,16 @@ def base_observation(value):
                 java_options_absent=clean_options)
 
 
+def validate_base(value):
+    # Classic Docker exposes the config digest; the containerd store exposes
+    # the manifest digest. Both identify this exact pre-reviewed pinned image.
+    observed = base_observation(value)
+    need(observed["id_kind"] in {"config_digest", "manifest_digest"} and
+         all(observed[key] is True for key in
+             ("linux", "amd64", "config_present", "java_options_absent")), "base_invalid")
+    return observed
+
+
 def run(rclone=None, *, loader=load_helpers, downloader=download, runner_factory=None, profile="kerberos-remediation"):
     started = time.monotonic()
     report = dict(schema_version=1, scope="hdfs_kerberos_transfer_container_feasibility", success=False,
@@ -635,9 +645,7 @@ def run(rclone=None, *, loader=load_helpers, downloader=download, runner_factory
         docker.call(["image", "pull", "--quiet", "--platform", "linux/amd64", BASE], timeout=120)
         base = docker.inspect("image", BASE)
         report["inputs"]["base_observation"] = base_observation(base)
-        need(base.get("Id") == BASE_ID and base.get("Os") == "linux" and base.get("Architecture") == "amd64", "base_invalid")
-        need(not any(s.split("=", 1)[0] in {"JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS", "JDK_JAVA_OPTIONS"}
-             for s in base.get("Config", {}).get("Env", [])), "base_invalid")
+        validate_base(base)
         need(docker.inspect("image", tag, allow_missing=True) is None, "image_invalid")
         report["stage"] = "build"; built_attempted = True
         docker.call(["build", "--network", "none", "--pull=false", "--label", LABEL + "=" + run_id,
