@@ -2,6 +2,7 @@
 
 
 import copy
+import hashlib
 
 
 from contextlib import ExitStack
@@ -1937,3 +1938,34 @@ class BaseAdmissionTests(unittest.TestCase):
             self.assertIsNone(report["result"]); self.assertTrue(all(report["cleanup"].values()))
             self.assertFalse(any(args[0] in ("build", "create", "start") for args, _ in docker.calls))
         finally: helper.tearDown()
+
+
+class SeedOriginDiagnostics(unittest.TestCase):
+    SITES = {
+        "org.apache.hadoop.hdfs.DataStreamer": "data_streamer",
+        "org.apache.hadoop.hdfs.DFSOutputStream": "dfs_output",
+        "org.apache.hadoop.hdfs.protocol.datatransfer.sasl.SaslDataTransferClient": "data_sasl_client",
+        "org.apache.hadoop.hdfs.protocol.datatransfer.sasl.SaslParticipant": "data_sasl_participant",
+    }
+    def test_exact_source_origin_markers_stay_within_existing_source_cap(self):
+        raw = (F.HERE / "HdfsKerberosTransferProbe.java").read_bytes()
+        self.assertLessEqual(len(raw),128*1024)
+        self.assertEqual(hashlib.sha256(raw).hexdigest(),F.JAVA_SHA)
+        source=raw.decode();start=source.index('private static String originFrame(')
+        method=source[start:source.index('private static void projectFailure(',start)]
+        for cls,label in self.SITES.items():
+            self.assertIn('case "'+cls+'" -> "'+label+'";',method)
+            self.assertIn(label,F.DIAGNOSTIC_ORIGINS)
+        self.assertNotIn('getMessage(',method)
+
+    def test_finite_data_origins_preserve_failed_result_and_cleanup(self):
+        helper=TicketTests(methodName='test_finite_startup_diagnostic_and_residual_threads_never_grant_credit')
+        for label in self.SITES.values():
+            value=helper.startup_failure();value['diagnostic']=dict(category='invalid_config',origin=label)
+            result=F.validate_java(F.canonical(value),1)
+            self.assertEqual(result['diagnostic'],value['diagnostic'])
+            self.assertFalse(result['success'])
+            self.assertFalse(result['cleanup']['threads_terminated'])
+            self.assertFalse(result['cleanup']['private_material_removed'])
+            self.assertTrue(all(result[key] is False for key in F.JAVA_FALSE))
+            helper.rejected(value,0)
