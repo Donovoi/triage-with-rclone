@@ -73,319 +73,319 @@ import org.apache.kerby.kerberos.kerb.ccache.CredentialCache;
 import org.apache.kerby.kerberos.kerb.type.ticket.TgtTicket;
 
 public final class HdfsKerberosTransferProbe {
-    private static final Path WORK = Path.of("/work");
-    private static final Path ROOT = WORK.resolve("private");
-    private static final Path CONF = ROOT.resolve("krb5.conf");
-    private static final Path CACHE = ROOT.resolve("reader.ccache");
-    private static final Path KEYTAB = ROOT.resolve("service.keytab");
-    private static final Path HTTP_KEYTAB = ROOT.resolve("http.keytab");
-    private static final String MEMBER = "/synthetic";
-    private static final String DENIAL = "SIMPLE authentication is not enabled.  Available:[TOKEN, KERBEROS]";
-    private static final String EXCEPTION = "org.apache.hadoop.security.AccessControlException";
-    private static final List<Process> CHILDREN = new ArrayList<>();
-    private static Set<Long> processBaseline;
-    private static String wireHex = "";
-    private static String rcloneWireHex = "";
-    private static Relay relay;
-    private static String stage = "environment";
-    private static long controlDeadline, totalDeadline, cleanupDeadline, materialDeadline;
-    private static long ioDeadline() { return Math.min(totalDeadline, materialDeadline > 0 ? materialDeadline : cleanupDeadline > 0 ? cleanupDeadline : controlDeadline); }
-    private static org.apache.hadoop.hdfs.server.datanode.DataNode datanode;
-    private static boolean namenodeAttempted, datanodeAttempted, ownerCaptureComplete = true;
-    private static Thread datanodeSslThread;
-    private static boolean datanodeSslCaptured;
-    private static final Path TLS = WORK.resolve("private-tls"), RESOURCES = WORK.resolve("tls-resources"), ACQUIRED = WORK.resolve("acquired");
-    private static final Path PASSWORD = TLS.resolve("password"), STORE = TLS.resolve("server.p12"), TRUST = TLS.resolve("trust.p12"), SSL_XML = RESOURCES.resolve("owned-ssl-server.xml");
-    private static final Map<Path, Object> PRIVATE_DIRS = new LinkedHashMap<>();
-    private static final String[] NAMES = {"empty.bin", "nested/space name.bin", "payload.bin"};
-    private static final int[] SIZES = {0, 4096, 1052673};
-    private static final String[] HASHES = {"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "c8f5d0341d54d951a71b136e6e2afcb14d11ed8489a7ae126a8fee0df6ecf193", "ac6f8d639b2e2c683c08d7deae690d1b6120bd74bc80a39a895481450082c571"};
-    private static final String[] PHASE_NAMES = {"inventory_before", "empty", "small", "missing", "before", "negative", "after", "inventory_after"};
-    private static final Map<String, String> SOURCE_METADATA = new LinkedHashMap<>();
-    private static int acquiredBytes;
-    private static String dnUuid;
-    private static javax.net.ssl.SSLContext tlsContext;
-    private static NameNode namenode;
-    private static DistributedFileSystem filesystem;
-    private static org.apache.hadoop.hdfs.client.impl.LeaseRenewer seedLeaseRenewer;
-    private static UserGroupInformation owner;
-    private static final List<UserGroupInformation> OWNERS = new java.util.concurrent.CopyOnWriteArrayList<>();
-    private static String ownerPrincipal;
-    private static InetSocketAddress endpoint;
-    private static long memberMtime = -1, memberAtime = -1;
-    private static String memberGroup, configurationDigest;
-    private static String diagnosticCategory = "none", diagnosticOrigin = "none";
-    private static final List<String> THREAD_CATEGORIES = List.of("probe_task", "jdk_process_reaper", "jdk_timer",
-        "jdk_executor", "jdk_cleaner", "hadoop_metrics", "hadoop_rpc", "hadoop_fs", "hadoop_namenode",
-        "hadoop_blockmanagement", "hadoop_util", "jetty", "kerby", "other");
-    private static Map<String, Integer> remainingThreads;
-    // These are first-observed intervals, never creation/ownership evidence.
-    private static final List<String> THREAD_PHASES = List.of("tls", "kdc", "owner_login", "format", "namenode",
-        "filesystem", "datanode", "reader", "controls", "shutdown", "unattributed");
-    private static final Map<Thread, String> THREAD_ORIGINS = new java.util.IdentityHashMap<>();
-    private static final Set<String> OBSERVED_PHASES = new java.util.HashSet<>();
-    private static boolean threadObservationIncomplete;
-    private static Map<String, Integer> remainingThreadIntervals;
-    private static Map<String, Map<String, Integer>> remainingThreadMatrix;
-    private static final List<String> TIMER_KINDS = List.of("namenode_metrics", "rpc_idle", "snapshot_gc", "shell_timeout", "ssl_store", "unknown");
-    private static Map<String, Integer> remainingTimerKinds;
-    private enum OwnedCleanupState {
-        not_attempted, observation_incomplete, services_not_stopped, scan_failed,
-        missing, ambiguous, preexisting, unobserved, late, not_daemon, deadline,
-        shutdown_failed, still_alive, terminated
-    }
-    private static OwnedCleanupState gcCleanup = OwnedCleanupState.not_attempted;
-    private static OwnedCleanupState statisticsCleanup = OwnedCleanupState.not_attempted;
-    private static OwnedCleanupState sslCleanup = OwnedCleanupState.not_attempted;
-    private static OwnedCleanupState sslCaptureFailure = OwnedCleanupState.not_attempted;
-    private enum DataNodeSslCapture {
-        not_attempted, checking, observation_incomplete, phase_unobserved,
-        format_timer_missing, format_timer_ended, format_capture_failed, datanode_missing,
-        scan_bound, ambiguous, wrong_thread_type, preexisting, wrong_interval, not_daemon, missing, captured
-    }
-    private static DataNodeSslCapture datanodeSslCapture = DataNodeSslCapture.not_attempted;
-    private enum SeedOperation {
-        not_attempted, registration_wait, registration_check, safe_mode_leave, directory_setup,
-        file_path, existence_check, create, write, sync, close, file_times,
-        directory_permission, directory_times, verify_registration, verify_recursive_list,
-        verify_root_list, verify_nested_list, verify_missing, verify_metadata,
-        verify_read_open, verify_read, verify_read_close, verify_hash, verify_blocks, complete
-    }
-    private enum SeedRole { none, empty, small, payload, unknown }
-    private record SeedCheckpoint(SeedOperation operation, SeedRole role) { }
-    private static volatile SeedCheckpoint seedCheckpoint = new SeedCheckpoint(SeedOperation.not_attempted, SeedRole.none);
-    private static SeedCheckpoint failedSeedCheckpoint;
-    private static URLConnectionFactory formatSslFactory;
-    private static Thread formatSslThread;
-    private static final LinkOption NOFOLLOW = LinkOption.NOFOLLOW_LINKS;
-    private static final int PORT = 19006, MAX_BYTES = 65536, LIFETIME_SECONDS = 120;
-    private static final String CONF_PROPERTY = "java.security.krb5.conf";
-    private static final AtomicBoolean BACKGROUND_FAILURE = new AtomicBoolean();
-    private static final List<Thread> TASKS = new java.util.concurrent.CopyOnWriteArrayList<>();
-    private static final Map<Path, FileState> OWNED_FILES = new LinkedHashMap<>();
-    private static final Map<String, Boolean> CHECKS = new LinkedHashMap<>();
-    private static final Map<String, Boolean> CLEANUP = new LinkedHashMap<>();
-    private static Object workKey, rootKey;
-    private static boolean rootCreated, rootOwned;
-    private static long deadline;
-    private static int observedLifetime, cacheBytes;
+	private static final Path WORK = Path.of("/work");
+	private static final Path ROOT = WORK.resolve("private");
+	private static final Path CONF = ROOT.resolve("krb5.conf");
+	private static final Path CACHE = ROOT.resolve("reader.ccache");
+	private static final Path KEYTAB = ROOT.resolve("service.keytab");
+	private static final Path HTTP_KEYTAB = ROOT.resolve("http.keytab");
+	private static final String MEMBER = "/synthetic";
+	private static final String DENIAL = "SIMPLE authentication is not enabled.  Available:[TOKEN, KERBEROS]";
+	private static final String EXCEPTION = "org.apache.hadoop.security.AccessControlException";
+	private static final List<Process> CHILDREN = new ArrayList<>();
+	private static Set<Long> processBaseline;
+	private static String wireHex = "";
+	private static String rcloneWireHex = "";
+	private static Relay relay;
+	private static String stage = "environment";
+	private static long controlDeadline, totalDeadline, cleanupDeadline, materialDeadline;
+	private static long ioDeadline() { return Math.min(totalDeadline, materialDeadline > 0 ? materialDeadline : cleanupDeadline > 0 ? cleanupDeadline : controlDeadline); }
+	private static org.apache.hadoop.hdfs.server.datanode.DataNode datanode;
+	private static boolean namenodeAttempted, datanodeAttempted, ownerCaptureComplete = true;
+	private static Thread datanodeSslThread;
+	private static boolean datanodeSslCaptured;
+	private static final Path TLS = WORK.resolve("private-tls"), RESOURCES = WORK.resolve("tls-resources"), ACQUIRED = WORK.resolve("acquired");
+	private static final Path PASSWORD = TLS.resolve("password"), STORE = TLS.resolve("server.p12"), TRUST = TLS.resolve("trust.p12"), SSL_XML = RESOURCES.resolve("owned-ssl-server.xml");
+	private static final Map<Path, Object> PRIVATE_DIRS = new LinkedHashMap<>();
+	private static final String[] NAMES = {"empty.bin", "nested/space name.bin", "payload.bin"};
+	private static final int[] SIZES = {0, 4096, 1052673};
+	private static final String[] HASHES = {"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "c8f5d0341d54d951a71b136e6e2afcb14d11ed8489a7ae126a8fee0df6ecf193", "ac6f8d639b2e2c683c08d7deae690d1b6120bd74bc80a39a895481450082c571"};
+	private static final String[] PHASE_NAMES = {"inventory_before", "empty", "small", "missing", "before", "negative", "after", "inventory_after"};
+	private static final Map<String, String> SOURCE_METADATA = new LinkedHashMap<>();
+	private static int acquiredBytes;
+	private static String dnUuid;
+	private static javax.net.ssl.SSLContext tlsContext;
+	private static NameNode namenode;
+	private static DistributedFileSystem filesystem;
+	private static org.apache.hadoop.hdfs.client.impl.LeaseRenewer seedLeaseRenewer;
+	private static UserGroupInformation owner;
+	private static final List<UserGroupInformation> OWNERS = new java.util.concurrent.CopyOnWriteArrayList<>();
+	private static String ownerPrincipal;
+	private static InetSocketAddress endpoint;
+	private static long memberMtime = -1, memberAtime = -1;
+	private static String memberGroup, configurationDigest;
+	private static String diagnosticCategory = "none", diagnosticOrigin = "none";
+	private static final List<String> THREAD_CATEGORIES = List.of("probe_task", "jdk_process_reaper", "jdk_timer",
+		"jdk_executor", "jdk_cleaner", "hadoop_metrics", "hadoop_rpc", "hadoop_fs", "hadoop_namenode",
+		"hadoop_blockmanagement", "hadoop_util", "jetty", "kerby", "other");
+	private static Map<String, Integer> remainingThreads;
+	// These are first-observed intervals, never creation/ownership evidence.
+	private static final List<String> THREAD_PHASES = List.of("tls", "kdc", "owner_login", "format", "namenode",
+		"filesystem", "datanode", "reader", "controls", "shutdown", "unattributed");
+	private static final Map<Thread, String> THREAD_ORIGINS = new java.util.IdentityHashMap<>();
+	private static final Set<String> OBSERVED_PHASES = new java.util.HashSet<>();
+	private static boolean threadObservationIncomplete;
+	private static Map<String, Integer> remainingThreadIntervals;
+	private static Map<String, Map<String, Integer>> remainingThreadMatrix;
+	private static final List<String> TIMER_KINDS = List.of("namenode_metrics", "rpc_idle", "snapshot_gc", "shell_timeout", "ssl_store", "unknown");
+	private static Map<String, Integer> remainingTimerKinds;
+	private enum OwnedCleanupState {
+		not_attempted, observation_incomplete, services_not_stopped, scan_failed,
+		missing, ambiguous, preexisting, unobserved, late, not_daemon, deadline,
+		shutdown_failed, still_alive, terminated
+	}
+	private static OwnedCleanupState gcCleanup = OwnedCleanupState.not_attempted;
+	private static OwnedCleanupState statisticsCleanup = OwnedCleanupState.not_attempted;
+	private static OwnedCleanupState sslCleanup = OwnedCleanupState.not_attempted;
+	private static OwnedCleanupState sslCaptureFailure = OwnedCleanupState.not_attempted;
+	private enum DataNodeSslCapture {
+		not_attempted, checking, observation_incomplete, phase_unobserved,
+		format_timer_missing, format_timer_ended, format_capture_failed, datanode_missing,
+		scan_bound, ambiguous, wrong_thread_type, preexisting, wrong_interval, not_daemon, missing, captured
+	}
+	private static DataNodeSslCapture datanodeSslCapture = DataNodeSslCapture.not_attempted;
+	private enum SeedOperation {
+		not_attempted, registration_wait, registration_check, safe_mode_leave, directory_setup,
+		file_path, existence_check, create, write, sync, close, file_times,
+		directory_permission, directory_times, verify_registration, verify_recursive_list,
+		verify_root_list, verify_nested_list, verify_missing, verify_metadata,
+		verify_read_open, verify_read, verify_read_close, verify_hash, verify_blocks, complete
+	}
+	private enum SeedRole { none, empty, small, payload, unknown }
+	private record SeedCheckpoint(SeedOperation operation, SeedRole role) { }
+	private static volatile SeedCheckpoint seedCheckpoint = new SeedCheckpoint(SeedOperation.not_attempted, SeedRole.none);
+	private static SeedCheckpoint failedSeedCheckpoint;
+	private static URLConnectionFactory formatSslFactory;
+	private static Thread formatSslThread;
+	private static final LinkOption NOFOLLOW = LinkOption.NOFOLLOW_LINKS;
+	private static final int PORT = 19006, MAX_BYTES = 65536, LIFETIME_SECONDS = 120;
+	private static final String CONF_PROPERTY = "java.security.krb5.conf";
+	private static final AtomicBoolean BACKGROUND_FAILURE = new AtomicBoolean();
+	private static final List<Thread> TASKS = new java.util.concurrent.CopyOnWriteArrayList<>();
+	private static final Map<Path, FileState> OWNED_FILES = new LinkedHashMap<>();
+	private static final Map<String, Boolean> CHECKS = new LinkedHashMap<>();
+	private static final Map<String, Boolean> CLEANUP = new LinkedHashMap<>();
+	private static Object workKey, rootKey;
+	private static boolean rootCreated, rootOwned;
+	private static long deadline;
+	private static int observedLifetime, cacheBytes;
 
-    private enum Code {
-        environment_invalid, path_invalid, source_changed, unexpected_files,
-        listener_mismatch, configuration_invalid, deadline_exceeded,
-        positive_ticket_failed, wrong_password_failure_mismatch, wrong_principal_not_rejected,
-        cache_invalid, ticket_time_mismatch, ticket_flags_mismatch,
-        background_failure, io_failure, krb_failure, interrupted, unclassified,
-        cleanup_failed, namenode_failed, child_failed, child_output_invalid, wire_invalid,
-        rclone_positive_failed, rclone_denial_mismatch, rclone_denial_exit_zero, rclone_denial_output_invalid,
-        source_invalid, relay_invalid, tls_invalid, tls_keytool_exit_invalid, tls_store_shape_invalid, tls_certificate_key_invalid, tls_certificate_signature_invalid, tls_certificate_lifetime_invalid, tls_certificate_san_invalid, tls_resource_missing, tls_resource_identity_invalid, tls_resource_ambiguous, datanode_failed, missing_path_mismatch, acquisition_invalid,
-        child_descendant_found, child_reap_failed, child_streams_alive, child_process_drift,
-        rclone_version_nonzero, rclone_version_stderr, rclone_version_mismatch
-    }
-    private static final class Failure extends Exception {
-        final Code code;
-        Failure(Code value) { super(value.name()); code = value; }
-        Failure(Code value, Throwable cause) { super(value.name(), cause); code = value; }
-    }
-    private static void need(boolean value, Code code) throws Failure {
-        if (!value) throw new Failure(code);
-    }
-    private static byte[] readBound(Path path, int maximum) throws Exception {
-        try (var in = Files.newInputStream(path, NOFOLLOW)) {
-            byte[] bytes = in.readNBytes(maximum + 1);
-            need(bytes.length <= maximum, Code.path_invalid);
-            return bytes;
-        }
-    }
-    private static Object directory(Path path, boolean privateOwner) throws Exception {
-        BasicFileAttributes a = Files.readAttributes(path, BasicFileAttributes.class, NOFOLLOW);
-        need(a.isDirectory() && !a.isSymbolicLink() && a.fileKey() != null, Code.path_invalid);
-        if (privateOwner) {
-            need(((Number) Files.getAttribute(path, "unix:uid", NOFOLLOW)).intValue() == 10001
-                && ((Number) Files.getAttribute(path, "unix:gid", NOFOLLOW)).intValue() == 10001
-                && (((Number) Files.getAttribute(path, "unix:mode", NOFOLLOW)).intValue() & 07777) == 0700,
-                Code.path_invalid);
-        }
-        return a.fileKey();
-    }
-    // The exclusive driver mkdir precedes JVM classpath URL construction.
-    // Adopt only its empty private directory and retain the exact identity.
-    private static void adoptResourceDirectory() throws Exception {
-        guardRoot();
-        need(System.nanoTime() < deadline, Code.deadline_exceeded);
-        need(!PRIVATE_DIRS.containsKey(RESOURCES), Code.source_changed);
-        Object key = directory(RESOURCES, true);
-        try (DirectoryStream<Path> stream = Files.newDirectoryStream(RESOURCES)) {
-            need(!stream.iterator().hasNext(), Code.unexpected_files);
-        }
-        guardRoot();
-        need(key.equals(directory(RESOURCES, true)), Code.source_changed);
-        need(System.nanoTime() < deadline, Code.deadline_exceeded);
-        PRIVATE_DIRS.put(RESOURCES, key);
-    }
-    private static void guardRoot() throws Exception {
-        need(workKey.equals(directory(WORK, true)) && rootKey.equals(directory(ROOT, true)), Code.source_changed);
-    }
-    private static final class FileState {
-        final Object key; final byte[] digest; final int size;
-        FileState(Path path) throws Exception {
-            BasicFileAttributes a = Files.readAttributes(path, BasicFileAttributes.class, NOFOLLOW);
-            int maximum = path.getParent().equals(ACQUIRED) ? 1052674 : MAX_BYTES;
-            need(a.isRegularFile() && !a.isSymbolicLink() && a.fileKey() != null && a.size() <= maximum
-                && ((Number)Files.getAttribute(path, "unix:nlink", NOFOLLOW)).intValue() == 1
-                && ((Number)Files.getAttribute(path, "unix:uid", NOFOLLOW)).intValue() == 10001
-                && (((Number)Files.getAttribute(path, "unix:mode", NOFOLLOW)).intValue() & 07777) == 0600, Code.path_invalid);
-            key = a.fileKey(); MessageDigest hash = MessageDigest.getInstance("SHA-256"); int total = 0;
-            byte[] buffer = new byte[4096];
-            try (var input = Files.newInputStream(path, NOFOLLOW)) {
-                int n; while ((n = input.read(buffer)) != -1) {
-                    need(System.nanoTime() < ioDeadline() && (total += n) <= maximum, Code.path_invalid);
-                    hash.update(buffer, 0, n);
-                }
-            } finally { Arrays.fill(buffer, (byte)0); }
-            size = total; digest = hash.digest();
-            BasicFileAttributes b = Files.readAttributes(path, BasicFileAttributes.class, NOFOLLOW);
-            need(key.equals(b.fileKey()) && a.size() == size && b.size() == size
-                && a.lastModifiedTime().equals(b.lastModifiedTime()), Code.source_changed);
-        }
-        void verify(Path path) throws Exception {
-            FileState current = new FileState(path);
-            need(key.equals(current.key) && size == current.size && MessageDigest.isEqual(digest, current.digest), Code.source_changed);
-        }
-    }
-    private static void inventory() throws Exception {
-        guardRoot(); Set<Path> actual = new HashSet<>();
-        for (var dir : PRIVATE_DIRS.entrySet()) {
-            need(dir.getValue().equals(directory(dir.getKey(), true)), Code.source_changed);
-            try (DirectoryStream<Path> stream = Files.newDirectoryStream(dir.getKey())) {
-                for (Path path : stream) { need(actual.size() < 16, Code.unexpected_files); actual.add(path); }
-            }
-        }
-        need(actual.equals(OWNED_FILES.keySet()), Code.unexpected_files);
-        for (var entry : OWNED_FILES.entrySet()) entry.getValue().verify(entry.getKey());
-    }
+	private enum Code {
+		environment_invalid, path_invalid, source_changed, unexpected_files,
+		listener_mismatch, configuration_invalid, deadline_exceeded,
+		positive_ticket_failed, wrong_password_failure_mismatch, wrong_principal_not_rejected,
+		cache_invalid, ticket_time_mismatch, ticket_flags_mismatch,
+		background_failure, io_failure, krb_failure, interrupted, unclassified,
+		cleanup_failed, namenode_failed, child_failed, child_output_invalid, wire_invalid,
+		rclone_positive_failed, rclone_denial_mismatch, rclone_denial_exit_zero, rclone_denial_output_invalid,
+		source_invalid, relay_invalid, tls_invalid, tls_keytool_exit_invalid, tls_store_shape_invalid, tls_certificate_key_invalid, tls_certificate_signature_invalid, tls_certificate_lifetime_invalid, tls_certificate_san_invalid, tls_resource_missing, tls_resource_identity_invalid, tls_resource_ambiguous, datanode_failed, missing_path_mismatch, acquisition_invalid,
+		child_descendant_found, child_reap_failed, child_streams_alive, child_process_drift,
+		rclone_version_nonzero, rclone_version_stderr, rclone_version_mismatch
+	}
+	private static final class Failure extends Exception {
+		final Code code;
+		Failure(Code value) { super(value.name()); code = value; }
+		Failure(Code value, Throwable cause) { super(value.name(), cause); code = value; }
+	}
+	private static void need(boolean value, Code code) throws Failure {
+		if (!value) throw new Failure(code);
+	}
+	private static byte[] readBound(Path path, int maximum) throws Exception {
+		try (var in = Files.newInputStream(path, NOFOLLOW)) {
+			byte[] bytes = in.readNBytes(maximum + 1);
+			need(bytes.length <= maximum, Code.path_invalid);
+			return bytes;
+		}
+	}
+	private static Object directory(Path path, boolean privateOwner) throws Exception {
+		BasicFileAttributes a = Files.readAttributes(path, BasicFileAttributes.class, NOFOLLOW);
+		need(a.isDirectory() && !a.isSymbolicLink() && a.fileKey() != null, Code.path_invalid);
+		if (privateOwner) {
+			need(((Number) Files.getAttribute(path, "unix:uid", NOFOLLOW)).intValue() == 10001
+				&& ((Number) Files.getAttribute(path, "unix:gid", NOFOLLOW)).intValue() == 10001
+				&& (((Number) Files.getAttribute(path, "unix:mode", NOFOLLOW)).intValue() & 07777) == 0700,
+				Code.path_invalid);
+		}
+		return a.fileKey();
+	}
+	// The exclusive driver mkdir precedes JVM classpath URL construction.
+	// Adopt only its empty private directory and retain the exact identity.
+	private static void adoptResourceDirectory() throws Exception {
+		guardRoot();
+		need(System.nanoTime() < deadline, Code.deadline_exceeded);
+		need(!PRIVATE_DIRS.containsKey(RESOURCES), Code.source_changed);
+		Object key = directory(RESOURCES, true);
+		try (DirectoryStream<Path> stream = Files.newDirectoryStream(RESOURCES)) {
+			need(!stream.iterator().hasNext(), Code.unexpected_files);
+		}
+		guardRoot();
+		need(key.equals(directory(RESOURCES, true)), Code.source_changed);
+		need(System.nanoTime() < deadline, Code.deadline_exceeded);
+		PRIVATE_DIRS.put(RESOURCES, key);
+	}
+	private static void guardRoot() throws Exception {
+		need(workKey.equals(directory(WORK, true)) && rootKey.equals(directory(ROOT, true)), Code.source_changed);
+	}
+	private static final class FileState {
+		final Object key; final byte[] digest; final int size;
+		FileState(Path path) throws Exception {
+			BasicFileAttributes a = Files.readAttributes(path, BasicFileAttributes.class, NOFOLLOW);
+			int maximum = path.getParent().equals(ACQUIRED) ? 1052674 : MAX_BYTES;
+			need(a.isRegularFile() && !a.isSymbolicLink() && a.fileKey() != null && a.size() <= maximum
+				&& ((Number)Files.getAttribute(path, "unix:nlink", NOFOLLOW)).intValue() == 1
+				&& ((Number)Files.getAttribute(path, "unix:uid", NOFOLLOW)).intValue() == 10001
+				&& (((Number)Files.getAttribute(path, "unix:mode", NOFOLLOW)).intValue() & 07777) == 0600, Code.path_invalid);
+			key = a.fileKey(); MessageDigest hash = MessageDigest.getInstance("SHA-256"); int total = 0;
+			byte[] buffer = new byte[4096];
+			try (var input = Files.newInputStream(path, NOFOLLOW)) {
+				int n; while ((n = input.read(buffer)) != -1) {
+					need(System.nanoTime() < ioDeadline() && (total += n) <= maximum, Code.path_invalid);
+					hash.update(buffer, 0, n);
+				}
+			} finally { Arrays.fill(buffer, (byte)0); }
+			size = total; digest = hash.digest();
+			BasicFileAttributes b = Files.readAttributes(path, BasicFileAttributes.class, NOFOLLOW);
+			need(key.equals(b.fileKey()) && a.size() == size && b.size() == size
+				&& a.lastModifiedTime().equals(b.lastModifiedTime()), Code.source_changed);
+		}
+		void verify(Path path) throws Exception {
+			FileState current = new FileState(path);
+			need(key.equals(current.key) && size == current.size && MessageDigest.isEqual(digest, current.digest), Code.source_changed);
+		}
+	}
+	private static void inventory() throws Exception {
+		guardRoot(); Set<Path> actual = new HashSet<>();
+		for (var dir : PRIVATE_DIRS.entrySet()) {
+			need(dir.getValue().equals(directory(dir.getKey(), true)), Code.source_changed);
+			try (DirectoryStream<Path> stream = Files.newDirectoryStream(dir.getKey())) {
+				for (Path path : stream) { need(actual.size() < 16, Code.unexpected_files); actual.add(path); }
+			}
+		}
+		need(actual.equals(OWNED_FILES.keySet()), Code.unexpected_files);
+		for (var entry : OWNED_FILES.entrySet()) entry.getValue().verify(entry.getKey());
+	}
 
-    private static void environment(String[] args) throws Exception {
-        need(args.length == 0 && "Linux".equals(System.getProperty("os.name"))
-            && "true".equals(System.getProperty("java.net.preferIPv4Stack")), Code.environment_invalid);
-        for (String key : List.of("JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS", "_JAVA_OPTIONS", "KRB5_CONFIG",
-                "KRB5CCNAME", "KRB5_KTNAME")) need(System.getenv(key) == null, Code.environment_invalid);
-        need(System.getProperty(CONF_PROPERTY) == null, Code.environment_invalid);
-        String status = new String(readBound(Path.of("/proc/self/status"), MAX_BYTES), StandardCharsets.US_ASCII);
-        Map<String, String> fields = new LinkedHashMap<>();
-        for (String line : status.split("\n")) {
-            int colon = line.indexOf(':');
-            if (colon > 0) fields.put(line.substring(0, colon), line.substring(colon + 1).trim());
-        }
-        for (String key : List.of("Uid", "Gid")) need("10001 10001 10001 10001".equals(
-            fields.getOrDefault(key, "").replaceAll("\\s+", " ")), Code.environment_invalid);
-        for (String key : List.of("CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb"))
-            need(fields.getOrDefault(key, "").matches("0{16}"), Code.environment_invalid);
-        need("1".equals(fields.get("NoNewPrivs")) && "2".equals(fields.get("Seccomp")), Code.environment_invalid);
-        Enumeration<NetworkInterface> interfaces = NetworkInterface.getNetworkInterfaces(); int count = 0;
-        while (interfaces.hasMoreElements()) {
-            NetworkInterface iface = interfaces.nextElement(); count++;
-            need("lo".equals(iface.getName()) && iface.isLoopback(), Code.environment_invalid);
-            var addresses = iface.getInetAddresses();
-            while (addresses.hasMoreElements()) need(addresses.nextElement().isLoopbackAddress(), Code.environment_invalid);
-        }
-        need(count == 1, Code.environment_invalid);
-        directory(Path.of("/"), false); workKey = directory(WORK, true);
-        listeners(false);
-        List<ServerSocket> reservations = new ArrayList<>();
-        try {
-            for (int port = 19000; port <= 19007; port++) {
-                ServerSocket socket = new ServerSocket(); reservations.add(socket);
-                socket.bind(new InetSocketAddress(InetAddress.getByAddress(new byte[]{127,0,0,1}), port), 1);
-            }
-        } finally { for (ServerSocket socket : reservations) socket.close(); }
-        need(reservations.size() == 8 && reservations.stream().allMatch(ServerSocket::isClosed), Code.listener_mismatch);
-        listeners(false);
-    }
-    private static void listeners(boolean running) throws Exception {
-        Set<String> found = new HashSet<>();
-        for (String table : List.of("tcp", "tcp6", "udp", "udp6")) {
-            String data = new String(readBound(Path.of("/proc/net/" + table), MAX_BYTES), StandardCharsets.US_ASCII);
-            String[] lines = data.split("\n"); need(lines.length <= 128, Code.listener_mismatch);
-            for (int i = 1; i < lines.length; i++) {
-                String[] fields = lines[i].trim().split("\\s+");
-                need(fields.length >= 4, Code.listener_mismatch);
-                if (table.startsWith("udp") || fields[3].equals("0A"))
-                    need(found.add(table + ":" + fields[1]), Code.listener_mismatch);
-            }
-        }
-        Set<String> expected = new HashSet<>();
-        if (running) {
-            expected.add("tcp:0100007F:4A3E");
-            if (namenode != null) expected.addAll(Set.of("tcp:0100007F:4A38", "tcp:0100007F:4A3B"));
-            if (relay != null) expected.add("tcp:0100007F:4A3F");
-            if (datanode != null) expected.addAll(Set.of("tcp:0100007F:4A39", "tcp:0100007F:4A3A", "tcp:0100007F:4A3C", "tcp:0100007F:4A3D"));
-        }
-        need(found.equals(expected), Code.listener_mismatch);
-    }
-    private static <T> T bounded(Callable<T> call, int seconds, long until) throws Exception {
-        final long taskUntil = Math.min(until, System.nanoTime() + TimeUnit.SECONDS.toNanos(seconds));
-        need(taskUntil - System.nanoTime() > 0, Code.deadline_exceeded);
-        FutureTask<T> task = new FutureTask<>(call);
-        Thread thread = new Thread(task, "synthetic-ticket-task"); thread.setDaemon(true); TASKS.add(thread);
-        T result;
-        try {
-            thread.start();
-            // Thread startup consumes the original budget, never a fresh timeout.
-            long remaining = taskUntil - System.nanoTime();
-            need(remaining > 0, Code.deadline_exceeded);
-            result = task.get(remaining, TimeUnit.NANOSECONDS);
-            need(System.nanoTime() < taskUntil, Code.deadline_exceeded);
-        } catch (TimeoutException e) { task.cancel(true); throw new Failure(Code.deadline_exceeded); }
-        catch (ExecutionException e) {
-            Throwable cause = e.getCause();
-            if (cause instanceof Exception) throw (Exception) cause;
-            // Retain the cause only in memory for closed diagnostic projection.
-            throw new Failure(Code.unclassified, cause);
-        } finally {
-            // Covers startup-budget exhaustion, interruption, and all owned failures.
-            if (!task.isDone()) task.cancel(true);
-            long left = Math.min(TimeUnit.MILLISECONDS.toNanos(200), taskUntil - System.nanoTime());
-            if (left > 0) thread.join(left / 1_000_000L, (int)(left % 1_000_000L));
-        }
-        need(System.nanoTime() < taskUntil, Code.deadline_exceeded);
-        return result;
-    }
-    private static String random(SecureRandom source, int count) {
-        byte[] bytes = new byte[count]; source.nextBytes(bytes);
-        String result = java.util.HexFormat.of().formatHex(bytes); Arrays.fill(bytes, (byte) 0); return result;
-    }
-    private static KOptions options(String principal, String password) {
-        KOptions out = new KOptions();
-        out.add(KrbOption.CLIENT_PRINCIPAL, principal); out.add(KrbOption.USE_PASSWD, true);
-        out.add(KrbOption.USER_PASSWD, password); out.add(KrbOption.LIFE_TIME, LIFETIME_SECONDS);
-        out.add(KrbOption.RENEWABLE_TIME, 0);
-        out.add(KrbKdcOption.RENEWABLE, false); out.add(KrbKdcOption.RENEWABLE_OK, false);
-        out.add(KrbKdcOption.FORWARDABLE, false); out.add(KrbKdcOption.PROXIABLE, false);
-        return out;
-    }
-    private static final class LimitedBuffer extends ByteArrayOutputStream {
-        @Override public synchronized void write(int value) {
-            if (count >= MAX_BYTES) throw new IllegalStateException(); super.write(value);
-        }
-        @Override public synchronized void write(byte[] data, int offset, int length) {
-            if (length < 0 || length > MAX_BYTES - count) throw new IllegalStateException();
-            super.write(data, offset, length);
-        }
-        void erase() { Arrays.fill(buf, (byte) 0); reset(); }
-    }
-    private static int u16(ByteBuffer data) { return Short.toUnsignedInt(data.getShort()); }
-    private static long u32(ByteBuffer data) { return Integer.toUnsignedLong(data.getInt()); }
-    private static byte[] counted(ByteBuffer data, int limit) throws Exception {
-        long length = u32(data); need(length <= limit && length <= data.remaining(), Code.cache_invalid);
-        byte[] bytes = new byte[(int) length]; data.get(bytes); return bytes;
-    }
-    private static void principal(ByteBuffer data, String realm, List<String> components, int type) throws Exception {
-        need(u32(data) == type && u32(data) == components.size(), Code.cache_invalid);
-        need(Arrays.equals(counted(data, 256), realm.getBytes(StandardCharsets.US_ASCII)), Code.cache_invalid);
-        for (String component : components)
-            need(Arrays.equals(counted(data, 256), component.getBytes(StandardCharsets.US_ASCII)), Code.cache_invalid);
-    }
+	private static void environment(String[] args) throws Exception {
+		need(args.length == 0 && "Linux".equals(System.getProperty("os.name"))
+			&& "true".equals(System.getProperty("java.net.preferIPv4Stack")), Code.environment_invalid);
+		for (String key : List.of("JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS", "_JAVA_OPTIONS", "KRB5_CONFIG",
+				"KRB5CCNAME", "KRB5_KTNAME")) need(System.getenv(key) == null, Code.environment_invalid);
+		need(System.getProperty(CONF_PROPERTY) == null, Code.environment_invalid);
+		String status = new String(readBound(Path.of("/proc/self/status"), MAX_BYTES), StandardCharsets.US_ASCII);
+		Map<String, String> fields = new LinkedHashMap<>();
+		for (String line : status.split("\n")) {
+			int colon = line.indexOf(':');
+			if (colon > 0) fields.put(line.substring(0, colon), line.substring(colon + 1).trim());
+		}
+		for (String key : List.of("Uid", "Gid")) need("10001 10001 10001 10001".equals(
+			fields.getOrDefault(key, "").replaceAll("\\s+", " ")), Code.environment_invalid);
+		for (String key : List.of("CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb"))
+			need(fields.getOrDefault(key, "").matches("0{16}"), Code.environment_invalid);
+		need("1".equals(fields.get("NoNewPrivs")) && "2".equals(fields.get("Seccomp")), Code.environment_invalid);
+		Enumeration<NetworkInterface> interfaces = NetworkInterface.getNetworkInterfaces(); int count = 0;
+		while (interfaces.hasMoreElements()) {
+			NetworkInterface iface = interfaces.nextElement(); count++;
+			need("lo".equals(iface.getName()) && iface.isLoopback(), Code.environment_invalid);
+			var addresses = iface.getInetAddresses();
+			while (addresses.hasMoreElements()) need(addresses.nextElement().isLoopbackAddress(), Code.environment_invalid);
+		}
+		need(count == 1, Code.environment_invalid);
+		directory(Path.of("/"), false); workKey = directory(WORK, true);
+		listeners(false);
+		List<ServerSocket> reservations = new ArrayList<>();
+		try {
+			for (int port = 19000; port <= 19007; port++) {
+				ServerSocket socket = new ServerSocket(); reservations.add(socket);
+				socket.bind(new InetSocketAddress(InetAddress.getByAddress(new byte[]{127,0,0,1}), port), 1);
+			}
+		} finally { for (ServerSocket socket : reservations) socket.close(); }
+		need(reservations.size() == 8 && reservations.stream().allMatch(ServerSocket::isClosed), Code.listener_mismatch);
+		listeners(false);
+	}
+	private static void listeners(boolean running) throws Exception {
+		Set<String> found = new HashSet<>();
+		for (String table : List.of("tcp", "tcp6", "udp", "udp6")) {
+			String data = new String(readBound(Path.of("/proc/net/" + table), MAX_BYTES), StandardCharsets.US_ASCII);
+			String[] lines = data.split("\n"); need(lines.length <= 128, Code.listener_mismatch);
+			for (int i = 1; i < lines.length; i++) {
+				String[] fields = lines[i].trim().split("\\s+");
+				need(fields.length >= 4, Code.listener_mismatch);
+				if (table.startsWith("udp") || fields[3].equals("0A"))
+					need(found.add(table + ":" + fields[1]), Code.listener_mismatch);
+			}
+		}
+		Set<String> expected = new HashSet<>();
+		if (running) {
+			expected.add("tcp:0100007F:4A3E");
+			if (namenode != null) expected.addAll(Set.of("tcp:0100007F:4A38", "tcp:0100007F:4A3B"));
+			if (relay != null) expected.add("tcp:0100007F:4A3F");
+			if (datanode != null) expected.addAll(Set.of("tcp:0100007F:4A39", "tcp:0100007F:4A3A", "tcp:0100007F:4A3C", "tcp:0100007F:4A3D"));
+		}
+		need(found.equals(expected), Code.listener_mismatch);
+	}
+	private static <T> T bounded(Callable<T> call, int seconds, long until) throws Exception {
+		final long taskUntil = Math.min(until, System.nanoTime() + TimeUnit.SECONDS.toNanos(seconds));
+		need(taskUntil - System.nanoTime() > 0, Code.deadline_exceeded);
+		FutureTask<T> task = new FutureTask<>(call);
+		Thread thread = new Thread(task, "synthetic-ticket-task"); thread.setDaemon(true); TASKS.add(thread);
+		T result;
+		try {
+			thread.start();
+			// Thread startup consumes the original budget, never a fresh timeout.
+			long remaining = taskUntil - System.nanoTime();
+			need(remaining > 0, Code.deadline_exceeded);
+			result = task.get(remaining, TimeUnit.NANOSECONDS);
+			need(System.nanoTime() < taskUntil, Code.deadline_exceeded);
+		} catch (TimeoutException e) { task.cancel(true); throw new Failure(Code.deadline_exceeded); }
+		catch (ExecutionException e) {
+			Throwable cause = e.getCause();
+			if (cause instanceof Exception) throw (Exception) cause;
+			// Retain the cause only in memory for closed diagnostic projection.
+			throw new Failure(Code.unclassified, cause);
+		} finally {
+			// Covers startup-budget exhaustion, interruption, and all owned failures.
+			if (!task.isDone()) task.cancel(true);
+			long left = Math.min(TimeUnit.MILLISECONDS.toNanos(200), taskUntil - System.nanoTime());
+			if (left > 0) thread.join(left / 1_000_000L, (int)(left % 1_000_000L));
+		}
+		need(System.nanoTime() < taskUntil, Code.deadline_exceeded);
+		return result;
+	}
+	private static String random(SecureRandom source, int count) {
+		byte[] bytes = new byte[count]; source.nextBytes(bytes);
+		String result = java.util.HexFormat.of().formatHex(bytes); Arrays.fill(bytes, (byte) 0); return result;
+	}
+	private static KOptions options(String principal, String password) {
+		KOptions out = new KOptions();
+		out.add(KrbOption.CLIENT_PRINCIPAL, principal); out.add(KrbOption.USE_PASSWD, true);
+		out.add(KrbOption.USER_PASSWD, password); out.add(KrbOption.LIFE_TIME, LIFETIME_SECONDS);
+		out.add(KrbOption.RENEWABLE_TIME, 0);
+		out.add(KrbKdcOption.RENEWABLE, false); out.add(KrbKdcOption.RENEWABLE_OK, false);
+		out.add(KrbKdcOption.FORWARDABLE, false); out.add(KrbKdcOption.PROXIABLE, false);
+		return out;
+	}
+	private static final class LimitedBuffer extends ByteArrayOutputStream {
+		@Override public synchronized void write(int value) {
+			if (count >= MAX_BYTES) throw new IllegalStateException(); super.write(value);
+		}
+		@Override public synchronized void write(byte[] data, int offset, int length) {
+			if (length < 0 || length > MAX_BYTES - count) throw new IllegalStateException();
+			super.write(data, offset, length);
+		}
+		void erase() { Arrays.fill(buf, (byte) 0); reset(); }
+	}
+	private static int u16(ByteBuffer data) { return Short.toUnsignedInt(data.getShort()); }
+	private static long u32(ByteBuffer data) { return Integer.toUnsignedLong(data.getInt()); }
+	private static byte[] counted(ByteBuffer data, int limit) throws Exception {
+		long length = u32(data); need(length <= limit && length <= data.remaining(), Code.cache_invalid);
+		byte[] bytes = new byte[(int) length]; data.get(bytes); return bytes;
+	}
+	private static void principal(ByteBuffer data, String realm, List<String> components, int type) throws Exception {
+		need(u32(data) == type && u32(data) == components.size(), Code.cache_invalid);
+		need(Arrays.equals(counted(data, 256), realm.getBytes(StandardCharsets.US_ASCII)), Code.cache_invalid);
+		for (String component : components)
+			need(Arrays.equals(counted(data, 256), component.getBytes(StandardCharsets.US_ASCII)), Code.cache_invalid);
+	}
 	private static void inspectCache(byte[] bytes, String realm, String reader, long before, long after) throws Exception {
 		// Independent minimal FILEv3 parser; no Kerby cache reader or service ticket.
 		need(bytes.length > 100 && bytes.length <= MAX_BYTES, Code.cache_invalid);
@@ -421,75 +421,75 @@ public final class HdfsKerberosTransferProbe {
 			MessageDigest.getInstance("SHA-256").digest(bytes)), Code.source_changed);
 		cacheBytes = bytes.length; inventory();
 	}
-    private static void constrainConfig(SimpleKdcServer server, KrbConfig clientConfig, String realm) throws Exception {
-        server.setWorkDir(ROOT.toFile()); server.setKdcRealm(realm); server.setKdcHost("127.0.0.1");
-        server.setKdcTcpPort(PORT); server.setAllowTcp(true); server.setAllowUdp(false);
-        KdcConfig cfg = server.getKdcConfig();
-        cfg.setBoolean(KdcConfigKey.KRB_DEBUG, false); cfg.setBoolean(KdcConfigKey.PREAUTH_REQUIRED, true);
-        cfg.setBoolean(KdcConfigKey.PA_ENC_TIMESTAMP_REQUIRED, true); cfg.setBoolean(KdcConfigKey.ALLOW_TOKEN_PREAUTH, false);
-        cfg.setBoolean(KdcConfigKey.EMPTY_ADDRESSES_ALLOWED, true); cfg.setBoolean(KdcConfigKey.RENEWABLE_ALLOWED, false);
-        cfg.setBoolean(KdcConfigKey.FORWARDABLE_ALLOWED, false); cfg.setBoolean(KdcConfigKey.PROXIABLE_ALLOWED, false);
-        cfg.setBoolean(KdcConfigKey.POSTDATED_ALLOWED, false);
-        cfg.setLong(KdcConfigKey.ALLOWABLE_CLOCKSKEW, 5L);
-        cfg.setLong(KdcConfigKey.MINIMUM_TICKET_LIFETIME, 1L);
-        cfg.setLong(KdcConfigKey.MAXIMUM_TICKET_LIFETIME, 120L);
-        cfg.setLong(KdcConfigKey.MAXIMUM_RENEWABLE_LIFETIME, 0L);
-        cfg.setString(KdcConfigKey.ENCRYPTION_TYPES, "aes128-cts-hmac-sha1-96");
-        clientConfig.setBoolean(KrbConfigKey.KRB_DEBUG, false);
-        clientConfig.setBoolean(KrbConfigKey.DNS_LOOKUP_KDC, false); clientConfig.setBoolean(KrbConfigKey.DNS_LOOKUP_REALM, false);
-        clientConfig.setBoolean(KrbConfigKey.ALLOW_WEAK_CRYPTO, false);
-        clientConfig.setString(KrbConfigKey.PERMITTED_ENCTYPES, "aes128-cts-hmac-sha1-96");
-        clientConfig.setString(KrbConfigKey.DEFAULT_TKT_ENCTYPES, "aes128-cts-hmac-sha1-96");
-        clientConfig.setString(KrbConfigKey.DEFAULT_TGS_ENCTYPES, "aes128-cts-hmac-sha1-96");
-        server.getKrbClient().setTimeout(5000); // Tagged KrbNetwork uses milliseconds, not seconds.
-        need(server.getKdcSetting().allowTcp() && !server.getKdcSetting().allowUdp()
-            && server.getKdcSetting().getKdcTcpPort() == PORT
-            && "127.0.0.1".equals(server.getKdcSetting().getKdcHost()), Code.configuration_invalid);
-    }
-    private static void replaceGeneratedConfig(String realm) throws Exception {
-        guardRoot();
-        BasicFileAttributes before = Files.readAttributes(CONF, BasicFileAttributes.class, NOFOLLOW);
-        need(before.isRegularFile() && !before.isSymbolicLink() && before.size() <= MAX_BYTES
-            && ((Number) Files.getAttribute(CONF, "unix:nlink", NOFOLLOW)).intValue() == 1, Code.path_invalid);
-        Files.setPosixFilePermissions(CONF, PosixFilePermissions.fromString("rw-------"));
-        // SimpleKdcServer's template says localhost; replace only its owned file
-        // before client init. No system config or environment is modified.
-        String content = "[libdefaults]\n default_realm = " + realm
-            + "\n dns_lookup_kdc = false\n dns_lookup_realm = false\n rdns = false\n udp_preference_limit = 1\n"
-            + "[realms]\n " + realm + " = {\n  kdc = 127.0.0.1:19006\n }\n";
-        try (FileChannel channel = FileChannel.open(CONF, StandardOpenOption.WRITE, NOFOLLOW)) {
-            channel.truncate(0); ByteBuffer data = StandardCharsets.US_ASCII.encode(content);
-            while (data.hasRemaining()) channel.write(data); channel.force(true);
-        }
-        OWNED_FILES.put(CONF, new FileState(CONF));
-        need(before.fileKey().equals(OWNED_FILES.get(CONF).key)
-            && CONF.toString().equals(System.getProperty(CONF_PROPERTY)), Code.source_changed);
-        inventory();
-    }
-    private static Set<Long> threadIds() {
-        Set<Long> ids = new HashSet<>();
-        for (Thread thread : Thread.getAllStackTraces().keySet()) if (thread.isAlive()) ids.add(thread.getId());
-        return ids;
-    }
-    private static String linkageCategory(LinkageError failure) {
-        // Exact JDK classes only; no exception message or unknown class name is exported.
-        return switch (failure.getClass().getName()) {
-            case "java.lang.NoSuchMethodError" -> "linkage_no_such_method";
-            case "java.lang.NoSuchFieldError" -> "linkage_no_such_field";
-            case "java.lang.AbstractMethodError" -> "linkage_abstract_method";
-            case "java.lang.IllegalAccessError" -> "linkage_illegal_access";
-            case "java.lang.InstantiationError" -> "linkage_instantiation";
-            case "java.lang.IncompatibleClassChangeError" -> "linkage_incompatible_class";
-            case "java.lang.ExceptionInInitializerError" -> "linkage_initializer";
-            case "java.lang.BootstrapMethodError" -> "linkage_bootstrap";
-            case "java.lang.ClassCircularityError" -> "linkage_circularity";
-            case "java.lang.ClassFormatError" -> "linkage_class_format";
-            case "java.lang.UnsupportedClassVersionError" -> "linkage_class_version";
-            case "java.lang.UnsatisfiedLinkError" -> "linkage_native";
-            case "java.lang.VerifyError" -> "linkage_verify";
-            default -> "linkage_failure";
-        };
-    }
+	private static void constrainConfig(SimpleKdcServer server, KrbConfig clientConfig, String realm) throws Exception {
+		server.setWorkDir(ROOT.toFile()); server.setKdcRealm(realm); server.setKdcHost("127.0.0.1");
+		server.setKdcTcpPort(PORT); server.setAllowTcp(true); server.setAllowUdp(false);
+		KdcConfig cfg = server.getKdcConfig();
+		cfg.setBoolean(KdcConfigKey.KRB_DEBUG, false); cfg.setBoolean(KdcConfigKey.PREAUTH_REQUIRED, true);
+		cfg.setBoolean(KdcConfigKey.PA_ENC_TIMESTAMP_REQUIRED, true); cfg.setBoolean(KdcConfigKey.ALLOW_TOKEN_PREAUTH, false);
+		cfg.setBoolean(KdcConfigKey.EMPTY_ADDRESSES_ALLOWED, true); cfg.setBoolean(KdcConfigKey.RENEWABLE_ALLOWED, false);
+		cfg.setBoolean(KdcConfigKey.FORWARDABLE_ALLOWED, false); cfg.setBoolean(KdcConfigKey.PROXIABLE_ALLOWED, false);
+		cfg.setBoolean(KdcConfigKey.POSTDATED_ALLOWED, false);
+		cfg.setLong(KdcConfigKey.ALLOWABLE_CLOCKSKEW, 5L);
+		cfg.setLong(KdcConfigKey.MINIMUM_TICKET_LIFETIME, 1L);
+		cfg.setLong(KdcConfigKey.MAXIMUM_TICKET_LIFETIME, 120L);
+		cfg.setLong(KdcConfigKey.MAXIMUM_RENEWABLE_LIFETIME, 0L);
+		cfg.setString(KdcConfigKey.ENCRYPTION_TYPES, "aes128-cts-hmac-sha1-96");
+		clientConfig.setBoolean(KrbConfigKey.KRB_DEBUG, false);
+		clientConfig.setBoolean(KrbConfigKey.DNS_LOOKUP_KDC, false); clientConfig.setBoolean(KrbConfigKey.DNS_LOOKUP_REALM, false);
+		clientConfig.setBoolean(KrbConfigKey.ALLOW_WEAK_CRYPTO, false);
+		clientConfig.setString(KrbConfigKey.PERMITTED_ENCTYPES, "aes128-cts-hmac-sha1-96");
+		clientConfig.setString(KrbConfigKey.DEFAULT_TKT_ENCTYPES, "aes128-cts-hmac-sha1-96");
+		clientConfig.setString(KrbConfigKey.DEFAULT_TGS_ENCTYPES, "aes128-cts-hmac-sha1-96");
+		server.getKrbClient().setTimeout(5000); // Tagged KrbNetwork uses milliseconds, not seconds.
+		need(server.getKdcSetting().allowTcp() && !server.getKdcSetting().allowUdp()
+			&& server.getKdcSetting().getKdcTcpPort() == PORT
+			&& "127.0.0.1".equals(server.getKdcSetting().getKdcHost()), Code.configuration_invalid);
+	}
+	private static void replaceGeneratedConfig(String realm) throws Exception {
+		guardRoot();
+		BasicFileAttributes before = Files.readAttributes(CONF, BasicFileAttributes.class, NOFOLLOW);
+		need(before.isRegularFile() && !before.isSymbolicLink() && before.size() <= MAX_BYTES
+			&& ((Number) Files.getAttribute(CONF, "unix:nlink", NOFOLLOW)).intValue() == 1, Code.path_invalid);
+		Files.setPosixFilePermissions(CONF, PosixFilePermissions.fromString("rw-------"));
+		// SimpleKdcServer's template says localhost; replace only its owned file
+		// before client init. No system config or environment is modified.
+		String content = "[libdefaults]\n default_realm = " + realm
+			+ "\n dns_lookup_kdc = false\n dns_lookup_realm = false\n rdns = false\n udp_preference_limit = 1\n"
+			+ "[realms]\n " + realm + " = {\n  kdc = 127.0.0.1:19006\n }\n";
+		try (FileChannel channel = FileChannel.open(CONF, StandardOpenOption.WRITE, NOFOLLOW)) {
+			channel.truncate(0); ByteBuffer data = StandardCharsets.US_ASCII.encode(content);
+			while (data.hasRemaining()) channel.write(data); channel.force(true);
+		}
+		OWNED_FILES.put(CONF, new FileState(CONF));
+		need(before.fileKey().equals(OWNED_FILES.get(CONF).key)
+			&& CONF.toString().equals(System.getProperty(CONF_PROPERTY)), Code.source_changed);
+		inventory();
+	}
+	private static Set<Long> threadIds() {
+		Set<Long> ids = new HashSet<>();
+		for (Thread thread : Thread.getAllStackTraces().keySet()) if (thread.isAlive()) ids.add(thread.getId());
+		return ids;
+	}
+	private static String linkageCategory(LinkageError failure) {
+		// Exact JDK classes only; no exception message or unknown class name is exported.
+		return switch (failure.getClass().getName()) {
+			case "java.lang.NoSuchMethodError" -> "linkage_no_such_method";
+			case "java.lang.NoSuchFieldError" -> "linkage_no_such_field";
+			case "java.lang.AbstractMethodError" -> "linkage_abstract_method";
+			case "java.lang.IllegalAccessError" -> "linkage_illegal_access";
+			case "java.lang.InstantiationError" -> "linkage_instantiation";
+			case "java.lang.IncompatibleClassChangeError" -> "linkage_incompatible_class";
+			case "java.lang.ExceptionInInitializerError" -> "linkage_initializer";
+			case "java.lang.BootstrapMethodError" -> "linkage_bootstrap";
+			case "java.lang.ClassCircularityError" -> "linkage_circularity";
+			case "java.lang.ClassFormatError" -> "linkage_class_format";
+			case "java.lang.UnsupportedClassVersionError" -> "linkage_class_version";
+			case "java.lang.UnsatisfiedLinkError" -> "linkage_native";
+			case "java.lang.VerifyError" -> "linkage_verify";
+			default -> "linkage_failure";
+		};
+	}
 	private static String originFrame(StackTraceElement frame) {
 		// Only fixed markers leave this process.
 		return switch (frame.getClassName()) {
@@ -854,105 +854,105 @@ public final class HdfsKerberosTransferProbe {
 		remainingTimerKinds = timers;
 		return counts;
 	}
-    private static boolean statisticsCleanerFrame(Thread thread) {
-        StackTraceElement[] frames = thread.getStackTrace();
-        for (int i = 0; i < frames.length && i < 32; i++) {
-            if (frames[i].getClassName().equals("org.apache.hadoop.fs.FileSystem$Statistics$StatisticsDataReferenceCleaner")
-                && frames[i].getMethodName().equals("run")) return true;
-        }
-        return false;
-    }
-    private static OwnedCleanupState stopOwnedHelper(boolean gc, Set<Long> baseline, long until) {
-        // Private disposable JVM only: stop no shared/preexisting or ambiguous helper.
-        // All owned users must have closed before the process-wide statistics
-        // cleaner can use its pinned interrupt-and-exit lifecycle.
-        if (!threadObservationsComplete()) return OwnedCleanupState.observation_incomplete;
-        if (!List.of("children_reaped", "relay_closed", "filesystem_closed", "namenode_stop_returned", "datanode_stop_returned", "datanode_ssl_timer_reaped",
-            "owner_logged_out", "kdc_stop_returned").stream().allMatch(k -> Boolean.TRUE.equals(CLEANUP.get(k))))
-            return OwnedCleanupState.services_not_stopped;
-        Thread target = null;
-        try {
-            int live = 0;
-            for (Thread thread : Thread.getAllStackTraces().keySet()) {
-                if (!thread.isAlive()) continue;
-                if (++live > 128) return OwnedCleanupState.scan_failed;
-                if (System.nanoTime() >= until) return OwnedCleanupState.deadline;
-                boolean matches = gc ? thread.getClass() == GcTimeMonitor.class
-                    : thread.getClass() == SubjectInheritingThread.class && statisticsCleanerFrame(thread);
-                if (!matches) continue;
-                if (target != null) return OwnedCleanupState.ambiguous;
-                target = thread;
-            }
-            if (target == null) return OwnedCleanupState.missing;
-            if (baseline.contains(target.getId())) return OwnedCleanupState.preexisting;
-            if (!THREAD_ORIGINS.containsKey(target)) return OwnedCleanupState.unobserved;
-            if (!THREAD_ORIGINS.get(target).equals(gc ? "namenode" : "filesystem")) return OwnedCleanupState.late;
-            if (!target.isDaemon()) return OwnedCleanupState.not_daemon;
-        } catch (Throwable ignored) { return OwnedCleanupState.scan_failed; }
-        try {
-            if (System.nanoTime() >= until) return OwnedCleanupState.deadline;
-            if (gc) ((GcTimeMonitor) target).shutdown();
-            // Both exact pinned work loops explicitly return on interruption.
-            target.interrupt();
-            long remaining = until - System.nanoTime();
-            if (remaining <= 0) return OwnedCleanupState.deadline;
-            target.join(remaining / 1_000_000L, (int)(remaining % 1_000_000L));
-            return target.isAlive() ? OwnedCleanupState.still_alive : OwnedCleanupState.terminated;
-        } catch (InterruptedException ignored) {
-            Thread.currentThread().interrupt(); return OwnedCleanupState.shutdown_failed;
-        } catch (Throwable ignored) { return OwnedCleanupState.shutdown_failed; }
-    }
-    private static OwnedCleanupState inspectFormatSslTimer(Set<Long> baseline, long until, boolean capture) {
-        // NameNode.format has already initialized Util through namespace URI conversion.
-        // Match the timer privately, retaining its exact object before any later service.
-        if (threadObservationIncomplete || !OBSERVED_PHASES.contains("format"))
-            return OwnedCleanupState.observation_incomplete;
-        if (formatSslFactory == null || formatSslFactory.getClass() != URLConnectionFactory.class)
-            return OwnedCleanupState.missing;
-        Thread target = null;
-        try {
-            int live = 0;
-            for (Thread thread : Thread.getAllStackTraces().keySet()) {
-                if (!thread.isAlive()) continue;
-                if (++live > 128) return OwnedCleanupState.scan_failed;
-                if (System.nanoTime() >= until) return OwnedCleanupState.deadline;
-                if (!thread.getName().equals("SSL Certificates Store Monitor")) continue;
-                if (!thread.getClass().getName().equals("java.util.TimerThread")) return OwnedCleanupState.scan_failed;
-                if (target != null) return OwnedCleanupState.ambiguous;
-                target = thread;
-            }
-            if (target == null) return OwnedCleanupState.missing;
-            if (baseline.contains(target.getId())) return OwnedCleanupState.preexisting;
-            if (!THREAD_ORIGINS.containsKey(target)) return OwnedCleanupState.unobserved;
-            if (!THREAD_ORIGINS.get(target).equals("format")) return OwnedCleanupState.late;
-            if (!target.isDaemon()) return OwnedCleanupState.not_daemon;
-            if (capture) {
-                if (formatSslThread != null) return OwnedCleanupState.ambiguous;
-                formatSslThread = target;
-            } else if (target != formatSslThread) return OwnedCleanupState.unobserved;
-            return null;
-        } catch (Throwable ignored) { return OwnedCleanupState.scan_failed; }
-    }
-    private static OwnedCleanupState stopOwnedFormatSsl(Set<Long> baseline, long until) {
-        if (sslCaptureFailure != null) return sslCaptureFailure;
-        if (!threadObservationsComplete()) return OwnedCleanupState.observation_incomplete;
-        if (!List.of("children_reaped", "relay_closed", "filesystem_closed", "namenode_stop_returned", "datanode_stop_returned", "datanode_ssl_timer_reaped",
-            "owner_logged_out", "kdc_stop_returned").stream().allMatch(k -> Boolean.TRUE.equals(CLEANUP.get(k))))
-            return OwnedCleanupState.services_not_stopped;
-        OwnedCleanupState invalid = inspectFormatSslTimer(baseline, until, false);
-        if (invalid != null) return invalid;
-        try {
-            if (System.nanoTime() >= until) return OwnedCleanupState.deadline;
-            // Public lifecycle of this retained process-local factory; never interrupt a TimerThread.
-            formatSslFactory.destroy();
-            long remaining = until - System.nanoTime();
-            if (remaining <= 0) return OwnedCleanupState.deadline;
-            formatSslThread.join(remaining / 1_000_000L, (int)(remaining % 1_000_000L));
-            return formatSslThread.isAlive() ? OwnedCleanupState.still_alive : OwnedCleanupState.terminated;
-        } catch (InterruptedException ignored) {
-            Thread.currentThread().interrupt(); return OwnedCleanupState.shutdown_failed;
-        } catch (Throwable ignored) { return OwnedCleanupState.shutdown_failed; }
-    }
+	private static boolean statisticsCleanerFrame(Thread thread) {
+		StackTraceElement[] frames = thread.getStackTrace();
+		for (int i = 0; i < frames.length && i < 32; i++) {
+			if (frames[i].getClassName().equals("org.apache.hadoop.fs.FileSystem$Statistics$StatisticsDataReferenceCleaner")
+				&& frames[i].getMethodName().equals("run")) return true;
+		}
+		return false;
+	}
+	private static OwnedCleanupState stopOwnedHelper(boolean gc, Set<Long> baseline, long until) {
+		// Private disposable JVM only: stop no shared/preexisting or ambiguous helper.
+		// All owned users must have closed before the process-wide statistics
+		// cleaner can use its pinned interrupt-and-exit lifecycle.
+		if (!threadObservationsComplete()) return OwnedCleanupState.observation_incomplete;
+		if (!List.of("children_reaped", "relay_closed", "filesystem_closed", "namenode_stop_returned", "datanode_stop_returned", "datanode_ssl_timer_reaped",
+			"owner_logged_out", "kdc_stop_returned").stream().allMatch(k -> Boolean.TRUE.equals(CLEANUP.get(k))))
+			return OwnedCleanupState.services_not_stopped;
+		Thread target = null;
+		try {
+			int live = 0;
+			for (Thread thread : Thread.getAllStackTraces().keySet()) {
+				if (!thread.isAlive()) continue;
+				if (++live > 128) return OwnedCleanupState.scan_failed;
+				if (System.nanoTime() >= until) return OwnedCleanupState.deadline;
+				boolean matches = gc ? thread.getClass() == GcTimeMonitor.class
+					: thread.getClass() == SubjectInheritingThread.class && statisticsCleanerFrame(thread);
+				if (!matches) continue;
+				if (target != null) return OwnedCleanupState.ambiguous;
+				target = thread;
+			}
+			if (target == null) return OwnedCleanupState.missing;
+			if (baseline.contains(target.getId())) return OwnedCleanupState.preexisting;
+			if (!THREAD_ORIGINS.containsKey(target)) return OwnedCleanupState.unobserved;
+			if (!THREAD_ORIGINS.get(target).equals(gc ? "namenode" : "filesystem")) return OwnedCleanupState.late;
+			if (!target.isDaemon()) return OwnedCleanupState.not_daemon;
+		} catch (Throwable ignored) { return OwnedCleanupState.scan_failed; }
+		try {
+			if (System.nanoTime() >= until) return OwnedCleanupState.deadline;
+			if (gc) ((GcTimeMonitor) target).shutdown();
+			// Both exact pinned work loops explicitly return on interruption.
+			target.interrupt();
+			long remaining = until - System.nanoTime();
+			if (remaining <= 0) return OwnedCleanupState.deadline;
+			target.join(remaining / 1_000_000L, (int)(remaining % 1_000_000L));
+			return target.isAlive() ? OwnedCleanupState.still_alive : OwnedCleanupState.terminated;
+		} catch (InterruptedException ignored) {
+			Thread.currentThread().interrupt(); return OwnedCleanupState.shutdown_failed;
+		} catch (Throwable ignored) { return OwnedCleanupState.shutdown_failed; }
+	}
+	private static OwnedCleanupState inspectFormatSslTimer(Set<Long> baseline, long until, boolean capture) {
+		// NameNode.format has already initialized Util through namespace URI conversion.
+		// Match the timer privately, retaining its exact object before any later service.
+		if (threadObservationIncomplete || !OBSERVED_PHASES.contains("format"))
+			return OwnedCleanupState.observation_incomplete;
+		if (formatSslFactory == null || formatSslFactory.getClass() != URLConnectionFactory.class)
+			return OwnedCleanupState.missing;
+		Thread target = null;
+		try {
+			int live = 0;
+			for (Thread thread : Thread.getAllStackTraces().keySet()) {
+				if (!thread.isAlive()) continue;
+				if (++live > 128) return OwnedCleanupState.scan_failed;
+				if (System.nanoTime() >= until) return OwnedCleanupState.deadline;
+				if (!thread.getName().equals("SSL Certificates Store Monitor")) continue;
+				if (!thread.getClass().getName().equals("java.util.TimerThread")) return OwnedCleanupState.scan_failed;
+				if (target != null) return OwnedCleanupState.ambiguous;
+				target = thread;
+			}
+			if (target == null) return OwnedCleanupState.missing;
+			if (baseline.contains(target.getId())) return OwnedCleanupState.preexisting;
+			if (!THREAD_ORIGINS.containsKey(target)) return OwnedCleanupState.unobserved;
+			if (!THREAD_ORIGINS.get(target).equals("format")) return OwnedCleanupState.late;
+			if (!target.isDaemon()) return OwnedCleanupState.not_daemon;
+			if (capture) {
+				if (formatSslThread != null) return OwnedCleanupState.ambiguous;
+				formatSslThread = target;
+			} else if (target != formatSslThread) return OwnedCleanupState.unobserved;
+			return null;
+		} catch (Throwable ignored) { return OwnedCleanupState.scan_failed; }
+	}
+	private static OwnedCleanupState stopOwnedFormatSsl(Set<Long> baseline, long until) {
+		if (sslCaptureFailure != null) return sslCaptureFailure;
+		if (!threadObservationsComplete()) return OwnedCleanupState.observation_incomplete;
+		if (!List.of("children_reaped", "relay_closed", "filesystem_closed", "namenode_stop_returned", "datanode_stop_returned", "datanode_ssl_timer_reaped",
+			"owner_logged_out", "kdc_stop_returned").stream().allMatch(k -> Boolean.TRUE.equals(CLEANUP.get(k))))
+			return OwnedCleanupState.services_not_stopped;
+		OwnedCleanupState invalid = inspectFormatSslTimer(baseline, until, false);
+		if (invalid != null) return invalid;
+		try {
+			if (System.nanoTime() >= until) return OwnedCleanupState.deadline;
+			// Public lifecycle of this retained process-local factory; never interrupt a TimerThread.
+			formatSslFactory.destroy();
+			long remaining = until - System.nanoTime();
+			if (remaining <= 0) return OwnedCleanupState.deadline;
+			formatSslThread.join(remaining / 1_000_000L, (int)(remaining % 1_000_000L));
+			return formatSslThread.isAlive() ? OwnedCleanupState.still_alive : OwnedCleanupState.terminated;
+		} catch (InterruptedException ignored) {
+			Thread.currentThread().interrupt(); return OwnedCleanupState.shutdown_failed;
+		} catch (Throwable ignored) { return OwnedCleanupState.shutdown_failed; }
+	}
 	private static void cleanup(SimpleKdcServer server, Set<Long> baseline) {
 		boolean stopped = server == null;
 		try {
@@ -1022,50 +1022,50 @@ public final class HdfsKerberosTransferProbe {
 		CLEANUP.put("process_property_restored", restored);
 		CLEANUP.put("cleanup_completed", true);
 	}
-    private static String boolMap(Map<String, Boolean> values) {
-        StringBuilder out = new StringBuilder("{");
-        for (var entry : values.entrySet()) {
-            if (out.length() > 1) out.append(','); out.append('"').append(entry.getKey()).append("\":").append(entry.getValue());
-        }
-        return out.append('}').toString();
-    }
-    private static String threadCountsJson(Map<String, Integer> values, List<String> keys) {
-        if (values == null) return "null";
-        StringBuilder out = new StringBuilder("{");
-        for (String category : keys) {
-            if (out.length() > 1) out.append(',');
-            out.append('"').append(category).append("\":").append(values.get(category));
-        }
-        return out.append('}').toString();
-    }
-    private static String threadMatrixJson() {
-        if (remainingThreadMatrix == null) return "null";
-        StringBuilder out = new StringBuilder("{");
-        for (String category : THREAD_CATEGORIES) {
-            if (out.length() > 1) out.append(',');
-            out.append('"').append(category).append("\":")
-                .append(threadCountsJson(remainingThreadMatrix.get(category), THREAD_PHASES));
-        }
-        return out.append('}').toString();
-    }
+	private static String boolMap(Map<String, Boolean> values) {
+		StringBuilder out = new StringBuilder("{");
+		for (var entry : values.entrySet()) {
+			if (out.length() > 1) out.append(','); out.append('"').append(entry.getKey()).append("\":").append(entry.getValue());
+		}
+		return out.append('}').toString();
+	}
+	private static String threadCountsJson(Map<String, Integer> values, List<String> keys) {
+		if (values == null) return "null";
+		StringBuilder out = new StringBuilder("{");
+		for (String category : keys) {
+			if (out.length() > 1) out.append(',');
+			out.append('"').append(category).append("\":").append(values.get(category));
+		}
+		return out.append('}').toString();
+	}
+	private static String threadMatrixJson() {
+		if (remainingThreadMatrix == null) return "null";
+		StringBuilder out = new StringBuilder("{");
+		for (String category : THREAD_CATEGORIES) {
+			if (out.length() > 1) out.append(',');
+			out.append('"').append(category).append("\":")
+				.append(threadCountsJson(remainingThreadMatrix.get(category), THREAD_PHASES));
+		}
+		return out.append('}').toString();
+	}
 
-    private static Set<Long> processIds() {
-        Set<Long> result = new HashSet<>();
-        ProcessHandle.allProcesses().forEach(p -> result.add(p.pid())); return result;
-    }
-    private static byte[] fatalFrame(DataInputStream input) throws Exception {
-        int length = input.readInt(); need(length > 0 && length <= 4096, Code.wire_invalid);
-        byte[] response = input.readNBytes(length);
-        need(response.length == length, Code.wire_invalid);
-        ByteArrayInputStream frame = new ByteArrayInputStream(response);
-        RpcResponseHeaderProto header = RpcResponseHeaderProto.parseDelimitedFrom(frame);
-        need(header != null && frame.available() == 0 && header.getUnknownFields().asMap().isEmpty()
-            && header.getCallId() == -1 && header.getServerIpcVersionNum() == 9
-            && header.getStatus() == RpcStatusProto.FATAL
-            && header.getErrorDetail() == RpcErrorCodeProto.FATAL_UNAUTHORIZED
-            && header.getExceptionClassName().equals(EXCEPTION) && header.getErrorMsg().equals(DENIAL), Code.wire_invalid);
-        return ByteBuffer.allocate(4 + length).putInt(length).put(response).array();
-    }
+	private static Set<Long> processIds() {
+		Set<Long> result = new HashSet<>();
+		ProcessHandle.allProcesses().forEach(p -> result.add(p.pid())); return result;
+	}
+	private static byte[] fatalFrame(DataInputStream input) throws Exception {
+		int length = input.readInt(); need(length > 0 && length <= 4096, Code.wire_invalid);
+		byte[] response = input.readNBytes(length);
+		need(response.length == length, Code.wire_invalid);
+		ByteArrayInputStream frame = new ByteArrayInputStream(response);
+		RpcResponseHeaderProto header = RpcResponseHeaderProto.parseDelimitedFrom(frame);
+		need(header != null && frame.available() == 0 && header.getUnknownFields().asMap().isEmpty()
+			&& header.getCallId() == -1 && header.getServerIpcVersionNum() == 9
+			&& header.getStatus() == RpcStatusProto.FATAL
+			&& header.getErrorDetail() == RpcErrorCodeProto.FATAL_UNAUTHORIZED
+			&& header.getExceptionClassName().equals(EXCEPTION) && header.getErrorMsg().equals(DENIAL), Code.wire_invalid);
+		return ByteBuffer.allocate(4 + length).putInt(length).put(response).array();
+	}
 	private static final class Relay {
 		final ServerSocket listener = new ServerSocket();
 		final List<Thread> sessions = new java.util.concurrent.CopyOnWriteArrayList<>();
@@ -1300,6 +1300,11 @@ public final class HdfsKerberosTransferProbe {
 				if (message.contains("EOF")) return "data_io_eof";
 				if (message.contains("connection refused")) return "data_connection_refused";
 				if (message.contains("i/o timeout")) return "data_io_timeout";
+				if (message.contains("invalid checksum")) return "data_checksum_invalid";
+				if (message.contains("invalid response from datanode")) return "data_response_invalid";
+				if (message.startsWith("Failed to open:")) return "cat_open";
+				if (message.startsWith("Failed to send to output:")) return "cat_output";
+				if (message.startsWith("error listing:")) return "cat_listing";
 				return "json_message";
 			}
 		} catch (Exception ignored) { }
@@ -1323,88 +1328,99 @@ public final class HdfsKerberosTransferProbe {
 			command.addAll(List.of("--hdfs-service-principal-name","hdfs/127.0.0.1","--hdfs-data-transfer-protection","privacy"));
 			env.put("KRB5_CONFIG",CONF.toString());env.put("KRB5CCNAME","FILE:"+CACHE);
 		}
-		relay.begin(phase); Result result=child(command,env,listing?null:ACQUIRED.resolve("phase-"+phase+".bin"),expected);
-		rcloneObservation = new RcloneObservation(phase, result.code, result.out.length, result.err.length, rcloneFailure(result.err));
-		relay.end(phase);
-		return result;
+		var serverLogger = org.apache.log4j.Logger.getLogger("org.apache.hadoop.hdfs.server.datanode.DataNode");
+		var serverObserver = new PipelineAppender(true);
+		need(pipelineServerDetached && serverLogger.isEnabledFor(org.apache.log4j.Level.WARN), Code.configuration_invalid);
+		pipelineServerDetached = false;
+		try {
+			serverLogger.addAppender(serverObserver);
+			need(serverLogger.isAttached(serverObserver), Code.configuration_invalid);
+			relay.begin(phase); Result result=child(command,env,listing?null:ACQUIRED.resolve("phase-"+phase+".bin"),expected);
+			rcloneObservation = new RcloneObservation(phase, result.code, result.out.length, result.err.length, rcloneFailure(result.err));
+			relay.end(phase);
+			return result;
+		} finally {
+			try { serverLogger.removeAppender(serverObserver); serverObserver.close(); pipelineServerDetached = !serverLogger.isAttached(serverObserver); }
+			catch (Throwable ignored) { pipelineServerDetached = false; }
+		}
 	}
-    private static com.fasterxml.jackson.databind.ObjectMapper jsonMapper() {
-        return new com.fasterxml.jackson.databind.ObjectMapper()
-            .enable(com.fasterxml.jackson.core.JsonParser.Feature.STRICT_DUPLICATE_DETECTION)
-            .enable(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
-    }
-    private static void listing(String reader,int phase) throws Exception {
-        Result result=rclone(reader,phase,"",true,true,0);need(result.code==0&&result.err.length==0,Code.rclone_positive_failed);
-        var rows=jsonMapper().readTree(result.out);need(rows.isArray()&&rows.size()==3,Code.source_invalid); Set<String> found=new HashSet<>();
-        for(var row:rows) {
-            need(row.isObject()&&row.has("Path")&&row.get("Path").isTextual(),Code.source_invalid);
-            String path=row.get("Path").asText();int i=List.of(NAMES).indexOf(path);
-            need(i>=0&&found.add(path)&&row.get("Size").isIntegralNumber()&&row.get("Size").asLong()==SIZES[i]
-                &&row.get("IsDir").isBoolean()&&!row.get("IsDir").asBoolean()
-                &&row.get("Name").isTextual()&&row.get("Name").asText().equals(path.substring(path.lastIndexOf('/')+1))
-                &&java.time.Instant.parse(row.get("ModTime").asText()).toEpochMilli()==1704067200000L,Code.source_invalid);
-            var names=row.fieldNames();while(names.hasNext())need(Set.of("Path","Name","Size","MimeType","ModTime","IsDir").contains(names.next()),Code.source_invalid);
-        }
-        inventory();topology();
-    }
-    private static void acquire(String reader,int phase,int index) throws Exception {
-        Result result=rclone(reader,phase,NAMES[index],false,true,SIZES[index]);
-        FileState file=OWNED_FILES.get(ACQUIRED.resolve("phase-"+phase+".bin"));
-        need(result.code==0&&result.err.length==0&&file.size==SIZES[index]
-            &&java.util.HexFormat.of().formatHex(file.digest).equals(HASHES[index]),Code.acquisition_invalid);
-        need(acquiredBytes+file.size<=2109442,Code.acquisition_invalid);inventory();topology();acquiredBytes+=file.size;
-    }
-    private static void missing(String reader) throws Exception {
-        Result result=rclone(reader,3,"missing-synthetic.bin",false,true,0);
-        need(result.code!=0&&OWNED_FILES.get(ACQUIRED.resolve("phase-3.bin")).size==0,Code.missing_path_mismatch);
-        // Pinned Cat -> ListFn -> List -> ensureDirectory maps absent path to ErrorDirNotFound.
-        // JSON logging removes timestamp/text-prefix ambiguity; no generic error is accepted.
-        var error=jsonMapper().readTree(result.err);
-        need(error.isObject()&&error.size()==6&&error.path("level").isTextual()&&error.path("level").asText().equals("error")
-            &&error.path("msg").asText().equals("error listing: directory not found")
-            &&error.path("object").isTextual()&&error.path("object").asText().isEmpty()
-            &&error.path("objectType").asText().equals("string")&&error.path("source").isTextual()
-            &&error.path("time").isTextual(),Code.missing_path_mismatch);
-        bounded(()->{need(!filesystem.exists(sourcePath("missing-synthetic.bin")),Code.missing_path_mismatch);return null;},3,controlDeadline);
-        inventory();topology();
-    }
-    private static void negative(String reader) throws Exception {
-        Result result=rclone(reader,5,NAMES[2],false,false,0);
-        need(result.code!=0,Code.rclone_denial_exit_zero);
-        need(OWNED_FILES.get(ACQUIRED.resolve("phase-5.bin")).size==0,Code.rclone_denial_output_invalid);
-        need(relay.counts[5]==1&&relay.noneHeaders==1&&relay.fatalResponses==1&&!rcloneWireHex.isEmpty(),Code.rclone_denial_mismatch);
-        inventory();topology();
-    }
-    private static String acquisitionsJson() {
-        StringBuilder text=new StringBuilder("{");
-        for(int phase=1;phase<=6;phase++) {
-            if(phase>1)text.append(',');text.append('"').append(PHASE_NAMES[phase]).append("\":");
-            FileState value=OWNED_FILES.get(ACQUIRED.resolve("phase-"+phase+".bin"));
-            if(value==null)text.append("null");
-            else {
-                String hash=java.util.HexFormat.of().formatHex(value.digest);
-                text.append("{\"bytes\":").append(value.size).append(",\"sha256\":\"")
-                    .append(List.of(HASHES).contains(hash)?hash:"mismatch").append("\"}");
-            }
-        }
-        return text.append('}').toString();
-    }
+	private static com.fasterxml.jackson.databind.ObjectMapper jsonMapper() {
+		return new com.fasterxml.jackson.databind.ObjectMapper()
+			.enable(com.fasterxml.jackson.core.JsonParser.Feature.STRICT_DUPLICATE_DETECTION)
+			.enable(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
+	}
+	private static void listing(String reader,int phase) throws Exception {
+		Result result=rclone(reader,phase,"",true,true,0);need(result.code==0&&result.err.length==0,Code.rclone_positive_failed);
+		var rows=jsonMapper().readTree(result.out);need(rows.isArray()&&rows.size()==3,Code.source_invalid); Set<String> found=new HashSet<>();
+		for(var row:rows) {
+			need(row.isObject()&&row.has("Path")&&row.get("Path").isTextual(),Code.source_invalid);
+			String path=row.get("Path").asText();int i=List.of(NAMES).indexOf(path);
+			need(i>=0&&found.add(path)&&row.get("Size").isIntegralNumber()&&row.get("Size").asLong()==SIZES[i]
+				&&row.get("IsDir").isBoolean()&&!row.get("IsDir").asBoolean()
+				&&row.get("Name").isTextual()&&row.get("Name").asText().equals(path.substring(path.lastIndexOf('/')+1))
+				&&java.time.Instant.parse(row.get("ModTime").asText()).toEpochMilli()==1704067200000L,Code.source_invalid);
+			var names=row.fieldNames();while(names.hasNext())need(Set.of("Path","Name","Size","MimeType","ModTime","IsDir").contains(names.next()),Code.source_invalid);
+		}
+		inventory();topology();
+	}
+	private static void acquire(String reader,int phase,int index) throws Exception {
+		Result result=rclone(reader,phase,NAMES[index],false,true,SIZES[index]);
+		FileState file=OWNED_FILES.get(ACQUIRED.resolve("phase-"+phase+".bin"));
+		need(result.code==0&&result.err.length==0&&file.size==SIZES[index]
+			&&java.util.HexFormat.of().formatHex(file.digest).equals(HASHES[index]),Code.acquisition_invalid);
+		need(acquiredBytes+file.size<=2109442,Code.acquisition_invalid);inventory();topology();acquiredBytes+=file.size;
+	}
+	private static void missing(String reader) throws Exception {
+		Result result=rclone(reader,3,"missing-synthetic.bin",false,true,0);
+		need(result.code!=0&&OWNED_FILES.get(ACQUIRED.resolve("phase-3.bin")).size==0,Code.missing_path_mismatch);
+		// Pinned Cat -> ListFn -> List -> ensureDirectory maps absent path to ErrorDirNotFound.
+		// JSON logging removes timestamp/text-prefix ambiguity; no generic error is accepted.
+		var error=jsonMapper().readTree(result.err);
+		need(error.isObject()&&error.size()==6&&error.path("level").isTextual()&&error.path("level").asText().equals("error")
+			&&error.path("msg").asText().equals("error listing: directory not found")
+			&&error.path("object").isTextual()&&error.path("object").asText().isEmpty()
+			&&error.path("objectType").asText().equals("string")&&error.path("source").isTextual()
+			&&error.path("time").isTextual(),Code.missing_path_mismatch);
+		bounded(()->{need(!filesystem.exists(sourcePath("missing-synthetic.bin")),Code.missing_path_mismatch);return null;},3,controlDeadline);
+		inventory();topology();
+	}
+	private static void negative(String reader) throws Exception {
+		Result result=rclone(reader,5,NAMES[2],false,false,0);
+		need(result.code!=0,Code.rclone_denial_exit_zero);
+		need(OWNED_FILES.get(ACQUIRED.resolve("phase-5.bin")).size==0,Code.rclone_denial_output_invalid);
+		need(relay.counts[5]==1&&relay.noneHeaders==1&&relay.fatalResponses==1&&!rcloneWireHex.isEmpty(),Code.rclone_denial_mismatch);
+		inventory();topology();
+	}
+	private static String acquisitionsJson() {
+		StringBuilder text=new StringBuilder("{");
+		for(int phase=1;phase<=6;phase++) {
+			if(phase>1)text.append(',');text.append('"').append(PHASE_NAMES[phase]).append("\":");
+			FileState value=OWNED_FILES.get(ACQUIRED.resolve("phase-"+phase+".bin"));
+			if(value==null)text.append("null");
+			else {
+				String hash=java.util.HexFormat.of().formatHex(value.digest);
+				text.append("{\"bytes\":").append(value.size).append(",\"sha256\":\"")
+					.append(List.of(HASHES).contains(hash)?hash:"mismatch").append("\"}");
+			}
+		}
+		return text.append('}').toString();
+	}
 
-    private static void wireOracle() throws Exception {
-        topology();
-        try (Socket socket = new Socket()) {
-            socket.connect(endpoint, 2000); socket.setSoTimeout(2000);
-            need(socket.getInetAddress().equals(InetAddress.getByAddress(new byte[]{127,0,0,1}))
-                && socket.getPort() == 19000, Code.wire_invalid);
-            socket.getOutputStream().write(new byte[]{'h','r','p','c',9,0,0});
-            socket.getOutputStream().flush();
-            DataInputStream input = new DataInputStream(socket.getInputStream());
-            byte[] response = fatalFrame(input);
-            need(input.read() == -1, Code.wire_invalid);
-            wireHex = java.util.HexFormat.of().formatHex(response);
-            need(wireHex.equals(rcloneWireHex), Code.wire_invalid);
-        }
-    }
+	private static void wireOracle() throws Exception {
+		topology();
+		try (Socket socket = new Socket()) {
+			socket.connect(endpoint, 2000); socket.setSoTimeout(2000);
+			need(socket.getInetAddress().equals(InetAddress.getByAddress(new byte[]{127,0,0,1}))
+				&& socket.getPort() == 19000, Code.wire_invalid);
+			socket.getOutputStream().write(new byte[]{'h','r','p','c',9,0,0});
+			socket.getOutputStream().flush();
+			DataInputStream input = new DataInputStream(socket.getInputStream());
+			byte[] response = fatalFrame(input);
+			need(input.read() == -1, Code.wire_invalid);
+			wireHex = java.util.HexFormat.of().formatHex(response);
+			need(wireHex.equals(rcloneWireHex), Code.wire_invalid);
+		}
+	}
 	private static Configuration configuration(String realm, String reader) {
 		Configuration conf = new HdfsConfiguration(false);
 		conf.set("fs.defaultFS", "hdfs://127.0.0.1:19000");
@@ -1694,13 +1710,13 @@ public final class HdfsKerberosTransferProbe {
 		return java.util.HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
 			.digest(text.toString().getBytes(StandardCharsets.UTF_8)));
 	}
-    private static void exportKey(SimpleKdcServer server, String principal, Path path) throws Exception {
+	private static void exportKey(SimpleKdcServer server, String principal, Path path) throws Exception {
 		guardRoot(); need(!Files.exists(path, NOFOLLOW), Code.path_invalid);
 		server.createPrincipal(principal); server.exportPrincipal(principal, path.toFile());
 		Files.setPosixFilePermissions(path, PosixFilePermissions.fromString("rw-------"));
 		OWNED_FILES.put(path, new FileState(path)); inventory();
-    }
-    private static void rememberOwner() throws Exception {
+	}
+	private static void rememberOwner() throws Exception {
 		try {
 			UserGroupInformation current = UserGroupInformation.getLoginUser();
 			need(current.getUserName().equals(ownerPrincipal) && current.isFromKeytab()
@@ -1712,13 +1728,13 @@ public final class HdfsKerberosTransferProbe {
 			if (failure instanceof Exception exception) throw exception;
 			throw new Failure(Code.namenode_failed, failure);
 		}
-    }
-    private static long cap(int seconds) { return Math.min(cleanupDeadline, System.nanoTime() + TimeUnit.SECONDS.toNanos(seconds)); }
-    private static boolean metricsModeAttempted, metricsModeCaptured, metricsModePrior,
-        metricsModeEnableAttempted, metricsModeEnableVerified, metricsModeRestoreAttempted,
-        metricsModeRestoreVerified, metricsModeTransitionFailed;
+	}
+	private static long cap(int seconds) { return Math.min(cleanupDeadline, System.nanoTime() + TimeUnit.SECONDS.toNanos(seconds)); }
+	private static boolean metricsModeAttempted, metricsModeCaptured, metricsModePrior,
+		metricsModeEnableAttempted, metricsModeEnableVerified, metricsModeRestoreAttempted,
+		metricsModeRestoreVerified, metricsModeTransitionFailed;
 
-    private static void enableMetricsMode() throws Exception {
+	private static void enableMetricsMode() throws Exception {
 		metricsModeAttempted = true;
 		try {
 			need(System.nanoTime() < deadline, Code.deadline_exceeded);
@@ -1739,9 +1755,9 @@ public final class HdfsKerberosTransferProbe {
 			metricsModeTransitionFailed = true;
 			throw failure;
 		}
-    }
+	}
 
-    private static void restoreMetricsMode() {
+	private static void restoreMetricsMode() {
 		if (!metricsModeAttempted) { CLEANUP.put("metrics_mode_restored", true); return; }
 		if (metricsModeCaptured) {
 			metricsModeRestoreAttempted = true;
@@ -1757,16 +1773,16 @@ public final class HdfsKerberosTransferProbe {
 		// A failed capture/enable transition remains a failure even after restoration.
 		CLEANUP.put("metrics_mode_restored", metricsModeCaptured && !metricsModePrior
 			&& metricsModeEnableVerified && metricsModeRestoreVerified && !metricsModeTransitionFailed);
-    }
+	}
 
-    private static String metricsModeJson() {
+	private static String metricsModeJson() {
 		return "{\"attempted\":" + metricsModeAttempted + ",\"captured\":" + metricsModeCaptured
 			+ ",\"prior_enabled\":" + metricsModePrior + ",\"enable_attempted\":" + metricsModeEnableAttempted
 			+ ",\"enable_verified\":" + metricsModeEnableVerified + ",\"restore_attempted\":" + metricsModeRestoreAttempted
 			+ ",\"restore_verified\":" + metricsModeRestoreVerified + ",\"transition_failed\":" + metricsModeTransitionFailed + "}";
-    }
+	}
 
-    private static void stopServices() {
+	private static void stopServices() {
 		long until = cap(4); boolean children = true;
 		for (Process child : CHILDREN) {
 			try {
@@ -1814,9 +1830,9 @@ public final class HdfsKerberosTransferProbe {
 			catch (Throwable ignored) { loggedOut = false; }
 		}
 		CLEANUP.put("owner_logged_out", loggedOut);
-    }
+	}
 
-    public static void main(String[] args) {
+	public static void main(String[] args) {
 		PrintStream report = System.out;
 		System.setOut(new PrintStream(OutputStream.nullOutputStream()));
 		System.setErr(new PrintStream(OutputStream.nullOutputStream()));
@@ -1973,8 +1989,8 @@ public final class HdfsKerberosTransferProbe {
 			+ ",\"renewal_verified\":false,\"daemon_accepted\":false,\"provider_accepted\":false"
 			+ ",\"application_accepted\":false,\"vendor_accepted\":false,\"vulnerability_audited\":false}");
 		report.flush(); System.exit(success ? 0 : 1);
-    }
-    private static void privateBytes(Path path, byte[] data) throws Exception {
+	}
+	private static void privateBytes(Path path, byte[] data) throws Exception {
 		need(data.length <= MAX_BYTES && PRIVATE_DIRS.containsKey(path.getParent()), Code.path_invalid);
 		need(PRIVATE_DIRS.get(path.getParent()).equals(directory(path.getParent(), true)), Code.source_changed);
 		try (var channel = FileChannel.open(path, Set.of(StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE, NOFOLLOW),
@@ -1982,8 +1998,8 @@ public final class HdfsKerberosTransferProbe {
 			ByteBuffer buffer = ByteBuffer.wrap(data); while (buffer.hasRemaining()) channel.write(buffer); channel.force(true);
 		}
 		OWNED_FILES.put(path, new FileState(path));
-    }
-    private static void makeTls() throws Exception {
+	}
+	private static void makeTls() throws Exception {
 		char[] password = random(new SecureRandom(), 40).toCharArray();
 		byte[] passwordBytes = (new String(password) + "\n").getBytes(StandardCharsets.US_ASCII);
 		try {
@@ -2027,8 +2043,8 @@ public final class HdfsKerberosTransferProbe {
 			tlsContext = javax.net.ssl.SSLContext.getInstance("TLS"); tlsContext.init(null, tm.getTrustManagers(), null);
 			inventory();
 		} finally { Arrays.fill(password, '\0'); Arrays.fill(passwordBytes, (byte)0); }
-    }
-    private static void verifyTlsEndpoint(int port) throws Exception {
+	}
+	private static void verifyTlsEndpoint(int port) throws Exception {
 		need(port == 19003 || port == 19004, Code.tls_invalid);
 		bounded(() -> {
 			try (var socket = (javax.net.ssl.SSLSocket) tlsContext.getSocketFactory().createSocket()) {
@@ -2037,37 +2053,37 @@ public final class HdfsKerberosTransferProbe {
 				socket.startHandshake(); need(socket.getSession().getPeerCertificates().length == 1, Code.tls_invalid);
 			} return null;
 		}, 3, deadline);
-    }
-    private static boolean sslCapturePredicate(boolean value, DataNodeSslCapture failure) {
-        if (!value) datanodeSslCapture = failure;
-        return value;
-    }
-    private static String sslCaptureJson() {
-        return "{\"format\":\"" + (sslCaptureFailure == null ? "captured" : sslCaptureFailure.name())
-            + "\",\"datanode\":\"" + datanodeSslCapture.name() + "\"}";
-    }
-    private static void captureDatanodeSsl(Set<Long> baseline) throws Exception {
-        datanodeSslCapture = DataNodeSslCapture.checking;
-        need(sslCapturePredicate(!threadObservationIncomplete, DataNodeSslCapture.observation_incomplete)
-            && sslCapturePredicate(OBSERVED_PHASES.contains("datanode"), DataNodeSslCapture.phase_unobserved)
-            && sslCapturePredicate(formatSslThread != null, DataNodeSslCapture.format_timer_missing)
-            && sslCapturePredicate(formatSslThread.isAlive(), DataNodeSslCapture.format_timer_ended)
-            && sslCapturePredicate(sslCaptureFailure == null, DataNodeSslCapture.format_capture_failed)
-            && sslCapturePredicate(datanode != null, DataNodeSslCapture.datanode_missing), Code.cleanup_failed);
-        int seen = 0;
-        for (Thread thread : Thread.getAllStackTraces().keySet()) {
-            if (!thread.isAlive()) continue;
-            need(sslCapturePredicate(++seen <= 128, DataNodeSslCapture.scan_bound), Code.cleanup_failed);
-            if (!thread.getName().equals("SSL Certificates Store Monitor") || thread == formatSslThread) continue;
-            need(sslCapturePredicate(datanodeSslThread == null, DataNodeSslCapture.ambiguous)
-                && sslCapturePredicate(thread.getClass().getName().equals("java.util.TimerThread"), DataNodeSslCapture.wrong_thread_type)
-                && sslCapturePredicate(!baseline.contains(thread.getId()), DataNodeSslCapture.preexisting)
-                && sslCapturePredicate("datanode".equals(THREAD_ORIGINS.get(thread)), DataNodeSslCapture.wrong_interval)
-                && sslCapturePredicate(thread.isDaemon(), DataNodeSslCapture.not_daemon), Code.cleanup_failed);
-            datanodeSslThread = thread;
-        }
-        need(sslCapturePredicate(datanodeSslThread != null, DataNodeSslCapture.missing), Code.cleanup_failed); datanodeSslCaptured = true;
-        datanodeSslCapture = DataNodeSslCapture.captured;
-    }
+	}
+	private static boolean sslCapturePredicate(boolean value, DataNodeSslCapture failure) {
+		if (!value) datanodeSslCapture = failure;
+		return value;
+	}
+	private static String sslCaptureJson() {
+		return "{\"format\":\"" + (sslCaptureFailure == null ? "captured" : sslCaptureFailure.name())
+			+ "\",\"datanode\":\"" + datanodeSslCapture.name() + "\"}";
+	}
+	private static void captureDatanodeSsl(Set<Long> baseline) throws Exception {
+		datanodeSslCapture = DataNodeSslCapture.checking;
+		need(sslCapturePredicate(!threadObservationIncomplete, DataNodeSslCapture.observation_incomplete)
+			&& sslCapturePredicate(OBSERVED_PHASES.contains("datanode"), DataNodeSslCapture.phase_unobserved)
+			&& sslCapturePredicate(formatSslThread != null, DataNodeSslCapture.format_timer_missing)
+			&& sslCapturePredicate(formatSslThread.isAlive(), DataNodeSslCapture.format_timer_ended)
+			&& sslCapturePredicate(sslCaptureFailure == null, DataNodeSslCapture.format_capture_failed)
+			&& sslCapturePredicate(datanode != null, DataNodeSslCapture.datanode_missing), Code.cleanup_failed);
+		int seen = 0;
+		for (Thread thread : Thread.getAllStackTraces().keySet()) {
+			if (!thread.isAlive()) continue;
+			need(sslCapturePredicate(++seen <= 128, DataNodeSslCapture.scan_bound), Code.cleanup_failed);
+			if (!thread.getName().equals("SSL Certificates Store Monitor") || thread == formatSslThread) continue;
+			need(sslCapturePredicate(datanodeSslThread == null, DataNodeSslCapture.ambiguous)
+				&& sslCapturePredicate(thread.getClass().getName().equals("java.util.TimerThread"), DataNodeSslCapture.wrong_thread_type)
+				&& sslCapturePredicate(!baseline.contains(thread.getId()), DataNodeSslCapture.preexisting)
+				&& sslCapturePredicate("datanode".equals(THREAD_ORIGINS.get(thread)), DataNodeSslCapture.wrong_interval)
+				&& sslCapturePredicate(thread.isDaemon(), DataNodeSslCapture.not_daemon), Code.cleanup_failed);
+			datanodeSslThread = thread;
+		}
+		need(sslCapturePredicate(datanodeSslThread != null, DataNodeSslCapture.missing), Code.cleanup_failed); datanodeSslCaptured = true;
+		datanodeSslCapture = DataNodeSslCapture.captured;
+	}
 
 }
