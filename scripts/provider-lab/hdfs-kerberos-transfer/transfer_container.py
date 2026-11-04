@@ -67,7 +67,7 @@ rclone_denial_exit_zero rclone_denial_output_invalid
 rclone_version_nonzero rclone_version_stderr rclone_version_mismatch""".split())
 CODES = frozenset(("hosted_linux_required", "input_invalid", "input_changed", "unsafe_path", "download_failed",
     "download_cleanup_failed", "docker_failed", "command_cleanup_failed", "platform_invalid", "base_invalid",
-    "image_invalid", "container_invalid", "wire_invalid", "java_report_invalid", "java_probe_failed", "interrupted",
+    "build_failed", "image_invalid", "container_invalid", "wire_invalid", "java_report_invalid", "java_probe_failed", "interrupted",
     "container_cleanup_failed", "image_cleanup_failed", "raw_cleanup_failed", "report_failed", "probe_failed"))
 
 
@@ -301,7 +301,7 @@ def build_files(rows):
     dockerfile = ("FROM " + BASE + "\nUSER 0\nCOPY jars /opt/transfer/jars/\nCOPY rclone /opt/transfer/rclone\nCOPY resources /opt/transfer/resources\n"
         "COPY HdfsKerberosTransferProbe.java checksums driver.sh classpath /opt/transfer/\n"
         "RUN sha256sum -c /opt/transfer/checksums && mkdir /opt/transfer/classes && "
-        "/opt/java/openjdk/bin/javac -J-Xmx512m -proc:none -implicit:none -encoding UTF-8 -cp '" + cp +
+        "/opt/java/openjdk/bin/javac -J-Xmx512m -XDrawDiagnostics -proc:none -implicit:none -encoding UTF-8 -cp '" + cp +
         "' -d /opt/transfer/classes /opt/transfer/HdfsKerberosTransferProbe.java && cp -R /opt/transfer/resources/webapps /opt/transfer/classes/ && chmod -R a=rX /opt/transfer && chmod 0555 /opt/transfer/rclone\n"
         "USER 10001:10001\nWORKDIR /work\n")
     return {"Dockerfile": dockerfile.encode(), "checksums": checks.encode(), "driver.sh": driver.encode(), "classpath": classpath.encode()}
@@ -653,11 +653,28 @@ def validate_base(value):
     return observed
 
 
+def build_diagnostic(raw):
+    need(type(raw) is bytes and len(raw) <= 12 * 1024 * 1024 + 1, "input_invalid")
+    codes = {"compiler.err.cant.resolve.location": "symbol_missing", "compiler.err.cant.resolve": "symbol_missing",
+        "compiler.err.report.access": "inaccessible", "compiler.err.not.def.public.cant.access": "inaccessible",
+        "compiler.err.prob.found.req": "type_mismatch", "compiler.err.expected": "syntax",
+        "compiler.err.already.defined": "duplicate", "compiler.err.does.not.override.abstract": "abstract_method"}
+    rows = []
+    pattern = r"(?<![A-Za-z0-9_])HdfsKerberosTransferProbe\.java:(\d{1,4}):(\d{1,4}): (compiler\.err\.[a-z0-9_.]{1,80})(?![a-z0-9_.])"
+    for match in re.finditer(pattern, raw.decode("utf-8", "replace")):
+        line, column = int(match[1]), int(match[2])
+        if not (1 <= line <= 4096 and 1 <= column <= 4096): continue
+        row = dict(line=line, column=column, category=codes.get(match[3], "compiler_error"))
+        if row not in rows: rows.append(row)
+        if len(rows) == 8: break
+    return dict(category="compiler" if rows else "build_failure", errors=rows)
+
+
 def run(rclone=None, *, loader=load_helpers, downloader=download, runner_factory=None, profile="kerberos-remediation"):
     started = time.monotonic()
     report = dict(schema_version=1, scope="hdfs_kerberos_transfer_container_feasibility", success=False,
         started_utc=datetime.now(timezone.utc).isoformat(), finished_utc=None, duration_seconds=None,
-        stage="preflight", candidate_profile=None, inputs=None, result=None, java_validation_stage="not_observed", errors=[], cleanup=dict(container_removed=False,
+        stage="preflight", candidate_profile=None, inputs=None, result=None, java_validation_stage="not_observed", build_diagnostic=None, errors=[], cleanup=dict(container_removed=False,
         image_removed=False, context_removed=False, raw_evidence_removed=False),
         cleanup_excludes=["shared_base_image", "shared_build_cache"], **FALSE_CLAIMS)
     root = context = root_id = context_id = docker = D = None
@@ -709,8 +726,11 @@ def run(rclone=None, *, loader=load_helpers, downloader=download, runner_factory
         validate_base(base)
         need(docker.inspect("image", tag, allow_missing=True) is None, "image_invalid")
         report["stage"] = "build"; built_attempted = True
-        docker.call(["build", "--network", "none", "--pull=false", "--label", LABEL + "=" + run_id,
-            "--tag", tag, str(context)], timeout=180, limit=4 * 1024 * 1024)
+        build_result = docker.call(["build", "--network", "none", "--pull=false", "--label", LABEL + "=" + run_id,
+            "--tag", tag, str(context)], timeout=180, limit=4 * 1024 * 1024, allow_failure=True)
+        if build_result.code != 0:
+            report["build_diagnostic"] = build_diagnostic(read(build_result.stdout, 4 * 1024 * 1024) + b"\n" + read(build_result.stderr, 8 * 1024 * 1024))
+            raise ProbeError("build_failed")
         built = docker.inspect("image", tag); image = built.get("Id")
         need(type(image) is str and re.fullmatch(r"sha256:[a-f0-9]{64}", image)
              and built.get("Config", {}).get("Labels", {}).get(LABEL) == run_id

@@ -509,6 +509,23 @@ class TicketTests(unittest.TestCase):
                            downloader=downloader, runner_factory=factory, profile=profile)
         return report, made[0]
 
+    def test_compiler_failure_is_sanitized_and_never_starts_the_container(self):
+        original=FakeDocker.call
+        def fail_build(docker,args,**kwargs):
+            result=original(docker,args,**kwargs)
+            if args[0]=="build":
+                self.assertIs(kwargs["allow_failure"],True)
+                result.code=1;result.stderr=docker.root/"compiler.err"
+                result.stderr.write_bytes(b"HdfsKerberosTransferProbe.java:123:4: compiler.err.cant.resolve.location: PRIVATE_SYMBOL\n")
+            return result
+        with patch.object(FakeDocker,"call",fail_build):report,docker=self.fake_run()
+        self.assertFalse(report["success"]);self.assertEqual(report["errors"],["build_failed"])
+        self.assertEqual(report["build_diagnostic"],dict(category="compiler",errors=[dict(line=123,column=4,category="symbol_missing")]))
+        self.assertTrue(all(report["cleanup"].values()))
+        self.assertFalse(docker.root.exists())
+        self.assertFalse(any(args[0] in ("create","start") for args,_ in docker.calls))
+        self.assertNotIn("PRIVATE_SYMBOL",json.dumps(report))
+
     def test_full_mock_success_binds_context_and_cleans(self):
         report, docker = self.fake_run()
         self.assertTrue(report["success"], report["errors"])
@@ -2428,3 +2445,22 @@ class OwnedReplicaPoolTests(unittest.TestCase):
         result=F.validate_java(F.canonical(value),1)
         self.assertFalse(result["cleanup"]["replica_pool_stopped"])
         with self.assertRaises(F.ProbeError):F.validate_java(F.canonical(value),0)
+
+
+class BuildDiagnosticProjectionTests(unittest.TestCase):
+    def test_only_bounded_fixed_location_and_category_leave_build_logs(self):
+        raw=(b"#7 1.0 HdfsKerberosTransferProbe.java:20:9: compiler.err.report.access: PRIVATE_TOKEN\n"
+             b"#7 1.0 HdfsKerberosTransferProbe.java:20:9: compiler.err.report.access: PRIVATE_TOKEN\n"
+             b"/private/X.java:1:1: compiler.err.expected: secret\n")
+        self.assertEqual(F.build_diagnostic(raw),dict(category="compiler",errors=[dict(line=20,column=9,category="inaccessible")]))
+        for raw in (b"HdfsKerberosTransferProbe.java:0:1: compiler.err.expected", b"HdfsKerberosTransferProbe.java:9999:1: compiler.err.expected", b"OtherHdfsKerberosTransferProbe.java:1:1: compiler.err.expected",b"raw private text"):
+            self.assertEqual(F.build_diagnostic(raw),dict(category="build_failure",errors=[]))
+        raw=b"\n".join(("HdfsKerberosTransferProbe.java:%d:1: compiler.err.unknown: SECRET"%n).encode() for n in range(1,14))
+        result=F.build_diagnostic(raw);self.assertEqual(len(result["errors"]),8)
+        self.assertTrue(all(row["category"]=="compiler_error" for row in result["errors"]))
+        self.assertNotIn("SECRET",json.dumps(result))
+        self.assertIn(b"-XDrawDiagnostics",F.build_files([dict(sha256="d"*64)])["Dockerfile"])
+
+    def test_wrong_type_and_oversize_logs_are_rejected(self):
+        for raw in ("text",None,bytearray(b"text"),b"x"*(12*1024*1024+2)):
+            with self.assertRaises(F.ProbeError):F.build_diagnostic(raw)
