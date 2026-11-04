@@ -376,3 +376,35 @@ class Orchestration(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BaseImageCompatibility(unittest.TestCase):
+    def run_with_base(self, base):
+        original = FakeDocker.inspect
+        def inspect(fake, kind, target):
+            if kind == "image" and target == LOCK["base_image"]: return copy.deepcopy(base)
+            return original(fake, kind, target)
+        with mock.patch.object(FakeDocker, "inspect", inspect):
+            return Orchestration().execute()
+
+    def test_manifest_and_config_ids_execute_identical_contained_cases(self):
+        for identity in (LOCK["base_config_digest"], LOCK["base_image"].rsplit("@", 1)[1]):
+            with self.subTest(identity=identity):
+                result, docker = self.run_with_base(dict(Id=identity, Architecture="amd64", Os="linux"))
+                self.assertTrue(result["success"])
+                self.assertTrue(result["container_isolation_verified"])
+                self.assertTrue(all(result["cleanup"].values()))
+                self.assertFalse(result["ledger_eligible"])
+                self.assertTrue(any(args[0] == "start" for args, _ in docker.calls))
+
+    def test_foreign_image_and_platform_never_build_or_start(self):
+        for identity in (LOCK["base_config_digest"], LOCK["base_image"].rsplit("@", 1)[1]):
+            for key, value in (("Id", "sha256:" + "0" * 64), ("Id", identity.upper()),
+                               ("Architecture", "arm64"), ("Os", "windows")):
+                base = dict(Id=identity, Architecture="amd64", Os="linux"); base[key] = value
+                with self.subTest(identity=identity, key=key):
+                    result, docker = self.run_with_base(base)
+                    self.assertFalse(result["success"])
+                    self.assertIn("base_image_mismatch", result["errors"])
+                    self.assertTrue(all(result["cleanup"].values()))
+                    self.assertFalse(any(args[0] in ("build", "create", "start") for args, _ in docker.calls))
