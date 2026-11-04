@@ -12,6 +12,12 @@ runs one unprivileged network-none container. It uses the existing Kerberos
 1.75.2. No additional runtime dependency is introduced. Dependency pinning is
 integrity evidence; the existing lock still has advisory work pending.
 
+The RPC, ticket, SIMPLE and dependency supervisors accept only the exact pinned
+JDK config digest or manifest digest reported by the Docker image store. They
+still require Linux/amd64, a valid image configuration, and no Java option
+injection. Closed diagnostic fields identify the accepted digest kind; unknown
+identities and malformed metadata fail before image build or container creation.
+
 The default `kerberos` profile preserves that original graph and workflow.
 The separate remediation workflow selects `--profile kerberos-remediation`,
 using `runtime-classpath-remediation.json` and
