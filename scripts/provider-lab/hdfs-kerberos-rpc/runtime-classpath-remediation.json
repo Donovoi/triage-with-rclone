@@ -40,10 +40,10 @@
       "artifact": "guava",
       "classifier": "",
       "group": "com.google.guava",
-      "sha256": "f3d7f57f67fd622f4d468dfdd692b3a5e3909246c28017ac3263405f0fe617ed",
-      "size": 3023797,
+      "sha256": "b530942257fb935f8b2cfaa5f8eb5bd59c555fd8e8d01b8ce98912e077ea606c",
+      "size": 3057659,
       "type": "jar",
-      "version": "33.4.8-jre"
+      "version": "33.7.2-jre"
     },
     {
       "artifact": "failureaccess",
@@ -67,19 +67,19 @@
       "artifact": "jspecify",
       "classifier": "",
       "group": "org.jspecify",
-      "sha256": "1fad6e6be7557781e4d33729d49ae1cdc8fdda6fe477bb0cc68ce351eafdfbab",
-      "size": 3819,
+      "sha256": "070d75f261fe4c5b8202508366715f7f2d4660f88c8ef7e6d3575e48c9683b66",
+      "size": 3064,
       "type": "jar",
-      "version": "1.0.0"
+      "version": "1.0.1"
     },
     {
       "artifact": "j2objc-annotations",
       "classifier": "",
       "group": "com.google.j2objc",
-      "sha256": "88241573467ddca44ffd4d74aa04c2bbfd11bf7c17e0c342c94c9de7a70a7c64",
-      "size": 12467,
+      "sha256": "84d3a150518485f8140ea99b8a985656749629f6433c92b80c75b36aba3b099b",
+      "size": 16762,
       "type": "jar",
-      "version": "3.0.0"
+      "version": "3.1"
     },
     {
       "artifact": "commons-cli",
@@ -130,10 +130,10 @@
       "artifact": "commons-io",
       "classifier": "",
       "group": "commons-io",
-      "sha256": "f41f7baacd716896447ace9758621f62c1c6b0a91d89acee488da26fc477c84f",
-      "size": 508826,
+      "sha256": "2b9a7b1f726fb86216dbd2c8321eabe0221dbd5b1be81c18e1cb53811b104758",
+      "size": 609182,
       "type": "jar",
-      "version": "2.16.1"
+      "version": "2.22.0"
     },
     {
       "artifact": "commons-net",
@@ -751,10 +751,10 @@
       "artifact": "snappy-java",
       "classifier": "",
       "group": "org.xerial.snappy",
-      "sha256": "55b30c94e5c4cc2d4b6976916098d0678a8a6cc7427fa8c875621bd94e731ac8",
-      "size": 2112099,
+      "sha256": "35228628442e4b9797681c7cbd3b26594f6da3379159dbd0cb07094ed3aece0d",
+      "size": 2448456,
       "type": "jar",
-      "version": "1.1.10.4"
+      "version": "1.1.10.9"
     },
     {
       "artifact": "jaxb-runtime",
@@ -1279,6 +1279,6 @@
       "version": "2.3.6.Final"
     }
   ],
-  "normalized_sha256": "dbed8ddb36a8286af785cc4eace07f335b033cbb0b37f02683db901c6066e14c",
+  "normalized_sha256": "92533297bdae9e77befdc0c381f25850a08becac726c026ab70bd3a68b90b2a7",
   "schema_version": 1
 }

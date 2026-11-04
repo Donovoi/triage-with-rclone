@@ -1,0 +1,58 @@
+name: Isolated HDFS remediation Kerberos transfer experiment
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/hdfs-kerberos-transfer.yml
+      - scripts/provider-lab/hdfs-kerberos-transfer/**
+      - scripts/provider-lab/hdfs-kerberos-rpc/runtime-classpath-remediation.json
+      - scripts/provider-lab/hdfs-discovery/artifact-lock-kerberos-remediation.json
+      - scripts/provider-lab/hdfs-discovery/bootstrap_material.py
+      - scripts/provider-lab/hdfs-discovery/graph_export.py
+      - scripts/provider-lab/hdfs-discovery/offline_cache.py
+      - scripts/provider-lab/hdfs-discovery/resolver_discovery.py
+      - scripts/download-rclone.sh
+      - rclone-version.env
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hdfs-kerberos-transfer-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  transfer:
+    name: Check the remediation graph in the contained transfer experiment
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - name: Check pure source contracts without native tools
+        run: python -I -S -B scripts/provider-lab/hdfs-kerberos-transfer/run_pure_tests.py
+      - name: Prepare the verified rclone binary
+        run: bash scripts/download-rclone.sh --linux "$RUNNER_TEMP/rclone-hdfs-transfer"
+      # Exact proposed graph only. Offline replay is dependency evidence;
+      # this separate experiment checks its one-DataNode transfer behavior and cleanup.
+      # Four Jetty advisory matches remain; no security or provider acceptance.
+      - name: Check remediation profile transfer controls and cleanup
+        run: >-
+          python -I -S -B scripts/provider-lab/hdfs-kerberos-transfer/transfer_container.py
+          --profile kerberos-remediation
+          --rclone "${{ runner.temp }}/rclone-hdfs-transfer"
+          --report "${{ runner.temp }}/hdfs-kerberos-transfer-experiment.json"
+      - name: Retain only the sanitized result
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: hdfs-kerberos-transfer-experiment
+          path: ${{ runner.temp }}/hdfs-kerberos-transfer-experiment.json
+          if-no-files-found: warn
+          retention-days: 14

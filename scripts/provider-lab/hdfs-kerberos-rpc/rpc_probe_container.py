@@ -46,9 +46,9 @@ JAVA_SHA = "8a5130a4db5c9266d6eff439d1574faec05a81339da0a5765596732c70f56bb0"
 RUNTIME_SHA = "8944f0db4899d9e8f166feb28ce56d99278321ce0d3b1a9b9b993b5c0d508c2a"
 ORDER_SHA = "a482109e5170b0a6885af7c52902e89600c226f6e1fe1487083d736c13187632"
 LOCK_SHA = "a62e2a60bbb3f6c8b95b849760ff597e4e05e1c93bf61987c175502c3fe2ac74"
-REMEDIATION_RUNTIME_SHA = "0107937fb84e4cac5a87f0da7c53b1ea4a0a9f341f7b07a95f6033f8946de057"
-REMEDIATION_ORDER_SHA = "dbed8ddb36a8286af785cc4eace07f335b033cbb0b37f02683db901c6066e14c"
-REMEDIATION_LOCK_SHA = "56b33e3c897e02c9c487b66799666de4fc9eb51d8675dad2d4d42f69bb8a2a9c"
+REMEDIATION_RUNTIME_SHA = "e701b0047f1198614bd590954e8efd15bf05af51b98cc62b2d9298cd721663e7"
+REMEDIATION_ORDER_SHA = "92533297bdae9e77befdc0c381f25850a08becac726c026ab70bd3a68b90b2a7"
+REMEDIATION_LOCK_SHA = "80184076d64194810cae394fbc6d8b00e86717c9479d6176f828b042dcd41df1"
 PROFILES = ("kerberos", "kerberos-remediation")
 LABEL = "org.openai.triage.kerberos-rpc"
 TMPFS = "rw,nosuid,nodev,noexec,size=128m,mode=0700,uid=10001,gid=10001"
@@ -491,6 +491,32 @@ def tree_hashes(root):
     return result
 
 
+def base_observation(value, manifest, config_id):
+    """Project only the pinned image identity and closed admission predicates."""
+    value = value if type(value) is dict else {}
+    observed = value.get("Id")
+    kind = ("config_digest" if observed == config_id else
+            "manifest_digest" if observed == manifest.rsplit("@", 1)[1] else "unrecognized")
+    config = value.get("Config")
+    env = config.get("Env", []) if type(config) is dict else None
+    clean_options = (type(env) is list and all(type(item) is str for item in env) and
+        not any(item.split("=", 1)[0] in {"JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS", "JDK_JAVA_OPTIONS"}
+                for item in env))
+    return dict(id_kind=kind, linux=value.get("Os") == "linux",
+                amd64=value.get("Architecture") == "amd64", config_present=type(config) is dict,
+                java_options_absent=clean_options)
+
+
+def validate_base(value, manifest, config_id):
+    # The classic store exposes the config digest; containerd exposes the
+    # manifest digest. Accept only these two identities of the pinned image.
+    observed = base_observation(value, manifest, config_id)
+    need(observed["id_kind"] in {"config_digest", "manifest_digest"} and
+         all(observed[key] is True for key in
+             ("linux", "amd64", "config_present", "java_options_absent")), "base_invalid")
+    return observed
+
+
 def run(rclone=None, *, loader=load_helpers, downloader=download, runner_factory=None, profile="kerberos"):
     started = time.monotonic()
     report = dict(schema_version=1, scope="hdfs_kerberos_rpc_container_feasibility", success=False,
@@ -543,9 +569,8 @@ def run(rclone=None, *, loader=load_helpers, downloader=download, runner_factory
         report["stage"] = "base"
         docker.call(["image", "pull", "--quiet", "--platform", "linux/amd64", BASE], timeout=120)
         base = docker.inspect("image", BASE)
-        need(base.get("Id") == BASE_ID and base.get("Os") == "linux" and base.get("Architecture") == "amd64", "base_invalid")
-        need(not any(s.split("=", 1)[0] in {"JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS", "JDK_JAVA_OPTIONS"}
-             for s in base.get("Config", {}).get("Env", [])), "base_invalid")
+        report["base_observation"] = base_observation(base, BASE, BASE_ID)
+        validate_base(base, BASE, BASE_ID)
         need(docker.inspect("image", tag, allow_missing=True) is None, "image_invalid")
         report["stage"] = "build"; built_attempted = True
         docker.call(["build", "--network", "none", "--pull=false", "--label", LABEL + "=" + run_id,

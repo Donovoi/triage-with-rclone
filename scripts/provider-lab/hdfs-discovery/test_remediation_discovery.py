@@ -21,7 +21,10 @@ FAMILIES = (
     ("io.netty", "netty-handler", "4.1.139.Final"),
     ("io.netty", "netty-buffer", "4.1.139.Final"),
     ("org.apache.commons", "commons-configuration2", "2.15.1"),
+    ("commons-io", "commons-io", "2.22.0"),
     ("org.bouncycastle", "bcprov-jdk18on", "1.86"),
+    ("com.google.guava", "guava", "33.7.2-jre"),
+    ("org.xerial.snappy", "snappy-java", "1.1.10.9"),
 )
 
 
@@ -164,6 +167,95 @@ class HostedRemediationTests(unittest.TestCase):
         report, _, _ = self.invoke(profile=PROFILE, candidate_after={"pom.xml": "9" * 64})
         self.assertFalse(report["success"]); self.assertIn("candidate_changed", report["errors"])
 
+
+class CommonsIoLinkageCorrectionTests(unittest.TestCase):
+    def test_exact_declared_io_override_and_candidate_hash(self):
+        import xml.etree.ElementTree as ET
+        candidate = HERE / "candidate-kerberos-remediation"
+        raw = (candidate / "pom.xml").read_bytes()
+        self.assertEqual(hashlib.sha256(raw).hexdigest(), D.REMEDIATION_INPUT_HASHES["pom.xml"])
+        root = ET.fromstring(raw); ns = {"m": "http://maven.apache.org/POM/4.0.0"}
+        self.assertEqual(root.findtext("m:properties/m:commons.io.version", namespaces=ns), "2.22.0")
+        deps = [node for node in root.findall("m:dependencyManagement/m:dependencies/m:dependency", ns)
+                if node.findtext("m:groupId", namespaces=ns) == "commons-io"
+                and node.findtext("m:artifactId", namespaces=ns) == "commons-io"]
+        self.assertEqual(len(deps), 1)
+        self.assertEqual(deps[0].findtext("m:version", namespaces=ns), "${commons.io.version}")
+
+    def test_missing_old_mixed_and_spoofed_selected_io_are_rejected(self):
+        rows = selected_rows(); good = next(r for r in rows if r["group"] == "commons-io")
+        without = [r for r in rows if r is not good]
+        cases = [without, [*without, dict(good, version="2.16.1")],
+                 [*rows, dict(good, version="2.16.1")],
+                 [*without, dict(good, group="org.apache.commons")],
+                 [*without, dict(good, artifact="commons-io-private")],
+                 [*without, dict(good, selected_runtime=False)]]
+        for changed in cases:
+            with self.subTest(rows=changed), self.assertRaisesRegex(D.DiscoveryError, "classpath_invalid"):
+                D.validate_remediation_versions({"artifacts": changed})
+        D.validate_remediation_versions({"artifacts": [*rows, dict(good, version="2.16.1", selected_runtime=False)]})
+
+    def test_corrected_lock_rejects_a_stale_selected_io_row(self):
+        lock = json.loads(D.offline_cache.lock_path(PROFILE).read_bytes())
+        selected = [row for row in lock["artifacts"] if row["selected_runtime"] is True
+                    and (row["group"], row["artifact"]) == ("commons-io", "commons-io")]
+        self.assertEqual([row["version"] for row in selected], ["2.22.0"])
+        D.validate_remediation_versions(lock)
+        stale = copy.deepcopy(lock)
+        row = next(row for row in stale["artifacts"] if row["selected_runtime"] is True
+                   and (row["group"], row["artifact"]) == ("commons-io", "commons-io"))
+        row["version"] = "2.16.1"
+        with self.assertRaisesRegex(D.DiscoveryError, "classpath_invalid"):
+            D.validate_remediation_versions(stale)
+        self.assertTrue(lock["claims"] and all(value is False for value in lock["claims"].values()))
+
+    def test_repeat_workflow_requires_new_lock_and_exact_source(self):
+        workflow = (HERE.parents[2] / ".github/workflows/hdfs-remediation-discovery.yml").read_text()
+        self.assertEqual(workflow.count("--mode repeat"), 1)
+        self.assertNotIn("--mode online", workflow)
+        for required in ("workflow_dispatch:", "pull_request:", "contents: read", "persist-credentials: false",
+                         "ref: ${{ github.event.pull_request.head.sha || github.sha }}", "--profile kerberos-remediation",
+                         "--candidate scripts/provider-lab/hdfs-discovery/candidate-kerberos-remediation",
+                         "reviewed Commons IO correction", "fresh", "if: always()"):
+            self.assertIn(required, workflow)
+
+
+
+class GuavaSnappyRefreshTests(unittest.TestCase):
+    def test_declared_updates_match_selected_lock_versions(self):
+        import xml.etree.ElementTree as ET
+        raw = (HERE / "candidate-kerberos-remediation/pom.xml").read_bytes()
+        self.assertEqual(hashlib.sha256(raw).hexdigest(), D.REMEDIATION_INPUT_HASHES["pom.xml"])
+        root = ET.fromstring(raw); ns = {"m": "http://maven.apache.org/POM/4.0.0"}
+        lock = json.loads(D.offline_cache.lock_path(PROFILE).read_bytes())
+        for group, artifact, property_name, version in (
+                ("com.google.guava", "guava", "guava.version", "33.7.2-jre"),
+                ("org.xerial.snappy", "snappy-java", "snappy.version", "1.1.10.9")):
+            with self.subTest(package=artifact):
+                self.assertEqual(root.findtext("m:properties/m:" + property_name, namespaces=ns), version)
+                managed = [n for n in root.findall("m:dependencyManagement/m:dependencies/m:dependency", ns)
+                           if n.findtext("m:groupId", namespaces=ns) == group
+                           and n.findtext("m:artifactId", namespaces=ns) == artifact]
+                self.assertEqual(len(managed), 1)
+                self.assertEqual(managed[0].findtext("m:version", namespaces=ns), "$" + "{" + property_name + "}")
+                selected = [r for r in lock["artifacts"] if r["selected_runtime"]
+                            and (r["group"], r["artifact"]) == (group, artifact)]
+                self.assertEqual([(r["version"], r["type"], r["classifier"]) for r in selected], [(version, "jar", "")])
+        D.validate_remediation_versions(lock)
+        self.assertTrue(all(value is False for value in lock["claims"].values()))
+
+    def test_missing_old_mixed_spoofed_or_unselected_updates_are_rejected(self):
+        for group, artifact, old_version in (("com.google.guava", "guava", "33.4.8-jre"),
+                                             ("org.xerial.snappy", "snappy-java", "1.1.10.4")):
+            values = selected_rows(); good = next(r for r in values if (r["group"], r["artifact"]) == (group, artifact))
+            rest = [r for r in values if r is not good]
+            for changed in (rest, [*rest, dict(good, version=old_version)],
+                            [*values, dict(good, version=old_version)],
+                            [*rest, dict(good, artifact=artifact + "-private")],
+                            [*rest, dict(good, selected_runtime=False)]):
+                with self.subTest(package=artifact), self.assertRaisesRegex(D.DiscoveryError, "classpath_invalid"):
+                    D.validate_remediation_versions({"artifacts": changed})
+            D.validate_remediation_versions({"artifacts": [*values, dict(good, version=old_version, selected_runtime=False)]})
 
 if __name__ == "__main__":
     unittest.main()

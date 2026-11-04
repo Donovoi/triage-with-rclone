@@ -43,7 +43,7 @@ KERBEROS_INPUT_HASHES = {
 REMEDIATION_PROFILE = "kerberos-remediation"
 REMEDIATION_INPUT_HASHES = {
     "global-settings.xml": "aeb786c97c2a0103b71c04ab1b29508d7ec1c402a9d36e22301407b23670edf2",
-    "pom.xml": "c6d407169f2700ec59d298e26e9e9367cc31d2372fbbdc4b3852f7cd7b037eae",
+    "pom.xml": "79a901e17505bb2dea82f97942b67bcd3f14a74a7bf2bbe0006e06fd5ba3d312",
     "settings.xml": "73c88f4d9660338f35a6e56978f8567f89f5a85641d5338f189fc489440b364c"
 }
 MAVEN_SHA512 = "831a8591fe20c8243b1dbe7d71e3244f31d1665b0804b2e825e38cbbe5ce0cafb8338851f90780735568773e0a6cd07bbec107cda0b896b008b861075358b6f6"
@@ -533,11 +533,40 @@ def validate_remediation_versions(manifest):
         (lambda r: r["group"] == "io.netty", "4.1.139.Final"),
         (lambda r: (r["group"], r["artifact"]) ==
          ("org.apache.commons", "commons-configuration2"), "2.15.1"),
+        (lambda r: (r["group"], r["artifact"]) == ("commons-io", "commons-io"), "2.22.0"),
         (lambda r: r["group"] == "org.bouncycastle", "1.86"),
+        (lambda r: (r["group"], r["artifact"]) == ("com.google.guava", "guava"), "33.7.2-jre"),
+        (lambda r: (r["group"], r["artifact"]) == ("org.xerial.snappy", "snappy-java"), "1.1.10.9"),
     )
     for matches, version in families:
         rows = [r for r in selected if matches(r)]
         need(rows and all(r["version"] == version for r in rows), "classpath_invalid")
+
+
+def base_observation(value, manifest, config_id):
+    """Project only the pinned image identity and closed admission predicates."""
+    value = value if type(value) is dict else {}
+    observed = value.get("Id")
+    kind = ("config_digest" if observed == config_id else
+            "manifest_digest" if observed == manifest.rsplit("@", 1)[1] else "unrecognized")
+    config = value.get("Config")
+    env = config.get("Env", []) if type(config) is dict else None
+    clean_options = (type(env) is list and all(type(item) is str for item in env) and
+        not any(item.split("=", 1)[0] in {"JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS", "JDK_JAVA_OPTIONS"}
+                for item in env))
+    return dict(id_kind=kind, linux=value.get("Os") == "linux",
+                amd64=value.get("Architecture") == "amd64", config_present=type(config) is dict,
+                java_options_absent=clean_options)
+
+
+def validate_base(value, manifest, config_id):
+    # The classic store exposes the config digest; containerd exposes the
+    # manifest digest. Accept only these two identities of the pinned image.
+    observed = base_observation(value, manifest, config_id)
+    need(observed["id_kind"] in {"config_digest", "manifest_digest"} and
+         all(observed[key] is True for key in
+             ("linux", "amd64", "config_present", "java_options_absent")), "base_image_mismatch")
+    return observed
 
 
 def hosted_guard():
@@ -624,8 +653,8 @@ def discover(candidate, bootstrap, archive, output_parent, *, runner_factory=Doc
         if not offline:
             docker.call(["image", "pull", "--quiet", "--platform", "linux/amd64", bootstrap["jdk_image"]], timeout=120)
         base = docker.inspect("image", bootstrap["jdk_image"])
-        need(base is not None and base.get("Id") == bootstrap["jdk_image_id"] and base.get("Os") == "linux"
-             and base.get("Architecture") == "amd64", "base_image_mismatch")
+        report["base_observation"] = base_observation(base, bootstrap["jdk_image"], bootstrap["jdk_image_id"])
+        validate_base(base, bootstrap["jdk_image"], bootstrap["jdk_image_id"])
         iid = root / "image-id"
         attempted_build = True
         docker.call(["build", "--no-cache", "--force-rm", "--network", "none", "--platform", "linux/amd64",

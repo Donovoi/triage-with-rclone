@@ -136,7 +136,7 @@ class FakeDocker:
 
     def inspect(self, kind, identity, allow_missing=False):
         if kind == "image":
-            if identity == BASE: return {"Id": BASE_ID, "Os": "linux", "Architecture": "amd64"}
+            if identity == BASE: return {"Id": BASE_ID, "Os": "linux", "Architecture": "amd64", "Config": {}}
             if not self.built: return None
             tags = ["hdfs-discovery:" + RUN]
             if self.failure == "foreign_tag" and self.started: tags.append("unrelated:keep")
@@ -446,6 +446,51 @@ class ResolverTests(unittest.TestCase):
         with tarfile.open(path,"a") as stream:
             member=tarfile.TarInfo("output/status"); member.size=2; stream.addfile(member,io.BytesIO(b"xx"))
         with self.assertRaises(D.DiscoveryError): D.artifact_manifest(path)
+
+
+    def test_base_manifest_digest_through_owned_lifecycle(self):
+        original = FakeDocker.inspect
+        def inspect(docker, kind, reference, allow_missing=False):
+            if kind == "image" and reference == BASE:
+                return dict(Id=BASE.rsplit("@", 1)[1], Os="linux", Architecture="amd64", Config={})
+            return original(docker, kind, reference, allow_missing=allow_missing)
+        with patch.object(FakeDocker, "inspect", inspect):
+            result = self.execute()
+        report, docker = result[:2]
+        self.assertIs(report["success"], True)
+        self.assertTrue(all(report["cleanup"].values()))
+        self.assertNotIn("private-canary", json.dumps(report))
+        self.assertEqual(report["base_observation"]["id_kind"], "manifest_digest")
+
+    def test_base_unknown_digest_through_owned_lifecycle(self):
+        original = FakeDocker.inspect
+        def inspect(docker, kind, reference, allow_missing=False):
+            if kind == "image" and reference == BASE:
+                return dict(Id="sha256:" + "0" * 64, Os="linux", Architecture="amd64", Config={})
+            return original(docker, kind, reference, allow_missing=allow_missing)
+        with patch.object(FakeDocker, "inspect", inspect):
+            result = self.execute()
+        report, docker = result[:2]
+        self.assertIs(report["success"], False)
+        self.assertTrue(all(report["cleanup"].values()))
+        self.assertNotIn("private-canary", json.dumps(report))
+        self.assertIn("base_image_mismatch", report["errors"])
+        self.assertFalse(any(args[0] in {"build", "create", "start"} for args in (call[0] for call in docker.calls)))
+
+    def test_base_java_option_through_owned_lifecycle(self):
+        original = FakeDocker.inspect
+        def inspect(docker, kind, reference, allow_missing=False):
+            if kind == "image" and reference == BASE:
+                return dict(Id=BASE_ID, Os="linux", Architecture="amd64", Config={"Env": ["JDK_JAVA_OPTIONS=private-canary"]})
+            return original(docker, kind, reference, allow_missing=allow_missing)
+        with patch.object(FakeDocker, "inspect", inspect):
+            result = self.execute()
+        report, docker = result[:2]
+        self.assertIs(report["success"], False)
+        self.assertTrue(all(report["cleanup"].values()))
+        self.assertNotIn("private-canary", json.dumps(report))
+        self.assertIn("base_image_mismatch", report["errors"])
+        self.assertFalse(any(args[0] in {"build", "create", "start"} for args in (call[0] for call in docker.calls)))
 
     def execute(self, failure=None, *, offline=False, verify_effect=None, prepare=False, prepare_effect=None,
                 candidate_profile="hdfs"):
@@ -766,6 +811,56 @@ class ResolverTests(unittest.TestCase):
             with self.assertRaises(D.DiscoveryError): docker.inspect("container",CONTAINER,allow_missing=True)
             self.assertEqual(call.call_args_list[-1].args[0],["container","ls","--all","--no-trunc","--quiet","--filter","id="+CONTAINER])
 
+
+
+class PinnedImageAdmissionTests(unittest.TestCase):
+    def record(self):
+        return dict(Id=BASE_ID, Os="linux", Architecture="amd64", Config={"Env": ["PATH=/usr/bin"]})
+
+    def test_only_exact_config_or_manifest_digest_is_admitted(self):
+        for identity, kind in ((BASE_ID, "config_digest"), (BASE.rsplit("@", 1)[1], "manifest_digest")):
+            with self.subTest(kind=kind):
+                value = self.record(); value["Id"] = identity
+                result = D.validate_base(value, BASE, BASE_ID)
+                self.assertEqual(result, dict(id_kind=kind, linux=True, amd64=True,
+                    config_present=True, java_options_absent=True))
+        for identity in (None, "", [], True, "sha256:" + "0" * 64, BASE, BASE_ID + " "):
+            with self.subTest(identity=identity):
+                value = self.record(); value["Id"] = identity
+                with self.assertRaisesRegex(D.DiscoveryError, "^base_image_mismatch$"):
+                    D.validate_base(value, BASE, BASE_ID)
+
+    def test_missing_config_wrong_platform_and_malformed_env_are_rejected(self):
+        for field, invalid in (("Os", "windows"), ("Architecture", "arm64"),
+                               ("Config", None), ("Config", []), ("Config", {"Env": None}),
+                               ("Config", {"Env": "PATH=/usr/bin"}), ("Config", {"Env": [123]})):
+            with self.subTest(field=field, invalid=invalid):
+                value = self.record(); value[field] = invalid
+                with self.assertRaisesRegex(D.DiscoveryError, "^base_image_mismatch$"):
+                    D.validate_base(value, BASE, BASE_ID)
+        for value in (None, [], {}, "private-canary"):
+            with self.assertRaisesRegex(D.DiscoveryError, "^base_image_mismatch$"):
+                D.validate_base(value, BASE, BASE_ID)
+        value = self.record(); del value["Config"]
+        with self.assertRaisesRegex(D.DiscoveryError, "^base_image_mismatch$"):
+            D.validate_base(value, BASE, BASE_ID)
+
+    def test_each_java_injection_key_is_rejected_even_when_empty(self):
+        for key in ("JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS", "JDK_JAVA_OPTIONS"):
+            for suffix in ("", "=", "=-javaagent:private-canary"):
+                with self.subTest(key=key, suffix=suffix):
+                    value = self.record(); value["Config"]["Env"].append(key + suffix)
+                    with self.assertRaisesRegex(D.DiscoveryError, "^base_image_mismatch$"):
+                        D.validate_base(value, BASE, BASE_ID)
+
+    def test_diagnostics_do_not_export_untrusted_values(self):
+        value = self.record(); value.update(Id="private-canary", Arbitrary="private-canary")
+        value["Config"]["Env"].append("JAVA_TOOL_OPTIONS=private-canary")
+        result = D.base_observation(value, BASE, BASE_ID)
+        self.assertEqual(set(result), {"id_kind", "linux", "amd64", "config_present", "java_options_absent"})
+        self.assertEqual(result["id_kind"], "unrecognized")
+        self.assertIs(result["java_options_absent"], False)
+        self.assertNotIn("private-canary", json.dumps(result))
 
 if __name__=="__main__":
     unittest.main()
