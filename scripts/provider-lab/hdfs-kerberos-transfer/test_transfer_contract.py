@@ -1224,7 +1224,7 @@ class RemainingMetricsCallsiteTests(unittest.TestCase):
         origin=source[source.index('private static String originFrame('):source.index('private static void projectFailure(')].expandtabs(4)
         out={}
         for cls,methods in self.METHODS.items():
-            pattern=r'case "'+re.escape(cls)+r'" -> switch \(frame.getMethodName\(\)\) \{(.*?)\n            \};'
+            pattern=r'case "'+re.escape(cls)+r'" -> switch \(frame.getMethodName\(\)\) \{(.*?)\n[ \t]*\};'
             match=re.search(pattern,origin,re.S);self.assertIsNotNone(match)
             pairs=re.findall(r'case "([A-Za-z<>]+)" -> "([a-z_]+)";',match.group(1))
             self.assertEqual(len(pairs),len(methods));self.assertEqual({p[0] for p in pairs},methods)
@@ -1281,7 +1281,7 @@ class ConfigurationCallsiteTests(unittest.TestCase):
         origin=source[source.index('private static String originFrame('):source.index('private static void projectFailure(')].expandtabs(4)
         result={}
         for cls,expected in self.METHODS.items():
-            pattern=r'case "'+re.escape(cls)+r'" -> switch \(frame.getMethodName\(\)\) \{(.*?)\n            \};'
+            pattern=r'case "'+re.escape(cls)+r'" -> switch \(frame.getMethodName\(\)\) \{(.*?)\n[ \t]*\};'
             found=re.findall(pattern,origin,re.S);self.assertEqual(len(found),1)
             pairs=re.findall(r'case "([A-Za-z<>]+)" -> "([a-z_]+)";',found[0])
             self.assertEqual(len(pairs),len(expected));self.assertEqual(dict(pairs),expected)
@@ -2320,7 +2320,7 @@ class RcloneServerObservationTests(unittest.TestCase):
 
 class ExecutorAndReadCallsiteTests(unittest.TestCase):
     def test_executor_labels_cannot_clear_thread_failure_or_expose_names(self):
-        for kind in ('readahead','process_reaper','shortcircuit_cleaner','shortcircuit_releaser','striped_read','hedged_read','completable_delay','forkjoin_common','unnamed_pool','other','mixed'):
+        for kind in ('hdfs_frame','scheduled_executor','cached_executor','timeunit_sleeper','readahead','process_reaper','shortcircuit_cleaner','shortcircuit_releaser','striped_read','hedged_read','completable_delay','forkjoin_common','unnamed_pool','other','mixed'):
             value=positive();value.update(success=False,error='cleanup_failed',remaining_executor_kind=kind)
             value['cleanup'].update(threads_terminated=False,private_material_removed=False)
             value['remaining_threads']['jdk_executor']=1
@@ -2340,7 +2340,7 @@ class ExecutorAndReadCallsiteTests(unittest.TestCase):
         self.assertNotIn('return name',classify)
         self.assertNotIn('interrupt(',classify)
         self.assertNotIn('stop(',classify)
-        self.assertIn('if (name.length() > 128) return "other"',classify)
+        self.assertIn('if (name.length() > 128) name = ""',classify)
         self.assertIn('threadsClean = remainingThreads.values().stream().allMatch(count -> count == 0)',source)
 
     def test_fixed_receiver_and_datanode_callsite_labels_are_closed(self):
@@ -2385,3 +2385,15 @@ class PrivacyCipherConfigurationTests(unittest.TestCase):
         self.assertIn('conf.getBoolean("dfs.block.access.token.enable", false)',source)
         self.assertNotIn("dfs.datanode.readahead.bytes",source)
         self.assertLessEqual(len((HERE/"HdfsKerberosTransferProbe.java").read_bytes()),131072)
+
+
+class BoundedWaitDiagnosticsTests(unittest.TestCase):
+    def test_wait_classification_has_finite_scope_and_no_ownership_action(self):
+        source=(HERE/"HdfsKerberosTransferProbe.java").read_text().expandtabs(4)
+        method=source[source.index("private static String executorKind("):source.index("private static Map<String, Integer> remainingThreadCounts(")]
+        self.assertIn("i<frames.length && i<32",method)
+        for label in ("hdfs_frame","scheduled_executor","cached_executor","timeunit_sleeper"):
+            self.assertIn('return "'+label+'"',method)
+        for forbidden in ("getMessage", "printStackTrace", "interrupt(", "stop(", "return n;", "return frames"):
+            self.assertNotIn(forbidden,method)
+        self.assertIn('threadsClean = remainingThreads.values().stream().allMatch(count -> count == 0)',source)
