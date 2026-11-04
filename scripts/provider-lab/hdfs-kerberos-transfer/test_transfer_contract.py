@@ -2320,7 +2320,7 @@ class RcloneServerObservationTests(unittest.TestCase):
 
 class ExecutorAndReadCallsiteTests(unittest.TestCase):
     def test_executor_labels_cannot_clear_thread_failure_or_expose_names(self):
-        for kind in ('process_reaper','shortcircuit_cleaner','shortcircuit_releaser','striped_read','hedged_read','completable_delay','forkjoin_common','unnamed_pool','other','mixed'):
+        for kind in ('readahead','process_reaper','shortcircuit_cleaner','shortcircuit_releaser','striped_read','hedged_read','completable_delay','forkjoin_common','unnamed_pool','other','mixed'):
             value=positive();value.update(success=False,error='cleanup_failed',remaining_executor_kind=kind)
             value['cleanup'].update(threads_terminated=False,private_material_removed=False)
             value['remaining_threads']['jdk_executor']=1
@@ -2370,3 +2370,16 @@ class NarrowIoDiagnosticTests(unittest.TestCase):
         self.assertLess(method.index("instanceof javax.security.sasl.SaslException"),method.index("instanceof IOException"))
         for forbidden in ("getMessage", "getLocalizedMessage", "printStackTrace", "getLineNumber"):
             self.assertNotIn(forbidden,method)
+
+
+class BoundedReadaheadTests(unittest.TestCase):
+    def test_fixture_disables_optional_readahead_without_hiding_threads(self):
+        source=(HERE/"HdfsKerberosTransferProbe.java").read_text().expandtabs(4)
+        self.assertEqual(source.count("dfs.datanode.readahead.bytes"),2)
+        self.assertIn('conf.setLong("dfs.datanode.readahead.bytes", 0);',source)
+        self.assertIn('conf.getLong("dfs.datanode.readahead.bytes", -1) == 0',source)
+        self.assertIn('for (Configuration conf : List.of(namenode.getConf(), datanode.getConf()))',source)
+        self.assertIn('threadsClean = remainingThreads.values().stream().allMatch(count -> count == 0)',source)
+        self.assertNotIn("ReadaheadPool.resetInstance()",source)
+        self.assertIn('conf.set("dfs.data.transfer.protection", "privacy");',source)
+        self.assertLessEqual(len((HERE/"HdfsKerberosTransferProbe.java").read_bytes()),131072)
