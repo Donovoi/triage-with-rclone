@@ -106,7 +106,7 @@ def positive():
         checks=dict(environment=True, metrics_mode_enabled=True, endpoint_settings=True, positive_tgt=True, file_cache_v3=True,
             nonrenewable=True, secure_namenode=True, secure_datanode=True, tls_material=True, tls_endpoints=True, registered_datanode=True, seed_hashes=True, empty_acquired=True, small_acquired=True, missing_path_rejected=True, payload_before=True, payload_after=True, listing_before=True, rclone_auth_boundary_rejection=True,
             wire_auth_boundary_rejection=True, listing_after=True, source_preserved=True, cache_preserved=True),
-        cleanup=dict(pipeline_server_observer_detached=True, pipeline_observer_detached=True, children_reaped=True, relay_closed=True, filesystem_closed=True, namenode_stop_returned=True, owner_logged_out=True, kdc_stop_returned=True, threads_terminated=True, listeners_absent=True,
+        cleanup=dict(seed_lease_renewer_stopped=True, pipeline_server_observer_detached=True, pipeline_observer_detached=True, children_reaped=True, relay_closed=True, filesystem_closed=True, namenode_stop_returned=True, owner_logged_out=True, kdc_stop_returned=True, threads_terminated=True, listeners_absent=True,
             private_material_removed=True, process_property_restored=True, metrics_mode_restored=True, cleanup_completed=True,
             gc_monitor_reaped=True, fs_statistics_cleaner_reaped=True, format_ssl_timer_reaped=True, datanode_stop_returned=True, datanode_ssl_timer_reaped=True),
         metrics_mode=dict(attempted=True, captured=True, prior_enabled=False, enable_attempted=True,
@@ -2259,3 +2259,42 @@ class BoundedRpcHandlerTests(unittest.TestCase):
         self.assertEqual(args[args.index('--cpus')+1],'2')
         self.assertIn('counts[value] == 1 && !failed.get()',source)
         self.assertIn('conf.set("dfs.data.transfer.protection", "privacy");',config)
+
+
+class SeedClientCleanupTests(unittest.TestCase):
+    def test_owned_renewer_is_retained_before_use_and_stopped_after_filesystem(self):
+        raw = (HERE / 'HdfsKerberosTransferProbe.java').read_bytes()
+        source = raw.decode().expandtabs(4)
+        self.assertEqual(hashlib.sha256(raw).hexdigest(),F.JAVA_SHA)
+        self.assertLessEqual(len(raw),131072)
+        main = source[source.index('public static void main('):]
+        capture = 'seedLeaseRenewer = filesystem.getClient().getLeaseRenewer();'
+        self.assertEqual(source.count(capture),1)
+        self.assertLess(main.index('filesystem.initialize('),main.index(capture))
+        self.assertLess(main.index(capture),main.index('seedObserved();'))
+        stop = source[source.index('private static void stopServices()'):source.index('public static void main(')]
+        self.assertIn('boolean leaseStopped = filesystem == null && seedLeaseRenewer == null;',stop)
+        self.assertEqual(stop.count('seedLeaseRenewer.interruptAndJoin();'),1)
+        self.assertLess(stop.index('filesystem.close();'),stop.index('seedLeaseRenewer.interruptAndJoin();'))
+        self.assertLess(stop.index('seedLeaseRenewer.interruptAndJoin();'),stop.index('datanode.shutdown();'))
+        self.assertIn('}, 3, cleanupDeadline); leaseStopped = true;',stop)
+        self.assertIn('catch (Throwable ignored) { leaseStopped = false; }',stop)
+        cleanup = source[source.index('private static void cleanup('):source.index('private static String boolMap(')]
+        self.assertLess(cleanup.index('"seed_lease_renewer_stopped"'),cleanup.index('Files.delete(entry.getKey())'))
+        self.assertNotIn('getLeaseRenewer()',stop)
+        for key, setting, guard in [('dfs.client.socketcache.capacity','conf.setInt("dfs.client.socketcache.capacity", 0);','conf.getInt("dfs.client.socketcache.capacity", -1) == 0')]:
+            self.assertEqual(source.count(key),2)
+            self.assertIn(setting,source);self.assertIn(guard,source)
+
+    def test_failed_renewer_shutdown_blocks_success_and_is_retained(self):
+        for bad in (None,1,'true'):
+            value=positive();value['cleanup']['seed_lease_renewer_stopped']=bad
+            with self.assertRaises(F.ProbeError):F.validate_java(F.canonical(value),0)
+        value=positive();del value['cleanup']['seed_lease_renewer_stopped']
+        with self.assertRaises(F.ProbeError):F.validate_java(F.canonical(value),0)
+        value=positive();value.update(success=False,error='cleanup_failed')
+        value['cleanup']['seed_lease_renewer_stopped']=False
+        result=F.validate_java(F.canonical(value),1)
+        self.assertFalse(result['success'])
+        self.assertFalse(result['cleanup']['seed_lease_renewer_stopped'])
+        with self.assertRaises(F.ProbeError):F.validate_java(F.canonical(value),0)

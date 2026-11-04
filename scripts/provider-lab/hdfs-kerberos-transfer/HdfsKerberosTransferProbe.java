@@ -107,6 +107,7 @@ public final class HdfsKerberosTransferProbe {
     private static javax.net.ssl.SSLContext tlsContext;
     private static NameNode namenode;
     private static DistributedFileSystem filesystem;
+    private static org.apache.hadoop.hdfs.client.impl.LeaseRenewer seedLeaseRenewer;
     private static UserGroupInformation owner;
     private static final List<UserGroupInformation> OWNERS = new java.util.concurrent.CopyOnWriteArrayList<>();
     private static String ownerPrincipal;
@@ -952,75 +953,75 @@ public final class HdfsKerberosTransferProbe {
             Thread.currentThread().interrupt(); return OwnedCleanupState.shutdown_failed;
         } catch (Throwable ignored) { return OwnedCleanupState.shutdown_failed; }
     }
-    private static void cleanup(SimpleKdcServer server, Set<Long> baseline) {
-        boolean stopped = server == null;
-        try {
-            // A partial cache must not prevent network shutdown. Verify only
-            // the root/config path that SimpleKdcServer.stop itself may delete.
-            if (server != null) {
-                guardRoot();
-                if (OWNED_FILES.containsKey(CONF)) OWNED_FILES.get(CONF).verify(CONF);
-                else need(!Files.exists(CONF, NOFOLLOW), Code.source_changed);
-            }
-            if (server != null) bounded(() -> { server.stop(); return null; }, 3, cleanupDeadline);
-            stopped = true;
-        } catch (Throwable ignored) { stopped = false; }
-        CLEANUP.put("kdc_stop_returned", stopped);
-        observeThreads("shutdown", baseline);
-        boolean threadsClean = false;
-        long until = Math.min(cleanupDeadline, System.nanoTime() + TimeUnit.SECONDS.toNanos(3));
-        gcCleanup = stopOwnedHelper(true, baseline, until);
-        CLEANUP.put("gc_monitor_reaped", gcCleanup == OwnedCleanupState.terminated);
-        statisticsCleanup = stopOwnedHelper(false, baseline, until);
-        CLEANUP.put("fs_statistics_cleaner_reaped", statisticsCleanup == OwnedCleanupState.terminated);
-        sslCleanup = stopOwnedFormatSsl(baseline, until);
-        CLEANUP.put("format_ssl_timer_reaped", sslCleanup == OwnedCleanupState.terminated);
-        do {
-            try { remainingThreads = remainingThreadCounts(baseline); }
-            catch (Throwable ignored) { remainingThreads = null; remainingThreadIntervals = null; remainingThreadMatrix = null; remainingTimerKinds = null; break; }
-            // Every residual thread still fails cleanup, including JDK/unknown categories.
-            threadsClean = remainingThreads.values().stream().allMatch(count -> count == 0)
-                && TASKS.stream().noneMatch(Thread::isAlive);
-            if (threadsClean) break;
-            try { Thread.sleep(25); } catch (InterruptedException e) { Thread.currentThread().interrupt(); break; }
-        } while (System.nanoTime() < until);
-        CLEANUP.put("threads_terminated", threadsClean);
-        boolean noListeners = false;
-        try { listeners(false); noListeners = true; } catch (Throwable ignored) { }
-        CLEANUP.put("listeners_absent", noListeners);
-        // The driver creates RESOURCES before Java; unknown adoption cannot prove removal.
-        boolean removed = false;
-        if (rootOwned && PRIVATE_DIRS.containsKey(RESOURCES) && stopped && threadsClean && noListeners && List.of("children_reaped", "relay_closed", "filesystem_closed", "namenode_stop_returned", "owner_logged_out", "gc_monitor_reaped", "fs_statistics_cleaner_reaped", "format_ssl_timer_reaped", "datanode_stop_returned", "datanode_ssl_timer_reaped").stream().allMatch(k -> Boolean.TRUE.equals(CLEANUP.get(k)))) {
-            try {
-                materialDeadline = cap(2); guardRoot();
-                // stop() removes its config. No unknown/replaced file is deleted.
-                if (!Files.exists(CONF, NOFOLLOW)) OWNED_FILES.remove(CONF);
-                inventory();
-                for (var entry : OWNED_FILES.entrySet()) {
-                    guardRoot(); need(System.nanoTime() < materialDeadline, Code.deadline_exceeded);
-                    entry.getValue().verify(entry.getKey()); Files.delete(entry.getKey());
-                }
-                for (Path path : PRIVATE_DIRS.keySet()) {
-                    need(System.nanoTime() < materialDeadline, Code.deadline_exceeded);
-                    need(PRIVATE_DIRS.get(path).equals(directory(path, true)), Code.source_changed);
-                    try (DirectoryStream<Path> stream = Files.newDirectoryStream(path)) {
-                        need(!stream.iterator().hasNext(), Code.unexpected_files);
-                    }
-                    Files.delete(path);
-                }
-                removed = System.nanoTime() < materialDeadline && PRIVATE_DIRS.keySet().stream().noneMatch(p -> Files.exists(p, NOFOLLOW));
-            } catch (Throwable ignored) { removed = false; }
-        }
-        CLEANUP.put("private_material_removed", removed);
-        // Only this process property was set by SimpleKdcServer, and it was
-        // required absent at entry. Never change an unexpected replacement.
-        boolean restored = false;
-        String value = System.getProperty(CONF_PROPERTY);
-        if (value == null) restored = true;
-        else if (CONF.toString().equals(value)) { System.clearProperty(CONF_PROPERTY); restored = true; }
-        CLEANUP.put("process_property_restored", restored);
-        CLEANUP.put("cleanup_completed", true);
-    }
+	private static void cleanup(SimpleKdcServer server, Set<Long> baseline) {
+		boolean stopped = server == null;
+		try {
+			// A partial cache must not prevent network shutdown. Verify only
+			// the root/config path that SimpleKdcServer.stop itself may delete.
+			if (server != null) {
+				guardRoot();
+				if (OWNED_FILES.containsKey(CONF)) OWNED_FILES.get(CONF).verify(CONF);
+				else need(!Files.exists(CONF, NOFOLLOW), Code.source_changed);
+			}
+			if (server != null) bounded(() -> { server.stop(); return null; }, 3, cleanupDeadline);
+			stopped = true;
+		} catch (Throwable ignored) { stopped = false; }
+		CLEANUP.put("kdc_stop_returned", stopped);
+		observeThreads("shutdown", baseline);
+		boolean threadsClean = false;
+		long until = Math.min(cleanupDeadline, System.nanoTime() + TimeUnit.SECONDS.toNanos(3));
+		gcCleanup = stopOwnedHelper(true, baseline, until);
+		CLEANUP.put("gc_monitor_reaped", gcCleanup == OwnedCleanupState.terminated);
+		statisticsCleanup = stopOwnedHelper(false, baseline, until);
+		CLEANUP.put("fs_statistics_cleaner_reaped", statisticsCleanup == OwnedCleanupState.terminated);
+		sslCleanup = stopOwnedFormatSsl(baseline, until);
+		CLEANUP.put("format_ssl_timer_reaped", sslCleanup == OwnedCleanupState.terminated);
+		do {
+			try { remainingThreads = remainingThreadCounts(baseline); }
+			catch (Throwable ignored) { remainingThreads = null; remainingThreadIntervals = null; remainingThreadMatrix = null; remainingTimerKinds = null; break; }
+			// Every residual thread still fails cleanup, including JDK/unknown categories.
+			threadsClean = remainingThreads.values().stream().allMatch(count -> count == 0)
+				&& TASKS.stream().noneMatch(Thread::isAlive);
+			if (threadsClean) break;
+			try { Thread.sleep(25); } catch (InterruptedException e) { Thread.currentThread().interrupt(); break; }
+		} while (System.nanoTime() < until);
+		CLEANUP.put("threads_terminated", threadsClean);
+		boolean noListeners = false;
+		try { listeners(false); noListeners = true; } catch (Throwable ignored) { }
+		CLEANUP.put("listeners_absent", noListeners);
+		// The driver creates RESOURCES before Java; unknown adoption cannot prove removal.
+		boolean removed = false;
+		if (rootOwned && PRIVATE_DIRS.containsKey(RESOURCES) && stopped && threadsClean && noListeners && List.of("children_reaped", "relay_closed", "filesystem_closed", "namenode_stop_returned", "owner_logged_out", "gc_monitor_reaped", "fs_statistics_cleaner_reaped", "format_ssl_timer_reaped", "datanode_stop_returned", "datanode_ssl_timer_reaped", "seed_lease_renewer_stopped").stream().allMatch(k -> Boolean.TRUE.equals(CLEANUP.get(k)))) {
+			try {
+				materialDeadline = cap(2); guardRoot();
+				// stop() removes its config. No unknown/replaced file is deleted.
+				if (!Files.exists(CONF, NOFOLLOW)) OWNED_FILES.remove(CONF);
+				inventory();
+				for (var entry : OWNED_FILES.entrySet()) {
+					guardRoot(); need(System.nanoTime() < materialDeadline, Code.deadline_exceeded);
+					entry.getValue().verify(entry.getKey()); Files.delete(entry.getKey());
+				}
+				for (Path path : PRIVATE_DIRS.keySet()) {
+					need(System.nanoTime() < materialDeadline, Code.deadline_exceeded);
+					need(PRIVATE_DIRS.get(path).equals(directory(path, true)), Code.source_changed);
+					try (DirectoryStream<Path> stream = Files.newDirectoryStream(path)) {
+						need(!stream.iterator().hasNext(), Code.unexpected_files);
+					}
+					Files.delete(path);
+				}
+				removed = System.nanoTime() < materialDeadline && PRIVATE_DIRS.keySet().stream().noneMatch(p -> Files.exists(p, NOFOLLOW));
+			} catch (Throwable ignored) { removed = false; }
+		}
+		CLEANUP.put("private_material_removed", removed);
+		// Only this process property was set by SimpleKdcServer, and it was
+		// required absent at entry. Never change an unexpected replacement.
+		boolean restored = false;
+		String value = System.getProperty(CONF_PROPERTY);
+		if (value == null) restored = true;
+		else if (CONF.toString().equals(value)) { System.clearProperty(CONF_PROPERTY); restored = true; }
+		CLEANUP.put("process_property_restored", restored);
+		CLEANUP.put("cleanup_completed", true);
+	}
     private static String boolMap(Map<String, Boolean> values) {
         StringBuilder out = new StringBuilder("{");
         for (var entry : values.entrySet()) {
@@ -1420,6 +1421,7 @@ public final class HdfsKerberosTransferProbe {
 		conf.set("dfs.blocksize", "1048576");
 		conf.setInt("dfs.namenode.handler.count", 2);
 		conf.setInt("dfs.datanode.handler.count", 2);
+		conf.setInt("dfs.client.socketcache.capacity", 0);
 		conf.setLong("dfs.datanode.round-robin-volume-choosing-policy.additional-available-space", 4194304);
 		conf.set("dfs.datanode.max.locked.memory", "0");
 		conf.set("dfs.client.use.datanode.hostname", "false");
@@ -1487,6 +1489,7 @@ public final class HdfsKerberosTransferProbe {
 					&& conf.getLong("dfs.datanode.round-robin-volume-choosing-policy.additional-available-space", -1) == 4194304
 					&& conf.getInt("dfs.namenode.handler.count", -1) == 2
 					&& conf.getInt("dfs.datanode.handler.count", -1) == 2
+					&& conf.getInt("dfs.client.socketcache.capacity", -1) == 0
 					&& !conf.getBoolean("ignore.secure.ports.for.testing", true)
 					&& conf.get("dfs.datanode.ignore.secure.ports.for.testing") == null
 					&& !conf.getBoolean("ipc.client.fallback-to-simple-auth-allowed", true)
@@ -1770,6 +1773,11 @@ public final class HdfsKerberosTransferProbe {
 		try { if (filesystem != null) bounded(() -> { filesystem.close(); return null; }, 3, cleanupDeadline); }
 		catch (Throwable ignored) { closed = false; }
 		CLEANUP.put("filesystem_closed", closed);
+		boolean leaseStopped = filesystem == null && seedLeaseRenewer == null;
+		try { if (seedLeaseRenewer != null) {
+			bounded(() -> { seedLeaseRenewer.interruptAndJoin(); return null; }, 3, cleanupDeadline); leaseStopped = true;
+		} } catch (Throwable ignored) { leaseStopped = false; }
+		CLEANUP.put("seed_lease_renewer_stopped", leaseStopped);
 		// A partial constructor or failed return cannot claim a stopped object.
 		boolean dnStopped = !datanodeAttempted; long dnUntil = cap(35);
 		try { if (datanode != null) { bounded(() -> { datanode.shutdown(); return null; }, 35, dnUntil); dnStopped = true; } }
@@ -1809,7 +1817,7 @@ public final class HdfsKerberosTransferProbe {
 		for (String name : List.of("children_reaped", "relay_closed", "filesystem_closed", "namenode_stop_returned", "owner_logged_out",
 				"datanode_stop_returned", "datanode_ssl_timer_reaped", "gc_monitor_reaped", "fs_statistics_cleaner_reaped", "format_ssl_timer_reaped",
 				"kdc_stop_returned", "threads_terminated", "listeners_absent", "private_material_removed",
-				"process_property_restored", "metrics_mode_restored", "pipeline_observer_detached", "pipeline_server_observer_detached", "cleanup_completed")) CLEANUP.put(name, false);
+				"process_property_restored", "metrics_mode_restored", "pipeline_observer_detached", "pipeline_server_observer_detached", "seed_lease_renewer_stopped", "cleanup_completed")) CLEANUP.put(name, false);
 		Set<Long> baseline = threadIds(); SimpleKdcServer server = null; Code error = null;
 		totalDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(185);
 		deadline = Math.min(totalDeadline, System.nanoTime() + TimeUnit.SECONDS.toNanos(70));
@@ -1868,6 +1876,7 @@ public final class HdfsKerberosTransferProbe {
 			stage = "relay_start"; relay = new Relay(); topology();
 			stage = "filesystem"; bounded(() -> {
 				filesystem = new DistributedFileSystem(); filesystem.initialize(URI.create("hdfs://127.0.0.1:19000"), conf);
+				seedLeaseRenewer = filesystem.getClient().getLeaseRenewer();
 				return null; }, 5, deadline);
 			observeThreads("filesystem", baseline);
 			stage = "datanode_start"; datanodeAttempted = true;
