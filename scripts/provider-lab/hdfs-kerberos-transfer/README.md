@@ -26,6 +26,13 @@ downloads remain digest/size pinned and isolated from the credential-bearing run
 The pinned Temurin JDK image, Hadoop 3.5.0, Kerby 2.1.2 and rclone 1.75.2 identities
 are recorded in the supervisor and receipt.
 
+The fixture configures `AES/CTR/NoPadding` as the supported data-transfer cipher
+option requested by the pinned privacy client. Both service configurations are
+checked; privacy and block tokens remain required. NameNode and DataNode handler
+pools have two workers each, the extra volume reserve is 4 MiB, and the seed
+client socket cache is disabled. These fixture settings keep the original
+container limits; they do not enlarge the resource or timeout budgets.
+
 The disposable fixture shares one JVM between its two daemons. It captures the
 public Hadoop metrics mini-cluster mode before format/start, requires the prior
 value to be false, enables and verifies the mode, and retains it through the
@@ -119,12 +126,20 @@ listing stdout each remain capped at 16 KiB. Total successful acquired bytes are
 Only fixed checks, finite diagnostics, known-fixture digests/counts, and source
 bindings appear in the at-most-64-KiB final receipt.
 
+Failed image builds retain only up to eight fixed compiler error categories and
+bounded source line/column pairs. Build output, source symbols, and arbitrary
+error text stay private and are removed with the raw run evidence. A nonzero
+build cannot start the fixture or grant success.
+
 The sibling budget is 185 seconds inside the JVM: startup 70, controls 55, cleanup
 60, with one 195-second outer attach limit. Cleanup shares four seconds across
-children/relay, three for filesystem close, 35 for owned DataNode shutdown and
-its retained SSL timer, seven for NameNode stop, three across all retained login
+children/relay, three each for filesystem close and seed lease-renewer shutdown,
+35 for owned DataNode shutdown and
+its retained SSL timer, three for the retained replica-loading pool, seven for
+NameNode stop, three across all retained login
 Subjects, three for KDC stop, and the unchanged three-second owned-helper/residual
-proof, with two seconds for private material. A partial constructor, timeout,
+proof, with two seconds for private material. Every step is capped by the same
+cleanup deadline. A partial constructor, timeout,
 ambiguous/missing/preexisting/late identity, failed shutdown, residual thread,
 or listener fails cleanup; no framework or baseline exception is granted.
 
@@ -136,6 +151,17 @@ only its public destroy method is used after all users close. The existing exact
 GC monitor/statistics-cleaner guards remain. Ten snapshots retain at most 1280
 Thread identities; live residual count is capped at 128. First-observed intervals
 are diagnostics, not creation ownership proof. Every residual still fails.
+
+Normal Hadoop block-pool shutdown removes its JVM shutdown hook without stopping
+the replica-loading pool shared within the process. This disposable fixture retains the
+exact pool from its only owned DataNode volume and block-pool slice, checks the
+volume path and dataset identity, excludes the common pool and preexisting
+workers using an immutable baseline, and releases the volume reference. After
+owned users and the DataNode stop, it calls that retained pool's public graceful
+shutdown and requires termination under the cleanup deadline.
+`replica_pool_stopped` is required before private material can be removed. No
+thread-name match, global pool reset, or arbitrary thread interruption grants
+cleanup credit.
 
 The fixture uses fixed certificate and truststore files. It sets the literal
 `ssl.{0}.stores.reload.interval` option to zero and verifies it in the NameNode
