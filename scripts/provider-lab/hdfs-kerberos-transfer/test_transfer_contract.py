@@ -773,7 +773,7 @@ class TransferTests(unittest.TestCase):
     def test_exact_new_graph_and_cross_profile_rejection_before_reads(self):
         self.assertEqual(F.PROFILES,('kerberos-remediation',))
         p=F.profile_settings('kerberos-remediation');rows=F.runtime_rows(p['runtime'].read_bytes(),p['lock'].read_bytes())
-        self.assertEqual((len(rows),sum(x['size'] for x in rows)),(142,73104651))
+        self.assertEqual((len(rows),sum(x['size'] for x in rows)),(142,73478410))
         old=(HERE.parent/'hdfs-kerberos-ticket/runtime-classpath.json').read_bytes()
         with self.assertRaises(F.ProbeError):F.runtime_rows(old,p['lock'].read_bytes())
         for profile in ('kerberos','simple','kerberos-refresh','',None,True,{},'../kerberos-remediation'):

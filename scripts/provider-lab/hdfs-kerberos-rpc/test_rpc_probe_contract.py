@@ -640,7 +640,7 @@ class ProfileTests(unittest.TestCase):
 
     def test_real_profiles_validate_only_their_own_exact_runtime_and_lock(self):
         material = {}
-        for profile, total in (("kerberos", 74090067), ("kerberos-remediation", 73104651)):
+        for profile, total in (("kerberos", 74090067), ("kerberos-remediation", 73478410)):
             pins = F.profile_settings(profile)
             runtime, lock = pins["runtime"].read_bytes(), pins["lock"].read_bytes()
             rows = F.runtime_rows(runtime, lock, profile=profile)

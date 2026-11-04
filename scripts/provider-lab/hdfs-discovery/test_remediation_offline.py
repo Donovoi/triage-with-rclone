@@ -26,11 +26,11 @@ class RemediationCacheTests(unittest.TestCase):
         m = C.m
         rows = m._load_lock(PROFILE)
         self.assertEqual(m.sha(m.lock_path(PROFILE).read_bytes()),
-                         "a0fc4edc8ea5fa9df5c26cac0be9f638650c7a657260b9da5eaad16195746e95")
+                         "80184076d64194810cae394fbc6d8b00e86717c9479d6176f828b042dcd41df1")
         self.assertEqual(m.sha(m.encoded(rows)),
-                         "d411690d9c923494ebbc85eace1ff890d62d9e2c39b62e25749a361f122ffa46")
+                         "0942cbf50f0099d90b1b4f52822620461ba6943f5ecd73da6b4acf77af724e05")
         self.assertEqual(m._counts(rows), dict(artifacts=641, poms=444, selected_runtime_jars=142,
-                                             other_jars=55, artifact_bytes=97419881))
+                                             other_jars=55, artifact_bytes=97800012))
         self.assertEqual(len({m._artifact_path(row) for row in rows}), 641)
         lock = json.loads(m.lock_path(PROFILE).read_bytes())
         self.assertTrue(lock["advisory_work_pending"])

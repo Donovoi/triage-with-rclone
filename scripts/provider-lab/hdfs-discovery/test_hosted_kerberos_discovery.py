@@ -38,7 +38,7 @@ def profile_receipt(scope, profile="kerberos"):
     return dict(schema_version=1, scope=scope, candidate_profile=profile,
                 lock_sha256=H.D.offline_cache.REMEDIATION_LOCK_SHA256 if remediation else LOCK_SHA,
                 counts=dict(artifacts=641, poms=444, selected_runtime_jars=142, other_jars=55,
-                            artifact_bytes=97419881) if remediation else dict(COUNTS),
+                            artifact_bytes=97800012) if remediation else dict(COUNTS),
                 success=True, preparation_only=True, advisory_work_pending=True,
                 **FALSE)
 
@@ -79,8 +79,7 @@ def discovery(*, offline=False, prepare=False, profile="kerberos"):
                 inputs={"candidate_profile": profile, "candidate_sha256": dict(CANDIDATE),
                         "seed_cache": seed, "supervisor_sha256": "8" * 64,
                         "graph_export_sha256": "a" * 64, "cache_source_sha256": "b" * 64,
-                        "cache_lock_sha256": (None if profile == H.D.REFRESH_PROFILE else
-                                              H.D.offline_cache.lock_sha256(profile)),
+                        "cache_lock_sha256": H.D.offline_cache.lock_sha256(profile),
                         "maven": {"version": "3.9.16", "archive_sha256": "c" * 64,
                                   "archive_sha512": "d" * 128},
                         "jdk": {"manifest": "synthetic-jdk@sha256:" + "e" * 64,
@@ -141,8 +140,6 @@ class HostedKerberosTests(unittest.TestCase):
         bootstrap = FakeLease("bootstrap", events, self.root, bootstrap_failure)
         chosen = discovery(prepare=mode == "repeat", profile=profile) if result is None else result
         selected_sources = dict(SOURCES)
-        if profile == H.D.REFRESH_PROFILE:
-            selected_sources.pop("artifact-lock-kerberos.json")
         if profile == H.D.REMEDIATION_PROFILE:
             selected_sources.pop("artifact-lock-kerberos.json")
             selected_sources["artifact-lock-kerberos-remediation.json"] = H.D.offline_cache.REMEDIATION_LOCK_SHA256
