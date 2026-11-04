@@ -695,6 +695,10 @@ public final class HdfsKerberosTransferProbe {
 				case "opReadBlock" -> "data_op_read_block";
 				default -> "data_receiver";
 			};
+			case "org.apache.hadoop.security.SaslInputStream" -> "sasl_input";
+			case "org.apache.hadoop.security.SaslOutputStream" -> "sasl_output";
+			case "org.apache.hadoop.net.SocketInputStream" -> "socket_input";
+			case "org.apache.hadoop.net.SocketOutputStream" -> "socket_output";
 			case "org.apache.hadoop.hdfs.server.datanode.BlockSender" -> "data_block_sender";
 			case "org.apache.hadoop.hdfs.server.datanode.BlockReceiver" -> "data_block_receiver";
 			case "org.apache.hadoop.hdfs.server.datanode.fsdataset.impl.FsDatasetImpl" -> frame.getMethodName().equals("createRbw") ? "data_create_rbw" : "data_dataset";
@@ -833,6 +837,7 @@ public final class HdfsKerberosTransferProbe {
 	private static String executorKind(Thread thread) {
 		String name = thread.getName();
 		if (name.length() > 128) return "other";
+		if (name.equals("process reaper") || name.matches("process reaper [(]pid [0-9]+[)]")) return "process_reaper";
 		if (name.equals("ShortCircuitCache_Cleaner")) return "shortcircuit_cleaner";
 		if (name.equals("ShortCircuitCache_SlotReleaser")) return "shortcircuit_releaser";
 		if (name.startsWith("StripedRead-")) return "striped_read";
@@ -1329,6 +1334,8 @@ public final class HdfsKerberosTransferProbe {
 				if (message.contains("no available datanodes")) return "data_nodes_unavailable";
 				if (message.contains("read failed:")) return "data_read_status";
 				if (message.contains("EOF")) return "data_io_eof";
+				if (message.contains("connection reset by peer")) return "data_connection_reset";
+				if (message.contains("broken pipe")) return "data_broken_pipe";
 				if (message.contains("connection refused")) return "data_connection_refused";
 				if (message.contains("i/o timeout")) return "data_io_timeout";
 				if (message.contains("invalid checksum")) return "data_checksum_invalid";
@@ -1599,6 +1606,10 @@ public final class HdfsKerberosTransferProbe {
 				var failure = event.getThrowableInformation().getThrowable();
 				category = failure instanceof ClassNotFoundException || failure instanceof NoClassDefFoundError ? "missing_class"
 					: failure instanceof LinkageError ? linkageCategory((LinkageError) failure)
+					: failure instanceof javax.security.sasl.SaslException ? "io_sasl"
+					: failure instanceof java.net.SocketTimeoutException ? "io_timeout"
+					: failure instanceof java.net.SocketException ? "io_socket"
+					: failure instanceof java.io.EOFException ? "io_eof"
 					: failure instanceof IOException ? "io_failure" : failure instanceof NullPointerException ? "null_state"
 					: failure instanceof IllegalArgumentException ? "invalid_config" : "unclassified";
 				var frames = failure.getStackTrace();

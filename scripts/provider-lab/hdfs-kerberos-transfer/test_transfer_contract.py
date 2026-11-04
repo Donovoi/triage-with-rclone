@@ -2320,7 +2320,7 @@ class RcloneServerObservationTests(unittest.TestCase):
 
 class ExecutorAndReadCallsiteTests(unittest.TestCase):
     def test_executor_labels_cannot_clear_thread_failure_or_expose_names(self):
-        for kind in ('shortcircuit_cleaner','shortcircuit_releaser','striped_read','hedged_read','completable_delay','forkjoin_common','unnamed_pool','other','mixed'):
+        for kind in ('process_reaper','shortcircuit_cleaner','shortcircuit_releaser','striped_read','hedged_read','completable_delay','forkjoin_common','unnamed_pool','other','mixed'):
             value=positive();value.update(success=False,error='cleanup_failed',remaining_executor_kind=kind)
             value['cleanup'].update(threads_terminated=False,private_material_removed=False)
             value['remaining_threads']['jdk_executor']=1
@@ -2353,3 +2353,20 @@ class ExecutorAndReadCallsiteTests(unittest.TestCase):
             self.assertFalse(F.validate_java(F.canonical(value),1)['success'])
         for forbidden in ('getMessage','getLocalizedMessage','getLineNumber','substring','startsWith'):
             self.assertNotIn(forbidden,origin)
+
+
+class NarrowIoDiagnosticTests(unittest.TestCase):
+    def test_io_subtypes_and_fixed_callsites_remain_failed_diagnostics(self):
+        for category in ("io_sasl", "io_timeout", "io_socket", "io_eof"):
+            for origin in ("sasl_input", "sasl_output", "socket_input", "socket_output"):
+                value=LinkageDiagnosticTests().failure(origin=origin)
+                value["pipeline_server_diagnostic"]={"category":category,"origin":origin}
+                result=F.validate_java(F.canonical(value),1)
+                self.assertEqual(result["pipeline_server_diagnostic"],value["pipeline_server_diagnostic"])
+                self.assertFalse(result["success"])
+                with self.assertRaises(F.ProbeError):F.validate_java(F.canonical(value),0)
+        source=(HERE/"HdfsKerberosTransferProbe.java").read_text()
+        method=source[source.index("private static final class PipelineAppender"):source.index("private static void seedObserved()")]
+        self.assertLess(method.index("instanceof javax.security.sasl.SaslException"),method.index("instanceof IOException"))
+        for forbidden in ("getMessage", "getLocalizedMessage", "printStackTrace", "getLineNumber"):
+            self.assertNotIn(forbidden,method)
