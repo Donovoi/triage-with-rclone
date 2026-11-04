@@ -41,7 +41,7 @@ OWNED_CLEANUP_STATES = frozenset("not_attempted observation_incomplete services_
 TIMER_KINDS = frozenset("namenode_metrics rpc_idle snapshot_gc shell_timeout ssl_store unknown".split())
 BASE = "docker.io/library/eclipse-temurin@sha256:e1c09a9ee23feb81f94016547826c1e694086cd927356fb57fccc312fcc32f85"
 BASE_ID = "sha256:d0e6e16acb7f941e5206d99ec38e5bba18545c43462541958f84b22e0fc006e8"
-JAVA_SHA = "327c73ea45bf973a87f881694f9f48be91c66ab9f14015e3daabb78ed6b9b58c"
+JAVA_SHA = "5cc0194a944096a714577475eda5e19a864785bbf512d44dacf0b7308f124306"
 REMEDIATION_RUNTIME_SHA = "01095cf92c20a65a479aafdcd52538e11313610230c17b011a5e5146a81bb127"
 REMEDIATION_ORDER_SHA = "74206f7ff8e05475fd310648003cd570c620e92cf670ee1965c66b96eb3ba15d"
 REMEDIATION_LOCK_SHA = "a0fc4edc8ea5fa9df5c26cac0be9f638650c7a657260b9da5eaad16195746e95"
@@ -56,7 +56,7 @@ JAVA_FALSE = set(FALSE_CLAIMS) - {"publisher_audit_completed"}
 JAVA_CHECKS = frozenset(("environment", "metrics_mode_enabled", "endpoint_settings", "positive_tgt", "file_cache_v3",
     "nonrenewable", "secure_namenode", "secure_datanode", "tls_material", "tls_endpoints", "registered_datanode", "seed_hashes", "empty_acquired", "small_acquired", "missing_path_rejected", "payload_before", "payload_after", "listing_before", "rclone_auth_boundary_rejection",
     "wire_auth_boundary_rejection", "listing_after", "source_preserved", "cache_preserved"))
-JAVA_CLEANUP = frozenset(("seed_lease_renewer_stopped", "pipeline_server_observer_detached", "pipeline_observer_detached", "children_reaped", "relay_closed", "filesystem_closed", "namenode_stop_returned", "owner_logged_out", "kdc_stop_returned", "threads_terminated", "listeners_absent",
+JAVA_CLEANUP = frozenset(("replica_pool_stopped", "seed_lease_renewer_stopped", "pipeline_server_observer_detached", "pipeline_observer_detached", "children_reaped", "relay_closed", "filesystem_closed", "namenode_stop_returned", "owner_logged_out", "kdc_stop_returned", "threads_terminated", "listeners_absent",
     "private_material_removed", "process_property_restored", "metrics_mode_restored", "cleanup_completed", "gc_monitor_reaped", "fs_statistics_cleaner_reaped", "format_ssl_timer_reaped", "datanode_stop_returned", "datanode_ssl_timer_reaped"))
 JAVA_CODES = frozenset("""environment_invalid path_invalid source_changed unexpected_files
 listener_mismatch configuration_invalid deadline_exceeded positive_ticket_failed
