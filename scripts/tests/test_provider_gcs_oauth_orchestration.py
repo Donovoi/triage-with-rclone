@@ -498,7 +498,7 @@ class DriverOrchestrationTests(unittest.TestCase):
 
 class DockerScript:
     """Daemon/CLI boundary with independent literal inspect responses."""
-    def __init__(self, root, suite, fault=None):
+    def __init__(self, root, suite, fault=None, base=None):
         self.root, self.make_suite, self.fault = root, suite, fault
         self.commands_stopped, self.pending, self.build_phase, self.last_stderr = True, None, None, b""
         self.calls, self.images, self.containers = [], False, False
@@ -506,6 +506,7 @@ class DockerScript:
         self.run_id = "1" * 32
         self.name, self.tag = "triage-gcs-oauth-" + self.run_id, "triage-gcs-oauth-fixture:" + self.run_id
         self.lock = S.read_lock()
+        self.base = base
         self.source_digest = S.canonical_hash(S.source_hashes())
         self.started, self.name_inspections = False, 0
 
@@ -539,7 +540,8 @@ class DockerScript:
     def inspect(self, kind, target):
         self.calls.append(("inspect", kind, target))
         if kind == "image" and target == self.lock["base_image"]:
-            return {"Id": self.lock["base_config_digest"], "Architecture": "amd64", "Os": "linux"}
+            return copy.deepcopy(self.base) if self.base is not None else {
+                "Id": self.lock["base_config_digest"], "Architecture": "amd64", "Os": "linux"}
         if kind == "image":
             assert target in (self.image, self.tag)
             return self.image_config() if self.images else None
@@ -608,14 +610,14 @@ class DockerScript:
 
 
 class SupervisorOrchestrationTests(unittest.TestCase):
-    def execute(self, directory, fault=None, lifecycle=False):
+    def execute(self, directory, fault=None, lifecycle=False, base_image=None):
         base = Path(directory)
         child_base = base / "child"
         child_base.mkdir()
         driver = DriverHarness(child_base)
         root = base / "triage-gcs-oauth-synthetic"
         root.mkdir()
-        docker = DockerScript(root, driver.suite, fault)
+        docker = DockerScript(root, driver.suite, fault, base_image)
         identity = {"version": "1.75.1", "sha256": driver.sha}
         report_path = base / "report.json"
         with ExitStack() as stack:
@@ -661,6 +663,35 @@ class SupervisorOrchestrationTests(unittest.TestCase):
                     self.assertEqual(len(native["probe"]["cases"]), 10)
                     self.assertTrue(result["cleanup_passed"])
                 self.assertNotIn("synthetic private output", json.dumps(result))
+
+    def test_locked_manifest_and_config_ids_run_full_lifecycle(self):
+        lock = S.read_lock()
+        for identity in (lock["base_config_digest"], lock["base_image"].rsplit("@", 1)[1]):
+            with self.subTest(identity=identity), tempfile.TemporaryDirectory() as directory:
+                base = {"Id": identity, "Architecture": "amd64", "Os": "linux"}
+                result, docker, root = self.execute(directory, lifecycle=True, base_image=base)
+                self.assertTrue(result["success"], result["errors"])
+                self.assertTrue(result["cleanup_passed"])
+                self.assertEqual(len(result["native_evidence"]["probe"]["cases"]), 10)
+                self.assertTrue(docker.started)
+                self.assertFalse(root.exists())
+
+    def test_other_base_ids_and_wrong_platform_stop_before_build(self):
+        lock = S.read_lock()
+        bases = [{"Id": "sha256:" + "0" * 64, "Architecture": "amd64", "Os": "linux"}]
+        for identity in (lock["base_config_digest"], lock["base_image"].rsplit("@", 1)[1]):
+            bases.extend((
+                {"Id": identity, "Architecture": "arm64", "Os": "linux"},
+                {"Id": identity, "Architecture": "amd64", "Os": "windows"},
+            ))
+        for base in bases:
+            with self.subTest(base=base), tempfile.TemporaryDirectory() as directory:
+                result, docker, root = self.execute(directory, lifecycle=True, base_image=base)
+                self.assertFalse(result["success"])
+                self.assertEqual(result["native_evidence"]["errors"], ["base_image_mismatch"])
+                self.assertFalse(any(call[0] in ("build", "create", "start") for call in docker.calls))
+                self.assertFalse(docker.started)
+                self.assertFalse(root.exists())
 
     def test_full_supervisor_runs_validated_ten_case_suite_then_owned_cleanup(self):
         with tempfile.TemporaryDirectory() as directory:
