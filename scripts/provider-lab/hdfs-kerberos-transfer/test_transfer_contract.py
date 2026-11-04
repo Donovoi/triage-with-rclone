@@ -2241,3 +2241,21 @@ class RcloneObservationTests(unittest.TestCase):
             self.assertNotIn(forbidden,serializer)
         self.assertIn('record RcloneObservation(int phase, int exit, int stdoutBytes, int stderrBytes, String failure)',source)
         self.assertIn('counts[value] == 1 && !failed.get()',source)
+
+
+class BoundedRpcHandlerTests(unittest.TestCase):
+    def test_handler_pools_are_explicit_and_container_task_limit_is_unchanged(self):
+        source = (HERE / 'HdfsKerberosTransferProbe.java').read_text().expandtabs(4)
+        config = source[source.index('private static Configuration configuration('):source.index('private static void topology()')]
+        topology = source[source.index('private static void topology()'):source.index('private static SeedRole seedRole(')]
+        for key in ('dfs.namenode.handler.count','dfs.datanode.handler.count'):
+            self.assertEqual(config.count('conf.setInt("'+key+'", 2);'),1)
+            self.assertEqual(topology.count('conf.getInt("'+key+'", -1) == 2'),1)
+            self.assertEqual(source.count(key),2)
+        self.assertIn('for (Configuration conf : List.of(namenode.getConf(), datanode.getConf()))',topology)
+        args = F.command_args('kerberos-transfer-'+'1'*32, 'sha256:'+'2'*64, '1'*32)
+        self.assertEqual(args[args.index('--pids-limit')+1],'128')
+        self.assertEqual(args[args.index('--memory')+1],'2g')
+        self.assertEqual(args[args.index('--cpus')+1],'2')
+        self.assertIn('counts[value] == 1 && !failed.get()',source)
+        self.assertIn('conf.set("dfs.data.transfer.protection", "privacy");',config)

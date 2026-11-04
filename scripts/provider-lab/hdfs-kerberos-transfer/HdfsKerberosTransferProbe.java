@@ -762,30 +762,30 @@ public final class HdfsKerberosTransferProbe {
 			diagnosticCategory = selected; diagnosticOrigin = origin;
 		} catch (Throwable ignored) { diagnosticCategory = "unclassified"; diagnosticOrigin = "none"; }
 	}
-    private static String threadCategory(Thread thread) {
-        if (TASKS.contains(thread)) return "probe_task";
-        String selected = "other"; int selectedRank = 99;
-        try {
-            StackTraceElement[] frames = thread.getStackTrace();
-            for (int i = 0; i < frames.length && i < 32; i++) {
-                String name = frames[i].getClassName(), category = "other"; int rank = 99;
-                if (name.startsWith("org.apache.hadoop.metrics2.")) { category = "hadoop_metrics"; rank = 0; }
-                else if (name.startsWith("org.apache.hadoop.ipc.")) { category = "hadoop_rpc"; rank = 1; }
-                else if (name.startsWith("org.eclipse.jetty.")) { category = "jetty"; rank = 2; }
-                else if (name.startsWith("org.apache.kerby.")) { category = "kerby"; rank = 3; }
-                else if (name.startsWith("org.apache.hadoop.fs.")) { category = "hadoop_fs"; rank = 4; }
-                else if (name.startsWith("org.apache.hadoop.hdfs.server.namenode.")) { category = "hadoop_namenode"; rank = 5; }
-                else if (name.startsWith("org.apache.hadoop.hdfs.server.blockmanagement.")) { category = "hadoop_blockmanagement"; rank = 6; }
-                else if (name.startsWith("org.apache.hadoop.util.")) { category = "hadoop_util"; rank = 7; }
-                else if (name.equals("jdk.internal.ref.CleanerImpl")) { category = "jdk_cleaner"; rank = 8; }
-                else if (name.equals("java.lang.ProcessHandleImpl")) { category = "jdk_process_reaper"; rank = 9; }
-                else if (name.equals("java.util.TimerThread")) { category = "jdk_timer"; rank = 10; }
-                else if (name.startsWith("java.util.concurrent.")) { category = "jdk_executor"; rank = 11; }
-                if (rank < selectedRank) { selected = category; selectedRank = rank; }
-            }
-        } catch (Throwable ignored) { return "other"; }
-        return selected;
-    }
+	private static String threadCategory(Thread thread) {
+		if (TASKS.contains(thread)) return "probe_task";
+		String selected = "other"; int selectedRank = 99;
+		try {
+			StackTraceElement[] frames = thread.getStackTrace();
+			for (int i = 0; i < frames.length && i < 32; i++) {
+				String name = frames[i].getClassName(), category = "other"; int rank = 99;
+				if (name.startsWith("org.apache.hadoop.metrics2.")) { category = "hadoop_metrics"; rank = 0; }
+				else if (name.startsWith("org.apache.hadoop.ipc.")) { category = "hadoop_rpc"; rank = 1; }
+				else if (name.startsWith("org.eclipse.jetty.")) { category = "jetty"; rank = 2; }
+				else if (name.startsWith("org.apache.kerby.")) { category = "kerby"; rank = 3; }
+				else if (name.startsWith("org.apache.hadoop.fs.")) { category = "hadoop_fs"; rank = 4; }
+				else if (name.startsWith("org.apache.hadoop.hdfs.server.namenode.")) { category = "hadoop_namenode"; rank = 5; }
+				else if (name.startsWith("org.apache.hadoop.hdfs.server.blockmanagement.")) { category = "hadoop_blockmanagement"; rank = 6; }
+				else if (name.startsWith("org.apache.hadoop.util.")) { category = "hadoop_util"; rank = 7; }
+				else if (name.equals("jdk.internal.ref.CleanerImpl")) { category = "jdk_cleaner"; rank = 8; }
+				else if (name.equals("java.lang.ProcessHandleImpl")) { category = "jdk_process_reaper"; rank = 9; }
+				else if (name.equals("java.util.TimerThread")) { category = "jdk_timer"; rank = 10; }
+				else if (name.startsWith("java.util.concurrent.")) { category = "jdk_executor"; rank = 11; }
+				if (rank < selectedRank) { selected = category; selectedRank = rank; }
+			}
+		} catch (Throwable ignored) { return "other"; }
+		return selected;
+	}
     private static String timerKind(Thread thread) {
         // Exact names from pinned source; diagnostic hints only, never ownership.
         // No raw thread name leaves this process; unknown timers remain failures.
@@ -1418,6 +1418,8 @@ public final class HdfsKerberosTransferProbe {
 		conf.set("dfs.encrypt.data.transfer", "false");
 		conf.set("ignore.secure.ports.for.testing", "false");
 		conf.set("dfs.blocksize", "1048576");
+		conf.setInt("dfs.namenode.handler.count", 2);
+		conf.setInt("dfs.datanode.handler.count", 2);
 		conf.setLong("dfs.datanode.round-robin-volume-choosing-policy.additional-available-space", 4194304);
 		conf.set("dfs.datanode.max.locked.memory", "0");
 		conf.set("dfs.client.use.datanode.hostname", "false");
@@ -1483,6 +1485,8 @@ public final class HdfsKerberosTransferProbe {
 				need("HTTPS_ONLY".equals(conf.get("dfs.http.policy")) && "kerberos".equals(conf.get("hadoop.security.authentication"))
 					&& conf.getBoolean("dfs.block.access.token.enable", false) && "privacy".equals(conf.get("dfs.data.transfer.protection"))
 					&& conf.getLong("dfs.datanode.round-robin-volume-choosing-policy.additional-available-space", -1) == 4194304
+					&& conf.getInt("dfs.namenode.handler.count", -1) == 2
+					&& conf.getInt("dfs.datanode.handler.count", -1) == 2
 					&& !conf.getBoolean("ignore.secure.ports.for.testing", true)
 					&& conf.get("dfs.datanode.ignore.secure.ports.for.testing") == null
 					&& !conf.getBoolean("ipc.client.fallback-to-simple-auth-allowed", true)
