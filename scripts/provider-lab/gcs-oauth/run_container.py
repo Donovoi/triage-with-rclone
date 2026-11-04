@@ -565,7 +565,7 @@ def run(binary, report_path, lifecycle=False):
         report["stage"] = "pull"
         docker.run(["image", "pull", "--quiet", "--platform", "linux/amd64", lock["base_image"]], timeout=120)
         base = docker.inspect("image", lock["base_image"])
-        check(type(base) is dict and base.get("Id") == lock["base_config_digest"]
+        check(type(base) is dict and base.get("Id") in {lock["base_config_digest"], lock["base_image"].rsplit("@", 1)[1]}
               and base.get("Architecture") == "amd64" and base.get("Os") == "linux", "base_image_mismatch")
         attempted_build = True
         report["stage"] = "build"
