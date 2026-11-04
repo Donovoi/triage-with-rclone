@@ -698,6 +698,7 @@ public final class HdfsKerberosTransferProbe {
 				case "closeImpl" -> "dfs_close_impl";
 				case "close" -> "dfs_close";
 				case "cleanupAndRethrowIOException" -> "dfs_rethrow";
+				case "abort" -> "dfs_abort";
 				default -> "dfs_output";
 			};
 			case "org.apache.hadoop.hdfs.protocol.datatransfer.sasl.SaslDataTransferClient" -> "data_sasl_client";
