@@ -9,10 +9,10 @@ No native result is implied by the pure tests.
 The only dependency profile is `kerberos-remediation`: the existing immutable
 142-JAR runtime descriptor in `hdfs-kerberos-rpc/runtime-classpath-remediation.json`
 and `hdfs-discovery/artifact-lock-kerberos-remediation.json`. The descriptor SHA-256
-is `01095cf92c20a65a479aafdcd52538e11313610230c17b011a5e5146a81bb127`, ordered
-entry SHA-256 `74206f7ff8e05475fd310648003cd570c620e92cf670ee1965c66b96eb3ba15d`,
-and lock SHA-256 `a0fc4edc8ea5fa9df5c26cac0be9f638650c7a657260b9da5eaad16195746e95`.
-There are 73,104,651 runtime bytes. Four Jetty advisory matches remain. The
+is `e701b0047f1198614bd590954e8efd15bf05af51b98cc62b2d9298cd721663e7`, ordered
+entry SHA-256 `92533297bdae9e77befdc0c381f25850a08becac726c026ab70bd3a68b90b2a7`,
+and lock SHA-256 `80184076d64194810cae394fbc6d8b00e86717c9479d6176f828b042dcd41df1`.
+There are 73,478,410 runtime bytes. Four Jetty advisory matches remain. The
 corrected graph selects Commons IO 2.22.0; its verified online inventory still
 requires fresh offline replay, RPC and transfer validation. Earlier remediation
 results bind older hashes and do not qualify this corrected transfer runtime.

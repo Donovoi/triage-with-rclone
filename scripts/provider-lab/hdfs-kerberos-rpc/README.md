@@ -22,29 +22,30 @@ The default `kerberos` profile preserves that original graph and workflow.
 The separate remediation workflow selects `--profile kerberos-remediation`,
 using `runtime-classpath-remediation.json` and
 `hdfs-discovery/artifact-lock-kerberos-remediation.json`. Its 142 JARs total
-73,104,651 bytes, with ordered runtime SHA256
-`74206f7ff8e05475fd310648003cd570c620e92cf670ee1965c66b96eb3ba15d`.
+73,478,410 bytes, with ordered runtime SHA256
+`92533297bdae9e77befdc0c381f25850a08becac726c026ab70bd3a68b90b2a7`.
 The supervisor and owned downloader both require the same closed profile and
 exact runtime/lock bytes; no custom paths or fallback graph are accepted.
 Receipts identify the selected profile, runtime file, ordered rows and lock.
 
-This graph includes Commons IO 2.22.0 to supply the method required by
-Commons Configuration 2.15.1. At revision
-`bb03e8253cf9972b0cb8b1de47ddd8e39db68b18`, its online/offline replay,
-RPC controls and transfer cleanup passed. Fresh evidence remains required for
-each changed runtime. The November 4 exact-version OSV query found eight
-advisory matches across five runtime coordinates: four Jetty matches, one Guava
-match and three Snappy matches. This is a database match count, not a complete
-security audit or evidence of runtime exploitability. Dependency semantics and
-all security, provider, application, vendor and ledger acceptance remain open.
+This graph includes Commons IO 2.22.0 for Commons Configuration 2.15.1,
+Guava 33.7.2-jre and Snappy 1.1.10.9. The updated graph was captured by
+[hosted online resolution](https://github.com/Donovoi/triage-with-rclone/actions/runs/41813886704)
+at revision `82620ce983c431101079144b5f398b3f70497495`; all 641 artifact
+sizes and SHA-256 hashes were independently rechecked against Maven Central.
+Four runtime JAR versions changed, including Guava's J2ObjC and JSpecify
+annotation dependencies. The original SIMPLE and Kerberos profile pins remain
+unchanged. The temporary online discovery profile was retired after capture.
 
-The separate online-only `kerberos-refresh` discovery profile proposes Guava
-33.7.2-jre and Snappy 1.1.10.9, using published patched versions. It has no cache
-lock and cannot prepare or replay an offline cache. It does not change the RPC
-or transfer runtime. Before adoption, its complete graph must be reviewed and
-pinned, replayed offline, and tested by the real fixture workflows. Jetty
-advisory work remains unresolved. The Java probe and all service/resource
-bounds are identical between the two existing runtime profiles.
+The November 4 OSV query of all 137 resolved runtime coordinates returned
+four Jetty advisory matches; the previously matched Guava and Snappy versions
+are no longer selected. This database query does not establish a complete
+security audit or runtime exploitability. Dependency semantics and all
+security, provider, application, vendor and ledger acceptance remain open.
+
+Qualification of this graph requires a fresh offline replay and exact-revision
+RPC and transfer controls with complete cleanup. Earlier reports bind earlier
+runtime hashes. The Java probes and all service/resource bounds are unchanged.
 
 The fixed loopback services are NameNode RPC `19000`, NameNode HTTP/SPNEGO
 scaffolding `19003`, synthetic TCP KDC `19006`, and owned relay `19007`. All

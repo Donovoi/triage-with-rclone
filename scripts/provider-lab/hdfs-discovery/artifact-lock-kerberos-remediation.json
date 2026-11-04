@@ -370,10 +370,10 @@
       "group": "com.google.guava",
       "origin": "unverified_private_cache",
       "selected_runtime": true,
-      "sha256": "f3d7f57f67fd622f4d468dfdd692b3a5e3909246c28017ac3263405f0fe617ed",
-      "size": 3023797,
+      "sha256": "b530942257fb935f8b2cfaa5f8eb5bd59c555fd8e8d01b8ce98912e077ea606c",
+      "size": 3057659,
       "type": "jar",
-      "version": "33.4.8-jre"
+      "version": "33.7.2-jre"
     },
     {
       "artifact": "guava",
@@ -381,10 +381,10 @@
       "group": "com.google.guava",
       "origin": "unverified_private_cache",
       "selected_runtime": false,
-      "sha256": "04365d4b6ef22c8cf9349fe628069fc3e81a2c838351402ef4e95f9e757beebc",
-      "size": 9610,
+      "sha256": "5d1501a97230f90df54ea33164831a61c6714a8b2a4c6a04e90bb729581bbabc",
+      "size": 9732,
       "type": "pom",
-      "version": "33.4.8-jre"
+      "version": "33.7.2-jre"
     },
     {
       "artifact": "guava-parent",
@@ -414,10 +414,10 @@
       "group": "com.google.guava",
       "origin": "unverified_private_cache",
       "selected_runtime": false,
-      "sha256": "a03c5199a1be14443df7fd40ba8673b1c6aae04deef6688ce7d573ea489e3a20",
-      "size": 24597,
+      "sha256": "a81570d53c8710355e0216a4405afa93834b17c4cdd0ed9aa8beede3a132bbbe",
+      "size": 30059,
       "type": "pom",
-      "version": "33.4.8-jre"
+      "version": "33.7.2-jre"
     },
     {
       "artifact": "listenablefuture",
@@ -447,10 +447,10 @@
       "group": "com.google.j2objc",
       "origin": "unverified_private_cache",
       "selected_runtime": true,
-      "sha256": "88241573467ddca44ffd4d74aa04c2bbfd11bf7c17e0c342c94c9de7a70a7c64",
-      "size": 12467,
+      "sha256": "84d3a150518485f8140ea99b8a985656749629f6433c92b80c75b36aba3b099b",
+      "size": 16762,
       "type": "jar",
-      "version": "3.0.0"
+      "version": "3.1"
     },
     {
       "artifact": "j2objc-annotations",
@@ -458,10 +458,10 @@
       "group": "com.google.j2objc",
       "origin": "unverified_private_cache",
       "selected_runtime": false,
-      "sha256": "23b3d039e168ad89dd114698e6dd7be383f4a2c577b8877d82c73a6515e74a17",
-      "size": 5057,
+      "sha256": "14570838500034fc1b47c8205ce1c9d6b255c1ccdd2d1afdcdcbf75e89b24a33",
+      "size": 5420,
       "type": "pom",
-      "version": "3.0.0"
+      "version": "3.1"
     },
     {
       "artifact": "re2j",
@@ -6376,10 +6376,10 @@
       "group": "org.jspecify",
       "origin": "unverified_private_cache",
       "selected_runtime": true,
-      "sha256": "1fad6e6be7557781e4d33729d49ae1cdc8fdda6fe477bb0cc68ce351eafdfbab",
-      "size": 3819,
+      "sha256": "070d75f261fe4c5b8202508366715f7f2d4660f88c8ef7e6d3575e48c9683b66",
+      "size": 3064,
       "type": "jar",
-      "version": "1.0.0"
+      "version": "1.0.1"
     },
     {
       "artifact": "jspecify",
@@ -6387,10 +6387,10 @@
       "group": "org.jspecify",
       "origin": "unverified_private_cache",
       "selected_runtime": false,
-      "sha256": "cdab929a3b95211f43d2090c5e2d0dfe8465960e378bc32b35841dab324433a6",
-      "size": 1511,
+      "sha256": "55b38bf1a7b1d8ea518cf2f4f3ae9aaa236e61bbf0b6bd31ffb49753a059dd5e",
+      "size": 1937,
       "type": "pom",
-      "version": "1.0.0"
+      "version": "1.0.1"
     },
     {
       "artifact": "junit-bom",
@@ -7036,10 +7036,10 @@
       "group": "org.xerial.snappy",
       "origin": "unverified_private_cache",
       "selected_runtime": true,
-      "sha256": "55b30c94e5c4cc2d4b6976916098d0678a8a6cc7427fa8c875621bd94e731ac8",
-      "size": 2112099,
+      "sha256": "35228628442e4b9797681c7cbd3b26594f6da3379159dbd0cb07094ed3aece0d",
+      "size": 2448456,
       "type": "jar",
-      "version": "1.1.10.4"
+      "version": "1.1.10.9"
     },
     {
       "artifact": "snappy-java",
@@ -7047,13 +7047,13 @@
       "group": "org.xerial.snappy",
       "origin": "unverified_private_cache",
       "selected_runtime": false,
-      "sha256": "76a670dee897fc0610413da7035d79b76eb8a4e3c2da9b67fe784ced63858ccd",
-      "size": 3067,
+      "sha256": "55d846e8019d2d86532504603bce2c5e2b22ed37570877abae4470b3dd6471c5",
+      "size": 3066,
       "type": "pom",
-      "version": "1.1.10.4"
+      "version": "1.1.10.9"
     }
   ],
-  "artifacts_sha256": "d411690d9c923494ebbc85eace1ff890d62d9e2c39b62e25749a361f122ffa46",
+  "artifacts_sha256": "0942cbf50f0099d90b1b4f52822620461ba6943f5ecd73da6b4acf77af724e05",
   "claims": {
     "application_accepted": false,
     "authentication_verified": false,
@@ -7069,14 +7069,14 @@
   },
   "counts": {
     "artifacts": 641,
-    "bytes": 97419881,
+    "bytes": 97800012,
     "other_jars": 55,
     "poms": 444,
     "selected_runtime_jars": 142
   },
-  "hosted_discovery_report_sha256": "5ceb82f4a785a45d04a7ffd269b98be750afb7d42004f83a5d2a24bd4bb9bf62",
+  "hosted_discovery_report_sha256": "124369fd841040ab2cd2e5d1fd5e18f1f174975ceef594173cdbb80bb6454680",
   "repository": "https://repo.maven.apache.org/maven2/",
   "schema_version": 1,
   "scope": "hdfs_kerberos_remediation_central_artifact_lock",
-  "source_receipt_sha256": "313f2234012d2b7d0e38eecb77ae87a7e459d39182f5924ff7bc440a925364ed"
+  "source_receipt_sha256": "2e10bf47692ef76e426dfe2d4cd666a0a0f0d4c0ff5f2f8641308f383105935c"
 }

@@ -38,15 +38,14 @@ def source_bindings(verifier, profile="kerberos"):
     paths = [Path(__file__).absolute(), Path(verifier).absolute()]
     paths.extend(Path(module.__file__).absolute()
                  for module in (B, J, D, R, D.graph_export, D.offline_cache))
-    lock = None if profile == D.REFRESH_PROFILE else D.offline_cache.lock_path(profile)
-    if lock is not None:
-        paths.append(lock)
+    lock = D.offline_cache.lock_path(profile)
+    paths.append(lock)
     if len({path.name for path in paths}) != len(paths):
         raise ValueError("source_invalid")
     result = {path.name: D.file_hash(path, maximum=256 * 1024) for path in paths}
     if result[Path(verifier).name] != B.VERIFIER_SHA256:
         raise ValueError("source_invalid")
-    if lock is not None and result[lock.name] != D.offline_cache.lock_sha256(profile):
+    if result[lock.name] != D.offline_cache.lock_sha256(profile):
         raise ValueError("source_invalid")
     return result
 
@@ -76,10 +75,7 @@ def discovery_matches(value, candidate, *, mode="online", seed=None, prepare=Fal
             and type(value.get("manifest")) is dict
             and type(value.get("inputs")) is dict
             and value["inputs"].get("candidate_profile") == profile
-            and ((mode == "online" and not prepare and seed is None
-                  and value["inputs"].get("cache_lock_sha256", "missing") is None)
-                 if profile == D.REFRESH_PROFILE else
-                 value["inputs"].get("cache_lock_sha256") == D.offline_cache.lock_sha256(profile))
+            and value["inputs"].get("cache_lock_sha256") == D.offline_cache.lock_sha256(profile)
             and value["inputs"].get("candidate_sha256") == candidate
             and value["inputs"].get("seed_cache") == seed
             and clean_discovery(value))
@@ -88,7 +84,7 @@ def discovery_matches(value, candidate, *, mode="online", seed=None, prepare=Fal
 COUNTS = dict(artifacts=645, poms=447, selected_runtime_jars=142, other_jars=56,
               artifact_bytes=98990688)
 REMEDIATION_COUNTS = dict(artifacts=641, poms=444, selected_runtime_jars=142, other_jars=55,
-                         artifact_bytes=97419881)
+                         artifact_bytes=97800012)
 
 
 def profile_receipt_matches(value, scope, profile="kerberos"):
@@ -120,8 +116,7 @@ def stage_inputs_match(value, candidate, sources, material, seed, profile="kerbe
     try:
         expected = dict(supervisor_sha256=sources["resolver_discovery.py"],
             graph_export_sha256=sources["graph_export.py"], cache_source_sha256=sources["offline_cache.py"],
-            cache_lock_sha256=(None if profile == D.REFRESH_PROFILE else
-                               sources[D.offline_cache.lock_path(profile).name]), seed_cache=seed,
+            cache_lock_sha256=sources[D.offline_cache.lock_path(profile).name], seed_cache=seed,
             candidate_profile=profile, candidate_sha256=candidate,
             maven=dict(version=material["maven_version"], archive_sha256=material["maven_archive_sha256"],
                        archive_sha512=material["maven_archive_sha512"]),
@@ -145,9 +140,9 @@ def comparison_matches(value, manifest, profile="kerberos"):
 
 
 def run(candidate, verifier, mode="online", *, profile="kerberos"):
-    if profile not in ("kerberos", D.REMEDIATION_PROFILE, D.REFRESH_PROFILE):
+    if profile not in ("kerberos", D.REMEDIATION_PROFILE):
         raise ValueError("profile_invalid")
-    if mode not in ("online", "repeat") or (profile == D.REFRESH_PROFILE and mode != "online"):
+    if mode not in ("online", "repeat"):
         raise ValueError("mode_invalid")
     started = time.monotonic()
     report = dict(schema_version=1, scope="hdfs_kerberos_dependency_discovery",
@@ -187,7 +182,7 @@ def run(candidate, verifier, mode="online", *, profile="kerberos"):
                     candidate_profile=profile, **({"cache_destination": seed} if mode == "repeat" else {}))
                 if (not discovery_matches(report["discovery"], report["candidate_sha256"],
                                           prepare=mode == "repeat", profile=profile)
-                        or (profile in {D.REMEDIATION_PROFILE, D.REFRESH_PROFILE} and not stage_inputs_match(
+                        or (profile == D.REMEDIATION_PROFILE and not stage_inputs_match(
                             report["discovery"], report["candidate_sha256"], report["source_sha256"],
                             material, None, profile=profile))):
                     report["errors"].append("discovery_failed")
@@ -285,7 +280,7 @@ def main(argv=None):
     for name in ("candidate", "verifier", "report"):
         parser.add_argument("--" + name, type=Path, required=True)
     parser.add_argument("--mode", choices=("online", "repeat"), default="online")
-    parser.add_argument("--profile", choices=("kerberos", D.REMEDIATION_PROFILE, D.REFRESH_PROFILE), default="kerberos")
+    parser.add_argument("--profile", choices=("kerberos", D.REMEDIATION_PROFILE), default="kerberos")
     args = parser.parse_args(argv)
     previous = signal.getsignal(signal.SIGTERM)
     def interrupted(_signal, _frame):
