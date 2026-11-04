@@ -41,7 +41,7 @@ OWNED_CLEANUP_STATES = frozenset("not_attempted observation_incomplete services_
 TIMER_KINDS = frozenset("namenode_metrics rpc_idle snapshot_gc shell_timeout ssl_store unknown".split())
 BASE = "docker.io/library/eclipse-temurin@sha256:e1c09a9ee23feb81f94016547826c1e694086cd927356fb57fccc312fcc32f85"
 BASE_ID = "sha256:d0e6e16acb7f941e5206d99ec38e5bba18545c43462541958f84b22e0fc006e8"
-JAVA_SHA = "8cc500e98863b5765ea0623bfab24a699541855c4dceda33ec322cd63a82ac54"
+JAVA_SHA = "3bb81f568db50a44a54d97cbfeee9ca83c85c1e44d0ac3ed56ab68332a83db2b"
 REMEDIATION_RUNTIME_SHA = "01095cf92c20a65a479aafdcd52538e11313610230c17b011a5e5146a81bb127"
 REMEDIATION_ORDER_SHA = "74206f7ff8e05475fd310648003cd570c620e92cf670ee1965c66b96eb3ba15d"
 REMEDIATION_LOCK_SHA = "a0fc4edc8ea5fa9df5c26cac0be9f638650c7a657260b9da5eaad16195746e95"
@@ -531,7 +531,9 @@ def validate_seed_checkpoint(value, checks):
 
 
 RCLONE_FAILURE_KINDS = frozenset(('empty', 'cache_tgt_missing', 'cache_ticket_invalid',
-    'kerberos_initialization', 'backend_creation', 'json_message', 'unclassified'))
+    'kerberos_initialization', 'backend_creation', 'json_message', 'unclassified',
+    'runtime_thread_limit', 'panic_credential_cache', 'panic_kerberos_config',
+    'panic_kerberos_client', 'go_panic', 'go_runtime_fatal'))
 
 
 def validate_rclone_observation(value, passed):
