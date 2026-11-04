@@ -1864,3 +1864,43 @@ class SslCaptureDiagnosticTests(unittest.TestCase):
                 self.assertEqual(report['result']['cleanup'],receipt['cleanup'])
                 self.assertTrue(all(report['cleanup'].values()));self.assertFalse(docker.root.exists())
             finally:helper.tearDown()
+
+
+class BaseObservationTests(unittest.TestCase):
+    def test_known_digest_kinds_remain_distinct(self):
+        for identity, kind in ((F.BASE_ID, "config_digest"), (F.BASE.rsplit("@", 1)[1], "manifest_digest")):
+            observed = F.base_observation(dict(Id=identity, Os="linux", Architecture="amd64", Config={}))
+            self.assertEqual(observed, dict(id_kind=kind, linux=True, amd64=True,
+                                           config_present=True, java_options_absent=True))
+
+    def test_unknown_fields_are_not_exported(self):
+        value = dict(Id="private-id", Os="private-os", Architecture="private-arch",
+                     Config=dict(Env=["PRIVATE_VALUE=secret"], Labels={"secret": "private"}), Extra="private")
+        observed = F.base_observation(value)
+        self.assertEqual(observed["id_kind"], "unrecognized")
+        self.assertNotIn("private", F.canonical(observed).decode())
+        self.assertFalse(observed["linux"]); self.assertFalse(observed["amd64"])
+
+    def test_malformed_config_and_java_options_are_negative(self):
+        for config in (None, [], dict(Env=None), dict(Env=[1]),
+                       dict(Env=["JAVA_TOOL_OPTIONS=-agentlib:private"]),
+                       dict(Env=["_JAVA_OPTIONS=private"]), dict(Env=["JDK_JAVA_OPTIONS=private"])):
+            with self.subTest(config=config):
+                self.assertFalse(F.base_observation(dict(Config=config))["java_options_absent"])
+        self.assertFalse(F.base_observation(None)["config_present"])
+
+    def test_manifest_diagnostic_does_not_relax_existing_admission(self):
+        original = FakeDocker.inspect
+        def changed(fake, kind, reference, allow_missing=False):
+            result = original(fake, kind, reference, allow_missing)
+            if kind == "image" and reference == F.BASE:
+                result["Id"] = F.BASE.rsplit("@", 1)[1]
+            return result
+        helper = TicketTests(methodName="test_full_mock_success_binds_context_and_cleans"); helper.setUp()
+        try:
+            with patch.object(FakeDocker, "inspect", changed): report, docker = helper.fake_run()
+            self.assertFalse(report["success"]); self.assertEqual(report["errors"], ["base_invalid"])
+            self.assertEqual(report["inputs"]["base_observation"]["id_kind"], "manifest_digest")
+            self.assertIsNone(report["result"]); self.assertTrue(all(report["cleanup"].values()))
+            self.assertFalse(any(args[0] in ("build", "create", "start") for args, _ in docker.calls))
+        finally: helper.tearDown()
