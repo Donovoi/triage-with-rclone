@@ -1382,6 +1382,7 @@ public final class HdfsKerberosTransferProbe {
 		conf.set("dfs.encrypt.data.transfer", "false");
 		conf.set("ignore.secure.ports.for.testing", "false");
 		conf.set("dfs.blocksize", "1048576");
+		conf.setLong("dfs.datanode.round-robin-volume-choosing-policy.additional-available-space", 4194304);
 		conf.set("dfs.datanode.max.locked.memory", "0");
 		conf.set("dfs.client.use.datanode.hostname", "false");
 		conf.set("dfs.datanode.use.datanode.hostname", "false");
@@ -1396,8 +1397,6 @@ public final class HdfsKerberosTransferProbe {
 		conf.set("hadoop.http.authentication.type", "kerberos");
 		conf.set("hadoop.http.authentication.kerberos.principal", "HTTP/127.0.0.1@" + realm);
 		conf.set("hadoop.http.authentication.kerberos.keytab", HTTP_KEYTAB.toString());
-		// BlockManager requires tokens during secure NameNode formatting;
-		// this sibling also requires them for secure DataNode byte transfers.
 		conf.set("dfs.block.access.token.enable", "true");
 		conf.set("hadoop.security.authorization", "true");
 		conf.set("hadoop.kerberos.keytab.login.autorenewal.enabled", "false");
@@ -1447,6 +1446,7 @@ public final class HdfsKerberosTransferProbe {
 			for (Configuration conf : List.of(namenode.getConf(), datanode.getConf())) {
 				need("HTTPS_ONLY".equals(conf.get("dfs.http.policy")) && "kerberos".equals(conf.get("hadoop.security.authentication"))
 					&& conf.getBoolean("dfs.block.access.token.enable", false) && "privacy".equals(conf.get("dfs.data.transfer.protection"))
+					&& conf.getLong("dfs.datanode.round-robin-volume-choosing-policy.additional-available-space", -1) == 4194304
 					&& !conf.getBoolean("ignore.secure.ports.for.testing", true)
 					&& conf.get("dfs.datanode.ignore.secure.ports.for.testing") == null
 					&& !conf.getBoolean("ipc.client.fallback-to-simple-auth-allowed", true)
