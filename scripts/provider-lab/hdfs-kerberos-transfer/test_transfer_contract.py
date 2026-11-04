@@ -126,6 +126,7 @@ def positive():
         relay=dict(phase_connections=dict(inventory_before=1,empty=1,small=1,missing=1,before=1,negative=1,after=1,inventory_after=1), none_headers=1,
                    fatal_responses=1, unexpected_connections=0, bytes_forwarded_unchanged=True), error=None, ledger_eligible=False,
         diagnostic=dict(category="none", origin="none"), pipeline_origin="not_observed", pipeline_server_diagnostic=dict(category="none", origin="none"),
+        remaining_executor_kind="not_observed",
         remaining_threads=dict(probe_task=0, jdk_process_reaper=0, jdk_timer=0, jdk_executor=0,
             jdk_cleaner=0, hadoop_metrics=0, hadoop_rpc=0, hadoop_fs=0, hadoop_namenode=0,
             hadoop_blockmanagement=0, hadoop_util=0, jetty=0, kerby=0, other=0),
@@ -2315,3 +2316,40 @@ class RcloneServerObservationTests(unittest.TestCase):
         self.assertIn('catch (Throwable ignored) { pipelineServerDetached = false; }',method)
         for forbidden in ('setLevel','setAdditivity','getRootLogger','getMessage','getLocalizedMessage','Thread.interrupt'):
             self.assertNotIn(forbidden,method)
+
+
+class ExecutorAndReadCallsiteTests(unittest.TestCase):
+    def test_executor_labels_cannot_clear_thread_failure_or_expose_names(self):
+        for kind in ('shortcircuit_cleaner','shortcircuit_releaser','striped_read','hedged_read','completable_delay','forkjoin_common','unnamed_pool','other','mixed'):
+            value=positive();value.update(success=False,error='cleanup_failed',remaining_executor_kind=kind)
+            value['cleanup'].update(threads_terminated=False,private_material_removed=False)
+            value['remaining_threads']['jdk_executor']=1
+            value['remaining_thread_intervals']['reader']=1
+            value['remaining_thread_matrix']['jdk_executor']['reader']=1
+            result=F.validate_java(F.canonical(value),1)
+            self.assertEqual(result['remaining_executor_kind'],kind)
+            self.assertFalse(result['cleanup']['threads_terminated'])
+            with self.assertRaises(F.ProbeError):F.validate_java(F.canonical(value),0)
+            passed=positive();passed['remaining_executor_kind']=kind
+            with self.assertRaises(F.ProbeError):F.validate_java(F.canonical(passed),0)
+        for kind in ('private-thread-name',None,True,0,[]):
+            value=positive();value['remaining_executor_kind']=kind
+            with self.assertRaises(F.ProbeError):F.validate_java(F.canonical(value),0)
+        source=(HERE/'HdfsKerberosTransferProbe.java').read_text().expandtabs(4)
+        classify=source[source.index('private static String executorKind('):source.index('private static Map<String, Integer> remainingThreadCounts(')]
+        self.assertNotIn('return name',classify)
+        self.assertNotIn('interrupt(',classify)
+        self.assertNotIn('stop(',classify)
+        self.assertIn('if (name.length() > 128) return "other"',classify)
+        self.assertIn('threadsClean = remainingThreads.values().stream().allMatch(count -> count == 0)',source)
+
+    def test_fixed_receiver_and_datanode_callsite_labels_are_closed(self):
+        source=(HERE/'HdfsKerberosTransferProbe.java').read_text().expandtabs(4)
+        origin=source[source.index('private static String originFrame('):source.index('private static void projectFailure(')]
+        for method,label in [('run','data_xceiver_run'),('readBlock','data_read_block'),('checkAccess','data_access_check'),('writeSuccessWithChecksumInfo','data_read_success'),('readOp','data_read_op'),('processOp','data_process_op'),('opReadBlock','data_op_read_block')]:
+            self.assertIn('case "'+method+'" -> "'+label+'";',origin)
+            self.assertIn(label,F.DIAGNOSTIC_ORIGINS)
+            value=LinkageDiagnosticTests().failure(origin=label)
+            self.assertFalse(F.validate_java(F.canonical(value),1)['success'])
+        for forbidden in ('getMessage','getLocalizedMessage','getLineNumber','substring','startsWith'):
+            self.assertNotIn(forbidden,origin)
