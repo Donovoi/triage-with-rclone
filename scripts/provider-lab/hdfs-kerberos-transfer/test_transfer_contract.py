@@ -2372,14 +2372,16 @@ class NarrowIoDiagnosticTests(unittest.TestCase):
             self.assertNotIn(forbidden,method)
 
 
-class BoundedReadaheadTests(unittest.TestCase):
-    def test_fixture_disables_optional_readahead_without_hiding_threads(self):
+class PrivacyCipherConfigurationTests(unittest.TestCase):
+    def test_fixture_enables_supported_aes_without_weakening_privacy(self):
         source=(HERE/"HdfsKerberosTransferProbe.java").read_text().expandtabs(4)
-        self.assertEqual(source.count("dfs.datanode.readahead.bytes"),2)
-        self.assertIn('conf.setLong("dfs.datanode.readahead.bytes", 0);',source)
-        self.assertIn('conf.getLong("dfs.datanode.readahead.bytes", -1) == 0',source)
+        self.assertEqual(source.count("dfs.encrypt.data.transfer.cipher.suites"),2)
+        self.assertIn('conf.set("dfs.encrypt.data.transfer.cipher.suites", "AES/CTR/NoPadding");',source)
+        self.assertIn('"AES/CTR/NoPadding".equals(conf.get("dfs.encrypt.data.transfer.cipher.suites"))',source)
         self.assertIn('for (Configuration conf : List.of(namenode.getConf(), datanode.getConf()))',source)
         self.assertIn('threadsClean = remainingThreads.values().stream().allMatch(count -> count == 0)',source)
-        self.assertNotIn("ReadaheadPool.resetInstance()",source)
         self.assertIn('conf.set("dfs.data.transfer.protection", "privacy");',source)
+        self.assertIn('"--hdfs-data-transfer-protection","privacy"',source)
+        self.assertIn('conf.getBoolean("dfs.block.access.token.enable", false)',source)
+        self.assertNotIn("dfs.datanode.readahead.bytes",source)
         self.assertLessEqual(len((HERE/"HdfsKerberosTransferProbe.java").read_bytes()),131072)

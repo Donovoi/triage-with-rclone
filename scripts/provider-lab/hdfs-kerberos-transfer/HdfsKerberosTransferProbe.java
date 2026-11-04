@@ -1489,7 +1489,7 @@ public final class HdfsKerberosTransferProbe {
 		conf.setInt("dfs.namenode.handler.count", 2);
 		conf.setInt("dfs.datanode.handler.count", 2);
 		conf.setInt("dfs.client.socketcache.capacity", 0);
-		conf.setLong("dfs.datanode.readahead.bytes", 0);
+		conf.set("dfs.encrypt.data.transfer.cipher.suites", "AES/CTR/NoPadding");
 		conf.setLong("dfs.datanode.round-robin-volume-choosing-policy.additional-available-space", 4194304);
 		conf.set("dfs.datanode.max.locked.memory", "0");
 		conf.set("dfs.client.use.datanode.hostname", "false");
@@ -1558,7 +1558,7 @@ public final class HdfsKerberosTransferProbe {
 					&& conf.getInt("dfs.namenode.handler.count", -1) == 2
 					&& conf.getInt("dfs.datanode.handler.count", -1) == 2
 					&& conf.getInt("dfs.client.socketcache.capacity", -1) == 0
-					&& conf.getLong("dfs.datanode.readahead.bytes", -1) == 0
+					&& "AES/CTR/NoPadding".equals(conf.get("dfs.encrypt.data.transfer.cipher.suites"))
 					&& !conf.getBoolean("ignore.secure.ports.for.testing", true)
 					&& conf.get("dfs.datanode.ignore.secure.ports.for.testing") == null
 					&& !conf.getBoolean("ipc.client.fallback-to-simple-auth-allowed", true)
