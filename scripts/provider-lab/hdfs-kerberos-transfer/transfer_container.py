@@ -41,7 +41,7 @@ OWNED_CLEANUP_STATES = frozenset("not_attempted observation_incomplete services_
 TIMER_KINDS = frozenset("namenode_metrics rpc_idle snapshot_gc shell_timeout ssl_store unknown".split())
 BASE = "docker.io/library/eclipse-temurin@sha256:e1c09a9ee23feb81f94016547826c1e694086cd927356fb57fccc312fcc32f85"
 BASE_ID = "sha256:d0e6e16acb7f941e5206d99ec38e5bba18545c43462541958f84b22e0fc006e8"
-JAVA_SHA = "7c802d723dbba6c885a77496b7bfc229e403428f03a181c1c360b68e5589222a"
+JAVA_SHA = "fadd1f3f54647d8ee286f44417346377b36e82932beb035a9444fdc1d6ecdc90"
 REMEDIATION_RUNTIME_SHA = "01095cf92c20a65a479aafdcd52538e11313610230c17b011a5e5146a81bb127"
 REMEDIATION_ORDER_SHA = "74206f7ff8e05475fd310648003cd570c620e92cf670ee1965c66b96eb3ba15d"
 REMEDIATION_LOCK_SHA = "a0fc4edc8ea5fa9df5c26cac0be9f638650c7a657260b9da5eaad16195746e95"
@@ -56,7 +56,7 @@ JAVA_FALSE = set(FALSE_CLAIMS) - {"publisher_audit_completed"}
 JAVA_CHECKS = frozenset(("environment", "metrics_mode_enabled", "endpoint_settings", "positive_tgt", "file_cache_v3",
     "nonrenewable", "secure_namenode", "secure_datanode", "tls_material", "tls_endpoints", "registered_datanode", "seed_hashes", "empty_acquired", "small_acquired", "missing_path_rejected", "payload_before", "payload_after", "listing_before", "rclone_auth_boundary_rejection",
     "wire_auth_boundary_rejection", "listing_after", "source_preserved", "cache_preserved"))
-JAVA_CLEANUP = frozenset(("children_reaped", "relay_closed", "filesystem_closed", "namenode_stop_returned", "owner_logged_out", "kdc_stop_returned", "threads_terminated", "listeners_absent",
+JAVA_CLEANUP = frozenset(("pipeline_observer_detached", "children_reaped", "relay_closed", "filesystem_closed", "namenode_stop_returned", "owner_logged_out", "kdc_stop_returned", "threads_terminated", "listeners_absent",
     "private_material_removed", "process_property_restored", "metrics_mode_restored", "cleanup_completed", "gc_monitor_reaped", "fs_statistics_cleaner_reaped", "format_ssl_timer_reaped", "datanode_stop_returned", "datanode_ssl_timer_reaped"))
 JAVA_CODES = frozenset("""environment_invalid path_invalid source_changed unexpected_files
 listener_mismatch configuration_invalid deadline_exceeded positive_ticket_failed
@@ -517,7 +517,7 @@ def validate_java(raw, exit_code):
     try:
         value = parse(raw, 32768)
         keys = {"schema_version", "scope", "success", "expected_kerby_version", "runtime_binding_required", "checks",
-                "cleanup", "metrics_mode", "ssl_capture", "seed_checkpoint", "cache_bytes", "child_count", "acquired_bytes", "acquisitions", "missing_category", "observed_lifetime_seconds", "stage", "wire_hex", "rclone_wire_hex", "relay", "error", "diagnostic", "remaining_threads", "remaining_thread_intervals", "remaining_thread_matrix", "remaining_timer_kinds", "thread_observation_complete", "owned_thread_cleanup"} | JAVA_FALSE
+                "cleanup", "metrics_mode", "ssl_capture", "seed_checkpoint", "cache_bytes", "child_count", "acquired_bytes", "acquisitions", "missing_category", "observed_lifetime_seconds", "stage", "wire_hex", "rclone_wire_hex", "relay", "error", "diagnostic", "pipeline_origin", "remaining_threads", "remaining_thread_intervals", "remaining_thread_matrix", "remaining_timer_kinds", "thread_observation_complete", "owned_thread_cleanup"} | JAVA_FALSE
         need(type(value) is dict and set(value) == keys and type(value["schema_version"]) is int
              and value["schema_version"] == 1 and value["scope"] == "hdfs_kerberos_transfer_feasibility"
              and value["expected_kerby_version"] == "2.1.2" and value["runtime_binding_required"] is True
@@ -528,6 +528,7 @@ def validate_java(raw, exit_code):
         validate_metrics_mode(value["metrics_mode"], value["checks"], value["cleanup"])
         validate_ssl_capture(value["ssl_capture"], value["checks"], value["cleanup"], value["error"])
         validate_seed_checkpoint(value["seed_checkpoint"], value["checks"])
+        need(type(value["pipeline_origin"]) is str and value["pipeline_origin"] in DIAGNOSTIC_ORIGINS | {"not_observed"}, "java_report_invalid")
         need(type(value["cache_bytes"]) is int and 0 <= value["cache_bytes"] <= 65536
              and type(value["observed_lifetime_seconds"]) is int and 0 <= value["observed_lifetime_seconds"] <= 120
              and (value["error"] is None or type(value["error"]) is str and value["error"] in JAVA_CODES), "java_report_invalid")
