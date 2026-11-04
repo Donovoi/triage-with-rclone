@@ -1969,3 +1969,22 @@ class SeedOriginDiagnostics(unittest.TestCase):
             self.assertFalse(result['cleanup']['private_material_removed'])
             self.assertTrue(all(result[key] is False for key in F.JAVA_FALSE))
             helper.rejected(value,0)
+
+class SelfSuppressionDiagnosticTests(unittest.TestCase):
+    def test_exact_throwable_callsite_is_closed_and_within_cap(self):
+        raw = (F.HERE / "HdfsKerberosTransferProbe.java").read_bytes()
+        self.assertLessEqual(len(raw), 131072)
+        self.assertEqual(hashlib.sha256(raw).hexdigest(), F.JAVA_SHA)
+        self.assertIn('case "java.lang.Throwable" -> frame.getMethodName().equals("addSuppressed") ? "self_suppression" : null;', raw.decode())
+        self.assertIn("self_suppression", F.DIAGNOSTIC_ORIGINS)
+
+    def test_self_suppression_does_not_grant_credit(self):
+        helper = TicketTests(methodName="test_finite_startup_diagnostic_and_residual_threads_never_grant_credit")
+        value = helper.startup_failure()
+        value["diagnostic"] = dict(category="invalid_config", origin="self_suppression")
+        result = F.validate_java(F.canonical(value), 1)
+        self.assertEqual(result["diagnostic"], value["diagnostic"])
+        self.assertFalse(result["success"])
+        self.assertFalse(result["cleanup"]["threads_terminated"])
+        self.assertTrue(all(result[k] is False for k in F.JAVA_FALSE))
+        helper.rejected(value, 0)

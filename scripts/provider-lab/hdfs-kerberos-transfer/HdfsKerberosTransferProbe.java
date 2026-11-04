@@ -680,6 +680,7 @@ public final class HdfsKerberosTransferProbe {
             };
 			case "org.apache.hadoop.security.authentication.server.KerberosAuthenticationHandler",
 				 "org.apache.hadoop.security.authentication.server.AuthenticationFilter" -> "http_authentication";
+			case "java.lang.Throwable" -> frame.getMethodName().equals("addSuppressed") ? "self_suppression" : null;
 			case "org.apache.hadoop.hdfs.DataStreamer" -> "data_streamer";
 			case "org.apache.hadoop.hdfs.DFSOutputStream" -> "dfs_output";
 			case "org.apache.hadoop.hdfs.protocol.datatransfer.sasl.SaslDataTransferClient" -> "data_sasl_client";
@@ -691,8 +692,7 @@ public final class HdfsKerberosTransferProbe {
 		};
     }
     private static void projectFailure(Throwable failure) {
-        // Same finite type approach as the existing SIMPLE fixture, extended to
-        // secure NameNode startup. Do not guess a cause from a generic code.
+        // Closed type projection; no exception messages or raw frames.
         String selected = "unclassified", origin = "none";
         int selectedRank = 99;
         Set<Throwable> seen = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
