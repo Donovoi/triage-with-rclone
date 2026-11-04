@@ -106,7 +106,7 @@ def positive():
         checks=dict(environment=True, metrics_mode_enabled=True, endpoint_settings=True, positive_tgt=True, file_cache_v3=True,
             nonrenewable=True, secure_namenode=True, secure_datanode=True, tls_material=True, tls_endpoints=True, registered_datanode=True, seed_hashes=True, empty_acquired=True, small_acquired=True, missing_path_rejected=True, payload_before=True, payload_after=True, listing_before=True, rclone_auth_boundary_rejection=True,
             wire_auth_boundary_rejection=True, listing_after=True, source_preserved=True, cache_preserved=True),
-        cleanup=dict(seed_lease_renewer_stopped=True, pipeline_server_observer_detached=True, pipeline_observer_detached=True, children_reaped=True, relay_closed=True, filesystem_closed=True, namenode_stop_returned=True, owner_logged_out=True, kdc_stop_returned=True, threads_terminated=True, listeners_absent=True,
+        cleanup=dict(replica_pool_stopped=True, seed_lease_renewer_stopped=True, pipeline_server_observer_detached=True, pipeline_observer_detached=True, children_reaped=True, relay_closed=True, filesystem_closed=True, namenode_stop_returned=True, owner_logged_out=True, kdc_stop_returned=True, threads_terminated=True, listeners_absent=True,
             private_material_removed=True, process_property_restored=True, metrics_mode_restored=True, cleanup_completed=True,
             gc_monitor_reaped=True, fs_statistics_cleaner_reaped=True, format_ssl_timer_reaped=True, datanode_stop_returned=True, datanode_ssl_timer_reaped=True),
         metrics_mode=dict(attempted=True, captured=True, prior_enabled=False, enable_attempted=True,
@@ -1050,7 +1050,7 @@ class TlsDiagnosticTests(unittest.TestCase):
 
     def test_keytool_buffers_are_erased_in_finally_before_store_inspection(self):
         source=(HERE/'HdfsKerberosTransferProbe.java').read_text().expandtabs(4)
-        exact='try { need(keytool.code == 0, Code.tls_keytool_exit_invalid); }\n            finally { Arrays.fill(keytool.out, (byte)0); Arrays.fill(keytool.err, (byte)0); }'
+        exact='try { need(keytool.code == 0, Code.tls_keytool_exit_invalid); }\n        finally { Arrays.fill(keytool.out, (byte)0); Arrays.fill(keytool.err, (byte)0); }'
         self.assertIn(exact,source)
         self.assertLess(source.index(exact),source.index('OWNED_FILES.put(STORE, new FileState(STORE))'))
         method=source[source.index('private static void makeTls()'):source.index('private static void verifyTlsEndpoint(')]
@@ -1457,7 +1457,7 @@ class MetricsModeLifecycleTests(unittest.TestCase):
                  'metricsModeEnableVerified = true;','CHECKS.put("metrics_mode_enabled", true);')
         self.assertEqual([enable.index(x) for x in ordered],sorted(enable.index(x) for x in ordered))
         self.assertEqual(enable.count('need(System.nanoTime() < deadline, Code.deadline_exceeded);'),3)
-        self.assertIn('metricsModeTransitionFailed = true;\n            throw failure;',enable)
+        self.assertIn('metricsModeTransitionFailed = true;\n        throw failure;',enable)
         restore=source[source.index('private static void restoreMetricsMode()'):source.index('private static String metricsModeJson()')].expandtabs(4)
         self.assertIn('if (metricsModeCaptured)',restore)
         self.assertIn('if (metricsModeEnableAttempted) DefaultMetricsSystem.setMiniClusterMode(metricsModePrior);',restore)
@@ -1472,7 +1472,7 @@ class MetricsModeLifecycleTests(unittest.TestCase):
         self.assertLess(main.index('Set<Long> baseline = threadIds()'),main.index('enableMetricsMode();'))
         self.assertLess(main.index('enableMetricsMode();'),main.index('NameNode.format(conf)'))
         self.assertIn('namenode = new NameNode(conf)',main)
-        self.assertIn('try { stopServices(); } catch (Throwable ignored) { CLEANUP.put("cleanup_completed", false); }\n            finally { restoreMetricsMode(); }',main)
+        self.assertIn('try { stopServices(); } catch (Throwable ignored) { CLEANUP.put("cleanup_completed", false); }\n        finally { restoreMetricsMode(); }',main)
         self.assertLess(main.index('finally { restoreMetricsMode(); }'),main.index('cleanup(server, baseline)'))
         stop=source[source.index('private static void stopServices()'):source.index('public static void main(')]
         self.assertLess(stop.index('datanode.shutdown()'),stop.index('namenode.stop()'))
@@ -1575,7 +1575,7 @@ class SeedCheckpointTests(unittest.TestCase):
         self.assertIn('if (closing != primary) primary.addSuppressed(closing);', seed)
         self.assertRegex(verify, r'seedStep\(SeedOperation.verify_read_open, role\);\s*try \(var input=filesystem.open\(path, 4096\)\) \{\s*seedStep\(SeedOperation.verify_read, role\);')
         self.assertRegex(verify, r'seedStep\(SeedOperation.verify_read_close, role\);\s*} finally \{ Arrays.fill\(buffer,\(byte\)0\); }')
-        self.assertIn('stage = "seed"; bounded(() -> { seedObserved(); verifyMember(); seedStep(SeedOperation.complete, SeedRole.none); return null; }, 20, deadline);', source)
+        self.assertIn('stage = "seed"; bounded(() -> { seedObserved(); verifyMember(); captureReplicaPool(baseline); seedStep(SeedOperation.complete, SeedRole.none); return null; }, 20, deadline);', source)
         self.assertIn('stage = "preservation"; bounded(() -> { verifyMember(); return null; }, 5, controlDeadline);', source)
 
     def test_inert_resource_failure_model_keeps_original_calls_and_suppression(self):
@@ -2397,3 +2397,34 @@ class BoundedWaitDiagnosticsTests(unittest.TestCase):
         for forbidden in ("getMessage", "printStackTrace", "interrupt(", "stop(", "return n;", "return frames"):
             self.assertNotIn(forbidden,method)
         self.assertIn('threadsClean = remainingThreads.values().stream().allMatch(count -> count == 0)',source)
+
+
+class OwnedReplicaPoolTests(unittest.TestCase):
+    def test_capture_retains_exact_private_volume_pool_and_excludes_preexisting_workers(self):
+        source=(HERE/"HdfsKerberosTransferProbe.java").read_text().expandtabs(4)
+        capture=source[source.index("private static void captureReplicaPool("):source.index("private static void stopServices()")]
+        for guard in ("refs.size()==1", "volume.getDataset()==dataset", "slices.size()==1", "pool!=ForkJoinPool.commonPool()", "!baseline.contains(t.getId())", "w.getPool()==pool", "++scanned<=128"):
+            self.assertIn(guard,capture)
+        self.assertIn('WORK.resolve("state/data").toRealPath()',capture)
+        self.assertLess(capture.index("!baseline.contains"),capture.index("replicaPool=pool"))
+        stop=source[source.index("private static void stopServices()"):source.index("public static void main(")]
+        self.assertLess(stop.index("datanode.shutdown()"),stop.index("replicaPool.shutdown()"))
+        self.assertIn("dnStopped && replicaPool!=null && closed && children && relayClosed",stop)
+        self.assertIn("replicaPool.awaitTermination(3,TimeUnit.SECONDS)",stop)
+        self.assertIn("catch(Throwable ignored) { poolStopped=false; }",stop)
+        cleanup=source[source.index("private static void cleanup("):source.index("private static String boolMap(")]
+        self.assertLess(cleanup.index('"replica_pool_stopped"'),cleanup.index("Files.delete(entry.getKey())"))
+        for forbidden in ("reInitializeAddReplicaThreadPool", "shutdownNow", "getDeclaredField", "setAccessible"):
+            self.assertNotIn(forbidden,capture+stop)
+
+    def test_missing_or_failed_pool_shutdown_never_grants_success(self):
+        for bad in (None,1,"true"):
+            value=positive();value["cleanup"]["replica_pool_stopped"]=bad
+            with self.assertRaises(F.ProbeError):F.validate_java(F.canonical(value),0)
+        value=positive();del value["cleanup"]["replica_pool_stopped"]
+        with self.assertRaises(F.ProbeError):F.validate_java(F.canonical(value),0)
+        value=positive();value.update(success=False,error="cleanup_failed")
+        value["cleanup"].update(replica_pool_stopped=False,private_material_removed=False)
+        result=F.validate_java(F.canonical(value),1)
+        self.assertFalse(result["cleanup"]["replica_pool_stopped"])
+        with self.assertRaises(F.ProbeError):F.validate_java(F.canonical(value),0)
