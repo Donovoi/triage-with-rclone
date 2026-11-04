@@ -41,7 +41,7 @@ OWNED_CLEANUP_STATES = frozenset("not_attempted observation_incomplete services_
 TIMER_KINDS = frozenset("namenode_metrics rpc_idle snapshot_gc shell_timeout ssl_store unknown".split())
 BASE = "docker.io/library/eclipse-temurin@sha256:e1c09a9ee23feb81f94016547826c1e694086cd927356fb57fccc312fcc32f85"
 BASE_ID = "sha256:d0e6e16acb7f941e5206d99ec38e5bba18545c43462541958f84b22e0fc006e8"
-JAVA_SHA = "78d7358bf9ff547b9fa2cd977a10c179a8e70a5b593127465414ce441f9709d8"
+JAVA_SHA = "327c73ea45bf973a87f881694f9f48be91c66ab9f14015e3daabb78ed6b9b58c"
 REMEDIATION_RUNTIME_SHA = "01095cf92c20a65a479aafdcd52538e11313610230c17b011a5e5146a81bb127"
 REMEDIATION_ORDER_SHA = "74206f7ff8e05475fd310648003cd570c620e92cf670ee1965c66b96eb3ba15d"
 REMEDIATION_LOCK_SHA = "a0fc4edc8ea5fa9df5c26cac0be9f638650c7a657260b9da5eaad16195746e95"
@@ -602,7 +602,7 @@ def validate_java(raw, exit_code):
         checkpoint = "diagnostics"
         validate_diagnostics(value["diagnostic"], value["remaining_threads"], value["remaining_thread_intervals"],
                              value["remaining_thread_matrix"], value["remaining_timer_kinds"], value["thread_observation_complete"], value["error"], value["cleanup"], passed)
-        need(type(value["remaining_executor_kind"]) is str and value["remaining_executor_kind"] in ["not_observed","readahead","process_reaper","shortcircuit_cleaner","shortcircuit_releaser","striped_read","hedged_read","completable_delay","forkjoin_common","unnamed_pool","other","mixed"]
+        need(type(value["remaining_executor_kind"]) is str and value["remaining_executor_kind"] in ["not_observed","hdfs_frame","scheduled_executor","cached_executor","timeunit_sleeper","readahead","process_reaper","shortcircuit_cleaner","shortcircuit_releaser","striped_read","hedged_read","completable_delay","forkjoin_common","unnamed_pool","other","mixed"]
              and (not passed or value["remaining_executor_kind"] == "not_observed"), "java_report_invalid")
         checkpoint = "owned_cleanup"
         validate_owned_cleanup(value["owned_thread_cleanup"], value["cleanup"])
