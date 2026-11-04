@@ -1065,222 +1065,249 @@ public final class HdfsKerberosTransferProbe {
             && header.getExceptionClassName().equals(EXCEPTION) && header.getErrorMsg().equals(DENIAL), Code.wire_invalid);
         return ByteBuffer.allocate(4 + length).putInt(length).put(response).array();
     }
-    private static final class Relay {
-        final ServerSocket listener = new ServerSocket();
-        final List<Thread> sessions = new java.util.concurrent.CopyOnWriteArrayList<>();
-        final List<Socket> sockets = new java.util.concurrent.CopyOnWriteArrayList<>();
-        final AtomicBoolean failed = new AtomicBoolean();
-        final int[] counts = new int[8];
-        volatile boolean running = true;
-        int phase = -1, nextPhase, noneHeaders, fatalResponses, unexpected;
-        Thread acceptor;
-        Relay() throws Exception {
-            try {
-            listener.bind(new InetSocketAddress(InetAddress.getByAddress(new byte[]{127,0,0,1}), 19007), 4);
-            listener.setSoTimeout(200);
-            acceptor = new Thread(() -> {
-                while (running) {
-                    try {
-                        Socket incoming = listener.accept(); sockets.add(incoming);
-                        int ownedPhase;
-                        synchronized (this) {
-                            ownedPhase = phase;
-                            if (ownedPhase < 0 || ownedPhase > 7 || counts[ownedPhase] >= 1) {
-                                unexpected++; incoming.close(); failed.set(true);
-                                running = false; listener.close(); break;
-                            }
-                            counts[ownedPhase]++;
-                        }
-                        Thread session = new Thread(() -> serve(incoming, ownedPhase), "owned-rpc-relay-session");
-                        session.setDaemon(true); sessions.add(session); TASKS.add(session); session.start();
-                    } catch (SocketTimeoutException ignored) { }
-                    catch (Throwable error) { if (running) failed.set(true); break; }
-                }
-            }, "owned-rpc-relay-acceptor");
-            acceptor.setDaemon(true); TASKS.add(acceptor); acceptor.start();
-            } catch (Exception failure) {
-                running = false; listener.close(); throw failure;
-            }
-        }
-        synchronized void begin(int value) throws Exception {
-            need(!failed.get() && phase == -1 && value == nextPhase && value >= 0 && value <= 7 && counts[value] == 0
-                && sessions.stream().noneMatch(Thread::isAlive), Code.relay_invalid);
-            phase = value;
-        }
-        void end(int value) throws Exception {
-            long until = Math.min(controlDeadline, System.nanoTime() + TimeUnit.SECONDS.toNanos(3));
-            for (Thread session : sessions) {
-                long left = until - System.nanoTime(); need(left > 0, Code.relay_invalid);
-                session.join(Math.max(1, TimeUnit.NANOSECONDS.toMillis(left)));
-            }
-            synchronized (this) {
-                need(phase == value && counts[value] == 1 && !failed.get()
-                    && sessions.stream().noneMatch(Thread::isAlive), Code.relay_invalid);
-                phase = -1; nextPhase++;
-            }
-        }
-        private void pump(Socket source, Socket destination, AtomicBoolean closing) throws Exception {
-            byte[] buffer = new byte[4096]; int total = 0;
-            try {
-                while (!closing.get()) {
-                    need(System.nanoTime() < controlDeadline, Code.deadline_exceeded);
-                    int count = source.getInputStream().read(buffer);
-                    if (count == -1) { destination.shutdownOutput(); return; }
-                    total += count; need(total <= 131072, Code.relay_invalid);
-                    destination.getOutputStream().write(buffer, 0, count);
-                    destination.getOutputStream().flush();
-                }
-            } finally { Arrays.fill(buffer, (byte)0); }
-        }
-        private void serve(Socket incoming, int ownedPhase) {
-            Socket upstream = new Socket(); sockets.add(upstream);
-            AtomicBoolean closing = new AtomicBoolean(), uploadFailed = new AtomicBoolean();
-            Thread upload = null; boolean captured = false;
-            try {
-                incoming.setSoTimeout(5000);
-                byte[] header = incoming.getInputStream().readNBytes(7);
-                byte auth = ownedPhase == 5 ? (byte)0 : (byte)0xdf;
-                need(Arrays.equals(header, new byte[]{'h','r','p','c',9,0,auth}), Code.relay_invalid);
-                synchronized (this) { need(phase == ownedPhase, Code.relay_invalid); if (ownedPhase == 5) noneHeaders++; }
-                upstream.connect(endpoint, 2000); upstream.setSoTimeout(5000);
-                need(upstream.getPort() == 19000 && upstream.getInetAddress().isLoopbackAddress(), Code.relay_invalid);
-                upstream.getOutputStream().write(header); upstream.getOutputStream().flush();
-                upload = new Thread(() -> {
-                    try { pump(incoming, upstream, closing); }
-                    catch (Throwable error) { if (!closing.get()) uploadFailed.set(true); }
-                }, "owned-rpc-relay-upload");
-                upload.setDaemon(true); TASKS.add(upload); upload.start();
-                if (ownedPhase == 5) {
-                    DataInputStream input = new DataInputStream(upstream.getInputStream());
-                    byte[] response = fatalFrame(input);
-                    // Forward exactly the response received, including its length prefix.
-                    incoming.getOutputStream().write(response); incoming.getOutputStream().flush();
-                    need(input.read() == -1, Code.relay_invalid);
-                    String encoded = java.util.HexFormat.of().formatHex(response);
-                    synchronized (this) {
-                        need(phase == ownedPhase && (rcloneWireHex.isEmpty() || rcloneWireHex.equals(encoded)), Code.relay_invalid);
-                        rcloneWireHex = encoded; fatalResponses++;
-                    }
-                    captured = true; Arrays.fill(response, (byte)0);
-                } else {
-                    // SASL/credential bytes are forwarded in fixed buffers and never exported.
-                    pump(upstream, incoming, closing);
-                }
-            } catch (Throwable error) { failed.set(true); }
-            finally {
-                closing.set(true);
-                try { incoming.close(); } catch (IOException ignored) { failed.set(true); }
-                try { upstream.close(); } catch (IOException ignored) { failed.set(true); }
-                try { long left = Math.min(TimeUnit.SECONDS.toNanos(1), controlDeadline - System.nanoTime()); if (upload != null && left > 0) upload.join(left / 1_000_000L, (int)(left % 1_000_000L)); } catch (InterruptedException error) { failed.set(true); }
-                if (upload != null && upload.isAlive() || uploadFailed.get() && !captured) failed.set(true);
-            }
-        }
-        boolean stop(long until) {
-            running = false;
-            try { listener.close(); } catch (IOException ignored) { failed.set(true); }
-            for (Socket socket : sockets) try { socket.close(); } catch (IOException ignored) { failed.set(true); }
-            List<Thread> threads = new ArrayList<>(sessions); threads.add(acceptor);
-            for (Thread thread : threads) {
-                try { long left = until - System.nanoTime(); if (left <= 0) return false; thread.join(left / 1_000_000L, (int)(left % 1_000_000L)); }
-                catch (InterruptedException ignored) { Thread.currentThread().interrupt(); return false; }
-            }
-            return listener.isClosed() && sockets.stream().allMatch(Socket::isClosed)
-                && threads.stream().noneMatch(Thread::isAlive);
-        }
-        synchronized String json() {
-            StringBuilder text=new StringBuilder("{\"phase_connections\":{");
-            for(int i=0;i<8;i++) { if(i>0)text.append(','); text.append('"').append(PHASE_NAMES[i]).append("\":").append(counts[i]); }
-            return text + "},\"none_headers\":"+noneHeaders+",\"fatal_responses\":"+fatalResponses
-                +",\"unexpected_connections\":"+unexpected+",\"bytes_forwarded_unchanged\":"+!failed.get()+"}";
-        }
-    }
-    private static byte[] childRead(java.io.InputStream input) throws Exception {
-        try(input) { byte[] data=input.readNBytes(16385); need(data.length<=16384, Code.child_output_invalid); return data; }
-    }
-    private static final class Result {
-        final int code; final byte[] out,err;
-        Result(int c,byte[] o,byte[] e) {code=c;out=o;err=e;}
-    }
-    private static final class StreamWitness {
-        final int size; final byte[] digest;
-        StreamWitness(int n, byte[] h) {size=n;digest=h;}
-    }
-    private static Result child(List<String> command, Map<String,String> env) throws Exception {
-        return child(command,env,null,0);
-    }
-    private static Result child(List<String> command, Map<String,String> env, Path target, int expected) throws Exception {
-        need(System.nanoTime()<controlDeadline && CHILDREN.size()<10, Code.deadline_exceeded);
-        need(target==null || target.getParent().equals(ACQUIRED) && expected>=0 && expected<=1052673, Code.acquisition_invalid);
-        FileState initial=null;
-        if(target!=null) { privateBytes(target,new byte[0]); initial=OWNED_FILES.get(target); }
-        final FileState original=initial;
-        ProcessBuilder builder=new ProcessBuilder(command); builder.environment().clear(); builder.environment().putAll(env); builder.directory(WORK.toFile());
-        Process process=builder.start(); CHILDREN.add(process); process.getOutputStream().close();
-        FutureTask<byte[]> stdout=new FutureTask<>(()-> target==null ? childRead(process.getInputStream()) : new byte[0]);
-        FutureTask<StreamWitness> streamed=new FutureTask<>(()-> {
-            MessageDigest digest=MessageDigest.getInstance("SHA-256"); int total=0; byte[] buffer=new byte[4096];
-            try(var input=process.getInputStream(); var output=FileChannel.open(target, StandardOpenOption.WRITE, NOFOLLOW)) {
-                need(original.key.equals(Files.readAttributes(target,BasicFileAttributes.class,NOFOLLOW).fileKey()),Code.source_changed);
-                while(true) {
-                    need(System.nanoTime()<controlDeadline,Code.deadline_exceeded);
-                    int n=input.read(buffer,0,Math.min(buffer.length, expected-total+1)); if(n==-1)break;
-                    // Read at most expected+1, but never retain the overflow byte.
-                    need(total+n<=expected,Code.acquisition_invalid); total+=n;digest.update(buffer,0,n);
-                    ByteBuffer bytes=ByteBuffer.wrap(buffer,0,n);while(bytes.hasRemaining())output.write(bytes);
-                } output.force(true);
-                return new StreamWitness(total,digest.digest());
-            } finally {Arrays.fill(buffer,(byte)0);}
-        });
-        FutureTask<byte[]> stderr=new FutureTask<>(()->childRead(process.getErrorStream()));
-        Thread out=new Thread(target==null?stdout:streamed,"owned-rclone-stdout"),err=new Thread(stderr,"owned-rclone-stderr");
-        out.setDaemon(true);err.setDaemon(true);TASKS.add(out);TASKS.add(err);out.start();err.start();
-        try {
-            long until=Math.min(controlDeadline,System.nanoTime()+TimeUnit.SECONDS.toNanos(12));
-            while(process.isAlive()) {
-                need(System.nanoTime()<until,Code.deadline_exceeded);
-                if(stderr.isDone())stderr.get();
-                if(target==null && stdout.isDone())stdout.get();
-                if(target!=null && streamed.isDone())streamed.get();
-                process.waitFor(Math.min(TimeUnit.MILLISECONDS.toNanos(25),Math.max(1,until-System.nanoTime())),TimeUnit.NANOSECONDS);
-            }
-            need(process.descendants().findAny().isEmpty(),Code.child_descendant_found);
-            byte[] stderrBytes=stderr.get(Math.max(1,until-System.nanoTime()),TimeUnit.NANOSECONDS);
-            byte[] stdoutBytes=target==null?stdout.get(Math.max(1,until-System.nanoTime()),TimeUnit.NANOSECONDS):new byte[0];
-            if(target!=null) {
-                StreamWitness observed=streamed.get(Math.max(1,until-System.nanoTime()),TimeUnit.NANOSECONDS);
-                FileState independentlyRead=new FileState(target);
-                need(original.key.equals(independentlyRead.key) && observed.size==independentlyRead.size
-                    && MessageDigest.isEqual(observed.digest,independentlyRead.digest),Code.acquisition_invalid);
-                OWNED_FILES.put(target,independentlyRead);
-            }
-            return new Result(process.exitValue(),stdoutBytes,stderrBytes);
-        } finally {
-            if(process.isAlive())process.destroyForcibly();
-            long until=Math.min(controlDeadline,System.nanoTime()+TimeUnit.SECONDS.toNanos(3));
-            need(process.waitFor(Math.max(1,until-System.nanoTime()),TimeUnit.NANOSECONDS),Code.child_reap_failed);
-            process.getInputStream().close();process.getErrorStream().close();
-            for(Thread thread:List.of(out,err)) {long left=until-System.nanoTime();if(left>0)thread.join(left/1_000_000L,(int)(left%1_000_000L));}
-            need(!out.isAlive()&&!err.isAlive(),Code.child_streams_alive);
-        }
-    }
-    private static Map<String,String> plainEnvironment() {
-        return Map.of("HOME","/work/home","PATH","/usr/bin:/bin","LANG","C","LC_ALL","C");
-    }
-    private static Result rclone(String reader, int phase, String member, boolean listing, boolean authenticated, int expected) throws Exception {
-        need(phase>=0&&phase<8,Code.relay_invalid); List<String> command=new ArrayList<>(List.of("/opt/transfer/rclone",
-            listing?"lsjson":"cat",":hdfs:"+MEMBER+(member.isEmpty()?"":"/"+member),"--config","/dev/null",
-            "--hdfs-namenode","127.0.0.1:19007","--hdfs-username",reader,"--log-level","ERROR","--use-json-log",
-            "--retries","1","--low-level-retries","1","--contimeout","3s","--timeout","8s","--disable","ListR",
-            "--buffer-size","0","--checkers","1","--transfers","1","--stats","0"));
-        if(listing)command.addAll(List.of("--recursive","--files-only"));
-        Map<String,String> env=new LinkedHashMap<>(plainEnvironment());
-        if(authenticated) {
-            command.addAll(List.of("--hdfs-service-principal-name","hdfs/127.0.0.1","--hdfs-data-transfer-protection","privacy"));
-            env.put("KRB5_CONFIG",CONF.toString());env.put("KRB5CCNAME","FILE:"+CACHE);
-        }
-        relay.begin(phase); Result result=child(command,env,listing?null:ACQUIRED.resolve("phase-"+phase+".bin"),expected);relay.end(phase);
-        return result;
-    }
+	private static final class Relay {
+		final ServerSocket listener = new ServerSocket();
+		final List<Thread> sessions = new java.util.concurrent.CopyOnWriteArrayList<>();
+		final List<Socket> sockets = new java.util.concurrent.CopyOnWriteArrayList<>();
+		final AtomicBoolean failed = new AtomicBoolean();
+		final int[] counts = new int[8];
+		volatile boolean running = true;
+		int phase = -1, nextPhase, noneHeaders, fatalResponses, unexpected;
+		Thread acceptor;
+		Relay() throws Exception {
+			try {
+			listener.bind(new InetSocketAddress(InetAddress.getByAddress(new byte[]{127,0,0,1}), 19007), 4);
+			listener.setSoTimeout(200);
+			acceptor = new Thread(() -> {
+				while (running) {
+					try {
+						Socket incoming = listener.accept(); sockets.add(incoming);
+						int ownedPhase;
+						synchronized (this) {
+							ownedPhase = phase;
+							if (ownedPhase < 0 || ownedPhase > 7 || counts[ownedPhase] >= 1) {
+								unexpected++; incoming.close(); failed.set(true);
+								running = false; listener.close(); break;
+							}
+							counts[ownedPhase]++;
+						}
+						Thread session = new Thread(() -> serve(incoming, ownedPhase), "owned-rpc-relay-session");
+						session.setDaemon(true); sessions.add(session); TASKS.add(session); session.start();
+					} catch (SocketTimeoutException ignored) { }
+					catch (Throwable error) { if (running) failed.set(true); break; }
+				}
+			}, "owned-rpc-relay-acceptor");
+			acceptor.setDaemon(true); TASKS.add(acceptor); acceptor.start();
+			} catch (Exception failure) {
+				running = false; listener.close(); throw failure;
+			}
+		}
+		synchronized void begin(int value) throws Exception {
+			need(!failed.get() && phase == -1 && value == nextPhase && value >= 0 && value <= 7 && counts[value] == 0
+				&& sessions.stream().noneMatch(Thread::isAlive), Code.relay_invalid);
+			phase = value;
+		}
+		void end(int value) throws Exception {
+			long until = Math.min(controlDeadline, System.nanoTime() + TimeUnit.SECONDS.toNanos(3));
+			for (Thread session : sessions) {
+				long left = until - System.nanoTime(); need(left > 0, Code.relay_invalid);
+				session.join(Math.max(1, TimeUnit.NANOSECONDS.toMillis(left)));
+			}
+			synchronized (this) {
+				need(phase == value && counts[value] == 1 && !failed.get()
+					&& sessions.stream().noneMatch(Thread::isAlive), Code.relay_invalid);
+				phase = -1; nextPhase++;
+			}
+		}
+		private void pump(Socket source, Socket destination, AtomicBoolean closing) throws Exception {
+			byte[] buffer = new byte[4096]; int total = 0;
+			try {
+				while (!closing.get()) {
+					need(System.nanoTime() < controlDeadline, Code.deadline_exceeded);
+					int count = source.getInputStream().read(buffer);
+					if (count == -1) { destination.shutdownOutput(); return; }
+					total += count; need(total <= 131072, Code.relay_invalid);
+					destination.getOutputStream().write(buffer, 0, count);
+					destination.getOutputStream().flush();
+				}
+			} finally { Arrays.fill(buffer, (byte)0); }
+		}
+		private void serve(Socket incoming, int ownedPhase) {
+			Socket upstream = new Socket(); sockets.add(upstream);
+			AtomicBoolean closing = new AtomicBoolean(), uploadFailed = new AtomicBoolean();
+			Thread upload = null; boolean captured = false;
+			try {
+				incoming.setSoTimeout(5000);
+				byte[] header = incoming.getInputStream().readNBytes(7);
+				byte auth = ownedPhase == 5 ? (byte)0 : (byte)0xdf;
+				need(Arrays.equals(header, new byte[]{'h','r','p','c',9,0,auth}), Code.relay_invalid);
+				synchronized (this) { need(phase == ownedPhase, Code.relay_invalid); if (ownedPhase == 5) noneHeaders++; }
+				upstream.connect(endpoint, 2000); upstream.setSoTimeout(5000);
+				need(upstream.getPort() == 19000 && upstream.getInetAddress().isLoopbackAddress(), Code.relay_invalid);
+				upstream.getOutputStream().write(header); upstream.getOutputStream().flush();
+				upload = new Thread(() -> {
+					try { pump(incoming, upstream, closing); }
+					catch (Throwable error) { if (!closing.get()) uploadFailed.set(true); }
+				}, "owned-rpc-relay-upload");
+				upload.setDaemon(true); TASKS.add(upload); upload.start();
+				if (ownedPhase == 5) {
+					DataInputStream input = new DataInputStream(upstream.getInputStream());
+					byte[] response = fatalFrame(input);
+					// Forward exactly the response received, including its length prefix.
+					incoming.getOutputStream().write(response); incoming.getOutputStream().flush();
+					need(input.read() == -1, Code.relay_invalid);
+					String encoded = java.util.HexFormat.of().formatHex(response);
+					synchronized (this) {
+						need(phase == ownedPhase && (rcloneWireHex.isEmpty() || rcloneWireHex.equals(encoded)), Code.relay_invalid);
+						rcloneWireHex = encoded; fatalResponses++;
+					}
+					captured = true; Arrays.fill(response, (byte)0);
+				} else {
+					// SASL/credential bytes are forwarded in fixed buffers and never exported.
+					pump(upstream, incoming, closing);
+				}
+			} catch (Throwable error) { failed.set(true); }
+			finally {
+				closing.set(true);
+				try { incoming.close(); } catch (IOException ignored) { failed.set(true); }
+				try { upstream.close(); } catch (IOException ignored) { failed.set(true); }
+				try { long left = Math.min(TimeUnit.SECONDS.toNanos(1), controlDeadline - System.nanoTime()); if (upload != null && left > 0) upload.join(left / 1_000_000L, (int)(left % 1_000_000L)); } catch (InterruptedException error) { failed.set(true); }
+				if (upload != null && upload.isAlive() || uploadFailed.get() && !captured) failed.set(true);
+			}
+		}
+		boolean stop(long until) {
+			running = false;
+			try { listener.close(); } catch (IOException ignored) { failed.set(true); }
+			for (Socket socket : sockets) try { socket.close(); } catch (IOException ignored) { failed.set(true); }
+			List<Thread> threads = new ArrayList<>(sessions); threads.add(acceptor);
+			for (Thread thread : threads) {
+				try { long left = until - System.nanoTime(); if (left <= 0) return false; thread.join(left / 1_000_000L, (int)(left % 1_000_000L)); }
+				catch (InterruptedException ignored) { Thread.currentThread().interrupt(); return false; }
+			}
+			return listener.isClosed() && sockets.stream().allMatch(Socket::isClosed)
+				&& threads.stream().noneMatch(Thread::isAlive);
+		}
+		synchronized String json() {
+			StringBuilder text=new StringBuilder("{\"phase_connections\":{");
+			for(int i=0;i<8;i++) { if(i>0)text.append(','); text.append('"').append(PHASE_NAMES[i]).append("\":").append(counts[i]); }
+			return text + "},\"none_headers\":"+noneHeaders+",\"fatal_responses\":"+fatalResponses
+				+",\"unexpected_connections\":"+unexpected+",\"bytes_forwarded_unchanged\":"+!failed.get()+"}";
+		}
+	}
+	private static byte[] childRead(java.io.InputStream input) throws Exception {
+		try(input) { byte[] data=input.readNBytes(16385); need(data.length<=16384, Code.child_output_invalid); return data; }
+	}
+	private static final class Result {
+		final int code; final byte[] out,err;
+		Result(int c,byte[] o,byte[] e) {code=c;out=o;err=e;}
+	}
+	private static final class StreamWitness {
+		final int size; final byte[] digest;
+		StreamWitness(int n, byte[] h) {size=n;digest=h;}
+	}
+	private static Result child(List<String> command, Map<String,String> env) throws Exception {
+		return child(command,env,null,0);
+	}
+	private static Result child(List<String> command, Map<String,String> env, Path target, int expected) throws Exception {
+		need(System.nanoTime()<controlDeadline && CHILDREN.size()<10, Code.deadline_exceeded);
+		need(target==null || target.getParent().equals(ACQUIRED) && expected>=0 && expected<=1052673, Code.acquisition_invalid);
+		FileState initial=null;
+		if(target!=null) { privateBytes(target,new byte[0]); initial=OWNED_FILES.get(target); }
+		final FileState original=initial;
+		ProcessBuilder builder=new ProcessBuilder(command); builder.environment().clear(); builder.environment().putAll(env); builder.directory(WORK.toFile());
+		Process process=builder.start(); CHILDREN.add(process); process.getOutputStream().close();
+		FutureTask<byte[]> stdout=new FutureTask<>(()-> target==null ? childRead(process.getInputStream()) : new byte[0]);
+		FutureTask<StreamWitness> streamed=new FutureTask<>(()-> {
+			MessageDigest digest=MessageDigest.getInstance("SHA-256"); int total=0; byte[] buffer=new byte[4096];
+			try(var input=process.getInputStream(); var output=FileChannel.open(target, StandardOpenOption.WRITE, NOFOLLOW)) {
+				need(original.key.equals(Files.readAttributes(target,BasicFileAttributes.class,NOFOLLOW).fileKey()),Code.source_changed);
+				while(true) {
+					need(System.nanoTime()<controlDeadline,Code.deadline_exceeded);
+					int n=input.read(buffer,0,Math.min(buffer.length, expected-total+1)); if(n==-1)break;
+					// Read at most expected+1, but never retain the overflow byte.
+					need(total+n<=expected,Code.acquisition_invalid); total+=n;digest.update(buffer,0,n);
+					ByteBuffer bytes=ByteBuffer.wrap(buffer,0,n);while(bytes.hasRemaining())output.write(bytes);
+				} output.force(true);
+				return new StreamWitness(total,digest.digest());
+			} finally {Arrays.fill(buffer,(byte)0);}
+		});
+		FutureTask<byte[]> stderr=new FutureTask<>(()->childRead(process.getErrorStream()));
+		Thread out=new Thread(target==null?stdout:streamed,"owned-rclone-stdout"),err=new Thread(stderr,"owned-rclone-stderr");
+		out.setDaemon(true);err.setDaemon(true);TASKS.add(out);TASKS.add(err);out.start();err.start();
+		try {
+			long until=Math.min(controlDeadline,System.nanoTime()+TimeUnit.SECONDS.toNanos(12));
+			while(process.isAlive()) {
+				need(System.nanoTime()<until,Code.deadline_exceeded);
+				if(stderr.isDone())stderr.get();
+				if(target==null && stdout.isDone())stdout.get();
+				if(target!=null && streamed.isDone())streamed.get();
+				process.waitFor(Math.min(TimeUnit.MILLISECONDS.toNanos(25),Math.max(1,until-System.nanoTime())),TimeUnit.NANOSECONDS);
+			}
+			need(process.descendants().findAny().isEmpty(),Code.child_descendant_found);
+			byte[] stderrBytes=stderr.get(Math.max(1,until-System.nanoTime()),TimeUnit.NANOSECONDS);
+			byte[] stdoutBytes=target==null?stdout.get(Math.max(1,until-System.nanoTime()),TimeUnit.NANOSECONDS):new byte[0];
+			if(target!=null) {
+				StreamWitness observed=streamed.get(Math.max(1,until-System.nanoTime()),TimeUnit.NANOSECONDS);
+				FileState independentlyRead=new FileState(target);
+				need(original.key.equals(independentlyRead.key) && observed.size==independentlyRead.size
+					&& MessageDigest.isEqual(observed.digest,independentlyRead.digest),Code.acquisition_invalid);
+				OWNED_FILES.put(target,independentlyRead);
+			}
+			return new Result(process.exitValue(),stdoutBytes,stderrBytes);
+		} finally {
+			if(process.isAlive())process.destroyForcibly();
+			long until=Math.min(controlDeadline,System.nanoTime()+TimeUnit.SECONDS.toNanos(3));
+			need(process.waitFor(Math.max(1,until-System.nanoTime()),TimeUnit.NANOSECONDS),Code.child_reap_failed);
+			process.getInputStream().close();process.getErrorStream().close();
+			for(Thread thread:List.of(out,err)) {long left=until-System.nanoTime();if(left>0)thread.join(left/1_000_000L,(int)(left%1_000_000L));}
+			need(!out.isAlive()&&!err.isAlive(),Code.child_streams_alive);
+		}
+	}
+	private static Map<String,String> plainEnvironment() {
+		return Map.of("HOME","/work/home","PATH","/usr/bin:/bin","LANG","C","LC_ALL","C");
+	}
+	private record RcloneObservation(int phase, int exit, int stdoutBytes, int stderrBytes, String failure) {}
+	private static volatile RcloneObservation rcloneObservation;
+	private static String rcloneFailure(byte[] raw) {
+		if (raw.length == 0) return "empty";
+		try {
+			var value = jsonMapper().readTree(raw);
+			if (value != null && value.isObject() && value.path("msg").isTextual()) {
+				String message = value.path("msg").asText();
+				if (message.contains("problem with kerberos authentication:")) {
+					if (message.contains("TGT not found in CCache")) return "cache_tgt_missing";
+					if (message.contains("TGT bytes in cache are not valid:") || message.contains("cache entry ticket bytes are not valid:")) return "cache_ticket_invalid";
+					return "kerberos_initialization";
+				}
+				if (message.startsWith("Failed to create file system for ")) return "backend_creation";
+				return "json_message";
+			}
+		} catch (Exception ignored) { }
+		return "unclassified";
+	}
+	private static String rcloneObservationJson() {
+		var value = rcloneObservation;
+		return value == null ? "null" : "{\"phase\":" + value.phase() + ",\"exit\":" + value.exit()
+			+ ",\"stdout_bytes\":" + value.stdoutBytes() + ",\"stderr_bytes\":" + value.stderrBytes()
+			+ ",\"failure\":\"" + value.failure() + "\"}";
+	}
+	private static Result rclone(String reader, int phase, String member, boolean listing, boolean authenticated, int expected) throws Exception {
+		need(phase>=0&&phase<8,Code.relay_invalid); List<String> command=new ArrayList<>(List.of("/opt/transfer/rclone",
+			listing?"lsjson":"cat",":hdfs:"+MEMBER+(member.isEmpty()?"":"/"+member),"--config","/dev/null",
+			"--hdfs-namenode","127.0.0.1:19007","--hdfs-username",reader,"--log-level","ERROR","--use-json-log",
+			"--retries","1","--low-level-retries","1","--contimeout","3s","--timeout","8s","--disable","ListR",
+			"--buffer-size","0","--checkers","1","--transfers","1","--stats","0"));
+		if(listing)command.addAll(List.of("--recursive","--files-only"));
+		Map<String,String> env=new LinkedHashMap<>(plainEnvironment());
+		if(authenticated) {
+			command.addAll(List.of("--hdfs-service-principal-name","hdfs/127.0.0.1","--hdfs-data-transfer-protection","privacy"));
+			env.put("KRB5_CONFIG",CONF.toString());env.put("KRB5CCNAME","FILE:"+CACHE);
+		}
+		relay.begin(phase); Result result=child(command,env,listing?null:ACQUIRED.resolve("phase-"+phase+".bin"),expected);
+		rcloneObservation = new RcloneObservation(phase, result.code, result.out.length, result.err.length, rcloneFailure(result.err));
+		relay.end(phase);
+		return result;
+	}
     private static com.fasterxml.jackson.databind.ObjectMapper jsonMapper() {
         return new com.fasterxml.jackson.databind.ObjectMapper()
             .enable(com.fasterxml.jackson.core.JsonParser.Feature.STRICT_DUPLICATE_DETECTION)
@@ -1898,6 +1925,7 @@ public final class HdfsKerberosTransferProbe {
 			+ ",\"observed_lifetime_seconds\":" + observedLifetime + ",\"stage\":\"" + stage + "\",\"wire_hex\":\"" + wireHex + "\",\"error\":"
 			+ (error == null ? "null" : "\"" + error.name() + "\"")
 			+ ",\"diagnostic\":{\"category\":\"" + diagnosticCategory + "\",\"origin\":\"" + diagnosticOrigin + "\"}"
+			+ ",\"rclone_observation\":" + rcloneObservationJson()
 			+ ",\"pipeline_origin\":\"" + pipelineOrigin + "\""
 			+ ",\"pipeline_server_diagnostic\":{\"category\":\"" + serverFailure.category() + "\",\"origin\":\"" + serverFailure.origin() + "\"}"
 			+ ",\"remaining_threads\":" + threadCountsJson(remainingThreads, THREAD_CATEGORIES)
