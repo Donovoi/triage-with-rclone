@@ -541,6 +541,32 @@ def validate_remediation_versions(manifest):
         need(rows and all(r["version"] == version for r in rows), "classpath_invalid")
 
 
+def base_observation(value, manifest, config_id):
+    """Project only the pinned image identity and closed admission predicates."""
+    value = value if type(value) is dict else {}
+    observed = value.get("Id")
+    kind = ("config_digest" if observed == config_id else
+            "manifest_digest" if observed == manifest.rsplit("@", 1)[1] else "unrecognized")
+    config = value.get("Config")
+    env = config.get("Env", []) if type(config) is dict else None
+    clean_options = (type(env) is list and all(type(item) is str for item in env) and
+        not any(item.split("=", 1)[0] in {"JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS", "JDK_JAVA_OPTIONS"}
+                for item in env))
+    return dict(id_kind=kind, linux=value.get("Os") == "linux",
+                amd64=value.get("Architecture") == "amd64", config_present=type(config) is dict,
+                java_options_absent=clean_options)
+
+
+def validate_base(value, manifest, config_id):
+    # The classic store exposes the config digest; containerd exposes the
+    # manifest digest. Accept only these two identities of the pinned image.
+    observed = base_observation(value, manifest, config_id)
+    need(observed["id_kind"] in {"config_digest", "manifest_digest"} and
+         all(observed[key] is True for key in
+             ("linux", "amd64", "config_present", "java_options_absent")), "base_image_mismatch")
+    return observed
+
+
 def hosted_guard():
     need(sys.platform == "linux" and os.environ.get("GITHUB_ACTIONS") == "true"
          and os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted" and os.environ.get("RUNNER_OS") == "Linux",
@@ -625,8 +651,8 @@ def discover(candidate, bootstrap, archive, output_parent, *, runner_factory=Doc
         if not offline:
             docker.call(["image", "pull", "--quiet", "--platform", "linux/amd64", bootstrap["jdk_image"]], timeout=120)
         base = docker.inspect("image", bootstrap["jdk_image"])
-        need(base is not None and base.get("Id") == bootstrap["jdk_image_id"] and base.get("Os") == "linux"
-             and base.get("Architecture") == "amd64", "base_image_mismatch")
+        report["base_observation"] = base_observation(base, bootstrap["jdk_image"], bootstrap["jdk_image_id"])
+        validate_base(base, bootstrap["jdk_image"], bootstrap["jdk_image_id"])
         iid = root / "image-id"
         attempted_build = True
         docker.call(["build", "--no-cache", "--force-rm", "--network", "none", "--platform", "linux/amd64",
