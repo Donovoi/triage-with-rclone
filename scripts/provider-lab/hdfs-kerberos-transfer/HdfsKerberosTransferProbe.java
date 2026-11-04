@@ -681,6 +681,10 @@ public final class HdfsKerberosTransferProbe {
 			case "org.apache.hadoop.security.authentication.server.KerberosAuthenticationHandler",
 				 "org.apache.hadoop.security.authentication.server.AuthenticationFilter" -> "http_authentication";
 			case "java.lang.Throwable" -> frame.getMethodName().equals("addSuppressed") ? "self_suppression" : null;
+			case "org.apache.hadoop.hdfs.server.datanode.DataXceiver" -> "data_xceiver";
+			case "org.apache.hadoop.hdfs.server.datanode.BlockReceiver" -> "data_block_receiver";
+			case "org.apache.hadoop.hdfs.server.datanode.fsdataset.impl.FsDatasetImpl" -> "data_dataset";
+			case "org.apache.hadoop.hdfs.protocol.datatransfer.sasl.SaslDataTransferServer" -> "data_sasl_server";
 			case "org.apache.hadoop.hdfs.DataStreamer" -> switch (frame.getMethodName()) {
 				case "createSocketForPipeline" -> "data_socket_create";
 				case "createBlockOutputStream" -> "data_block_stream";
@@ -1479,34 +1483,48 @@ public final class HdfsKerberosTransferProbe {
 		need(dnUuid.equals(nodes[0].getDatanodeUuid()), Code.datanode_failed);
 	}
 	private static volatile String pipelineOrigin = "not_observed";
-	private static volatile boolean pipelineDetached = true;
+	private static volatile boolean pipelineDetached = true, pipelineServerDetached = true;
+	private record ServerFailure(String category, String origin) {}
+	private static volatile ServerFailure serverFailure = new ServerFailure("none", "none");
 	private static final class PipelineAppender extends org.apache.log4j.AppenderSkeleton {
 		private boolean seen;
+		private final boolean server;
+		PipelineAppender(boolean server) { this.server = server; }
 		protected void append(org.apache.log4j.spi.LoggingEvent event) {
 			if (seen || event.getThrowableInformation() == null) return;
-			seen = true; pipelineOrigin = "none";
+			seen = true; String origin = "none", category = "unclassified";
 			try {
-				var frames = event.getThrowableInformation().getThrowable().getStackTrace();
+				var failure = event.getThrowableInformation().getThrowable();
+				category = failure instanceof ClassNotFoundException || failure instanceof NoClassDefFoundError ? "missing_class"
+					: failure instanceof LinkageError ? linkageCategory((LinkageError) failure)
+					: failure instanceof IOException ? "io_failure" : failure instanceof NullPointerException ? "null_state"
+					: failure instanceof IllegalArgumentException ? "invalid_config" : "unclassified";
+				var frames = failure.getStackTrace();
 				for (int i = 0; i < frames.length && i < 32; i++) {
 					String marker = originFrame(frames[i]);
-					if (marker != null) { pipelineOrigin = marker; break; }
+					if (marker != null) { origin = marker; break; }
 				}
-			} catch (Throwable ignored) { pipelineOrigin = "none"; }
+			} catch (Throwable ignored) { category = "unclassified"; origin = "none"; }
+			if (server) serverFailure = new ServerFailure(category, origin); else pipelineOrigin = origin;
 		}
 		public synchronized void close() { closed = true; }
 		public boolean requiresLayout() { return false; }
 	}
 	private static void seedObserved() throws Exception {
 		var logger = org.apache.log4j.Logger.getLogger("org.apache.hadoop.hdfs.DataStreamer");
-		var observer = new PipelineAppender();
-		pipelineDetached = false;
+		var serverLogger = org.apache.log4j.Logger.getLogger("org.apache.hadoop.hdfs.server.datanode.DataNode");
+		var observer = new PipelineAppender(false); var serverObserver = new PipelineAppender(true);
+		pipelineDetached = false; pipelineServerDetached = false;
 		try {
-			need(logger.isEnabledFor(org.apache.log4j.Level.WARN), Code.configuration_invalid);
-			logger.addAppender(observer); need(logger.isAttached(observer), Code.configuration_invalid);
+			need(logger.isEnabledFor(org.apache.log4j.Level.WARN) && serverLogger.isEnabledFor(org.apache.log4j.Level.WARN), Code.configuration_invalid);
+			logger.addAppender(observer); serverLogger.addAppender(serverObserver);
+			need(logger.isAttached(observer) && serverLogger.isAttached(serverObserver), Code.configuration_invalid);
 			seed();
 		} finally {
 			try { logger.removeAppender(observer); observer.close(); pipelineDetached = !logger.isAttached(observer); }
 			catch (Throwable ignored) { pipelineDetached = false; }
+			try { serverLogger.removeAppender(serverObserver); serverObserver.close(); pipelineServerDetached = !serverLogger.isAttached(serverObserver); }
+			catch (Throwable ignored) { pipelineServerDetached = false; }
 		}
 	}
 	private static void seed() throws Exception {
@@ -1694,267 +1712,269 @@ public final class HdfsKerberosTransferProbe {
     }
 
     private static void stopServices() {
-        long until = cap(4); boolean children = true;
-        for (Process child : CHILDREN) {
-            try {
-                if (child.isAlive()) child.destroyForcibly();
-                long left = until - System.nanoTime();
-                children &= left > 0 && child.waitFor(left, TimeUnit.NANOSECONDS);
-            } catch (Throwable ignored) { children = false; }
-        }
-        CLEANUP.put("children_reaped", children && (processBaseline == null || processIds().equals(processBaseline)));
-        boolean relayClosed = relay == null;
-        try { if (relay != null) relayClosed = relay.stop(until); } catch (Throwable ignored) { relayClosed = false; }
-        CLEANUP.put("relay_closed", relayClosed);
-        boolean closed = true;
-        try { if (filesystem != null) bounded(() -> { filesystem.close(); return null; }, 3, cleanupDeadline); }
-        catch (Throwable ignored) { closed = false; }
-        CLEANUP.put("filesystem_closed", closed);
-        // A partial constructor or failed return cannot claim a stopped object.
-        boolean dnStopped = !datanodeAttempted; long dnUntil = cap(35);
-        try { if (datanode != null) { bounded(() -> { datanode.shutdown(); return null; }, 35, dnUntil); dnStopped = true; } }
-        catch (Throwable ignored) { dnStopped = false; }
-        CLEANUP.put("datanode_stop_returned", dnStopped);
-        // Public DataNode.shutdown -> DatanodeHttpServer.close -> SSLFactory.destroy.
-        // No reflection, cancellation or interruption of a timer. Exact retained identity only.
-        boolean dnSslStopped = !datanodeAttempted;
-        if (dnStopped && datanodeSslCaptured && datanodeSslThread != null) {
-            try {
-                long left = Math.min(TimeUnit.MILLISECONDS.toNanos(250), dnUntil - System.nanoTime());
-                if (left > 0) datanodeSslThread.join(left / 1_000_000L, (int)(left % 1_000_000L));
-                dnSslStopped = !datanodeSslThread.isAlive();
-            } catch (Throwable ignored) { dnSslStopped = false; }
-        }
-        CLEANUP.put("datanode_ssl_timer_reaped", dnSslStopped);
-        boolean stopped = !namenodeAttempted;
-        try { if (namenode != null) { bounded(() -> { namenode.stop(); return null; }, 7, cleanupDeadline); stopped = true; } }
-        catch (Throwable ignored) { stopped = false; }
-        CLEANUP.put("namenode_stop_returned", stopped);
-        boolean loggedOut = ownerCaptureComplete; long logoutUntil = cap(3);
-        for (UserGroupInformation login : OWNERS) {
-            try { bounded(() -> { login.logoutUserFromKeytab(); return null; }, 3, logoutUntil); }
-            catch (Throwable ignored) { loggedOut = false; }
-        }
-        CLEANUP.put("owner_logged_out", loggedOut);
+		long until = cap(4); boolean children = true;
+		for (Process child : CHILDREN) {
+			try {
+				if (child.isAlive()) child.destroyForcibly();
+				long left = until - System.nanoTime();
+				children &= left > 0 && child.waitFor(left, TimeUnit.NANOSECONDS);
+			} catch (Throwable ignored) { children = false; }
+		}
+		CLEANUP.put("children_reaped", children && (processBaseline == null || processIds().equals(processBaseline)));
+		boolean relayClosed = relay == null;
+		try { if (relay != null) relayClosed = relay.stop(until); } catch (Throwable ignored) { relayClosed = false; }
+		CLEANUP.put("relay_closed", relayClosed);
+		boolean closed = true;
+		try { if (filesystem != null) bounded(() -> { filesystem.close(); return null; }, 3, cleanupDeadline); }
+		catch (Throwable ignored) { closed = false; }
+		CLEANUP.put("filesystem_closed", closed);
+		// A partial constructor or failed return cannot claim a stopped object.
+		boolean dnStopped = !datanodeAttempted; long dnUntil = cap(35);
+		try { if (datanode != null) { bounded(() -> { datanode.shutdown(); return null; }, 35, dnUntil); dnStopped = true; } }
+		catch (Throwable ignored) { dnStopped = false; }
+		CLEANUP.put("datanode_stop_returned", dnStopped);
+		// Public DataNode.shutdown -> DatanodeHttpServer.close -> SSLFactory.destroy.
+		// No reflection, cancellation or interruption of a timer. Exact retained identity only.
+		boolean dnSslStopped = !datanodeAttempted;
+		if (dnStopped && datanodeSslCaptured && datanodeSslThread != null) {
+			try {
+				long left = Math.min(TimeUnit.MILLISECONDS.toNanos(250), dnUntil - System.nanoTime());
+				if (left > 0) datanodeSslThread.join(left / 1_000_000L, (int)(left % 1_000_000L));
+				dnSslStopped = !datanodeSslThread.isAlive();
+			} catch (Throwable ignored) { dnSslStopped = false; }
+		}
+		CLEANUP.put("datanode_ssl_timer_reaped", dnSslStopped);
+		boolean stopped = !namenodeAttempted;
+		try { if (namenode != null) { bounded(() -> { namenode.stop(); return null; }, 7, cleanupDeadline); stopped = true; } }
+		catch (Throwable ignored) { stopped = false; }
+		CLEANUP.put("namenode_stop_returned", stopped);
+		boolean loggedOut = ownerCaptureComplete; long logoutUntil = cap(3);
+		for (UserGroupInformation login : OWNERS) {
+			try { bounded(() -> { login.logoutUserFromKeytab(); return null; }, 3, logoutUntil); }
+			catch (Throwable ignored) { loggedOut = false; }
+		}
+		CLEANUP.put("owner_logged_out", loggedOut);
     }
 
     public static void main(String[] args) {
-        PrintStream report = System.out;
-        System.setOut(new PrintStream(OutputStream.nullOutputStream()));
-        System.setErr(new PrintStream(OutputStream.nullOutputStream()));
-        Thread.setDefaultUncaughtExceptionHandler((thread, error) -> BACKGROUND_FAILURE.set(true));
-        for (String name : List.of("environment", "metrics_mode_enabled", "endpoint_settings", "positive_tgt", "file_cache_v3",
-                "nonrenewable", "secure_namenode", "secure_datanode", "tls_material", "tls_endpoints", "registered_datanode", "seed_hashes", "listing_before", "empty_acquired", "small_acquired", "missing_path_rejected", "payload_before", "payload_after", "rclone_auth_boundary_rejection",
-                "wire_auth_boundary_rejection", "listing_after", "source_preserved", "cache_preserved")) CHECKS.put(name, false);
-        for (String name : List.of("children_reaped", "relay_closed", "filesystem_closed", "namenode_stop_returned", "owner_logged_out",
-                "datanode_stop_returned", "datanode_ssl_timer_reaped", "gc_monitor_reaped", "fs_statistics_cleaner_reaped", "format_ssl_timer_reaped",
-                "kdc_stop_returned", "threads_terminated", "listeners_absent", "private_material_removed",
-                "process_property_restored", "metrics_mode_restored", "pipeline_observer_detached", "cleanup_completed")) CLEANUP.put(name, false);
-        Set<Long> baseline = threadIds(); SimpleKdcServer server = null; Code error = null;
-        totalDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(185);
-        deadline = Math.min(totalDeadline, System.nanoTime() + TimeUnit.SECONDS.toNanos(70));
-        byte[] serialized = null;
-        try {
-            environment(args); processBaseline = processIds(); CHECKS.put("environment", true);
-            // Prime only the JDK child reaper before the service-thread baseline.
-            // The version child uses the same pinned binary and bounded supervisor.
-            controlDeadline = deadline;
-            stage = "rclone_version";
-            Result version = child(List.of("/opt/transfer/rclone", "version", "--config", "/dev/null", "--log-level", "ERROR"),
-                Map.of("HOME", "/work/home", "PATH", "/usr/bin:/bin", "LANG", "C", "LC_ALL", "C"));
-            need(version.code == 0, Code.rclone_version_nonzero);
-            need(version.err.length == 0, Code.rclone_version_stderr);
-            need(new String(version.out, StandardCharsets.US_ASCII).startsWith("rclone v1.75.2\n"), Code.rclone_version_mismatch);
-            need(processIds().equals(processBaseline), Code.child_process_drift);
-            baseline = threadIds();
-            Files.createDirectory(ROOT, PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------")));
-            rootCreated = true; rootKey = directory(ROOT, true); rootOwned = true; PRIVATE_DIRS.put(ROOT, rootKey);
-            adoptResourceDirectory();
-            for (Path path : List.of(TLS, ACQUIRED)) { Files.createDirectory(path, PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------"))); PRIVATE_DIRS.put(path, directory(path, true)); }
-            guardRoot(); stage = "tls"; makeTls(); CHECKS.put("tls_material", true); observeThreads("tls", baseline);
-            SecureRandom random = new SecureRandom();
-            String realm = "SYNTHETIC" + random(random, 12).toUpperCase(java.util.Locale.ROOT) + ".INVALID";
-            String reader = "reader" + random(random, 12), password = random(random, 32);
-            KrbConfig clientConfig = new KrbConfig(); server = new SimpleKdcServer(clientConfig);
-            constrainConfig(server, clientConfig, realm); final SimpleKdcServer ownedServer = server;
-            stage = "kdc_init"; bounded(() -> { ownedServer.init(); return null; }, 10, deadline);
-            replaceGeneratedConfig(realm);
-            stage = "principals";
-            server.createPrincipal(reader + "@" + realm, password);
-            exportKey(server, "hdfs/127.0.0.1@" + realm, KEYTAB);
-            exportKey(server, "HTTP/127.0.0.1@" + realm, HTTP_KEYTAB);
-            stage = "kdc_start"; bounded(() -> { ownedServer.start(); return null; }, 10, deadline);
-            listeners(true); CHECKS.put("endpoint_settings", true);
-            observeThreads("kdc", baseline);
-            ExitUtil.disableSystemExit(); ExitUtil.disableSystemHalt();
-            Configuration conf = configuration(realm, reader);
-            UserGroupInformation.setConfiguration(conf);
-            ownerPrincipal = "hdfs/127.0.0.1@" + realm;
-            stage = "owner_login";
-            bounded(() -> { UserGroupInformation.loginUserFromKeytab(ownerPrincipal, KEYTAB.toString());
-                rememberOwner(); return null; }, 10, deadline);
-            need(owner != null && owner.hasKerberosCredentials() && owner.isFromKeytab(), Code.namenode_failed);
-            observeThreads("owner_login", baseline);
-            stage = "metrics_mode"; enableMetricsMode();
-            stage = "format"; bounded(() -> {
-                try { NameNode.format(conf); formatSslFactory = Util.connectionFactory; }
-                finally { rememberOwner(); } return null; }, 15, deadline);
-            observeThreads("format", baseline);
-            sslCaptureFailure = inspectFormatSslTimer(baseline, deadline, true);
-            stage = "namenode_start"; namenodeAttempted = true; bounded(() -> {
-                try { namenode = new NameNode(conf); } finally { rememberOwner(); } return null; }, 30, deadline);
-            endpoint = namenode.getNameNodeAddress(); topology(); CHECKS.put("secure_namenode", true);
-            observeThreads("namenode", baseline);
-            stage = "relay_start"; relay = new Relay(); topology();
-            stage = "filesystem"; bounded(() -> {
-                filesystem = new DistributedFileSystem(); filesystem.initialize(URI.create("hdfs://127.0.0.1:19000"), conf);
-                return null; }, 5, deadline);
-            observeThreads("filesystem", baseline);
-            stage = "datanode_start"; datanodeAttempted = true;
-            bounded(() -> { try { datanode = org.apache.hadoop.hdfs.server.datanode.DataNode.createDataNode(new String[0], conf, null); }
-                finally { rememberOwner(); } return null; }, 35, deadline);
-            need(datanode != null, Code.datanode_failed); observeThreads("datanode", baseline);
-            captureDatanodeSsl(baseline); topology(); CHECKS.put("secure_datanode", true);
-            stage = "tls_endpoints"; verifyTlsEndpoint(19003); verifyTlsEndpoint(19004); CHECKS.put("tls_endpoints", true);
-            stage = "seed"; bounded(() -> { seedObserved(); verifyMember(); seedStep(SeedOperation.complete, SeedRole.none); return null; }, 20, deadline);
-            CHECKS.put("registered_datanode", true); CHECKS.put("seed_hashes", true);
-            configurationDigest = configurationDigest();
-            stage = "reader_tgt";
-            KrbClient client = server.getKrbClient(); long before = System.currentTimeMillis() / 1000;
-            TgtTicket tgt = bounded(() -> client.requestTgt(options(reader + "@" + realm, password)), 10, deadline);
-            long after = System.currentTimeMillis() / 1000;
-            need(tgt != null && !BACKGROUND_FAILURE.get(), Code.positive_ticket_failed); CHECKS.put("positive_tgt", true);
-            LimitedBuffer buffer = new LimitedBuffer();
-            try { new CredentialCache(tgt).store(buffer); serialized = buffer.toByteArray(); } finally { buffer.erase(); }
-            inspectCache(serialized, realm, reader, before, after); publishCache(serialized);
-            CHECKS.put("file_cache_v3", true); CHECKS.put("nonrenewable", true);
-            observeThreads("reader", baseline);
-            controlDeadline = Math.min(totalDeadline - TimeUnit.SECONDS.toNanos(60), System.nanoTime() + TimeUnit.SECONDS.toNanos(55));
-            stage = "listing_before"; listing(reader, 0); CHECKS.put("listing_before", true);
-            stage = "empty"; acquire(reader, 1, 0); CHECKS.put("empty_acquired", true);
-            stage = "small"; acquire(reader, 2, 1); CHECKS.put("small_acquired", true);
-            stage = "missing"; missing(reader); CHECKS.put("missing_path_rejected", true);
-            stage = "payload_before"; acquire(reader, 4, 2); CHECKS.put("payload_before", true);
-            stage = "rclone_none"; negative(reader); CHECKS.put("rclone_auth_boundary_rejection", true);
-            stage = "wire_none"; bounded(() -> { wireOracle(); return null; }, 3, controlDeadline); CHECKS.put("wire_auth_boundary_rejection", true);
-            stage = "payload_after"; acquire(reader, 6, 2); CHECKS.put("payload_after", true);
-            stage = "listing_after"; listing(reader, 7); CHECKS.put("listing_after", true);
-            need(acquiredBytes == 2109442, Code.acquisition_invalid);
-            stage = "preservation"; bounded(() -> { verifyMember(); return null; }, 5, controlDeadline);
-            need(configurationDigest.equals(configurationDigest()), Code.source_invalid);
-            CHECKS.put("source_preserved", true);
-            inventory(); topology(); need(!BACKGROUND_FAILURE.get(), Code.background_failure);
-            CHECKS.put("cache_preserved", true); stage = "completed";
-        } catch (Throwable failure) {
-            failedSeedCheckpoint = seedCheckpoint;
-            if (failure instanceof Failure owned) error = owned.code;
-            else if (failure instanceof KrbException) error = Code.krb_failure;
-            else if (failure instanceof IOException) error = Code.io_failure;
-            else if (failure instanceof InterruptedException) { Thread.currentThread().interrupt(); error = Code.interrupted; }
-            else error = Code.unclassified;
-            projectFailure(failure);
-        }
-        finally {
-            observeThreads("controls", baseline);
-            cleanupDeadline = Math.min(totalDeadline, System.nanoTime() + TimeUnit.SECONDS.toNanos(60));
-            if (serialized != null) Arrays.fill(serialized, (byte) 0);
-            try { stopServices(); } catch (Throwable ignored) { CLEANUP.put("cleanup_completed", false); }
-            finally { restoreMetricsMode(); }
-            try { cleanup(server, baseline); } catch (Throwable ignored) { CLEANUP.put("cleanup_completed", false); }
-            finally { THREAD_ORIGINS.clear(); }
-        }
-        CLEANUP.put("pipeline_observer_detached", pipelineDetached);
-        boolean clean = CLEANUP.values().stream().allMatch(Boolean.TRUE::equals);
-        if (!clean && error == null) error = Code.cleanup_failed;
-        if (!threadObservationsComplete() && error == null) error = Code.cleanup_failed;
-        if (BACKGROUND_FAILURE.get() && error == null) error = Code.background_failure;
-        boolean success = error == null && CHECKS.values().stream().allMatch(Boolean.TRUE::equals) && clean;
-        report.println("{\"schema_version\":1,\"scope\":\"hdfs_kerberos_transfer_feasibility\",\"success\":" + success
-            + ",\"expected_kerby_version\":\"2.1.2\",\"runtime_binding_required\":true,\"checks\":" + boolMap(CHECKS)
-            + ",\"cleanup\":" + boolMap(CLEANUP) + ",\"metrics_mode\":" + metricsModeJson() + ",\"ssl_capture\":" + sslCaptureJson() + ",\"seed_checkpoint\":" + seedCheckpointJson() + ",\"cache_bytes\":" + cacheBytes
-            + ",\"child_count\":" + CHILDREN.size() + ",\"acquired_bytes\":" + acquiredBytes + ",\"acquisitions\":" + acquisitionsJson()
-            + ",\"missing_category\":\"" + (Boolean.TRUE.equals(CHECKS.get("missing_path_rejected")) ? "directory_not_found" : "not_observed") + "\""
-            + ",\"observed_lifetime_seconds\":" + observedLifetime + ",\"stage\":\"" + stage + "\",\"wire_hex\":\"" + wireHex + "\",\"error\":"
-            + (error == null ? "null" : "\"" + error.name() + "\"")
-            + ",\"diagnostic\":{\"category\":\"" + diagnosticCategory + "\",\"origin\":\"" + diagnosticOrigin + "\"}"
-            + ",\"pipeline_origin\":\"" + pipelineOrigin + "\""
-            + ",\"remaining_threads\":" + threadCountsJson(remainingThreads, THREAD_CATEGORIES)
-            + ",\"thread_observation_complete\":" + threadObservationsComplete()
-            + ",\"remaining_thread_intervals\":" + threadCountsJson(remainingThreadIntervals, THREAD_PHASES)
-            + ",\"remaining_thread_matrix\":" + threadMatrixJson()
-            + ",\"remaining_timer_kinds\":" + threadCountsJson(remainingTimerKinds, TIMER_KINDS)
-            + ",\"owned_thread_cleanup\":{\"gc_monitor\":\"" + gcCleanup.name()
-            + "\",\"fs_statistics_cleaner\":\"" + statisticsCleanup.name()
-            + "\",\"format_ssl_timer\":\"" + sslCleanup.name() + "\"}"
-            + ",\"rclone_wire_hex\":\"" + rcloneWireHex + "\",\"relay\":" + (relay == null ? "null" : relay.json())
-            + ",\"ledger_eligible\":false,\"authentication_verified\":false,\"hdfs_authenticated\":false"
-            + ",\"renewal_verified\":false,\"daemon_accepted\":false,\"provider_accepted\":false"
-            + ",\"application_accepted\":false,\"vendor_accepted\":false,\"vulnerability_audited\":false}");
-        report.flush(); System.exit(success ? 0 : 1);
+		PrintStream report = System.out;
+		System.setOut(new PrintStream(OutputStream.nullOutputStream()));
+		System.setErr(new PrintStream(OutputStream.nullOutputStream()));
+		Thread.setDefaultUncaughtExceptionHandler((thread, error) -> BACKGROUND_FAILURE.set(true));
+		for (String name : List.of("environment", "metrics_mode_enabled", "endpoint_settings", "positive_tgt", "file_cache_v3",
+				"nonrenewable", "secure_namenode", "secure_datanode", "tls_material", "tls_endpoints", "registered_datanode", "seed_hashes", "listing_before", "empty_acquired", "small_acquired", "missing_path_rejected", "payload_before", "payload_after", "rclone_auth_boundary_rejection",
+				"wire_auth_boundary_rejection", "listing_after", "source_preserved", "cache_preserved")) CHECKS.put(name, false);
+		for (String name : List.of("children_reaped", "relay_closed", "filesystem_closed", "namenode_stop_returned", "owner_logged_out",
+				"datanode_stop_returned", "datanode_ssl_timer_reaped", "gc_monitor_reaped", "fs_statistics_cleaner_reaped", "format_ssl_timer_reaped",
+				"kdc_stop_returned", "threads_terminated", "listeners_absent", "private_material_removed",
+				"process_property_restored", "metrics_mode_restored", "pipeline_observer_detached", "pipeline_server_observer_detached", "cleanup_completed")) CLEANUP.put(name, false);
+		Set<Long> baseline = threadIds(); SimpleKdcServer server = null; Code error = null;
+		totalDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(185);
+		deadline = Math.min(totalDeadline, System.nanoTime() + TimeUnit.SECONDS.toNanos(70));
+		byte[] serialized = null;
+		try {
+			environment(args); processBaseline = processIds(); CHECKS.put("environment", true);
+			// Prime only the JDK child reaper before the service-thread baseline.
+			// The version child uses the same pinned binary and bounded supervisor.
+			controlDeadline = deadline;
+			stage = "rclone_version";
+			Result version = child(List.of("/opt/transfer/rclone", "version", "--config", "/dev/null", "--log-level", "ERROR"),
+				Map.of("HOME", "/work/home", "PATH", "/usr/bin:/bin", "LANG", "C", "LC_ALL", "C"));
+			need(version.code == 0, Code.rclone_version_nonzero);
+			need(version.err.length == 0, Code.rclone_version_stderr);
+			need(new String(version.out, StandardCharsets.US_ASCII).startsWith("rclone v1.75.2\n"), Code.rclone_version_mismatch);
+			need(processIds().equals(processBaseline), Code.child_process_drift);
+			baseline = threadIds();
+			Files.createDirectory(ROOT, PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------")));
+			rootCreated = true; rootKey = directory(ROOT, true); rootOwned = true; PRIVATE_DIRS.put(ROOT, rootKey);
+			adoptResourceDirectory();
+			for (Path path : List.of(TLS, ACQUIRED)) { Files.createDirectory(path, PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------"))); PRIVATE_DIRS.put(path, directory(path, true)); }
+			guardRoot(); stage = "tls"; makeTls(); CHECKS.put("tls_material", true); observeThreads("tls", baseline);
+			SecureRandom random = new SecureRandom();
+			String realm = "SYNTHETIC" + random(random, 12).toUpperCase(java.util.Locale.ROOT) + ".INVALID";
+			String reader = "reader" + random(random, 12), password = random(random, 32);
+			KrbConfig clientConfig = new KrbConfig(); server = new SimpleKdcServer(clientConfig);
+			constrainConfig(server, clientConfig, realm); final SimpleKdcServer ownedServer = server;
+			stage = "kdc_init"; bounded(() -> { ownedServer.init(); return null; }, 10, deadline);
+			replaceGeneratedConfig(realm);
+			stage = "principals";
+			server.createPrincipal(reader + "@" + realm, password);
+			exportKey(server, "hdfs/127.0.0.1@" + realm, KEYTAB);
+			exportKey(server, "HTTP/127.0.0.1@" + realm, HTTP_KEYTAB);
+			stage = "kdc_start"; bounded(() -> { ownedServer.start(); return null; }, 10, deadline);
+			listeners(true); CHECKS.put("endpoint_settings", true);
+			observeThreads("kdc", baseline);
+			ExitUtil.disableSystemExit(); ExitUtil.disableSystemHalt();
+			Configuration conf = configuration(realm, reader);
+			UserGroupInformation.setConfiguration(conf);
+			ownerPrincipal = "hdfs/127.0.0.1@" + realm;
+			stage = "owner_login";
+			bounded(() -> { UserGroupInformation.loginUserFromKeytab(ownerPrincipal, KEYTAB.toString());
+				rememberOwner(); return null; }, 10, deadline);
+			need(owner != null && owner.hasKerberosCredentials() && owner.isFromKeytab(), Code.namenode_failed);
+			observeThreads("owner_login", baseline);
+			stage = "metrics_mode"; enableMetricsMode();
+			stage = "format"; bounded(() -> {
+				try { NameNode.format(conf); formatSslFactory = Util.connectionFactory; }
+				finally { rememberOwner(); } return null; }, 15, deadline);
+			observeThreads("format", baseline);
+			sslCaptureFailure = inspectFormatSslTimer(baseline, deadline, true);
+			stage = "namenode_start"; namenodeAttempted = true; bounded(() -> {
+				try { namenode = new NameNode(conf); } finally { rememberOwner(); } return null; }, 30, deadline);
+			endpoint = namenode.getNameNodeAddress(); topology(); CHECKS.put("secure_namenode", true);
+			observeThreads("namenode", baseline);
+			stage = "relay_start"; relay = new Relay(); topology();
+			stage = "filesystem"; bounded(() -> {
+				filesystem = new DistributedFileSystem(); filesystem.initialize(URI.create("hdfs://127.0.0.1:19000"), conf);
+				return null; }, 5, deadline);
+			observeThreads("filesystem", baseline);
+			stage = "datanode_start"; datanodeAttempted = true;
+			bounded(() -> { try { datanode = org.apache.hadoop.hdfs.server.datanode.DataNode.createDataNode(new String[0], conf, null); }
+				finally { rememberOwner(); } return null; }, 35, deadline);
+			need(datanode != null, Code.datanode_failed); observeThreads("datanode", baseline);
+			captureDatanodeSsl(baseline); topology(); CHECKS.put("secure_datanode", true);
+			stage = "tls_endpoints"; verifyTlsEndpoint(19003); verifyTlsEndpoint(19004); CHECKS.put("tls_endpoints", true);
+			stage = "seed"; bounded(() -> { seedObserved(); verifyMember(); seedStep(SeedOperation.complete, SeedRole.none); return null; }, 20, deadline);
+			CHECKS.put("registered_datanode", true); CHECKS.put("seed_hashes", true);
+			configurationDigest = configurationDigest();
+			stage = "reader_tgt";
+			KrbClient client = server.getKrbClient(); long before = System.currentTimeMillis() / 1000;
+			TgtTicket tgt = bounded(() -> client.requestTgt(options(reader + "@" + realm, password)), 10, deadline);
+			long after = System.currentTimeMillis() / 1000;
+			need(tgt != null && !BACKGROUND_FAILURE.get(), Code.positive_ticket_failed); CHECKS.put("positive_tgt", true);
+			LimitedBuffer buffer = new LimitedBuffer();
+			try { new CredentialCache(tgt).store(buffer); serialized = buffer.toByteArray(); } finally { buffer.erase(); }
+			inspectCache(serialized, realm, reader, before, after); publishCache(serialized);
+			CHECKS.put("file_cache_v3", true); CHECKS.put("nonrenewable", true);
+			observeThreads("reader", baseline);
+			controlDeadline = Math.min(totalDeadline - TimeUnit.SECONDS.toNanos(60), System.nanoTime() + TimeUnit.SECONDS.toNanos(55));
+			stage = "listing_before"; listing(reader, 0); CHECKS.put("listing_before", true);
+			stage = "empty"; acquire(reader, 1, 0); CHECKS.put("empty_acquired", true);
+			stage = "small"; acquire(reader, 2, 1); CHECKS.put("small_acquired", true);
+			stage = "missing"; missing(reader); CHECKS.put("missing_path_rejected", true);
+			stage = "payload_before"; acquire(reader, 4, 2); CHECKS.put("payload_before", true);
+			stage = "rclone_none"; negative(reader); CHECKS.put("rclone_auth_boundary_rejection", true);
+			stage = "wire_none"; bounded(() -> { wireOracle(); return null; }, 3, controlDeadline); CHECKS.put("wire_auth_boundary_rejection", true);
+			stage = "payload_after"; acquire(reader, 6, 2); CHECKS.put("payload_after", true);
+			stage = "listing_after"; listing(reader, 7); CHECKS.put("listing_after", true);
+			need(acquiredBytes == 2109442, Code.acquisition_invalid);
+			stage = "preservation"; bounded(() -> { verifyMember(); return null; }, 5, controlDeadline);
+			need(configurationDigest.equals(configurationDigest()), Code.source_invalid);
+			CHECKS.put("source_preserved", true);
+			inventory(); topology(); need(!BACKGROUND_FAILURE.get(), Code.background_failure);
+			CHECKS.put("cache_preserved", true); stage = "completed";
+		} catch (Throwable failure) {
+			failedSeedCheckpoint = seedCheckpoint;
+			if (failure instanceof Failure owned) error = owned.code;
+			else if (failure instanceof KrbException) error = Code.krb_failure;
+			else if (failure instanceof IOException) error = Code.io_failure;
+			else if (failure instanceof InterruptedException) { Thread.currentThread().interrupt(); error = Code.interrupted; }
+			else error = Code.unclassified;
+			projectFailure(failure);
+		}
+		finally {
+			observeThreads("controls", baseline);
+			cleanupDeadline = Math.min(totalDeadline, System.nanoTime() + TimeUnit.SECONDS.toNanos(60));
+			if (serialized != null) Arrays.fill(serialized, (byte) 0);
+			try { stopServices(); } catch (Throwable ignored) { CLEANUP.put("cleanup_completed", false); }
+			finally { restoreMetricsMode(); }
+			try { cleanup(server, baseline); } catch (Throwable ignored) { CLEANUP.put("cleanup_completed", false); }
+			finally { THREAD_ORIGINS.clear(); }
+		}
+		CLEANUP.put("pipeline_observer_detached", pipelineDetached);
+		CLEANUP.put("pipeline_server_observer_detached", pipelineServerDetached);
+		boolean clean = CLEANUP.values().stream().allMatch(Boolean.TRUE::equals);
+		if (!clean && error == null) error = Code.cleanup_failed;
+		if (!threadObservationsComplete() && error == null) error = Code.cleanup_failed;
+		if (BACKGROUND_FAILURE.get() && error == null) error = Code.background_failure;
+		boolean success = error == null && CHECKS.values().stream().allMatch(Boolean.TRUE::equals) && clean;
+		report.println("{\"schema_version\":1,\"scope\":\"hdfs_kerberos_transfer_feasibility\",\"success\":" + success
+			+ ",\"expected_kerby_version\":\"2.1.2\",\"runtime_binding_required\":true,\"checks\":" + boolMap(CHECKS)
+			+ ",\"cleanup\":" + boolMap(CLEANUP) + ",\"metrics_mode\":" + metricsModeJson() + ",\"ssl_capture\":" + sslCaptureJson() + ",\"seed_checkpoint\":" + seedCheckpointJson() + ",\"cache_bytes\":" + cacheBytes
+			+ ",\"child_count\":" + CHILDREN.size() + ",\"acquired_bytes\":" + acquiredBytes + ",\"acquisitions\":" + acquisitionsJson()
+			+ ",\"missing_category\":\"" + (Boolean.TRUE.equals(CHECKS.get("missing_path_rejected")) ? "directory_not_found" : "not_observed") + "\""
+			+ ",\"observed_lifetime_seconds\":" + observedLifetime + ",\"stage\":\"" + stage + "\",\"wire_hex\":\"" + wireHex + "\",\"error\":"
+			+ (error == null ? "null" : "\"" + error.name() + "\"")
+			+ ",\"diagnostic\":{\"category\":\"" + diagnosticCategory + "\",\"origin\":\"" + diagnosticOrigin + "\"}"
+			+ ",\"pipeline_origin\":\"" + pipelineOrigin + "\""
+			+ ",\"pipeline_server_diagnostic\":{\"category\":\"" + serverFailure.category() + "\",\"origin\":\"" + serverFailure.origin() + "\"}"
+			+ ",\"remaining_threads\":" + threadCountsJson(remainingThreads, THREAD_CATEGORIES)
+			+ ",\"thread_observation_complete\":" + threadObservationsComplete()
+			+ ",\"remaining_thread_intervals\":" + threadCountsJson(remainingThreadIntervals, THREAD_PHASES)
+			+ ",\"remaining_thread_matrix\":" + threadMatrixJson()
+			+ ",\"remaining_timer_kinds\":" + threadCountsJson(remainingTimerKinds, TIMER_KINDS)
+			+ ",\"owned_thread_cleanup\":{\"gc_monitor\":\"" + gcCleanup.name()
+			+ "\",\"fs_statistics_cleaner\":\"" + statisticsCleanup.name()
+			+ "\",\"format_ssl_timer\":\"" + sslCleanup.name() + "\"}"
+			+ ",\"rclone_wire_hex\":\"" + rcloneWireHex + "\",\"relay\":" + (relay == null ? "null" : relay.json())
+			+ ",\"ledger_eligible\":false,\"authentication_verified\":false,\"hdfs_authenticated\":false"
+			+ ",\"renewal_verified\":false,\"daemon_accepted\":false,\"provider_accepted\":false"
+			+ ",\"application_accepted\":false,\"vendor_accepted\":false,\"vulnerability_audited\":false}");
+		report.flush(); System.exit(success ? 0 : 1);
     }
     private static void privateBytes(Path path, byte[] data) throws Exception {
-        need(data.length <= MAX_BYTES && PRIVATE_DIRS.containsKey(path.getParent()), Code.path_invalid);
-        need(PRIVATE_DIRS.get(path.getParent()).equals(directory(path.getParent(), true)), Code.source_changed);
-        try (var channel = FileChannel.open(path, Set.of(StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE, NOFOLLOW),
-                PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------")))) {
-            ByteBuffer buffer = ByteBuffer.wrap(data); while (buffer.hasRemaining()) channel.write(buffer); channel.force(true);
-        }
-        OWNED_FILES.put(path, new FileState(path));
+		need(data.length <= MAX_BYTES && PRIVATE_DIRS.containsKey(path.getParent()), Code.path_invalid);
+		need(PRIVATE_DIRS.get(path.getParent()).equals(directory(path.getParent(), true)), Code.source_changed);
+		try (var channel = FileChannel.open(path, Set.of(StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE, NOFOLLOW),
+				PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------")))) {
+			ByteBuffer buffer = ByteBuffer.wrap(data); while (buffer.hasRemaining()) channel.write(buffer); channel.force(true);
+		}
+		OWNED_FILES.put(path, new FileState(path));
     }
     private static void makeTls() throws Exception {
-        char[] password = random(new SecureRandom(), 40).toCharArray();
-        byte[] passwordBytes = (new String(password) + "\n").getBytes(StandardCharsets.US_ASCII);
-        try {
-            privateBytes(PASSWORD, passwordBytes);
-            need(!Files.exists(STORE, NOFOLLOW), Code.path_invalid);
-            // Exact pinned keytool supports file modifiers; argv has paths, never private values.
-            Result keytool = child(List.of("/opt/java/openjdk/bin/keytool", "-genkeypair", "-noprompt", "-alias", "owned",
-                "-keyalg", "RSA", "-keysize", "2048", "-sigalg", "SHA256withRSA", "-validity", "1",
-                "-dname", "CN=127.0.0.1", "-ext", "SAN=ip:127.0.0.1", "-storetype", "PKCS12",
-                "-keystore", STORE.toString(), "-storepass:file", PASSWORD.toString(), "-keypass:file", PASSWORD.toString()), plainEnvironment());
-            try { need(keytool.code == 0, Code.tls_keytool_exit_invalid); }
-            finally { Arrays.fill(keytool.out, (byte)0); Arrays.fill(keytool.err, (byte)0); }
-            OWNED_FILES.put(STORE, new FileState(STORE));
-            java.security.KeyStore store = java.security.KeyStore.getInstance("PKCS12");
-            try (var input = Files.newInputStream(STORE, NOFOLLOW)) { store.load(input, password); }
-            need(store.size() == 1 && store.isKeyEntry("owned"), Code.tls_store_shape_invalid);
-            var cert = (java.security.cert.X509Certificate) store.getCertificate("owned"); cert.checkValidity();
-            need(cert.getPublicKey() instanceof java.security.interfaces.RSAPublicKey
-                && ((java.security.interfaces.RSAPublicKey)cert.getPublicKey()).getModulus().bitLength() == 2048, Code.tls_certificate_key_invalid);
-            need(cert.getSigAlgName().equalsIgnoreCase("SHA256withRSA"), Code.tls_certificate_signature_invalid);
-            need(cert.getNotAfter().getTime() - cert.getNotBefore().getTime() == 86400000L, Code.tls_certificate_lifetime_invalid);
-            need(cert.getSubjectAlternativeNames().size() == 1
-                && cert.getSubjectAlternativeNames().contains(List.of(7, "127.0.0.1")), Code.tls_certificate_san_invalid);
-            java.security.KeyStore trust = java.security.KeyStore.getInstance("PKCS12"); trust.load(null, password);
-            trust.setCertificateEntry("owned", cert);
-            LimitedBuffer buffer = new LimitedBuffer();
-            try { trust.store(buffer, password); privateBytes(TRUST, buffer.toByteArray()); } finally { buffer.erase(); }
-            Configuration ssl = new Configuration(false);
-            ssl.set("ssl.server.keystore.type", "PKCS12"); ssl.set("ssl.server.keystore.location", STORE.toString());
-            ssl.set("ssl.server.keystore.password", new String(password)); ssl.set("ssl.server.keystore.keypassword", new String(password));
-            ssl.set("ssl.server.truststore.type", "PKCS12"); ssl.set("ssl.server.truststore.location", TRUST.toString());
-            ssl.set("ssl.server.truststore.password", new String(password)); ssl.set("hadoop.ssl.require.client.cert", "false");
-            LimitedBuffer xml = new LimitedBuffer();
-            try { ssl.writeXml(xml); privateBytes(SSL_XML, xml.toByteArray()); } finally { xml.erase(); }
-            // Relative resource resolves only this one private XML after immutable classes/JARs.
-            var urls = HdfsKerberosTransferProbe.class.getClassLoader().getResources("owned-ssl-server.xml");
-            need(urls.hasMoreElements(), Code.tls_resource_missing);
-            need(urls.nextElement().toURI().equals(SSL_XML.toUri()), Code.tls_resource_identity_invalid);
-            need(!urls.hasMoreElements(), Code.tls_resource_ambiguous);
-            var tm = javax.net.ssl.TrustManagerFactory.getInstance(javax.net.ssl.TrustManagerFactory.getDefaultAlgorithm()); tm.init(trust);
-            tlsContext = javax.net.ssl.SSLContext.getInstance("TLS"); tlsContext.init(null, tm.getTrustManagers(), null);
-            inventory();
-        } finally { Arrays.fill(password, '\0'); Arrays.fill(passwordBytes, (byte)0); }
+		char[] password = random(new SecureRandom(), 40).toCharArray();
+		byte[] passwordBytes = (new String(password) + "\n").getBytes(StandardCharsets.US_ASCII);
+		try {
+			privateBytes(PASSWORD, passwordBytes);
+			need(!Files.exists(STORE, NOFOLLOW), Code.path_invalid);
+			// Exact pinned keytool supports file modifiers; argv has paths, never private values.
+			Result keytool = child(List.of("/opt/java/openjdk/bin/keytool", "-genkeypair", "-noprompt", "-alias", "owned",
+				"-keyalg", "RSA", "-keysize", "2048", "-sigalg", "SHA256withRSA", "-validity", "1",
+				"-dname", "CN=127.0.0.1", "-ext", "SAN=ip:127.0.0.1", "-storetype", "PKCS12",
+				"-keystore", STORE.toString(), "-storepass:file", PASSWORD.toString(), "-keypass:file", PASSWORD.toString()), plainEnvironment());
+			try { need(keytool.code == 0, Code.tls_keytool_exit_invalid); }
+			finally { Arrays.fill(keytool.out, (byte)0); Arrays.fill(keytool.err, (byte)0); }
+			OWNED_FILES.put(STORE, new FileState(STORE));
+			java.security.KeyStore store = java.security.KeyStore.getInstance("PKCS12");
+			try (var input = Files.newInputStream(STORE, NOFOLLOW)) { store.load(input, password); }
+			need(store.size() == 1 && store.isKeyEntry("owned"), Code.tls_store_shape_invalid);
+			var cert = (java.security.cert.X509Certificate) store.getCertificate("owned"); cert.checkValidity();
+			need(cert.getPublicKey() instanceof java.security.interfaces.RSAPublicKey
+				&& ((java.security.interfaces.RSAPublicKey)cert.getPublicKey()).getModulus().bitLength() == 2048, Code.tls_certificate_key_invalid);
+			need(cert.getSigAlgName().equalsIgnoreCase("SHA256withRSA"), Code.tls_certificate_signature_invalid);
+			need(cert.getNotAfter().getTime() - cert.getNotBefore().getTime() == 86400000L, Code.tls_certificate_lifetime_invalid);
+			need(cert.getSubjectAlternativeNames().size() == 1
+				&& cert.getSubjectAlternativeNames().contains(List.of(7, "127.0.0.1")), Code.tls_certificate_san_invalid);
+			java.security.KeyStore trust = java.security.KeyStore.getInstance("PKCS12"); trust.load(null, password);
+			trust.setCertificateEntry("owned", cert);
+			LimitedBuffer buffer = new LimitedBuffer();
+			try { trust.store(buffer, password); privateBytes(TRUST, buffer.toByteArray()); } finally { buffer.erase(); }
+			Configuration ssl = new Configuration(false);
+			ssl.set("ssl.server.keystore.type", "PKCS12"); ssl.set("ssl.server.keystore.location", STORE.toString());
+			ssl.set("ssl.server.keystore.password", new String(password)); ssl.set("ssl.server.keystore.keypassword", new String(password));
+			ssl.set("ssl.server.truststore.type", "PKCS12"); ssl.set("ssl.server.truststore.location", TRUST.toString());
+			ssl.set("ssl.server.truststore.password", new String(password)); ssl.set("hadoop.ssl.require.client.cert", "false");
+			LimitedBuffer xml = new LimitedBuffer();
+			try { ssl.writeXml(xml); privateBytes(SSL_XML, xml.toByteArray()); } finally { xml.erase(); }
+			// Relative resource resolves only this one private XML after immutable classes/JARs.
+			var urls = HdfsKerberosTransferProbe.class.getClassLoader().getResources("owned-ssl-server.xml");
+			need(urls.hasMoreElements(), Code.tls_resource_missing);
+			need(urls.nextElement().toURI().equals(SSL_XML.toUri()), Code.tls_resource_identity_invalid);
+			need(!urls.hasMoreElements(), Code.tls_resource_ambiguous);
+			var tm = javax.net.ssl.TrustManagerFactory.getInstance(javax.net.ssl.TrustManagerFactory.getDefaultAlgorithm()); tm.init(trust);
+			tlsContext = javax.net.ssl.SSLContext.getInstance("TLS"); tlsContext.init(null, tm.getTrustManagers(), null);
+			inventory();
+		} finally { Arrays.fill(password, '\0'); Arrays.fill(passwordBytes, (byte)0); }
     }
     private static void verifyTlsEndpoint(int port) throws Exception {
-        need(port == 19003 || port == 19004, Code.tls_invalid);
-        bounded(() -> {
-            try (var socket = (javax.net.ssl.SSLSocket) tlsContext.getSocketFactory().createSocket()) {
-                socket.connect(new InetSocketAddress("127.0.0.1", port), 2000); socket.setSoTimeout(3000);
-                var params = socket.getSSLParameters(); params.setEndpointIdentificationAlgorithm("HTTPS"); socket.setSSLParameters(params);
-                socket.startHandshake(); need(socket.getSession().getPeerCertificates().length == 1, Code.tls_invalid);
-            } return null;
-        }, 3, deadline);
+		need(port == 19003 || port == 19004, Code.tls_invalid);
+		bounded(() -> {
+			try (var socket = (javax.net.ssl.SSLSocket) tlsContext.getSocketFactory().createSocket()) {
+				socket.connect(new InetSocketAddress("127.0.0.1", port), 2000); socket.setSoTimeout(3000);
+				var params = socket.getSSLParameters(); params.setEndpointIdentificationAlgorithm("HTTPS"); socket.setSSLParameters(params);
+				socket.startHandshake(); need(socket.getSession().getPeerCertificates().length == 1, Code.tls_invalid);
+			} return null;
+		}, 3, deadline);
     }
     private static boolean sslCapturePredicate(boolean value, DataNodeSslCapture failure) {
         if (!value) datanodeSslCapture = failure;

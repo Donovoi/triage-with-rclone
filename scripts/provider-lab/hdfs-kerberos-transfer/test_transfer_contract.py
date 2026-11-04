@@ -106,7 +106,7 @@ def positive():
         checks=dict(environment=True, metrics_mode_enabled=True, endpoint_settings=True, positive_tgt=True, file_cache_v3=True,
             nonrenewable=True, secure_namenode=True, secure_datanode=True, tls_material=True, tls_endpoints=True, registered_datanode=True, seed_hashes=True, empty_acquired=True, small_acquired=True, missing_path_rejected=True, payload_before=True, payload_after=True, listing_before=True, rclone_auth_boundary_rejection=True,
             wire_auth_boundary_rejection=True, listing_after=True, source_preserved=True, cache_preserved=True),
-        cleanup=dict(pipeline_observer_detached=True, children_reaped=True, relay_closed=True, filesystem_closed=True, namenode_stop_returned=True, owner_logged_out=True, kdc_stop_returned=True, threads_terminated=True, listeners_absent=True,
+        cleanup=dict(pipeline_server_observer_detached=True, pipeline_observer_detached=True, children_reaped=True, relay_closed=True, filesystem_closed=True, namenode_stop_returned=True, owner_logged_out=True, kdc_stop_returned=True, threads_terminated=True, listeners_absent=True,
             private_material_removed=True, process_property_restored=True, metrics_mode_restored=True, cleanup_completed=True,
             gc_monitor_reaped=True, fs_statistics_cleaner_reaped=True, format_ssl_timer_reaped=True, datanode_stop_returned=True, datanode_ssl_timer_reaped=True),
         metrics_mode=dict(attempted=True, captured=True, prior_enabled=False, enable_attempted=True,
@@ -124,7 +124,7 @@ def positive():
         cache_bytes=400, observed_lifetime_seconds=119, stage="completed", wire_hex=wire().hex(), rclone_wire_hex=wire().hex(),
         relay=dict(phase_connections=dict(inventory_before=1,empty=1,small=1,missing=1,before=1,negative=1,after=1,inventory_after=1), none_headers=1,
                    fatal_responses=1, unexpected_connections=0, bytes_forwarded_unchanged=True), error=None, ledger_eligible=False,
-        diagnostic=dict(category="none", origin="none"), pipeline_origin="not_observed",
+        diagnostic=dict(category="none", origin="none"), pipeline_origin="not_observed", pipeline_server_diagnostic=dict(category="none", origin="none"),
         remaining_threads=dict(probe_task=0, jdk_process_reaper=0, jdk_timer=0, jdk_executor=0,
             jdk_cleaner=0, hadoop_metrics=0, hadoop_rpc=0, hadoop_fs=0, hadoop_namenode=0,
             hadoop_blockmanagement=0, hadoop_util=0, jetty=0, kerby=0, other=0),
@@ -787,7 +787,7 @@ class TransferTests(unittest.TestCase):
         self.assertIn('timeout=195, limit=32768',source)
 
     def test_native_surface_source_contains_no_secret_argv_or_test_bypass(self):
-        source=(HERE/'HdfsKerberosTransferProbe.java').read_text()
+        source=(HERE/'HdfsKerberosTransferProbe.java').read_text().expandtabs(4)
         self.assertIn('"-storepass:file", PASSWORD.toString(), "-keypass:file", PASSWORD.toString()',source)
         self.assertNotIn('"-storepass",',source);self.assertNotIn('"-keypass",',source)
         self.assertIn('conf.set("ignore.secure.ports.for.testing", "false")',source)
@@ -799,7 +799,7 @@ class TransferTests(unittest.TestCase):
         self.assertNotIn('setAccessible(',source);self.assertNotIn('System.getenv("HOME")',source)
 
     def test_retained_ssl_identity_and_subjects_are_not_generic_cleanup(self):
-        s=(HERE/'HdfsKerberosTransferProbe.java').read_text()
+        s=(HERE/'HdfsKerberosTransferProbe.java').read_text().expandtabs(4)
         for required in ('formatSslFactory = Util.connectionFactory','thread == formatSslThread','"datanode".equals(THREAD_ORIGINS.get(thread))','datanodeSslThread == null','!baseline.contains(thread.getId())','datanodeSslThread.isAlive()','finally { rememberOwner(); }','OWNERS.add(current)','login.logoutUserFromKeytab()'):
             self.assertIn(required,s)
         cleanup=s[s.index('private static void stopServices()'):s.index('public static void main(')]
@@ -808,13 +808,13 @@ class TransferTests(unittest.TestCase):
         self.assertIn('}, 35, dnUntil)',cleanup)
 
     def test_streaming_has_expected_plus_one_drain_and_exclusive_identity(self):
-        s=(HERE/'HdfsKerberosTransferProbe.java').read_text()
+        s=(HERE/'HdfsKerberosTransferProbe.java').read_text().expandtabs(4)
         for required in ('expected-total+1','need(total+n<=expected','FileChannel.open(target, StandardOpenOption.WRITE, NOFOLLOW)','original.key.equals(independentlyRead.key)','MessageDigest.isEqual(observed.digest,independentlyRead.digest)','process.destroyForcibly()','process.waitFor(Math.max(1,until-System.nanoTime())','CHILDREN.size()<10','streamed.isDone()','stderr.isDone()'):
             self.assertIn(required,s)
         self.assertNotIn('readAllBytes()',s)
 
     def test_deadlines_and_baseline_are_fixed_and_incomplete_observation_fails(self):
-        s=(HERE/'HdfsKerberosTransferProbe.java').read_text()
+        s=(HERE/'HdfsKerberosTransferProbe.java').read_text().expandtabs(4)
         for required in ('TimeUnit.SECONDS.toNanos(185)','TimeUnit.SECONDS.toNanos(70)','TimeUnit.SECONDS.toNanos(55)','TimeUnit.SECONDS.toNanos(60)','OBSERVED_PHASES.size() == 10','THREAD_ORIGINS.size() < 1280','new java.util.IdentityHashMap<>()','Math.min(cleanupDeadline, System.nanoTime() + TimeUnit.SECONDS.toNanos(3))'):
             self.assertIn(required,s)
         self.assertEqual(s.count('baseline = threadIds()'),2)
@@ -836,7 +836,7 @@ class TransferTests(unittest.TestCase):
     def test_exact_child_count_and_no_additional_native_helper(self):
         for count in (0,9,11,True,128):
             value=positive();value['child_count']=count;self.rejected(value)
-        source=(HERE/'HdfsKerberosTransferProbe.java').read_text()
+        source=(HERE/'HdfsKerberosTransferProbe.java').read_text().expandtabs(4)
         self.assertEqual(source.count('builder.start()'),1)
         self.assertIn('reservations.size() == 8',source)
         self.assertIn('port = 19000; port <= 19007',source)
@@ -873,7 +873,7 @@ class TransferTests(unittest.TestCase):
             finally:helper.tearDown()
 
     def test_missing_log_parser_and_private_outputs_are_source_bounded(self):
-        source=(HERE/'HdfsKerberosTransferProbe.java').read_text()
+        source=(HERE/'HdfsKerberosTransferProbe.java').read_text().expandtabs(4)
         for required in ('error.size()==6','error listing: directory not found','error.path("objectType").asText().equals("string")','FAIL_ON_TRAILING_TOKENS','STRICT_DUPLICATE_DETECTION','privateBytes(target,new byte[0])','original.key.equals(independentlyRead.key)','actual.equals(OWNED_FILES.keySet())','PRIVATE_DIRS.get(path).equals(directory(path, true))'):
             self.assertIn(required,source)
         self.assertIn('boolean loggedOut = ownerCaptureComplete',source)
@@ -882,7 +882,7 @@ class TransferTests(unittest.TestCase):
 
     def test_lexical_java_delimiters_are_balanced_without_native_compilation(self):
         # Pure lexical smoke only, deliberately not advertised as javac/type proof.
-        source=(HERE/'HdfsKerberosTransferProbe.java').read_text()
+        source=(HERE/'HdfsKerberosTransferProbe.java').read_text().expandtabs(4)
         token=re.compile(r'//[^\n]*|/\*.*?\*/|"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|[{}()\[\]]',re.S)
         stack=[];pairs={'}':'{',')':'(',']':'['}
         for match in token.finditer(source):
@@ -893,7 +893,7 @@ class TransferTests(unittest.TestCase):
 
 class DeadlineTests(unittest.TestCase):
     def test_subtimeout_and_private_deletion_do_not_borrow_extra_budget(self):
-        source=(HERE/'HdfsKerberosTransferProbe.java').read_text()
+        source=(HERE/'HdfsKerberosTransferProbe.java').read_text().expandtabs(4)
         bounded=source[source.index('private static <T> T bounded('):source.index('private static String random(')]
         self.assertIn('long taskUntil = Math.min(until, System.nanoTime() + TimeUnit.SECONDS.toNanos(seconds))',bounded)
         self.assertIn('long remaining = taskUntil - System.nanoTime()',bounded)
@@ -917,7 +917,7 @@ class ReviewRegressionTests(unittest.TestCase):
         self.assertTrue(all(line.split(b'  ',1)[1].startswith(b'/opt/transfer/') for line in generated['checksums'].splitlines()))
 
     def test_bounded_task_recomputes_after_start_and_rejects_late_completion(self):
-        source=(HERE/'HdfsKerberosTransferProbe.java').read_text()
+        source=(HERE/'HdfsKerberosTransferProbe.java').read_text().expandtabs(4)
         bounded=source[source.index('private static <T> T bounded('):source.index('private static String random(')]
         order=[bounded.index('final long taskUntil'),bounded.index('thread.start();'),
                bounded.index('long remaining = taskUntil - System.nanoTime()'),bounded.index('need(remaining > 0'),
@@ -1034,7 +1034,7 @@ class TlsDiagnosticTests(unittest.TestCase):
             with self.assertRaises(F.ProbeError):F.validate_java(F.canonical(value),0)
 
     def test_tls_assertions_keep_exact_original_success_requirements(self):
-        source=(HERE/'HdfsKerberosTransferProbe.java').read_text()
+        source=(HERE/'HdfsKerberosTransferProbe.java').read_text().expandtabs(4)
         method=source[source.index('private static void makeTls()'):source.index('private static void verifyTlsEndpoint(')]
         for predicate in ('keytool.code == 0','store.size() == 1 && store.isKeyEntry("owned")',
             'cert.checkValidity()','cert.getPublicKey() instanceof java.security.interfaces.RSAPublicKey',
@@ -1047,7 +1047,7 @@ class TlsDiagnosticTests(unittest.TestCase):
         self.assertNotIn('Code.tls_invalid',method)
 
     def test_keytool_buffers_are_erased_in_finally_before_store_inspection(self):
-        source=(HERE/'HdfsKerberosTransferProbe.java').read_text()
+        source=(HERE/'HdfsKerberosTransferProbe.java').read_text().expandtabs(4)
         exact='try { need(keytool.code == 0, Code.tls_keytool_exit_invalid); }\n            finally { Arrays.fill(keytool.out, (byte)0); Arrays.fill(keytool.err, (byte)0); }'
         self.assertIn(exact,source)
         self.assertLess(source.index(exact),source.index('OWNED_FILES.put(STORE, new FileState(STORE))'))
@@ -1071,7 +1071,7 @@ class ResourceDirectoryStartupTests(unittest.TestCase):
         self.assertEqual(checks[b'/opt/transfer/classpath'],F.sha(files['classpath']).encode())
 
     def test_resource_adoption_rejects_nonempty_changed_or_unowned_directory(self):
-        source=(HERE/'HdfsKerberosTransferProbe.java').read_text()
+        source=(HERE/'HdfsKerberosTransferProbe.java').read_text().expandtabs(4)
         adopt=source[source.index('private static void adoptResourceDirectory()'):source.index('private static void guardRoot()')]
         ordered=['guardRoot();','need(System.nanoTime() < deadline, Code.deadline_exceeded);',
             'need(!PRIVATE_DIRS.containsKey(RESOURCES), Code.source_changed);',
@@ -1097,7 +1097,7 @@ class ResourceDirectoryStartupTests(unittest.TestCase):
         self.assertNotIn('List.of(TLS, RESOURCES, ACQUIRED)',main)
 
     def test_precreated_resource_prevents_false_early_cleanup_credit(self):
-        source=(HERE/'HdfsKerberosTransferProbe.java').read_text()
+        source=(HERE/'HdfsKerberosTransferProbe.java').read_text().expandtabs(4)
         cleanup=source[source.index('// The driver creates RESOURCES before Java'):source.index('CLEANUP.put("private_material_removed"')]
         self.assertIn('boolean removed = false;',cleanup)
         self.assertNotIn('!rootCreated',cleanup)
@@ -1149,7 +1149,7 @@ class LinkageDiagnosticTests(unittest.TestCase):
         return value
 
     def test_exact_linkage_classes_have_finite_labels_and_unknown_fallback(self):
-        source=(HERE/'HdfsKerberosTransferProbe.java').read_text()
+        source=(HERE/'HdfsKerberosTransferProbe.java').read_text().expandtabs(4)
         method=source[source.index('private static String linkageCategory('):source.index('private static String originFrame(')]
         observed=dict(re.findall(r'case "java\.lang\.([A-Za-z]+)" -> "([a-z_]+)";',method))
         self.assertEqual(observed,self.TYPES)
@@ -1160,7 +1160,7 @@ class LinkageDiagnosticTests(unittest.TestCase):
         self.assertLessEqual(set(self.TYPES.values()),F.DIAGNOSTIC_CATEGORIES)
 
     def test_known_callsites_are_exact_markers_not_private_target_text(self):
-        source=(HERE/'HdfsKerberosTransferProbe.java').read_text()
+        source=(HERE/'HdfsKerberosTransferProbe.java').read_text().expandtabs(4)
         method=source[source.index('private static String originFrame('):source.index('private static void projectFailure(')]
         self.assertLessEqual(self.SITES,F.DIAGNOSTIC_ORIGINS)
         for label in self.SITES:self.assertEqual(method.count('-> "'+label+'";'),1)
@@ -1175,7 +1175,7 @@ class LinkageDiagnosticTests(unittest.TestCase):
             self.assertNotIn(forbidden,method)
 
     def test_selected_cause_owns_marker_and_existing_bounds_priorities_remain(self):
-        source=(HERE/'HdfsKerberosTransferProbe.java').read_text()
+        source=(HERE/'HdfsKerberosTransferProbe.java').read_text().expandtabs(4)
         method=source[source.index('private static void projectFailure('):source.index('private static String threadCategory(')]
         self.assertIn('depth < 8 && seen.add(failure)',method)
         self.assertIn('frames.length && i < 32',method)
@@ -1218,7 +1218,7 @@ class RemainingMetricsCallsiteTests(unittest.TestCase):
         'org.apache.hadoop.metrics2.impl.MetricsSystemImpl':set('<init> init start stop register unregisterSource registerSource registerSink getProxyForCallback startMetricsMBeans stopMetricsMBeans currentConfig startTimer onTimerEvent publishMetricsNow sampleMetrics snapshotMetrics publishMetrics stopTimer stopSources stopSinks configure configureSystem configureSinks newSink configureSources clearConfigs getHostname registerSystemSource getMetrics initSystemMBean shutdown getSource getSourceAdapter getSinkAdapter initMode'.split())}
 
     def mappings(self):
-        source=(HERE/'HdfsKerberosTransferProbe.java').read_text()
+        source=(HERE/'HdfsKerberosTransferProbe.java').read_text().expandtabs(4)
         origin=source[source.index('private static String originFrame('):source.index('private static void projectFailure(')].expandtabs(4)
         out={}
         for cls,methods in self.METHODS.items():
@@ -1241,7 +1241,7 @@ class RemainingMetricsCallsiteTests(unittest.TestCase):
 
     def test_unknown_methods_keep_generic_fallback_without_prefix_or_text_matching(self):
         self.mappings()
-        source=(HERE/'HdfsKerberosTransferProbe.java').read_text()
+        source=(HERE/'HdfsKerberosTransferProbe.java').read_text().expandtabs(4)
         origin=source[source.index('private static String originFrame('):source.index('private static void projectFailure(')].expandtabs(4)
         self.assertEqual(origin.count('default -> "hadoop_metrics";'),2)
         for forbidden in ('getMessage','getLocalizedMessage','getLineNumber','startsWith','substring','toString()','Class.forName'):
@@ -1275,7 +1275,7 @@ class ConfigurationCallsiteTests(unittest.TestCase):
     METHODS = {'org.apache.hadoop.metrics2.impl.MetricsConfig': {'<init>': 'metrics_config_constructor', '<clinit>': 'metrics_config_static_initializer', 'create': 'metrics_config_create', 'loadFirst': 'metrics_config_load_first', 'subset': 'metrics_config_subset', 'getInstanceConfigs': 'metrics_config_get_instance_configs', 'getClassName': 'metrics_config_get_class_name', 'getPlugin': 'metrics_config_get_plugin', 'getPluginLoader': 'metrics_config_get_plugin_loader', 'getFilter': 'metrics_config_get_filter', 'getPropertyInternal': 'metrics_config_get_property_internal', 'toString': 'metrics_config_to_string', 'keys': 'metrics_config_keys'}, 'org.apache.commons.configuration2.PropertiesConfiguration': {'<init>': 'config_properties_constructor', '<clinit>': 'config_properties_static_initializer', 'createLayout': 'config_properties_create_layout', 'installLayout': 'config_properties_install_layout', 'read': 'config_properties_read'}, 'org.apache.commons.configuration2.AbstractConfiguration': {'<init>': 'config_abstract_constructor', 'initLogger': 'config_abstract_init_logger', 'installDefaultInterpolator': 'config_abstract_install_default_interpolator', 'installInterpolator': 'config_abstract_install_interpolator', 'interpolate': 'config_abstract_interpolate', 'interpolatedConfiguration': 'config_abstract_interpolated_configuration'}, 'org.apache.commons.configuration2.io.FileHandler': {'<init>': 'config_file_constructor', '<clinit>': 'config_file_static_initializer', 'load': 'config_file_load', 'loadFromReader': 'config_file_load_from_reader', 'loadFromStream': 'config_file_load_from_stream', 'loadFromStreamDirectly': 'config_file_load_from_stream_directly', 'loadFromTransformedStream': 'config_file_load_from_transformed_stream'}, 'org.apache.commons.configuration2.interpol.ConfigurationInterpolator': {'<init>': 'config_interpolator_constructor', '<clinit>': 'config_interpolator_static_initializer', 'createInterpolator': 'config_interpolator_create_interpolator', 'fromSpecification': 'config_interpolator_from_specification', 'getDefaultPrefixLookups': 'config_interpolator_get_default_prefix_lookups', 'initSubstitutor': 'config_interpolator_init_substitutor', 'interpolate': 'config_interpolator_interpolate', 'resolve': 'config_interpolator_resolve', 'resolveSingleVariable': 'config_interpolator_resolve_single_variable'}, 'org.apache.commons.configuration2.interpol.ConfigurationInterpolator$DefaultPrefixLookupsHolder': {'<init>': 'config_lookup_holder_constructor', '<clinit>': 'config_lookup_holder_static_initializer', 'addLookup': 'config_lookup_holder_add_lookup', 'createDefaultLookups': 'config_lookup_holder_create_default_lookups', 'parseLookups': 'config_lookup_holder_parse_lookups', 'getDefaultPrefixLookups': 'config_lookup_holder_get_default_prefix_lookups'}, 'org.apache.commons.configuration2.interpol.DefaultLookups': {'<init>': 'config_default_lookups_constructor', '<clinit>': 'config_default_lookups_static_initializer'}, 'org.apache.commons.configuration2.SubsetConfiguration': {'<init>': 'config_subset_constructor', 'initInterpolator': 'config_subset_init_interpolator'}}
 
     def mappings(self):
-        source=(HERE/'HdfsKerberosTransferProbe.java').read_text()
+        source=(HERE/'HdfsKerberosTransferProbe.java').read_text().expandtabs(4)
         origin=source[source.index('private static String originFrame('):source.index('private static void projectFailure(')].expandtabs(4)
         result={}
         for cls,expected in self.METHODS.items():
@@ -1299,7 +1299,7 @@ class ConfigurationCallsiteTests(unittest.TestCase):
             for method in ('unknown','configure(private)','lambda$private$0','write','save'):
                 self.assertIsNone(methods.get(method))
             self.assertNotIn(cls+'$Unselected',mappings)
-        source=(HERE/'HdfsKerberosTransferProbe.java').read_text()
+        source=(HERE/'HdfsKerberosTransferProbe.java').read_text().expandtabs(4)
         origin=source[source.index('private static String originFrame('):source.index('private static void projectFailure(')].expandtabs(4)
         for forbidden in ('getMessage','getLocalizedMessage','getLineNumber','startsWith','substring','toString()','Class.forName'):
             self.assertNotIn(forbidden,origin)
@@ -1328,7 +1328,7 @@ class ConfigurationCallsiteTests(unittest.TestCase):
             with self.subTest(key=key),self.assertRaises(F.ProbeError):F.validate_java(F.canonical(value),1)
 
     def test_selected_throwable_and_original_stack_bounds_remain_correlated(self):
-        source=(HERE/'HdfsKerberosTransferProbe.java').read_text()
+        source=(HERE/'HdfsKerberosTransferProbe.java').read_text().expandtabs(4)
         method=source[source.index('private static void projectFailure('):source.index('private static String threadCategory(')]
         for required in ('depth < 8 && seen.add(failure)','failure = failure.getCause()',
             'if (rank < selectedRank)', 'selected = category; selectedRank = rank; origin = "none";',
@@ -1446,7 +1446,7 @@ class MetricsModeLifecycleTests(unittest.TestCase):
             finally:helper.tearDown()
 
     def test_source_capture_attempt_flags_and_restoration_failure_are_sticky(self):
-        source=(HERE/'HdfsKerberosTransferProbe.java').read_text()
+        source=(HERE/'HdfsKerberosTransferProbe.java').read_text().expandtabs(4)
         enable=source[source.index('private static void enableMetricsMode()'):source.index('private static void restoreMetricsMode()')].expandtabs(4)
         ordered=('metricsModeAttempted = true;','metricsModePrior = DefaultMetricsSystem.inMiniClusterMode();',
                  'metricsModeCaptured = true;','need(!metricsModePrior, Code.configuration_invalid);',
@@ -1465,7 +1465,7 @@ class MetricsModeLifecycleTests(unittest.TestCase):
         self.assertIn('metricsModeEnableVerified && metricsModeRestoreVerified && !metricsModeTransitionFailed',restore)
 
     def test_source_keeps_mode_through_owned_stops_and_preserves_existing_bounds(self):
-        source=(HERE/'HdfsKerberosTransferProbe.java').read_text()
+        source=(HERE/'HdfsKerberosTransferProbe.java').read_text().expandtabs(4)
         main=source[source.index('public static void main('):]
         self.assertLess(main.index('Set<Long> baseline = threadIds()'),main.index('enableMetricsMode();'))
         self.assertLess(main.index('enableMetricsMode();'),main.index('NameNode.format(conf)'))
@@ -1523,7 +1523,7 @@ class SeedCheckpointTests(unittest.TestCase):
     ROLES = {'none', 'empty', 'small', 'payload', 'unknown'}
 
     def source(self):
-        return (HERE / 'HdfsKerberosTransferProbe.java').read_text()
+        return (HERE / 'HdfsKerberosTransferProbe.java').read_text().expandtabs(4)
 
     def failure(self, operation='create', role='empty'):
         value = SslCaptureDiagnosticTests().failure('captured')
@@ -1673,7 +1673,7 @@ class SeedCheckpointTests(unittest.TestCase):
 
 class FixedCertificateHttpMonitorTests(unittest.TestCase):
     def test_literal_option_is_set_once_and_checked_before_datanode_topology(self):
-        source = (HERE / 'HdfsKerberosTransferProbe.java').read_text()
+        source = (HERE / 'HdfsKerberosTransferProbe.java').read_text().expandtabs(4)
         configuration = source[source.index('private static Configuration configuration('):
                                source.index('private static void topology()')]
         topology = source[source.index('private static void topology()'):
@@ -1693,7 +1693,7 @@ class FixedCertificateHttpMonitorTests(unittest.TestCase):
     def test_raw_option_cannot_be_replaced_with_a_mode_specific_key(self):
         # Distinct literal configuration keys are the pinned consumer boundary.
         # This inert model does not execute or qualify the Java implementation.
-        source = (HERE / 'HdfsKerberosTransferProbe.java').read_text()
+        source = (HERE / 'HdfsKerberosTransferProbe.java').read_text().expandtabs(4)
         match = re.search(r'conf\.setLong\("(ssl\.[^"\n]+\.stores\.reload\.interval)",\s*(\d+)\);', source)
         self.assertIsNotNone(match)
         raw, value = match.group(1), int(match.group(2))
@@ -1726,7 +1726,7 @@ class SslCaptureDiagnosticTests(unittest.TestCase):
         (('datanodeSslThread != null','missing'),))
 
     def parsed_predicates(self):
-        source=(HERE/'HdfsKerberosTransferProbe.java').read_text()
+        source=(HERE/'HdfsKerberosTransferProbe.java').read_text().expandtabs(4)
         method=source[source.index('private static void captureDatanodeSsl('):]
         calls=[];cursor=0;token='sslCapturePredicate('
         while (start:=method.find(token,cursor))>=0:
@@ -2049,7 +2049,7 @@ class DfsOutputCallsiteTests(unittest.TestCase):
 
 class PipelineObservationTests(unittest.TestCase):
     def test_observer_is_scoped_bounded_and_never_formats_raw_errors(self):
-        source = (F.HERE / "HdfsKerberosTransferProbe.java").read_text()
+        source = (F.HERE / "HdfsKerberosTransferProbe.java").read_text().expandtabs(4)
         start = source.index("private static final class PipelineAppender")
         observer = source[start:source.index("private static void seed()", start)]
         for needed in ("if (seen ||", "seen = true", "i < 32", "originFrame(frames[i])",
@@ -2079,4 +2079,47 @@ class PipelineObservationTests(unittest.TestCase):
             value = helper.startup_failure(); value["pipeline_origin"] = bad
             helper.rejected(value, 1)
         value = positive(); value["cleanup"]["pipeline_observer_detached"] = False
+        helper.rejected(value, 0)
+
+
+class PipelineServerObservationTests(unittest.TestCase):
+    def test_two_exact_owned_appenders_are_detached_independently(self):
+        source = (F.HERE / "HdfsKerberosTransferProbe.java").read_text().expandtabs(4)
+        start = source.index("private static final class PipelineAppender")
+        observer = source[start:source.index("private static void seed()", start)]
+        for required in ('Logger.getLogger("org.apache.hadoop.hdfs.server.datanode.DataNode")',
+                         'new PipelineAppender(false)', 'new PipelineAppender(true)',
+                         'serverLogger.addAppender(serverObserver)', 'serverLogger.isAttached(serverObserver)',
+                         'serverLogger.removeAppender(serverObserver)', 'serverObserver.close()',
+                         'pipelineServerDetached = !serverLogger.isAttached(serverObserver)',
+                         'pipelineServerDetached = false', 'serverFailure = new ServerFailure(category, origin)',
+                         'var failure = event.getThrowableInformation().getThrowable()', 'var frames = failure.getStackTrace()'):
+            self.assertIn(required, observer)
+        self.assertIn('CLEANUP.put("pipeline_server_observer_detached", pipelineServerDetached)', source)
+        self.assertIn('record ServerFailure(String category, String origin)', source)
+        self.assertLess(observer.index('logger.removeAppender(observer)'), observer.index('serverLogger.removeAppender(serverObserver)'))
+        for forbidden in ('getMessage', 'getRenderedMessage', 'getThrowableStrRep', 'printStackTrace',
+                          'setLevel', 'setAdditivity', 'removeAllAppenders', 'getRootLogger'):
+            self.assertNotIn(forbidden, observer)
+
+    def test_closed_server_diagnostics_do_not_promote_failed_cleanup(self):
+        helper = TicketTests(methodName="test_finite_startup_diagnostic_and_residual_threads_never_grant_credit")
+        for category, origin in (("none", "none"), ("unclassified", "none"), ("missing_class", "data_xceiver"),
+                                 ("linkage_no_such_method", "data_block_receiver"), ("io_failure", "data_sasl_server"),
+                                 ("null_state", "data_dataset"), ("invalid_config", "data_xceiver")):
+            value = helper.startup_failure()
+            value["pipeline_server_diagnostic"] = dict(category=category, origin=origin)
+            value["cleanup"]["pipeline_server_observer_detached"] = False
+            result = F.validate_java(F.canonical(value), 1)
+            self.assertEqual(result["pipeline_server_diagnostic"], value["pipeline_server_diagnostic"])
+            self.assertFalse(result["success"])
+            self.assertFalse(result["cleanup"]["pipeline_server_observer_detached"])
+            self.assertTrue(all(result[k] is False for k in F.JAVA_FALSE))
+            helper.rejected(value, 0)
+        for bad in (None, [], {"category": "io_failure"}, {"category": "raw message", "origin": "none"},
+                    {"category": "none", "origin": "data_xceiver"}, {"category": "io_failure", "origin": "private.path"},
+                    {"category": "io_failure", "origin": "none", "message": "private"}):
+            value = helper.startup_failure(); value["pipeline_server_diagnostic"] = bad
+            helper.rejected(value, 1)
+        value = positive(); value["cleanup"]["pipeline_server_observer_detached"] = False
         helper.rejected(value, 0)
