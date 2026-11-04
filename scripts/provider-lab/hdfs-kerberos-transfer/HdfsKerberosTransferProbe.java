@@ -1346,244 +1346,275 @@ public final class HdfsKerberosTransferProbe {
             need(wireHex.equals(rcloneWireHex), Code.wire_invalid);
         }
     }
-    private static Configuration configuration(String realm, String reader) {
-        Configuration conf = new HdfsConfiguration(false);
-        conf.set("fs.defaultFS", "hdfs://127.0.0.1:19000");
-        conf.set("dfs.namenode.rpc-address", "127.0.0.1:19000");
-        conf.set("dfs.namenode.rpc-bind-host", "127.0.0.1");
-        conf.set("dfs.namenode.http-address", "127.0.0.1:19003");
-        conf.set("dfs.namenode.http-bind-host", "127.0.0.1");
-        conf.set("dfs.http.policy", "HTTPS_ONLY");
-        // Fixed certificates: disable only the optional HttpServer2 reload timer.
-        conf.setLong("ssl.{0}.stores.reload.interval", 0);
-        conf.set("dfs.namenode.https-address", "127.0.0.1:19003");
-        conf.set("dfs.namenode.https-bind-host", "127.0.0.1");
-        conf.set("dfs.datanode.address", "127.0.0.1:19001");
-        conf.set("dfs.datanode.ipc.address", "127.0.0.1:19002");
-        conf.set("dfs.datanode.http.address", "127.0.0.1:19004");
-        conf.set("dfs.datanode.https.address", "127.0.0.1:19004");
-        conf.set("dfs.datanode.http.internal-proxy.port", "19005");
-        conf.set("dfs.datanode.hostname", "127.0.0.1");
-        conf.set("dfs.datanode.kerberos.principal", "hdfs/127.0.0.1@" + realm);
-        conf.set("dfs.datanode.keytab.file", KEYTAB.toString());
-        conf.set("dfs.data.transfer.protection", "privacy");
-        conf.set("dfs.encrypt.data.transfer", "false");
-        conf.set("ignore.secure.ports.for.testing", "false");
-        conf.set("dfs.blocksize", "1048576");
-        conf.set("dfs.datanode.max.locked.memory", "0");
-        conf.set("dfs.client.use.datanode.hostname", "false");
-        conf.set("dfs.datanode.use.datanode.hostname", "false");
-        conf.set("dfs.datanode.data.dir", WORK.resolve("state/data").toUri().toString());
-        conf.set("dfs.https.server.keystore.resource", "owned-ssl-server.xml");
-        conf.set("hadoop.ssl.server.conf", "owned-ssl-server.xml");
-        conf.set("dfs.client.https.need-auth", "false");
-        conf.set("hadoop.ssl.require.client.cert", "false");
+	private static Configuration configuration(String realm, String reader) {
+		Configuration conf = new HdfsConfiguration(false);
+		conf.set("fs.defaultFS", "hdfs://127.0.0.1:19000");
+		conf.set("dfs.namenode.rpc-address", "127.0.0.1:19000");
+		conf.set("dfs.namenode.rpc-bind-host", "127.0.0.1");
+		conf.set("dfs.namenode.http-address", "127.0.0.1:19003");
+		conf.set("dfs.namenode.http-bind-host", "127.0.0.1");
+		conf.set("dfs.http.policy", "HTTPS_ONLY");
+		// Fixed certificates: disable only the optional HttpServer2 reload timer.
+		conf.setLong("ssl.{0}.stores.reload.interval", 0);
+		conf.set("dfs.namenode.https-address", "127.0.0.1:19003");
+		conf.set("dfs.namenode.https-bind-host", "127.0.0.1");
+		conf.set("dfs.datanode.address", "127.0.0.1:19001");
+		conf.set("dfs.datanode.ipc.address", "127.0.0.1:19002");
+		conf.set("dfs.datanode.http.address", "127.0.0.1:19004");
+		conf.set("dfs.datanode.https.address", "127.0.0.1:19004");
+		conf.set("dfs.datanode.http.internal-proxy.port", "19005");
+		conf.set("dfs.datanode.hostname", "127.0.0.1");
+		conf.set("dfs.datanode.kerberos.principal", "hdfs/127.0.0.1@" + realm);
+		conf.set("dfs.datanode.keytab.file", KEYTAB.toString());
+		conf.set("dfs.data.transfer.protection", "privacy");
+		conf.set("dfs.encrypt.data.transfer", "false");
+		conf.set("ignore.secure.ports.for.testing", "false");
+		conf.set("dfs.blocksize", "1048576");
+		conf.set("dfs.datanode.max.locked.memory", "0");
+		conf.set("dfs.client.use.datanode.hostname", "false");
+		conf.set("dfs.datanode.use.datanode.hostname", "false");
+		conf.set("dfs.datanode.data.dir", WORK.resolve("state/data").toUri().toString());
+		conf.set("dfs.https.server.keystore.resource", "owned-ssl-server.xml");
+		conf.set("hadoop.ssl.server.conf", "owned-ssl-server.xml");
+		conf.set("dfs.client.https.need-auth", "false");
+		conf.set("hadoop.ssl.require.client.cert", "false");
 
-        conf.set("hadoop.security.authentication", "kerberos");
-        // No defaults: set the separate HttpServer2 AuthFilter with the owned key.
-        conf.set("hadoop.http.authentication.type", "kerberos");
-        conf.set("hadoop.http.authentication.kerberos.principal", "HTTP/127.0.0.1@" + realm);
-        conf.set("hadoop.http.authentication.kerberos.keytab", HTTP_KEYTAB.toString());
-        // BlockManager requires tokens during secure NameNode formatting;
-        // this sibling also requires them for secure DataNode byte transfers.
-        conf.set("dfs.block.access.token.enable", "true");
-        conf.set("hadoop.security.authorization", "true");
-        conf.set("hadoop.kerberos.keytab.login.autorenewal.enabled", "false");
-        conf.set("ipc.client.fallback-to-simple-auth-allowed", "false");
-        conf.set("hadoop.rpc.protection", "authentication");
-        conf.set("dfs.namenode.kerberos.principal", "hdfs/127.0.0.1@" + realm);
-        conf.set("dfs.namenode.keytab.file", KEYTAB.toString());
-        conf.set("dfs.namenode.kerberos.internal.spnego.principal", "HTTP/127.0.0.1@" + realm);
-        conf.set("dfs.web.authentication.kerberos.principal", "HTTP/127.0.0.1@" + realm);
-        conf.set("dfs.web.authentication.kerberos.keytab", HTTP_KEYTAB.toString());
-        conf.set("dfs.web.authentication.simple.anonymous.allowed", "false");
-        conf.set("hadoop.user.group.static.mapping.overrides", "hdfs=fixture-group;" + reader + "=reader-group");
-        conf.set("dfs.permissions.enabled", "true");
-        conf.set("dfs.reformat.disabled", "true");
-        conf.set("dfs.replication", "1");
-        conf.set("dfs.namenode.safemode.min.datanodes", "0");
-        conf.set("dfs.namenode.safemode.extension", "0");
-        conf.set("dfs.namenode.accesstime.precision", "0");
-        conf.set("dfs.client.read.shortcircuit", "false");
-        conf.set("dfs.domain.socket.path", "");
-        conf.set("dfs.client.socket-timeout", "5000");
-        conf.set("ipc.client.connect.timeout", "3000");
-        conf.set("ipc.client.connect.max.retries", "0");
-        conf.set("ipc.client.connect.max.retries.on.timeouts", "0");
-        conf.set("ipc.client.rpc-timeout.ms", "5000");
-        conf.set("dfs.namenode.name.dir", WORK.resolve("state/name").toUri().toString());
-        conf.set("dfs.namenode.edits.dir", WORK.resolve("state/edits").toUri().toString());
-        conf.set("hadoop.tmp.dir", WORK.resolve("state/tmp").toString());
-        conf.set("hadoop.http.temp.dir", WORK.resolve("state/http").toString());
-        return conf;
-    }
-    private static void topology() throws Exception {
-        need(namenode != null && endpoint != null && namenode.getNameNodeAddress().equals(endpoint)
-            && endpoint.getPort() == 19000 && endpoint.getAddress().getHostAddress().equals("127.0.0.1")
-            && namenode.getHttpAddress() == null && namenode.getHttpsAddress().getPort() == 19003
-            && namenode.getHttpsAddress().getAddress().getHostAddress().equals("127.0.0.1")
-            && namenode.getAuxiliaryNameNodeAddresses().isEmpty() && UserGroupInformation.isSecurityEnabled()
-            && namenode.getConf().getLong("ssl.{0}.stores.reload.interval", -1) == 0, Code.namenode_failed);
-        if (datanode != null) {
-            var dn = datanode.getDnConf(); var resolver = dn.getTrustedChannelResolver();
-            need(datanode.getXferAddress().getPort() == 19001 && datanode.getXferAddress().getAddress().getHostAddress().equals("127.0.0.1")
-                && datanode.getIpcPort() == 19002 && datanode.getInfoPort() == 0 && datanode.getInfoSecurePort() == 19004
-                && !dn.getIgnoreSecurePortsForTesting() && !dn.getEncryptDataTransfer() && dn.getSaslPropsResolver() != null
-                && "auth-conf".equals(dn.getSaslPropsResolver().getServerProperties(InetAddress.getByName("127.0.0.1")).get(javax.security.sasl.Sasl.QOP))
-                && resolver != null && resolver.getClass() == org.apache.hadoop.hdfs.protocol.datatransfer.TrustedChannelResolver.class
-                && !resolver.isTrusted() && !resolver.isTrusted(InetAddress.getByName("127.0.0.1")), Code.datanode_failed);
-            for (Configuration conf : List.of(namenode.getConf(), datanode.getConf())) {
-                need("HTTPS_ONLY".equals(conf.get("dfs.http.policy")) && "kerberos".equals(conf.get("hadoop.security.authentication"))
-                    && conf.getBoolean("dfs.block.access.token.enable", false) && "privacy".equals(conf.get("dfs.data.transfer.protection"))
-                    && !conf.getBoolean("ignore.secure.ports.for.testing", true)
-                    && conf.get("dfs.datanode.ignore.secure.ports.for.testing") == null
-                    && !conf.getBoolean("ipc.client.fallback-to-simple-auth-allowed", true)
-                    && !conf.getBoolean("dfs.client.read.shortcircuit", true) && "".equals(conf.get("dfs.domain.socket.path"))
-                    && "owned-ssl-server.xml".equals(conf.get("dfs.https.server.keystore.resource"))
-                    && "owned-ssl-server.xml".equals(conf.get("hadoop.ssl.server.conf")), Code.configuration_invalid);
-            }
-        }
-        listeners(true); need(processIds().equals(processBaseline), Code.child_process_drift);
-        need(ExitUtil.getFirstExitException() == null && ExitUtil.getFirstHaltException() == null, Code.namenode_failed);
-    }
-    private static SeedRole seedRole(int index) {
-        return switch (index) { case 0 -> SeedRole.empty; case 1 -> SeedRole.small; case 2 -> SeedRole.payload; default -> SeedRole.unknown; };
-    }
-    private static SeedRole seedRole(String name) {
-        if ("".equals(name) || "nested".equals(name)) return SeedRole.none;
-        if ("empty.bin".equals(name)) return SeedRole.empty;
-        if ("nested/space name.bin".equals(name)) return SeedRole.small;
-        if ("payload.bin".equals(name)) return SeedRole.payload;
-        return SeedRole.unknown;
-    }
-    private static void seedStep(SeedOperation operation, SeedRole role) {
-        if ("seed".equals(stage)) seedCheckpoint = new SeedCheckpoint(operation, role);
-    }
-    private static String seedCheckpointJson() {
-        SeedCheckpoint value = failedSeedCheckpoint != null ? failedSeedCheckpoint : seedCheckpoint;
-        return "{\"operation\":\"" + value.operation().name() + "\",\"role\":\"" + value.role().name() + "\"}";
-    }
-    private static org.apache.hadoop.fs.Path sourcePath(String name) { return new org.apache.hadoop.fs.Path(MEMBER + "/" + name); }
-    private static void registered() throws Exception {
-        var nodes = filesystem.getDataNodeStats(org.apache.hadoop.hdfs.protocol.HdfsConstants.DatanodeReportType.LIVE);
-        need(nodes.length == 1 && nodes[0].getCapacity() > 0 && nodes[0].getDatanodeUuid().equals(datanode.getDatanodeUuid())
-            && nodes[0].getIpAddr().equals("127.0.0.1") && nodes[0].getXferPort() == 19001 && nodes[0].getIpcPort() == 19002
-            && nodes[0].getInfoSecurePort() == 19004, Code.datanode_failed);
-        if (dnUuid == null) dnUuid = nodes[0].getDatanodeUuid();
-        need(dnUuid.equals(nodes[0].getDatanodeUuid()), Code.datanode_failed);
-    }
-    private static void seed() throws Exception {
-        seedStep(SeedOperation.registration_wait, SeedRole.none);
-        while (true) {
-            need(System.nanoTime() < deadline, Code.deadline_exceeded);
-            var nodes = filesystem.getDataNodeStats(org.apache.hadoop.hdfs.protocol.HdfsConstants.DatanodeReportType.LIVE);
-            need(nodes.length <= 1, Code.datanode_failed);
-            if (nodes.length == 1 && nodes[0].getCapacity() > 0) break;
-            Thread.sleep(50);
-        }
-        seedStep(SeedOperation.registration_check, SeedRole.none);
-        registered();
-        seedStep(SeedOperation.safe_mode_leave, SeedRole.none);
-        filesystem.setSafeMode(SafeModeAction.SAFEMODE_LEAVE);
-        seedStep(SeedOperation.directory_setup, SeedRole.none);
-        need(filesystem.mkdirs(new org.apache.hadoop.fs.Path(MEMBER + "/nested"), new FsPermission((short)0755)), Code.source_invalid);
-        byte[] data = new byte[4096]; for (int i=0; i<data.length; i++) data[i]=(byte)i;
-        for (int i=0; i<NAMES.length; i++) {
-            SeedRole role = seedRole(i);
-            seedStep(SeedOperation.file_path, role);
-            var path = sourcePath(NAMES[i]);
-            seedStep(SeedOperation.existence_check, role);
-            need(!filesystem.exists(path), Code.source_invalid);
-            seedStep(SeedOperation.create, role);
-            var output = filesystem.create(path, new FsPermission((short)0644), false, 4096, (short)1, 1048576, null);
-            Throwable primary = null;
-            try {
-                seedStep(SeedOperation.write, role);
-                for (int offset=0; offset<SIZES[i]; offset+=data.length) {
-                    need(System.nanoTime() < deadline, Code.deadline_exceeded);
-                    output.write(data, 0, Math.min(data.length, SIZES[i]-offset));
-                }
-                seedStep(SeedOperation.sync, role);
-                output.hsync();
-                seedStep(SeedOperation.close, role);
-            } catch (Throwable failure) {
-                primary = failure; throw failure;
-            } finally {
-                try { output.close(); }
-                catch (Throwable closing) {
-                    if (primary == null) throw closing;
-                    if (closing != primary) primary.addSuppressed(closing);
-                }
-            }
-            seedStep(SeedOperation.file_times, role);
-            filesystem.setTimes(path, 1704067200000L, 1704067200000L);
-        }
-        Arrays.fill(data, (byte)0);
-        seedStep(SeedOperation.directory_permission, SeedRole.none);
-        filesystem.setPermission(new org.apache.hadoop.fs.Path(MEMBER), new FsPermission((short)0755));
-        seedStep(SeedOperation.directory_times, SeedRole.none);
-        for (String dir : List.of(MEMBER, MEMBER + "/nested")) filesystem.setTimes(new org.apache.hadoop.fs.Path(dir), 1704067200000L, 1704067200000L);
-    }
-    private static void verifyMember() throws Exception {
-        seedStep(SeedOperation.verify_registration, SeedRole.none);
-        registered(); Set<String> found = new HashSet<>();
-        seedStep(SeedOperation.verify_recursive_list, SeedRole.none);
-        var iterator = filesystem.listFiles(new org.apache.hadoop.fs.Path(MEMBER), true);
-        while (iterator.hasNext()) { var entry = iterator.next(); need(found.size() < 3 && found.add(entry.getPath().toUri().getPath()), Code.source_invalid); }
-        need(found.equals(Set.of(MEMBER+"/"+NAMES[0], MEMBER+"/"+NAMES[1], MEMBER+"/"+NAMES[2])), Code.source_invalid);
-        seedStep(SeedOperation.verify_root_list, SeedRole.none);
-        var rootRows = filesystem.listStatus(new org.apache.hadoop.fs.Path(MEMBER));
-        seedStep(SeedOperation.verify_nested_list, SeedRole.none);
-        var nestedRows = filesystem.listStatus(sourcePath("nested"));
-        seedStep(SeedOperation.verify_missing, SeedRole.none);
-        need(rootRows.length == 3 && nestedRows.length == 1 && !filesystem.exists(sourcePath("missing-synthetic.bin")), Code.source_invalid);
-        List<String> paths = new ArrayList<>(List.of("", "nested")); paths.addAll(List.of(NAMES));
-        for (String name : paths) {
-            SeedRole role = seedRole(name);
-            seedStep(SeedOperation.verify_metadata, role);
-            var path = name.isEmpty() ? new org.apache.hadoop.fs.Path(MEMBER) : sourcePath(name); var info=filesystem.getFileStatus(path);
-            boolean dir = name.isEmpty() || name.equals("nested");
-            need(!info.isSymlink() && info.isDirectory() == dir && info.getOwner().equals("hdfs")
-                && info.getPermission().toShort() == (dir ? 0755 : 0644) && info.getModificationTime() == 1704067200000L, Code.source_invalid);
-            String metadata = info.getOwner()+":"+info.getGroup()+":"+info.getPermission().toShort()+":"+info.getLen()+":"+info.getModificationTime()+":"+info.getAccessTime()+":"+info.getReplication();
-            if (!SOURCE_METADATA.containsKey(name)) SOURCE_METADATA.put(name, metadata);
-            need(SOURCE_METADATA.get(name).equals(metadata), Code.source_invalid);
-            if (dir) continue;
-            int index=List.of(NAMES).indexOf(name); need(info.getLen()==SIZES[index] && info.getReplication()==1 && info.getBlockSize()==1048576, Code.source_invalid);
-            MessageDigest digest=MessageDigest.getInstance("SHA-256"); byte[] buffer=new byte[4096]; int count=0;
-            seedStep(SeedOperation.verify_read_open, role);
-            try (var input=filesystem.open(path, 4096)) {
-                seedStep(SeedOperation.verify_read, role);
-                int n; while((n=input.read(buffer))!=-1) {
-                    need(System.nanoTime()<totalDeadline && count+n<=SIZES[index], Code.source_invalid);
-                    for(int k=0;k<n;k++) need(buffer[k]==(byte)(count+k), Code.source_invalid);
-                    count+=n; digest.update(buffer,0,n);
-                }
-                seedStep(SeedOperation.verify_read_close, role);
-            } finally { Arrays.fill(buffer,(byte)0); }
-            seedStep(SeedOperation.verify_hash, role);
-            need(count==SIZES[index] && java.util.HexFormat.of().formatHex(digest.digest()).equals(HASHES[index]), Code.source_invalid);
-            seedStep(SeedOperation.verify_blocks, role);
-            var blocks=filesystem.getFileBlockLocations(info,0,info.getLen());
-            need(blocks.length==(index==2?2:index==1?1:0), Code.source_invalid); long length=0;
-            for(var block:blocks) {
-                need(!block.isCorrupt() && block.getOffset()==length && Arrays.equals(block.getNames(),new String[]{"127.0.0.1:19001"}), Code.source_invalid);
-                length+=block.getLength();
-            }
-            need(length==info.getLen(), Code.source_invalid);
-        }
-    }
+		conf.set("hadoop.security.authentication", "kerberos");
+		// No defaults: set the separate HttpServer2 AuthFilter with the owned key.
+		conf.set("hadoop.http.authentication.type", "kerberos");
+		conf.set("hadoop.http.authentication.kerberos.principal", "HTTP/127.0.0.1@" + realm);
+		conf.set("hadoop.http.authentication.kerberos.keytab", HTTP_KEYTAB.toString());
+		// BlockManager requires tokens during secure NameNode formatting;
+		// this sibling also requires them for secure DataNode byte transfers.
+		conf.set("dfs.block.access.token.enable", "true");
+		conf.set("hadoop.security.authorization", "true");
+		conf.set("hadoop.kerberos.keytab.login.autorenewal.enabled", "false");
+		conf.set("ipc.client.fallback-to-simple-auth-allowed", "false");
+		conf.set("hadoop.rpc.protection", "authentication");
+		conf.set("dfs.namenode.kerberos.principal", "hdfs/127.0.0.1@" + realm);
+		conf.set("dfs.namenode.keytab.file", KEYTAB.toString());
+		conf.set("dfs.namenode.kerberos.internal.spnego.principal", "HTTP/127.0.0.1@" + realm);
+		conf.set("dfs.web.authentication.kerberos.principal", "HTTP/127.0.0.1@" + realm);
+		conf.set("dfs.web.authentication.kerberos.keytab", HTTP_KEYTAB.toString());
+		conf.set("dfs.web.authentication.simple.anonymous.allowed", "false");
+		conf.set("hadoop.user.group.static.mapping.overrides", "hdfs=fixture-group;" + reader + "=reader-group");
+		conf.set("dfs.permissions.enabled", "true");
+		conf.set("dfs.reformat.disabled", "true");
+		conf.set("dfs.replication", "1");
+		conf.set("dfs.namenode.safemode.min.datanodes", "0");
+		conf.set("dfs.namenode.safemode.extension", "0");
+		conf.set("dfs.namenode.accesstime.precision", "0");
+		conf.set("dfs.client.read.shortcircuit", "false");
+		conf.set("dfs.domain.socket.path", "");
+		conf.set("dfs.client.socket-timeout", "5000");
+		conf.set("ipc.client.connect.timeout", "3000");
+		conf.set("ipc.client.connect.max.retries", "0");
+		conf.set("ipc.client.connect.max.retries.on.timeouts", "0");
+		conf.set("ipc.client.rpc-timeout.ms", "5000");
+		conf.set("dfs.namenode.name.dir", WORK.resolve("state/name").toUri().toString());
+		conf.set("dfs.namenode.edits.dir", WORK.resolve("state/edits").toUri().toString());
+		conf.set("hadoop.tmp.dir", WORK.resolve("state/tmp").toString());
+		conf.set("hadoop.http.temp.dir", WORK.resolve("state/http").toString());
+		return conf;
+	}
+	private static void topology() throws Exception {
+		need(namenode != null && endpoint != null && namenode.getNameNodeAddress().equals(endpoint)
+			&& endpoint.getPort() == 19000 && endpoint.getAddress().getHostAddress().equals("127.0.0.1")
+			&& namenode.getHttpAddress() == null && namenode.getHttpsAddress().getPort() == 19003
+			&& namenode.getHttpsAddress().getAddress().getHostAddress().equals("127.0.0.1")
+			&& namenode.getAuxiliaryNameNodeAddresses().isEmpty() && UserGroupInformation.isSecurityEnabled()
+			&& namenode.getConf().getLong("ssl.{0}.stores.reload.interval", -1) == 0, Code.namenode_failed);
+		if (datanode != null) {
+			var dn = datanode.getDnConf(); var resolver = dn.getTrustedChannelResolver();
+			need(datanode.getXferAddress().getPort() == 19001 && datanode.getXferAddress().getAddress().getHostAddress().equals("127.0.0.1")
+				&& datanode.getIpcPort() == 19002 && datanode.getInfoPort() == 0 && datanode.getInfoSecurePort() == 19004
+				&& !dn.getIgnoreSecurePortsForTesting() && !dn.getEncryptDataTransfer() && dn.getSaslPropsResolver() != null
+				&& "auth-conf".equals(dn.getSaslPropsResolver().getServerProperties(InetAddress.getByName("127.0.0.1")).get(javax.security.sasl.Sasl.QOP))
+				&& resolver != null && resolver.getClass() == org.apache.hadoop.hdfs.protocol.datatransfer.TrustedChannelResolver.class
+				&& !resolver.isTrusted() && !resolver.isTrusted(InetAddress.getByName("127.0.0.1")), Code.datanode_failed);
+			for (Configuration conf : List.of(namenode.getConf(), datanode.getConf())) {
+				need("HTTPS_ONLY".equals(conf.get("dfs.http.policy")) && "kerberos".equals(conf.get("hadoop.security.authentication"))
+					&& conf.getBoolean("dfs.block.access.token.enable", false) && "privacy".equals(conf.get("dfs.data.transfer.protection"))
+					&& !conf.getBoolean("ignore.secure.ports.for.testing", true)
+					&& conf.get("dfs.datanode.ignore.secure.ports.for.testing") == null
+					&& !conf.getBoolean("ipc.client.fallback-to-simple-auth-allowed", true)
+					&& !conf.getBoolean("dfs.client.read.shortcircuit", true) && "".equals(conf.get("dfs.domain.socket.path"))
+					&& "owned-ssl-server.xml".equals(conf.get("dfs.https.server.keystore.resource"))
+					&& "owned-ssl-server.xml".equals(conf.get("hadoop.ssl.server.conf")), Code.configuration_invalid);
+			}
+		}
+		listeners(true); need(processIds().equals(processBaseline), Code.child_process_drift);
+		need(ExitUtil.getFirstExitException() == null && ExitUtil.getFirstHaltException() == null, Code.namenode_failed);
+	}
+	private static SeedRole seedRole(int index) {
+		return switch (index) { case 0 -> SeedRole.empty; case 1 -> SeedRole.small; case 2 -> SeedRole.payload; default -> SeedRole.unknown; };
+	}
+	private static SeedRole seedRole(String name) {
+		if ("".equals(name) || "nested".equals(name)) return SeedRole.none;
+		if ("empty.bin".equals(name)) return SeedRole.empty;
+		if ("nested/space name.bin".equals(name)) return SeedRole.small;
+		if ("payload.bin".equals(name)) return SeedRole.payload;
+		return SeedRole.unknown;
+	}
+	private static void seedStep(SeedOperation operation, SeedRole role) {
+		if ("seed".equals(stage)) seedCheckpoint = new SeedCheckpoint(operation, role);
+	}
+	private static String seedCheckpointJson() {
+		SeedCheckpoint value = failedSeedCheckpoint != null ? failedSeedCheckpoint : seedCheckpoint;
+		return "{\"operation\":\"" + value.operation().name() + "\",\"role\":\"" + value.role().name() + "\"}";
+	}
+	private static org.apache.hadoop.fs.Path sourcePath(String name) { return new org.apache.hadoop.fs.Path(MEMBER + "/" + name); }
+	private static void registered() throws Exception {
+		var nodes = filesystem.getDataNodeStats(org.apache.hadoop.hdfs.protocol.HdfsConstants.DatanodeReportType.LIVE);
+		need(nodes.length == 1 && nodes[0].getCapacity() > 0 && nodes[0].getDatanodeUuid().equals(datanode.getDatanodeUuid())
+			&& nodes[0].getIpAddr().equals("127.0.0.1") && nodes[0].getXferPort() == 19001 && nodes[0].getIpcPort() == 19002
+			&& nodes[0].getInfoSecurePort() == 19004, Code.datanode_failed);
+		if (dnUuid == null) dnUuid = nodes[0].getDatanodeUuid();
+		need(dnUuid.equals(nodes[0].getDatanodeUuid()), Code.datanode_failed);
+	}
+	private static volatile String pipelineOrigin = "not_observed";
+	private static volatile boolean pipelineDetached = true;
+	private static final class PipelineAppender extends org.apache.log4j.AppenderSkeleton {
+		private boolean seen;
+		protected void append(org.apache.log4j.spi.LoggingEvent event) {
+			if (seen || event.getThrowableInformation() == null) return;
+			seen = true; pipelineOrigin = "none";
+			try {
+				var frames = event.getThrowableInformation().getThrowable().getStackTrace();
+				for (int i = 0; i < frames.length && i < 32; i++) {
+					String marker = originFrame(frames[i]);
+					if (marker != null) { pipelineOrigin = marker; break; }
+				}
+			} catch (Throwable ignored) { pipelineOrigin = "none"; }
+		}
+		public synchronized void close() { closed = true; }
+		public boolean requiresLayout() { return false; }
+	}
+	private static void seedObserved() throws Exception {
+		var logger = org.apache.log4j.Logger.getLogger("org.apache.hadoop.hdfs.DataStreamer");
+		var observer = new PipelineAppender();
+		pipelineDetached = false;
+		try {
+			need(logger.isEnabledFor(org.apache.log4j.Level.WARN), Code.configuration_invalid);
+			logger.addAppender(observer); need(logger.isAttached(observer), Code.configuration_invalid);
+			seed();
+		} finally {
+			try { logger.removeAppender(observer); observer.close(); pipelineDetached = !logger.isAttached(observer); }
+			catch (Throwable ignored) { pipelineDetached = false; }
+		}
+	}
+	private static void seed() throws Exception {
+		seedStep(SeedOperation.registration_wait, SeedRole.none);
+		while (true) {
+			need(System.nanoTime() < deadline, Code.deadline_exceeded);
+			var nodes = filesystem.getDataNodeStats(org.apache.hadoop.hdfs.protocol.HdfsConstants.DatanodeReportType.LIVE);
+			need(nodes.length <= 1, Code.datanode_failed);
+			if (nodes.length == 1 && nodes[0].getCapacity() > 0) break;
+			Thread.sleep(50);
+		}
+		seedStep(SeedOperation.registration_check, SeedRole.none);
+		registered();
+		seedStep(SeedOperation.safe_mode_leave, SeedRole.none);
+		filesystem.setSafeMode(SafeModeAction.SAFEMODE_LEAVE);
+		seedStep(SeedOperation.directory_setup, SeedRole.none);
+		need(filesystem.mkdirs(new org.apache.hadoop.fs.Path(MEMBER + "/nested"), new FsPermission((short)0755)), Code.source_invalid);
+		byte[] data = new byte[4096]; for (int i=0; i<data.length; i++) data[i]=(byte)i;
+		for (int i=0; i<NAMES.length; i++) {
+			SeedRole role = seedRole(i);
+			seedStep(SeedOperation.file_path, role);
+			var path = sourcePath(NAMES[i]);
+			seedStep(SeedOperation.existence_check, role);
+			need(!filesystem.exists(path), Code.source_invalid);
+			seedStep(SeedOperation.create, role);
+			var output = filesystem.create(path, new FsPermission((short)0644), false, 4096, (short)1, 1048576, null);
+			Throwable primary = null;
+			try {
+				seedStep(SeedOperation.write, role);
+				for (int offset=0; offset<SIZES[i]; offset+=data.length) {
+					need(System.nanoTime() < deadline, Code.deadline_exceeded);
+					output.write(data, 0, Math.min(data.length, SIZES[i]-offset));
+				}
+				seedStep(SeedOperation.sync, role);
+				output.hsync();
+				seedStep(SeedOperation.close, role);
+			} catch (Throwable failure) {
+				primary = failure; throw failure;
+			} finally {
+				try { output.close(); }
+				catch (Throwable closing) {
+					if (primary == null) throw closing;
+					if (closing != primary) primary.addSuppressed(closing);
+				}
+			}
+			seedStep(SeedOperation.file_times, role);
+			filesystem.setTimes(path, 1704067200000L, 1704067200000L);
+		}
+		Arrays.fill(data, (byte)0);
+		seedStep(SeedOperation.directory_permission, SeedRole.none);
+		filesystem.setPermission(new org.apache.hadoop.fs.Path(MEMBER), new FsPermission((short)0755));
+		seedStep(SeedOperation.directory_times, SeedRole.none);
+		for (String dir : List.of(MEMBER, MEMBER + "/nested")) filesystem.setTimes(new org.apache.hadoop.fs.Path(dir), 1704067200000L, 1704067200000L);
+	}
+	private static void verifyMember() throws Exception {
+		seedStep(SeedOperation.verify_registration, SeedRole.none);
+		registered(); Set<String> found = new HashSet<>();
+		seedStep(SeedOperation.verify_recursive_list, SeedRole.none);
+		var iterator = filesystem.listFiles(new org.apache.hadoop.fs.Path(MEMBER), true);
+		while (iterator.hasNext()) { var entry = iterator.next(); need(found.size() < 3 && found.add(entry.getPath().toUri().getPath()), Code.source_invalid); }
+		need(found.equals(Set.of(MEMBER+"/"+NAMES[0], MEMBER+"/"+NAMES[1], MEMBER+"/"+NAMES[2])), Code.source_invalid);
+		seedStep(SeedOperation.verify_root_list, SeedRole.none);
+		var rootRows = filesystem.listStatus(new org.apache.hadoop.fs.Path(MEMBER));
+		seedStep(SeedOperation.verify_nested_list, SeedRole.none);
+		var nestedRows = filesystem.listStatus(sourcePath("nested"));
+		seedStep(SeedOperation.verify_missing, SeedRole.none);
+		need(rootRows.length == 3 && nestedRows.length == 1 && !filesystem.exists(sourcePath("missing-synthetic.bin")), Code.source_invalid);
+		List<String> paths = new ArrayList<>(List.of("", "nested")); paths.addAll(List.of(NAMES));
+		for (String name : paths) {
+			SeedRole role = seedRole(name);
+			seedStep(SeedOperation.verify_metadata, role);
+			var path = name.isEmpty() ? new org.apache.hadoop.fs.Path(MEMBER) : sourcePath(name); var info=filesystem.getFileStatus(path);
+			boolean dir = name.isEmpty() || name.equals("nested");
+			need(!info.isSymlink() && info.isDirectory() == dir && info.getOwner().equals("hdfs")
+				&& info.getPermission().toShort() == (dir ? 0755 : 0644) && info.getModificationTime() == 1704067200000L, Code.source_invalid);
+			String metadata = info.getOwner()+":"+info.getGroup()+":"+info.getPermission().toShort()+":"+info.getLen()+":"+info.getModificationTime()+":"+info.getAccessTime()+":"+info.getReplication();
+			if (!SOURCE_METADATA.containsKey(name)) SOURCE_METADATA.put(name, metadata);
+			need(SOURCE_METADATA.get(name).equals(metadata), Code.source_invalid);
+			if (dir) continue;
+			int index=List.of(NAMES).indexOf(name); need(info.getLen()==SIZES[index] && info.getReplication()==1 && info.getBlockSize()==1048576, Code.source_invalid);
+			MessageDigest digest=MessageDigest.getInstance("SHA-256"); byte[] buffer=new byte[4096]; int count=0;
+			seedStep(SeedOperation.verify_read_open, role);
+			try (var input=filesystem.open(path, 4096)) {
+				seedStep(SeedOperation.verify_read, role);
+				int n; while((n=input.read(buffer))!=-1) {
+					need(System.nanoTime()<totalDeadline && count+n<=SIZES[index], Code.source_invalid);
+					for(int k=0;k<n;k++) need(buffer[k]==(byte)(count+k), Code.source_invalid);
+					count+=n; digest.update(buffer,0,n);
+				}
+				seedStep(SeedOperation.verify_read_close, role);
+			} finally { Arrays.fill(buffer,(byte)0); }
+			seedStep(SeedOperation.verify_hash, role);
+			need(count==SIZES[index] && java.util.HexFormat.of().formatHex(digest.digest()).equals(HASHES[index]), Code.source_invalid);
+			seedStep(SeedOperation.verify_blocks, role);
+			var blocks=filesystem.getFileBlockLocations(info,0,info.getLen());
+			need(blocks.length==(index==2?2:index==1?1:0), Code.source_invalid); long length=0;
+			for(var block:blocks) {
+				need(!block.isCorrupt() && block.getOffset()==length && Arrays.equals(block.getNames(),new String[]{"127.0.0.1:19001"}), Code.source_invalid);
+				length+=block.getLength();
+			}
+			need(length==info.getLen(), Code.source_invalid);
+		}
+	}
 
-    private static String configurationDigest() throws Exception {
-        Map<String, String> settings = new java.util.TreeMap<>();
-        for (Map.Entry<String, String> entry : namenode.getConf()) settings.put("nn:" + entry.getKey(), entry.getValue());
-        for (Map.Entry<String, String> entry : datanode.getConf()) settings.put("dn:" + entry.getKey(), entry.getValue());
-        StringBuilder text = new StringBuilder();
-        for (var entry : settings.entrySet()) text.append(entry.getKey().length()).append(':').append(entry.getKey())
-            .append(entry.getValue().length()).append(':').append(entry.getValue());
-        return java.util.HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
-            .digest(text.toString().getBytes(StandardCharsets.UTF_8)));
-    }
+	private static String configurationDigest() throws Exception {
+		Map<String, String> settings = new java.util.TreeMap<>();
+		for (Map.Entry<String, String> entry : namenode.getConf()) settings.put("nn:" + entry.getKey(), entry.getValue());
+		for (Map.Entry<String, String> entry : datanode.getConf()) settings.put("dn:" + entry.getKey(), entry.getValue());
+		StringBuilder text = new StringBuilder();
+		for (var entry : settings.entrySet()) text.append(entry.getKey().length()).append(':').append(entry.getKey())
+			.append(entry.getValue().length()).append(':').append(entry.getValue());
+		return java.util.HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+			.digest(text.toString().getBytes(StandardCharsets.UTF_8)));
+	}
     private static void exportKey(SimpleKdcServer server, String principal, Path path) throws Exception {
         guardRoot(); need(!Files.exists(path, NOFOLLOW), Code.path_invalid);
         server.createPrincipal(principal); server.exportPrincipal(principal, path.toFile());
@@ -1712,7 +1743,7 @@ public final class HdfsKerberosTransferProbe {
         for (String name : List.of("children_reaped", "relay_closed", "filesystem_closed", "namenode_stop_returned", "owner_logged_out",
                 "datanode_stop_returned", "datanode_ssl_timer_reaped", "gc_monitor_reaped", "fs_statistics_cleaner_reaped", "format_ssl_timer_reaped",
                 "kdc_stop_returned", "threads_terminated", "listeners_absent", "private_material_removed",
-                "process_property_restored", "metrics_mode_restored", "cleanup_completed")) CLEANUP.put(name, false);
+                "process_property_restored", "metrics_mode_restored", "pipeline_observer_detached", "cleanup_completed")) CLEANUP.put(name, false);
         Set<Long> baseline = threadIds(); SimpleKdcServer server = null; Code error = null;
         totalDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(185);
         deadline = Math.min(totalDeadline, System.nanoTime() + TimeUnit.SECONDS.toNanos(70));
@@ -1779,7 +1810,7 @@ public final class HdfsKerberosTransferProbe {
             need(datanode != null, Code.datanode_failed); observeThreads("datanode", baseline);
             captureDatanodeSsl(baseline); topology(); CHECKS.put("secure_datanode", true);
             stage = "tls_endpoints"; verifyTlsEndpoint(19003); verifyTlsEndpoint(19004); CHECKS.put("tls_endpoints", true);
-            stage = "seed"; bounded(() -> { seed(); verifyMember(); seedStep(SeedOperation.complete, SeedRole.none); return null; }, 20, deadline);
+            stage = "seed"; bounded(() -> { seedObserved(); verifyMember(); seedStep(SeedOperation.complete, SeedRole.none); return null; }, 20, deadline);
             CHECKS.put("registered_datanode", true); CHECKS.put("seed_hashes", true);
             configurationDigest = configurationDigest();
             stage = "reader_tgt";
@@ -1826,6 +1857,7 @@ public final class HdfsKerberosTransferProbe {
             try { cleanup(server, baseline); } catch (Throwable ignored) { CLEANUP.put("cleanup_completed", false); }
             finally { THREAD_ORIGINS.clear(); }
         }
+        CLEANUP.put("pipeline_observer_detached", pipelineDetached);
         boolean clean = CLEANUP.values().stream().allMatch(Boolean.TRUE::equals);
         if (!clean && error == null) error = Code.cleanup_failed;
         if (!threadObservationsComplete() && error == null) error = Code.cleanup_failed;
@@ -1839,6 +1871,7 @@ public final class HdfsKerberosTransferProbe {
             + ",\"observed_lifetime_seconds\":" + observedLifetime + ",\"stage\":\"" + stage + "\",\"wire_hex\":\"" + wireHex + "\",\"error\":"
             + (error == null ? "null" : "\"" + error.name() + "\"")
             + ",\"diagnostic\":{\"category\":\"" + diagnosticCategory + "\",\"origin\":\"" + diagnosticOrigin + "\"}"
+            + ",\"pipeline_origin\":\"" + pipelineOrigin + "\""
             + ",\"remaining_threads\":" + threadCountsJson(remainingThreads, THREAD_CATEGORIES)
             + ",\"thread_observation_complete\":" + threadObservationsComplete()
             + ",\"remaining_thread_intervals\":" + threadCountsJson(remainingThreadIntervals, THREAD_PHASES)

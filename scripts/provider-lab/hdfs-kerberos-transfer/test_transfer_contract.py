@@ -106,7 +106,7 @@ def positive():
         checks=dict(environment=True, metrics_mode_enabled=True, endpoint_settings=True, positive_tgt=True, file_cache_v3=True,
             nonrenewable=True, secure_namenode=True, secure_datanode=True, tls_material=True, tls_endpoints=True, registered_datanode=True, seed_hashes=True, empty_acquired=True, small_acquired=True, missing_path_rejected=True, payload_before=True, payload_after=True, listing_before=True, rclone_auth_boundary_rejection=True,
             wire_auth_boundary_rejection=True, listing_after=True, source_preserved=True, cache_preserved=True),
-        cleanup=dict(children_reaped=True, relay_closed=True, filesystem_closed=True, namenode_stop_returned=True, owner_logged_out=True, kdc_stop_returned=True, threads_terminated=True, listeners_absent=True,
+        cleanup=dict(pipeline_observer_detached=True, children_reaped=True, relay_closed=True, filesystem_closed=True, namenode_stop_returned=True, owner_logged_out=True, kdc_stop_returned=True, threads_terminated=True, listeners_absent=True,
             private_material_removed=True, process_property_restored=True, metrics_mode_restored=True, cleanup_completed=True,
             gc_monitor_reaped=True, fs_statistics_cleaner_reaped=True, format_ssl_timer_reaped=True, datanode_stop_returned=True, datanode_ssl_timer_reaped=True),
         metrics_mode=dict(attempted=True, captured=True, prior_enabled=False, enable_attempted=True,
@@ -124,7 +124,7 @@ def positive():
         cache_bytes=400, observed_lifetime_seconds=119, stage="completed", wire_hex=wire().hex(), rclone_wire_hex=wire().hex(),
         relay=dict(phase_connections=dict(inventory_before=1,empty=1,small=1,missing=1,before=1,negative=1,after=1,inventory_after=1), none_headers=1,
                    fatal_responses=1, unexpected_connections=0, bytes_forwarded_unchanged=True), error=None, ledger_eligible=False,
-        diagnostic=dict(category="none", origin="none"),
+        diagnostic=dict(category="none", origin="none"), pipeline_origin="not_observed",
         remaining_threads=dict(probe_task=0, jdk_process_reaper=0, jdk_timer=0, jdk_executor=0,
             jdk_cleaner=0, hadoop_metrics=0, hadoop_rpc=0, hadoop_fs=0, hadoop_namenode=0,
             hadoop_blockmanagement=0, hadoop_util=0, jetty=0, kerby=0, other=0),
@@ -1573,7 +1573,7 @@ class SeedCheckpointTests(unittest.TestCase):
         self.assertIn('if (closing != primary) primary.addSuppressed(closing);', seed)
         self.assertRegex(verify, r'seedStep\(SeedOperation.verify_read_open, role\);\s*try \(var input=filesystem.open\(path, 4096\)\) \{\s*seedStep\(SeedOperation.verify_read, role\);')
         self.assertRegex(verify, r'seedStep\(SeedOperation.verify_read_close, role\);\s*} finally \{ Arrays.fill\(buffer,\(byte\)0\); }')
-        self.assertIn('stage = "seed"; bounded(() -> { seed(); verifyMember(); seedStep(SeedOperation.complete, SeedRole.none); return null; }, 20, deadline);', source)
+        self.assertIn('stage = "seed"; bounded(() -> { seedObserved(); verifyMember(); seedStep(SeedOperation.complete, SeedRole.none); return null; }, 20, deadline);', source)
         self.assertIn('stage = "preservation"; bounded(() -> { verifyMember(); return null; }, 5, controlDeadline);', source)
 
     def test_inert_resource_failure_model_keeps_original_calls_and_suppression(self):
@@ -1674,10 +1674,10 @@ class SeedCheckpointTests(unittest.TestCase):
 class FixedCertificateHttpMonitorTests(unittest.TestCase):
     def test_literal_option_is_set_once_and_checked_before_datanode_topology(self):
         source = (HERE / 'HdfsKerberosTransferProbe.java').read_text()
-        configuration = source[source.index('    private static Configuration configuration('):
-                               source.index('    private static void topology()')]
-        topology = source[source.index('    private static void topology()'):
-                          source.index('    private static org.apache.hadoop.fs.Path sourcePath(')]
+        configuration = source[source.index('private static Configuration configuration('):
+                               source.index('private static void topology()')]
+        topology = source[source.index('private static void topology()'):
+                          source.index('private static org.apache.hadoop.fs.Path sourcePath(')]
         assignments = re.findall(r'conf\.setLong\("([^"\n]+)",\s*(-?\d+)\);', configuration)
         self.assertEqual([row for row in assignments if 'stores.reload.interval' in row[0]],
                          [('ssl.{0}.stores.reload.interval', '0')])
@@ -2037,3 +2037,38 @@ class DfsOutputCallsiteTests(unittest.TestCase):
             self.assertFalse(result["cleanup"]["threads_terminated"])
             self.assertTrue(all(result[k] is False for k in F.JAVA_FALSE))
             helper.rejected(value, 0)
+
+
+class PipelineObservationTests(unittest.TestCase):
+    def test_observer_is_scoped_bounded_and_never_formats_raw_errors(self):
+        source = (F.HERE / "HdfsKerberosTransferProbe.java").read_text()
+        start = source.index("private static final class PipelineAppender")
+        observer = source[start:source.index("private static void seed()", start)]
+        for needed in ("if (seen ||", "seen = true", "i < 32", "originFrame(frames[i])",
+                       'Logger.getLogger("org.apache.hadoop.hdfs.DataStreamer")',
+                       "logger.addAppender(observer)", "finally", "logger.removeAppender(observer)",
+                       "observer.close()", "pipelineDetached = !logger.isAttached(observer)"):
+            self.assertIn(needed, observer)
+        for forbidden in ("getMessage", "getRenderedMessage", "getThrowableStrRep", "toString",
+                          "printStackTrace", "setLevel", "setAdditivity", "removeAllAppenders",
+                          "getRootLogger", "Files.", "new Thread"):
+            self.assertNotIn(forbidden, observer)
+        self.assertIn('CLEANUP.put("pipeline_observer_detached", pipelineDetached)', source)
+        self.assertIn("seedObserved(); verifyMember();", source)
+
+    def test_only_closed_origins_survive_and_failed_cleanup_stays_failed(self):
+        helper = TicketTests(methodName="test_finite_startup_diagnostic_and_residual_threads_never_grant_credit")
+        for label in ("not_observed", "none", "data_streamer", "data_sasl_client", "data_sasl_participant"):
+            value = helper.startup_failure(); value["pipeline_origin"] = label
+            value["cleanup"]["pipeline_observer_detached"] = False
+            result = F.validate_java(F.canonical(value), 1)
+            self.assertEqual(result["pipeline_origin"], label)
+            self.assertFalse(result["success"])
+            self.assertFalse(result["cleanup"]["pipeline_observer_detached"])
+            self.assertTrue(all(result[k] is False for k in F.JAVA_FALSE))
+            helper.rejected(value, 0)
+        for bad in (None, 0, True, [], "private error text", "javax.crypto.Cipher"):
+            value = helper.startup_failure(); value["pipeline_origin"] = bad
+            helper.rejected(value, 1)
+        value = positive(); value["cleanup"]["pipeline_observer_detached"] = False
+        helper.rejected(value, 0)
