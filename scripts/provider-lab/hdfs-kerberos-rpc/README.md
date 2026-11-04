@@ -29,13 +29,22 @@ exact runtime/lock bytes; no custom paths or fallback graph are accepted.
 Receipts identify the selected profile, runtime file, ordered rows and lock.
 
 This graph includes Commons IO 2.22.0 to supply the method required by
-Commons Configuration 2.15.1. Its online inventory is verified; fresh offline
-replay and exact-head RPC validation are still required after this pin update.
-Earlier remediation replay/RPC results bind the earlier hashes and cannot
-qualify this corrected graph. Four Jetty advisory matches and incomplete dependency
-semantics remain; all security, provider, application, vendor and ledger
-acceptance flags remain false. The Java probe and all service/resource bounds
-are identical between the two profiles.
+Commons Configuration 2.15.1. At revision
+`bb03e8253cf9972b0cb8b1de47ddd8e39db68b18`, its online/offline replay,
+RPC controls and transfer cleanup passed. Fresh evidence remains required for
+each changed runtime. The November 4 exact-version OSV query found eight
+advisory matches across five runtime coordinates: four Jetty matches, one Guava
+match and three Snappy matches. This is a database match count, not a complete
+security audit or evidence of runtime exploitability. Dependency semantics and
+all security, provider, application, vendor and ledger acceptance remain open.
+
+The separate online-only `kerberos-refresh` discovery profile proposes Guava
+33.7.2-jre and Snappy 1.1.10.9, using published patched versions. It has no cache
+lock and cannot prepare or replay an offline cache. It does not change the RPC
+or transfer runtime. Before adoption, its complete graph must be reviewed and
+pinned, replayed offline, and tested by the real fixture workflows. Jetty
+advisory work remains unresolved. The Java probe and all service/resource
+bounds are identical between the two existing runtime profiles.
 
 The fixed loopback services are NameNode RPC `19000`, NameNode HTTP/SPNEGO
 scaffolding `19003`, synthetic TCP KDC `19006`, and owned relay `19007`. All

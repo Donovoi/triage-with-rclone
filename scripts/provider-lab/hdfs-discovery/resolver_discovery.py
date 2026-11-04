@@ -46,6 +46,13 @@ REMEDIATION_INPUT_HASHES = {
     "pom.xml": "834df5c2b94de5b7d99ed70807c7d31c6fdbd6272a9f75672f59865da049c0e0",
     "settings.xml": "73c88f4d9660338f35a6e56978f8567f89f5a85641d5338f189fc489440b364c"
 }
+# Online-only staging of the next graph; no cache lock or runtime admission.
+REFRESH_PROFILE = "kerberos-refresh"
+REFRESH_INPUT_HASHES = {
+    "global-settings.xml": "aeb786c97c2a0103b71c04ab1b29508d7ec1c402a9d36e22301407b23670edf2",
+    "pom.xml": "79a901e17505bb2dea82f97942b67bcd3f14a74a7bf2bbe0006e06fd5ba3d312",
+    "settings.xml": "73c88f4d9660338f35a6e56978f8567f89f5a85641d5338f189fc489440b364c"
+}
 MAVEN_SHA512 = "831a8591fe20c8243b1dbe7d71e3244f31d1665b0804b2e825e38cbbe5ce0cafb8338851f90780735568773e0a6cd07bbec107cda0b896b008b861075358b6f6"
 HASH = re.compile(r"[a-f0-9]{64}\Z")
 COMPONENT = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.+-]{0,127}\Z")
@@ -140,7 +147,9 @@ def json_value(raw):
 
 
 def candidate_hashes(profile):
-    need(type(profile) is str and profile in {"hdfs", "kerberos", REMEDIATION_PROFILE}, "candidate_invalid")
+    need(type(profile) is str and profile in {"hdfs", "kerberos", REMEDIATION_PROFILE, REFRESH_PROFILE}, "candidate_invalid")
+    if profile == REFRESH_PROFILE:
+        return dict(REFRESH_INPUT_HASHES)
     if profile == REMEDIATION_PROFILE:
         return dict(REMEDIATION_INPUT_HASHES)
     return dict(INPUT_HASHES if profile == "hdfs" else KERBEROS_INPUT_HASHES)
@@ -541,6 +550,16 @@ def validate_remediation_versions(manifest):
         need(rows and all(r["version"] == version for r in rows), "classpath_invalid")
 
 
+def validate_refresh_versions(manifest):
+    validate_remediation_versions(manifest)
+    for group, artifact, version in (("com.google.guava", "guava", "33.7.2-jre"),
+                                     ("org.xerial.snappy", "snappy-java", "1.1.10.9")):
+        rows = [r for r in manifest["artifacts"] if r["selected_runtime"] is True
+                and (r["group"], r["artifact"]) == (group, artifact)]
+        need(len(rows) == 1 and rows[0]["version"] == version
+             and rows[0]["type"] == "jar" and rows[0]["classifier"] == "", "classpath_invalid")
+
+
 def base_observation(value, manifest, config_id):
     """Project only the pinned image identity and closed admission predicates."""
     value = value if type(value) is dict else {}
@@ -578,7 +597,9 @@ def discover(candidate, bootstrap, archive, output_parent, *, runner_factory=Doc
     """One fresh hosted discovery; raw logs/archive stay private, never uploaded here."""
     hosted_guard()
     hashes = candidate_hashes(candidate_profile)
-    prospective = candidate_profile == REMEDIATION_PROFILE
+    prospective = candidate_profile in {REMEDIATION_PROFILE, REFRESH_PROFILE}
+    unlocked = candidate_profile == REFRESH_PROFILE
+    need(not unlocked or (cache_destination is None and seed_cache is None), "offline_cache_invalid")
     started_utc = datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
     started_clock = time.monotonic()
     supervisor_sha = file_hash(Path(__file__).resolve())
@@ -586,9 +607,10 @@ def discover(candidate, bootstrap, archive, output_parent, *, runner_factory=Doc
     exporter_sha = file_hash(exporter_source)
     cache_source = Path(offline_cache.__file__).absolute()
     cache_source_sha = file_hash(cache_source)
-    cache_lock = offline_cache.lock_path(candidate_profile)
-    cache_lock_sha = file_hash(cache_lock)
-    need(cache_lock_sha == offline_cache.lock_sha256(candidate_profile), "offline_cache_invalid")
+    cache_lock = None if unlocked else offline_cache.lock_path(candidate_profile)
+    cache_lock_sha = None if unlocked else file_hash(cache_lock)
+    if not unlocked:
+        need(cache_lock_sha == offline_cache.lock_sha256(candidate_profile), "offline_cache_invalid")
     inputs = candidate_inputs(candidate, candidate_profile)
     bootstrap = validate_bootstrap(bootstrap, archive)
     parent = Path(output_parent).absolute()
@@ -684,6 +706,8 @@ def discover(candidate, bootstrap, archive, output_parent, *, runner_factory=Doc
         validate_profile_manifest(report["manifest"], candidate_profile)
         if prospective:
             validate_remediation_versions(report["manifest"])
+        if unlocked:
+            validate_refresh_versions(report["manifest"])
         if cache_destination is not None:
             report["cache_preparation"] = offline_cache.prepare_cache(result.stdout, cache_destination,
                                                                        profile=candidate_profile)
@@ -745,7 +769,7 @@ def discover(candidate, bootstrap, archive, output_parent, *, runner_factory=Doc
                  and file_hash(Path(__file__).resolve()) == supervisor_sha
                  and file_hash(exporter_source) == exporter_sha
                  and file_hash(cache_source) == cache_source_sha
-                 and file_hash(cache_lock) == cache_lock_sha, "source_changed")
+                 and (cache_lock is None if unlocked else file_hash(cache_lock) == cache_lock_sha), "source_changed")
             need(validate_bootstrap(bootstrap, archive) == bootstrap, "source_changed")
             if offline:
                 need(offline_cache.verify_cache(seed_cache, profile=candidate_profile) == seed_receipt, "source_changed")

@@ -776,7 +776,7 @@ class TransferTests(unittest.TestCase):
         self.assertEqual((len(rows),sum(x['size'] for x in rows)),(142,73104651))
         old=(HERE.parent/'hdfs-kerberos-ticket/runtime-classpath.json').read_bytes()
         with self.assertRaises(F.ProbeError):F.runtime_rows(old,p['lock'].read_bytes())
-        for profile in ('kerberos','simple','',None,True,{},'../kerberos-remediation'):
+        for profile in ('kerberos','simple','kerberos-refresh','',None,True,{},'../kerberos-remediation'):
             with patch.object(F,'read',side_effect=AssertionError('read forbidden')),patch.object(F,'hosted_guard',side_effect=AssertionError('host forbidden')):
                 with self.assertRaises(F.ProbeError):F.profile_settings(profile)
                 self.assertFalse(F.run(profile=profile)['success'])

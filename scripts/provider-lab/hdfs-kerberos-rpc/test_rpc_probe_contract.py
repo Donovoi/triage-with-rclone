@@ -659,7 +659,7 @@ class ProfileTests(unittest.TestCase):
         self.assertEqual(F.runtime_rows(*material["kerberos"]), F.runtime_rows(*material["kerberos"], profile="kerberos"))
 
     def test_closed_profiles_fail_before_reads_workers_or_host_access(self):
-        for bad in (None, True, 1, [], {}, "", "Kerberos", "kerberos/../kerberos-remediation", "PRIVATE_CANARY"):
+        for bad in (None, True, 1, [], {}, "", "Kerberos", "kerberos-refresh", "kerberos/../kerberos-remediation", "PRIVATE_CANARY"):
             with self.subTest(kind=type(bad).__name__), \
                     patch.object(F, "directory") as directory, patch.object(F, "read") as read, \
                     patch.object(F, "file_hash") as hashed, patch.object(F, "hosted_guard") as host:
