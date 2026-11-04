@@ -682,7 +682,20 @@ public final class HdfsKerberosTransferProbe {
 			case "org.apache.hadoop.security.authentication.server.KerberosAuthenticationHandler",
 				 "org.apache.hadoop.security.authentication.server.AuthenticationFilter" -> "http_authentication";
 			case "java.lang.Throwable" -> frame.getMethodName().equals("addSuppressed") ? "self_suppression" : null;
-			case "org.apache.hadoop.hdfs.server.datanode.DataXceiver" -> "data_xceiver";
+			case "org.apache.hadoop.hdfs.server.datanode.DataXceiver" -> switch (frame.getMethodName()) {
+				case "run" -> "data_xceiver_run";
+				case "readBlock" -> "data_read_block";
+				case "checkAccess" -> "data_access_check";
+				case "writeSuccessWithChecksumInfo" -> "data_read_success";
+				default -> "data_xceiver";
+			};
+			case "org.apache.hadoop.hdfs.protocol.datatransfer.Receiver" -> switch (frame.getMethodName()) {
+				case "readOp" -> "data_read_op";
+				case "processOp" -> "data_process_op";
+				case "opReadBlock" -> "data_op_read_block";
+				default -> "data_receiver";
+			};
+			case "org.apache.hadoop.hdfs.server.datanode.BlockSender" -> "data_block_sender";
 			case "org.apache.hadoop.hdfs.server.datanode.BlockReceiver" -> "data_block_receiver";
 			case "org.apache.hadoop.hdfs.server.datanode.fsdataset.impl.FsDatasetImpl" -> frame.getMethodName().equals("createRbw") ? "data_create_rbw" : "data_dataset";
 			case "org.apache.hadoop.hdfs.server.datanode.fsdataset.impl.FsVolumeImpl" -> "data_volume";
@@ -816,6 +829,19 @@ public final class HdfsKerberosTransferProbe {
 	private static boolean threadObservationsComplete() {
 		return !threadObservationIncomplete && OBSERVED_PHASES.size() == 10;
 	}
+	private static String remainingExecutorKind = "not_observed";
+	private static String executorKind(Thread thread) {
+		String name = thread.getName();
+		if (name.length() > 128) return "other";
+		if (name.equals("ShortCircuitCache_Cleaner")) return "shortcircuit_cleaner";
+		if (name.equals("ShortCircuitCache_SlotReleaser")) return "shortcircuit_releaser";
+		if (name.startsWith("StripedRead-")) return "striped_read";
+		if (name.startsWith("hedgedRead-")) return "hedged_read";
+		if (name.equals("CompletableFutureDelayScheduler")) return "completable_delay";
+		if (name.startsWith("ForkJoinPool.commonPool-worker-")) return "forkjoin_common";
+		if (name.matches("pool-[0-9]+-thread-[0-9]+")) return "unnamed_pool";
+		return "other";
+	}
 	private static Map<String, Integer> remainingThreadCounts(Set<Long> baseline) throws Exception {
 		Map<String, Integer> counts = new LinkedHashMap<>();
 		for (String category : THREAD_CATEGORIES) counts.put(category, 0);
@@ -829,11 +855,15 @@ public final class HdfsKerberosTransferProbe {
 			for (String phase : THREAD_PHASES) row.put(phase, 0);
 			matrix.put(category, row);
 		}
-		int total = 0;
+		int total = 0; String observedExecutor = "not_observed";
 		for (Thread thread : Thread.getAllStackTraces().keySet()) {
 			if (!thread.isAlive() || baseline.contains(thread.getId())) continue;
 			need(++total <= 128, Code.cleanup_failed);
 			String category = threadCategory(thread); counts.put(category, counts.get(category) + 1);
+			if (category.equals("jdk_executor")) {
+				String kind = executorKind(thread);
+				observedExecutor = observedExecutor.equals("not_observed") ? kind : observedExecutor.equals(kind) ? kind : "mixed";
+			}
 			if (category.equals("jdk_timer")) {
 				String kind = timerKind(thread); timers.put(kind, timers.get(kind) + 1);
 			}
@@ -848,6 +878,7 @@ public final class HdfsKerberosTransferProbe {
 		for (String phase : THREAD_PHASES) {
 			need(matrix.values().stream().mapToInt(row -> row.get(phase)).sum() == intervals.get(phase), Code.cleanup_failed);
 		}
+		remainingExecutorKind = observedExecutor;
 		remainingThreadIntervals = intervals;
 		remainingThreadMatrix = matrix;
 		need(timers.values().stream().mapToInt(Integer::intValue).sum() == counts.get("jdk_timer"), Code.cleanup_failed);
@@ -978,7 +1009,7 @@ public final class HdfsKerberosTransferProbe {
 		CLEANUP.put("format_ssl_timer_reaped", sslCleanup == OwnedCleanupState.terminated);
 		do {
 			try { remainingThreads = remainingThreadCounts(baseline); }
-			catch (Throwable ignored) { remainingThreads = null; remainingThreadIntervals = null; remainingThreadMatrix = null; remainingTimerKinds = null; break; }
+			catch (Throwable ignored) { remainingThreads = null; remainingThreadIntervals = null; remainingThreadMatrix = null; remainingTimerKinds = null; remainingExecutorKind = "not_observed"; break; }
 			// Every residual thread still fails cleanup, including JDK/unknown categories.
 			threadsClean = remainingThreads.values().stream().allMatch(count -> count == 0)
 				&& TASKS.stream().noneMatch(Thread::isAlive);
@@ -1976,6 +2007,7 @@ public final class HdfsKerberosTransferProbe {
 			+ ",\"rclone_observation\":" + rcloneObservationJson()
 			+ ",\"pipeline_origin\":\"" + pipelineOrigin + "\""
 			+ ",\"pipeline_server_diagnostic\":{\"category\":\"" + serverFailure.category() + "\",\"origin\":\"" + serverFailure.origin() + "\"}"
+			+ ",\"remaining_executor_kind\":\"" + remainingExecutorKind + "\""
 			+ ",\"remaining_threads\":" + threadCountsJson(remainingThreads, THREAD_CATEGORIES)
 			+ ",\"thread_observation_complete\":" + threadObservationsComplete()
 			+ ",\"remaining_thread_intervals\":" + threadCountsJson(remainingThreadIntervals, THREAD_PHASES)
