@@ -2127,3 +2127,24 @@ class PipelineServerObservationTests(unittest.TestCase):
             helper.rejected(value, 1)
         value = positive(); value["cleanup"]["pipeline_server_observer_detached"] = False
         helper.rejected(value, 0)
+
+
+class BoundedVolumeReserveTests(unittest.TestCase):
+    def test_isolated_volume_reserve_is_explicit_and_checked_on_both_services(self):
+        source = (HERE / 'HdfsKerberosTransferProbe.java').read_text().expandtabs(4)
+        key = 'dfs.datanode.round-robin-volume-choosing-policy.additional-available-space'
+        configuration = source[source.index('private static Configuration configuration('):
+                               source.index('private static void topology()')]
+        topology = source[source.index('private static void topology()'):
+                          source.index('private static SeedRole seedRole(')]
+        self.assertEqual(configuration.count('conf.setLong("' + key + '", 4194304);'), 1)
+        self.assertEqual(source.count(key), 2)
+        guard = 'conf.getLong("' + key + '", -1) == 4194304'
+        self.assertIn('for (Configuration conf : List.of(namenode.getConf(), datanode.getConf()))', topology)
+        self.assertEqual(topology.count(guard), 1)
+        self.assertLess(topology.index('for (Configuration conf'), topology.index(guard))
+        self.assertLess(topology.index(guard), topology.index('Code.configuration_invalid'))
+        self.assertIn('size=128m', F.TMPFS)
+        self.assertIn('conf.set("dfs.blocksize", "1048576");', configuration)
+        self.assertIn('conf.set("dfs.data.transfer.protection", "privacy");', configuration)
+        self.assertLessEqual((HERE / 'HdfsKerberosTransferProbe.java').stat().st_size, 131072)
