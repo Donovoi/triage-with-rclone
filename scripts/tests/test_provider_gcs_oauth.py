@@ -494,7 +494,7 @@ class SupervisorTests(unittest.TestCase):
             docker.build_phase = None
             docker.run = Mock(side_effect=S.SupervisorError("docker_command_reap_unproved"))
             lock = {"requirements": {"sha256": "a" * 64, "distributions": {}}, "python_version": "3.12.15",
-                    "base_image": "synthetic", "base_config_digest": "b" * 64}
+                    "base_image": "synthetic@sha256:" + "c" * 64, "base_config_digest": "b" * 64}
             with patch.dict(S.os.environ, {"GITHUB_ACTIONS": "true", "RUNNER_ENVIRONMENT": "github-hosted"}), patch.object(S.sys, "platform", "linux"), patch.object(S, "runtime_identity", return_value={"version": "1.75.1", "sha256": "a" * 64}), patch.object(S, "source_hashes", return_value={}), patch.object(S, "read_lock", return_value=lock), patch.object(S.tempfile, "mkdtemp", return_value=str(root)), patch.object(S, "Docker", return_value=docker), patch.object(S, "cleanup_owned") as cleanup, patch.object(S, "cleanup_temporary") as remove:
                 result = S.run(base / "synthetic-runtime", base / "report.json")
             cleanup.assert_not_called()
@@ -515,7 +515,7 @@ class SupervisorTests(unittest.TestCase):
                                            (0, b""), S.SupervisorError("synthetic_build_failure")])
             docker.inspect = Mock(return_value={"Id": "b" * 64, "Architecture": "amd64", "Os": "linux"})
             lock = {"requirements": {"sha256": "a" * 64, "distributions": {}}, "python_version": "3.12.15",
-                    "base_image": "synthetic", "base_config_digest": "b" * 64}
+                    "base_image": "synthetic@sha256:" + "c" * 64, "base_config_digest": "b" * 64}
 
             def failed_cleanup(*_args):
                 docker.commands_stopped = False

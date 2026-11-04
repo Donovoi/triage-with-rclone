@@ -280,7 +280,7 @@ class ProducerTests(unittest.TestCase):
 
     def test_config_queue_source_and_artifact_preservation_are_independent(self):
         case=Path("C:/synthetic-private");config=b"synthetic config"
-        item=dict(case=case,lease=(1,2),source=(2,3),config=config,artifact="a"*64,record=dict(checks=dict(configuration_preserved=True)))
+        item=dict(name="acquisition",case=case,lease=(1,2),source=(2,3),config=config,artifact="a"*64,record=dict(checks=dict(configuration_preserved=True)))
         for broken in (None,"config","queue","app","artifact","source","identity"):
             def read(path,*a):
                 if path.name=="application.exe":return b"changed" if broken=="app" else b"app"
