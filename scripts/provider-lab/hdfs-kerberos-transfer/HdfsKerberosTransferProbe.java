@@ -699,6 +699,7 @@ public final class HdfsKerberosTransferProbe {
 				case "close" -> "dfs_close";
 				case "cleanupAndRethrowIOException" -> "dfs_rethrow";
 				case "abort" -> "dfs_abort";
+				case "addBlock" -> "dfs_add_block";
 				default -> "dfs_output";
 			};
 			case "org.apache.hadoop.hdfs.protocol.datatransfer.sasl.SaslDataTransferClient" -> "data_sasl_client";
@@ -737,7 +738,7 @@ public final class HdfsKerberosTransferProbe {
 				else if (failure instanceof Failure own && own.code != Code.unclassified) { category = "assertion"; rank = 14; }
 				if (rank < selectedRank) {
 					selected = category; selectedRank = rank; origin = "none";
-					// The known callsite belongs to this selected throwable, not another cause.
+					// Callsite belongs to the selected throwable.
 					// A callsite identifies a frame, never the unresolved linkage target.
 					StackTraceElement[] frames = failure.getStackTrace();
 					for (int i = 0; i < frames.length && i < 32; i++) {

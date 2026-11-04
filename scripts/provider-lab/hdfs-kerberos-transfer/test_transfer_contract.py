@@ -2010,6 +2010,7 @@ class DfsOutputCallsiteTests(unittest.TestCase):
         "close": "dfs_close",
         "cleanupAndRethrowIOException": "dfs_rethrow",
         "abort": "dfs_abort",
+        "addBlock": "dfs_add_block",
     }
     def test_pinned_output_callsites_are_closed_with_generic_fallback(self):
         raw = (F.HERE / "HdfsKerberosTransferProbe.java").read_bytes()
