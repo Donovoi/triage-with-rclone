@@ -1335,10 +1335,7 @@ public final class HdfsKerberosTransferProbe {
         conf.set("dfs.namenode.http-address", "127.0.0.1:19003");
         conf.set("dfs.namenode.http-bind-host", "127.0.0.1");
         conf.set("dfs.http.policy", "HTTPS_ONLY");
-        // Pinned HttpServer2 reads this literal template key. Its builder creates
-        // the reload Timer after the server copies the empty owner reference.
-        // This fixture keeps certificates fixed; skip only that optional monitor.
-        // SSLFactory CLIENT/SERVER use distinct mode-resolved keys and are unchanged.
+        // Fixed certificates: disable only the optional HttpServer2 reload timer.
         conf.setLong("ssl.{0}.stores.reload.interval", 0);
         conf.set("dfs.namenode.https-address", "127.0.0.1:19003");
         conf.set("dfs.namenode.https-bind-host", "127.0.0.1");
@@ -1364,9 +1361,7 @@ public final class HdfsKerberosTransferProbe {
         conf.set("hadoop.ssl.require.client.cert", "false");
 
         conf.set("hadoop.security.authentication", "kerberos");
-        // No defaults are loaded: secure HttpServer2 requires an explicit type.
-        // Its separate AuthFilter reads this prefix, not the dfs.web.* keys
-        // used below by the internal SPNEGO filter. Both use the owned HTTP key.
+        // No defaults: set the separate HttpServer2 AuthFilter with the owned key.
         conf.set("hadoop.http.authentication.type", "kerberos");
         conf.set("hadoop.http.authentication.kerberos.principal", "HTTP/127.0.0.1@" + realm);
         conf.set("hadoop.http.authentication.kerberos.keytab", HTTP_KEYTAB.toString());
@@ -1481,7 +1476,9 @@ public final class HdfsKerberosTransferProbe {
             seedStep(SeedOperation.existence_check, role);
             need(!filesystem.exists(path), Code.source_invalid);
             seedStep(SeedOperation.create, role);
-            try (var output = filesystem.create(path, new FsPermission((short)0644), false, 4096, (short)1, 1048576, null)) {
+            var output = filesystem.create(path, new FsPermission((short)0644), false, 4096, (short)1, 1048576, null);
+            Throwable primary = null;
+            try {
                 seedStep(SeedOperation.write, role);
                 for (int offset=0; offset<SIZES[i]; offset+=data.length) {
                     need(System.nanoTime() < deadline, Code.deadline_exceeded);
@@ -1490,6 +1487,14 @@ public final class HdfsKerberosTransferProbe {
                 seedStep(SeedOperation.sync, role);
                 output.hsync();
                 seedStep(SeedOperation.close, role);
+            } catch (Throwable failure) {
+                primary = failure; throw failure;
+            } finally {
+                try { output.close(); }
+                catch (Throwable closing) {
+                    if (primary == null) throw closing;
+                    if (closing != primary) primary.addSuppressed(closing);
+                }
             }
             seedStep(SeedOperation.file_times, role);
             filesystem.setTimes(path, 1704067200000L, 1704067200000L);
