@@ -114,6 +114,7 @@ def positive():
         ssl_capture=dict(format='captured',datanode='captured'),
         seed_checkpoint=dict(operation='complete',role='none'),
         owned_thread_cleanup=dict(gc_monitor='terminated', fs_statistics_cleaner='terminated', format_ssl_timer='terminated'),
+        rclone_observation=dict(phase=7, exit=0, stdout_bytes=512, stderr_bytes=0, failure="empty"),
         child_count=10, acquired_bytes=2109442, missing_category="directory_not_found",
         acquisitions=dict(empty=dict(bytes=0,sha256="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"),
             small=dict(bytes=4096,sha256="c8f5d0341d54d951a71b136e6e2afcb14d11ed8489a7ae126a8fee0df6ecf193"),
@@ -2202,3 +2203,41 @@ class ReceiptValidationStageTests(unittest.TestCase):
             self.assertFalse(docker.root.exists())
             for claim in F.FALSE_CLAIMS: self.assertIs(report[claim], False)
         finally: helper.tearDown()
+
+
+class RcloneObservationTests(unittest.TestCase):
+    def test_closed_fields_limits_and_missing_success_evidence(self):
+        F.validate_rclone_observation(None, False)
+        with self.assertRaises(F.ProbeError): F.validate_rclone_observation(None, True)
+        good = dict(phase=0, exit=1, stdout_bytes=0, stderr_bytes=32, failure='kerberos_initialization')
+        for category in F.RCLONE_FAILURE_KINDS:
+            value = dict(good, failure=category, stderr_bytes=0 if category == 'empty' else 32)
+            F.validate_rclone_observation(value, False)
+        for key, limit in (('phase',7),('exit',255),('stdout_bytes',16384),('stderr_bytes',16384)):
+            for bad in (-1, limit+1, True, None, '0'):
+                with self.subTest(key=key, bad=bad), self.assertRaises(F.ProbeError):
+                    F.validate_rclone_observation(dict(good, **{key:bad}), False)
+        for value in (dict(good, failure='secret/path'),dict(good, stderr_bytes=0),
+                      dict(good, failure='empty'),dict(good, raw='secret'),[]):
+            with self.assertRaises(F.ProbeError): F.validate_rclone_observation(value, False)
+        for key, value in (('phase',0),('exit',1),('stderr_bytes',1),('failure','json_message')):
+            report = positive(); report['rclone_observation'][key] = value
+            with self.assertRaises(F.JavaReportError) as caught:
+                F.validate_java(F.canonical(report), 0)
+            self.assertEqual(caught.exception.stage,'rclone_observation')
+
+    def test_observation_precedes_relay_validation_and_exports_no_raw_text(self):
+        raw = (HERE / 'HdfsKerberosTransferProbe.java').read_bytes()
+        self.assertEqual(hashlib.sha256(raw).hexdigest(), F.JAVA_SHA)
+        self.assertLessEqual(len(raw), 131072)
+        source = raw.decode().expandtabs(4)
+        method = source[source.index('private static Result rclone('):source.index('private static com.fasterxml.jackson.databind.ObjectMapper jsonMapper()')]
+        self.assertLess(method.index('Result result=child('),method.index('rcloneObservation = new RcloneObservation('))
+        self.assertLess(method.index('rcloneObservation = new RcloneObservation('),method.index('relay.end(phase)'))
+        classifier = source[source.index('private static String rcloneFailure('):source.index('private static String rcloneObservationJson()')]
+        self.assertEqual(set(re.findall(r'return "([a-z_]+)";',classifier)), F.RCLONE_FAILURE_KINDS)
+        serializer = source[source.index('private static String rcloneObservationJson()'):source.index('private static Result rclone(')]
+        for forbidden in ('getMessage','getLocalizedMessage','new String','result.err','result.out','raw','message'):
+            self.assertNotIn(forbidden,serializer)
+        self.assertIn('record RcloneObservation(int phase, int exit, int stdoutBytes, int stderrBytes, String failure)',source)
+        self.assertIn('counts[value] == 1 && !failed.get()',source)

@@ -41,7 +41,7 @@ OWNED_CLEANUP_STATES = frozenset("not_attempted observation_incomplete services_
 TIMER_KINDS = frozenset("namenode_metrics rpc_idle snapshot_gc shell_timeout ssl_store unknown".split())
 BASE = "docker.io/library/eclipse-temurin@sha256:e1c09a9ee23feb81f94016547826c1e694086cd927356fb57fccc312fcc32f85"
 BASE_ID = "sha256:d0e6e16acb7f941e5206d99ec38e5bba18545c43462541958f84b22e0fc006e8"
-JAVA_SHA = "aa293d04a723e1689f92830bbb0e09cae21d126b2fd64d6464bd393c8eb59218"
+JAVA_SHA = "8cc500e98863b5765ea0623bfab24a699541855c4dceda33ec322cd63a82ac54"
 REMEDIATION_RUNTIME_SHA = "01095cf92c20a65a479aafdcd52538e11313610230c17b011a5e5146a81bb127"
 REMEDIATION_ORDER_SHA = "74206f7ff8e05475fd310648003cd570c620e92cf670ee1965c66b96eb3ba15d"
 REMEDIATION_LOCK_SHA = "a0fc4edc8ea5fa9df5c26cac0be9f638650c7a657260b9da5eaad16195746e95"
@@ -77,7 +77,7 @@ class ProbeError(Exception):
         super().__init__(self.code)
 
 
-JAVA_VALIDATION_STAGES = frozenset(["parse","schema","boolean_maps","metrics_mode","ssl_capture","seed_checkpoint","pipeline_server","pipeline_origin","scalars","stage","wire","exit_status","relay","acquisitions","diagnostics","owned_cleanup","completion"])
+JAVA_VALIDATION_STAGES = frozenset(["parse","schema","boolean_maps","metrics_mode","ssl_capture","seed_checkpoint","pipeline_server","pipeline_origin","rclone_observation","scalars","stage","wire","exit_status","relay","acquisitions","diagnostics","owned_cleanup","completion"])
 
 
 class JavaReportError(ProbeError):
@@ -530,13 +530,31 @@ def validate_seed_checkpoint(value, checks):
     need(not (checks["registered_datanode"] or checks["seed_hashes"]) or operation == "complete", "java_report_invalid")
 
 
+RCLONE_FAILURE_KINDS = frozenset(('empty', 'cache_tgt_missing', 'cache_ticket_invalid',
+    'kerberos_initialization', 'backend_creation', 'json_message', 'unclassified'))
+
+
+def validate_rclone_observation(value, passed):
+    if value is None:
+        need(not passed, "java_report_invalid")
+        return
+    need(type(value) is dict and set(value) == {'phase', 'exit', 'stdout_bytes', 'stderr_bytes', 'failure'}, "java_report_invalid")
+    for key, limit in (('phase', 7), ('exit', 255), ('stdout_bytes', 16384), ('stderr_bytes', 16384)):
+        need(type(value[key]) is int and 0 <= value[key] <= limit, "java_report_invalid")
+    need(type(value['failure']) is str and value['failure'] in RCLONE_FAILURE_KINDS
+         and (value['stderr_bytes'] == 0) is (value['failure'] == 'empty'), "java_report_invalid")
+    if passed:
+        need(value['phase'] == 7 and value['exit'] == 0 and value['stderr_bytes'] == 0
+             and value['failure'] == 'empty', "java_report_invalid")
+
+
 def validate_java(raw, exit_code):
     checkpoint = "parse"
     try:
         value = parse(raw, 32768)
         checkpoint = "schema"
         keys = {"schema_version", "scope", "success", "expected_kerby_version", "runtime_binding_required", "checks",
-                "cleanup", "metrics_mode", "ssl_capture", "seed_checkpoint", "cache_bytes", "child_count", "acquired_bytes", "acquisitions", "missing_category", "observed_lifetime_seconds", "stage", "wire_hex", "rclone_wire_hex", "relay", "error", "diagnostic", "pipeline_origin", "pipeline_server_diagnostic", "remaining_threads", "remaining_thread_intervals", "remaining_thread_matrix", "remaining_timer_kinds", "thread_observation_complete", "owned_thread_cleanup"} | JAVA_FALSE
+                "cleanup", "metrics_mode", "ssl_capture", "seed_checkpoint", "cache_bytes", "child_count", "acquired_bytes", "acquisitions", "missing_category", "observed_lifetime_seconds", "stage", "wire_hex", "rclone_wire_hex", "relay", "error", "diagnostic", "pipeline_origin", "pipeline_server_diagnostic", "rclone_observation", "remaining_threads", "remaining_thread_intervals", "remaining_thread_matrix", "remaining_timer_kinds", "thread_observation_complete", "owned_thread_cleanup"} | JAVA_FALSE
         need(type(value) is dict and set(value) == keys and type(value["schema_version"]) is int
              and value["schema_version"] == 1 and value["scope"] == "hdfs_kerberos_transfer_feasibility"
              and value["expected_kerby_version"] == "2.1.2" and value["runtime_binding_required"] is True
@@ -572,6 +590,8 @@ def validate_java(raw, exit_code):
         need(type(exit_code) is int and exit_code in (0, 1) and value["success"] is passed
              and exit_code == (0 if passed else 1), "java_report_invalid")
         if passed: need(100 < value["cache_bytes"] <= 65536 and 110 <= value["observed_lifetime_seconds"] <= 120, "java_report_invalid")
+        checkpoint = "rclone_observation"
+        validate_rclone_observation(value["rclone_observation"], passed)
         checkpoint = "relay"
         validate_relay(value["relay"], passed)
         checkpoint = "acquisitions"
