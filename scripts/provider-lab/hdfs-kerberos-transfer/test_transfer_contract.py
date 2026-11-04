@@ -2097,6 +2097,9 @@ class PipelineServerObservationTests(unittest.TestCase):
             self.assertIn(required, observer)
         self.assertIn('CLEANUP.put("pipeline_server_observer_detached", pipelineServerDetached)', source)
         self.assertIn('record ServerFailure(String category, String origin)', source)
+        self.assertIn('frame.getMethodName().equals("createRbw") ? "data_create_rbw" : "data_dataset"', source)
+        for cls, label in (("FsVolumeImpl", "data_volume"), ("FsVolumeList", "data_volume_list")):
+            self.assertIn('case "org.apache.hadoop.hdfs.server.datanode.fsdataset.impl.'+cls+'" -> "'+label+'";', source)
         self.assertLess(observer.index('logger.removeAppender(observer)'), observer.index('serverLogger.removeAppender(serverObserver)'))
         for forbidden in ('getMessage', 'getRenderedMessage', 'getThrowableStrRep', 'printStackTrace',
                           'setLevel', 'setAdditivity', 'removeAllAppenders', 'getRootLogger'):
@@ -2106,7 +2109,8 @@ class PipelineServerObservationTests(unittest.TestCase):
         helper = TicketTests(methodName="test_finite_startup_diagnostic_and_residual_threads_never_grant_credit")
         for category, origin in (("none", "none"), ("unclassified", "none"), ("missing_class", "data_xceiver"),
                                  ("linkage_no_such_method", "data_block_receiver"), ("io_failure", "data_sasl_server"),
-                                 ("null_state", "data_dataset"), ("invalid_config", "data_xceiver")):
+                                 ("null_state", "data_dataset"), ("invalid_config", "data_xceiver"),
+                                 ("io_failure", "data_create_rbw"), ("io_failure", "data_volume"), ("io_failure", "data_volume_list")):
             value = helper.startup_failure()
             value["pipeline_server_diagnostic"] = dict(category=category, origin=origin)
             value["cleanup"]["pipeline_server_observer_detached"] = False

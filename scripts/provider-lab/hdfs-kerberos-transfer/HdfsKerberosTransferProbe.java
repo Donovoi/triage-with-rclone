@@ -683,7 +683,9 @@ public final class HdfsKerberosTransferProbe {
 			case "java.lang.Throwable" -> frame.getMethodName().equals("addSuppressed") ? "self_suppression" : null;
 			case "org.apache.hadoop.hdfs.server.datanode.DataXceiver" -> "data_xceiver";
 			case "org.apache.hadoop.hdfs.server.datanode.BlockReceiver" -> "data_block_receiver";
-			case "org.apache.hadoop.hdfs.server.datanode.fsdataset.impl.FsDatasetImpl" -> "data_dataset";
+			case "org.apache.hadoop.hdfs.server.datanode.fsdataset.impl.FsDatasetImpl" -> frame.getMethodName().equals("createRbw") ? "data_create_rbw" : "data_dataset";
+			case "org.apache.hadoop.hdfs.server.datanode.fsdataset.impl.FsVolumeImpl" -> "data_volume";
+			case "org.apache.hadoop.hdfs.server.datanode.fsdataset.impl.FsVolumeList" -> "data_volume_list";
 			case "org.apache.hadoop.hdfs.protocol.datatransfer.sasl.SaslDataTransferServer" -> "data_sasl_server";
 			case "org.apache.hadoop.hdfs.DataStreamer" -> switch (frame.getMethodName()) {
 				case "createSocketForPipeline" -> "data_socket_create";
