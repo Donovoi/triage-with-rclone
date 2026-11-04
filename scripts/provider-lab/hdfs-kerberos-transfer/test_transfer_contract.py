@@ -1947,7 +1947,6 @@ class BaseAdmissionTests(unittest.TestCase):
 class SeedOriginDiagnostics(unittest.TestCase):
     SITES = {
         "org.apache.hadoop.hdfs.DataStreamer": "data_streamer",
-        "org.apache.hadoop.hdfs.DFSOutputStream": "dfs_output",
         "org.apache.hadoop.hdfs.protocol.datatransfer.sasl.SaslDataTransferClient": "data_sasl_client",
         "org.apache.hadoop.hdfs.protocol.datatransfer.sasl.SaslParticipant": "data_sasl_participant",
     }
@@ -1992,3 +1991,38 @@ class SelfSuppressionDiagnosticTests(unittest.TestCase):
         self.assertFalse(result["cleanup"]["threads_terminated"])
         self.assertTrue(all(result[k] is False for k in F.JAVA_FALSE))
         helper.rejected(value, 0)
+
+class DfsOutputCallsiteTests(unittest.TestCase):
+    SITES = {
+        "writeChunkPrepare": "dfs_chunk_validation",
+        "createPacket": "dfs_packet_allocation",
+        "closeThreads": "dfs_thread_shutdown",
+        "completeFile": "dfs_file_completion",
+        "newStreamForCreate": "dfs_file_creation",
+        "newStreamForAppend": "dfs_file_append",
+    }
+    def test_pinned_output_callsites_are_closed_with_generic_fallback(self):
+        raw = (F.HERE / "HdfsKerberosTransferProbe.java").read_bytes()
+        self.assertLessEqual(len(raw), 131072)
+        self.assertEqual(hashlib.sha256(raw).hexdigest(), F.JAVA_SHA)
+        source = raw.decode()
+        start = source.index('case "org.apache.hadoop.hdfs.DFSOutputStream" ->')
+        marker = source[start:source.index('};', start)]
+        for method, label in self.SITES.items():
+            self.assertIn('case "' + method + '" -> "' + label + '";', marker)
+            self.assertIn(label, F.DIAGNOSTIC_ORIGINS)
+        self.assertIn('default -> "dfs_output";', marker)
+        for forbidden in ("getMessage", "getLineNumber", "startsWith", "toString"):
+            self.assertNotIn(forbidden, marker)
+
+    def test_output_diagnostics_preserve_failed_cleanup_and_no_acceptance(self):
+        helper = TicketTests(methodName="test_finite_startup_diagnostic_and_residual_threads_never_grant_credit")
+        for label in self.SITES.values():
+            value = helper.startup_failure()
+            value["diagnostic"] = dict(category="io_failure", origin=label)
+            result = F.validate_java(F.canonical(value), 1)
+            self.assertEqual(result["diagnostic"], value["diagnostic"])
+            self.assertFalse(result["success"])
+            self.assertFalse(result["cleanup"]["threads_terminated"])
+            self.assertTrue(all(result[k] is False for k in F.JAVA_FALSE))
+            helper.rejected(value, 0)
