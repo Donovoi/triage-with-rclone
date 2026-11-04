@@ -1219,7 +1219,7 @@ class RemainingMetricsCallsiteTests(unittest.TestCase):
 
     def mappings(self):
         source=(HERE/'HdfsKerberosTransferProbe.java').read_text()
-        origin=source[source.index('private static String originFrame('):source.index('private static void projectFailure(')]
+        origin=source[source.index('private static String originFrame('):source.index('private static void projectFailure(')].expandtabs(4)
         out={}
         for cls,methods in self.METHODS.items():
             pattern=r'case "'+re.escape(cls)+r'" -> switch \(frame.getMethodName\(\)\) \{(.*?)\n            \};'
@@ -1242,7 +1242,7 @@ class RemainingMetricsCallsiteTests(unittest.TestCase):
     def test_unknown_methods_keep_generic_fallback_without_prefix_or_text_matching(self):
         self.mappings()
         source=(HERE/'HdfsKerberosTransferProbe.java').read_text()
-        origin=source[source.index('private static String originFrame('):source.index('private static void projectFailure(')]
+        origin=source[source.index('private static String originFrame('):source.index('private static void projectFailure(')].expandtabs(4)
         self.assertEqual(origin.count('default -> "hadoop_metrics";'),2)
         for forbidden in ('getMessage','getLocalizedMessage','getLineNumber','startsWith','substring','toString()','Class.forName'):
             self.assertNotIn(forbidden,origin)
@@ -1276,7 +1276,7 @@ class ConfigurationCallsiteTests(unittest.TestCase):
 
     def mappings(self):
         source=(HERE/'HdfsKerberosTransferProbe.java').read_text()
-        origin=source[source.index('private static String originFrame('):source.index('private static void projectFailure(')]
+        origin=source[source.index('private static String originFrame('):source.index('private static void projectFailure(')].expandtabs(4)
         result={}
         for cls,expected in self.METHODS.items():
             pattern=r'case "'+re.escape(cls)+r'" -> switch \(frame.getMethodName\(\)\) \{(.*?)\n            \};'
@@ -1300,7 +1300,7 @@ class ConfigurationCallsiteTests(unittest.TestCase):
                 self.assertIsNone(methods.get(method))
             self.assertNotIn(cls+'$Unselected',mappings)
         source=(HERE/'HdfsKerberosTransferProbe.java').read_text()
-        origin=source[source.index('private static String originFrame('):source.index('private static void projectFailure(')]
+        origin=source[source.index('private static String originFrame('):source.index('private static void projectFailure(')].expandtabs(4)
         for forbidden in ('getMessage','getLocalizedMessage','getLineNumber','startsWith','substring','toString()','Class.forName'):
             self.assertNotIn(forbidden,origin)
 
@@ -2000,6 +2000,15 @@ class DfsOutputCallsiteTests(unittest.TestCase):
         "completeFile": "dfs_file_completion",
         "newStreamForCreate": "dfs_file_creation",
         "newStreamForAppend": "dfs_file_append",
+        "flushOrSync": "dfs_sync",
+        "writeChunk": "dfs_chunk",
+        "checkClosed": "dfs_closed",
+        "hsync": "dfs_hsync",
+        "hflush": "dfs_hflush",
+        "flushInternal": "dfs_flush",
+        "closeImpl": "dfs_close_impl",
+        "close": "dfs_close",
+        "cleanupAndRethrowIOException": "dfs_rethrow",
     }
     def test_pinned_output_callsites_are_closed_with_generic_fallback(self):
         raw = (F.HERE / "HdfsKerberosTransferProbe.java").read_bytes()

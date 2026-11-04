@@ -1,4 +1,4 @@
-/* Source-only transfer experiment: one secure DataNode, synthetic private credentials, no acceptance. */
+/* Isolated synthetic HDFS transfer; no acceptance. */
 import java.io.ByteArrayOutputStream;
 import java.io.ByteArrayInputStream;
 import java.io.DataInputStream;
@@ -489,8 +489,8 @@ public final class HdfsKerberosTransferProbe {
             default -> "linkage_failure";
         };
     }
-    private static String originFrame(StackTraceElement frame) {
-		// Closed markers only; class names, method names and messages never leave this process.
+	private static String originFrame(StackTraceElement frame) {
+		// Only fixed markers leave this process.
 		return switch (frame.getClassName()) {
 			case "org.apache.hadoop.hdfs.server.namenode.NameNode" -> switch (frame.getMethodName()) {
 				case "<init>" -> "namenode_constructor";
@@ -498,7 +498,7 @@ public final class HdfsKerberosTransferProbe {
 				case "loginAsNameNodeUser" -> "namenode_login";
 				case "format" -> "namenode_format";
 				default -> null;
-            };
+			};
 			case "org.apache.hadoop.hdfs.server.namenode.NameNodeHttpServer" -> "namenode_http";
 			case "org.apache.hadoop.http.HttpServer2", "org.apache.hadoop.http.HttpServer2$Builder" -> "hadoop_http";
 			case "org.apache.hadoop.metrics2.impl.MetricsConfig" -> switch (frame.getMethodName()) {
@@ -516,7 +516,7 @@ public final class HdfsKerberosTransferProbe {
 				case "toString" -> "metrics_config_to_string";
 				case "keys" -> "metrics_config_keys";
 				default -> null;
-            };
+			};
 			case "org.apache.commons.configuration2.PropertiesConfiguration" -> switch (frame.getMethodName()) {
 				case "<init>" -> "config_properties_constructor";
 				case "<clinit>" -> "config_properties_static_initializer";
@@ -524,7 +524,7 @@ public final class HdfsKerberosTransferProbe {
 				case "installLayout" -> "config_properties_install_layout";
 				case "read" -> "config_properties_read";
 				default -> null;
-            };
+			};
 			case "org.apache.commons.configuration2.AbstractConfiguration" -> switch (frame.getMethodName()) {
 				case "<init>" -> "config_abstract_constructor";
 				case "initLogger" -> "config_abstract_init_logger";
@@ -533,7 +533,7 @@ public final class HdfsKerberosTransferProbe {
 				case "interpolate" -> "config_abstract_interpolate";
 				case "interpolatedConfiguration" -> "config_abstract_interpolated_configuration";
 				default -> null;
-            };
+			};
 			case "org.apache.commons.configuration2.io.FileHandler" -> switch (frame.getMethodName()) {
 				case "<init>" -> "config_file_constructor";
 				case "<clinit>" -> "config_file_static_initializer";
@@ -543,7 +543,7 @@ public final class HdfsKerberosTransferProbe {
 				case "loadFromStreamDirectly" -> "config_file_load_from_stream_directly";
 				case "loadFromTransformedStream" -> "config_file_load_from_transformed_stream";
 				default -> null;
-            };
+			};
 			case "org.apache.commons.configuration2.interpol.ConfigurationInterpolator" -> switch (frame.getMethodName()) {
 				case "<init>" -> "config_interpolator_constructor";
 				case "<clinit>" -> "config_interpolator_static_initializer";
@@ -555,7 +555,7 @@ public final class HdfsKerberosTransferProbe {
 				case "resolve" -> "config_interpolator_resolve";
 				case "resolveSingleVariable" -> "config_interpolator_resolve_single_variable";
 				default -> null;
-            };
+			};
 			case "org.apache.commons.configuration2.interpol.ConfigurationInterpolator$DefaultPrefixLookupsHolder" -> switch (frame.getMethodName()) {
 				case "<init>" -> "config_lookup_holder_constructor";
 				case "<clinit>" -> "config_lookup_holder_static_initializer";
@@ -564,17 +564,17 @@ public final class HdfsKerberosTransferProbe {
 				case "parseLookups" -> "config_lookup_holder_parse_lookups";
 				case "getDefaultPrefixLookups" -> "config_lookup_holder_get_default_prefix_lookups";
 				default -> null;
-            };
+			};
 			case "org.apache.commons.configuration2.interpol.DefaultLookups" -> switch (frame.getMethodName()) {
 				case "<init>" -> "config_default_lookups_constructor";
 				case "<clinit>" -> "config_default_lookups_static_initializer";
 				default -> null;
-            };
+			};
 			case "org.apache.commons.configuration2.SubsetConfiguration" -> switch (frame.getMethodName()) {
 				case "<init>" -> "config_subset_constructor";
 				case "initInterpolator" -> "config_subset_init_interpolator";
 				default -> null;
-            };
+			};
 			case "org.apache.hadoop.metrics2.lib.DefaultMetricsSystem" -> switch (frame.getMethodName()) {
 				case "getImpl" -> "default_metrics_get_impl";
 				case "init" -> "default_metrics_init";
@@ -595,7 +595,7 @@ public final class HdfsKerberosTransferProbe {
 				case "removeSource" -> "default_metrics_remove_source";
 				case "newSourceName" -> "default_metrics_new_source_name";
 				default -> "hadoop_metrics";
-            };
+			};
 			case "org.apache.hadoop.metrics2.impl.MetricsSystemImpl" -> switch (frame.getMethodName()) {
 				case "<init>" -> "metrics_system_constructor";
 				case "init" -> "metrics_system_init";
@@ -634,12 +634,12 @@ public final class HdfsKerberosTransferProbe {
 				case "getSinkAdapter" -> "metrics_system_get_sink_adapter";
 				case "initMode" -> "metrics_system_init_mode";
 				default -> "hadoop_metrics";
-            };
+			};
 			case "org.apache.hadoop.hdfs.server.datanode.metrics.DataNodeMetrics" -> switch (frame.getMethodName()) {
 				case "<init>" -> "datanode_metrics_constructor";
 				case "create" -> "datanode_metrics_create";
 				default -> null;
-            };
+			};
 			case "org.apache.hadoop.metrics2.lib.MetricsSourceBuilder" -> switch (frame.getMethodName()) {
 				case "<init>" -> "metrics_source_builder_constructor";
 				case "initRegistry" -> "metrics_source_builder_registry";
@@ -647,27 +647,27 @@ public final class HdfsKerberosTransferProbe {
 				case "build" -> "metrics_source_builder_build";
 				case "info" -> "metrics_source_builder_info";
 				default -> null;
-            };
+			};
 			case "org.apache.hadoop.metrics2.lib.MutableMetricsFactory" -> switch (frame.getMethodName()) {
 				case "newForField" -> "metrics_factory_field";
 				case "newForMethod" -> "metrics_factory_method";
 				case "getInfo" -> "metrics_factory_info";
 				case "getName" -> "metrics_factory_name";
 				default -> null;
-            };
+			};
 			case "org.apache.hadoop.metrics2.lib.MetricsAnnotations" -> switch (frame.getMethodName()) {
 				case "newSourceBuilder" -> "metrics_annotations_builder";
 				default -> null;
-            };
+			};
 			case "org.apache.hadoop.metrics2.lib.MethodMetric" -> switch (frame.getMethodName()) {
 				case "<init>" -> "method_metric_constructor";
 				default -> null;
-            };
+			};
 			case "org.apache.hadoop.metrics2.source.JvmMetrics" -> switch (frame.getMethodName()) {
 				case "create" -> "jvm_metrics_create";
 				case "registerIfNeeded" -> "jvm_metrics_register";
 				default -> null;
-            };
+			};
 			case "org.apache.hadoop.metrics2.lib.MetricsRegistry" -> switch (frame.getMethodName()) {
 				case "newCounter" -> "metrics_registry_counter";
 				case "newGauge" -> "metrics_registry_gauge";
@@ -677,7 +677,7 @@ public final class HdfsKerberosTransferProbe {
 				case "newMutableRollingAverages" -> "metrics_registry_rolling";
 				case "newQuantiles" -> "metrics_registry_quantiles";
 				default -> null;
-            };
+			};
 			case "org.apache.hadoop.security.authentication.server.KerberosAuthenticationHandler",
 				 "org.apache.hadoop.security.authentication.server.AuthenticationFilter" -> "http_authentication";
 			case "java.lang.Throwable" -> frame.getMethodName().equals("addSuppressed") ? "self_suppression" : null;
@@ -689,6 +689,15 @@ public final class HdfsKerberosTransferProbe {
 				case "completeFile" -> "dfs_file_completion";
 				case "newStreamForCreate" -> "dfs_file_creation";
 				case "newStreamForAppend" -> "dfs_file_append";
+				case "flushOrSync" -> "dfs_sync";
+				case "writeChunk" -> "dfs_chunk";
+				case "checkClosed" -> "dfs_closed";
+				case "hsync" -> "dfs_hsync";
+				case "hflush" -> "dfs_hflush";
+				case "flushInternal" -> "dfs_flush";
+				case "closeImpl" -> "dfs_close_impl";
+				case "close" -> "dfs_close";
+				case "cleanupAndRethrowIOException" -> "dfs_rethrow";
 				default -> "dfs_output";
 			};
 			case "org.apache.hadoop.hdfs.protocol.datatransfer.sasl.SaslDataTransferClient" -> "data_sasl_client";
@@ -698,9 +707,9 @@ public final class HdfsKerberosTransferProbe {
 			case "org.apache.hadoop.hdfs.server.namenode.FSNamesystem" -> "namesystem";
 			default -> null;
 		};
-    }
+	}
 	private static void projectFailure(Throwable failure) {
-		// Closed type projection; no exception messages or raw frames.
+		// Closed types; no messages or raw frames.
 		String selected = "unclassified", origin = "none";
 		int selectedRank = 99;
 		Set<Throwable> seen = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
