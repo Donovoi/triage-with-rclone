@@ -417,6 +417,51 @@ class TicketTests(unittest.TestCase):
         self.assertIn(b"--kill-after=5s 180s", files["driver.sh"])
         self.assertIn(b"-Duser.home=/work/home", files["driver.sh"])
 
+
+    def test_base_manifest_digest_through_owned_lifecycle(self):
+        original = FakeDocker.inspect
+        def inspect(docker, kind, reference, allow_missing=False):
+            if kind == "image" and reference == F.BASE:
+                return dict(Id=F.BASE.rsplit("@", 1)[1], Os="linux", Architecture="amd64", Config={})
+            return original(docker, kind, reference, allow_missing=allow_missing)
+        with patch.object(FakeDocker, "inspect", inspect):
+            result = self.fake_run()
+        report, docker = result[:2]
+        self.assertIs(report["success"], True)
+        self.assertTrue(all(report["cleanup"].values()))
+        self.assertNotIn("private-canary", json.dumps(report))
+        self.assertEqual(report["base_observation"]["id_kind"], "manifest_digest")
+
+    def test_base_unknown_digest_through_owned_lifecycle(self):
+        original = FakeDocker.inspect
+        def inspect(docker, kind, reference, allow_missing=False):
+            if kind == "image" and reference == F.BASE:
+                return dict(Id="sha256:" + "0" * 64, Os="linux", Architecture="amd64", Config={})
+            return original(docker, kind, reference, allow_missing=allow_missing)
+        with patch.object(FakeDocker, "inspect", inspect):
+            result = self.fake_run()
+        report, docker = result[:2]
+        self.assertIs(report["success"], False)
+        self.assertTrue(all(report["cleanup"].values()))
+        self.assertNotIn("private-canary", json.dumps(report))
+        self.assertIn("base_invalid", report["errors"])
+        self.assertFalse(any(args[0] in {"build", "create", "start"} for args in (call[0] for call in docker.calls)))
+
+    def test_base_java_option_through_owned_lifecycle(self):
+        original = FakeDocker.inspect
+        def inspect(docker, kind, reference, allow_missing=False):
+            if kind == "image" and reference == F.BASE:
+                return dict(Id=F.BASE_ID, Os="linux", Architecture="amd64", Config={"Env": ["JDK_JAVA_OPTIONS=private-canary"]})
+            return original(docker, kind, reference, allow_missing=allow_missing)
+        with patch.object(FakeDocker, "inspect", inspect):
+            result = self.fake_run()
+        report, docker = result[:2]
+        self.assertIs(report["success"], False)
+        self.assertTrue(all(report["cleanup"].values()))
+        self.assertNotIn("private-canary", json.dumps(report))
+        self.assertIn("base_invalid", report["errors"])
+        self.assertFalse(any(args[0] in {"build", "create", "start"} for args in (call[0] for call in docker.calls)))
+
     def fake_run(self, action=None, failure=None, *, profile="kerberos", real_helpers=False):
         here = self.root / "input"; discovery = self.root / "discovery"
         here.mkdir(); discovery.mkdir()
@@ -595,7 +640,7 @@ class ProfileTests(unittest.TestCase):
 
     def test_real_profiles_validate_only_their_own_exact_runtime_and_lock(self):
         material = {}
-        for profile, total in (("kerberos", 74090067), ("kerberos-remediation", 73004295)):
+        for profile, total in (("kerberos", 74090067), ("kerberos-remediation", 73478410)):
             pins = F.profile_settings(profile)
             runtime, lock = pins["runtime"].read_bytes(), pins["lock"].read_bytes()
             rows = F.runtime_rows(runtime, lock, profile=profile)
@@ -614,7 +659,7 @@ class ProfileTests(unittest.TestCase):
         self.assertEqual(F.runtime_rows(*material["kerberos"]), F.runtime_rows(*material["kerberos"], profile="kerberos"))
 
     def test_closed_profiles_fail_before_reads_workers_or_host_access(self):
-        for bad in (None, True, 1, [], {}, "", "Kerberos", "kerberos/../kerberos-remediation", "PRIVATE_CANARY"):
+        for bad in (None, True, 1, [], {}, "", "Kerberos", "kerberos-refresh", "kerberos/../kerberos-remediation", "PRIVATE_CANARY"):
             with self.subTest(kind=type(bad).__name__), \
                     patch.object(F, "directory") as directory, patch.object(F, "read") as read, \
                     patch.object(F, "file_hash") as hashed, patch.object(F, "hosted_guard") as host:
@@ -1271,5 +1316,72 @@ class DownloadDeadlineTests(unittest.TestCase):
             with self.subTest(late=late):self.download_at(late,269.999)
 
 
+
+class PinnedImageAdmissionTests(unittest.TestCase):
+    def record(self):
+        return dict(Id=F.BASE_ID, Os="linux", Architecture="amd64", Config={"Env": ["PATH=/usr/bin"]})
+
+    def test_only_exact_config_or_manifest_digest_is_admitted(self):
+        for identity, kind in ((F.BASE_ID, "config_digest"), (F.BASE.rsplit("@", 1)[1], "manifest_digest")):
+            with self.subTest(kind=kind):
+                value = self.record(); value["Id"] = identity
+                result = F.validate_base(value, F.BASE, F.BASE_ID)
+                self.assertEqual(result, dict(id_kind=kind, linux=True, amd64=True,
+                    config_present=True, java_options_absent=True))
+        for identity in (None, "", [], True, "sha256:" + "0" * 64, F.BASE, F.BASE_ID + " "):
+            with self.subTest(identity=identity):
+                value = self.record(); value["Id"] = identity
+                with self.assertRaisesRegex(F.ProbeError, "^base_invalid$"):
+                    F.validate_base(value, F.BASE, F.BASE_ID)
+
+    def test_missing_config_wrong_platform_and_malformed_env_are_rejected(self):
+        for field, invalid in (("Os", "windows"), ("Architecture", "arm64"),
+                               ("Config", None), ("Config", []), ("Config", {"Env": None}),
+                               ("Config", {"Env": "PATH=/usr/bin"}), ("Config", {"Env": [123]})):
+            with self.subTest(field=field, invalid=invalid):
+                value = self.record(); value[field] = invalid
+                with self.assertRaisesRegex(F.ProbeError, "^base_invalid$"):
+                    F.validate_base(value, F.BASE, F.BASE_ID)
+        for value in (None, [], {}, "private-canary"):
+            with self.assertRaisesRegex(F.ProbeError, "^base_invalid$"):
+                F.validate_base(value, F.BASE, F.BASE_ID)
+        value = self.record(); del value["Config"]
+        with self.assertRaisesRegex(F.ProbeError, "^base_invalid$"):
+            F.validate_base(value, F.BASE, F.BASE_ID)
+
+    def test_each_java_injection_key_is_rejected_even_when_empty(self):
+        for key in ("JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS", "JDK_JAVA_OPTIONS"):
+            for suffix in ("", "=", "=-javaagent:private-canary"):
+                with self.subTest(key=key, suffix=suffix):
+                    value = self.record(); value["Config"]["Env"].append(key + suffix)
+                    with self.assertRaisesRegex(F.ProbeError, "^base_invalid$"):
+                        F.validate_base(value, F.BASE, F.BASE_ID)
+
+    def test_diagnostics_do_not_export_untrusted_values(self):
+        value = self.record(); value.update(Id="private-canary", Arbitrary="private-canary")
+        value["Config"]["Env"].append("JAVA_TOOL_OPTIONS=private-canary")
+        result = F.base_observation(value, F.BASE, F.BASE_ID)
+        self.assertEqual(set(result), {"id_kind", "linux", "amd64", "config_present", "java_options_absent"})
+        self.assertEqual(result["id_kind"], "unrecognized")
+        self.assertIs(result["java_options_absent"], False)
+        self.assertNotIn("private-canary", json.dumps(result))
+
 if __name__ == "__main__":
     unittest.main()
+
+
+class CommonsIoRuntimePinTests(unittest.TestCase):
+    def test_exact_io_selection_and_rebound_stale_descriptor_cannot_use_new_lock(self):
+        pins=F.profile_settings('kerberos-remediation')
+        descriptor=json.loads(pins['runtime'].read_bytes());lock=pins['lock'].read_bytes()
+        rows=F.runtime_rows(pins['runtime'].read_bytes(),lock,profile='kerberos-remediation')
+        selected=[row for row in rows if (row['group'],row['artifact'])==('commons-io','commons-io')]
+        self.assertEqual(len(selected),1)
+        self.assertEqual((selected[0]['version'],selected[0]['size'],selected[0]['sha256']),
+            ('2.22.0',609182,'2b9a7b1f726fb86216dbd2c8321eabe0221dbd5b1be81c18e1cb53811b104758'))
+        stale=json.loads(pins['runtime'].read_bytes())
+        io=next(row for row in stale['entries'] if (row['group'],row['artifact'])==('commons-io','commons-io'))
+        io.update(version='2.16.1',size=508826,sha256='f41f7baacd716896447ace9758621f62c1c6b0a91d89acee488da26fc477c84f')
+        stale['normalized_sha256']=F.sha(F.canonical(stale['entries']));raw=F.canonical(stale)
+        with patch.object(F,'REMEDIATION_RUNTIME_SHA',F.sha(raw)),patch.object(F,'REMEDIATION_ORDER_SHA',stale['normalized_sha256']):
+            with self.assertRaises(F.ProbeError):F.runtime_rows(raw,lock,profile='kerberos-remediation')

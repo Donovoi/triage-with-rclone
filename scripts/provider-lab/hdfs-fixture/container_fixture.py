@@ -451,6 +451,32 @@ def probe(docker, container, progress=None):
                 java_exited=True, listeners_closed=True)}
 
 
+def base_observation(value, manifest, config_id):
+    """Project only the pinned image identity and closed admission predicates."""
+    value = value if type(value) is dict else {}
+    observed = value.get("Id")
+    kind = ("config_digest" if observed == config_id else
+            "manifest_digest" if observed == manifest.rsplit("@", 1)[1] else "unrecognized")
+    config = value.get("Config")
+    env = config.get("Env", []) if type(config) is dict else None
+    clean_options = (type(env) is list and all(type(item) is str for item in env) and
+        not any(item.split("=", 1)[0] in {"JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS", "JDK_JAVA_OPTIONS"}
+                for item in env))
+    return dict(id_kind=kind, linux=value.get("Os") == "linux",
+                amd64=value.get("Architecture") == "amd64", config_present=type(config) is dict,
+                java_options_absent=clean_options)
+
+
+def validate_base(value, manifest, config_id):
+    # The classic store exposes the config digest; containerd exposes the
+    # manifest digest. Accept only these two identities of the pinned image.
+    observed = base_observation(value, manifest, config_id)
+    need(observed["id_kind"] in {"config_digest", "manifest_digest"} and
+         all(observed[key] is True for key in
+             ("linux", "amd64", "config_present", "java_options_absent")), "base_image_mismatch")
+    return observed
+
+
 def run(rclone, *, runner_factory=D.Docker, downloader=download_jars):
     start = time.monotonic()
     report = dict(schema_version=1, scope="hdfs_simple_protocol_experiment", success=False,
@@ -516,8 +542,8 @@ def run(rclone, *, runner_factory=D.Docker, downloader=download_jars):
         need(host.get("OSType") == "linux" and host.get("Architecture") in ("amd64", "x86_64"), "docker_platform_invalid")
         docker.call(["image", "pull", "--quiet", "--platform", "linux/amd64", BASE], timeout=120)
         base = docker.inspect("image", BASE)
-        need(base.get("Id") == BASE_ID and base.get("Os") == "linux" and base.get("Architecture") == "amd64",
-             "base_image_mismatch")
+        report["base_observation"] = base_observation(base, BASE, BASE_ID)
+        validate_base(base, BASE, BASE_ID)
         need(docker.inspect("image", tag, allow_missing=True) is None, "image_binding_invalid")
         report["stage"] = "build"
         attempted_build = True

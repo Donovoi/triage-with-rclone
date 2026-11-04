@@ -12,23 +12,40 @@ runs one unprivileged network-none container. It uses the existing Kerberos
 1.75.2. No additional runtime dependency is introduced. Dependency pinning is
 integrity evidence; the existing lock still has advisory work pending.
 
+The RPC, ticket, SIMPLE and dependency supervisors accept only the exact pinned
+JDK config digest or manifest digest reported by the Docker image store. They
+still require Linux/amd64, a valid image configuration, and no Java option
+injection. Closed diagnostic fields identify the accepted digest kind; unknown
+identities and malformed metadata fail before image build or container creation.
+
 The default `kerberos` profile preserves that original graph and workflow.
 The separate remediation workflow selects `--profile kerberos-remediation`,
 using `runtime-classpath-remediation.json` and
 `hdfs-discovery/artifact-lock-kerberos-remediation.json`. Its 142 JARs total
-73,004,295 bytes, with ordered runtime SHA256
-`dbed8ddb36a8286af785cc4eace07f335b033cbb0b37f02683db901c6066e14c`.
+73,478,410 bytes, with ordered runtime SHA256
+`92533297bdae9e77befdc0c381f25850a08becac726c026ab70bd3a68b90b2a7`.
 The supervisor and owned downloader both require the same closed profile and
 exact runtime/lock bytes; no custom paths or fallback graph are accepted.
 Receipts identify the selected profile, runtime file, ordered rows and lock.
 
-The remediation graph has a verified dependency-only offline replay. That
-does not establish RPC compatibility: its separate exact-head native result
-must pass every control and cleanup check below. Old-graph successes cannot
-qualify this profile. Four Jetty advisory matches and incomplete dependency
-semantics remain; all security, provider, application, vendor and ledger
-acceptance flags remain false. The Java probe and all service/resource bounds
-are identical between the two profiles.
+This graph includes Commons IO 2.22.0 for Commons Configuration 2.15.1,
+Guava 33.7.2-jre and Snappy 1.1.10.9. The updated graph was captured by
+[hosted online resolution](https://github.com/Donovoi/triage-with-rclone/actions/runs/41813886704)
+at revision `82620ce983c431101079144b5f398b3f70497495`; all 641 artifact
+sizes and SHA-256 hashes were independently rechecked against Maven Central.
+Four runtime JAR versions changed, including Guava's J2ObjC and JSpecify
+annotation dependencies. The original SIMPLE and Kerberos profile pins remain
+unchanged. The temporary online discovery profile was retired after capture.
+
+The November 4 OSV query of all 137 resolved runtime coordinates returned
+four Jetty advisory matches; the previously matched Guava and Snappy versions
+are no longer selected. This database query does not establish a complete
+security audit or runtime exploitability. Dependency semantics and all
+security, provider, application, vendor and ledger acceptance remain open.
+
+Qualification of this graph requires a fresh offline replay and exact-revision
+RPC and transfer controls with complete cleanup. Earlier reports bind earlier
+runtime hashes. The Java probes and all service/resource bounds are unchanged.
 
 The fixed loopback services are NameNode RPC `19000`, NameNode HTTP/SPNEGO
 scaffolding `19003`, synthetic TCP KDC `19006`, and owned relay `19007`. All
