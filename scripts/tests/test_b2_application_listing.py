@@ -299,6 +299,10 @@ class ListingTests(unittest.TestCase):
                     def snapshot(name,action="finish",finished=True):
                         value=original_snapshot("acquisition",action,finished);value["runtime_launch_count"]=1;return value
                     mocks.enter_context(patch.object(old_p,"snapshot",snapshot))
+                    # Python 3.12 Windows monotonic ticks can be equal for an
+                    # instantaneous fake command. Model elapsed time explicitly.
+                    ticks=iter(range(1000000000,1100000000,1000000))
+                    mocks.enter_context(patch.object(P.time,"monotonic_ns",side_effect=lambda:next(ticks)))
                     witness={}
                     def command(action,**fields):
                         order.append(action)
