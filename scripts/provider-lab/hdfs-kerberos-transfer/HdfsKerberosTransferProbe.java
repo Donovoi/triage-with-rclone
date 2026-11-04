@@ -1943,6 +1943,7 @@ public final class HdfsKerberosTransferProbe {
 		need(new String(version.out, StandardCharsets.US_ASCII).startsWith("rclone v1.75.2\n"), Code.rclone_version_mismatch);
 		need(processIds().equals(processBaseline), Code.child_process_drift);
 		baseline = threadIds();
+		final Set<Long> poolBaseline = Set.copyOf(baseline);
 		Files.createDirectory(ROOT, PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------")));
 		rootCreated = true; rootKey = directory(ROOT, true); rootOwned = true; PRIVATE_DIRS.put(ROOT, rootKey);
 		adoptResourceDirectory();
@@ -1993,7 +1994,7 @@ public final class HdfsKerberosTransferProbe {
 		need(datanode != null, Code.datanode_failed); observeThreads("datanode", baseline);
 		captureDatanodeSsl(baseline); topology(); CHECKS.put("secure_datanode", true);
 		stage = "tls_endpoints"; verifyTlsEndpoint(19003); verifyTlsEndpoint(19004); CHECKS.put("tls_endpoints", true);
-		stage = "seed"; bounded(() -> { seedObserved(); verifyMember(); captureReplicaPool(baseline); seedStep(SeedOperation.complete, SeedRole.none); return null; }, 20, deadline);
+		stage = "seed"; bounded(() -> { seedObserved(); verifyMember(); captureReplicaPool(poolBaseline); seedStep(SeedOperation.complete, SeedRole.none); return null; }, 20, deadline);
 		CHECKS.put("registered_datanode", true); CHECKS.put("seed_hashes", true);
 		configurationDigest = configurationDigest();
 		stage = "reader_tgt";

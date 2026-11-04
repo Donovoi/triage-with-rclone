@@ -1592,7 +1592,7 @@ class SeedCheckpointTests(unittest.TestCase):
         self.assertIn('if (closing != primary) primary.addSuppressed(closing);', seed)
         self.assertRegex(verify, r'seedStep\(SeedOperation.verify_read_open, role\);\s*try \(var input=filesystem.open\(path, 4096\)\) \{\s*seedStep\(SeedOperation.verify_read, role\);')
         self.assertRegex(verify, r'seedStep\(SeedOperation.verify_read_close, role\);\s*} finally \{ Arrays.fill\(buffer,\(byte\)0\); }')
-        self.assertIn('stage = "seed"; bounded(() -> { seedObserved(); verifyMember(); captureReplicaPool(baseline); seedStep(SeedOperation.complete, SeedRole.none); return null; }, 20, deadline);', source)
+        self.assertIn('stage = "seed"; bounded(() -> { seedObserved(); verifyMember(); captureReplicaPool(poolBaseline); seedStep(SeedOperation.complete, SeedRole.none); return null; }, 20, deadline);', source)
         self.assertIn('stage = "preservation"; bounded(() -> { verifyMember(); return null; }, 5, controlDeadline);', source)
 
     def test_inert_resource_failure_model_keeps_original_calls_and_suppression(self):
@@ -2424,6 +2424,10 @@ class OwnedReplicaPoolTests(unittest.TestCase):
             self.assertIn(guard,capture)
         self.assertIn('WORK.resolve("state/data").toRealPath()',capture)
         self.assertLess(capture.index("!baseline.contains"),capture.index("replicaPool=pool"))
+        main=source[source.index("public static void main("):]
+        self.assertLess(main.index("final Set<Long> poolBaseline = Set.copyOf(baseline);"),main.index("DataNode.createDataNode("))
+        self.assertIn("captureReplicaPool(poolBaseline);",main)
+        self.assertNotIn("captureReplicaPool(baseline);",main)
         stop=source[source.index("private static void stopServices()"):source.index("public static void main(")]
         self.assertLess(stop.index("datanode.shutdown()"),stop.index("replicaPool.shutdown()"))
         self.assertIn("dnStopped && replicaPool!=null && closed && children && relayClosed",stop)
