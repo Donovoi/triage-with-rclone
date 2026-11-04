@@ -680,6 +680,10 @@ public final class HdfsKerberosTransferProbe {
             };
 			case "org.apache.hadoop.security.authentication.server.KerberosAuthenticationHandler",
 				 "org.apache.hadoop.security.authentication.server.AuthenticationFilter" -> "http_authentication";
+			case "org.apache.hadoop.hdfs.DataStreamer" -> "data_streamer";
+			case "org.apache.hadoop.hdfs.DFSOutputStream" -> "dfs_output";
+			case "org.apache.hadoop.hdfs.protocol.datatransfer.sasl.SaslDataTransferClient" -> "data_sasl_client";
+			case "org.apache.hadoop.hdfs.protocol.datatransfer.sasl.SaslParticipant" -> "data_sasl_participant";
 			case "org.apache.hadoop.security.UserGroupInformation" -> "ugi";
 			case "org.apache.hadoop.hdfs.server.blockmanagement.BlockManager" -> "block_manager";
 			case "org.apache.hadoop.hdfs.server.namenode.FSNamesystem" -> "namesystem";
