@@ -681,7 +681,13 @@ public final class HdfsKerberosTransferProbe {
 			case "org.apache.hadoop.security.authentication.server.KerberosAuthenticationHandler",
 				 "org.apache.hadoop.security.authentication.server.AuthenticationFilter" -> "http_authentication";
 			case "java.lang.Throwable" -> frame.getMethodName().equals("addSuppressed") ? "self_suppression" : null;
-			case "org.apache.hadoop.hdfs.DataStreamer" -> "data_streamer";
+			case "org.apache.hadoop.hdfs.DataStreamer" -> switch (frame.getMethodName()) {
+				case "createSocketForPipeline" -> "data_socket_create";
+				case "createBlockOutputStream" -> "data_block_stream";
+				case "setupPipelineForCreate" -> "data_pipeline_create";
+				default -> "data_streamer";
+			};
+			case "org.apache.hadoop.hdfs.protocol.datatransfer.DataTransferProtoUtil" -> "data_block_status";
 			case "org.apache.hadoop.hdfs.DFSOutputStream" -> switch (frame.getMethodName()) {
 				case "writeChunkPrepare" -> "dfs_chunk_validation";
 				case "createPacket" -> "dfs_packet_allocation";
@@ -1616,23 +1622,23 @@ public final class HdfsKerberosTransferProbe {
 			.digest(text.toString().getBytes(StandardCharsets.UTF_8)));
 	}
     private static void exportKey(SimpleKdcServer server, String principal, Path path) throws Exception {
-        guardRoot(); need(!Files.exists(path, NOFOLLOW), Code.path_invalid);
-        server.createPrincipal(principal); server.exportPrincipal(principal, path.toFile());
-        Files.setPosixFilePermissions(path, PosixFilePermissions.fromString("rw-------"));
-        OWNED_FILES.put(path, new FileState(path)); inventory();
+		guardRoot(); need(!Files.exists(path, NOFOLLOW), Code.path_invalid);
+		server.createPrincipal(principal); server.exportPrincipal(principal, path.toFile());
+		Files.setPosixFilePermissions(path, PosixFilePermissions.fromString("rw-------"));
+		OWNED_FILES.put(path, new FileState(path)); inventory();
     }
     private static void rememberOwner() throws Exception {
-        try {
-            UserGroupInformation current = UserGroupInformation.getLoginUser();
-            need(current.getUserName().equals(ownerPrincipal) && current.isFromKeytab()
-                && current.hasKerberosCredentials(), Code.namenode_failed);
-            if (!OWNERS.contains(current)) { need(OWNERS.size() < 4, Code.namenode_failed); OWNERS.add(current); }
-            owner = current;
-        } catch (Throwable failure) {
-            ownerCaptureComplete = false;
-            if (failure instanceof Exception exception) throw exception;
-            throw new Failure(Code.namenode_failed, failure);
-        }
+		try {
+			UserGroupInformation current = UserGroupInformation.getLoginUser();
+			need(current.getUserName().equals(ownerPrincipal) && current.isFromKeytab()
+				&& current.hasKerberosCredentials(), Code.namenode_failed);
+			if (!OWNERS.contains(current)) { need(OWNERS.size() < 4, Code.namenode_failed); OWNERS.add(current); }
+			owner = current;
+		} catch (Throwable failure) {
+			ownerCaptureComplete = false;
+			if (failure instanceof Exception exception) throw exception;
+			throw new Failure(Code.namenode_failed, failure);
+		}
     }
     private static long cap(int seconds) { return Math.min(cleanupDeadline, System.nanoTime() + TimeUnit.SECONDS.toNanos(seconds)); }
     private static boolean metricsModeAttempted, metricsModeCaptured, metricsModePrior,
@@ -1640,51 +1646,51 @@ public final class HdfsKerberosTransferProbe {
         metricsModeRestoreVerified, metricsModeTransitionFailed;
 
     private static void enableMetricsMode() throws Exception {
-        metricsModeAttempted = true;
-        try {
-            need(System.nanoTime() < deadline, Code.deadline_exceeded);
-            metricsModePrior = DefaultMetricsSystem.inMiniClusterMode();
-            metricsModeCaptured = true;
-            need(!metricsModePrior, Code.configuration_invalid);
-            need(System.nanoTime() < deadline, Code.deadline_exceeded);
-            // Pinned Hadoop exposes this mode for multiple daemons in one JVM.
-            // Record the attempt before the setter, including a write-then-throw.
-            metricsModeEnableAttempted = true;
-            DefaultMetricsSystem.setMiniClusterMode(true);
-            boolean enabled = DefaultMetricsSystem.inMiniClusterMode();
-            need(System.nanoTime() < deadline, Code.deadline_exceeded);
-            need(enabled, Code.configuration_invalid);
-            metricsModeEnableVerified = true;
-            CHECKS.put("metrics_mode_enabled", true);
-        } catch (Throwable failure) {
-            metricsModeTransitionFailed = true;
-            throw failure;
-        }
+		metricsModeAttempted = true;
+		try {
+			need(System.nanoTime() < deadline, Code.deadline_exceeded);
+			metricsModePrior = DefaultMetricsSystem.inMiniClusterMode();
+			metricsModeCaptured = true;
+			need(!metricsModePrior, Code.configuration_invalid);
+			need(System.nanoTime() < deadline, Code.deadline_exceeded);
+			// Pinned Hadoop exposes this mode for multiple daemons in one JVM.
+			// Record the attempt before the setter, including a write-then-throw.
+			metricsModeEnableAttempted = true;
+			DefaultMetricsSystem.setMiniClusterMode(true);
+			boolean enabled = DefaultMetricsSystem.inMiniClusterMode();
+			need(System.nanoTime() < deadline, Code.deadline_exceeded);
+			need(enabled, Code.configuration_invalid);
+			metricsModeEnableVerified = true;
+			CHECKS.put("metrics_mode_enabled", true);
+		} catch (Throwable failure) {
+			metricsModeTransitionFailed = true;
+			throw failure;
+		}
     }
 
     private static void restoreMetricsMode() {
-        if (!metricsModeAttempted) { CLEANUP.put("metrics_mode_restored", true); return; }
-        if (metricsModeCaptured) {
-            metricsModeRestoreAttempted = true;
-            try {
-                need(System.nanoTime() < cleanupDeadline, Code.deadline_exceeded);
-                if (metricsModeEnableAttempted) DefaultMetricsSystem.setMiniClusterMode(metricsModePrior);
-                boolean restored = DefaultMetricsSystem.inMiniClusterMode() == metricsModePrior;
-                need(System.nanoTime() < cleanupDeadline, Code.deadline_exceeded);
-                need(restored, Code.configuration_invalid);
-                metricsModeRestoreVerified = true;
-            } catch (Throwable ignored) { metricsModeTransitionFailed = true; }
-        }
-        // A failed capture/enable transition remains a failure even after restoration.
-        CLEANUP.put("metrics_mode_restored", metricsModeCaptured && !metricsModePrior
-            && metricsModeEnableVerified && metricsModeRestoreVerified && !metricsModeTransitionFailed);
+		if (!metricsModeAttempted) { CLEANUP.put("metrics_mode_restored", true); return; }
+		if (metricsModeCaptured) {
+			metricsModeRestoreAttempted = true;
+			try {
+				need(System.nanoTime() < cleanupDeadline, Code.deadline_exceeded);
+				if (metricsModeEnableAttempted) DefaultMetricsSystem.setMiniClusterMode(metricsModePrior);
+				boolean restored = DefaultMetricsSystem.inMiniClusterMode() == metricsModePrior;
+				need(System.nanoTime() < cleanupDeadline, Code.deadline_exceeded);
+				need(restored, Code.configuration_invalid);
+				metricsModeRestoreVerified = true;
+			} catch (Throwable ignored) { metricsModeTransitionFailed = true; }
+		}
+		// A failed capture/enable transition remains a failure even after restoration.
+		CLEANUP.put("metrics_mode_restored", metricsModeCaptured && !metricsModePrior
+			&& metricsModeEnableVerified && metricsModeRestoreVerified && !metricsModeTransitionFailed);
     }
 
     private static String metricsModeJson() {
-        return "{\"attempted\":" + metricsModeAttempted + ",\"captured\":" + metricsModeCaptured
-            + ",\"prior_enabled\":" + metricsModePrior + ",\"enable_attempted\":" + metricsModeEnableAttempted
-            + ",\"enable_verified\":" + metricsModeEnableVerified + ",\"restore_attempted\":" + metricsModeRestoreAttempted
-            + ",\"restore_verified\":" + metricsModeRestoreVerified + ",\"transition_failed\":" + metricsModeTransitionFailed + "}";
+		return "{\"attempted\":" + metricsModeAttempted + ",\"captured\":" + metricsModeCaptured
+			+ ",\"prior_enabled\":" + metricsModePrior + ",\"enable_attempted\":" + metricsModeEnableAttempted
+			+ ",\"enable_verified\":" + metricsModeEnableVerified + ",\"restore_attempted\":" + metricsModeRestoreAttempted
+			+ ",\"restore_verified\":" + metricsModeRestoreVerified + ",\"transition_failed\":" + metricsModeTransitionFailed + "}";
     }
 
     private static void stopServices() {
