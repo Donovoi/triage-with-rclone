@@ -682,7 +682,15 @@ public final class HdfsKerberosTransferProbe {
 				 "org.apache.hadoop.security.authentication.server.AuthenticationFilter" -> "http_authentication";
 			case "java.lang.Throwable" -> frame.getMethodName().equals("addSuppressed") ? "self_suppression" : null;
 			case "org.apache.hadoop.hdfs.DataStreamer" -> "data_streamer";
-			case "org.apache.hadoop.hdfs.DFSOutputStream" -> "dfs_output";
+			case "org.apache.hadoop.hdfs.DFSOutputStream" -> switch (frame.getMethodName()) {
+				case "writeChunkPrepare" -> "dfs_chunk_validation";
+				case "createPacket" -> "dfs_packet_allocation";
+				case "closeThreads" -> "dfs_thread_shutdown";
+				case "completeFile" -> "dfs_file_completion";
+				case "newStreamForCreate" -> "dfs_file_creation";
+				case "newStreamForAppend" -> "dfs_file_append";
+				default -> "dfs_output";
+			};
 			case "org.apache.hadoop.hdfs.protocol.datatransfer.sasl.SaslDataTransferClient" -> "data_sasl_client";
 			case "org.apache.hadoop.hdfs.protocol.datatransfer.sasl.SaslParticipant" -> "data_sasl_participant";
 			case "org.apache.hadoop.security.UserGroupInformation" -> "ugi";
@@ -691,46 +699,46 @@ public final class HdfsKerberosTransferProbe {
 			default -> null;
 		};
     }
-    private static void projectFailure(Throwable failure) {
-        // Closed type projection; no exception messages or raw frames.
-        String selected = "unclassified", origin = "none";
-        int selectedRank = 99;
-        Set<Throwable> seen = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
-        try {
-            for (int depth = 0; failure != null && depth < 8 && seen.add(failure); depth++, failure = failure.getCause()) {
-                String category = "unclassified"; int rank = 99;
-                if (failure instanceof ExitUtil.ExitException) { category = "exit_requested"; rank = 0; }
-                else if (failure instanceof ExitUtil.HaltException) { category = "halt_requested"; rank = 0; }
-                else if (failure instanceof ClassNotFoundException || failure instanceof NoClassDefFoundError) {
-                    category = "missing_class"; rank = 1;
-                } else if (failure instanceof OutOfMemoryError || failure instanceof StackOverflowError) {
-                    category = "resource_failure"; rank = 2;
-                } else if (failure instanceof IllegalArgumentException) { category = "invalid_config"; rank = 3; }
-                else if (failure instanceof LinkageError) { category = linkageCategory((LinkageError) failure); rank = 4; }
-                else if (failure instanceof MetricsException) { category = "metrics_failure"; rank = 5; }
-                else if (failure instanceof NullPointerException) { category = "null_state"; rank = 6; }
-                else if (failure instanceof IllegalStateException) { category = "illegal_state"; rank = 7; }
-                else if (failure instanceof UnsupportedOperationException) { category = "unsupported_operation"; rank = 8; }
-                else if (failure instanceof SecurityException) { category = "security_failure"; rank = 9; }
-                else if (failure instanceof KrbException) { category = "krb_failure"; rank = 10; }
-                else if (failure instanceof FileNotFoundException) { category = "file_missing"; rank = 11; }
-                else if (failure instanceof IOException) { category = "io_failure"; rank = 12; }
-                else if (failure instanceof InterruptedException) { category = "interrupted"; rank = 13; }
-                else if (failure instanceof Failure own && own.code != Code.unclassified) { category = "assertion"; rank = 14; }
-                if (rank < selectedRank) {
-                    selected = category; selectedRank = rank; origin = "none";
-                    // The known callsite belongs to this selected throwable, not another cause.
-                    // A callsite identifies a frame, never the unresolved linkage target.
-                    StackTraceElement[] frames = failure.getStackTrace();
-                    for (int i = 0; i < frames.length && i < 32; i++) {
-                        String marker = originFrame(frames[i]);
-                        if (marker != null) { origin = marker; break; }
-                    }
-                }
-            }
-            diagnosticCategory = selected; diagnosticOrigin = origin;
-        } catch (Throwable ignored) { diagnosticCategory = "unclassified"; diagnosticOrigin = "none"; }
-    }
+	private static void projectFailure(Throwable failure) {
+		// Closed type projection; no exception messages or raw frames.
+		String selected = "unclassified", origin = "none";
+		int selectedRank = 99;
+		Set<Throwable> seen = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+		try {
+			for (int depth = 0; failure != null && depth < 8 && seen.add(failure); depth++, failure = failure.getCause()) {
+				String category = "unclassified"; int rank = 99;
+				if (failure instanceof ExitUtil.ExitException) { category = "exit_requested"; rank = 0; }
+				else if (failure instanceof ExitUtil.HaltException) { category = "halt_requested"; rank = 0; }
+				else if (failure instanceof ClassNotFoundException || failure instanceof NoClassDefFoundError) {
+					category = "missing_class"; rank = 1;
+				} else if (failure instanceof OutOfMemoryError || failure instanceof StackOverflowError) {
+					category = "resource_failure"; rank = 2;
+				} else if (failure instanceof IllegalArgumentException) { category = "invalid_config"; rank = 3; }
+				else if (failure instanceof LinkageError) { category = linkageCategory((LinkageError) failure); rank = 4; }
+				else if (failure instanceof MetricsException) { category = "metrics_failure"; rank = 5; }
+				else if (failure instanceof NullPointerException) { category = "null_state"; rank = 6; }
+				else if (failure instanceof IllegalStateException) { category = "illegal_state"; rank = 7; }
+				else if (failure instanceof UnsupportedOperationException) { category = "unsupported_operation"; rank = 8; }
+				else if (failure instanceof SecurityException) { category = "security_failure"; rank = 9; }
+				else if (failure instanceof KrbException) { category = "krb_failure"; rank = 10; }
+				else if (failure instanceof FileNotFoundException) { category = "file_missing"; rank = 11; }
+				else if (failure instanceof IOException) { category = "io_failure"; rank = 12; }
+				else if (failure instanceof InterruptedException) { category = "interrupted"; rank = 13; }
+				else if (failure instanceof Failure own && own.code != Code.unclassified) { category = "assertion"; rank = 14; }
+				if (rank < selectedRank) {
+					selected = category; selectedRank = rank; origin = "none";
+					// The known callsite belongs to this selected throwable, not another cause.
+					// A callsite identifies a frame, never the unresolved linkage target.
+					StackTraceElement[] frames = failure.getStackTrace();
+					for (int i = 0; i < frames.length && i < 32; i++) {
+						String marker = originFrame(frames[i]);
+						if (marker != null) { origin = marker; break; }
+					}
+				}
+			}
+			diagnosticCategory = selected; diagnosticOrigin = origin;
+		} catch (Throwable ignored) { diagnosticCategory = "unclassified"; diagnosticOrigin = "none"; }
+	}
     private static String threadCategory(Thread thread) {
         if (TASKS.contains(thread)) return "probe_task";
         String selected = "other"; int selectedRank = 99;
