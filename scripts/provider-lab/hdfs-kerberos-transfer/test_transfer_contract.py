@@ -2298,3 +2298,20 @@ class SeedClientCleanupTests(unittest.TestCase):
         self.assertFalse(result['success'])
         self.assertFalse(result['cleanup']['seed_lease_renewer_stopped'])
         with self.assertRaises(F.ProbeError):F.validate_java(F.canonical(value),0)
+
+
+class RcloneServerObservationTests(unittest.TestCase):
+    def test_each_child_observer_requires_clean_prior_scope_and_always_detaches(self):
+        source=(HERE/'HdfsKerberosTransferProbe.java').read_text().expandtabs(4)
+        method=source[source.index('private static Result rclone('):source.index('private static com.fasterxml.jackson.databind.ObjectMapper jsonMapper()')]
+        self.assertEqual(method.count('Logger.getLogger("org.apache.hadoop.hdfs.server.datanode.DataNode")'),1)
+        self.assertIn('need(pipelineServerDetached && serverLogger.isEnabledFor(org.apache.log4j.Level.WARN), Code.configuration_invalid)',method)
+        self.assertLess(method.index('need(pipelineServerDetached'),method.index('pipelineServerDetached = false'))
+        self.assertLess(method.index('serverLogger.addAppender(serverObserver)'),method.index('Result result=child('))
+        self.assertLess(method.index('serverLogger.isAttached(serverObserver)'),method.index('Result result=child('))
+        self.assertLess(method.index('relay.end(phase)'),method.index('finally {'))
+        self.assertLess(method.index('finally {'),method.index('serverLogger.removeAppender(serverObserver)'))
+        self.assertIn('serverObserver.close(); pipelineServerDetached = !serverLogger.isAttached(serverObserver)',method)
+        self.assertIn('catch (Throwable ignored) { pipelineServerDetached = false; }',method)
+        for forbidden in ('setLevel','setAdditivity','getRootLogger','getMessage','getLocalizedMessage','Thread.interrupt'):
+            self.assertNotIn(forbidden,method)
