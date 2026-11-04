@@ -838,6 +838,7 @@ public final class HdfsKerberosTransferProbe {
 		String name = thread.getName();
 		if (name.length() > 128) return "other";
 		if (name.equals("process reaper") || name.matches("process reaper [(]pid [0-9]+[)]")) return "process_reaper";
+		if (name.matches("Readahead Thread #[0-9]+")) return "readahead";
 		if (name.equals("ShortCircuitCache_Cleaner")) return "shortcircuit_cleaner";
 		if (name.equals("ShortCircuitCache_SlotReleaser")) return "shortcircuit_releaser";
 		if (name.startsWith("StripedRead-")) return "striped_read";
@@ -1338,6 +1339,8 @@ public final class HdfsKerberosTransferProbe {
 				if (message.contains("broken pipe")) return "data_broken_pipe";
 				if (message.contains("connection refused")) return "data_connection_refused";
 				if (message.contains("i/o timeout")) return "data_io_timeout";
+				if (message.contains("unsupported checksum type:")) return "data_checksum_unsupported";
+				if (message.contains("cannot parse invalid wire-format data")) return "data_protobuf_invalid";
 				if (message.contains("invalid checksum")) return "data_checksum_invalid";
 				if (message.contains("invalid response from datanode")) return "data_response_invalid";
 				if (message.startsWith("Failed to open:")) return "cat_open";
@@ -1486,6 +1489,7 @@ public final class HdfsKerberosTransferProbe {
 		conf.setInt("dfs.namenode.handler.count", 2);
 		conf.setInt("dfs.datanode.handler.count", 2);
 		conf.setInt("dfs.client.socketcache.capacity", 0);
+		conf.setLong("dfs.datanode.readahead.bytes", 0);
 		conf.setLong("dfs.datanode.round-robin-volume-choosing-policy.additional-available-space", 4194304);
 		conf.set("dfs.datanode.max.locked.memory", "0");
 		conf.set("dfs.client.use.datanode.hostname", "false");
@@ -1554,6 +1558,7 @@ public final class HdfsKerberosTransferProbe {
 					&& conf.getInt("dfs.namenode.handler.count", -1) == 2
 					&& conf.getInt("dfs.datanode.handler.count", -1) == 2
 					&& conf.getInt("dfs.client.socketcache.capacity", -1) == 0
+					&& conf.getLong("dfs.datanode.readahead.bytes", -1) == 0
 					&& !conf.getBoolean("ignore.secure.ports.for.testing", true)
 					&& conf.get("dfs.datanode.ignore.secure.ports.for.testing") == null
 					&& !conf.getBoolean("ipc.client.fallback-to-simple-auth-allowed", true)
