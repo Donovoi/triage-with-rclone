@@ -77,6 +77,15 @@ class ProbeError(Exception):
         super().__init__(self.code)
 
 
+JAVA_VALIDATION_STAGES = frozenset(["parse","schema","boolean_maps","metrics_mode","ssl_capture","seed_checkpoint","pipeline_server","pipeline_origin","scalars","stage","wire","exit_status","relay","acquisitions","diagnostics","owned_cleanup","completion"])
+
+
+class JavaReportError(ProbeError):
+    def __init__(self, stage):
+        super().__init__("java_report_invalid")
+        self.stage = stage if type(stage) is str and stage in JAVA_VALIDATION_STAGES else "unclassified"
+
+
 def need(value, code):
     if not value: raise ProbeError(code)
 
@@ -522,40 +531,57 @@ def validate_seed_checkpoint(value, checks):
 
 
 def validate_java(raw, exit_code):
+    checkpoint = "parse"
     try:
         value = parse(raw, 32768)
+        checkpoint = "schema"
         keys = {"schema_version", "scope", "success", "expected_kerby_version", "runtime_binding_required", "checks",
                 "cleanup", "metrics_mode", "ssl_capture", "seed_checkpoint", "cache_bytes", "child_count", "acquired_bytes", "acquisitions", "missing_category", "observed_lifetime_seconds", "stage", "wire_hex", "rclone_wire_hex", "relay", "error", "diagnostic", "pipeline_origin", "pipeline_server_diagnostic", "remaining_threads", "remaining_thread_intervals", "remaining_thread_matrix", "remaining_timer_kinds", "thread_observation_complete", "owned_thread_cleanup"} | JAVA_FALSE
         need(type(value) is dict and set(value) == keys and type(value["schema_version"]) is int
              and value["schema_version"] == 1 and value["scope"] == "hdfs_kerberos_transfer_feasibility"
              and value["expected_kerby_version"] == "2.1.2" and value["runtime_binding_required"] is True
              and type(value["success"]) is bool and all(value[key] is False for key in JAVA_FALSE), "java_report_invalid")
+        checkpoint = "boolean_maps"
         for key, expected in (("checks", JAVA_CHECKS), ("cleanup", JAVA_CLEANUP)):
             need(type(value[key]) is dict and set(value[key]) == expected
                  and all(type(x) is bool for x in value[key].values()), "java_report_invalid")
+        checkpoint = "metrics_mode"
         validate_metrics_mode(value["metrics_mode"], value["checks"], value["cleanup"])
+        checkpoint = "ssl_capture"
         validate_ssl_capture(value["ssl_capture"], value["checks"], value["cleanup"], value["error"])
+        checkpoint = "seed_checkpoint"
         validate_seed_checkpoint(value["seed_checkpoint"], value["checks"])
+        checkpoint = "pipeline_server"
         validate_pipeline_server(value["pipeline_server_diagnostic"])
+        checkpoint = "pipeline_origin"
         need(type(value["pipeline_origin"]) is str and value["pipeline_origin"] in DIAGNOSTIC_ORIGINS | {"not_observed"}, "java_report_invalid")
+        checkpoint = "scalars"
         need(type(value["cache_bytes"]) is int and 0 <= value["cache_bytes"] <= 65536
              and type(value["observed_lifetime_seconds"]) is int and 0 <= value["observed_lifetime_seconds"] <= 120
              and (value["error"] is None or type(value["error"]) is str and value["error"] in JAVA_CODES), "java_report_invalid")
+        checkpoint = "stage"
         need(type(value["stage"]) is str and value["stage"] in STAGES, "java_report_invalid")
+        checkpoint = "wire"
         oracles = {}
         for key, check in (("wire_hex", "wire_auth_boundary_rejection"), ("rclone_wire_hex", "rclone_auth_boundary_rejection")):
             need(type(value[key]) is str and re.fullmatch(r"(?:[0-9a-f]{2}){0,4100}", value[key]), "java_report_invalid")
             need(not value["checks"][check] or bool(value[key]), "java_report_invalid")
             oracles[key] = parse_wire(bytes.fromhex(value[key])) if value[key] else None
+        checkpoint = "exit_status"
         passed = all(value["checks"].values()) and all(value["cleanup"].values()) and value["error"] is None
         need(type(exit_code) is int and exit_code in (0, 1) and value["success"] is passed
              and exit_code == (0 if passed else 1), "java_report_invalid")
         if passed: need(100 < value["cache_bytes"] <= 65536 and 110 <= value["observed_lifetime_seconds"] <= 120, "java_report_invalid")
+        checkpoint = "relay"
         validate_relay(value["relay"], passed)
+        checkpoint = "acquisitions"
         validate_acquisitions(value, passed)
+        checkpoint = "diagnostics"
         validate_diagnostics(value["diagnostic"], value["remaining_threads"], value["remaining_thread_intervals"],
                              value["remaining_thread_matrix"], value["remaining_timer_kinds"], value["thread_observation_complete"], value["error"], value["cleanup"], passed)
+        checkpoint = "owned_cleanup"
         validate_owned_cleanup(value["owned_thread_cleanup"], value["cleanup"])
+        checkpoint = "completion"
         if passed:
             need(value["stage"] == "completed" and value["wire_hex"] == value["rclone_wire_hex"], "java_report_invalid")
         del value["wire_hex"]  # Raw RPC bytes stay private; publish only finite categories.
@@ -564,7 +590,7 @@ def validate_java(raw, exit_code):
         value["rclone_wire_oracle"] = oracles["rclone_wire_hex"]
         return value
     except ProbeError:
-        raise ProbeError("java_report_invalid") from None
+        raise JavaReportError(checkpoint) from None
 
 
 def tree_hashes(root):
@@ -606,7 +632,7 @@ def run(rclone=None, *, loader=load_helpers, downloader=download, runner_factory
     started = time.monotonic()
     report = dict(schema_version=1, scope="hdfs_kerberos_transfer_container_feasibility", success=False,
         started_utc=datetime.now(timezone.utc).isoformat(), finished_utc=None, duration_seconds=None,
-        stage="preflight", candidate_profile=None, inputs=None, result=None, errors=[], cleanup=dict(container_removed=False,
+        stage="preflight", candidate_profile=None, inputs=None, result=None, java_validation_stage="not_observed", errors=[], cleanup=dict(container_removed=False,
         image_removed=False, context_removed=False, raw_evidence_removed=False),
         cleanup_excludes=["shared_base_image", "shared_build_cache"], **FALSE_CLAIMS)
     root = context = root_id = context_id = docker = D = None
@@ -686,6 +712,7 @@ def run(rclone=None, *, loader=load_helpers, downloader=download, runner_factory
     except BaseException as error:
         code = error.code if isinstance(error, ProbeError) else "command_cleanup_failed" if D is not None and isinstance(error, D.DiscoveryError) and error.code == "command_cleanup_failed" else "probe_failed"
         report["errors"].append(code)
+        if isinstance(error, JavaReportError): report["java_validation_stage"] = error.stage
     finally:
         for kind, attempted, reference, exact in (("container", created_attempted, container or name, container),
                                                  ("image", built_attempted, image or tag, image)):

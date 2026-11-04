@@ -2148,3 +2148,57 @@ class BoundedVolumeReserveTests(unittest.TestCase):
         self.assertIn('conf.set("dfs.blocksize", "1048576");', configuration)
         self.assertIn('conf.set("dfs.data.transfer.protection", "privacy");', configuration)
         self.assertLessEqual((HERE / 'HdfsKerberosTransferProbe.java').stat().st_size, 131072)
+
+
+class ReceiptValidationStageTests(unittest.TestCase):
+    def test_rejection_stage_is_closed_and_success_has_no_rejection(self):
+        for stage in F.JAVA_VALIDATION_STAGES:
+            error = F.JavaReportError(stage)
+            self.assertEqual((error.code, error.stage), ('java_report_invalid', stage))
+        for unsafe in ('private/path?token=secret', '', None, True, [], {}):
+            self.assertEqual(F.JavaReportError(unsafe).stage, 'unclassified')
+        good = F.validate_java(F.canonical(positive()), 0)
+        self.assertTrue(good['success'])
+        cases = [
+            ('schema', lambda value: value.update(scope='private-input')),
+            ('boolean_maps', lambda value: value['checks'].update(seed_hashes=1)),
+            ('seed_checkpoint', lambda value: value['seed_checkpoint'].update(operation='private-input')),
+            ('pipeline_server', lambda value: value['pipeline_server_diagnostic'].update(origin='private-input')),
+            ('pipeline_origin', lambda value: value.update(pipeline_origin='private-input')),
+            ('scalars', lambda value: value.update(cache_bytes=True)),
+            ('stage', lambda value: value.update(stage='private-input')),
+            ('wire', lambda value: value.update(wire_hex='private-input')),
+            ('exit_status', lambda value: value.update(success=False)),
+            ('acquisitions', lambda value: value.update(acquired_bytes=0)),
+            ('diagnostics', lambda value: value['diagnostic'].update(origin='private-input')),
+            ('owned_cleanup', lambda value: value['owned_thread_cleanup'].update(gc_monitor='private-input')),
+        ]
+        for expected, mutate in cases:
+            with self.subTest(expected=expected):
+                value = positive(); mutate(value)
+                with self.assertRaises(F.JavaReportError) as caught:
+                    F.validate_java(F.canonical(value), 0)
+                self.assertEqual(caught.exception.stage, expected)
+                self.assertNotIn('private-input', str(caught.exception))
+        with self.assertRaises(F.JavaReportError) as caught:
+            F.validate_java(b'not json', 1)
+        self.assertEqual(caught.exception.stage, 'parse')
+
+    def test_invalid_native_receipt_stays_failed_and_retains_outer_cleanup(self):
+        original = FakeDocker.__init__
+        def initialize(fake, root, *, max_calls):
+            original(fake, root, max_calls=max_calls)
+            fake.java['acquired_bytes'] = 0
+        helper = TicketTests(methodName='test_full_mock_success_binds_context_and_cleans')
+        helper.setUp()
+        try:
+            with patch.object(FakeDocker, '__init__', initialize):
+                report, docker = helper.fake_run()
+            self.assertFalse(report['success'])
+            self.assertIsNone(report['result'])
+            self.assertEqual(report['errors'], ['java_report_invalid'])
+            self.assertEqual(report['java_validation_stage'], 'acquisitions')
+            self.assertTrue(all(report['cleanup'].values()))
+            self.assertFalse(docker.root.exists())
+            for claim in F.FALSE_CLAIMS: self.assertIs(report[claim], False)
+        finally: helper.tearDown()
