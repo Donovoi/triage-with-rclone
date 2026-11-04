@@ -386,41 +386,41 @@ public final class HdfsKerberosTransferProbe {
         for (String component : components)
             need(Arrays.equals(counted(data, 256), component.getBytes(StandardCharsets.US_ASCII)), Code.cache_invalid);
     }
-    private static void inspectCache(byte[] bytes, String realm, String reader, long before, long after) throws Exception {
-        // Independent minimal FILEv3 parser; no Kerby cache reader or service ticket.
-        need(bytes.length > 100 && bytes.length <= MAX_BYTES, Code.cache_invalid);
-        ByteBuffer data = ByteBuffer.wrap(bytes).order(ByteOrder.BIG_ENDIAN);
-        need(u16(data) == 0x0503, Code.cache_invalid);
-        principal(data, realm, List.of(reader), 1); principal(data, realm, List.of(reader), 1);
-        principal(data, realm, List.of("krbtgt", realm), 2);
-        need(u16(data) == 17 && u16(data) == 17, Code.cache_invalid);
-        byte[] key = counted(data, 32); need(key.length == 16, Code.cache_invalid); Arrays.fill(key, (byte) 0);
-        long auth = u32(data), start = u32(data), end = u32(data), renew = u32(data);
-        long effectiveStart = start == 0 ? auth : start;
-        need(auth >= before && auth <= after && effectiveStart == auth && renew == 0
-            && end >= before + LIFETIME_SECONDS && end <= after + LIFETIME_SECONDS
-            && end - effectiveStart >= 110 && end - effectiveStart <= LIFETIME_SECONDS, Code.ticket_time_mismatch);
-        observedLifetime = (int) (end - effectiveStart);
-        need(Byte.toUnsignedInt(data.get()) == 0, Code.cache_invalid);
-        long flags = u32(data);
-        need(flags == 0x00600000L, Code.ticket_flags_mismatch); // INITIAL | PRE_AUTH only.
-        need(u32(data) == 0 && u32(data) == 0, Code.cache_invalid); // no addresses/authdata
-        need(counted(data, MAX_BYTES).length > 0 && counted(data, MAX_BYTES).length == 0
-            && !data.hasRemaining(), Code.cache_invalid); // exactly one TGT
-    }
-    private static void publishCache(byte[] bytes) throws Exception {
-        guardRoot();
-        try (FileChannel channel = FileChannel.open(CACHE,
-                Set.of(StandardOpenOption.WRITE, StandardOpenOption.CREATE_NEW, NOFOLLOW),
-                PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------")))) {
-            ByteBuffer buffer = ByteBuffer.wrap(bytes); while (buffer.hasRemaining()) channel.write(buffer);
-            channel.force(true);
-        }
-        OWNED_FILES.put(CACHE, new FileState(CACHE));
-        need(MessageDigest.isEqual(OWNED_FILES.get(CACHE).digest,
-            MessageDigest.getInstance("SHA-256").digest(bytes)), Code.source_changed);
-        cacheBytes = bytes.length; inventory();
-    }
+	private static void inspectCache(byte[] bytes, String realm, String reader, long before, long after) throws Exception {
+		// Independent minimal FILEv3 parser; no Kerby cache reader or service ticket.
+		need(bytes.length > 100 && bytes.length <= MAX_BYTES, Code.cache_invalid);
+		ByteBuffer data = ByteBuffer.wrap(bytes).order(ByteOrder.BIG_ENDIAN);
+		need(u16(data) == 0x0503, Code.cache_invalid);
+		principal(data, realm, List.of(reader), 1); principal(data, realm, List.of(reader), 1);
+		principal(data, realm, List.of("krbtgt", realm), 2);
+		need(u16(data) == 17 && u16(data) == 17, Code.cache_invalid);
+		byte[] key = counted(data, 32); need(key.length == 16, Code.cache_invalid); Arrays.fill(key, (byte) 0);
+		long auth = u32(data), start = u32(data), end = u32(data), renew = u32(data);
+		long effectiveStart = start == 0 ? auth : start;
+		need(auth >= before && auth <= after && effectiveStart == auth && renew == 0
+			&& end >= before + LIFETIME_SECONDS && end <= after + LIFETIME_SECONDS
+			&& end - effectiveStart >= 110 && end - effectiveStart <= LIFETIME_SECONDS, Code.ticket_time_mismatch);
+		observedLifetime = (int) (end - effectiveStart);
+		need(Byte.toUnsignedInt(data.get()) == 0, Code.cache_invalid);
+		long flags = u32(data);
+		need(flags == 0x00600000L, Code.ticket_flags_mismatch); // INITIAL | PRE_AUTH only.
+		need(u32(data) == 0 && u32(data) == 0, Code.cache_invalid); // no addresses/authdata
+		need(counted(data, MAX_BYTES).length > 0 && counted(data, MAX_BYTES).length == 0
+			&& !data.hasRemaining(), Code.cache_invalid); // exactly one TGT
+	}
+	private static void publishCache(byte[] bytes) throws Exception {
+		guardRoot();
+		try (FileChannel channel = FileChannel.open(CACHE,
+				Set.of(StandardOpenOption.WRITE, StandardOpenOption.CREATE_NEW, NOFOLLOW),
+				PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------")))) {
+			ByteBuffer buffer = ByteBuffer.wrap(bytes); while (buffer.hasRemaining()) channel.write(buffer);
+			channel.force(true);
+		}
+		OWNED_FILES.put(CACHE, new FileState(CACHE));
+		need(MessageDigest.isEqual(OWNED_FILES.get(CACHE).digest,
+			MessageDigest.getInstance("SHA-256").digest(bytes)), Code.source_changed);
+		cacheBytes = bytes.length; inventory();
+	}
     private static void constrainConfig(SimpleKdcServer server, KrbConfig clientConfig, String realm) throws Exception {
         server.setWorkDir(ROOT.toFile()); server.setKdcRealm(realm); server.setKdcHost("127.0.0.1");
         server.setKdcTcpPort(PORT); server.setAllowTcp(true); server.setAllowUdp(false);
@@ -787,73 +787,73 @@ public final class HdfsKerberosTransferProbe {
 		} catch (Throwable ignored) { return "other"; }
 		return selected;
 	}
-    private static String timerKind(Thread thread) {
-        // Exact names from pinned source; diagnostic hints only, never ownership.
-        // No raw thread name leaves this process; unknown timers remain failures.
-        String name = thread.getName();
-        if (name.equals("Timer for 'NameNode' metrics system")) return "namenode_metrics";
-        if (name.equals("IPC Server idle connection scanner for port 19000")) return "rpc_idle";
-        if (name.equals("SnapshotDeletionGc")) return "snapshot_gc";
-        if (name.equals("Shell command timeout")) return "shell_timeout";
-        if (name.equals("SSL Certificates Store Monitor")) return "ssl_store";
-        return "unknown";
-    }
-    private static void observeThreads(String phase, Set<Long> baseline) {
-        try {
-            need(THREAD_PHASES.subList(0, 10).contains(phase) && OBSERVED_PHASES.add(phase)
-                && OBSERVED_PHASES.size() <= 10, Code.cleanup_failed);
-            int live = 0;
-            for (Thread thread : Thread.getAllStackTraces().keySet()) {
-                if (!thread.isAlive() || baseline.contains(thread.getId())) continue;
-                need(++live <= 128, Code.cleanup_failed);
-                if (!THREAD_ORIGINS.containsKey(thread)) {
-                    need(THREAD_ORIGINS.size() < 1280, Code.cleanup_failed);
-                    THREAD_ORIGINS.put(thread, phase);
-                }
-            }
-        } catch (Throwable ignored) { threadObservationIncomplete = true; }
-    }
-    private static boolean threadObservationsComplete() {
-        return !threadObservationIncomplete && OBSERVED_PHASES.size() == 10;
-    }
-    private static Map<String, Integer> remainingThreadCounts(Set<Long> baseline) throws Exception {
-        Map<String, Integer> counts = new LinkedHashMap<>();
-        for (String category : THREAD_CATEGORIES) counts.put(category, 0);
-        Map<String, Integer> intervals = new LinkedHashMap<>();
-        for (String phase : THREAD_PHASES) intervals.put(phase, 0);
-        Map<String, Integer> timers = new LinkedHashMap<>();
-        for (String kind : TIMER_KINDS) timers.put(kind, 0);
-        Map<String, Map<String, Integer>> matrix = new LinkedHashMap<>();
-        for (String category : THREAD_CATEGORIES) {
-            Map<String, Integer> row = new LinkedHashMap<>();
-            for (String phase : THREAD_PHASES) row.put(phase, 0);
-            matrix.put(category, row);
-        }
-        int total = 0;
-        for (Thread thread : Thread.getAllStackTraces().keySet()) {
-            if (!thread.isAlive() || baseline.contains(thread.getId())) continue;
-            need(++total <= 128, Code.cleanup_failed);
-            String category = threadCategory(thread); counts.put(category, counts.get(category) + 1);
-            if (category.equals("jdk_timer")) {
-                String kind = timerKind(thread); timers.put(kind, timers.get(kind) + 1);
-            }
-            String phase = threadObservationsComplete() ? THREAD_ORIGINS.getOrDefault(thread, "unattributed") : "unattributed";
-            intervals.put(phase, intervals.get(phase) + 1);
-            Map<String, Integer> row = matrix.get(category); row.put(phase, row.get(phase) + 1);
-        }
-        need(intervals.values().stream().mapToInt(Integer::intValue).sum() == total, Code.cleanup_failed);
-        for (String category : THREAD_CATEGORIES) {
-            need(matrix.get(category).values().stream().mapToInt(Integer::intValue).sum() == counts.get(category), Code.cleanup_failed);
-        }
-        for (String phase : THREAD_PHASES) {
-            need(matrix.values().stream().mapToInt(row -> row.get(phase)).sum() == intervals.get(phase), Code.cleanup_failed);
-        }
-        remainingThreadIntervals = intervals;
-        remainingThreadMatrix = matrix;
-        need(timers.values().stream().mapToInt(Integer::intValue).sum() == counts.get("jdk_timer"), Code.cleanup_failed);
-        remainingTimerKinds = timers;
-        return counts;
-    }
+	private static String timerKind(Thread thread) {
+		// Exact names from pinned source; diagnostic hints only, never ownership.
+		// No raw thread name leaves this process; unknown timers remain failures.
+		String name = thread.getName();
+		if (name.equals("Timer for 'NameNode' metrics system")) return "namenode_metrics";
+		if (name.equals("IPC Server idle connection scanner for port 19000")) return "rpc_idle";
+		if (name.equals("SnapshotDeletionGc")) return "snapshot_gc";
+		if (name.equals("Shell command timeout")) return "shell_timeout";
+		if (name.equals("SSL Certificates Store Monitor")) return "ssl_store";
+		return "unknown";
+	}
+	private static void observeThreads(String phase, Set<Long> baseline) {
+		try {
+			need(THREAD_PHASES.subList(0, 10).contains(phase) && OBSERVED_PHASES.add(phase)
+				&& OBSERVED_PHASES.size() <= 10, Code.cleanup_failed);
+			int live = 0;
+			for (Thread thread : Thread.getAllStackTraces().keySet()) {
+				if (!thread.isAlive() || baseline.contains(thread.getId())) continue;
+				need(++live <= 128, Code.cleanup_failed);
+				if (!THREAD_ORIGINS.containsKey(thread)) {
+					need(THREAD_ORIGINS.size() < 1280, Code.cleanup_failed);
+					THREAD_ORIGINS.put(thread, phase);
+				}
+			}
+		} catch (Throwable ignored) { threadObservationIncomplete = true; }
+	}
+	private static boolean threadObservationsComplete() {
+		return !threadObservationIncomplete && OBSERVED_PHASES.size() == 10;
+	}
+	private static Map<String, Integer> remainingThreadCounts(Set<Long> baseline) throws Exception {
+		Map<String, Integer> counts = new LinkedHashMap<>();
+		for (String category : THREAD_CATEGORIES) counts.put(category, 0);
+		Map<String, Integer> intervals = new LinkedHashMap<>();
+		for (String phase : THREAD_PHASES) intervals.put(phase, 0);
+		Map<String, Integer> timers = new LinkedHashMap<>();
+		for (String kind : TIMER_KINDS) timers.put(kind, 0);
+		Map<String, Map<String, Integer>> matrix = new LinkedHashMap<>();
+		for (String category : THREAD_CATEGORIES) {
+			Map<String, Integer> row = new LinkedHashMap<>();
+			for (String phase : THREAD_PHASES) row.put(phase, 0);
+			matrix.put(category, row);
+		}
+		int total = 0;
+		for (Thread thread : Thread.getAllStackTraces().keySet()) {
+			if (!thread.isAlive() || baseline.contains(thread.getId())) continue;
+			need(++total <= 128, Code.cleanup_failed);
+			String category = threadCategory(thread); counts.put(category, counts.get(category) + 1);
+			if (category.equals("jdk_timer")) {
+				String kind = timerKind(thread); timers.put(kind, timers.get(kind) + 1);
+			}
+			String phase = threadObservationsComplete() ? THREAD_ORIGINS.getOrDefault(thread, "unattributed") : "unattributed";
+			intervals.put(phase, intervals.get(phase) + 1);
+			Map<String, Integer> row = matrix.get(category); row.put(phase, row.get(phase) + 1);
+		}
+		need(intervals.values().stream().mapToInt(Integer::intValue).sum() == total, Code.cleanup_failed);
+		for (String category : THREAD_CATEGORIES) {
+			need(matrix.get(category).values().stream().mapToInt(Integer::intValue).sum() == counts.get(category), Code.cleanup_failed);
+		}
+		for (String phase : THREAD_PHASES) {
+			need(matrix.values().stream().mapToInt(row -> row.get(phase)).sum() == intervals.get(phase), Code.cleanup_failed);
+		}
+		remainingThreadIntervals = intervals;
+		remainingThreadMatrix = matrix;
+		need(timers.values().stream().mapToInt(Integer::intValue).sum() == counts.get("jdk_timer"), Code.cleanup_failed);
+		remainingTimerKinds = timers;
+		return counts;
+	}
     private static boolean statisticsCleanerFrame(Thread thread) {
         StackTraceElement[] frames = thread.getStackTrace();
         for (int i = 0; i < frames.length && i < 32; i++) {
@@ -1290,6 +1290,16 @@ public final class HdfsKerberosTransferProbe {
 					return "kerberos_initialization";
 				}
 				if (message.startsWith("Failed to create file system for ")) return "backend_creation";
+				if (message.contains("no available cipher among choices:")) return "data_cipher_unavailable";
+				if (message.contains("negotiating data protection:")) return "data_qop_mismatch";
+				if (message.contains("rspauth")) return "data_rspauth_invalid";
+				if (message.contains("HMAC check failed")) return "data_hmac_invalid";
+				if (message.contains("bad response length")) return "data_response_length";
+				if (message.contains("no available datanodes")) return "data_nodes_unavailable";
+				if (message.contains("read failed:")) return "data_read_status";
+				if (message.contains("EOF")) return "data_io_eof";
+				if (message.contains("connection refused")) return "data_connection_refused";
+				if (message.contains("i/o timeout")) return "data_io_timeout";
 				return "json_message";
 			}
 		} catch (Exception ignored) { }
