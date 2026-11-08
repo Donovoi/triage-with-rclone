@@ -102,10 +102,10 @@ Source metadata, effective NameNode/DataNode settings, and private file identiti
 and hashes must remain unchanged. Mutable NameNode/DataNode storage is excluded
 from whole-storage identity claims and disappears with the owned container.
 
-Eight fixed phases use the same relay endpoint, with exactly one connection per
+Ten fixed phases use the same relay endpoint, with exactly one connection per
 phase and no reconnect credit: inventory before, empty acquisition, small
 acquisition, missing path, payload before, same-reader NONE denial, payload after,
-inventory after. Authentication uses a fresh nonrenewable FILEv3 TGT. The NONE
+RC checksum, RC missing object, inventory after. Authentication uses a fresh nonrenewable FILEv3 TGT. The NONE
 phase has no Kerberos environment or service principal option and must produce
 zero payload bytes, nonzero exit, the actual NONE header and exact unchanged
 FATAL_UNAUTHORIZED/SIMPLE-disabled/KERBEROS-offered response. A separate direct
@@ -117,6 +117,30 @@ ErrorDirNotFound. The missing phase therefore requires one exact JSON
 `error listing: directory not found` record, nonzero exit, zero payload bytes, and
 an independent Java absence witness. It does **not** claim object-not-found
 coverage. Permission, cache/KDC, timeout, or dead-endpoint failures are rejected.
+
+The separate object controls use `rclone rc --loopback operations/hashsumfile`
+with `fs=:hdfs:/synthetic`, `hashType=SHA-256`, and `download=true`. Loopback calls
+the method in-process without an RC listener. First, the existing 4096-byte leaf
+must return the independent seed SHA-256 through this same route, with zero exit
+and empty stderr. Only then may the missing leaf receive credit: nonzero exit,
+the exact closed JSON object containing `loopback: call failed: object not found`,
+the exact method path and integral status 500, plus a fresh Java absence witness.
+The directory rejection remains a distinct check. RC stdout is bounded JSON,
+separate from acquired file bytes; the successful acquisition total is unchanged.
+
+`HdfsTransferJson.java` holds the JSON controls and finite diagnostic classifier.
+Both Java sources are independently size-bounded to 128 KiB, SHA-256 pinned,
+included in the context checksums, explicitly compiled with annotation processing
+and implicit compilation disabled, and rechecked before cleanup. The same JVM
+checks valid JSON controls and 22 malformed or misleading alternatives, including
+duplicate keys, trailing values, wrong digest, wrong method, permission/directory
+errors, and nonintegral status. Native success requires these checks as well as
+the actual paired rclone calls.
+
+The reviewed child count is twelve: one version child, one TLS keytool child,
+and ten sequential rclone controls. The two added controls share the existing
+55-second control deadline; no concurrency, PID, memory, listener, output, or
+outer timeout limit is increased.
 
 Acquisition stdout streams in 4096-byte buffers to CREATE_NEW, identity-checked
 0600 files. Each stream reads at most expected+1 bytes and never stores overflow;
