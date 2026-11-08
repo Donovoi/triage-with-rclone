@@ -104,7 +104,7 @@ def positive():
     return dict(schema_version=1, scope="hdfs_kerberos_transfer_feasibility", success=True,
         expected_kerby_version="2.1.2", runtime_binding_required=True,
         checks=dict(environment=True, metrics_mode_enabled=True, endpoint_settings=True, positive_tgt=True, file_cache_v3=True,
-            nonrenewable=True, secure_namenode=True, secure_datanode=True, tls_material=True, tls_endpoints=True, registered_datanode=True, seed_hashes=True, empty_acquired=True, small_acquired=True, missing_path_rejected=True, payload_before=True, payload_after=True, listing_before=True, rclone_auth_boundary_rejection=True,
+            nonrenewable=True, secure_namenode=True, secure_datanode=True, tls_material=True, tls_endpoints=True, registered_datanode=True, seed_hashes=True, empty_acquired=True, small_acquired=True, missing_path_rejected=True, json_validator_controls=True, rc_hash_verified=True, missing_object_rejected=True, payload_before=True, payload_after=True, listing_before=True, rclone_auth_boundary_rejection=True,
             wire_auth_boundary_rejection=True, listing_after=True, source_preserved=True, cache_preserved=True),
         cleanup=dict(replica_pool_stopped=True, seed_lease_renewer_stopped=True, pipeline_server_observer_detached=True, pipeline_observer_detached=True, children_reaped=True, relay_closed=True, filesystem_closed=True, namenode_stop_returned=True, owner_logged_out=True, kdc_stop_returned=True, threads_terminated=True, listeners_absent=True,
             private_material_removed=True, process_property_restored=True, metrics_mode_restored=True, cleanup_completed=True,
@@ -114,8 +114,9 @@ def positive():
         ssl_capture=dict(format='captured',datanode='captured'),
         seed_checkpoint=dict(operation='complete',role='none'),
         owned_thread_cleanup=dict(gc_monitor='terminated', fs_statistics_cleaner='terminated', format_ssl_timer='terminated'),
-        rclone_observation=dict(phase=7, exit=0, stdout_bytes=512, stderr_bytes=0, failure="empty"),
-        child_count=10, acquired_bytes=2109442, missing_category="directory_not_found",
+        rclone_observation=dict(phase=9, exit=0, stdout_bytes=512, stderr_bytes=0, failure="empty"),
+        child_count=12, acquired_bytes=2109442, missing_category="directory_not_found",
+        rc_hash_sha256=F.SMALL_SHA, missing_object_category="object_not_found",
         acquisitions=dict(empty=dict(bytes=0,sha256="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"),
             small=dict(bytes=4096,sha256="c8f5d0341d54d951a71b136e6e2afcb14d11ed8489a7ae126a8fee0df6ecf193"),
             missing=dict(bytes=0,sha256="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"),
@@ -123,7 +124,7 @@ def positive():
             negative=dict(bytes=0,sha256="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"),
             after=dict(bytes=1052673,sha256="ac6f8d639b2e2c683c08d7deae690d1b6120bd74bc80a39a895481450082c571")),
         cache_bytes=400, observed_lifetime_seconds=119, stage="completed", wire_hex=wire().hex(), rclone_wire_hex=wire().hex(),
-        relay=dict(phase_connections=dict(inventory_before=1,empty=1,small=1,missing=1,before=1,negative=1,after=1,inventory_after=1), none_headers=1,
+        relay=dict(phase_connections=dict(inventory_before=1,empty=1,small=1,missing=1,before=1,negative=1,after=1,rc_hash=1,rc_missing=1,inventory_after=1), none_headers=1,
                    fatal_responses=1, unexpected_connections=0, bytes_forwarded_unchanged=True), error=None, ledger_eligible=False,
         diagnostic=dict(category="none", origin="none"), pipeline_origin="not_observed", pipeline_server_diagnostic=dict(category="none", origin="none"),
         remaining_executor_kind="not_observed",
@@ -232,6 +233,7 @@ class TicketTests(unittest.TestCase):
         value['ssl_capture']['datanode']='not_attempted'
         value["acquisitions"] = {key: None for key in value["acquisitions"]}
         value["acquired_bytes"] = 0; value["missing_category"] = "not_observed"
+        value["rc_hash_sha256"] = value["missing_object_category"] = "not_observed"
         value["remaining_threads"]["hadoop_metrics"] = 1
         value["remaining_thread_intervals"]["unattributed"] = 1
         value["remaining_thread_matrix"]["hadoop_metrics"]["unattributed"] = 1
@@ -474,6 +476,7 @@ class TicketTests(unittest.TestCase):
         here.mkdir(); discovery.mkdir()
         java = b"inert Java source"
         (here / "HdfsKerberosTransferProbe.java").write_bytes(java)
+        (here / "HdfsTransferJson.java").write_bytes(b"inert JSON helper")
         (here / "runtime-classpath.json").write_bytes(b"{}")
         binary = here / "rclone"; binary.write_bytes(b"inert rclone")
         pin = here / "rclone-version.env"
@@ -499,7 +502,7 @@ class TicketTests(unittest.TestCase):
         real_mkdtemp = tempfile.mkdtemp
         selected_profile = profile
         chosen_discovery = F.DISCOVERY if real_helpers else discovery
-        with patch.multiple(F, HERE=here, DISCOVERY=chosen_discovery, JAVA_SHA=F.sha(java),
+        with patch.multiple(F, HERE=here, DISCOVERY=chosen_discovery, JAVA_SHA=F.sha(java), JSON_SHA=F.sha(b"inert JSON helper"),
              REMEDIATION_RUNTIME=here / "runtime-classpath.json",
              PIN_FILE=pin, RCLONE_SHA=F.sha(b"inert rclone")), \
              patch.object(F, "hosted_guard"), patch.object(F, "runtime_rows", return_value=rows), \
@@ -828,7 +831,7 @@ class TransferTests(unittest.TestCase):
 
     def test_streaming_has_expected_plus_one_drain_and_exclusive_identity(self):
         s=(HERE/'HdfsKerberosTransferProbe.java').read_text().expandtabs(4)
-        for required in ('expected-total+1','need(total+n<=expected','FileChannel.open(target, StandardOpenOption.WRITE, NOFOLLOW)','original.key.equals(independentlyRead.key)','MessageDigest.isEqual(observed.digest,independentlyRead.digest)','process.destroyForcibly()','process.waitFor(Math.max(1,until-System.nanoTime())','CHILDREN.size()<10','streamed.isDone()','stderr.isDone()'):
+        for required in ('expected-total+1','need(total+n<=expected','FileChannel.open(target, StandardOpenOption.WRITE, NOFOLLOW)','original.key.equals(independentlyRead.key)','MessageDigest.isEqual(observed.digest,independentlyRead.digest)','process.destroyForcibly()','process.waitFor(Math.max(1,until-System.nanoTime())','CHILDREN.size()<12','streamed.isDone()','stderr.isDone()'):
             self.assertIn(required,s)
         self.assertNotIn('readAllBytes()',s)
 
@@ -853,7 +856,7 @@ class TransferTests(unittest.TestCase):
         self.assertNotIn('pull_request_target',workflow)
 
     def test_exact_child_count_and_no_additional_native_helper(self):
-        for count in (0,9,11,True,128):
+        for count in (0,9,10,11,13,True,128):
             value=positive();value['child_count']=count;self.rejected(value)
         source=(HERE/'HdfsKerberosTransferProbe.java').read_text().expandtabs(4)
         self.assertEqual(source.count('builder.start()'),1)
@@ -931,7 +934,7 @@ class ReviewRegressionTests(unittest.TestCase):
             self.assertLessEqual(roots,{b'/opt/transfer',b'/opt/java'},name)
         docker=generated['Dockerfile']
         self.assertIn(b'COPY jars /opt/transfer/jars/',docker)
-        self.assertIn(b'COPY HdfsKerberosTransferProbe.java checksums driver.sh classpath /opt/transfer/',docker)
+        self.assertIn(b'COPY HdfsKerberosTransferProbe.java HdfsTransferJson.java checksums driver.sh classpath /opt/transfer/',docker)
         self.assertIn(b'cp -R /opt/transfer/resources/webapps /opt/transfer/classes/ && chmod -R a=rX /opt/transfer && chmod 0555 /opt/transfer/rclone',docker)
         self.assertTrue(all(line.split(b'  ',1)[1].startswith(b'/opt/transfer/') for line in generated['checksums'].splitlines()))
 
@@ -1018,7 +1021,7 @@ class TlsDiagnosticTests(unittest.TestCase):
 
     def failed_tls(self,code):
         value=positive();value.update(success=False,error=code,stage='tls',child_count=2,acquired_bytes=0,
-            missing_category='not_observed',cache_bytes=0,observed_lifetime_seconds=0,wire_hex='',rclone_wire_hex='',relay=None,
+            missing_category='not_observed',rc_hash_sha256='not_observed',missing_object_category='not_observed',cache_bytes=0,observed_lifetime_seconds=0,wire_hex='',rclone_wire_hex='',relay=None,
             diagnostic=dict(category='assertion',origin='none'),thread_observation_complete=False)
         value['checks']={key:key=='environment' for key in value['checks']}
         value['metrics_mode']={key:False for key in value['metrics_mode']}
@@ -2231,7 +2234,7 @@ class RcloneObservationTests(unittest.TestCase):
         for category in F.RCLONE_FAILURE_KINDS:
             value = dict(good, failure=category, stderr_bytes=0 if category == 'empty' else 32)
             F.validate_rclone_observation(value, False)
-        for key, limit in (('phase',7),('exit',255),('stdout_bytes',16384),('stderr_bytes',16384)):
+        for key, limit in (('phase',9),('exit',255),('stdout_bytes',16384),('stderr_bytes',16384)):
             for bad in (-1, limit+1, True, None, '0'):
                 with self.subTest(key=key, bad=bad), self.assertRaises(F.ProbeError):
                     F.validate_rclone_observation(dict(good, **{key:bad}), False)
@@ -2252,7 +2255,7 @@ class RcloneObservationTests(unittest.TestCase):
         method = source[source.index('private static Result rclone('):source.index('private static com.fasterxml.jackson.databind.ObjectMapper jsonMapper()')]
         self.assertLess(method.index('Result result=child('),method.index('rcloneObservation = new RcloneObservation('))
         self.assertLess(method.index('rcloneObservation = new RcloneObservation('),method.index('relay.end(phase)'))
-        classifier = source[source.index('private static String rcloneFailure('):source.index('private static String rcloneObservationJson()')]
+        classifier = (HERE / 'HdfsTransferJson.java').read_text().expandtabs(4)
         self.assertEqual(set(re.findall(r'return "([a-z_]+)";',classifier)), F.RCLONE_FAILURE_KINDS)
         serializer = source[source.index('private static String rcloneObservationJson()'):source.index('private static Result rclone(')]
         for forbidden in ('getMessage','getLocalizedMessage','new String','result.err','result.out','raw','message'):
@@ -2468,3 +2471,52 @@ class BuildDiagnosticProjectionTests(unittest.TestCase):
     def test_wrong_type_and_oversize_logs_are_rejected(self):
         for raw in ("text",None,bytearray(b"text"),b"x"*(12*1024*1024+2)):
             with self.assertRaises(F.ProbeError):F.build_diagnostic(raw)
+
+
+class ObjectControlTests(unittest.TestCase):
+    def test_pair_digest_category_and_relay_are_required(self):
+        mutations = [
+            lambda v: v.update(rc_hash_sha256='0'*64),
+            lambda v: v.update(missing_object_category='directory_not_found'),
+            lambda v: v.update(missing_object_category='permission_denied'),
+            lambda v: v['checks'].update(rc_hash_verified=False),
+            lambda v: v['checks'].update(missing_object_rejected=False),
+            lambda v: v['checks'].update(json_validator_controls=False),
+            lambda v: v['relay']['phase_connections'].update(rc_hash=0),
+            lambda v: v['relay']['phase_connections'].update(rc_missing=0),
+            lambda v: v['relay']['phase_connections'].update(rc_missing=2),
+        ]
+        for change in mutations:
+            value = positive(); change(value)
+            with self.subTest(change=mutations.index(change)), self.assertRaises(F.ProbeError):
+                F.validate_java(F.canonical(value), 0)
+
+    def test_paired_claim_cannot_survive_missing_positive_on_failed_receipt(self):
+        value = positive()
+        value.update(success=False, error='missing_path_mismatch', rc_hash_sha256='not_observed')
+        value['checks']['rc_hash_verified'] = False
+        with self.assertRaises(F.ProbeError): F.validate_java(F.canonical(value), 1)
+
+    def test_helper_is_size_bounded_pinned_compiled_and_in_context(self):
+        raw = (HERE/'HdfsTransferJson.java').read_bytes()
+        self.assertLessEqual(len(raw), 131072)
+        self.assertEqual(hashlib.sha256(raw).hexdigest(), F.JSON_SHA)
+        files = F.build_files([dict(sha256='d'*64)])
+        self.assertIn((F.JSON_SHA+'  /opt/transfer/HdfsTransferJson.java\n').encode(), files['checksums'])
+        self.assertIn(b'/opt/transfer/HdfsKerberosTransferProbe.java /opt/transfer/HdfsTransferJson.java', files['Dockerfile'])
+        helper = TicketTests(); helper.setUp()
+        try:
+            report, _ = helper.fake_run()
+            self.assertTrue(report['success'], report['errors'])
+            self.assertEqual(report['inputs']['source_sha256']['HdfsTransferJson.java'], F.sha(b'inert JSON helper'))
+        finally: helper.tearDown()
+
+    def test_mutated_json_helper_cannot_receive_success(self):
+        helper = TicketTests(); helper.setUp()
+        try:
+            def mutate(docker, source):
+                (helper.root/'input/HdfsTransferJson.java').write_bytes(b'changed helper')
+            report, _ = helper.fake_run(action=mutate)
+            self.assertFalse(report['success'])
+            self.assertIn('input_changed', report['errors'])
+        finally: helper.tearDown()
