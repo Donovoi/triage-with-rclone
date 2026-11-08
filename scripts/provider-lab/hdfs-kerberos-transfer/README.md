@@ -132,9 +132,9 @@ separate from acquired file bytes; the successful acquisition total is unchanged
 Both Java sources are independently size-bounded to 128 KiB, SHA-256 pinned,
 included in the context checksums, explicitly compiled with annotation processing
 and implicit compilation disabled, and rechecked before cleanup. The same JVM
-checks valid JSON controls and 22 malformed or misleading alternatives, including
+checks valid JSON controls and 23 malformed or misleading alternatives, including
 duplicate keys, trailing values, wrong digest, wrong method, permission/directory
-errors, and nonintegral status. Native success requires these checks as well as
+errors, and nonintegral or out-of-range status. Native success requires these checks as well as
 the actual paired rclone calls.
 
 The reviewed child count is twelve: one version child, one TLS keytool child,

@@ -29,6 +29,7 @@ final class HdfsTransferJson {
             goodMissing.replace("object not found", "permission denied"),
             goodMissing.replace("500", "404"), goodMissing.replace("500", "\"500\""),
             goodMissing.replace("500", "500.0"), goodMissing.replace("500", "true"),
+            goodMissing.replace("500", "18446744073709552116"),
             goodMissing.replace("operations/hashsumfile", "operations/list"),
             goodMissing.replace("\"status\":", "\"extra\":true,\"status\":"),
             goodMissing.replace("\"status\":", "\"status\":500,\"status\":" )}) {
@@ -50,7 +51,8 @@ final class HdfsTransferJson {
             && value.path("error").isTextual()
             && value.path("error").asText().equals("loopback: call failed: object not found")
             && value.path("path").isTextual() && value.path("path").asText().equals("operations/hashsumfile")
-            && value.path("status").isIntegralNumber() && value.path("status").asLong() == 500;
+            && value.path("status").isIntegralNumber() && value.path("status").canConvertToInt()
+            && value.path("status").intValue() == 500;
     }
 	static String rcloneFailure(byte[] raw) {
 	if (raw.length == 0) return "empty";
