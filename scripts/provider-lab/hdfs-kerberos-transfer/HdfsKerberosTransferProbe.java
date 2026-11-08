@@ -103,7 +103,7 @@ public final class HdfsKerberosTransferProbe {
 	private static final String[] NAMES = {"empty.bin", "nested/space name.bin", "payload.bin"};
 	private static final int[] SIZES = {0, 4096, 1052673};
 	private static final String[] HASHES = {"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "c8f5d0341d54d951a71b136e6e2afcb14d11ed8489a7ae126a8fee0df6ecf193", "ac6f8d639b2e2c683c08d7deae690d1b6120bd74bc80a39a895481450082c571"};
-	private static final String[] PHASE_NAMES = {"inventory_before", "empty", "small", "missing", "before", "negative", "after", "inventory_after"};
+	private static final String[] PHASE_NAMES = {"inventory_before", "empty", "small", "missing", "before", "negative", "after", "rc_hash", "rc_missing", "inventory_after"};
 	private static final Map<String, String> SOURCE_METADATA = new LinkedHashMap<>();
 	private static int acquiredBytes;
 	private static String dnUuid;
@@ -1120,7 +1120,7 @@ public final class HdfsKerberosTransferProbe {
 	final List<Thread> sessions = new java.util.concurrent.CopyOnWriteArrayList<>();
 	final List<Socket> sockets = new java.util.concurrent.CopyOnWriteArrayList<>();
 	final AtomicBoolean failed = new AtomicBoolean();
-	final int[] counts = new int[8];
+	final int[] counts = new int[PHASE_NAMES.length];
 	volatile boolean running = true;
 	int phase = -1, nextPhase, noneHeaders, fatalResponses, unexpected;
 	Thread acceptor;
@@ -1135,7 +1135,7 @@ public final class HdfsKerberosTransferProbe {
 					int ownedPhase;
 					synchronized (this) {
 						ownedPhase = phase;
-						if (ownedPhase < 0 || ownedPhase > 7 || counts[ownedPhase] >= 1) {
+						if (ownedPhase < 0 || ownedPhase >= PHASE_NAMES.length || counts[ownedPhase] >= 1) {
 							unexpected++; incoming.close(); failed.set(true);
 							running = false; listener.close(); break;
 						}
@@ -1153,7 +1153,7 @@ public final class HdfsKerberosTransferProbe {
 		}
 	}
 	synchronized void begin(int value) throws Exception {
-		need(!failed.get() && phase == -1 && value == nextPhase && value >= 0 && value <= 7 && counts[value] == 0
+		need(!failed.get() && phase == -1 && value == nextPhase && value >= 0 && value < PHASE_NAMES.length && counts[value] == 0
 			&& sessions.stream().noneMatch(Thread::isAlive), Code.relay_invalid);
 		phase = value;
 	}
@@ -1239,7 +1239,7 @@ public final class HdfsKerberosTransferProbe {
 	}
 	synchronized String json() {
 		StringBuilder text=new StringBuilder("{\"phase_connections\":{");
-		for(int i=0;i<8;i++) { if(i>0)text.append(','); text.append('"').append(PHASE_NAMES[i]).append("\":").append(counts[i]); }
+		for(int i=0;i<PHASE_NAMES.length;i++) { if(i>0)text.append(','); text.append('"').append(PHASE_NAMES[i]).append("\":").append(counts[i]); }
 		return text + "},\"none_headers\":"+noneHeaders+",\"fatal_responses\":"+fatalResponses
 			+",\"unexpected_connections\":"+unexpected+",\"bytes_forwarded_unchanged\":"+!failed.get()+"}";
 	}
@@ -1259,7 +1259,7 @@ public final class HdfsKerberosTransferProbe {
 	return child(command,env,null,0);
 	}
 	private static Result child(List<String> command, Map<String,String> env, Path target, int expected) throws Exception {
-	need(System.nanoTime()<controlDeadline && CHILDREN.size()<10, Code.deadline_exceeded);
+	need(System.nanoTime()<controlDeadline && CHILDREN.size()<12, Code.deadline_exceeded);
 	need(target==null || target.getParent().equals(ACQUIRED) && expected>=0 && expected<=1052673, Code.acquisition_invalid);
 	FileState initial=null;
 	if(target!=null) { privateBytes(target,new byte[0]); initial=OWNED_FILES.get(target); }
@@ -1318,51 +1318,7 @@ public final class HdfsKerberosTransferProbe {
 	}
 	private record RcloneObservation(int phase, int exit, int stdoutBytes, int stderrBytes, String failure) {}
 	private static volatile RcloneObservation rcloneObservation;
-	private static String rcloneFailure(byte[] raw) {
-	if (raw.length == 0) return "empty";
-	String text = new String(raw, StandardCharsets.UTF_8);
-	if (text.contains("runtime: failed to create new OS thread") && text.contains("fatal error: newosproc")) return "runtime_thread_limit";
-	if (text.contains("panic:")) {
-		if (text.contains("github.com/jcmturner/gokrb5/v8/credentials.")) return "panic_credential_cache";
-		if (text.contains("github.com/jcmturner/gokrb5/v8/config.")) return "panic_kerberos_config";
-		if (text.contains("github.com/jcmturner/gokrb5/v8/client.")) return "panic_kerberos_client";
-		return "go_panic";
-	}
-	if (text.contains("fatal error:")) return "go_runtime_fatal";
-	try {
-		var value = jsonMapper().readTree(raw);
-		if (value != null && value.isObject() && value.path("msg").isTextual()) {
-			String message = value.path("msg").asText();
-			if (message.contains("problem with kerberos authentication:")) {
-				if (message.contains("TGT not found in CCache")) return "cache_tgt_missing";
-				if (message.contains("TGT bytes in cache are not valid:") || message.contains("cache entry ticket bytes are not valid:")) return "cache_ticket_invalid";
-				return "kerberos_initialization";
-			}
-			if (message.startsWith("Failed to create file system for ")) return "backend_creation";
-			if (message.contains("no available cipher among choices:")) return "data_cipher_unavailable";
-			if (message.contains("negotiating data protection:")) return "data_qop_mismatch";
-			if (message.contains("rspauth")) return "data_rspauth_invalid";
-			if (message.contains("HMAC check failed")) return "data_hmac_invalid";
-			if (message.contains("bad response length")) return "data_response_length";
-			if (message.contains("no available datanodes")) return "data_nodes_unavailable";
-			if (message.contains("read failed:")) return "data_read_status";
-			if (message.contains("EOF")) return "data_io_eof";
-			if (message.contains("connection reset by peer")) return "data_connection_reset";
-			if (message.contains("broken pipe")) return "data_broken_pipe";
-			if (message.contains("connection refused")) return "data_connection_refused";
-			if (message.contains("i/o timeout")) return "data_io_timeout";
-			if (message.contains("unsupported checksum type:")) return "data_checksum_unsupported";
-			if (message.contains("cannot parse invalid wire-format data")) return "data_protobuf_invalid";
-			if (message.contains("invalid checksum")) return "data_checksum_invalid";
-			if (message.contains("invalid response from datanode")) return "data_response_invalid";
-			if (message.startsWith("Failed to open:")) return "cat_open";
-			if (message.startsWith("Failed to send to output:")) return "cat_output";
-			if (message.startsWith("error listing:")) return "cat_listing";
-			return "json_message";
-		}
-	} catch (Exception ignored) { }
-	return "unclassified";
-	}
+	private static String rcloneFailure(byte[] raw) { return HdfsTransferJson.rcloneFailure(raw); }
 	private static String rcloneObservationJson() {
 	var value = rcloneObservation;
 	return value == null ? "null" : "{\"phase\":" + value.phase() + ",\"exit\":" + value.exit()
@@ -1370,8 +1326,13 @@ public final class HdfsKerberosTransferProbe {
 		+ ",\"failure\":\"" + value.failure() + "\"}";
 	}
 	private static Result rclone(String reader, int phase, String member, boolean listing, boolean authenticated, int expected) throws Exception {
-	need(phase>=0&&phase<8,Code.relay_invalid); List<String> command=new ArrayList<>(List.of("/opt/transfer/rclone",
-		listing?"lsjson":"cat",":hdfs:"+MEMBER+(member.isEmpty()?"":"/"+member),"--config","/dev/null",
+	need(phase>=0&&phase<PHASE_NAMES.length,Code.relay_invalid);
+	boolean rc = phase == 7 || phase == 8;
+	List<String> command=new ArrayList<>(List.of("/opt/transfer/rclone"));
+	if (rc) command.addAll(List.of("rc", "--loopback", "operations/hashsumfile", "fs=:hdfs:"+MEMBER,
+		"remote="+member, "hashType=SHA-256", "download=true"));
+	else command.addAll(List.of(listing?"lsjson":"cat",":hdfs:"+MEMBER+(member.isEmpty()?"":"/"+member)));
+	command.addAll(List.of("--config","/dev/null",
 		"--hdfs-namenode","127.0.0.1:19007","--hdfs-username",reader,"--log-level","ERROR","--use-json-log",
 		"--retries","1","--low-level-retries","1","--contimeout","3s","--timeout","8s","--disable","ListR",
 		"--buffer-size","0","--checkers","1","--transfers","1","--stats","0"));
@@ -1388,7 +1349,7 @@ public final class HdfsKerberosTransferProbe {
 	try {
 		serverLogger.addAppender(serverObserver);
 		need(serverLogger.isAttached(serverObserver), Code.configuration_invalid);
-		relay.begin(phase); Result result=child(command,env,listing?null:ACQUIRED.resolve("phase-"+phase+".bin"),expected);
+		relay.begin(phase); Result result=child(command,env,(listing||rc)?null:ACQUIRED.resolve("phase-"+phase+".bin"),expected);
 		rcloneObservation = new RcloneObservation(phase, result.code, result.out.length, result.err.length, rcloneFailure(result.err));
 		relay.end(phase);
 		return result;
@@ -1436,6 +1397,16 @@ public final class HdfsKerberosTransferProbe {
 		&&error.path("time").isTextual(),Code.missing_path_mismatch);
 	bounded(()->{need(!filesystem.exists(sourcePath("missing-synthetic.bin")),Code.missing_path_mismatch);return null;},3,controlDeadline);
 	inventory();topology();
+	}
+	private static void objectControl(String reader, boolean missing) throws Exception {
+	Result result = rclone(reader, missing?8:7, missing?"missing-synthetic.bin":NAMES[1], false, true, 0);
+	if (missing) {
+		need(Boolean.TRUE.equals(CHECKS.get("rc_hash_verified")) && result.code != 0
+			&& HdfsTransferJson.missingObject(result.out), Code.missing_path_mismatch);
+		bounded(()->{need(!filesystem.exists(sourcePath("missing-synthetic.bin")),Code.missing_path_mismatch);return null;},3,controlDeadline);
+	} else need(result.code == 0 && result.err.length == 0
+		&& HdfsTransferJson.hash(result.out, HASHES[1]), Code.acquisition_invalid);
+	inventory(); topology();
 	}
 	private static void negative(String reader) throws Exception {
 	Result result=rclone(reader,5,NAMES[2],false,false,0);
@@ -1920,7 +1891,7 @@ public final class HdfsKerberosTransferProbe {
 	System.setErr(new PrintStream(OutputStream.nullOutputStream()));
 	Thread.setDefaultUncaughtExceptionHandler((thread, error) -> BACKGROUND_FAILURE.set(true));
 	for (String name : List.of("environment", "metrics_mode_enabled", "endpoint_settings", "positive_tgt", "file_cache_v3",
-			"nonrenewable", "secure_namenode", "secure_datanode", "tls_material", "tls_endpoints", "registered_datanode", "seed_hashes", "listing_before", "empty_acquired", "small_acquired", "missing_path_rejected", "payload_before", "payload_after", "rclone_auth_boundary_rejection",
+			"nonrenewable", "secure_namenode", "secure_datanode", "tls_material", "tls_endpoints", "registered_datanode", "seed_hashes", "listing_before", "empty_acquired", "small_acquired", "missing_path_rejected", "json_validator_controls", "rc_hash_verified", "missing_object_rejected", "payload_before", "payload_after", "rclone_auth_boundary_rejection",
 			"wire_auth_boundary_rejection", "listing_after", "source_preserved", "cache_preserved")) CHECKS.put(name, false);
 	for (String name : List.of("children_reaped", "relay_closed", "filesystem_closed", "namenode_stop_returned", "owner_logged_out",
 			"datanode_stop_returned", "datanode_ssl_timer_reaped", "gc_monitor_reaped", "fs_statistics_cleaner_reaped", "format_ssl_timer_reaped",
@@ -1932,6 +1903,7 @@ public final class HdfsKerberosTransferProbe {
 	byte[] serialized = null;
 	try {
 		environment(args); processBaseline = processIds(); CHECKS.put("environment", true);
+		HdfsTransferJson.selfCheck(HASHES[1]); CHECKS.put("json_validator_controls", true);
 		// Prime only the JDK child reaper before the service-thread baseline.
 		// The version child uses the same pinned binary and bounded supervisor.
 		controlDeadline = deadline;
@@ -2016,7 +1988,9 @@ public final class HdfsKerberosTransferProbe {
 		stage = "rclone_none"; negative(reader); CHECKS.put("rclone_auth_boundary_rejection", true);
 		stage = "wire_none"; bounded(() -> { wireOracle(); return null; }, 3, controlDeadline); CHECKS.put("wire_auth_boundary_rejection", true);
 		stage = "payload_after"; acquire(reader, 6, 2); CHECKS.put("payload_after", true);
-		stage = "listing_after"; listing(reader, 7); CHECKS.put("listing_after", true);
+		stage = "rc_hash"; objectControl(reader, false); CHECKS.put("rc_hash_verified", true);
+		stage = "rc_missing"; objectControl(reader, true); CHECKS.put("missing_object_rejected", true);
+		stage = "listing_after"; listing(reader, 9); CHECKS.put("listing_after", true);
 		need(acquiredBytes == 2109442, Code.acquisition_invalid);
 		stage = "preservation"; bounded(() -> { verifyMember(); return null; }, 5, controlDeadline);
 		need(configurationDigest.equals(configurationDigest()), Code.source_invalid);
@@ -2053,6 +2027,8 @@ public final class HdfsKerberosTransferProbe {
 		+ ",\"cleanup\":" + boolMap(CLEANUP) + ",\"metrics_mode\":" + metricsModeJson() + ",\"ssl_capture\":" + sslCaptureJson() + ",\"seed_checkpoint\":" + seedCheckpointJson() + ",\"cache_bytes\":" + cacheBytes
 		+ ",\"child_count\":" + CHILDREN.size() + ",\"acquired_bytes\":" + acquiredBytes + ",\"acquisitions\":" + acquisitionsJson()
 		+ ",\"missing_category\":\"" + (Boolean.TRUE.equals(CHECKS.get("missing_path_rejected")) ? "directory_not_found" : "not_observed") + "\""
+		+ ",\"rc_hash_sha256\":\"" + (Boolean.TRUE.equals(CHECKS.get("rc_hash_verified")) ? HASHES[1] : "not_observed") + "\""
+		+ ",\"missing_object_category\":\"" + (Boolean.TRUE.equals(CHECKS.get("missing_object_rejected")) ? "object_not_found" : "not_observed") + "\""
 		+ ",\"observed_lifetime_seconds\":" + observedLifetime + ",\"stage\":\"" + stage + "\",\"wire_hex\":\"" + wireHex + "\",\"error\":"
 		+ (error == null ? "null" : "\"" + error.name() + "\"")
 		+ ",\"diagnostic\":{\"category\":\"" + diagnosticCategory + "\",\"origin\":\"" + diagnosticOrigin + "\"}"
