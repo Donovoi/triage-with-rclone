@@ -32,7 +32,7 @@ RCLONE_VERSION = "1.75.2"
 RCLONE_SHA = "ed7ab1f17876bb006c3df3949a3044959671afd9112362dacaa5dd1647735bc1"
 DENIAL = "SIMPLE authentication is not enabled.  Available:[TOKEN, KERBEROS]"
 EXCEPTION = "org.apache.hadoop.security.AccessControlException"
-STAGES = frozenset("environment tls filesystem datanode_start tls_endpoints empty small missing payload_before payload_after rclone_version kdc_init principals kdc_start owner_login metrics_mode format namenode_start relay_start seed reader_tgt listing_before rclone_none wire_none listing_after preservation completed".split())
+STAGES = frozenset("environment tls filesystem datanode_start tls_endpoints empty small missing rc_hash rc_missing payload_before payload_after rclone_version kdc_init principals kdc_start owner_login metrics_mode format namenode_start relay_start seed reader_tgt listing_before rclone_none wire_none listing_after preservation completed".split())
 DIAGNOSTIC_CATEGORIES = frozenset("io_sasl io_timeout io_socket io_eof none unclassified assertion exit_requested halt_requested missing_class resource_failure invalid_config linkage_failure linkage_no_such_method linkage_no_such_field linkage_abstract_method linkage_illegal_access linkage_instantiation linkage_incompatible_class linkage_initializer linkage_bootstrap linkage_circularity linkage_class_format linkage_class_version linkage_native linkage_verify metrics_failure null_state illegal_state unsupported_operation security_failure krb_failure file_missing io_failure interrupted".split())
 DIAGNOSTIC_ORIGINS = frozenset("sasl_input sasl_output socket_input socket_output data_xceiver_run data_read_block data_access_check data_read_success data_read_op data_process_op data_op_read_block data_receiver data_block_sender data_create_rbw data_volume data_volume_list data_xceiver data_block_receiver data_dataset data_sasl_server data_socket_create data_block_stream data_pipeline_create data_block_status dfs_add_block dfs_abort dfs_sync dfs_chunk dfs_closed dfs_hsync dfs_hflush dfs_flush dfs_close_impl dfs_close dfs_rethrow dfs_chunk_validation dfs_packet_allocation dfs_thread_shutdown dfs_file_completion dfs_file_creation dfs_file_append self_suppression data_streamer dfs_output data_sasl_client data_sasl_participant none namenode_constructor namenode_initialize namenode_login namenode_format namenode_http hadoop_http hadoop_metrics default_metrics_get_impl default_metrics_init default_metrics_shutdown_instance default_metrics_set_impl metrics_system_constructor metrics_system_init metrics_system_start metrics_system_stop metrics_system_unregister_source metrics_system_register_sink metrics_system_get_proxy_for_callback metrics_system_start_metrics_mbeans metrics_system_stop_metrics_mbeans metrics_system_current_config metrics_system_start_timer metrics_system_on_timer_event metrics_system_publish_metrics_now metrics_system_sample_metrics metrics_system_snapshot_metrics metrics_system_publish_metrics metrics_system_stop_timer metrics_system_stop_sources metrics_system_stop_sinks metrics_system_configure metrics_system_configure_system metrics_system_configure_sinks metrics_system_new_sink metrics_system_configure_sources metrics_system_clear_configs metrics_system_get_hostname metrics_system_register_system_source metrics_system_get_metrics metrics_system_init_system_mbean metrics_system_shutdown metrics_system_get_source metrics_system_get_source_adapter metrics_system_get_sink_adapter metrics_system_init_mode default_metrics_initialize default_metrics_instance default_metrics_shutdown default_metrics_set_instance default_metrics_set_mini_cluster_mode default_metrics_in_mini_cluster_mode default_metrics_new_mbean_name default_metrics_remove_mbean_name default_metrics_remove_source_name default_metrics_source_name default_metrics_new_object_name default_metrics_remove_object_name default_metrics_remove_source default_metrics_new_source_name metrics_system_register metrics_system_register_source datanode_metrics_constructor datanode_metrics_create metrics_source_builder_constructor metrics_source_builder_registry metrics_source_builder_add metrics_source_builder_build metrics_source_builder_info metrics_factory_field metrics_factory_method metrics_factory_info metrics_factory_name metrics_annotations_builder method_metric_constructor jvm_metrics_create jvm_metrics_register metrics_registry_counter metrics_registry_gauge metrics_registry_rate metrics_registry_rates_aggregation metrics_registry_stat metrics_registry_rolling metrics_registry_quantiles http_authentication ugi block_manager namesystem metrics_config_constructor metrics_config_static_initializer metrics_config_create metrics_config_load_first metrics_config_subset metrics_config_get_instance_configs metrics_config_get_class_name metrics_config_get_plugin metrics_config_get_plugin_loader metrics_config_get_filter metrics_config_get_property_internal metrics_config_to_string metrics_config_keys config_properties_constructor config_properties_static_initializer config_properties_create_layout config_properties_install_layout config_properties_read config_abstract_constructor config_abstract_init_logger config_abstract_install_default_interpolator config_abstract_install_interpolator config_abstract_interpolate config_abstract_interpolated_configuration config_file_constructor config_file_static_initializer config_file_load config_file_load_from_reader config_file_load_from_stream config_file_load_from_stream_directly config_file_load_from_transformed_stream config_interpolator_constructor config_interpolator_static_initializer config_interpolator_create_interpolator config_interpolator_from_specification config_interpolator_get_default_prefix_lookups config_interpolator_init_substitutor config_interpolator_interpolate config_interpolator_resolve config_interpolator_resolve_single_variable config_lookup_holder_constructor config_lookup_holder_static_initializer config_lookup_holder_add_lookup config_lookup_holder_create_default_lookups config_lookup_holder_parse_lookups config_lookup_holder_get_default_prefix_lookups config_default_lookups_constructor config_default_lookups_static_initializer config_subset_constructor config_subset_init_interpolator".split())
 THREAD_CATEGORIES = frozenset("probe_task jdk_process_reaper jdk_timer jdk_executor jdk_cleaner hadoop_metrics hadoop_rpc hadoop_fs hadoop_namenode hadoop_blockmanagement hadoop_util jetty kerby other".split())
@@ -41,7 +41,8 @@ OWNED_CLEANUP_STATES = frozenset("not_attempted observation_incomplete services_
 TIMER_KINDS = frozenset("namenode_metrics rpc_idle snapshot_gc shell_timeout ssl_store unknown".split())
 BASE = "docker.io/library/eclipse-temurin@sha256:e1c09a9ee23feb81f94016547826c1e694086cd927356fb57fccc312fcc32f85"
 BASE_ID = "sha256:d0e6e16acb7f941e5206d99ec38e5bba18545c43462541958f84b22e0fc006e8"
-JAVA_SHA = "765c1af0e2c7f98c7a0e82a2e83ffef31be6e316694b13d1ce0a7f86e355ebb2"
+JAVA_SHA = "2ad75ab4b1c9c21460f8d19716f9ccb4219bf55de8c83b0b3df5ceb74d32fd89"
+JSON_SHA = "72950bcefb1bd0b6b669df6748594771dc7554a799ec3a5c7615a7863557002a"
 REMEDIATION_RUNTIME_SHA = "e701b0047f1198614bd590954e8efd15bf05af51b98cc62b2d9298cd721663e7"
 REMEDIATION_ORDER_SHA = "92533297bdae9e77befdc0c381f25850a08becac726c026ab70bd3a68b90b2a7"
 REMEDIATION_LOCK_SHA = "80184076d64194810cae394fbc6d8b00e86717c9479d6176f828b042dcd41df1"
@@ -54,7 +55,7 @@ FALSE_CLAIMS = dict(ledger_eligible=False, authentication_verified=False, hdfs_a
     vendor_accepted=False, vulnerability_audited=False, publisher_audit_completed=False)
 JAVA_FALSE = set(FALSE_CLAIMS) - {"publisher_audit_completed"}
 JAVA_CHECKS = frozenset(("environment", "metrics_mode_enabled", "endpoint_settings", "positive_tgt", "file_cache_v3",
-    "nonrenewable", "secure_namenode", "secure_datanode", "tls_material", "tls_endpoints", "registered_datanode", "seed_hashes", "empty_acquired", "small_acquired", "missing_path_rejected", "payload_before", "payload_after", "listing_before", "rclone_auth_boundary_rejection",
+    "nonrenewable", "secure_namenode", "secure_datanode", "tls_material", "tls_endpoints", "registered_datanode", "seed_hashes", "empty_acquired", "small_acquired", "missing_path_rejected", "json_validator_controls", "rc_hash_verified", "missing_object_rejected", "payload_before", "payload_after", "listing_before", "rclone_auth_boundary_rejection",
     "wire_auth_boundary_rejection", "listing_after", "source_preserved", "cache_preserved"))
 JAVA_CLEANUP = frozenset(("replica_pool_stopped", "seed_lease_renewer_stopped", "pipeline_server_observer_detached", "pipeline_observer_detached", "children_reaped", "relay_closed", "filesystem_closed", "namenode_stop_returned", "owner_logged_out", "kdc_stop_returned", "threads_terminated", "listeners_absent",
     "private_material_removed", "process_property_restored", "metrics_mode_restored", "cleanup_completed", "gc_monitor_reaped", "fs_statistics_cleaner_reaped", "format_ssl_timer_reaped", "datanode_stop_returned", "datanode_ssl_timer_reaped"))
@@ -296,13 +297,14 @@ def build_files(rows):
     checks += "".join(sha(data) + "  /opt/transfer/resources/" + path + "\n"
                       for path, data in sorted(webapp_resources().items()))
     checks += JAVA_SHA + "  /opt/transfer/HdfsKerberosTransferProbe.java\n" + sha(driver.encode()) + "  /opt/transfer/driver.sh\n"
+    checks += JSON_SHA + "  /opt/transfer/HdfsTransferJson.java\n"
     classpath = "/opt/transfer/classes:" + cp + ":/work/tls-resources\n"
     checks += sha(classpath.encode()) + "  /opt/transfer/classpath\n"
     dockerfile = ("FROM " + BASE + "\nUSER 0\nCOPY jars /opt/transfer/jars/\nCOPY rclone /opt/transfer/rclone\nCOPY resources /opt/transfer/resources\n"
-        "COPY HdfsKerberosTransferProbe.java checksums driver.sh classpath /opt/transfer/\n"
+        "COPY HdfsKerberosTransferProbe.java HdfsTransferJson.java checksums driver.sh classpath /opt/transfer/\n"
         "RUN sha256sum -c /opt/transfer/checksums && mkdir /opt/transfer/classes && "
         "/opt/java/openjdk/bin/javac -J-Xmx512m -XDrawDiagnostics -proc:none -implicit:none -encoding UTF-8 -cp '" + cp +
-        "' -d /opt/transfer/classes /opt/transfer/HdfsKerberosTransferProbe.java && cp -R /opt/transfer/resources/webapps /opt/transfer/classes/ && chmod -R a=rX /opt/transfer && chmod 0555 /opt/transfer/rclone\n"
+        "' -d /opt/transfer/classes /opt/transfer/HdfsKerberosTransferProbe.java /opt/transfer/HdfsTransferJson.java && cp -R /opt/transfer/resources/webapps /opt/transfer/classes/ && chmod -R a=rX /opt/transfer && chmod 0555 /opt/transfer/rclone\n"
         "USER 10001:10001\nWORKDIR /work\n")
     return {"Dockerfile": dockerfile.encode(), "checksums": checks.encode(), "driver.sh": driver.encode(), "classpath": classpath.encode()}
 
@@ -385,7 +387,7 @@ def parse_wire(raw):
                 rpc_version=9, endpoint="namenode_loopback", bounded_single_response=True)
 
 
-PHASES = ("inventory_before", "empty", "small", "missing", "before", "negative", "after", "inventory_after")
+PHASES = ("inventory_before", "empty", "small", "missing", "before", "negative", "after", "rc_hash", "rc_missing", "inventory_after")
 EMPTY_SHA = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 SMALL_SHA = "c8f5d0341d54d951a71b136e6e2afcb14d11ed8489a7ae126a8fee0df6ecf193"
 PAYLOAD_SHA = "ac6f8d639b2e2c683c08d7deae690d1b6120bd74bc80a39a895481450082c571"
@@ -411,12 +413,18 @@ def validate_relay(value, complete):
 
 
 def validate_acquisitions(value, passed):
-    need(type(value["child_count"]) is int and 0 <= value["child_count"] <= 10
-         and (not passed or value["child_count"] == 10), "java_report_invalid")
+    need(type(value["child_count"]) is int and 0 <= value["child_count"] <= 12
+         and (not passed or value["child_count"] == 12), "java_report_invalid")
     acquisitions = value["acquisitions"]
     need(type(acquisitions) is dict and set(acquisitions) == set(ACQUISITIONS), "java_report_invalid")
     need(type(value["acquired_bytes"]) is int and 0 <= value["acquired_bytes"] <= 2109442, "java_report_invalid")
     need(value["missing_category"] == ("directory_not_found" if value["checks"]["missing_path_rejected"] else "not_observed"), "java_report_invalid")
+    need(value["rc_hash_sha256"] == (SMALL_SHA if value["checks"]["rc_hash_verified"] else "not_observed"), "java_report_invalid")
+    need(value["missing_object_category"] == ("object_not_found" if value["checks"]["missing_object_rejected"] else "not_observed"), "java_report_invalid")
+    need(not value["checks"]["missing_object_rejected"] or value["checks"]["rc_hash_verified"], "java_report_invalid")
+    for phase, check in (("rc_hash", "rc_hash_verified"), ("rc_missing", "missing_object_rejected")):
+        need(not value["checks"][check] or value["relay"] is not None
+             and value["relay"]["phase_connections"][phase] == 1, "java_report_invalid")
     checks = dict(empty="empty_acquired", small="small_acquired", missing="missing_path_rejected", before="payload_before",
                   negative="rclone_auth_boundary_rejection", after="payload_after")
     verified_total = 0
@@ -542,12 +550,12 @@ def validate_rclone_observation(value, passed):
         need(not passed, "java_report_invalid")
         return
     need(type(value) is dict and set(value) == {'phase', 'exit', 'stdout_bytes', 'stderr_bytes', 'failure'}, "java_report_invalid")
-    for key, limit in (('phase', 7), ('exit', 255), ('stdout_bytes', 16384), ('stderr_bytes', 16384)):
+    for key, limit in (('phase', 9), ('exit', 255), ('stdout_bytes', 16384), ('stderr_bytes', 16384)):
         need(type(value[key]) is int and 0 <= value[key] <= limit, "java_report_invalid")
     need(type(value['failure']) is str and value['failure'] in RCLONE_FAILURE_KINDS
          and (value['stderr_bytes'] == 0) is (value['failure'] == 'empty'), "java_report_invalid")
     if passed:
-        need(value['phase'] == 7 and value['exit'] == 0 and value['stderr_bytes'] == 0
+        need(value['phase'] == 9 and value['exit'] == 0 and value['stderr_bytes'] == 0
              and value['failure'] == 'empty', "java_report_invalid")
 
 
@@ -557,7 +565,7 @@ def validate_java(raw, exit_code):
         value = parse(raw, 32768)
         checkpoint = "schema"
         keys = {"schema_version", "scope", "success", "expected_kerby_version", "runtime_binding_required", "checks",
-                "cleanup", "metrics_mode", "ssl_capture", "seed_checkpoint", "cache_bytes", "child_count", "acquired_bytes", "acquisitions", "missing_category", "observed_lifetime_seconds", "stage", "wire_hex", "rclone_wire_hex", "relay", "error", "diagnostic", "pipeline_origin", "pipeline_server_diagnostic", "rclone_observation", "remaining_executor_kind", "remaining_threads", "remaining_thread_intervals", "remaining_thread_matrix", "remaining_timer_kinds", "thread_observation_complete", "owned_thread_cleanup"} | JAVA_FALSE
+                "cleanup", "metrics_mode", "ssl_capture", "seed_checkpoint", "cache_bytes", "child_count", "acquired_bytes", "acquisitions", "missing_category", "rc_hash_sha256", "missing_object_category", "observed_lifetime_seconds", "stage", "wire_hex", "rclone_wire_hex", "relay", "error", "diagnostic", "pipeline_origin", "pipeline_server_diagnostic", "rclone_observation", "remaining_executor_kind", "remaining_threads", "remaining_thread_intervals", "remaining_thread_matrix", "remaining_timer_kinds", "thread_observation_complete", "owned_thread_cleanup"} | JAVA_FALSE
         need(type(value) is dict and set(value) == keys and type(value["schema_version"]) is int
              and value["schema_version"] == 1 and value["scope"] == "hdfs_kerberos_transfer_feasibility"
              and value["expected_kerby_version"] == "2.1.2" and value["runtime_binding_required"] is True
@@ -689,13 +697,16 @@ def run(rclone=None, *, loader=load_helpers, downloader=download, runner_factory
         java_path, runtime_path = HERE / "HdfsKerberosTransferProbe.java", pins["runtime"]
         lock_path = pins["lock"]
         java, runtime_raw, lock_raw = read(java_path, 128 * 1024), read(runtime_path, 512 * 1024), read(lock_path, 512 * 1024)
+        json_path = HERE / "HdfsTransferJson.java"
+        json_source = read(json_path, 128 * 1024)
+        need(sha(json_source) == JSON_SHA, "input_invalid")
         need(sha(java) == JAVA_SHA, "input_invalid"); rows = runtime_rows(runtime_raw, lock_raw, profile=profile)
         rclone_pins = read(PIN_FILE, 4096).decode("ascii").splitlines()
         need("RCLONE_VERSION=" + RCLONE_VERSION in rclone_pins and "RCLONE_LINUX_EXE_SHA256=" + RCLONE_SHA in rclone_pins, "input_invalid")
         rclone = Path(rclone); binary = read(rclone, 128 * 1024 * 1024)
         need(sha(binary) == RCLONE_SHA, "input_invalid")
         source_hashes[rclone] = RCLONE_SHA; source_hashes[PIN_FILE] = sha(read(PIN_FILE, 4096))
-        for path, raw in ((java_path, java), (runtime_path, runtime_raw), (lock_path, lock_raw),
+        for path, raw in ((java_path, java), (json_path, json_source), (runtime_path, runtime_raw), (lock_path, lock_raw),
                 (Path(__file__).resolve(), read(Path(__file__).resolve(), 512 * 1024))): source_hashes[path] = sha(raw)
         report["inputs"] = dict(candidate_profile=profile, source_sha256={p.name: h for p, h in source_hashes.items()}, jdk_manifest=BASE,
             jdk_config_id=BASE_ID, hadoop_version="3.5.0", kerby_version="2.1.2",
@@ -709,6 +720,7 @@ def run(rclone=None, *, loader=load_helpers, downloader=download, runner_factory
         (context / lock_path.name).write_bytes(lock_raw)
         report["stage"] = "download"; downloader(context, rows, profile=profile); verify_jars(context, rows)
         (context / "HdfsKerberosTransferProbe.java").write_bytes(java)
+        (context / "HdfsTransferJson.java").write_bytes(json_source)
         (context / "rclone").write_bytes(binary)
         need(file_hash(context / "rclone") == RCLONE_SHA, "input_changed")
         for filename, data in webapp_resources().items():
