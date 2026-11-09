@@ -6,12 +6,12 @@ import hashlib,json,os,re,shutil,signal,stat,sys,tempfile,time,types,uuid
 from pathlib import Path
 
 HERE=Path(__file__).resolve().parent
-PINS_SHA='11c48152a533d9a19c7f72a193c94292d004ef785b185230d569bb263ed5cfca'
+PINS_SHA='57ab0d5bb62a124cfa5fee1170ce009ab3f598055996b2a210f906f3df01862e'
 LABEL='org.openai.triage.hdfs-context-build'
 TMPFS='rw,nosuid,nodev,noexec,size=128m,mode=0700,uid=10001,gid=10001'
 MODULES=('audit_contract','advisory_contract','scan_contract','snapshot_contract','tool_bundle',
          'tool_worker','wrapper_contract','native_controls','audit_build','remediation_bundle',
-         'remediation_worker','remediation_merge','remediation_contract','remediation_build','remediation_regression')
+         'remediation_worker','remediation_merge','graph_metadata','remediation_contract','remediation_build','remediation_regression')
 CASES=(('scan','positive'),('scan','negative'),('scan','fallback'),('extract','stripped'),
        ('extract','original'),('scan','original'),('extract','patched'),('scan','patched'),
        ('extract','upgraded'),('scan','upgraded'),('regression','upgraded'))
@@ -54,7 +54,7 @@ def load_inputs():
     raw=frozen_read(HERE/'source-pins.json',32768);need(sha(raw)==PINS_SHA,'input_changed')
     pins=json.loads(raw)
     need(type(pins) is dict and set(pins)=={'schema_version','files'} and type(pins['schema_version']) is int
-         and pins['schema_version']==1 and type(pins['files']) is dict and 30<=len(pins['files'])<=70,'input_invalid')
+         and pins['schema_version']==1 and type(pins['files']) is dict and 30<=len(pins['files'])<=73,'input_invalid')
     data={};hashes={HERE/'source-pins.json':PINS_SHA,Path(__file__):sha(frozen_read(Path(__file__),524288))}
     for name,pin in pins['files'].items():
         need(type(name) is str and re.fullmatch(r'(?:[A-Za-z0-9_-]+/)+[A-Za-z0-9_.-]+',name)
@@ -254,6 +254,11 @@ def run(variant):
         known={(row['module'],row['version']) for asset_lock in (lock,remediation_lock)
                for row in asset_lock['assets'] if row['kind'] in ('mod','zip','info')}
         diagnostic_coordinates=RBUILD.diagnostic_coordinates(metadata,known)
+        graph_metadata_raw=get('graph-metadata-snapshot.json');GM=modules['graph_metadata']
+        mod_sums={(row['module'],row['version']):row['h1'] for asset_lock in (lock,remediation_lock)
+                  for row in asset_lock['assets'] if row['kind']=='mod'}
+        catalog=GM.extend_catalog(catalog,graph_metadata_raw,overlay['upgraded-rclone.sum'],mod_sums,diagnostic_coordinates)
+        report['graph_metadata_preparation']=GM.stage_owned(C,context,graph_metadata_raw)
         build=RBUILD.extend_build(AB.extend_build(R.build_files(C,go_sources,original_mod,original_sum)),variant)
         control_files,blobs,_,_=N.fixture()
         additions={**go_sources,**build,**overlay,'audit_driver.go':get('audit_driver.go'),

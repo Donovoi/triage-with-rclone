@@ -45,7 +45,10 @@ def root_requirements(raw,variant):
 def admit_graph(rows,catalog,mod,variant):
  required,go=root_requirements(mod,variant)
  need(all(m in catalog and catalog[m]['version']==v for m,v in required.items()),'remediation_required_versions')
- need(type(rows) is list and len(required)+1<=len(rows)<=len(catalog),'remediation_graph_size')
+ need(type(catalog) is dict and len(catalog)==654 and all(type(c) is dict
+  and set(c)=={'path','version','sum','go_mod_sum','source_available'} and type(c['source_available']) is bool
+  for c in catalog.values()) and sum(c['source_available'] for c in catalog.values())==336,'remediation_graph_catalog')
+ need(type(rows) is list and len(rows)==len(catalog),'remediation_graph_size')
  names=[];mapped={};main_count=replacements=0
  for row in rows:
   need(type(row) is dict and set(row)==GRAPH_FIELDS,'remediation_graph_row')
@@ -65,8 +68,8 @@ def admit_graph(rows,catalog,mod,variant):
    else:
     need(row['replacement']=='' and row['sum']==expected['sum'] and row['go_mod_sum']==expected['go_mod_sum'],
      'remediation_graph_source_binding')
-  names.append(module);mapped[module]=row
- need(main_count==1 and names==sorted(names) and set(required)<=set(names)
+  names.append(module);mapped[module]=dict(row,source_available=catalog[module]['source_available'])
+ need(main_count==1 and names==sorted(names) and set(names)==set(catalog) and set(required)<=set(names)
   and replacements==(1 if variant=='patched' else 0),'remediation_graph_inventory')
  return mapped
 
@@ -79,6 +82,7 @@ def admit_compiled(identity,graph,baseline,variant):
  for row in identity['modules']:
   module=row['path'];need(module in graph and module!=MODULE,'remediation_compiled_module')
   target=graph[module]
+  need(target.get('source_available') is True,'remediation_compiled_metadata_only')
   need(row=={k:target[k] for k in ('path','version','sum','replacement')},'remediation_compiled_binding')
   names.add(module)
  need(CRITICAL<=names,'remediation_compiled_critical')

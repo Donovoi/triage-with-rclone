@@ -78,8 +78,8 @@
       "sha256": "891fc97ac4bc31ed64f2369cc9cdea40c30a79c756ba5a7fcd08f16717202b27"
     },
     "hdfs-go-advisory-remediation/README.md": {
-      "bytes": 3863,
-      "sha256": "8e74ed13703408bcc429f28ae0c492b780d09de36561dc63bc6ffc5f254e4c0d"
+      "bytes": 4834,
+      "sha256": "4be5805d66e5072d92eaf14aac02d15f7ddb0f179220f7b250d9248551081b33"
     },
     "hdfs-go-advisory-remediation/advisory-snapshot-pin.json": {
       "bytes": 635,
@@ -121,6 +121,14 @@
       "bytes": 93139,
       "sha256": "ccc2567d74827dac9d442e4626410e8dedd95505a177e7f75e299d1b9d4b8428"
     },
+    "hdfs-go-advisory-remediation/graph-metadata-snapshot.json": {
+      "bytes": 241246,
+      "sha256": "0e47c28ecb34e99a5d9f0c389492b25ef95ee980f3d962bac14d3c4ebea3945e"
+    },
+    "hdfs-go-advisory-remediation/graph_metadata.py": {
+      "bytes": 7726,
+      "sha256": "2bdf72b6851de6e09db5708de50fe05737b3b8e217aafccc4d190f2f0d417e66"
+    },
     "hdfs-go-advisory-remediation/native_controls.py": {
       "bytes": 4698,
       "sha256": "5fe176d987b53213dd661a5cdb8b7b9bda283087f8248f923af308c359342f41"
@@ -138,12 +146,12 @@
       "sha256": "13f6a42a57dd4cb14b02677b68118606baa55c4edf131347a9d0fddb46579069"
     },
     "hdfs-go-advisory-remediation/remediation_contract.py": {
-      "bytes": 11134,
-      "sha256": "dca9eb1153d36f410738f06e93c1ed5f8c9979c4d4d7e5053afd40f7e52296a4"
+      "bytes": 11594,
+      "sha256": "4316f87df0d50e99aaa1bfeb542bc3965c8e8408766ddeb075fe651c6c5d5abf"
     },
     "hdfs-go-advisory-remediation/remediation_driver.go": {
       "bytes": 7474,
-      "sha256": "26fc8c764cd20ea8911cbf239ca5b702b5f16a07d730db23fa702f289fef8ada"
+      "sha256": "d57ce09aab38f6a871cb9f16e9bbd94e1cdf67f3c32d4150bb78eb9bd7094269"
     },
     "hdfs-go-advisory-remediation/remediation_merge.py": {
       "bytes": 3433,
@@ -193,6 +201,10 @@
       "bytes": 6784,
       "sha256": "d6849e50841639bdf5c7c6b2463464d812e5a7ce0c1341a110677b58bda67c27"
     },
+    "hdfs-go-advisory-remediation/test_graph_metadata.py": {
+      "bytes": 9759,
+      "sha256": "89a1197d20a8a5189c5d218b85ae7e51adbd5248bd6841b3fd0d4f62fb89664a"
+    },
     "hdfs-go-advisory-remediation/test_native_controls.py": {
       "bytes": 3808,
       "sha256": "1de46fd3f2b300e0db3edd0afcb5919f12103a341ccb8ad3db7d15355f4c9c01"
@@ -206,8 +218,8 @@
       "sha256": "ef609bbef3a7420ace6457d4756cf43bbd12d0af011a8e2f24b953acf176654a"
     },
     "hdfs-go-advisory-remediation/test_remediation_contract.py": {
-      "bytes": 11879,
-      "sha256": "337e78fdddbb3eb67b67069f9929c7d0ba7ef8301001e1e855b25b90d26e0c8f"
+      "bytes": 13534,
+      "sha256": "a40e873097fa4da8492f52921dc48262a5dfe2dcb0838bed3ea340a188f0f7a5"
     },
     "hdfs-go-advisory-remediation/test_remediation_merge.py": {
       "bytes": 6526,
