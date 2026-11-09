@@ -3,8 +3,29 @@
 This sibling experiment adds one secure DataNode and known-byte acquisition to
 the separately preserved NameNode RPC experiment. It is a feasibility probe, not
 provider, application, vendor, cancellation, renewal, or security acceptance.
-Every acceptance and ledger flag remains false, including after a hosted pass.
+The native experiment's acceptance and ledger flags remain false after a pass.
 No native result is implied by the pure tests.
+
+The separate `protocol_evidence.py` consumer may emit a schema-7 protocol envelope
+after checking the complete successful native proof. It credits only listing,
+download hashes, missing-object rejection, authentication rejection, source
+preservation, and cleanup. Provider, application, vendor, lifecycle, and security
+acceptance remain unverified. Raw feasibility reports are not importable into
+the coverage ledger, and a valid protocol envelope still cannot complete HDFS.
+
+The consumer binds the current producer and dependency sources, its own harness,
+the HDFS seed manifest, rclone and JDK identities, and the exact reconstructed
+build context. It requires all checks, both finite authentication oracles, the
+paired object controls, all cleanup predicates, and zero residual threads. It
+rejects stale/future receipts under the normal 24-hour policy, invalid durations,
+unknown fields, duplicate JSON keys, wrong types, and broadened acceptance claims.
+It never reconstructs raw wire captures or executes a native tool. Failed input
+produces no envelope; output creation is exclusive and existing files survive.
+
+CI calls this workflow with read-only permissions and combines its separately
+validated `hdfs-protocol` artifact with the other 21 Linux protocol profiles.
+Concurrency groups distinguish standalone and reused calls, and preserve every
+main run. The original sanitized native evidence is retained on failure.
 
 The only dependency profile is `kerberos-remediation`: the existing immutable
 142-JAR runtime descriptor in `hdfs-kerberos-rpc/runtime-classpath-remediation.json`
@@ -13,9 +34,10 @@ is `e701b0047f1198614bd590954e8efd15bf05af51b98cc62b2d9298cd721663e7`, ordered
 entry SHA-256 `92533297bdae9e77befdc0c381f25850a08becac726c026ab70bd3a68b90b2a7`,
 and lock SHA-256 `80184076d64194810cae394fbc6d8b00e86717c9479d6176f828b042dcd41df1`.
 There are 73,478,410 runtime bytes. Four Jetty advisory matches remain. The
-corrected graph selects Commons IO 2.22.0; its verified online inventory still
-requires fresh offline replay, RPC and transfer validation. Earlier remediation
-results bind older hashes and do not qualify this corrected transfer runtime.
+corrected graph selects Commons IO 2.22.0. Each offline replay, RPC and transfer
+result must bind these exact corrected runtime hashes; an online inventory alone
+does not qualify native behavior. Earlier results bound to other hashes cannot
+qualify this transfer runtime.
 The original SIMPLE and Kerberos graphs remain unchanged.
 
 The workflow checks out the exact PR head with read-only contents permission and

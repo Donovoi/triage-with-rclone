@@ -14,11 +14,11 @@ def steps(block):
     return [part for part in re.split(r"(?=^      - )", block.split("    steps:\n", 1)[1], flags=re.MULTILINE) if part.strip()]
 
 
-def gate(step, baseline):
+def gate(step, baseline, *, combined=False):
     args = command(step)
     require(args.count("--require-fixtures") == 1, "fixture_gate_required")
     names = args[args.index("--require-fixtures") + 1].split(",")
-    require(len(names) == len(set(names)) and set(names) == (BASELINE if baseline else ALL), "complete_gate_required")
+    require(len(names) == len(set(names)) and set(names) == (BASELINE if baseline else ALL | ({"hdfs"} if combined else set())), "complete_gate_required")
     require(args.count("--require-gcs-static-token") == (1 if baseline else 0), "static_mode_gate_required")
     receipts = [args[i + 1] for i, value in enumerate(args) if value == "--fixture-receipt"]
     expected = ("$RUNNER_TEMP/provider-gcs/gcs-oauth-lifecycle.json" if "provider-baseline" in " ".join(args)
@@ -53,14 +53,14 @@ def validate(ci, smoke):
     for item in baseline: gate(item, True)
     require("gcs-oauth-lifecycle.json" not in definitions["test"], "no_linux_borrowing")
     combined = definitions["linux-provider-evidence"]
-    require(scalar(combined, "needs", 4) == "[test, smb-protocol, pcloud-oauth-authentication, gcs-oauth-lifecycle]", "same_run_dependency")
+    require(scalar(combined, "needs", 4) == "[test, smb-protocol, pcloud-oauth-authentication, gcs-oauth-lifecycle, hdfs-protocol]", "same_run_dependency")
     downloaded = [part for part in steps(combined) if "name: gcs-oauth-lifecycle" in part]
     require(len(downloaded) == 1, "same_run_named_download")
     require("actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c" in downloaded[0]
             and scalar(downloaded[0], "path", 10) == "${{ runner.temp }}/provider-gcs"
             and re.findall(r"^          ([a-z-]+):", downloaded[0], re.MULTILINE) == ["name", "path"], "no_foreign_artifact_run")
     combined_gates = [part for part in steps(combined) if "--require-fixtures" in part]
-    require(len(combined_gates) == 1, "combined_gate_required"); gate(combined_gates[0], False)
+    require(len(combined_gates) == 1, "combined_gate_required"); gate(combined_gates[0], False, combined=True)
     require("gcs-oauth-lifecycle" in scalar(definitions["release"], "needs", 4).strip("[]").split(", "), "release_dependency_required")
     smoke_parts = [part for part in re.split(r"(?=^      - )", smoke, flags=re.MULTILINE) if part.strip()]
     qualified = [part for part in smoke_parts if "gcs-oauth/run_container.py" in part]
@@ -91,12 +91,13 @@ class GcsLifecycleWorkflowTests(unittest.TestCase):
     def test_optional_skipped_foreign_or_unqualified_evidence_cannot_pass(self):
         for before, after in (
                 ("  gcs-oauth-lifecycle:\n", "  gcs-oauth-lifecycle:\n    if: false\n"),
-                ("[test, smb-protocol, pcloud-oauth-authentication, gcs-oauth-lifecycle]", "[test, smb-protocol, pcloud-oauth-authentication]"),
+                ("[test, smb-protocol, pcloud-oauth-authentication, gcs-oauth-lifecycle, hdfs-protocol]", "[test, smb-protocol, pcloud-oauth-authentication, hdfs-protocol]"),
                 ('--lifecycle-evidence \\\n', '\\\n'),
                 ('--fixture-receipt "$RUNNER_TEMP/provider-gcs/gcs-oauth-lifecycle.json"', '--fixture-receipt "$RUNNER_TEMP/provider-gcs/gcs-oauth-experiment.json"'),
                 ('          path: ${{ runner.temp }}/provider-gcs', '          run-id: 123\n          path: ${{ runner.temp }}/provider-gcs'),
                 ('          path: ${{ runner.temp }}/gcs-oauth-lifecycle.json', '          path: ${{ runner.temp }}/**')):
             with self.subTest(before=before), self.assertRaises(ValueError):
+                self.assertIn(before, self.ci)
                 validate(self.ci.replace(before, after, 1), self.smoke)
 
     def test_nightly_cannot_omit_fresh_run_import_or_retention(self):
