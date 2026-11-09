@@ -1,0 +1,36 @@
+name: Runtime download failover contracts
+
+on:
+  pull_request:
+    paths:
+      - scripts/download-rclone.sh
+      - scripts/download-rclone.ps1
+      - scripts/tests/runtime_download_probe.py
+      - .github/workflows/runtime-download.yml
+
+permissions:
+  contents: read
+
+jobs:
+  download-contracts:
+    name: Synthetic bootstrap acquisition (${{ matrix.mode }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            mode: bash
+          - os: windows-latest
+            mode: powershell
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+      - name: Exercise real bootstrap scripts with owned synthetic transports
+        run: python -I -S -B scripts/tests/runtime_download_probe.py ${{ matrix.mode }}
