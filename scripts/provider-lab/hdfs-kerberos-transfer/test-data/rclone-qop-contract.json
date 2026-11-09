@@ -24,6 +24,20 @@
       0
     ],
     "setup_stage": "opened",
-    "original_debug": true
+    "original_debug": true,
+    "failure": "none",
+    "cipher_streams": 6,
+    "phase_cipher_streams": [
+      0,
+      0,
+      1,
+      0,
+      2,
+      0,
+      2,
+      1,
+      0,
+      0
+    ]
   }
 }

@@ -14,12 +14,15 @@ import org.apache.log4j.spi.LoggingEvent;
 final class HdfsRcloneQop {
     private static final String CATEGORY = "org.apache.hadoop.hdfs.protocol.datatransfer.sasl.DataTransferSaslUtil";
     private static final String MESSAGE = "SaslServer: Verifying QOP: requested = [auth-conf], negotiated = auth-conf";
+    private static final String CIPHER_MESSAGE = "Creating IOStreamPair of CryptoInputStream and CryptoOutputStream.";
     private static final String SERVER = "org.apache.hadoop.hdfs.protocol.datatransfer.sasl.SaslDataTransferServer";
     private static final String XCEIVER = "org.apache.hadoop.hdfs.server.datanode.DataXceiver";
     private static final int[] EXPECTED = {0, 0, 1, 0, 2, 0, 2, 1, 0, 0};
     private static final int[] COUNTS = new int[10];
+    private static final int[] CIPHER_COUNTS = new int[10];
     private static final Object LOCK = new Object();
     private static final List<Thread> OWNED = new ArrayList<>();
+    private static final Set<Thread> CIPHERS = Collections.newSetFromMap(new IdentityHashMap<>());
     private static Set<Thread> baseline;
     private static Logger logger;
     private static Observer observer;
@@ -28,6 +31,7 @@ final class HdfsRcloneQop {
     private static volatile boolean attached, restored = true;
     private static boolean failed, verified, originalDebug;
     private static String setupStage = "not_attempted";
+    private static String failure = "none";
     private static int phase = -1, completed;
     private static long deadline;
 
@@ -37,13 +41,18 @@ final class HdfsRcloneQop {
 
     static boolean valid(String category, Level level, String message, boolean throwable,
                          StackTraceElement[] stack) {
-        if (!CATEGORY.equals(category) || level != Level.DEBUG || !MESSAGE.equals(message)
+        return validEvent(category, level, message, throwable, stack, MESSAGE, "checkSaslComplete");
+    }
+
+    private static boolean validEvent(String category, Level level, String message, boolean throwable,
+                         StackTraceElement[] stack, String expectedMessage, String method) {
+        if (!CATEGORY.equals(category) || level != Level.DEBUG || !expectedMessage.equals(message)
                 || throwable || stack == null || stack.length > 128) return false;
         int util = -1, server = -1, xceiver = -1;
         for (int i = 0; i < stack.length; i++) {
             var f = stack[i];
             if (f == null) return false;
-            if (CATEGORY.equals(f.getClassName()) && "checkSaslComplete".equals(f.getMethodName())) {
+            if (CATEGORY.equals(f.getClassName()) && method.equals(f.getMethodName())) {
                 if (util != -1) return false;
                 util = i;
             }
@@ -59,24 +68,47 @@ final class HdfsRcloneQop {
         return util >= 0 && util < server && server < xceiver;
     }
 
+    private static void fail(String reason) {
+        if (!failed) failure = reason;
+        failed = true;
+    }
+
     private static final class Observer extends AppenderSkeleton {
         @Override protected void append(LoggingEvent event) {
             synchronized (LOCK) {
                 try {
                     Thread thread = Thread.currentThread();
-                    // Only this exact finite message is retained as a count. No raw event is stored.
-                    if (!attached || phase < 0 || phase >= 10 || failed
-                            || System.nanoTime() >= deadline || baseline.contains(thread)
-                            || OWNED.contains(thread) || OWNED.size() >= 6
-                            || COUNTS[phase] >= EXPECTED[phase]
-                            || !valid(event.getLoggerName(), event.getLevel(), event.getRenderedMessage(),
-                                event.getThrowableInformation() != null, thread.getStackTrace())) {
-                        failed = true;
+                    if (failed) return;
+                    if (!attached || phase < 0 || phase >= 10
+                            || System.nanoTime() >= deadline || baseline == null || baseline.contains(thread)) {
+                        fail("phase_or_thread");
+                        return;
+                    }
+                    // Two finite events, separately typed. No raw event is retained.
+                    String message = event.getRenderedMessage();
+                    var stack = thread.getStackTrace();
+                    boolean throwable = event.getThrowableInformation() != null;
+                    if (validEvent(event.getLoggerName(), event.getLevel(), message, throwable, stack,
+                                   CIPHER_MESSAGE, "createStreamPair")) {
+                        if (!OWNED.contains(thread) || CIPHERS.contains(thread) || CIPHERS.size() >= 6) {
+                            fail("cipher_binding");
+                            return;
+                        }
+                        CIPHERS.add(thread);
+                        CIPHER_COUNTS[phase]++;
+                        return;
+                    }
+                    if (!valid(event.getLoggerName(), event.getLevel(), message, throwable, stack)) {
+                        fail("unsupported_event");
+                        return;
+                    }
+                    if (OWNED.contains(thread) || OWNED.size() >= 6 || COUNTS[phase] >= EXPECTED[phase]) {
+                        fail("duplicate_or_excess");
                         return;
                     }
                     OWNED.add(thread);
                     COUNTS[phase]++;
-                } catch (Throwable ignored) { failed = true; }
+                } catch (Throwable ignored) { fail("observer_error"); }
             }
         }
         @Override public void close() { closed = true; }
@@ -101,6 +133,12 @@ final class HdfsRcloneQop {
         }
         need(!valid(CATEGORY, Level.DEBUG, MESSAGE, false, new StackTraceElement[]{stack[1], stack[0], stack[2]}));
         need(!valid(CATEGORY, Level.DEBUG, MESSAGE, false, new StackTraceElement[]{stack[0], stack[0], stack[1], stack[2]}));
+        var cipherStack = stack.clone();
+        cipherStack[0] = new StackTraceElement(CATEGORY, "createStreamPair", "x", 1);
+        need(validEvent(CATEGORY, Level.DEBUG, CIPHER_MESSAGE, false, cipherStack, CIPHER_MESSAGE, "createStreamPair"));
+        need(!valid(CATEGORY, Level.DEBUG, CIPHER_MESSAGE, false, cipherStack));
+        need(!validEvent(CATEGORY, Level.DEBUG, CIPHER_MESSAGE, false, stack, CIPHER_MESSAGE, "createStreamPair"));
+        need(!validEvent(CATEGORY, Level.DEBUG, MESSAGE, false, cipherStack, CIPHER_MESSAGE, "createStreamPair"));
         parserChecked = true;
     }
 
@@ -191,6 +229,7 @@ final class HdfsRcloneQop {
             StringBuilder text = new StringBuilder("{\"attempted\":").append(attempted)
                 .append(",\"parser_checked\":").append(parserChecked).append(",\"verified\":").append(verified && !failed)
                 .append(",\"setup_stage\":\"").append(setupStage).append("\",\"original_debug\":").append(originalDebug)
+                .append(",\"failure\":\"").append(failure).append("\"")
                 .append(",\"failed\":").append(failed).append(",\"attached\":").append(attached)
                 .append(",\"logger_restored\":").append(restored)
                 .append(",\"quiescent\":").append(OWNED.stream().noneMatch(Thread::isAlive))
@@ -198,6 +237,8 @@ final class HdfsRcloneQop {
                 .append(",\"qop\":\"").append(OWNED.isEmpty() ? "not_observed" : "auth-conf")
                 .append("\",\"phase_connections\":[");
             for (int i = 0; i < 10; i++) { if (i > 0) text.append(','); text.append(COUNTS[i]); }
+            text.append("],\"cipher_streams\":").append(CIPHERS.size()).append(",\"phase_cipher_streams\":[");
+            for (int i = 0; i < 10; i++) { if (i > 0) text.append(','); text.append(CIPHER_COUNTS[i]); }
             return text.append("]}").toString();
         }
     }

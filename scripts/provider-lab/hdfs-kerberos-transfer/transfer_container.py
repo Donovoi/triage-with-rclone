@@ -44,7 +44,7 @@ BASE_ID = "sha256:d0e6e16acb7f941e5206d99ec38e5bba18545c43462541958f84b22e0fc006
 JAVA_SHA = "541531ab1e116d9baed2b6159fcc5d0ad07438ba68d532d5faaf00bd08942e21"
 JSON_SHA = "72950bcefb1bd0b6b669df6748594771dc7554a799ec3a5c7615a7863557002a"
 SECURITY_SHA = "6650b1baa6a9d1f4942b720328cbae820a189ae10e3e5c357dacd6a23277fb55"
-QOP_SHA = "eb31a514cfb07745d64c7340295803e404ece316a0b79fc2be1530a959fbaa69"
+QOP_SHA = "4cd654a59fda00f93b74be08823ae24b2a91cca8a2b7e632113e68dbd3cbb7c4"
 REMEDIATION_RUNTIME_SHA = "e701b0047f1198614bd590954e8efd15bf05af51b98cc62b2d9298cd721663e7"
 REMEDIATION_ORDER_SHA = "92533297bdae9e77befdc0c381f25850a08becac726c026ab70bd3a68b90b2a7"
 REMEDIATION_LOCK_SHA = "80184076d64194810cae394fbc6d8b00e86717c9479d6176f828b042dcd41df1"
@@ -598,16 +598,22 @@ def validate_data_security(value, checked, cleaned):
 def validate_rclone_qop(value, checked, cleaned):
     booleans = {'attempted', 'parser_checked', 'verified', 'failed', 'attached', 'logger_restored', 'quiescent', 'original_debug'}
     expected = [0, 0, 1, 0, 2, 0, 2, 1, 0, 0]
-    need(type(value) is dict and set(value) == booleans | {'phases_completed', 'connections', 'qop', 'phase_connections', 'setup_stage'}, 'java_report_invalid')
+    need(type(value) is dict and set(value) == booleans | {'phases_completed', 'connections', 'qop', 'phase_connections', 'setup_stage', 'cipher_streams', 'phase_cipher_streams', 'failure'}, 'java_report_invalid')
     need(all(type(value[k]) is bool for k in booleans) and type(checked) is bool and type(cleaned) is bool,
          'java_report_invalid')
-    for key, limit in (('phases_completed', 10), ('connections', 6)):
+    for key, limit in (('phases_completed', 10), ('connections', 6), ('cipher_streams', 6)):
         need(type(value[key]) is int and 0 <= value[key] <= limit, 'java_report_invalid')
     need(type(value['setup_stage']) is str and value['setup_stage'] in {'not_attempted', 'appender_check', 'configuring', 'opened'}, 'java_report_invalid')
     need((value['setup_stage'] != 'not_attempted') is value['attempted'], 'java_report_invalid')
     counts = value['phase_connections']; completed = value['phases_completed']
     need(type(counts) is list and len(counts) == 10
          and all(type(n) is int and 0 <= n <= cap for n, cap in zip(counts, expected)), 'java_report_invalid')
+    ciphers = value['phase_cipher_streams']
+    need(type(ciphers) is list and len(ciphers) == 10
+         and all(type(n) is int and 0 <= n <= cap for n, cap in zip(ciphers, counts))
+         and sum(ciphers) == value['cipher_streams'], 'java_report_invalid')
+    need(type(value['failure']) is str and value['failure'] in {'none', 'phase_or_thread', 'cipher_binding', 'unsupported_event', 'duplicate_or_excess', 'observer_error'}
+         and (value['failure'] != 'none') is value['failed'], 'java_report_invalid')
     need(sum(counts) == value['connections'] and counts[:completed] == expected[:completed]
          and not any(counts[completed + 1:]), 'java_report_invalid')
     need(type(value['qop']) is str and value['qop'] == ('auth-conf' if value['connections'] else 'not_observed'),

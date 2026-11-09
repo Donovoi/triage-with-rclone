@@ -301,3 +301,9 @@ snapshot size, and joins are bounded by the existing control deadline. Success
 requires all ten phases, six unique handshakes, quiescence and restored logger
 state. Pure `rclone-qop-contract.json` values remain explicitly synthetic;
 compilation and actual rclone observations require the contained native run.
+
+The separate finite encrypted-stream creation event is tracked only after a QOP
+observation on the same DataXceiver thread, with at most one per connection. It
+cannot substitute for a completed handshake. Unknown events still fail, with
+only a fixed failure category retained. Initial DEBUG state may be enabled or
+disabled; the exact original logger state must still be restored.

@@ -62,10 +62,10 @@ class QopContractTests(unittest.TestCase):
         value = deepcopy(self.proof)
         value.update(attempted=False, parser_checked=False, verified=False, phases_completed=0,
                      connections=0, qop='not_observed', phase_connections=[0]*10,
-                     setup_stage='not_attempted', original_debug=False)
+                     setup_stage='not_attempted', original_debug=False, cipher_streams=0, phase_cipher_streams=[0]*10)
         F.validate_rclone_qop(value, False, True)
         self.reject(value)
-        value.update(attempted=True, parser_checked=True, failed=True, phases_completed=2, setup_stage='opened',
+        value.update(attempted=True, parser_checked=True, failed=True, failure='observer_error', phases_completed=2, setup_stage='opened',
                      connections=1, qop='auth-conf', phase_connections=[0,0,1,0,0,0,0,0,0,0])
         F.validate_rclone_qop(value, False, True)
         self.reject(value)
@@ -85,8 +85,25 @@ class QopContractTests(unittest.TestCase):
             value = deepcopy(self.proof); value['setup_stage'] = stage; self.reject(value)
         value = deepcopy(self.proof)
         value.update(verified=False, phases_completed=0, connections=0, qop='not_observed',
-                     phase_connections=[0]*10, setup_stage='appender_check')
+                     phase_connections=[0]*10, setup_stage='appender_check', cipher_streams=0, phase_cipher_streams=[0]*10)
         F.validate_rclone_qop(value, False, True)
+
+    def test_encrypted_streams_cannot_replace_or_exceed_qop_observations(self):
+        value = deepcopy(self.proof)
+        value.update(cipher_streams=0, phase_cipher_streams=[0]*10)
+        F.validate_rclone_qop(value, True, True)
+        for key, bad in [('cipher_streams', 7), ('cipher_streams', True), ('phase_cipher_streams', [0]*9),
+                         ('phase_cipher_streams', [True]*10), ('phase_cipher_streams', [1]*10),
+                         ('failure', 'unbounded message'), ('failure', 'observer_error')]:
+            value = deepcopy(self.proof); value[key] = bad; self.reject(value)
+        value = deepcopy(self.proof)
+        value['phase_cipher_streams'][0] = 1
+        value['phase_cipher_streams'][2] = 0
+        self.reject(value)
+        for failure in ('phase_or_thread', 'cipher_binding', 'unsupported_event', 'duplicate_or_excess', 'observer_error'):
+            value = deepcopy(self.proof); value.update(verified=False, failed=True, failure=failure)
+            F.validate_rclone_qop(value, False, True)
+            self.reject(value)
 
     def test_source_pin_matches_helper_and_probe_stays_bounded(self):
         self.assertEqual(F.sha((HERE/'HdfsRcloneQop.java').read_bytes()), F.QOP_SHA)
