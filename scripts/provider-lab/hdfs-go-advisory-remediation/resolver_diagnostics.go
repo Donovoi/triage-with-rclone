@@ -16,7 +16,8 @@ func emitState(){
  fmt.Printf("GO_REMEDIATION_GRAPH_BYTES=%d\nGO_REMEDIATION_GRAPH_MODULES=%d\nGO_REMEDIATION_ERROR_MODULES=%d\nGO_REMEDIATION_COORDINATES=%d\n",graphBytes,graphModules,errorModules,coordinateCount)
 }
 type coordinate struct {Module string `json:"module"`;Version string `json:"version"`}
-type module struct {Path string;Version string;Error json.RawMessage;Replace *module}
+type module struct {Path string;Version string;Sum string;GoModSum string;Main bool;Error json.RawMessage;Replace *module}
+type inventoryRow struct {Module string `json:"module"`;Version string `json:"version"`;Kind string `json:"kind"`;HasSum bool `json:"has_sum"`;HasGoModSum bool `json:"has_go_mod_sum"`}
 func need(ok bool){if !ok {panic("invalid")}}
 func read(name string,maximum int64)[]byte {
  before,e:=os.Lstat(name);need(e==nil&&before.Mode().IsRegular()&&before.Size()>0&&before.Size()<=maximum)
@@ -44,10 +45,13 @@ func run()bool {
  for _,c:=range coordinates {need(c.Module!=""&&c.Version!=""&&len(c.Module)<=4096&&len(c.Version)<=256&&!allowed[c]);allowed[c]=true}
  diagnosticPhase="graph_read"
  graph:=read("/opt/probes/upgraded-module-graph.json",4*1024*1024);graphBytes=len(graph);diagnosticPhase="graph_parse"
- decoder=json.NewDecoder(bytes.NewReader(graph));failures:=map[string]bool{};seen:=map[string]bool{};count:=0
+ decoder=json.NewDecoder(bytes.NewReader(graph));failures:=map[string]bool{};seen:=map[string]bool{};inventory:=map[string]inventoryRow{};count:=0
  for {var row module;err:=decoder.Decode(&row);if err==io.EOF{break};need(err==nil&&row.Path!=""&&len(row.Path)<=4096&&len(row.Version)<=256&&!seen[row.Path]);seen[row.Path]=true
   count++;need(count<=2048);graphModules=count;diagnosticPhase="graph_error_parse";reason:=kind(row.Error)
   if row.Replace!=nil {need(row.Replace.Replace==nil);replacementReason:=kind(row.Replace.Error);if reason==""{reason=replacementReason}}
+  if allowed[coordinate{row.Path,row.Version}] {
+   label:=reason;if label==""{label="none"};inventory[row.Path]=inventoryRow{row.Path,row.Version,label,row.Sum!="",row.GoModSum!=""}
+  } else if !(row.Main&&row.Path=="github.com/rclone/rclone"&&row.Version=="") {failures["unbound"]=true}
   if reason!="" {
    errorModules++
    if allowed[coordinate{row.Path,row.Version}] {failures[row.Path+"@"+row.Version+":"+reason]=true} else {failures["unbound"]=true}
@@ -55,6 +59,8 @@ func run()bool {
   diagnosticPhase="graph_parse"
  }
  need(count>0);diagnosticPhase="graph_summary";ordered:=[]string{};for failure:=range failures{ordered=append(ordered,failure)};sort.Strings(ordered)
+ names:=[]string{};for name:=range inventory{names=append(names,name)};sort.Strings(names)
+ for _,name:=range names{encoded,err:=json.Marshal(inventory[name]);need(err==nil);fmt.Println("GO_REMEDIATION_GRAPH_ROW="+string(encoded))}
  for i,failure:=range ordered{if i>=32{break};fmt.Println("GO_REMEDIATION_MODULE_ERROR="+failure)}
  if len(ordered)>32 {fmt.Println("GO_REMEDIATION_GRAPH_STATUS=errors_truncated");return false}
  if len(ordered)>0 {fmt.Println("GO_REMEDIATION_GRAPH_STATUS=errors");return false}

@@ -1,7 +1,7 @@
 """Deterministic offline upgrades; foundation build commands retain their order."""
 from __future__ import annotations
-import re
-from audit_contract import need
+import json,re
+from audit_contract import ContractError,need,unique,nonfinite
 import audit_build as AB
 
 MOD='-modfile=/opt/input/upgraded-rclone.mod'
@@ -99,6 +99,19 @@ def diagnostics(R,raw,allowed):
   if pair in allowed:found.add((*pair,kind.decode('ascii')))
   else:unbound=True
  need(len(found)<=32,'remediation_diagnostic_limit')
+ inventory={};markers=list(re.finditer(rb'^(?:#[0-9]+ +[0-9.]+ +)?GO_REMEDIATION_GRAPH_ROW=([^\r\n]+)\r?$',raw,re.MULTILINE))
+ need(len(markers)<=2048,'remediation_inventory_limit')
+ for marker in markers:
+  need(len(marker[1])<=8192,'remediation_inventory_limit')
+  try:row=json.loads(marker[1],object_pairs_hook=unique,parse_constant=nonfinite)
+  except (ValueError,UnicodeError,RecursionError):raise ContractError('remediation_inventory_json') from None
+  need(type(row) is dict and set(row)=={'module','version','kind','has_sum','has_go_mod_sum'}
+   and all(type(row[k]) is str for k in ('module','version','kind'))
+   and type(row['has_sum']) is bool and type(row['has_go_mod_sum']) is bool
+   and row['kind'] in ('none','lookup_disabled','sum_missing','unclassified'),'remediation_inventory_row')
+  if (row['module'],row['version']) not in allowed:unbound=True;continue
+  name=row['module'];need(name not in inventory or inventory[name]==row,'remediation_inventory_conflict');inventory[name]=row
+ result['resolver_inventory']=[inventory[name] for name in sorted(inventory)]
  result['module_errors']=[dict(module=m,version=v,kind=k) for m,v,k in sorted(found)]
  statuses=re.findall(rb'^(?:#[0-9]+ +[0-9.]+ +)?GO_REMEDIATION_GRAPH_STATUS=(errors|errors_truncated|complete|invalid)\r?$',raw,re.MULTILINE)
  result['resolver_graph_status']=statuses[-1].decode('ascii') if statuses else None
@@ -110,6 +123,9 @@ def diagnostics(R,raw,allowed):
   if values:
    number=int(values[-1]);need(number<=maximum,'remediation_diagnostic_limit');counts[name.lower()]=number
  result['resolver_diagnostic_counts']=counts
+ result['resolver_inventory_complete']=(result['resolver_graph_status'] in ('errors','errors_truncated','complete')
+  and not unbound and len(inventory)+1==counts.get('graph_modules')
+  and sum(row['kind']!='none' for row in inventory.values())==counts.get('error_modules'))
  result['unbound_module_error_present']=unbound
  errors=set()
  for match in re.finditer(rb'(remediation_(?:driver|regression)[.]go|resolver_diagnostics[.]go):([0-9]{1,5}):[^\r\n]*',raw):
