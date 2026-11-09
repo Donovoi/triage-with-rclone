@@ -10,8 +10,8 @@
       "sha256": "32fcdd4c332b1542e5e1bda0116bcae15f39099870339b614f727d3a4dae202e"
     },
     "hdfs-kerberos-positive-renewal/positive_contract.py": {
-      "bytes": 18590,
-      "sha256": "a2a17019cb1f0c86a4b4970ce590a5378d90347f700222172e4fa064b78ef6ab"
+      "bytes": 20470,
+      "sha256": "55bb376290d6446b40537b1a93c5299bbb72bbf868ba6902f37663796317b96f"
     },
     "hdfs-kerberos-reconnect/reconnect_container.py": {
       "bytes": 55293,
@@ -26,12 +26,12 @@
       "sha256": "c6910dfbfa5e909e921010fe3c7f1c9d2df0e7cda4b36fda84db608d0a94ee06"
     },
     "hdfs-kerberos-positive-renewal/HdfsMitRenewalProbe.java": {
-      "bytes": 136298,
-      "sha256": "c66295be26f458e3e54c65624e468de4d8297e7c99958f42422c782180ba3955"
+      "bytes": 137619,
+      "sha256": "33dbd17f4b3db30de4059e6b6042ec7b6f41e8bbe5261bf29bcb54ee4a6cc152"
     },
     "hdfs-kerberos-positive-renewal/MitRenewalEvidence.java": {
-      "bytes": 26600,
-      "sha256": "350507a71031ea76d6ea35449d3aff5d09b4d6eb341c4ad7dcf948506c294d33"
+      "bytes": 27844,
+      "sha256": "4be75076959ec3a5ff18548fad58159e42d8e29ad7a126d2283ba34638dbf18e"
     },
     "hdfs-kerberos-positive-renewal/HdfsRenewalSaslGate.java": {
       "bytes": 7641,
@@ -44,6 +44,10 @@
     "hdfs-kerberos-positive-renewal/HdfsRenewalRpcGateVectors.java": {
       "bytes": 60835,
       "sha256": "d0a04364779cf46e1d47868c2447145b468ead84dd7a4d31519c6b389b1219e9"
+    },
+    "hdfs-kerberos-positive-renewal/MitRenewalKdcOwner.java": {
+      "bytes": 27762,
+      "sha256": "10ef596958de94fee37dae33765ed841e19f32820e7d6b058416fbc2ad35ae9a"
     }
   }
 }

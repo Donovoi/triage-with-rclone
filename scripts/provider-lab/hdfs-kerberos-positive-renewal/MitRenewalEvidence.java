@@ -15,7 +15,8 @@ final class MitRenewalEvidence implements AutoCloseable {
         Failure(Code value) { super(value.name()); code=value; }
     }
     static void need(boolean value,Code code) throws Failure { if(!value)throw new Failure(code); }
-    final String realm,reader,variant;
+    final String realm,reader,variant,clockPolicy;
+    final boolean positiveRenewal;
     final boolean renewable;
     final byte[] tgtBytes,serviceBytes;
     final EncryptionKey tgtKey,serviceKey;
@@ -28,18 +29,22 @@ final class MitRenewalEvidence implements AutoCloseable {
     final List<Map<String,Object>> responseObservations=new ArrayList<>();
     static final class Request {
         final boolean renew;final String ticketKind;final int usage,nonce;final long requestTime;
+        final int serviceExpiredSeconds,renewableRemainingSeconds;
         boolean replied;
-        Request(boolean renew,String ticketKind,int usage,int nonce,long requestTime) {
+        Request(boolean renew,String ticketKind,int usage,int nonce,long requestTime,int serviceAge,int renewRemaining) {
             this.renew=renew;this.ticketKind=ticketKind;this.usage=usage;this.nonce=nonce;this.requestTime=requestTime;
+            this.serviceExpiredSeconds=serviceAge;this.renewableRemainingSeconds=renewRemaining;
         }
     }
     static final class Reply {
         final String type;final int error;final boolean fresh;
         Reply(String type,int error,boolean fresh){this.type=type;this.error=error;this.fresh=fresh;}
     }
-    MitRenewalEvidence(TgtTicket tgt,SgtTicket service,String realm,String reader,boolean renewable,String variant) throws Exception {
-        need(realm!=null && reader!=null && List.of("original","patched").contains(variant),Code.wire_invalid);
-        this.realm=realm;this.reader=reader;this.renewable=renewable;this.variant=variant;
+    MitRenewalEvidence(TgtTicket tgt,SgtTicket service,String realm,String reader,boolean renewable,String variant,String clockPolicy) throws Exception {
+        need(realm!=null && reader!=null && List.of("original","patched").contains(variant)
+            && List.of("strict5","default300").contains(clockPolicy) && (clockPolicy.equals("strict5")||renewable),Code.wire_invalid);
+        this.realm=realm;this.reader=reader;this.renewable=renewable;this.variant=variant;this.clockPolicy=clockPolicy;
+        positiveRenewal=renewable && variant.equals("patched") && clockPolicy.equals("default300");
         tgtBytes=KrbCodec.encode(tgt.getTicket());serviceBytes=KrbCodec.encode(service.getTicket());
         tgtKey=new EncryptionKey(17,tgt.getSessionKey().getKeyData().clone());
         serviceKey=new EncryptionKey(17,service.getSessionKey().getKeyData().clone());
@@ -74,8 +79,13 @@ final class MitRenewalEvidence implements AutoCloseable {
             int usage=observeAuthenticator(ap.getEncryptedAuthenticator(),key,bodyBytes);
             need(usage==(renew && variant.equals("original")?11:7),Code.wire_invalid);
             if(renew)need(body.getKdcOptions().isFlagSet(KdcOption.RENEWABLE),Code.wire_invalid);
+            long now=System.currentTimeMillis();
+            int serviceAge=(int)Math.floorDiv(now-original.getEndTime().getTime(),1000);
+            int renewRemaining=original.getRenewTill()==null?0:(int)Math.floorDiv(original.getRenewTill().getTime()-now,1000);
+            need(serviceAge>=(clockPolicy.equals("strict5")?6:1) && serviceAge<=(clockPolicy.equals("strict5")?20:15)
+                && (renewable?renewRemaining>=25 && renewRemaining<=59:renewRemaining==0),Code.wire_invalid);
             authenticatorControls+=8;requests++;
-            return new Request(renew,kind,usage,body.getNonce(),System.currentTimeMillis());
+            return new Request(renew,kind,usage,body.getNonce(),now,serviceAge,renewRemaining);
         } finally {Arrays.fill(ticket,(byte)0);Arrays.fill(bodyBytes,(byte)0);}
     }
     synchronized Reply response(byte[] raw,Request request) throws Exception {
@@ -83,6 +93,8 @@ final class MitRenewalEvidence implements AutoCloseable {
         need(responseObservations.size()<4,Code.wire_invalid);
         Map<String,Object> observed=new LinkedHashMap<>();
         observed.put("renew",request.renew);observed.put("authenticator_usage",request.usage);
+        observed.put("service_expired_seconds",request.serviceExpiredSeconds);
+        observed.put("renewable_remaining_seconds",request.renewableRemainingSeconds);
         observed.put("response","unclassified");observed.put("error_code",0);observed.put("stage","start");
         responseObservations.add(observed);
         if(Byte.toUnsignedInt(raw[0])==0x7e){
@@ -93,11 +105,12 @@ final class MitRenewalEvidence implements AutoCloseable {
                 && error.getPvno()==5 && error.getMsgType()==KrbMessageType.KRB_ERROR
                 && error.getErrorCode().getValue()>=0 && error.getErrorCode().getValue()<=255,Code.wire_invalid);
             observed.put("error_code",error.getErrorCode().getValue());observed.put("stage","expected_error");
-            need(request.renew && variant.equals("original") && request.usage==11
-                && error.getErrorCode().getValue()==31,Code.wire_invalid);
-            observed.put("stage","complete");request.replied=true;return new Reply("krb_error",31,false);
+            int expectedError=variant.equals("original")?31:32;
+            need(request.renew && !positiveRenewal && request.usage==(variant.equals("original")?11:7)
+                && error.getErrorCode().getValue()==expectedError,Code.wire_invalid);
+            observed.put("stage","complete");request.replied=true;return new Reply("krb_error",expectedError,false);
         }
-        need(!request.renew || variant.equals("patched"),Code.wire_invalid);
+        need(!request.renew || positiveRenewal,Code.wire_invalid);
         observed.put("response","tgs_rep");observed.put("stage","reply_decode");
         TgsRep reply=KrbCodec.decode(raw,TgsRep.class);
         observed.put("stage","reply_identity");
@@ -235,7 +248,7 @@ final class MitRenewalEvidence implements AutoCloseable {
     }
     synchronized void verifyKdcOutcome() throws Exception {
         need(!closed && freshTicket!=null && freshKey!=null && authenticatorControls==8*requests,Code.wire_invalid);
-        boolean positive=renewable && variant.equals("patched");
+        boolean positive=positiveRenewal;
         need(positive?requests==1 && renewalReplies==1 && ordinaryReplies==0 && replyControls==4
             :requests==(renewable?2:1) && renewalReplies==0 && ordinaryReplies==1 && replyControls==2,Code.wire_invalid);
     }
