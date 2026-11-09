@@ -1,3 +1,10 @@
+import org.apache.kerby.kerberos.kerb.KrbCodec;
+import org.apache.kerby.kerberos.kerb.crypto.EncryptionHandler;
+import org.apache.kerby.kerberos.kerb.crypto.CheckSumHandler;
+import org.apache.kerby.kerberos.kerb.type.ap.Authenticator;
+import org.apache.kerby.kerberos.kerb.type.base.EncryptionKey;
+import org.apache.kerby.kerberos.kerb.type.base.EncryptedData;
+import org.apache.kerby.kerberos.kerb.type.base.KeyUsage;
 /* Isolated policy-denial feasibility probe. Requires the reviewed hosted Linux
  * container, fixed Kerby 2.1.2 classpath, UID/GID10001, network=none,
  * -Djava.net.preferIPv4Stack=true, private /work tmpfs, and an outer watchdog/reap.
@@ -331,6 +338,8 @@ public final class HdfsKerberosPolicyDenialProbe {
     private static int issuedCacheBindings, serviceLifetime, expiredBySeconds, remainingTgtSeconds;
     private static long tgtEnd, serviceEnd;
     private static byte[] issuedTgtBytes, issuedServiceBytes;
+    private static EncryptionKey observedTgtKey, observedServiceKey;
+    private static String observedReader;
     private static KdcRelay kdcRelay;
     private static KOptions serviceOptions(TgtTicket tgt, String realm) {
         KOptions out = new KOptions();
@@ -382,7 +391,10 @@ public final class HdfsKerberosPolicyDenialProbe {
         need(!data.hasRemaining() && issuedCacheBindings == 2 && tgtEnd > serviceEnd + 60, Code.cache_invalid);
         issuedTgtBytes = org.apache.kerby.kerberos.kerb.KrbCodec.encode(tgt.getTicket());
         issuedServiceBytes = org.apache.kerby.kerberos.kerb.KrbCodec.encode(service.getTicket());
-        need(!Arrays.equals(issuedTgtBytes, issuedServiceBytes), Code.cache_invalid); cacheBound = true;
+        need(!Arrays.equals(issuedTgtBytes, issuedServiceBytes), Code.cache_invalid);
+        observedTgtKey = new EncryptionKey(17, tgt.getEncKdcRepPart().getKey().getKeyData().clone());
+        observedServiceKey = new EncryptionKey(17, service.getEncKdcRepPart().getKey().getKeyData().clone());
+        observedReader = reader; cacheBound = true;
     }
     private static void publishCache(byte[] bytes) throws Exception {
         guardRoot();
@@ -1140,16 +1152,102 @@ public final class HdfsKerberosPolicyDenialProbe {
             need(data.length <= 16384, Code.child_output_invalid); return data;
         }
     }
+
+    // Observe the unchanged PA-TGS-REQ. Only authenticated, canonical plaintext
+    // with the original issued key and request-body checksum receives a usage.
+    // These keys and all plaintext remain inside the synthetic private fixture.
+    private static byte[] decryptAuthenticator(EncryptedData encrypted, EncryptionKey key, KeyUsage usage) throws Exception {
+        need(encrypted != null && encrypted.getEType().getValue() == 17 && key != null
+            && key.getKeyType().getValue() == 17 && key.getKeyData().length == 16
+            && encrypted.getCipher() != null && encrypted.getCipher().length >= 28
+            && encrypted.getCipher().length <= 4096, Code.wire_invalid);
+        byte[] cipher = encrypted.getCipher().clone();
+        try { return EncryptionHandler.decrypt(cipher, key, usage); }
+        catch (KrbException failure) {
+            if (failure.getKrbErrorCode() == org.apache.kerby.kerberos.kerb.KrbErrorCode.KRB_AP_ERR_BAD_INTEGRITY) return null;
+            throw failure;
+        } finally { Arrays.fill(cipher, (byte)0); }
+    }
+    private static void bindAuthenticator(byte[] plain, byte[] requestBody, EncryptionKey key) throws Exception {
+        need(plain != null && plain.length > 2 && plain.length <= 4096, Code.wire_invalid);
+        Authenticator auth;
+        try { auth = KrbCodec.decode(plain, Authenticator.class); }
+        catch (KrbException malformed) { throw new Failure(Code.wire_invalid); }
+        byte[] canonical = KrbCodec.encode(auth);
+        try {
+            need(Arrays.equals(plain, canonical) && auth.getAuthenticatorVno() == 5
+                && ownedRealm.equals(auth.getCrealm()) && auth.getCname() != null
+                && auth.getCname().getNameStrings().equals(List.of(observedReader))
+                && auth.getCname().getNameType().getValue() == 1
+                && auth.getSubKey() == null && auth.getAuthorizationData() == null
+                && auth.getCusec() >= 0 && auth.getCusec() < 1000000 && auth.getCtime() != null
+                && Math.abs(System.currentTimeMillis()-auth.getCtime().getTime()) <= 30000
+                && auth.getCksum() != null && auth.getCksum().getCksumtype().getValue() == 15
+                && auth.getCksum().getChecksum().length == 12
+                && CheckSumHandler.verifyWithKey(auth.getCksum(), requestBody, key.getKeyData(), KeyUsage.TGS_REQ_AUTH_CKSUM),
+                Code.wire_invalid);
+        } finally { Arrays.fill(canonical, (byte)0); }
+    }
+    private static int classifyAuthenticator(EncryptedData encrypted, EncryptionKey key, byte[] requestBody) throws Exception {
+        byte[] seven = null, eleven = null;
+        try {
+            seven = decryptAuthenticator(encrypted, key, KeyUsage.TGS_REQ_AUTH);
+            eleven = decryptAuthenticator(encrypted, key, KeyUsage.AP_REQ_AUTH);
+            need((seven == null) != (eleven == null), Code.wire_invalid);
+            bindAuthenticator(seven == null ? eleven : seven, requestBody, key);
+            return seven == null ? 11 : 7;
+        } finally {
+            if (seven != null) Arrays.fill(seven, (byte)0);
+            if (eleven != null) Arrays.fill(eleven, (byte)0);
+        }
+    }
+    private static boolean authenticatorRejected(EncryptedData encrypted, EncryptionKey key, byte[] requestBody) throws Exception {
+        try { classifyAuthenticator(encrypted, key, requestBody); return false; }
+        catch (Failure expected) { need(expected.code == Code.wire_invalid, Code.wire_invalid); return true; }
+    }
+    private static int observeAuthenticator(EncryptedData encrypted, EncryptionKey key, byte[] requestBody) throws Exception {
+        int usage = classifyAuthenticator(encrypted, key, requestBody), controls = 0;
+        byte[] plain = decryptAuthenticator(encrypted, key, usage == 7 ? KeyUsage.TGS_REQ_AUTH : KeyUsage.AP_REQ_AUTH);
+        byte[] wrongBody = requestBody.clone(), wrongBytes = key.getKeyData().clone();
+        wrongBody[wrongBody.length-1] ^= 1; wrongBytes[0] ^= 1;
+        try {
+            // Independent controls cover both usages, corrupt ciphertext, wrong
+            // key, changed body, invalid identity/version and trailing plaintext.
+            for (KeyUsage testUsage : List.of(KeyUsage.TGS_REQ_AUTH, KeyUsage.AP_REQ_AUTH)) {
+                EncryptedData test = EncryptionHandler.encrypt(plain, key, testUsage);
+                try {
+                    need(classifyAuthenticator(test, key, requestBody) == testUsage.getValue(), Code.wire_invalid); controls++;
+                    test.getCipher()[test.getCipher().length-1] ^= 1;
+                    need(authenticatorRejected(test, key, requestBody), Code.wire_invalid); controls++;
+                } finally { Arrays.fill(test.getCipher(), (byte)0); }
+            }
+            need(authenticatorRejected(encrypted, new EncryptionKey(17, wrongBytes), requestBody), Code.wire_invalid); controls++;
+            need(authenticatorRejected(encrypted, key, wrongBody), Code.wire_invalid); controls++;
+            Authenticator wrongIdentity = KrbCodec.decode(plain, Authenticator.class);
+            wrongIdentity.setAuthenticatorVno(4);
+            byte[] wrongPlain = KrbCodec.encode(wrongIdentity), trailing = Arrays.copyOf(plain, plain.length+1);
+            try {
+                for (byte[] badPlain : List.of(wrongPlain, trailing)) {
+                    EncryptedData test = EncryptionHandler.encrypt(badPlain, key, KeyUsage.TGS_REQ_AUTH);
+                    try { need(authenticatorRejected(test, key, requestBody), Code.wire_invalid); controls++; }
+                    finally { Arrays.fill(test.getCipher(), (byte)0); }
+                }
+            } finally { Arrays.fill(wrongPlain, (byte)0); Arrays.fill(trailing, (byte)0); }
+            need(controls == 8, Code.wire_invalid); return usage;
+        } finally { Arrays.fill(plain, (byte)0); Arrays.fill(wrongBody, (byte)0); Arrays.fill(wrongBytes, (byte)0); }
+    }
+
     private static final class KdcEvent {
-        final int phase; final boolean renew; final String ticketKind;
+        final int phase, authenticatorUsage; final boolean renew; final String ticketKind;
         String response = "not_observed"; int errorCode; boolean freshService;
-        KdcEvent(int phase, boolean renew, String ticketKind) {
-            this.phase = phase; this.renew = renew; this.ticketKind = ticketKind;
+        KdcEvent(int phase, boolean renew, String ticketKind, int authenticatorUsage) {
+            this.phase = phase; this.renew = renew; this.ticketKind = ticketKind; this.authenticatorUsage = authenticatorUsage;
         }
         String json() {
             return "{\"phase\":" + phase + ",\"renew\":" + renew + ",\"ticket_kind\":\"" + ticketKind
                 + "\",\"response\":\"" + response + "\",\"error_code\":" + errorCode
-                + ",\"fresh_service_ticket\":" + freshService + "}";
+                + ",\"fresh_service_ticket\":" + freshService + ",\"authenticator_usage\":" + authenticatorUsage
+                + ",\"authenticator_controls\":8}";
         }
     }
     private static final class KdcRelay {
@@ -1285,7 +1383,12 @@ public final class HdfsKerberosPolicyDenialProbe {
             } finally { Arrays.fill(presented, (byte)0); }
             traceStage.set(TraceStage.request_renew_binding);
             need(renew ? renewableCase && identity.equals("issued_service") : identity.equals("issued_tgt"), Code.wire_invalid);
-            return new KdcEvent(ownedPhase, renew, identity);
+            byte[] boundBody = KrbCodec.encode(requestBody);
+            try {
+                int usage = observeAuthenticator(ap.getEncryptedAuthenticator(), renew ? observedServiceKey : observedTgtKey, boundBody);
+                need(renew || usage == 7, Code.wire_invalid);
+                return new KdcEvent(ownedPhase, renew, identity, usage);
+            } finally { Arrays.fill(boundBody, (byte)0); }
         }
         void response(byte[] body, KdcEvent event) throws Exception {
             need(body.length > 2, Code.wire_invalid);
@@ -1792,7 +1895,11 @@ public final class HdfsKerberosPolicyDenialProbe {
             if (issuedServiceBytes != null) Arrays.fill(issuedServiceBytes, (byte)0);
             try { stopServices(); } catch (Throwable ignored) { CLEANUP.put("cleanup_completed", false); }
             try { cleanup(server, baseline); } catch (Throwable ignored) { CLEANUP.put("cleanup_completed", false); }
-            finally { THREAD_ORIGINS.clear(); if (policyState != null) policyState.erase(); }
+            finally {
+                THREAD_ORIGINS.clear(); if (policyState != null) policyState.erase();
+                if (observedTgtKey != null) Arrays.fill(observedTgtKey.getKeyData(), (byte)0);
+                if (observedServiceKey != null) Arrays.fill(observedServiceKey.getKeyData(), (byte)0);
+            }
         }
         boolean clean = CLEANUP.values().stream().allMatch(Boolean.TRUE::equals);
         if (!clean && error == null) error = Code.cleanup_failed;
