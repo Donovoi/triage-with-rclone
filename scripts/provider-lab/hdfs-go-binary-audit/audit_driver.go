@@ -6,6 +6,7 @@ import (
  "context"
  "crypto/sha256"
  "debug/buildinfo"
+ "debug/elf"
  "encoding/hex"
  "encoding/json"
  "errors"
@@ -15,6 +16,7 @@ import (
  "reflect"
  "runtime"
  "sort"
+ "strings"
  "time"
 )
 
@@ -50,6 +52,15 @@ type toolIdentity struct {
  SourceOrigin string `json:"source_origin"`
  LockSHA256 string `json:"lock_sha256"`
 }
+type strippedEvidence struct {
+ Format string `json:"format"`
+ SHA256 string `json:"sha256"`
+ Bytes int64 `json:"bytes"`
+ SymbolTableAbsent bool `json:"symbol_table_absent"`
+ StringTableAbsent bool `json:"string_table_absent"`
+ DwarfSectionsAbsent bool `json:"dwarf_sections_absent"`
+ PCLNPresent bool `json:"pcln_present"`
+}
 type result struct {
  Schema int `json:"schema_version"`
  Success bool `json:"success"`
@@ -60,6 +71,7 @@ type result struct {
  TargetBefore fileStamp `json:"target_before"`
  TargetAfter fileStamp `json:"target_after"`
  TargetIdentity *binaryIdentity `json:"target_identity"`
+ StrippedEvidence *strippedEvidence `json:"stripped_evidence"`
  ToolUnchanged bool `json:"tool_unchanged"`
  TargetUnchanged bool `json:"target_unchanged"`
  ExitCode int `json:"exit_code"`
@@ -119,7 +131,7 @@ func inspectBinary(name string) binaryIdentity {
   require(dep!=nil&&dep.Path!=""&&!seen[dep.Path],"build_info");seen[dep.Path]=true
   row:=moduleRow{dep.Path,dep.Version,dep.Sum,""}
   if dep.Replace!=nil {
-   require(dep.Replace.Replace==nil&&dep.Replace.Version==""&&dep.Replace.Sum=="","build_info")
+   require(dep.Replace.Replace==nil&&(dep.Replace.Version==""||dep.Replace.Version=="(devel)")&&dep.Replace.Sum=="","build_info")
    row.Replacement=dep.Replace.Path
   }
   identity.Modules=append(identity.Modules,row)
@@ -127,6 +139,20 @@ func inspectBinary(name string) binaryIdentity {
  sort.Slice(identity.Modules,func(i,j int) bool{return identity.Modules[i].Path<identity.Modules[j].Path})
  require(before==stamp(name,256*1024*1024),"file_changed")
  return identity
+}
+func inspectStripped(name string,bound fileStamp) *strippedEvidence {
+ f,e:=elf.Open(name);require(e==nil,"stripped_elf");defer f.Close()
+ require(f.Class==elf.ELFCLASS64&&f.Data==elf.ELFDATA2LSB&&f.Machine==elf.EM_X86_64&&f.Type==elf.ET_EXEC,"stripped_elf")
+ symbolsAbsent:=f.Section(".symtab")==nil
+ stringsAbsent:=f.Section(".strtab")==nil
+ dwarfAbsent:=true
+ for _,section:=range f.Sections {
+  if strings.HasPrefix(section.Name,".debug_")||strings.HasPrefix(section.Name,".zdebug_"){dwarfAbsent=false}
+ }
+ pcln:=f.Section(".gopclntab");pclnPresent:=pcln!=nil&&pcln.Size>0&&pcln.Size<=128*1024*1024
+ require(symbolsAbsent&&stringsAbsent&&dwarfAbsent&&pclnPresent,"stripped_elf")
+ require(bound==stamp(name,256*1024*1024),"file_changed")
+ return &strippedEvidence{"ELF64-little-x86_64",bound.SHA256,bound.Bytes,symbolsAbsent,stringsAbsent,dwarfAbsent,pclnPresent}
 }
 func inspectTool() toolIdentity {
  raw:=readFile(lockFile,65536);require(digest(raw)==lockSHA,"tool_lock")
@@ -196,7 +222,10 @@ func run(r *result) {
    require(identity.File==fileStamp{"37ef48307cbaae684126fe8e2f5d6ca3717fce679fd36c34fc4ba584295ea0d3",119830724},"target_identity")
   } else if r.Target=="patched" {
    require(identity.File==fileStamp{"8c72cfd7f7a8f0a7e62c7f527155e0e55bb391cf8bffdb1ada6009416d74e27b",119848207},"target_identity")
-  } else {require(identity.File.Bytes>=1024*1024&&identity.File.Bytes<119830724,"target_identity")}
+  } else {
+   require(identity.File.Bytes>=1024*1024&&identity.File.Bytes<119830724,"target_identity")
+   r.StrippedEvidence=inspectStripped(target,identity.File)
+  }
  } else {require(r.TargetBefore.Bytes<16384,"control_identity")}
  require(os.Mkdir("/work/home",0700)==nil,"work_directory")
  args:=[]string{"-mode=extract",target}
@@ -234,7 +263,7 @@ func main(){
    if code,ok:=e.(string);ok {
     switch code {case "file_invalid","file_changed","build_info","build_settings","tool_lock","tool_identity","tool_dependencies",
      "capture_control","arguments","runtime","target_identity","control_identity","work_directory",
-     "scanner_deadline","scanner_output","scanner_process":r.Error=code}
+     "scanner_deadline","scanner_output","scanner_process","stripped_elf":r.Error=code}
    }
   }}()
   run(&r)

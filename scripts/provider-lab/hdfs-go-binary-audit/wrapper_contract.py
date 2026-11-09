@@ -8,7 +8,7 @@ MAX_WRAPPER_BYTES=90*1024*1024
 MAX_STDOUT_BYTES=64*1024*1024
 TARGETS={'original':('37ef48307cbaae684126fe8e2f5d6ca3717fce679fd36c34fc4ba584295ea0d3',119830724),
          'patched':('8c72cfd7f7a8f0a7e62c7f527155e0e55bb391cf8bffdb1ada6009416d74e27b',119848207)}
-FIELDS={'schema_version','success','error','mode','target','tool','target_before','target_after','target_identity',
+FIELDS={'schema_version','success','error','mode','target','tool','target_before','target_after','target_identity','stripped_evidence',
         'tool_unchanged','target_unchanged','exit_code','timed_out','wait_delay_exceeded','stdout_overflow','stderr_overflow',
         'stdout_base64','stderr_base64','stdout_sha256','stderr_sha256','capture_controls','duration_ms',
         'vulnerability_audit_completed','provider_accepted'}
@@ -73,10 +73,18 @@ def admit_wrapper(raw,mode,target,expected_target,lock,exit_code,expected_tool=N
         identity=binary(value['target_identity'],'github.com/rclone/rclone','github.com/rclone/rclone')
         need(identity['file']==before and identity['modules']==expected_target['modules'],'wrapper_target_graph')
         if target=='stripped':
+            evidence=value['stripped_evidence']
             need(1024*1024<=before['bytes']<TARGETS['original'][1]
-                 and identity['settings'].get('-ldflags')=='-s -w -X github.com/rclone/rclone/fs.Version=v1.75.2-kerberos-original',
+                 and '-ldflags' not in identity['settings']
+                 and type(evidence) is dict and set(evidence)=={'format','sha256','bytes','symbol_table_absent',
+                     'string_table_absent','dwarf_sections_absent','pcln_present'}
+                 and evidence['format']=='ELF64-little-x86_64' and evidence['sha256']==before['sha256']
+                 and type(evidence['bytes']) is int and evidence['bytes']==before['bytes']
+                 and all(evidence[k] is True for k in ('symbol_table_absent','string_table_absent',
+                                                      'dwarf_sections_absent','pcln_present')),
                  'wrapper_stripped_identity')
     else:need(value['target_identity'] is None and before['bytes']<16384,'wrapper_synthetic_identity')
+    if target!='stripped':need(value['stripped_evidence'] is None,'wrapper_unexpected_stripping')
     tool=value['tool']
     need(type(tool) is dict and set(tool)=={'binary','source_version','source_origin','lock_sha256'}
          and tool['source_version']==VERSION and tool['source_origin']==ORIGIN and tool['lock_sha256']==LOCK_SHA,'wrapper_tool')
@@ -94,11 +102,33 @@ def admit_wrapper(raw,mode,target,expected_target,lock,exit_code,expected_tool=N
     summary.update(scope='contained_go_scanner_invocation',stdout_bytes=len(stdout),stderr_bytes=len(stderr))
     return summary,stdout,stderr
 
-def extraction_identity(native_binary):
+def runtime_modules(native_binary):
+    """Translate only the foundation's closed HDFS marker to its checked path."""
     need(type(native_binary) is dict and native_binary.get('variant') in TARGETS,'expected_binary')
     variant=native_binary['variant']
     need((native_binary.get('sha256'),native_binary.get('bytes'))==TARGETS[variant],'expected_binary')
-    rows=native_binary['modules']
+    rows=native_binary.get('modules')
+    need(type(rows) is list and 0<len(rows)<=4096,'expected_binary_modules')
+    output=[];replacements=0
+    for row in rows:
+        need(type(row) is dict and set(row)=={'path','version','sum','replacement'},'expected_binary_module')
+        mapped=dict(row)
+        if row['replacement']:
+            need(variant=='patched' and row['path']=='github.com/colinmarc/hdfs/v2'
+                 and row['version']=='v2.4.0' and row['sum']=='' and row['replacement']=='context-cancellation',
+                 'expected_binary_replacement')
+            mapped['replacement']='/opt/input/patched-hdfs';replacements+=1
+        output.append(mapped)
+    need(replacements==(1 if variant=='patched' else 0),'expected_binary_replacement')
+    need([r['path'] for r in output]==sorted({r['path'] for r in output}),'expected_binary_modules')
+    return output
+
+def expected_target(native_binary):
+    rows=runtime_modules(native_binary)
+    return dict(file=dict(sha256=native_binary['sha256'],bytes=native_binary['bytes']),modules=rows)
+
+def extraction_identity(native_binary):
+    rows=runtime_modules(native_binary)
     return dict(path='github.com/rclone/rclone',go_version='go1.26.10',goos='linux',goarch='amd64',
         main_versions=['','(devel)'],
         modules=[dict(path=r['path'],version=r['version'],
