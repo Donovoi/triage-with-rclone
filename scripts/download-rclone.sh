@@ -45,9 +45,15 @@ fi
 scratch=$(mktemp -d)
 trap 'rm -rf -- "$scratch"' EXIT
 archive="rclone-v${RCLONE_VERSION}-${platform}"
-curl --proto '=https' --tlsv1.2 -fSL --retry 3 \
+# Fail over only when acquisition fails. Digest failures below remain fatal.
+if ! curl --proto '=https' --tlsv1.2 -fSL --retry 3 --connect-timeout 15 --max-time 120 \
     "https://github.com/rclone/rclone/releases/download/v${RCLONE_VERSION}/${archive}.zip" \
-    -o "$scratch/runtime.zip"
+    -o "$scratch/runtime.zip"; then
+    rm -f -- "$scratch/runtime.zip"
+    curl --proto '=https' --tlsv1.2 -fSL --retry 3 --connect-timeout 15 --max-time 120 \
+        "https://downloads.rclone.org/v${RCLONE_VERSION}/${archive}.zip" \
+        -o "$scratch/runtime.zip"
+fi
 printf '%s  %s\n' "$archive_hash" "$scratch/runtime.zip" | sha256sum --check --status
 unzip -p "$scratch/runtime.zip" "$archive/$binary" > "$scratch/$binary"
 printf '%s  %s\n' "$binary_hash" "$scratch/$binary" | sha256sum --check --status

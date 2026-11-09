@@ -29,7 +29,13 @@ New-Item -ItemType Directory -Path $scratch | Out-Null
 try {
     $name = "rclone-v$($runtime.RCLONE_VERSION)-windows-$($pins[0])"
     $zipPath = Join-Path $scratch 'runtime.zip'
-    Invoke-WebRequest -Uri "https://github.com/rclone/rclone/releases/download/v$($runtime.RCLONE_VERSION)/$name.zip" -OutFile $zipPath
+    # Fail over only when acquisition throws. Digest failures below remain fatal.
+    try {
+        Invoke-WebRequest -Uri "https://github.com/rclone/rclone/releases/download/v$($runtime.RCLONE_VERSION)/$name.zip" -OutFile $zipPath -TimeoutSec 120
+    } catch {
+        if (Test-Path -LiteralPath $zipPath) { Remove-Item -LiteralPath $zipPath -Force }
+        Invoke-WebRequest -Uri "https://downloads.rclone.org/v$($runtime.RCLONE_VERSION)/$name.zip" -OutFile $zipPath -TimeoutSec 120
+    }
     if ((Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash -ne $archiveHash) {
         throw 'Runtime archive SHA256 mismatch'
     }
