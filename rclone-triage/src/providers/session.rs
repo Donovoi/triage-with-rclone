@@ -1032,6 +1032,16 @@ mod tests {
     }
 
     #[test]
+    fn sqlite_runtime_includes_wal_page_size_fix() {
+        // Check the linked library, as well as the lockfile checked by cargo-audit.
+        assert!(
+            rusqlite::version_number() >= 3_054_000,
+            "Browser snapshots require SQLite >= 3.54.0 for RUSTSEC-2026-0459; linked {}",
+            rusqlite::version()
+        );
+    }
+
+    #[test]
     fn snapshot_includes_uncheckpointed_wal_without_cookie_temp_files() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("cookies.sqlite");
