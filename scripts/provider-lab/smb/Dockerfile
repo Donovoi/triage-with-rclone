@@ -136,14 +136,34 @@ ucf	3.0052	ab5a6d5a621ad07034ce29d0c2587e6e267ecd2975458b2c8a7d0ada77dcb95b	4329
 zlib1g	1:1.3.dfsg+really1.3.1-1+b1	015be740d6236ad114582dea500c1d907f29e16d6db00566ca32fb68d71ac90d	88892	http://snapshot.debian.org/archive/debian/20261003T000000Z/pool/main/z/zlib/zlib1g_1.3.dfsg+really1.3.1-1+b1_amd64.deb
 ARTIFACTS
 printf '%s\n' 'SMB_BUILD_PHASE=deb-download'
+printf '%s\n' 'SMB_BUILD_DIAGNOSTIC=download_started'
 while IFS="$(printf '\t')" read -r name version digest size url; do
     target="/tmp/smb-locked-debs/$name.deb"
-    /usr/lib/apt/apt-helper -o Acquire::Retries=0 -o Acquire::http::Timeout=30 download-file "$url" "$target" "SHA256:$digest"
-    printf '%s  %s\n' "$digest" "$target" | sha256sum -c -
-    test "$(wc -c < "$target")" -eq "$size"
-    test "$(dpkg-deb -f "$target" Package)" = "$name"
-    test "$(dpkg-deb -f "$target" Version)" = "$version"
+    printf '%s\n' 'SMB_BUILD_DIAGNOSTIC=download_fetch_started'
+    if /usr/lib/apt/apt-helper -o Acquire::Retries=0 -o Acquire::http::Timeout=30 download-file "$url" "$target" "SHA256:$digest"; then
+        printf '%s\n' 'SMB_BUILD_DIAGNOSTIC=download_fetch_passed'
+    else
+        printf '%s\n' 'SMB_BUILD_DIAGNOSTIC=download_fetch_failed'
+        exit 1
+    fi
+    if ! printf '%s  %s\n' "$digest" "$target" | sha256sum -c -; then
+        printf '%s\n' 'SMB_BUILD_DIAGNOSTIC=download_checksum_failed'
+        exit 1
+    fi
+    if ! test "$(wc -c < "$target")" -eq "$size"; then
+        printf '%s\n' 'SMB_BUILD_DIAGNOSTIC=download_size_failed'
+        exit 1
+    fi
+    if ! test "$(dpkg-deb -f "$target" Package)" = "$name"; then
+        printf '%s\n' 'SMB_BUILD_DIAGNOSTIC=download_package_name_failed'
+        exit 1
+    fi
+    if ! test "$(dpkg-deb -f "$target" Version)" = "$version"; then
+        printf '%s\n' 'SMB_BUILD_DIAGNOSTIC=download_package_version_failed'
+        exit 1
+    fi
 done < /tmp/smb-artifacts.tsv
+printf '%s\n' 'SMB_BUILD_DIAGNOSTIC=download_complete'
 # APT 3.0.3 rejects uncached acquisitions with --no-download, even local URIs.
 # Source: https://github.com/Debian/apt/blob/3.0.3/apt-private/private-install.cc#L153-L170
 # Cache names and completed-local handling:

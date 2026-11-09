@@ -38,6 +38,22 @@ PROBE_RUNTIME = {"platform", "uid", "gid", "samba_version", "rclone_version", "s
                  "rclone_sha256", "probe_sha256", "lock_sha256"}
 BUILD_PHASE = re.compile(rb"^(?:#[0-9]+ +[0-9.]+ +)?SMB_BUILD_PHASE=(metadata|deb-download|install|seed|manifest)\r?$", re.MULTILINE)
 BUILD_CODES = {
+    "download_started",
+    "download_fetch_started",
+    "download_fetch_failed",
+    "download_fetch_passed",
+    "download_checksum_failed",
+    "download_size_failed",
+    "download_package_name_failed",
+    "download_package_version_failed",
+    "download_complete",
+    "download_http_not_found",
+    "download_http_throttled",
+    "download_http_denied",
+    "download_http_server_error",
+    "download_connection_timeout",
+    "download_name_resolution_failed",
+    "download_hash_mismatch",
     "bootstrap_cleanup_complete", "bootstrap_cleanup_failed", "bootstrap_cleanup_started",
     "install_apt_failed", "install_apt_passed", "install_apt_started",
     "install_cache_failed", "install_cache_passed", "install_cache_started",
@@ -151,6 +167,28 @@ def create_args(name, image, run_id):
             "--lock", "/opt/synthetic-smb/build-lock.json"]
 
 
+def build_diagnostic(transcript):
+    """Classify only the last failed package acquisition; never expose raw text."""
+    markers=list(BUILD_DIAGNOSTIC.finditer(transcript))
+    if not markers:return None
+    last=markers[-1]
+    code=last[1].decode("ascii")
+    if code!="download_fetch_failed":return code
+    starts=[m for m in markers[:-1] if m[1]==b"download_fetch_started"]
+    if not starts:return code
+    attempt=transcript[starts[-1].end():last.start()]
+    for pattern,result in (
+        (rb"Hash Sum mismatch", "download_hash_mismatch"),
+        (rb"(?:Temporary failure resolving|Could not resolve)", "download_name_resolution_failed"),
+        (rb"(?:Connection timed out|Connection timeout|Timeout was reached)", "download_connection_timeout"),
+        (rb"Failed to fetch[^\r\n]*[ \t]404[ \t]", "download_http_not_found"),
+        (rb"Failed to fetch[^\r\n]*[ \t]429[ \t]", "download_http_throttled"),
+        (rb"Failed to fetch[^\r\n]*[ \t](?:401|403)[ \t]", "download_http_denied"),
+        (rb"Failed to fetch[^\r\n]*[ \t]5[0-9]{2}[ \t]", "download_http_server_error")):
+        if re.search(pattern,attempt,re.IGNORECASE):return result
+    return code
+
+
 def startup_diagnostic(stderr):
     """Return a fixed classification only, never paths or exception messages."""
     for marker, code in (
@@ -245,9 +283,7 @@ class Docker:
                 phases = BUILD_PHASE.findall(transcript)
                 if phases:
                     self.build_phase = phases[-1].decode("ascii")
-                diagnostics = BUILD_DIAGNOSTIC.findall(transcript)
-                if diagnostics:
-                    self.build_diagnostic = diagnostics[-1].decode("ascii")
+                self.build_diagnostic = build_diagnostic(transcript)
 
     def inspect(self, kind, target):
         code, data = self.run([kind, "inspect", target], allow_failure=True)

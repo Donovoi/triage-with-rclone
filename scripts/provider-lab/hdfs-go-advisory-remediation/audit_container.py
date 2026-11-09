@@ -6,7 +6,7 @@ import hashlib,json,os,re,shutil,signal,stat,sys,tempfile,time,types,uuid
 from pathlib import Path
 
 HERE=Path(__file__).resolve().parent
-PINS_SHA='fb72bb929d0c491294b23e99a72e84a60cacda4ef0672d0b6bedd9cade5644cb'
+PINS_SHA='de9da7d71b6d36d5031e96d7482dba99d84f7c2cf8b336b22b4bef4d7efcf191'
 LABEL='org.openai.triage.hdfs-context-build'
 TMPFS='rw,nosuid,nodev,noexec,size=128m,mode=0700,uid=10001,gid=10001'
 MODULES=('audit_contract','advisory_contract','scan_contract','snapshot_contract','tool_bundle',
@@ -246,6 +246,14 @@ def run(variant):
         original_mod=C.read(context/'original/go.mod',131072);original_sum=C.read(context/'original/go.sum',131072)
         overlay=RB.overlay_files(remediation_lock,original_mod,original_sum,get('upgraded-rclone.mod'),get('upgraded-rclone.sum'),variant)
         catalog=RB.source_catalog(lock,remediation_lock)
+        metadata=[original_mod,overlay['upgraded-rclone.mod']]
+        for asset_lock,asset_root in ((lock,context),(remediation_lock,remediation_root)):
+            for row in asset_lock['assets']:
+                if row['kind']=='mod':
+                    raw=C.read(asset_root/'assets'/row['file'],2*1024*1024);B.verify_asset(raw,row);metadata.append(raw)
+        known={(row['module'],row['version']) for asset_lock in (lock,remediation_lock)
+               for row in asset_lock['assets'] if row['kind'] in ('mod','zip','info')}
+        diagnostic_coordinates=RBUILD.diagnostic_coordinates(metadata,known)
         build=RBUILD.extend_build(AB.extend_build(R.build_files(C,go_sources,original_mod,original_sum)),variant)
         control_files,blobs,_,_=N.fixture()
         additions={**go_sources,**build,**overlay,'audit_driver.go':get('audit_driver.go'),
@@ -267,7 +275,7 @@ def run(variant):
         report['stage']='build';built_attempted=True
         compiled=docker.call(['build','--network','none','--pull=false','--label',LABEL+'='+run_id,'--tag',tag,str(context)],
                             timeout=630,limit=4194304,allow_failure=True)
-        report['build_diagnostics']=AB.diagnostics(R,C.read(compiled.stdout,4194304)+C.read(compiled.stderr,4194304))
+        report['build_diagnostics']=RBUILD.diagnostics(R,C.read(compiled.stdout,4194304)+C.read(compiled.stderr,4194304),diagnostic_coordinates)
         need(compiled.code==0,'build_failed')
         built=docker.inspect('image',tag);image=built.get('Id')
         need(type(image) is str and re.fullmatch('sha256:[a-f0-9]{64}',image)
