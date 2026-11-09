@@ -675,6 +675,8 @@ SESSION_KEYS = frozenset({"schema_version", "action", "ok", "state", "app_exit_c
     "app_exited", "observed_children_exited", "job_zero_confirmed", "reader_joined", "conpty_closed", "errors"})
 PROCESS_OBSERVATION_ERRORS = frozenset("process_observation_stage_" + stage for stage in (
     "pid_buffer_allocate", "pid_list_query", "pid_list_shape", "pid_value", "retained_child_wait",
+    "pid_list_count_negative", "pid_list_count_capacity", "pid_list_assigned_capacity",
+    "pid_list_count_below_assigned", "pid_list_count_above_assigned",
     "child_open", "child_membership", "child_exit_wait", "child_capacity", "child_created",
     "child_handle_close", "pid_buffer_free", "job_accounting", "app_exit_wait", "app_exit_code", "unknown"))
 SESSION_ERRORS = PROCESS_OBSERVATION_ERRORS | frozenset("protocol_invalid job_assignment_failed termination_failed deadline_exceeded start_failed "
