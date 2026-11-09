@@ -10,6 +10,8 @@ After the owned child and relay exchanges end, the probe restores only the same 
 
 Cleanup repeats the identity restoration check before stopping the KDC. Failed or uncertain restoration cannot qualify or permit private-material deletion. Owned service shutdown still runs on failure. The original source, cache, process, socket, listener and zero-residual-thread gates remain required.
 
+An unfinished relay phase blocks policy mutation while the relay is live. After failure, restoration may proceed only when its active count is zero, every exchange worker has ended, shutdown was requested, the listener and all sockets are closed, and every relay thread has ended. The last phase remains unchanged for diagnostics. A required native self-check covers normal between-phase operation, all four stopped phase values, incomplete shutdown, live workers, nonzero counts and invalid phases.
+
 The private KDC relay on port 19008 forwards bounded frames unchanged; the issuer and owner use port 19006 and the NameNode relay uses 19007. Reports contain only fixed categories, counts and booleans. No raw identities, keys, tickets, messages or error text are published.
 
 Bounds: five child processes, five private root files, 60 seconds for controls, at most eight identities and 65,536 total snapshot bytes, four KDC connections per phase, 65,536 bytes per KDC message, one MB aggregate KDC traffic, 128 container PIDs and two GB memory. The container has no network. Shared base-image and build-cache removal are excluded from cleanup claims.

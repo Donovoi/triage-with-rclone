@@ -67,7 +67,7 @@ def positive():
     # Independent literal wire record, including deliberately narrow evidence label.
     return dict(schema_version=1, scope="hdfs_kerberos_policy_denial_feasibility", success=True,
         expected_kerby_version="2.1.2", runtime_binding_required=True,
-        checks=dict(policy_snapshot=True, policy_disabled=True, policy_restored=True, environment=True, endpoint_settings=True, positive_tgt=True, file_cache_v3=True,
+        checks=dict(policy_snapshot=True, policy_disabled=True, policy_restored=True, policy_relay_quiescence=True, environment=True, endpoint_settings=True, positive_tgt=True, file_cache_v3=True,
             nonrenewable_tgt=True, issued_service_ticket=True, secure_namenode=True, listing_before=True,
             rclone_auth_boundary_rejection=True, wire_auth_boundary_rejection=True, policy_denial=True, listing_after_restore=True,
             source_preserved=True, cache_preserved=True, cache_ticket_bound=True, actual_service_expiry=True,
@@ -1608,6 +1608,27 @@ class PolicyDenialTests(unittest.TestCase):
     def reject(self, value, code=0, case="renewable"):
         with self.assertRaises(F.ProbeError):
             F.validate_java(F.canonical(value), code, case)
+
+    def test_native_relay_quiescence_control_is_required_for_success(self):
+        for bad in (False, 1, None, "true"):
+            value = positive(); value["checks"]["policy_relay_quiescence"] = bad
+            with self.subTest(bad=bad): self.reject(value)
+        value = positive(); del value["checks"]["policy_relay_quiescence"]
+        self.reject(value)
+
+    def test_policy_mutations_share_the_native_relay_quiescence_gate(self):
+        source = (HERE / "HdfsKerberosPolicyDenialProbe.java").read_text()
+        policy = source[source.index("    private static final class PolicyState"):source.index("    private static boolean restorePolicy")]
+        self.assertIn("kdcRelay.quietForPolicy()", policy)
+        self.assertLess(policy.index("quiet(); verify(false)"), policy.index("reader.setDisabled(true)"))
+        restore = policy[policy.index("        void restore()") :]
+        self.assertLess(restore.index("quiet();"), restore.index("reader.setDisabled(false)"))
+        self.assertIn('KdcRelay.policyQuietSelfTest(); CHECKS.put("policy_relay_quiescence", true);', source)
+        relay_gate = source[source.index("        synchronized boolean quietForPolicy()"):source.index("        static void policyQuietSelfTest()")]
+        for token in ("policyQuiet(phase, active", "skip(1).noneMatch(Thread::isAlive)",
+                      "stopping, listener.isClosed()", "allMatch(Socket::isClosed)",
+                      "threads.stream().noneMatch(Thread::isAlive)"):
+            self.assertIn(token, relay_gate)
 
     def test_every_policy_field_is_required_and_private_extras_rejected(self):
         for key in positive()["policy_lifecycle"]:
