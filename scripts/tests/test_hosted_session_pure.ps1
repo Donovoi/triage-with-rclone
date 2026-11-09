@@ -67,7 +67,27 @@ try {
     $script:phase = 'hosted_conpty_add_type'
     $script:clock.Restart()
     CompileObservation 'started'
-    Add-Type -Path (Join-Path $root 'application-lab/HostedConPtySession.cs') -ErrorAction Stop -WarningAction SilentlyContinue 2>$null
+    # A managed holder preserves the by-ref observation even when Read throws.
+    # This test-only adapter calls the production loop; it has no native methods.
+    $pidObservationHarness = @'
+namespace TriageApplicationLab.PureTests {
+    public sealed class PidListObservation {
+        HostedProcessObservation observation;
+        public PidListObservation(bool sticky) {
+            observation.Begin();
+            if(sticky) { observation.At(HostedProcessObservationStage.ChildOpen); observation.Capture(); }
+        }
+        public long[] Read(System.Func<int,HostedPidListSnapshot> query,System.Func<long> clock,
+                System.Action<int> pause,long frequency) {
+            try { return HostedPidListReader.Read(query,clock,pause,frequency,ref observation); }
+            finally { observation.End(); }
+        }
+        public string Code { get { return observation.Code; } }
+    }
+}
+'@
+    $sessionSource=[IO.File]::ReadAllText((Join-Path $root 'application-lab/HostedConPtySession.cs'))
+    Add-Type -TypeDefinition ($sessionSource + [Environment]::NewLine + $pidObservationHarness) -ErrorAction Stop -WarningAction SilentlyContinue 2>$null
 
     CompileObservation 'passed'
     $script:phase = 'poll_observation_pure'
@@ -170,10 +190,9 @@ try {
         $clock = [Func[long]]$clockBlock
         $pause = [Action[int]]$pauseBlock
         $frequency = if ($Case.ContainsKey('Frequency')) { [long]$Case.Frequency } else { [long]1000 }
-        $readObservation=[TriageApplicationLab.HostedProcessObservation]::new(); $readObservation.Begin()
-        if ($Case.ContainsKey('Sticky')) { $readObservation.At([TriageApplicationLab.HostedProcessObservationStage]::ChildOpen); $readObservation.Capture() }
+        $readObservation=[TriageApplicationLab.PureTests.PidListObservation]::new($Case.ContainsKey('Sticky'))
         $ids=$null; $rejected=$false; $script:pidReadFailureKind='none'
-        try { $ids=[TriageApplicationLab.HostedPidListReader]::Read($query,$clock,$pause,$frequency,[ref]$readObservation) }
+        try { $ids=$readObservation.Read($query,$clock,$pause,$frequency) }
         catch {
             $rejected=$true
             $failure=$_.Exception
@@ -185,7 +204,6 @@ try {
                 elseif($failure -is [ArgumentException]) { 'argument' }
                 else { 'other' }
         }
-        $readObservation.End()
         [pscustomobject]@{ Rejected=$rejected; Ids=$ids; Code=$readObservation.Code; State=$state }
     }
     $script:phase = 'pid_snapshot_recovery'
