@@ -112,6 +112,8 @@ def fixture(case="renewable", variant="patched"):
         reply_controls=4 if positive else 2, initial_ap_bindings=1, fresh_ap_bindings=1, ap_controls=8,
         renewal_fields=dict(fields_present=True, nonce=True, server=True, auth_time=True, start_time=True,
                             validity=True, renewal_horizon=True, flags=True, key=True) if positive else {},
+        response_observations=[dict(renew=e["renew"],authenticator_usage=e["authenticator_usage"],
+            response=e["response"],error_code=e["error_code"],stage="complete") for e in events],
         closed=True, renewal_verified=False)
     value["mit_owner"] = dict(stage="closed", setup_completed=6, children=7, children_reaped=True,
         streams_reaped=True, modules_verified=True, listener_verified=True, private_material_removed=True,
@@ -281,6 +283,36 @@ class ContractTests(unittest.TestCase):
         out=self.accept(v,exit_code=1);self.assertEqual(out["ticket_flag_observations"][0]["cache_flags"],0x00e10000)
         self.assertFalse(out["success"])
         v["ticket_flag_observations"][0]["secret"]="not allowed";self.reject(v,exit_code=1)
+
+    def test_response_observations_are_closed_and_bounded(self):
+        for field,bad in (("renew",1),("authenticator_usage",True),("authenticator_usage",8),
+                          ("response","raw_ticket"),("error_code",True),("error_code",-1),("error_code",256),
+                          ("stage","arbitrary_exception")):
+            with self.subTest(field=field,bad=bad):
+                v=fixture();v["renewal_evidence"]["response_observations"][0][field]=bad;self.reject(v)
+        v=fixture();v["renewal_evidence"]["response_observations"][0]["secret"]="forbidden";self.reject(v)
+        for bad in (None,{},[],fixture()["renewal_evidence"]["response_observations"]*5):
+            v=fixture();v["renewal_evidence"]["response_observations"]=bad;self.reject(v)
+
+    def test_response_progress_does_not_promote_failure(self):
+        v=fixture();v.update(success=False,error="relay_invalid",stage="bounded_reconnect")
+        v["checks"]["bounded_reconnect"]=False;v["diagnostic"]["category"]="assertion"
+        response=v["renewal_evidence"]["response_observations"][0]
+        response.update(response="krb_error",error_code=13,stage="expected_error")
+        out=self.accept(v,exit_code=1)
+        self.assertEqual(out["renewal_evidence"]["response_observations"][0]["error_code"],13)
+        self.assertFalse(out["renewal_verified"])
+        response["secret"]="forbidden";self.reject(v,exit_code=1)
+
+    def test_success_requires_exact_completed_response_sequence(self):
+        for case,variant in (("renewable","original"),("renewable","patched"),("nonrenewable","original"),("nonrenewable","patched")):
+            for field,bad in (("renew",False if case=="renewable" else True),("authenticator_usage",11),
+                              ("response","unclassified"),("error_code",12),("stage","reply_decrypt")):
+                v=fixture(case,variant);response=v["renewal_evidence"]["response_observations"][-1]
+                if response[field]==bad:continue
+                response[field]=bad;self.reject(v,case,variant)
+            if variant=="original" and case=="renewable":
+                v=fixture(case,variant);v["renewal_evidence"]["response_observations"].reverse();self.reject(v,case,variant)
 
     def test_legacy_fixture_cannot_pass(self):
         self.reject(legacy_fixture())
