@@ -161,7 +161,8 @@ public final class HdfsKerberosReconnectProbe {
         rclone_positive_failed, rclone_denial_mismatch, rclone_denial_exit_zero, rclone_denial_output_invalid,
         source_invalid, relay_invalid,
         child_descendant_found, child_reap_failed, child_streams_alive, child_process_drift,
-        rclone_version_nonzero, rclone_version_stderr, rclone_version_mismatch
+        rclone_version_nonzero, rclone_version_stderr, rclone_version_mismatch,
+        rc_io_connect, rc_io_request, rc_io_header, rc_io_body, rc_io_end
     }
     private static final class Failure extends Exception {
         final Code code;
@@ -786,6 +787,10 @@ public final class HdfsKerberosReconnectProbe {
         CLEANUP.put("fs_statistics_cleaner_reaped", statisticsCleanup == OwnedCleanupState.terminated);
         sslCleanup = stopOwnedFormatSsl(baseline, until);
         CLEANUP.put("format_ssl_timer_reaped", sslCleanup == OwnedCleanupState.terminated);
+        // Concurrent children can add a JDK cached-pool process reaper whose
+        // pinned idle lifetime is 60 seconds. Only wait; never exempt or stop it.
+        // Owned helper actions retain their original shared three-second budget.
+        long passiveUntil = System.nanoTime() + TimeUnit.SECONDS.toNanos(65);
         do {
             try { remainingThreads = remainingThreadCounts(baseline); }
             catch (Throwable ignored) { remainingThreads = null; remainingThreadIntervals = null; remainingThreadMatrix = null; remainingTimerKinds = null; remainingRpcKinds = null; break; }
@@ -794,7 +799,7 @@ public final class HdfsKerberosReconnectProbe {
                 && TASKS.stream().noneMatch(Thread::isAlive);
             if (threadsClean) break;
             try { Thread.sleep(25); } catch (InterruptedException e) { Thread.currentThread().interrupt(); break; }
-        } while (System.nanoTime() < until);
+        } while (System.nanoTime() < passiveUntil);
         CLEANUP.put("threads_terminated", threadsClean);
         boolean noListeners = false;
         try { listeners(false); noListeners = true; } catch (Throwable ignored) { }
@@ -1451,16 +1456,18 @@ public final class HdfsKerberosReconnectProbe {
             byte[] payload = body.getBytes(StandardCharsets.US_ASCII);
             need(payload.length <= 8192, Code.child_output_invalid);
             Socket socket = new Socket(); RC_SOCKETS.add(socket);
+            Code ioStage = Code.rc_io_connect;
             try (socket) {
                 socket.connect(new InetSocketAddress(InetAddress.getByAddress(new byte[]{127,0,0,1}),19009), 300);
                 socket.setSoTimeout(10000); need(++rcRequests <= 16, Code.child_output_invalid);
                 String header = "POST /" + method + " HTTP/1.1\r\nHost: 127.0.0.1:19009\r\nConnection: close\r\n"
                     + "Content-Type: application/json\r\nContent-Length: " + payload.length + "\r\n"
                     + (authenticated ? "Authorization: " + authorization + "\r\n" : "") + "\r\n";
+                ioStage = Code.rc_io_request;
                 socket.getOutputStream().write(header.getBytes(StandardCharsets.US_ASCII));
                 socket.getOutputStream().write(payload); socket.getOutputStream().flush();
                 var input = socket.getInputStream(); var bytes = new java.io.ByteArrayOutputStream();
-                int ending = 0;
+                int ending = 0; ioStage = Code.rc_io_header;
                 while (ending != 0x0d0a0d0a) {
                     int v = readRcByte(input,socket); need(v >= 0 && bytes.size() < 8192, Code.child_output_invalid);
                     bytes.write(v); ending = (ending << 8) | v;
@@ -1481,11 +1488,16 @@ public final class HdfsKerberosReconnectProbe {
                 need(!headers.containsKey("transfer-encoding") && length!=null && length.matches("0|[1-9][0-9]{0,4}"),
                     Code.child_output_invalid);
                 int count=Integer.parseInt(length); need(count<=16384,Code.child_output_invalid);
-                byte[] response=new byte[count];int offset=0;
+                byte[] response=new byte[count];int offset=0; ioStage = Code.rc_io_body;
                 while(offset<count){int n=readRc(input,socket,response,offset,count-offset);need(n>0,Code.child_output_invalid);offset+=n;}
+                ioStage = Code.rc_io_end;
                 need(readRcByte(input,socket)==-1,Code.child_output_invalid);
                 alive(); return new RcResponse(status,response);
-            } finally { Arrays.fill(payload,(byte)0); }
+            } catch (java.net.ConnectException failure) {
+                if (ioStage == Code.rc_io_connect) throw failure;
+                throw new Failure(ioStage, failure);
+            } catch (IOException failure) { throw new Failure(ioStage, failure); }
+            finally { Arrays.fill(payload,(byte)0); }
         }
         int entries() throws Exception {
             RcResponse response=request("fscache/entries","{}",true);
@@ -1501,7 +1513,8 @@ public final class HdfsKerberosReconnectProbe {
                 }
             }
             need(cacheEntriesBefore==0,Code.rclone_positive_failed);
-            RcResponse denied=request("fscache/entries","{}",false);
+            // Authentication rejects before the handler reads a request body.
+            RcResponse denied=request("fscache/entries","",false);
             try { need(denied.status==401,Code.rclone_denial_mismatch); rcAuthenticationChecked=true; }
             finally { denied.erase(); }
         }

@@ -43,7 +43,7 @@ TIMER_KINDS = frozenset("namenode_metrics rpc_idle snapshot_gc shell_timeout ssl
 RPC_KINDS = frozenset("client_request_sender client_connection other".split())
 BASE = "docker.io/library/eclipse-temurin@sha256:e1c09a9ee23feb81f94016547826c1e694086cd927356fb57fccc312fcc32f85"
 BASE_ID = "sha256:d0e6e16acb7f941e5206d99ec38e5bba18545c43462541958f84b22e0fc006e8"
-JAVA_SHA = "98300c2a46e57cb40adf95e9f15ca0a7dc96ba37858a860f9106d5a34f9f8769"
+JAVA_SHA = "fb0295ef769c41118470eb2dfacab97b22c7ef90a5d037d5d20a84296951db65"
 RUNTIME_SHA = "8944f0db4899d9e8f166feb28ce56d99278321ce0d3b1a9b9b993b5c0d508c2a"
 ORDER_SHA = "a482109e5170b0a6885af7c52902e89600c226f6e1fe1487083d736c13187632"
 LOCK_SHA = "a62e2a60bbb3f6c8b95b849760ff597e4e05e1c93bf61987c175502c3fe2ac74"
@@ -66,7 +66,7 @@ JAVA_CHECKS = frozenset(("environment", "endpoint_settings", "positive_tgt", "fi
     "cache_ticket_bound", "actual_service_expiry", "kdc_exchange_classified", "owner_filesystem_lifecycle", "rc_json_parser", "rc_authentication", "cache_read_barrier", "retained_backend", "retained_session_after_expiry", "forced_connection_loss", "bounded_reconnect"))
 JAVA_CLEANUP = frozenset(("daemon_reaped", "rc_sockets_closed", "cache_permissions_restored", "children_reaped", "relay_closed", "kdc_relay_closed", "filesystem_closed", "namenode_stop_returned", "owner_logged_out", "kdc_stop_returned", "threads_terminated", "listeners_absent",
     "private_material_removed", "process_property_restored", "cleanup_completed", "gc_monitor_reaped", "fs_statistics_cleaner_reaped", "format_ssl_timer_reaped"))
-JAVA_CODES = frozenset("""environment_invalid path_invalid source_changed unexpected_files
+JAVA_CODES = frozenset("""rc_io_connect rc_io_request rc_io_header rc_io_body rc_io_end environment_invalid path_invalid source_changed unexpected_files
 listener_mismatch configuration_invalid deadline_exceeded positive_ticket_failed
 wrong_password_failure_mismatch wrong_principal_not_rejected cache_invalid ticket_time_mismatch
 ticket_flags_mismatch background_failure io_failure krb_failure interrupted unclassified cleanup_failed namenode_failed child_failed child_output_invalid wire_invalid rclone_positive_failed rclone_denial_mismatch source_invalid relay_invalid
