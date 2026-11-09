@@ -43,7 +43,7 @@ TIMER_KINDS = frozenset("namenode_metrics rpc_idle snapshot_gc shell_timeout ssl
 RPC_KINDS = frozenset("client_request_sender client_connection other".split())
 BASE = "docker.io/library/eclipse-temurin@sha256:e1c09a9ee23feb81f94016547826c1e694086cd927356fb57fccc312fcc32f85"
 BASE_ID = "sha256:d0e6e16acb7f941e5206d99ec38e5bba18545c43462541958f84b22e0fc006e8"
-JAVA_SHA = "744f27cd85cf2d73a8d66b2df1f4c3fe0e514218166e5a663de5dfbde623f3c5"
+JAVA_SHA = "01997d93033cc40be2b6ade6adf59d2da3ef3b4b631628865e5e3e2b31b5d06d"
 RUNTIME_SHA = "8944f0db4899d9e8f166feb28ce56d99278321ce0d3b1a9b9b993b5c0d508c2a"
 ORDER_SHA = "a482109e5170b0a6885af7c52902e89600c226f6e1fe1487083d736c13187632"
 LOCK_SHA = "a62e2a60bbb3f6c8b95b849760ff597e4e05e1c93bf61987c175502c3fe2ac74"
@@ -504,12 +504,15 @@ def validate_kdc_trace(value, complete, service_case):
          and all(type(value[k]) is bool for k in ("bytes_forwarded_unchanged", "all_phases_observed", "parser_checked")), "java_report_invalid")
     phase_counts = [0,0,0,0]
     for event in events:
-        need(type(event) is dict and set(event) == {"phase", "renew", "ticket_kind", "response", "error_code", "fresh_service_ticket"}, "java_report_invalid")
+        need(type(event) is dict and set(event) == {"phase", "renew", "ticket_kind", "response", "error_code", "fresh_service_ticket", "authenticator_usage", "authenticator_controls"}, "java_report_invalid")
         need(type(event["phase"]) is int and 0 <= event["phase"] < 4
              and type(event["renew"]) is bool and type(event["fresh_service_ticket"]) is bool
              and type(event["ticket_kind"]) is str and event["ticket_kind"] in {"issued_tgt", "issued_service"}
              and type(event["response"]) is str and event["response"] in {"tgs_rep", "krb_error"}
-             and type(event["error_code"]) is int and 0 <= event["error_code"] <= 255, "java_report_invalid")
+             and type(event["error_code"]) is int and 0 <= event["error_code"] <= 255
+             and type(event["authenticator_usage"]) is int and event["authenticator_usage"] in {7,11}
+             and type(event["authenticator_controls"]) is int and event["authenticator_controls"] == 8
+             and (event["renew"] or event["authenticator_usage"] == 7), "java_report_invalid")
         need(event["renew"] is (event["ticket_kind"] == "issued_service")
              and (event["response"] == "tgs_rep") is (event["error_code"] == 0)
              and (event["response"] != "krb_error" or event["fresh_service_ticket"] is False), "java_report_invalid")
@@ -528,7 +531,7 @@ def validate_kdc_trace(value, complete, service_case):
                      and event["response"] == "krb_error" and event["error_code"] > 0
                      and event["fresh_service_ticket"] is False, "java_report_invalid")
             event = events[index]; index += 1
-            need(event == dict(phase=phase, renew=False, ticket_kind="issued_tgt", response="krb_error" if phase == 2 else "tgs_rep", error_code=18 if phase == 2 else 0,
+            need(event == dict(phase=phase, renew=False, ticket_kind="issued_tgt", authenticator_usage=7, authenticator_controls=8, response="krb_error" if phase == 2 else "tgs_rep", error_code=18 if phase == 2 else 0,
                                fresh_service_ticket=phase == 3), "java_report_invalid")
 
 
@@ -558,7 +561,7 @@ def validate_policy(value, complete, cleanup, checks, trace, child_count):
         need(value["reader_disabled_observed"] and child_count >= 4 and trace is not None,
              "java_report_invalid")
         denied = [e for e in trace["events"] if e["phase"] == 2 and not e["renew"]]
-        need(denied == [dict(phase=2, renew=False, ticket_kind="issued_tgt",
+        need(denied == [dict(phase=2, renew=False, ticket_kind="issued_tgt", authenticator_usage=7, authenticator_controls=8,
                             response="krb_error", error_code=18, fresh_service_ticket=False)],
              "java_report_invalid")
     if complete:

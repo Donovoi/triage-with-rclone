@@ -85,10 +85,10 @@ def positive():
             cache_ticket_bound=True, original_cache_preserved=True, new_tgs_acquisition_verified=True,
             successful_renewal_verified=False), stage="completed", wire_hex=wire().hex(), rclone_wire_hex=wire().hex(),
         kdc_trace=dict(connections=[0,0,2,2], events=[
-            dict(phase=2, renew=True, ticket_kind="issued_service", response="krb_error", error_code=31, fresh_service_ticket=False),
-            dict(phase=2, renew=False, ticket_kind="issued_tgt", response="krb_error", error_code=18, fresh_service_ticket=False),
-            dict(phase=3, renew=True, ticket_kind="issued_service", response="krb_error", error_code=31, fresh_service_ticket=False),
-            dict(phase=3, renew=False, ticket_kind="issued_tgt", response="tgs_rep", error_code=0, fresh_service_ticket=True)],
+            dict(phase=2, renew=True, ticket_kind="issued_service", authenticator_usage=11, authenticator_controls=8, response="krb_error", error_code=31, fresh_service_ticket=False),
+            dict(phase=2, renew=False, ticket_kind="issued_tgt", authenticator_usage=7, authenticator_controls=8, response="krb_error", error_code=18, fresh_service_ticket=False),
+            dict(phase=3, renew=True, ticket_kind="issued_service", authenticator_usage=11, authenticator_controls=8, response="krb_error", error_code=31, fresh_service_ticket=False),
+            dict(phase=3, renew=False, ticket_kind="issued_tgt", authenticator_usage=7, authenticator_controls=8, response="tgs_rep", error_code=0, fresh_service_ticket=True)],
             forwarded_bytes=4096, bytes_forwarded_unchanged=True, all_phases_observed=True, parser_checked=True, failure_stage="none"),
         relay=dict(before_connections=1, negative_connections=1, expired_connections=1, expired_kerberos_headers=1, after_connections=1, none_headers=1,
                    fatal_responses=1, unexpected_connections=0, bytes_forwarded_unchanged=True), error=None, ledger_eligible=False,
@@ -1102,7 +1102,11 @@ class JavaSourceTests(unittest.TestCase):
         phases = re.findall(r'observeThreads\("([a-z_]+)", baseline\)', main)
         self.assertEqual(phases, ['kdc', 'owner_login', 'format', 'namenode', 'filesystem', 'reader', 'controls'])
         self.assertLess(main.index('observeThreads("controls", baseline)'), main.index('stopServices();'))
-        self.assertIn('finally { THREAD_ORIGINS.clear(); if (policyState != null) policyState.erase(); }', main)
+        self.assertIn('THREAD_ORIGINS.clear(); if (policyState != null) policyState.erase();', main)
+        cleanup_tail = main[main.index('try { cleanup(server, baseline);'): ]
+        self.assertIn('finally {', cleanup_tail)
+        for key in ('observedTgtKey', 'observedServiceKey'):
+            self.assertIn('Arrays.fill(' + key + '.getKeyData(), (byte)0)', cleanup_tail)
         self.assertIn('observeThreads("shutdown", baseline);', source)
         self.assertIn('deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(90)', main)
         self.assertIn('controlDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(60)', main)
@@ -1707,3 +1711,33 @@ class PolicyDenialTests(unittest.TestCase):
             self.assertFalse(result["success"]); self.assertEqual(result["error"], code)
         value["error"] = "policy_PRIVATE_CANARY"
         self.reject(value, 1)
+
+
+class AuthenticatorObservationTests(unittest.TestCase):
+    def test_usage_observation_is_typed_closed_and_required(self):
+        for field, values in (("authenticator_usage", (True, 0, 6, 8, 12, 7.0, "7", None)),
+                              ("authenticator_controls", (True, 0, 7, 9, 8.0, "8", None))):
+            for bad in values:
+                with self.subTest(field=field, bad=bad):
+                    value = positive(); value["kdc_trace"]["events"][0][field] = bad
+                    with self.assertRaises(F.ProbeError): F.validate_java(F.canonical(value), 0)
+            value = positive(); del value["kdc_trace"]["events"][0][field]
+            with self.assertRaises(F.ProbeError): F.validate_java(F.canonical(value), 0)
+
+    def test_renewal_observation_accepts_either_exclusive_usage_without_credit(self):
+        for usage in (7, 11):
+            value = positive()
+            for event in value["kdc_trace"]["events"]:
+                if event["renew"]: event["authenticator_usage"] = usage
+            result = F.validate_java(F.canonical(value), 0)
+            self.assertFalse(result["renewal_verified"])
+            self.assertFalse(result["service_cache_lifecycle"]["successful_renewal_verified"])
+
+    def test_ordinary_tgs_requires_usage_seven(self):
+        value = positive(); value["kdc_trace"]["events"][1]["authenticator_usage"] = 11
+        with self.assertRaises(F.ProbeError): F.validate_java(F.canonical(value), 0)
+
+    def test_private_authenticator_bytes_and_keys_cannot_be_reported(self):
+        for field in ("plaintext", "session_key", "authenticator", "request_body"):
+            value = positive(); value["kdc_trace"]["events"][0][field] = "PRIVATE_CANARY"
+            with self.assertRaises(F.ProbeError): F.validate_java(F.canonical(value), 0)
