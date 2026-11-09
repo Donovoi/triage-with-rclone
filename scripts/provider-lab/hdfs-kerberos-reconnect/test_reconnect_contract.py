@@ -1695,3 +1695,36 @@ class ReconnectReceiptTests(unittest.TestCase):
             changed = copy.deepcopy(value)
             changed["relay"]["forced_disconnects"] = bad
             self.reject(changed, 1)
+
+
+class ReconnectTransportFailureTests(unittest.TestCase):
+    def test_finite_io_stages_preserve_failure_and_reject_unrecognized_codes(self):
+        for code in ("rc_io_connect", "rc_io_request", "rc_io_header", "rc_io_body", "rc_io_end"):
+            value = positive()
+            value.update(success=False, stage="rc_start", error=code,
+                         diagnostic=dict(category="io_failure", origin="none"))
+            result = F.validate_java(F.canonical(value), 1)
+            self.assertFalse(result["success"])
+            self.assertEqual(result["error"], code)
+            self.assertTrue(all(result[k] is False for k in F.JAVA_FALSE))
+            with self.assertRaises(F.ProbeError):
+                F.validate_java(F.canonical(value), 0)
+        value["error"] = "rc_io_PRIVATE_CANARY"
+        with self.assertRaises(F.ProbeError):
+            F.validate_java(F.canonical(value), 1)
+
+    def test_passive_reaper_wait_never_extends_owned_actions_or_exempts_threads(self):
+        source = (HERE / "HdfsKerberosReconnectProbe.java").read_text()
+        body = source[source.index("    private static void cleanup("):source.index("    private static String boolMap(")]
+        self.assertEqual(body.count("TimeUnit.SECONDS.toNanos(3)"), 1)
+        self.assertEqual(body.count("TimeUnit.SECONDS.toNanos(65)"), 1)
+        self.assertLess(body.index("stopOwnedFormatSsl(baseline, until)"), body.index("long passiveUntil"))
+        passive = body[body.index("long passiveUntil"):body.index('CLEANUP.put("threads_terminated"')]
+        self.assertIn("System.nanoTime() < passiveUntil", passive)
+        self.assertIn("remainingThreads.values().stream().allMatch(count -> count == 0)", passive)
+        self.assertIn("TASKS.stream().noneMatch(Thread::isAlive)", passive)
+        for forbidden in ("baseline.add", "baseline =", ".interrupt(", ".stop(", "setDaemon(", "stopOwned"):
+            self.assertNotIn(forbidden, passive.replace("Thread.currentThread().interrupt();", ""))
+        self.assertIn('request("fscache/entries","",false)', source)
+        self.assertIn("denied.status==401", source)
+        self.assertIn("need(readRcByte(input,socket)==-1,Code.child_output_invalid)", source)

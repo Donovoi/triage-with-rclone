@@ -15,3 +15,7 @@ Bounds: four child processes, one retained daemon, five private root files, 16 R
 Cleanup first reaps the daemon and control sockets, restores the original cache permissions under inode/owner checks, then applies the existing service shutdown and private-material deletion gates. Full cache bytes, source contents and source metadata are rechecked after restoration. The shared base image and build cache remain excluded from removal claims.
 
 No provider, application, vendor, vulnerability, cancellation or successful-renewal acceptance is granted. Native qualification requires both complete case receipts and independent artifact/source verification.
+
+The concurrent daemon and fresh-cache negative child can add a JDK process-reaper worker. Its pinned cached-pool idle lifetime is 60 seconds, so cleanup permits up to 65 seconds of passive waiting after the original three-second owned-helper shutdown budget. Every residual thread still fails cleanup and prevents private-material deletion. No JDK worker is interrupted, reclassified as exempt, or added to the baseline.
+
+The unauthenticated RC check sends an empty request body and still requires a complete bounded 401 response and EOF. RC IO failures expose only a finite transport stage, never raw messages.
