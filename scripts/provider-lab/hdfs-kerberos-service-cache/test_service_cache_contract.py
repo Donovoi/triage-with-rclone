@@ -1557,3 +1557,19 @@ class KdcFailureDiagnosticTests(unittest.TestCase):
         for bad in (None,True,"PRIVATE_CANARY","none"):
             changed=copy.deepcopy(value);changed["kdc_trace"]["failure_stage"]=bad
             with self.assertRaises(F.ProbeError):F.validate_java(F.canonical(changed),1)
+
+    def test_each_parser_failure_stage_remains_unqualified(self):
+        for stage in F.TRACE_STAGES - {"none"}:
+            value = positive()
+            value.update(success=False, error="relay_invalid", stage="listing_after",
+                         diagnostic=dict(category="assertion", origin="none"))
+            value["checks"]["kdc_exchange_classified"] = False
+            value["kdc_trace"].update(failure_stage=stage, bytes_forwarded_unchanged=False,
+                connections=[0,0,1,0], events=[], forwarded_bytes=0,
+                all_phases_observed=False, parser_checked=False)
+            result = F.validate_java(F.canonical(value), 1)
+            self.assertFalse(result["success"])
+            self.assertEqual(result["kdc_trace"]["failure_stage"], stage)
+            self.assertTrue(all(result[k] is False for k in F.JAVA_FALSE))
+            with self.assertRaises(F.ProbeError):
+                F.validate_java(F.canonical(value), 0)
