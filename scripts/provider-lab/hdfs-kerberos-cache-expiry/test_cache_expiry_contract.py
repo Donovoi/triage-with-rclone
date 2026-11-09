@@ -69,7 +69,7 @@ def positive():
         expected_kerby_version="2.1.2", runtime_binding_required=True,
         checks=dict(environment=True, endpoint_settings=True, positive_tgt=True, file_cache_v3=True,
             nonrenewable=True, secure_namenode=True, listing_before=True, rclone_auth_boundary_rejection=True,
-            wire_auth_boundary_rejection=True, listing_after=True, source_preserved=True, cache_preserved=True, cache_ticket_bound=True, actual_tgt_expiry=True, expired_tgt_rejected=True, external_cache_refresh=True),
+            wire_auth_boundary_rejection=True, listing_after=True, source_preserved=True, cache_preserved=True, cache_ticket_bound=True, actual_tgt_expiry=True, expired_tgt_rejected=True, external_cache_refresh=True, owner_filesystem_lifecycle=True),
         cleanup=dict(children_reaped=True, relay_closed=True, filesystem_closed=True, namenode_stop_returned=True, owner_logged_out=True, kdc_stop_returned=True, threads_terminated=True, listeners_absent=True,
             private_material_removed=True, process_property_restored=True, cleanup_completed=True,
             gc_monitor_reaped=True, fs_statistics_cleaner_reaped=True, format_ssl_timer_reaped=True),
@@ -1486,3 +1486,19 @@ class RpcDiagnosticTests(unittest.TestCase):
         self.assertTrue(result["success"])
         self.assertEqual(sum(result["remaining_rpc_kinds"].values()), 0)
         self.assertFalse(result["provider_accepted"])
+
+
+class OwnerFilesystemTests(unittest.TestCase):
+    def test_setup_client_closes_before_ticket_wait_and_all_handles_are_retained(self):
+        source = (HERE / "HdfsKerberosCacheExpiryProbe.java").read_text()
+        main = source[source.index("    public static void main("):]
+        self.assertLess(main.index("seedFilesystemClosed = true"), main.index('stage = "reader_tgt"'))
+        self.assertIn('stage = "preservation"; bounded(() -> { openOwnerFilesystem(conf); verifyMember();', main)
+        self.assertIn('FILESYSTEMS.size() == 2 && FILESYSTEMS.get(0) != FILESYSTEMS.get(1)', main)
+        opening = source[source.index("    private static void openOwnerFilesystem("):source.index("    private static void verifyMember(")]
+        self.assertIn("FILESYSTEMS.size() < 2", opening)
+        self.assertLess(opening.index("FILESYSTEMS.add(filesystem)"), opening.index("filesystem.initialize("))
+        closing = source[source.index("    private static void stopServices("):source.index("    public static void main(")]
+        self.assertIn("for (DistributedFileSystem ownedFilesystem : FILESYSTEMS)", closing)
+        self.assertIn("ownedFilesystem.close(); return null; }, 5, closeUntil", closing)
+        self.assertLess(closing.index("long closeUntil ="), closing.index("for (DistributedFileSystem"))
