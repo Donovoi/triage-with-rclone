@@ -102,6 +102,8 @@ public final class HdfsKerberosCacheExpiryProbe {
     private static long controlDeadline;
     private static NameNode namenode;
     private static DistributedFileSystem filesystem;
+    private static final List<DistributedFileSystem> FILESYSTEMS = new java.util.concurrent.CopyOnWriteArrayList<>();
+    private static boolean seedFilesystemClosed;
     private static UserGroupInformation owner;
     private static final List<UserGroupInformation> OWNERS = new java.util.concurrent.CopyOnWriteArrayList<>();
     private static String ownerPrincipal;
@@ -1143,6 +1145,12 @@ public final class HdfsKerberosCacheExpiryProbe {
         need(processIds().equals(processBaseline), Code.child_process_drift);
         need(ExitUtil.getFirstExitException() == null && ExitUtil.getFirstHaltException() == null, Code.namenode_failed);
     }
+    private static void openOwnerFilesystem(Configuration conf) throws Exception {
+        need(FILESYSTEMS.size() < 2 && (FILESYSTEMS.isEmpty() || seedFilesystemClosed), Code.source_invalid);
+        filesystem = new DistributedFileSystem();
+        FILESYSTEMS.add(filesystem); // Retain even a partially initialized owned handle.
+        filesystem.initialize(URI.create("hdfs://127.0.0.1:19000"), conf);
+    }
     private static void verifyMember() throws Exception {
         org.apache.hadoop.fs.Path path = new org.apache.hadoop.fs.Path(MEMBER);
         var info = filesystem.getFileStatus(path);
@@ -1193,8 +1201,11 @@ public final class HdfsKerberosCacheExpiryProbe {
         try { if (relay != null) relayClosed = relay.stop(); } catch (Throwable ignored) { relayClosed = false; }
         CLEANUP.put("relay_closed", relayClosed);
         boolean closed = true;
-        try { if (filesystem != null) bounded(() -> { filesystem.close(); return null; }, 5,
-            System.nanoTime() + TimeUnit.SECONDS.toNanos(5)); } catch (Throwable ignored) { closed = false; }
+        long closeUntil = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        for (DistributedFileSystem ownedFilesystem : FILESYSTEMS) {
+            try { bounded(() -> { ownedFilesystem.close(); return null; }, 5, closeUntil); }
+            catch (Throwable ignored) { closed = false; }
+        }
         CLEANUP.put("filesystem_closed", closed);
         boolean stopped = true;
         try { if (namenode != null) bounded(() -> { namenode.stop(); return null; }, 8,
@@ -1215,7 +1226,7 @@ public final class HdfsKerberosCacheExpiryProbe {
         for (String name : List.of("environment", "endpoint_settings", "positive_tgt", "file_cache_v3",
                 "nonrenewable", "secure_namenode", "listing_before", "rclone_auth_boundary_rejection",
                 "wire_auth_boundary_rejection", "listing_after", "source_preserved", "cache_preserved",
-                "cache_ticket_bound", "actual_tgt_expiry", "expired_tgt_rejected", "external_cache_refresh")) CHECKS.put(name, false);
+                "cache_ticket_bound", "actual_tgt_expiry", "expired_tgt_rejected", "external_cache_refresh", "owner_filesystem_lifecycle")) CHECKS.put(name, false);
         for (String name : List.of("children_reaped", "relay_closed", "filesystem_closed", "namenode_stop_returned", "owner_logged_out",
                 "gc_monitor_reaped", "fs_statistics_cleaner_reaped", "format_ssl_timer_reaped",
                 "kdc_stop_returned", "threads_terminated", "listeners_absent", "private_material_removed",
@@ -1272,11 +1283,15 @@ public final class HdfsKerberosCacheExpiryProbe {
             observeThreads("namenode", baseline);
             stage = "relay_start"; relay = new Relay(); topology();
             stage = "seed"; bounded(() -> {
-                filesystem = new DistributedFileSystem(); filesystem.initialize(URI.create("hdfs://127.0.0.1:19000"), conf);
+                openOwnerFilesystem(conf);
                 filesystem.setSafeMode(SafeModeAction.SAFEMODE_LEAVE);
                 need(filesystem.mkdirs(new org.apache.hadoop.fs.Path(MEMBER), new FsPermission((short)0755)), Code.source_invalid);
                 verifyMember(); return null; }, 10, deadline);
             observeThreads("filesystem", baseline);
+            // The owner is only a setup/inspection client. Close it before the
+            // intentional reader-ticket wait instead of leaving an idle RPC
+            // connection and its request-sender poll across that interval.
+            bounded(() -> { filesystem.close(); seedFilesystemClosed = true; return null; }, 5, deadline);
             configurationDigest = configurationDigest();
             stage = "reader_tgt";
             KrbClient client = server.getKrbClient(); long before = System.currentTimeMillis() / 1000;
@@ -1310,7 +1325,9 @@ public final class HdfsKerberosCacheExpiryProbe {
             stage = "listing_after"; positive(reader, 3);
             need(System.currentTimeMillis() / 1000 < ticketEnd && CHILDREN.size() == 5, Code.ticket_time_mismatch);
             CHECKS.put("listing_after", true); CHECKS.put("external_cache_refresh", true);
-            stage = "preservation"; bounded(() -> { verifyMember(); return null; }, 5, controlDeadline);
+            stage = "preservation"; bounded(() -> { openOwnerFilesystem(conf); verifyMember(); return null; }, 5, controlDeadline);
+            need(seedFilesystemClosed && FILESYSTEMS.size() == 2 && FILESYSTEMS.get(0) != FILESYSTEMS.get(1), Code.source_invalid);
+            CHECKS.put("owner_filesystem_lifecycle", true);
             need(configurationDigest.equals(configurationDigest()), Code.source_invalid);
             CHECKS.put("source_preserved", true);
             inventory(); topology(); need(!BACKGROUND_FAILURE.get(), Code.background_failure);

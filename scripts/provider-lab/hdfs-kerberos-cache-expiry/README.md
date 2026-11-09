@@ -33,3 +33,10 @@ snapshot at cleanup entry can show a transient sender while the final snapshot
 still requires zero residual threads. These categories and first-observed
 intervals are diagnostics, not ownership proofs or cleanup exemptions. No raw
 thread names, addresses, or stacks are published.
+
+The owner filesystem used to seed the empty directory closes before the reader
+TGT is issued. A second owned filesystem verifies the preserved directory after
+the reader controls. Both handles remain tracked and share the original bounded
+filesystem cleanup deadline. This avoids keeping a setup RPC connection idle
+through the intentional expiry wait. It does not test retained-client reconnect
+or establish the exact cause of an earlier intermittent RPC cleanup residual.
