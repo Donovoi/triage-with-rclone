@@ -1,0 +1,89 @@
+{
+  "schema_version": 1,
+  "files": {
+    "hdfs-cancellation-context-build/COPYING-hdfs": {
+      "bytes": 1089,
+      "sha256": "8900f7361a2860cdeca7194ff689e97a0e23ed5a5aa382d995cfbb37e5f8e330"
+    },
+    "hdfs-cancellation-context-build/COPYING-rclone": {
+      "bytes": 1095,
+      "sha256": "8cd2e9e750b90a04b7d82dbbca3930c696ae0309d7c10464f90a44f45754cd04"
+    },
+    "hdfs-cancellation-context-build/hdfs_context_build.py": {
+      "bytes": 38703,
+      "sha256": "2ab053bd55aa530dcd321461593acafee01e8e400cf7224d06c274a5d90c55d8"
+    },
+    "hdfs-cancellation-context-build/inspect_context_build.go": {
+      "bytes": 10666,
+      "sha256": "0ae948a9f46c14126d2b2fd5efcb842d9a5874097434234a35cd65064345a88a"
+    },
+    "hdfs-cancellation-context-build/patch-pins.json": {
+      "bytes": 1929,
+      "sha256": "fb63871ad79138aa98e3e113735828e491473ae19e6344290c8a354167c602e8"
+    },
+    "hdfs-cancellation-context-build/patches/hdfs/file_reader.go": {
+      "bytes": 11380,
+      "sha256": "216b35142d147811f6b4c5b48c5ca7757acc3a712b938bba6486c58da4d75547"
+    },
+    "hdfs-cancellation-context-build/patches/hdfs/internal/rpc/namenode.go": {
+      "bytes": 8236,
+      "sha256": "f69a2bef64de42e9ab5d1cb08a346baf8d9b4078e22bed0b92f9d353283b1072"
+    },
+    "hdfs-cancellation-context-build/patches/hdfs/internal/rpc/namenode_context.go": {
+      "bytes": 3930,
+      "sha256": "f29d421740704451c80da27340ddee48f947c91d3a50f99479c67e0a8e4397df"
+    },
+    "hdfs-cancellation-context-build/patches/hdfs/internal/rpc/namenode_context_test.go": {
+      "bytes": 11559,
+      "sha256": "790626fd030d16fb80e0dc4fec6d215537158c92da53e01a07947c700c3a0647"
+    },
+    "hdfs-cancellation-context-build/patches/hdfs/readdir.go": {
+      "bytes": 668,
+      "sha256": "95f74bb7dfad4d12ca4fa9e56381ef89a12e2da00abacf49977116702af4a745"
+    },
+    "hdfs-cancellation-context-build/patches/hdfs/stat.go": {
+      "bytes": 2947,
+      "sha256": "93710528153ca05ce36b9244ac43bf387907fc281ef649e183ba580cfe7185e7"
+    },
+    "hdfs-cancellation-context-build/patches/rclone/backend/hdfs/fs.go": {
+      "bytes": 10224,
+      "sha256": "720ba739dbcef16f6f778f22e765949018fb63c972f59cb13e2e97cd6279888b"
+    },
+    "hdfs-kerberos-cancellation/HdfsCancellationRpcGate.java": {
+      "bytes": 9527,
+      "sha256": "bca359ee8bac65d0e7cd4cbf531dbfa362f04a094bc0d06d77c6085cf9edb542"
+    },
+    "hdfs-kerberos-cancellation/HdfsCancellationRpcGateVectors.java": {
+      "bytes": 61855,
+      "sha256": "7021fab1ecca3a459d5898037391a6ed5cacd39c1f439449e3051fb1fa720002"
+    },
+    "hdfs-kerberos-cancellation/cancellation_container.py": {
+      "bytes": 59706,
+      "sha256": "39a7c0caf66f72beab39ab4b856796169f768db4ecce4218e47efa672796b51c"
+    },
+    "hdfs-kerberos-context-cancellation/HdfsContextCancellationProbe.java": {
+      "bytes": 160868,
+      "sha256": "bf4ff627583181cced0aed5255fb222c8ede06b3309375c39fed931776568df3"
+    },
+    "hdfs-kerberos-context-cancellation/HdfsContextHeldResponse.java": {
+      "bytes": 7178,
+      "sha256": "d6a0e028965f632470d0fce55f6cb11bbf016751f73d62bb85c03156d756b588"
+    },
+    "hdfs-kerberos-context-cancellation/HdfsContextHeldResponseVectors.java": {
+      "bytes": 9590,
+      "sha256": "7f70fcf21d1847a9ddded8fa9a8c5c86b8f185b9b1db3213f4d1d3e48f6e3389"
+    },
+    "hdfs-kerberos-context-cancellation/context_contract.py": {
+      "bytes": 17668,
+      "sha256": "b214bacd5f249b25a9447b92b29e082092cb2bc729aec2fcfcd3478218837eef"
+    },
+    "hdfs-kerberos-policy-denial/policy_denial_container.py": {
+      "bytes": 55021,
+      "sha256": "99304f8183f6068140e9e6f364bb96e1cc5c7c28408f1437b6a85b85fdfec2bd"
+    },
+    "hdfs-rclone-usage-build/rclone_build_bundle.py": {
+      "bytes": 11794,
+      "sha256": "5fe229670dfc48755df3f296359d9d09359c18b7861d1cc867de0f5567c1400d"
+    }
+  }
+}
