@@ -10,11 +10,11 @@ RUN="a"*32
 IMAGE="sha256:"+"b"*64
 CID="c"*64
 
-def inspected(kind="case",variant="patched",case="renewable"):
-    if kind=="identity": variant=case=None
-    suffix="identity" if kind=="identity" else variant+"-"+case
+def inspected(kind="case",variant="patched",case="renewable",policy="default300"):
+    if kind=="identity": variant=case=policy=None
+    suffix="identity" if kind=="identity" else variant+"-"+case+"-"+policy
     name="mit-retained-"+RUN+"-"+suffix
-    args=U.command_args(name,IMAGE,RUN,kind,variant,case)
+    args=U.command_args(name,IMAGE,RUN,kind,variant,case,policy)
     value=dict(Name="/"+name,Image=IMAGE,Id=CID,
         Config=dict(Labels={U.LABEL:RUN},User="10001:10001",Entrypoint=["/usr/bin/env"],Cmd=args[args.index(IMAGE)+1:],
                     Volumes=None,ExposedPorts=None,Healthcheck=None),
@@ -31,7 +31,7 @@ class SupervisorTests(unittest.TestCase):
     def setUpClass(cls): cls.R,cls.M,cls.F,cls.data,cls.hashes=U.load_inputs();cls.C=cls.R.load_support()
 
     def test_all_frozen_source_identities_loaded(self):
-        self.assertEqual(len(self.data),11);self.assertEqual(len(self.hashes),12)
+        self.assertEqual(len(self.data),12);self.assertEqual(len(self.hashes),13)
         self.assertIn("hdfs-kerberos-positive-renewal/HdfsMitRenewalProbe.java",self.data)
         self.assertEqual(self.C.BASE,self.F.C.BASE)
 
@@ -45,19 +45,23 @@ class SupervisorTests(unittest.TestCase):
     def test_local_native_execution_rejected(self):
         with patch.dict(U.os.environ,{},clear=True),self.assertRaises(Exception):self.C.hosted_guard()
 
-    def test_exact_five_container_commands(self):
-        for kind,variant,case in [("identity",None,None),*(("case",v,c) for v,c in U.CASES)]:
-            name,record=inspected(kind,variant,case)
-            U.inspect_container(record,name,IMAGE,RUN,kind,variant,case)
-            args=U.command_args(name,IMAGE,RUN,kind,variant,case)
+    def test_exact_seven_container_commands(self):
+        self.assertEqual(U.CASES,self.F.CASES)
+        self.assertEqual(len(U.CASES),6)
+        for kind,variant,case,policy in [("identity",None,None,None),*(("case",v,c,p) for v,c,p in U.CASES)]:
+            name,record=inspected(kind,variant,case,policy)
+            U.inspect_container(record,name,IMAGE,RUN,kind,variant,case,policy)
+            args=U.command_args(name,IMAGE,RUN,kind,variant,case,policy)
             self.assertNotIn("--volume",args);self.assertNotIn("--publish",args)
-            if kind=="case":self.assertEqual(args[-2:],[case,variant])
+            if kind=="case":self.assertEqual(args[-3:],[case,variant,policy])
 
     def test_unknown_or_relabelled_case_rejected(self):
         name,_=inspected()
-        for kind,variant,case in (("case","other","renewable"),("case","patched","other"),("identity","patched","renewable"),
-                                  ("case","original","renewable"),("other",None,None)):
-            with self.assertRaises(U.ProbeError):U.command_args(name,IMAGE,RUN,kind,variant,case)
+        for kind,variant,case,policy in (("case","other","renewable","default300"),("case","patched","other","default300"),
+                ("identity","patched","renewable","default300"),("case","original","renewable","default300"),
+                ("other",None,None,None),("case","patched","renewable","strict5"),("case","patched","renewable","unknown"),
+                ("case","patched","nonrenewable","default300"),("identity",None,None,"strict5")):
+            with self.assertRaises(U.ProbeError):U.command_args(name,IMAGE,RUN,kind,variant,case,policy)
 
     def test_container_isolation_mutations_rejected(self):
         name,record=inspected()
@@ -68,7 +72,7 @@ class SupervisorTests(unittest.TestCase):
                         ("Devices",[{}]),("DeviceRequests",[{}]),("ExtraHosts",["a:b"]),("PidMode","host")):
             with self.subTest(key=key):
                 v=copy.deepcopy(record);v["HostConfig"][key]=bad
-                with self.assertRaises(U.ProbeError):U.inspect_container(v,name,IMAGE,RUN,"case","patched","renewable")
+                with self.assertRaises(U.ProbeError):U.inspect_container(v,name,IMAGE,RUN,"case","patched","renewable","default300")
 
     def test_command_and_identity_mutations_rejected(self):
         name,record=inspected()
@@ -78,7 +82,7 @@ class SupervisorTests(unittest.TestCase):
                              (None,"Mounts",[{"Type":"bind","Destination":"/work"}])):
             with self.subTest(area=area,key=key):
                 v=copy.deepcopy(record);(v if area is None else v[area])[key]=bad
-                with self.assertRaises(U.ProbeError):U.inspect_container(v,name,IMAGE,RUN,"case","patched","renewable")
+                with self.assertRaises(U.ProbeError):U.inspect_container(v,name,IMAGE,RUN,"case","patched","renewable","default300")
 
     def test_cleanup_rejects_unowned_container(self):
         name,record=inspected()
@@ -126,7 +130,7 @@ class SupervisorTests(unittest.TestCase):
         files=U.build_files(self.C,self.R,self.F,rows,{},sources,go,b"module synthetic\n",b"")
         docker=files["Dockerfile"].decode();driver=files["rpc/driver.sh"].decode()
         self.assertIn("-proc:none -implicit:none",docker);self.assertIn("USER 10001:10001",docker)
-        self.assertIn("180s",driver);self.assertIn('HdfsMitRenewalProbe "$1" "$2"',driver)
+        self.assertIn("180s",driver);self.assertIn('HdfsMitRenewalProbe "$1" "$2" "$3"',driver)
         self.assertIn("GOPROXY=off GOSUMDB=off",files["build.sh"].decode())
         self.assertEqual(len(rows),142)
         for n in U.JAVA_NAMES:self.assertIn("/opt/rpc/"+n,docker)
@@ -139,7 +143,7 @@ class SupervisorTests(unittest.TestCase):
         result=types.SimpleNamespace(stdout=b"{}",stderr=b"",code=0)
         docker=types.SimpleNamespace(inspect=lambda *a,**kw:next(snapshots),call=lambda args,**kw:(calls.append((args,kw)) or result))
         owned=[];reader=types.SimpleNamespace(read=lambda raw,maximum:raw)
-        out=U.execute(reader,docker,IMAGE,RUN,"case",owned,"patched","renewable")
+        out=U.execute(reader,docker,IMAGE,RUN,"case",owned,"patched","renewable","default300")
         self.assertEqual(out,(b"{}",0,CID));self.assertTrue(owned[0]["removed"])
         self.assertEqual(calls[1][1]["timeout"],195)
 
@@ -149,7 +153,7 @@ class SupervisorTests(unittest.TestCase):
         result=types.SimpleNamespace(stdout=b"{}",stderr=b"",code=0)
         docker=types.SimpleNamespace(inspect=lambda *a,**kw:next(snapshots),call=lambda args,**kw:(calls.append(args) or result))
         owned=[];reader=types.SimpleNamespace(read=lambda raw,maximum:raw)
-        with self.assertRaises(U.ProbeError):U.execute(reader,docker,IMAGE,RUN,"case",owned,"patched","renewable")
+        with self.assertRaises(U.ProbeError):U.execute(reader,docker,IMAGE,RUN,"case",owned,"patched","renewable","default300")
         self.assertFalse(owned[0]["removed"]);self.assertEqual(len(calls),2)
 
 if __name__=="__main__":unittest.main()

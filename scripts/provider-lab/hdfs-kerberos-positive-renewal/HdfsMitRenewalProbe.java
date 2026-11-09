@@ -228,11 +228,15 @@ public final class HdfsMitRenewalProbe {
         }
     }
     private static void environment(String[] args) throws Exception {
-        need(args.length == 2 && List.of("renewable", "nonrenewable").contains(args[0])
+        need(args.length == 3 && List.of("renewable", "nonrenewable").contains(args[0])
+            && List.of("strict5","default300").contains(args[2])
+            && (args[2].equals("strict5") || args[0].equals("renewable"))
             && List.of("original", "patched").contains(args[1]) && "Linux".equals(System.getProperty("os.name"))
             && "true".equals(System.getProperty("java.net.preferIPv4Stack")), Code.environment_invalid);
         serviceCase = args[0]; renewableCase = serviceCase.equals("renewable");
         binaryVariant = args[1]; rcloneBinary = "/opt/probes/rclone-" + binaryVariant;
+        clockPolicy=args[2];clockSkewSeconds=clockPolicy.equals("strict5")?5:300;
+        positiveRenewal=renewableCase && binaryVariant.equals("patched") && clockPolicy.equals("default300");
         for (String key : List.of("JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS", "_JAVA_OPTIONS", "KRB5_CONFIG",
                 "KRB5CCNAME", "KRB5_KTNAME")) need(System.getenv(key) == null, Code.environment_invalid);
         need(System.getProperty(CONF_PROPERTY) == null, Code.environment_invalid);
@@ -331,10 +335,13 @@ public final class HdfsMitRenewalProbe {
             need(Arrays.equals(counted(data, 256), component.getBytes(StandardCharsets.US_ASCII)), Code.cache_invalid);
     }
     private static String serviceCase = "not_selected", ownedRealm, binaryVariant;
-    private static MitKdcOwner mitOwner;
+    private static MitRenewalKdcOwner mitOwner;
     private static MitRenewalEvidence renewalEvidence;
     private static String rcloneBinary;
     private static boolean renewableCase, serviceExpired, cacheBound, serviceIssued;
+    private static String clockPolicy="not_selected";
+    private static int clockSkewSeconds,policyVectors;
+    private static boolean clockPolicyVerified,positiveRenewal;
     private static int issuedCacheBindings, serviceLifetime, expiredBySeconds, remainingTgtSeconds;
     private static final List<Map<String,Object>> ticketFlagObservations = new ArrayList<>();
     private static long tgtEnd, serviceEnd;
@@ -449,7 +456,7 @@ public final class HdfsMitRenewalProbe {
             + ",\"expired_by_seconds\":" + expiredBySeconds + ",\"actual_service_expiry\":" + serviceExpired
             + ",\"remaining_tgt_seconds\":" + remainingTgtSeconds
             + ",\"cache_ticket_bound\":" + cacheBound + ",\"original_cache_preserved\":" + CHECKS.get("cache_preserved")
-            + ",\"new_tgs_acquisition_verified\":" + (Boolean.TRUE.equals(CHECKS.get("kdc_exchange_classified")) && !(renewableCase && "patched".equals(binaryVariant)))
+            + ",\"new_tgs_acquisition_verified\":" + (Boolean.TRUE.equals(CHECKS.get("kdc_exchange_classified")) && !positiveRenewal)
             + ",\"successful_renewal_verified\":false}";
     }
 
@@ -463,11 +470,11 @@ public final class HdfsMitRenewalProbe {
         }
         OWNED_FILES.put(target, new FileState(target)); inventory();
     }
-    private static KrbClient installMitMaterial(MitKdcOwner server) throws Exception {
+    private static KrbClient installMitMaterial(MitRenewalKdcOwner server) throws Exception {
         server.healthy();
         for (Path[] pair : List.of(new Path[]{server.clientConfig(), CONF},
                 new Path[]{server.serviceKeytab(), KEYTAB}, new Path[]{server.httpKeytab(), HTTP_KEYTAB})) {
-            byte[] bytes = MitKdcOwner.boundedFile(pair[0], MAX_BYTES);
+            byte[] bytes = MitRenewalKdcOwner.boundedFile(pair[0], MAX_BYTES);
             try { writeMitMaterial(pair[1], bytes); } finally { Arrays.fill(bytes, (byte)0); }
         }
         server.healthy(); need(System.getProperty(CONF_PROPERTY) == null, Code.environment_invalid);
@@ -767,7 +774,7 @@ public final class HdfsMitRenewalProbe {
             Thread.currentThread().interrupt(); return OwnedCleanupState.shutdown_failed;
         } catch (Throwable ignored) { return OwnedCleanupState.shutdown_failed; }
     }
-    private static void cleanup(MitKdcOwner server, Set<Long> baseline) {
+    private static void cleanup(MitRenewalKdcOwner server, Set<Long> baseline) {
         boolean stopped = server == null;
         try {
             if (server != null) server.close();
@@ -1310,7 +1317,7 @@ public final class HdfsMitRenewalProbe {
             }
             synchronized (this) {
                 var phaseEvents = events.stream().filter(e -> e.phase == wanted).toList();
-                boolean positive = renewableCase && binaryVariant.equals("patched");
+                boolean positive = positiveRenewal;
                 int expected = wanted == 2 ? (renewableCase && !positive ? 2 : 1) : 0;
                 need(connections[wanted] == expected && phaseEvents.size() == expected, Code.relay_invalid);
                 if (expected > 0) {
@@ -1321,8 +1328,8 @@ public final class HdfsMitRenewalProbe {
                     if (renewableCase && !positive) {
                         KdcEvent renewal = phaseEvents.get(0);
                         need(renewal.renew && renewal.ticketKind.equals("issued_service") && renewal.response.equals("krb_error")
-                            && renewal.errorCode == 31 && !renewal.freshService && renewal.authenticated != null
-                            && renewal.authenticated.usage == 11, Code.relay_invalid);
+                            && renewal.errorCode == (binaryVariant.equals("original")?31:32) && !renewal.freshService && renewal.authenticated != null
+                            && renewal.authenticated.usage == (binaryVariant.equals("original")?11:7), Code.relay_invalid);
                     }
                     renewalEvidence.verifyKdcOutcome();
                 }
@@ -1609,6 +1616,12 @@ public final class HdfsMitRenewalProbe {
         retainedAfterExpiry=true;daemonIdentityVerified=true;
         CHECKS.put("retained_backend",true);CHECKS.put("retained_session_after_expiry",true);
         kdcRelay.end(0);
+        if(clockPolicy.equals("strict5")) {
+            stage="await_policy_window";
+            while(System.currentTimeMillis()/1000<serviceEnd+6) {
+                need(System.nanoTime()<controlDeadline,Code.deadline_exceeded);daemon.alive();Thread.sleep(25);
+            }
+        }
         stage="force_connection_loss";kdcRelay.begin(2);relay.armAndCut();
         CHECKS.put("forced_connection_loss",true);
         stage="bounded_reconnect";
@@ -1876,7 +1889,7 @@ public final class HdfsMitRenewalProbe {
                 "gc_monitor_reaped", "fs_statistics_cleaner_reaped", "format_ssl_timer_reaped",
                 "kdc_stop_returned", "threads_terminated", "listeners_absent", "private_material_removed",
                 "process_property_restored", "cleanup_completed")) CLEANUP.put(name, false);
-        Set<Long> baseline = threadIds(); MitKdcOwner server = null; Code error = null;
+        Set<Long> baseline = threadIds(); MitRenewalKdcOwner server = null; Code error = null;
         deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(90);
         byte[] serialized = null;
         try {
@@ -1894,8 +1907,10 @@ public final class HdfsMitRenewalProbe {
             baseline = threadIds();
             Files.createDirectory(ROOT, PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------")));
             rootCreated = true; rootKey = directory(ROOT, true); rootOwned = true; guardRoot();
-            stage = "mit_construct"; server = new MitKdcOwner(); mitOwner = server;
+            stage = "mit_construct"; server = new MitRenewalKdcOwner(clockPolicy); mitOwner = server;
+            policyVectors=server.policyVectors;need(policyVectors==9,Code.configuration_invalid);
             stage = "mit_prepare"; server.prepare();
+            clockPolicyVerified=server.verifyClockPolicy();need(clockPolicyVerified && server.clockSkewSeconds==clockSkewSeconds,Code.configuration_invalid);
             stage = "mit_start"; server.start(); server.healthy();
             String realm = server.realm(); ownedRealm = realm;
             String readerPrincipal = server.reader();
@@ -1951,7 +1966,7 @@ public final class HdfsMitRenewalProbe {
             inspectServiceCache(serialized, tgt, service, realm, reader); publishCache(serialized); publishReaderConfig();
             CHECKS.put("file_cache_v3", true); CHECKS.put("renewable_tgt", true);
             CHECKS.put("issued_service_ticket", serviceIssued); CHECKS.put("cache_ticket_bound", cacheBound);
-            renewalEvidence = new MitRenewalEvidence(tgt, service, realm, reader, renewableCase, binaryVariant);
+            renewalEvidence = new MitRenewalEvidence(tgt, service, realm, reader, renewableCase, binaryVariant,clockPolicy);
             kdcRelay = new KdcRelay(); topology(); observeThreads("reader", baseline);
             controlDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(60);
             stage = "rclone_none"; negative(reader); CHECKS.put("rclone_auth_boundary_rejection", true);
@@ -2011,6 +2026,8 @@ public final class HdfsMitRenewalProbe {
             + ",\"mit_owner\":" + (mitOwner == null ? "null" : new com.fasterxml.jackson.databind.ObjectMapper().valueToTree(mitOwner.projection()).toString())
             + ",\"ticket_flag_observations\":" + new com.fasterxml.jackson.databind.ObjectMapper().valueToTree(ticketFlagObservations).toString()
             + ",\"binary_variant\":\"" + binaryVariant + "\""
+            + ",\"kdc_policy\":{\"name\":\""+clockPolicy+"\",\"clock_skew_seconds\":"+clockSkewSeconds
+            + ",\"configuration_verified\":"+clockPolicyVerified+",\"vectors\":"+policyVectors+"}"
             + ",\"rpc_gate_vectors\":" + rpcGateVectors
             + ",\"initial_sasl_binding\":" + (relay == null || relay.initialBinding == null ? "null" : new com.fasterxml.jackson.databind.ObjectMapper().valueToTree(relay.initialBinding.projection()).toString())
             + ",\"fresh_sasl_binding\":" + (relay == null || relay.freshBinding == null ? "null" : new com.fasterxml.jackson.databind.ObjectMapper().valueToTree(relay.freshBinding.projection()).toString())

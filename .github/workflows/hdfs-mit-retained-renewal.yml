@@ -26,7 +26,7 @@ concurrency:
 
 jobs:
   build:
-    name: Check retained MIT HDFS renewal matrix
+    name: Check six-case retained MIT HDFS policy matrix
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:

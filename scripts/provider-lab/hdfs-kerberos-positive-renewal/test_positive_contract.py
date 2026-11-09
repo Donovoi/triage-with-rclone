@@ -87,24 +87,26 @@ def legacy_fixture():
 
 
 
-def fixture(case="renewable", variant="patched"):
+def fixture(case="renewable", variant="patched", policy=None):
+    policy=policy or ("default300" if case=="renewable" else "strict5")
     value = legacy_fixture()
     value["scope"] = "hdfs_mit_retained_renewal"
     value["checks"]["renewable_tgt"] = value["checks"].pop("nonrenewable_tgt")
     value["binary_variant"] = variant
+    value["kdc_policy"]=dict(name=policy,clock_skew_seconds=5 if policy=="strict5" else 300,configuration_verified=True,vectors=9)
     value["rpc_gate_vectors"] = 85
     value["ticket_flag_observations"] = [dict(kind="issued_tgt",cache_flags=0x00e10000,issued_flags=0x00e10000,renewable_expected=True),
         dict(kind="issued_service",cache_flags=0x00a90000 if case=="renewable" else 0x00290000,
              issued_flags=0x00a90000 if case=="renewable" else 0x00290000,renewable_expected=case=="renewable")]
-    positive = case == "renewable" and variant == "patched"
+    positive = case == "renewable" and variant == "patched" and policy == "default300"
     cache = value["service_cache_lifecycle"]
     cache.update(case=case, service_renewable=case == "renewable", new_tgs_acquisition_verified=not positive)
     ordinary = dict(phase=2, renew=False, ticket_kind="issued_tgt", response="tgs_rep", error_code=0,
                     fresh_service_ticket=True, authenticator_usage=7)
     renewal = dict(phase=2, renew=True, ticket_kind="issued_service", response="tgs_rep", error_code=0,
                    fresh_service_ticket=True, authenticator_usage=7)
-    rejected = dict(phase=2, renew=True, ticket_kind="issued_service", response="krb_error", error_code=31,
-                    fresh_service_ticket=False, authenticator_usage=11)
+    rejected = dict(phase=2, renew=True, ticket_kind="issued_service", response="krb_error", error_code=31 if variant=="original" else 32,
+                    fresh_service_ticket=False, authenticator_usage=11 if variant=="original" else 7)
     events = [renewal] if positive else [rejected, ordinary] if case == "renewable" else [ordinary]
     value["kdc_trace"].update(connections=[0, 0, len(events), 0], events=events)
     value["renewal_evidence"] = dict(requests=len(events), authenticator_controls=8 * len(events),
@@ -113,7 +115,9 @@ def fixture(case="renewable", variant="patched"):
         renewal_fields=dict(fields_present=True, nonce=True, server=True, auth_time=True, start_time=True,
                             validity=True, renewal_horizon=True, flags=True, key=True) if positive else {},
         response_observations=[dict(renew=e["renew"],authenticator_usage=e["authenticator_usage"],
-            response=e["response"],error_code=e["error_code"],stage="complete") for e in events],
+            response=e["response"],error_code=e["error_code"],stage="complete",
+             service_expired_seconds=12 if policy=="strict5" else 7,
+             renewable_remaining_seconds=(38 if policy=="strict5" else 43) if case=="renewable" else 0) for e in events],
         closed=True, renewal_verified=False)
     value["mit_owner"] = dict(stage="closed", setup_completed=6, children=7, children_reaped=True,
         streams_reaped=True, modules_verified=True, listener_verified=True, private_material_removed=True,
@@ -130,23 +134,58 @@ def encode(value): return json.dumps(value, separators=(",", ":")).encode("ascii
 
 
 class ContractTests(unittest.TestCase):
-    def accept(self, value, case="renewable", variant="patched", exit_code=0):
-        return F.validate_java(encode(value), exit_code, case, variant)
+    def accept(self, value, case="renewable", variant="patched", exit_code=0, policy=None):
+        policy=policy or ("default300" if case=="renewable" else "strict5")
+        return F.validate_java(encode(value), exit_code, case, variant, policy)
 
-    def reject(self, value, case="renewable", variant="patched", exit_code=0):
+    def reject(self, value, case="renewable", variant="patched", exit_code=0, policy=None):
         with self.assertRaises(F.ProbeError) as caught:
-            self.accept(value, case, variant, exit_code)
+            self.accept(value, case, variant, exit_code, policy)
         self.assertEqual(caught.exception.code, "java_report_invalid")
 
-    def test_four_distinct_case_contracts(self):
-        for case in ("renewable", "nonrenewable"):
-            for variant in ("original", "patched"):
-                with self.subTest(case=case, variant=variant):
-                    out = self.accept(fixture(case, variant), case, variant)
-                    self.assertTrue(out["success"])
-                    self.assertFalse(out["renewal_verified"])
-                    self.assertNotIn("wire_hex", out)
-                    self.assertEqual(out["wire_oracle"], out["rclone_wire_oracle"])
+    def test_six_distinct_case_contracts(self):
+        self.assertEqual(len(F.CASES),6)
+        for variant,case,policy in F.CASES:
+            with self.subTest(case=case,variant=variant,policy=policy):
+                out=self.accept(fixture(case,variant,policy),case,variant,policy=policy)
+                self.assertTrue(out["success"])
+                self.assertFalse(out["renewal_verified"])
+                self.assertNotIn("wire_hex",out)
+                self.assertEqual(out["wire_oracle"],out["rclone_wire_oracle"])
+
+    def test_policy_cannot_be_relabelled(self):
+        self.reject(fixture(policy="strict5"))
+        self.reject(fixture(),policy="strict5")
+        self.reject(fixture(),policy="unknown")
+        self.reject(fixture("nonrenewable",policy="default300"),case="nonrenewable",policy="default300")
+        for field,bad in (("name","default301"),("clock_skew_seconds",True),("clock_skew_seconds",5),
+                          ("configuration_verified",False),("configuration_verified",1),("vectors",8),("vectors",True)):
+            v=fixture();v["kdc_policy"][field]=bad;self.reject(v)
+
+    def test_strict_expiry_denial_cannot_count_as_renewal(self):
+        v=fixture(policy="strict5")
+        self.assertEqual(v["kdc_trace"]["events"][0]["error_code"],32)
+        self.assertEqual(v["kdc_trace"]["events"][0]["authenticator_usage"],7)
+        self.accept(v,policy="strict5")
+        for key in ("kdc_trace","renewal_evidence","service_cache_lifecycle"):
+            forged=fixture();forged[key]=v[key];self.reject(forged)
+        for field,bad in (("error_code",31),("authenticator_usage",11),("response","tgs_rep")):
+            forged=fixture(policy="strict5");forged["kdc_trace"]["events"][0][field]=bad
+            self.reject(forged,policy="strict5")
+
+    def test_request_timing_bound_to_policy_and_horizon(self):
+        for variant,case,policy in F.CASES:
+            low,high=(6,20) if policy=="strict5" else (1,15)
+            for age in (low,high):
+                v=fixture(case,variant,policy)
+                for response in v["renewal_evidence"]["response_observations"]:response["service_expired_seconds"]=age
+                self.accept(v,case,variant,policy=policy)
+            for bad in (True,low-1,high+1,1.5):
+                v=fixture(case,variant,policy);v["renewal_evidence"]["response_observations"][0]["service_expired_seconds"]=bad
+                self.reject(v,case,variant,policy=policy)
+            for bad in ((True,-1,24,60,1.5) if case=="renewable" else (True,-1,1,1.5)):
+                v=fixture(case,variant,policy);v["renewal_evidence"]["response_observations"][0]["renewable_remaining_seconds"]=bad
+                self.reject(v,case,variant,policy=policy)
 
     def test_variant_cannot_be_relabelled(self):
         self.reject(fixture(variant="original"))
@@ -227,9 +266,9 @@ class ContractTests(unittest.TestCase):
             v=fixture(); v["rpc_gate_vectors"]=bad; self.reject(v)
 
     def test_closed_schemas(self):
-        for section in (None, "mit_owner", "renewal_evidence", "initial_sasl_binding", "fresh_sasl_binding", "kdc_trace"):
+        for section in (None, "kdc_policy", "mit_owner", "renewal_evidence", "initial_sasl_binding", "fresh_sasl_binding", "kdc_trace"):
             v=fixture(); obj=v if section is None else v[section]; obj["unexpected"]="secret"; self.reject(v)
-        for key in ("mit_owner", "renewal_evidence", "initial_sasl_binding", "fresh_sasl_binding"):
+        for key in ("kdc_policy", "mit_owner", "renewal_evidence", "initial_sasl_binding", "fresh_sasl_binding"):
             v=fixture(); del v[key]; self.reject(v)
             v=fixture(); v[key]=None; self.reject(v)
 

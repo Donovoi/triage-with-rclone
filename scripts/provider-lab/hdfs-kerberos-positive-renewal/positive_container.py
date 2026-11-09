@@ -21,13 +21,15 @@ import types
 import uuid
 
 HERE=Path(__file__).resolve().parent
-PINS_SHA="2710cc7cef76216175e3220ab8655c1379092c711ffdfae9c51244f80f597751"
+PINS_SHA="05e00d01bb2aeae2a89d2a644811949b7d7bd6e6425c08ecf2ebd34b4e071989"
 LABEL="org.openai.triage.mit-retained-renewal"
 TMPFS="rw,nosuid,nodev,noexec,size=128m,mode=0700,uid=10001,gid=10001"
 PROFILE="kerberos-remediation"
-CASES=(("original","renewable"),("patched","renewable"),("original","nonrenewable"),("patched","nonrenewable"))
+CASES=(("original","renewable","strict5"),("patched","renewable","strict5"),
+       ("original","nonrenewable","strict5"),("patched","nonrenewable","strict5"),
+       ("original","renewable","default300"),("patched","renewable","default300"))
 JAVA_NAMES=("HdfsMitRenewalProbe.java","MitRenewalEvidence.java","HdfsRenewalSaslGate.java",
-            "HdfsRenewalRpcGate.java","HdfsRenewalRpcGateVectors.java","MitKdcOwner.java")
+            "HdfsRenewalRpcGate.java","HdfsRenewalRpcGateVectors.java","MitKdcOwner.java","MitRenewalKdcOwner.java")
 FALSE_CLAIMS=("renewal_verified","rclone_verified","provider_accepted","application_accepted",
               "vendor_accepted","vulnerability_audited")
 CODES=frozenset(("input_invalid","input_changed","unsafe_path","hosted_linux_required","python_version",
@@ -78,14 +80,14 @@ def load_inputs():
     return R,M,F,data,hashes
 
 
-def command_args(name,image,run_id,kind,variant=None,service_case=None):
+def command_args(name,image,run_id,kind,variant=None,service_case=None,policy=None):
     need(type(run_id) is str and re.fullmatch("[a-f0-9]{32}",run_id)
          and type(image) is str and re.fullmatch("sha256:[a-f0-9]{64}",image),"container_invalid")
-    need(kind in ("identity","case") and (kind=="identity" and variant is None and service_case is None
-         or kind=="case" and (variant,service_case) in CASES),"container_invalid")
-    suffix="identity" if kind=="identity" else variant+"-"+service_case
+    need(kind in ("identity","case") and (kind=="identity" and variant is None and service_case is None and policy is None
+         or kind=="case" and (variant,service_case,policy) in CASES),"container_invalid")
+    suffix="identity" if kind=="identity" else variant+"-"+service_case+"-"+policy
     need(name=="mit-retained-"+run_id+"-"+suffix,"container_invalid")
-    command=["/bin/sh","/opt/input/driver.sh"] if kind=="identity" else ["/bin/sh","/opt/rpc/driver.sh",service_case,variant]
+    command=["/bin/sh","/opt/input/driver.sh"] if kind=="identity" else ["/bin/sh","/opt/rpc/driver.sh",service_case,variant,policy]
     return ["create","--name",name,"--label",LABEL+"="+run_id,"--network","none","--read-only",
         "--user","10001:10001","--cap-drop","ALL","--security-opt","no-new-privileges","--pids-limit","128",
         "--memory","2g","--cpus","2","--init","--cgroupns","private","--ipc","private","--log-driver","none",
@@ -94,11 +96,11 @@ def command_args(name,image,run_id,kind,variant=None,service_case=None):
         "GOMAXPROCS=2","LANG=C","LC_ALL=C",*command]
 
 
-def inspect_container(value,name,image,run_id,kind,variant=None,service_case=None):
+def inspect_container(value,name,image,run_id,kind,variant=None,service_case=None,policy=None):
     need(type(value) is dict and value.get("Name")=="/"+name and value.get("Image")==image
          and re.fullmatch("[a-f0-9]{64}",value.get("Id","")),"container_invalid")
     config,host=value.get("Config",{}),value.get("HostConfig",{})
-    args=command_args(name,image,run_id,kind,variant,service_case)
+    args=command_args(name,image,run_id,kind,variant,service_case,policy)
     need(config.get("Labels",{}).get(LABEL)==run_id and config.get("User")=="10001:10001"
          and config.get("Entrypoint")==["/usr/bin/env"] and config.get("Cmd")==args[args.index(image)+1:]
          and not config.get("Volumes") and not config.get("ExposedPorts") and not config.get("Healthcheck"),"container_invalid")
@@ -123,7 +125,7 @@ def build_files(C,R,F,rows,members,sources,go_sources,original_mod,original_sum)
     driver=("#!/bin/sh\nset -eu\numask 077\nmkdir /work/home /work/tmp\n"
         "exec /usr/bin/timeout --signal=TERM --kill-after=5s 180s /opt/java/openjdk/bin/java "
         "-Xmx512m -Djava.net.preferIPv4Stack=true -Djava.io.tmpdir=/work/tmp -Duser.home=/work/home "
-        "-cp \"$(cat /opt/rpc/classpath)\" HdfsMitRenewalProbe \"$1\" \"$2\"\n").encode()
+        "-cp \"$(cat /opt/rpc/classpath)\" HdfsMitRenewalProbe \"$1\" \"$2\" \"$3\"\n").encode()
     runtime={**sources,"driver.sh":driver,"classpath":("/opt/rpc/classes:"+cp+"\n").encode()}
     resources=F.C.webapp_resources()
     checks="".join(row["sha256"]+"  /opt/rpc/jars/%03d.jar\n"%i for i,row in enumerate(rows))
@@ -181,17 +183,17 @@ def remove_container(docker,entry,image,run_id):
     entry["removed"]=True
 
 
-def execute(C,docker,image,run_id,kind,owned,variant=None,service_case=None):
-    suffix="identity" if kind=="identity" else variant+"-"+service_case
+def execute(C,docker,image,run_id,kind,owned,variant=None,service_case=None,policy=None):
+    suffix="identity" if kind=="identity" else variant+"-"+service_case+"-"+policy
     name="mit-retained-"+run_id+"-"+suffix
     need(docker.inspect("container",name,allow_missing=True) is None,"container_invalid")
     entry=dict(name=name,id=None,removed=False); owned.append(entry)
-    docker.call(command_args(name,image,run_id,kind,variant,service_case))
-    initial=docker.inspect("container",name); inspect_container(initial,name,image,run_id,kind,variant,service_case)
+    docker.call(command_args(name,image,run_id,kind,variant,service_case,policy))
+    initial=docker.inspect("container",name); inspect_container(initial,name,image,run_id,kind,variant,service_case,policy)
     need(initial.get("State",{}).get("Status")=="created" and initial["State"].get("Running") is False,"container_invalid")
     entry["id"]=initial["Id"]
     result=docker.call(["start","--attach",entry["id"]],timeout=45 if kind=="identity" else 195,limit=262144,allow_failure=True)
-    ended=docker.inspect("container",entry["id"]); inspect_container(ended,name,image,run_id,kind,variant,service_case)
+    ended=docker.inspect("container",entry["id"]); inspect_container(ended,name,image,run_id,kind,variant,service_case,policy)
     state=ended.get("State",{})
     need(ended["Id"]==entry["id"] and state.get("Running") is False and state.get("Status")=="exited"
          and state.get("OOMKilled") is False and type(state.get("ExitCode")) is int and state["ExitCode"]==result.code,"container_invalid")
@@ -305,15 +307,16 @@ def run():
         stage("binary_identity"); raw,code,container=execute(C,docker,image,run_id,"identity",owned)
         report["inputs"]["containers"].append(dict(kind="identity",id=container))
         report["binary_identity"]=R.validate_native(C,raw,code,lock)
-        for variant,service_case in CASES:
-            stage(variant+"_"+service_case)
-            raw,code,container=execute(C,docker,image,run_id,"case",owned,variant,service_case)
-            report["inputs"]["containers"].append(dict(kind="case",variant=variant,case=service_case,id=container))
-            report["case_diagnostics"].append(dict(variant=variant,case=service_case,diagnostics=java_diagnostics(F,raw)))
-            result=F.validate_java(raw,code,service_case,variant)
-            report["cases"].append(dict(variant=variant,case=service_case,result=result))
+        need(CASES==F.CASES,"input_invalid")
+        for variant,service_case,policy in CASES:
+            stage(variant+"_"+service_case+"_"+policy)
+            raw,code,container=execute(C,docker,image,run_id,"case",owned,variant,service_case,policy)
+            report["inputs"]["containers"].append(dict(kind="case",variant=variant,case=service_case,policy=policy,id=container))
+            report["case_diagnostics"].append(dict(variant=variant,case=service_case,policy=policy,diagnostics=java_diagnostics(F,raw)))
+            result=F.validate_java(raw,code,service_case,variant,policy)
+            report["cases"].append(dict(variant=variant,case=service_case,policy=policy,result=result))
             if not result["success"]: report["errors"].append("java_probe_failed")
-        report["success"]=len(report["cases"])==4 and all(x["result"]["success"] for x in report["cases"])
+        report["success"]=len(report["cases"])==6 and all(x["result"]["success"] for x in report["cases"])
         stage("completed")
     except KeyboardInterrupt: report["errors"].append("interrupted")
     except BaseException as error:

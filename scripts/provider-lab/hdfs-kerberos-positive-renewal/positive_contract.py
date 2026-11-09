@@ -19,10 +19,14 @@ exec(compile(base_source, str(BASE_PATH), "exec"), C.__dict__)
 ProbeError, need, parse = C.ProbeError, C.need, C.parse
 JAVA_FALSE, JAVA_CLEANUP, JAVA_CODES = C.JAVA_FALSE, C.JAVA_CLEANUP, C.JAVA_CODES
 JAVA_CHECKS = (C.JAVA_CHECKS - {"nonrenewable_tgt"}) | {"renewable_tgt"}
-STAGES = C.STAGES | {"mit_construct", "mit_prepare", "mit_start"}
+STAGES = C.STAGES | {"mit_construct", "mit_prepare", "mit_start", "await_policy_window"}
 TRACE_STAGES = C.TRACE_STAGES | {"request_authenticator"}
 SERVICE_CASES = C.SERVICE_CASES
 VARIANTS = ("original", "patched")
+POLICIES = {"strict5":5, "default300":300}
+CASES = (("original","renewable","strict5"),("patched","renewable","strict5"),
+         ("original","nonrenewable","strict5"),("patched","nonrenewable","strict5"),
+         ("original","renewable","default300"),("patched","renewable","default300"))
 SASL_STAGES = frozenset(("start", "negotiate_sent", "negotiate_received", "initiate_sent", "challenge_received", "response_sent", "authenticated"))
 parse_wire, validate_relay = C.parse_wire, C.validate_relay
 validate_reconnect, validate_diagnostics = C.validate_reconnect, C.validate_diagnostics
@@ -39,18 +43,19 @@ def integer(value, low, high):
     need(type(value) is int and low <= value <= high, "java_report_invalid")
 
 
-def expected_events(service_case, variant):
+def expected_events(service_case, variant, policy):
     ordinary = dict(phase=2, renew=False, ticket_kind="issued_tgt", response="tgs_rep",
                     error_code=0, fresh_service_ticket=True, authenticator_usage=7)
     if service_case == "nonrenewable": return [ordinary]
-    if variant == "patched":
+    if variant == "patched" and policy == "default300":
         return [dict(phase=2, renew=True, ticket_kind="issued_service", response="tgs_rep",
                      error_code=0, fresh_service_ticket=True, authenticator_usage=7)]
     return [dict(phase=2, renew=True, ticket_kind="issued_service", response="krb_error",
-                 error_code=31, fresh_service_ticket=False, authenticator_usage=11), ordinary]
+                 error_code=31 if variant=="original" else 32, fresh_service_ticket=False,
+                 authenticator_usage=11 if variant=="original" else 7), ordinary]
 
 
-def validate_kdc_trace(value, complete, service_case, variant):
+def validate_kdc_trace(value, complete, service_case, variant, policy):
     if value is None:
         need(not complete, "java_report_invalid"); return
     need(type(value) is dict and set(value) == {"connections", "events", "forwarded_bytes",
@@ -78,7 +83,7 @@ def validate_kdc_trace(value, complete, service_case, variant):
         phase_counts[event["phase"]] += 1
     need(all(phase_counts[i] <= counts[i] for i in range(4)), "java_report_invalid")
     if complete:
-        expected = expected_events(service_case, variant)
+        expected = expected_events(service_case, variant, policy)
         need(counts == [0, 0, len(expected), 0] and events == expected
              and value["forwarded_bytes"] > 0
              and all(value[k] is True for k in ("bytes_forwarded_unchanged", "all_phases_observed", "parser_checked")), "java_report_invalid")
@@ -115,9 +120,17 @@ def validate_sasl(value, complete, fresh):
              and value["pending_requests"] == value["pending_at_close"] == 0, "java_report_invalid")
 
 
-def validate_new_evidence(value, complete, service_case, variant):
+def validate_new_evidence(value, complete, service_case, variant, policy):
     need(type(service_case) is str and service_case in SERVICE_CASES and type(variant) is str and variant in VARIANTS
          and type(value["binary_variant"]) is str and value["binary_variant"] == variant, "java_report_invalid")
+    need((variant,service_case,policy) in CASES, "java_report_invalid")
+    selected=value["kdc_policy"]
+    need(type(selected) is dict and set(selected)=={"name","clock_skew_seconds","configuration_verified","vectors"}
+         and type(selected["name"]) is str and selected["name"]==policy
+         and type(selected["clock_skew_seconds"]) is int and selected["clock_skew_seconds"]==POLICIES[policy]
+         and type(selected["configuration_verified"]) is bool, "java_report_invalid")
+    integer(selected["vectors"],0,9)
+    if complete: need(selected["configuration_verified"] is True and selected["vectors"]==9, "java_report_invalid")
     observations=value["ticket_flag_observations"]
     need(type(observations) is list and len(observations)<=2, "java_report_invalid")
     for index, observed in enumerate(observations):
@@ -145,23 +158,29 @@ def validate_new_evidence(value, complete, service_case, variant):
     responses=evidence["response_observations"]
     need(type(responses) is list and len(responses)<=evidence["requests"], "java_report_invalid")
     for response in responses:
-        need(type(response) is dict and set(response)=={"renew","authenticator_usage","response","error_code","stage"}
+        need(type(response) is dict and set(response)=={"renew","authenticator_usage","response","error_code","stage","service_expired_seconds","renewable_remaining_seconds"}
              and type(response["renew"]) is bool and type(response["authenticator_usage"]) is int
              and response["authenticator_usage"] in (7,11)
              and type(response["response"]) is str and response["response"] in ("unclassified","krb_error","tgs_rep")
              and type(response["stage"]) is str and response["stage"] in ["start","error_decode","error_identity","expected_error","reply_decode","reply_identity","reply_decrypt","reply_part_decode","reply_part_canonical","reply_nonce","reply_server","reply_key","reply_start_present","reply_end_present","reply_end_future","reply_end_extended","renewal_bindings","fresh_ticket","reply_controls","complete"]
              and type(response["error_code"]) is int and 0<=response["error_code"]<=255, "java_report_invalid")
+        integer(response["service_expired_seconds"],-120,180);integer(response["renewable_remaining_seconds"],0,180)
+        if complete:
+            integer(response["service_expired_seconds"],6 if policy=="strict5" else 1,20 if policy=="strict5" else 15)
+            if service_case=="renewable": integer(response["renewable_remaining_seconds"],25,59)
+            else: need(response["renewable_remaining_seconds"]==0, "java_report_invalid")
     if complete:
         expected=[dict(renew=e["renew"],authenticator_usage=e["authenticator_usage"],response=e["response"],
-                       error_code=e["error_code"],stage="complete") for e in expected_events(service_case,variant)]
-        need(responses==expected, "java_report_invalid")
+                       error_code=e["error_code"],stage="complete") for e in expected_events(service_case,variant,policy)]
+        projected=[{k:v for k,v in response.items() if k not in ("service_expired_seconds","renewable_remaining_seconds")} for response in responses]
+        need(projected==expected, "java_report_invalid")
     fields = evidence["renewal_fields"]
     need(type(fields) is dict and (not fields or set(fields) == RENEWAL_FIELDS)
          and all(type(x) is bool for x in fields.values()) and type(evidence["closed"]) is bool
          and evidence["renewal_verified"] is False, "java_report_invalid")
     if complete:
-        positive = service_case == "renewable" and variant == "patched"
-        requests = len(expected_events(service_case, variant))
+        positive = service_case == "renewable" and variant == "patched" and policy == "default300"
+        requests = len(expected_events(service_case, variant, policy))
         need(value["rpc_gate_vectors"] == 85 and evidence["requests"] == requests
              and evidence["authenticator_controls"] == requests * 8 and evidence["closed"] is True
              and evidence["initial_ap_bindings"] == evidence["fresh_ap_bindings"] == 1
@@ -170,7 +189,7 @@ def validate_new_evidence(value, complete, service_case, variant):
              and (set(fields) == RENEWAL_FIELDS and all(fields.values()) if positive else fields == {}), "java_report_invalid")
 
 
-def validate_service_cache(value, complete, child_count, service_case, variant):
+def validate_service_cache(value, complete, child_count, service_case, variant, policy):
     keys = {"case", "issued_cache_bindings", "service_lifetime_seconds", "service_renewable",
             "expired_by_seconds", "actual_service_expiry", "remaining_tgt_seconds", "cache_ticket_bound",
             "original_cache_preserved", "new_tgs_acquisition_verified", "successful_renewal_verified"}
@@ -193,14 +212,14 @@ def validate_service_cache(value, complete, child_count, service_case, variant):
              and 1 <= value["remaining_tgt_seconds"] <= 120
              and all(value[k] is True for k in ("actual_service_expiry", "cache_ticket_bound",
                                                "original_cache_preserved"))
-             and value["new_tgs_acquisition_verified"] is not (service_case == "renewable" and variant == "patched"), "java_report_invalid")
+             and value["new_tgs_acquisition_verified"] is not (service_case == "renewable" and variant == "patched" and policy == "default300"), "java_report_invalid")
 
 
-def validate_java(raw, exit_code, service_case="renewable", variant="patched"):
+def validate_java(raw, exit_code, service_case="renewable", variant="patched", policy="default300"):
     try:
         value = parse(raw, 32768)
         keys = {"schema_version", "scope", "success", "expected_kerby_version", "runtime_binding_required", "checks",
-                "cleanup", "cache_bytes", "observed_lifetime_seconds", "child_count", "service_cache_lifecycle", "stage", "wire_hex", "rclone_wire_hex", "relay", "error", "diagnostic", "remaining_threads", "remaining_thread_intervals", "remaining_thread_matrix", "remaining_timer_kinds", "remaining_rpc_kinds", "cleanup_entry_rpc_kinds", "thread_observation_complete", "owned_thread_cleanup", "kdc_trace", "reconnect_lifecycle", "renewal_evidence", "mit_owner", "binary_variant", "rpc_gate_vectors", "initial_sasl_binding", "fresh_sasl_binding", "ticket_flag_observations"} | JAVA_FALSE
+                "cleanup", "cache_bytes", "observed_lifetime_seconds", "child_count", "service_cache_lifecycle", "stage", "wire_hex", "rclone_wire_hex", "relay", "error", "diagnostic", "remaining_threads", "remaining_thread_intervals", "remaining_thread_matrix", "remaining_timer_kinds", "remaining_rpc_kinds", "cleanup_entry_rpc_kinds", "thread_observation_complete", "owned_thread_cleanup", "kdc_trace", "reconnect_lifecycle", "renewal_evidence", "mit_owner", "binary_variant", "rpc_gate_vectors", "initial_sasl_binding", "fresh_sasl_binding", "ticket_flag_observations", "kdc_policy"} | JAVA_FALSE
         need(type(value) is dict and set(value) == keys and type(value["schema_version"]) is int
              and value["schema_version"] == 1 and value["scope"] == "hdfs_mit_retained_renewal"
              and value["expected_kerby_version"] == "2.1.2" and value["runtime_binding_required"] is True
@@ -222,9 +241,9 @@ def validate_java(raw, exit_code, service_case="renewable", variant="patched"):
              and exit_code == (0 if passed else 1), "java_report_invalid")
         if passed: need(100 < value["cache_bytes"] <= 65536 and 118 <= value["observed_lifetime_seconds"] <= 120, "java_report_invalid")
         validate_relay(value["relay"], passed)
-        validate_service_cache(value["service_cache_lifecycle"], passed, value["child_count"], service_case, variant)
-        validate_kdc_trace(value["kdc_trace"], passed, service_case, variant)
-        validate_new_evidence(value, passed, service_case, variant)
+        validate_service_cache(value["service_cache_lifecycle"], passed, value["child_count"], service_case, variant, policy)
+        validate_kdc_trace(value["kdc_trace"], passed, service_case, variant, policy)
+        validate_new_evidence(value, passed, service_case, variant, policy)
         validate_reconnect(value["reconnect_lifecycle"], passed, value["cleanup"])
         need(value["reconnect_lifecycle"]["forced_disconnects"] == (0 if value["relay"] is None else value["relay"]["forced_disconnects"]), "java_report_invalid")
         validate_diagnostics(value["diagnostic"], value["remaining_threads"], value["remaining_thread_intervals"],
