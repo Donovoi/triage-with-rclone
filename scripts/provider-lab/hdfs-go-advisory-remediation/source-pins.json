@@ -130,8 +130,8 @@
       "sha256": "cd5a454cec149568c8acf5dd125277a76c9e9a743990120d3f4ab385421103fa"
     },
     "hdfs-go-advisory-remediation/remediation_build.py": {
-      "bytes": 6882,
-      "sha256": "108d3ccd2fc642d51a19a6cf91fb03de7b6dca7577b7dcbad8b3c8f526fcc0fa"
+      "bytes": 7595,
+      "sha256": "7319c1b51ba37c8d058e55eb8302d0245abf1771583c47283524d6905c4da6e8"
     },
     "hdfs-go-advisory-remediation/remediation_bundle.py": {
       "bytes": 10502,
@@ -162,8 +162,8 @@
       "sha256": "ba2bf386b79d5b90b8888aabff66d0432574cc2719ef50f00b8502e888f7126c"
     },
     "hdfs-go-advisory-remediation/resolver_diagnostics.go": {
-      "bytes": 3255,
-      "sha256": "7d166fc4491bb42fbf4710f0a45b192b6f7682ffe1fe93f9152dbfdcc5e2bfbd"
+      "bytes": 4028,
+      "sha256": "4bda37be7d53e6d3faae0fb14f189f36157b2e4c45e303ce281934b86273b170"
     },
     "hdfs-go-advisory-remediation/run_guarded_tests.py": {
       "bytes": 824,
@@ -198,8 +198,8 @@
       "sha256": "1de46fd3f2b300e0db3edd0afcb5919f12103a341ccb8ad3db7d15355f4c9c01"
     },
     "hdfs-go-advisory-remediation/test_remediation_build.py": {
-      "bytes": 10037,
-      "sha256": "51e80a93b1c273e848df5fdda01be592e38553c6c2d7e94580f27e891e7ef849"
+      "bytes": 12139,
+      "sha256": "f63531f2862ea452d3b8f75787de826df6be4d372a9617f8e14a4093e02c7f5d"
     },
     "hdfs-go-advisory-remediation/test_remediation_bundle.py": {
       "bytes": 5908,

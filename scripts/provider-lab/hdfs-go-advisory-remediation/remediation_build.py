@@ -100,8 +100,16 @@ def diagnostics(R,raw,allowed):
   else:unbound=True
  need(len(found)<=32,'remediation_diagnostic_limit')
  result['module_errors']=[dict(module=m,version=v,kind=k) for m,v,k in sorted(found)]
- statuses=re.findall(rb'^(?:#[0-9]+ +[0-9.]+ +)?GO_REMEDIATION_GRAPH_STATUS=(errors|complete|invalid)\r?$',raw,re.MULTILINE)
+ statuses=re.findall(rb'^(?:#[0-9]+ +[0-9.]+ +)?GO_REMEDIATION_GRAPH_STATUS=(errors|errors_truncated|complete|invalid)\r?$',raw,re.MULTILINE)
  result['resolver_graph_status']=statuses[-1].decode('ascii') if statuses else None
+ stages=re.findall(rb'^(?:#[0-9]+ +[0-9.]+ +)?GO_REMEDIATION_DIAGNOSTIC_STAGE=(coordinate_read|coordinate_parse|graph_read|graph_parse|graph_error_parse|graph_summary)\r?$',raw,re.MULTILINE)
+ result['resolver_diagnostic_stage']=stages[-1].decode('ascii') if stages else None
+ counts={}
+ for name,maximum in (('GRAPH_BYTES',4*1024*1024),('GRAPH_MODULES',2048),('ERROR_MODULES',2048),('COORDINATES',20000)):
+  values=re.findall(rb'^(?:#[0-9]+ +[0-9.]+ +)?GO_REMEDIATION_'+name.encode('ascii')+rb'=([0-9]{1,8})\r?$',raw,re.MULTILINE)
+  if values:
+   number=int(values[-1]);need(number<=maximum,'remediation_diagnostic_limit');counts[name.lower()]=number
+ result['resolver_diagnostic_counts']=counts
  result['unbound_module_error_present']=unbound
  errors=set()
  for match in re.finditer(rb'(remediation_(?:driver|regression)[.]go|resolver_diagnostics[.]go):([0-9]{1,5}):[^\r\n]*',raw):
