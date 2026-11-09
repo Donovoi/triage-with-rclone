@@ -1,0 +1,55 @@
+name: Isolated Go dependency remediation comparison
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/hdfs-go-advisory-remediation.yml
+      - scripts/provider-lab/hdfs-go-advisory-remediation/**
+      - scripts/provider-lab/hdfs-cancellation-context-build/**
+      - scripts/provider-lab/hdfs-rclone-usage-build/**
+      - scripts/provider-lab/hdfs-kerberos-policy-denial/policy_denial_container.py
+      - scripts/provider-lab/hdfs-discovery/bootstrap_material.py
+      - scripts/provider-lab/hdfs-discovery/graph_export.py
+      - scripts/provider-lab/hdfs-discovery/offline_cache.py
+      - scripts/provider-lab/hdfs-discovery/resolver_discovery.py
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hdfs-go-advisory-remediation-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    name: Compare pinned dependency remediation (${{ matrix.variant }})
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [original, patched]
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.14'
+      - name: Check guarded evidence and ownership contracts
+        run: python -I -S -B scripts/provider-lab/hdfs-go-advisory-remediation/run_guarded_tests.py
+      # Native compilation and scanner execution occur only in owned offline containers.
+      - name: Compare the pinned baseline and upgraded binary
+        run: >-
+          python -I -S -B scripts/provider-lab/hdfs-go-advisory-remediation/audit_container.py
+          --variant "${{ matrix.variant }}"
+          --report "${{ runner.temp }}/hdfs-go-advisory-remediation-${{ matrix.variant }}.json"
+      - name: Retain only the sanitized result
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: hdfs-go-advisory-remediation-${{ matrix.variant }}
+          path: ${{ runner.temp }}/hdfs-go-advisory-remediation-${{ matrix.variant }}.json
+          if-no-files-found: warn
+          retention-days: 14
