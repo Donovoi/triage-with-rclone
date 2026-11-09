@@ -42,7 +42,8 @@ jobs:
         run: bash scripts/download-rclone.sh --linux "$RUNNER_TEMP/rclone-hdfs-transfer"
       # Exact proposed graph only. Offline replay is dependency evidence;
       # this separate experiment checks its one-DataNode transfer behavior and cleanup.
-      # Four Jetty advisory matches remain; no security or provider acceptance.
+      # Jetty advisory candidates remain; no security or provider acceptance.
+      # See the dated publisher reconciliation under hdfs-discovery.
       - name: Check remediation profile transfer controls and cleanup
         run: >-
           python -I -S -B scripts/provider-lab/hdfs-kerberos-transfer/transfer_container.py

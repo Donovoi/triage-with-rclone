@@ -1,0 +1,1518 @@
+{
+  "recordedAt": "2026-11-09T00:09:20.069Z",
+  "scope": "Pinned HDFS fixture runtime at PR158; current dependency-version advisory classification only; no dependency or security-acceptance changes",
+  "claims": [
+    {
+      "id": "C1",
+      "claim": "Jetty 9.4.58.v20250814 still falls within the current maintainer affected ranges for the four historical GHSA matches.",
+      "support": "Current maintainer advisory records enumerate the pinned artifacts/version as affected.",
+      "falsifier": "Withdrawn advisory, corrected range excluding the pinned version, artifact mismatch, or later superseding guidance."
+    },
+    {
+      "id": "C2",
+      "claim": "A maintainer-published compatible-line release is documented to fix all four matches.",
+      "support": "Each advisory lists a nonoverlapping fixed 9.4.x release and an official release confirms availability.",
+      "falsifier": "An advisory has no 9.4.x fix, conflicting affected/fixed ranges, or unsupported/unavailable artifact."
+    },
+    {
+      "id": "C3",
+      "claim": "The version matches alone establish exploitability of this contained fixture.",
+      "support": "Concrete vulnerable code paths plus required configuration and attacker inputs are demonstrated in the fixture.",
+      "falsifier": "Required protocol/configuration/classes absent, or no reachability evidence; version match alone is insufficient."
+    }
+  ],
+  "evidenceLedger": [
+    {
+      "claim": "The selected org.eclipse.jetty:jetty-http 9.4.58.v20250814 corresponds to the publisher affected range.",
+      "id": "GHSA-355h-qmc2-wpwf",
+      "cve": "CVE-2026-2332",
+      "package": "org.eclipse.jetty:jetty-http",
+      "selectedVersion": "9.4.58.v20250814",
+      "source": {
+        "title": "GHSA-355h-qmc2-wpwf",
+        "publisher": "Eclipse Jetty maintainers",
+        "url": "https://github.com/jetty/jetty.project/security/advisories/GHSA-355h-qmc2-wpwf",
+        "published": "2026-04-14",
+        "reviewedAt": "2026-11-09T00:15:14.879Z"
+      },
+      "provenance": "primary maintainer advisory",
+      "direction": "supports version match; does not establish exploitability",
+      "entailment": {
+        "affected": "9.4.0 through 9.4.59",
+        "patched": "9.4.60",
+        "discovery": "osv_and_maintainer"
+      },
+      "quality": "Direct package/version ranges; prerequisites reviewed; binary reachability not tested.",
+      "independence": "Same publisher as Jetty security index and Eclipse CNA records; these are not independent corroborating votes.",
+      "limitations": "Chunk-extension parsing difference; HTTP/1.1 proxy/intermediary reachability has not been tested.",
+      "matchClassification": "publisher_package_and_range_candidate"
+    },
+    {
+      "claim": "The selected org.eclipse.jetty:jetty-http 9.4.58.v20250814 corresponds to the publisher affected range.",
+      "id": "GHSA-qh8g-58pp-2wxh",
+      "cve": "CVE-2024-6763",
+      "package": "org.eclipse.jetty:jetty-http",
+      "selectedVersion": "9.4.58.v20250814",
+      "source": {
+        "title": "GHSA-qh8g-58pp-2wxh",
+        "publisher": "Eclipse Jetty maintainers",
+        "url": "https://github.com/jetty/jetty.project/security/advisories/GHSA-qh8g-58pp-2wxh",
+        "published": "2024-10-14",
+        "reviewedAt": "2026-11-09T00:15:14.879Z"
+      },
+      "provenance": "primary maintainer advisory",
+      "direction": "supports version match; does not establish exploitability",
+      "entailment": {
+        "affected": "7.0.0 through 12.0.11",
+        "patched": "12.0.12; no 9.4 patch listed in this advisory",
+        "discovery": "osv_and_maintainer"
+      },
+      "quality": "Direct package/version ranges; prerequisites reviewed; binary reachability not tested.",
+      "independence": "Same publisher as Jetty security index and Eclipse CNA records; these are not independent corroborating votes.",
+      "limitations": "Requires application use of HttpURI as a utility on attacker-controlled URI data; maintainer says Jetty internal use is not vulnerable.",
+      "matchClassification": "publisher_package_and_range_candidate"
+    },
+    {
+      "claim": "The selected org.eclipse.jetty:jetty-security 9.4.58.v20250814 corresponds to the publisher affected range.",
+      "id": "GHSA-2fvj-hgj9-j2gr",
+      "cve": "CVE-2026-10050",
+      "package": "org.eclipse.jetty:jetty-security",
+      "selectedVersion": "9.4.58.v20250814",
+      "source": {
+        "title": "GHSA-2fvj-hgj9-j2gr",
+        "publisher": "Eclipse Jetty maintainers",
+        "url": "https://github.com/jetty/jetty.project/security/advisories/GHSA-2fvj-hgj9-j2gr",
+        "published": "2026-07-13",
+        "reviewedAt": "2026-11-09T00:15:14.879Z"
+      },
+      "provenance": "primary maintainer advisory",
+      "direction": "supports version match; does not establish exploitability",
+      "entailment": {
+        "affected": "9.4.0 through 9.4.62",
+        "patched": "9.4.63",
+        "discovery": "osv_and_maintainer"
+      },
+      "quality": "Direct package/version ranges; prerequisites reviewed; binary reachability not tested.",
+      "independence": "Same publisher as Jetty security index and Eclipse CNA records; these are not independent corroborating votes.",
+      "limitations": "Digest authentication with non-Latin-1 credential handling; selected fixture config instead requests Kerberos, and full runtime reachability remains unverified.",
+      "matchClassification": "publisher_package_and_range_candidate"
+    },
+    {
+      "claim": "The selected org.eclipse.jetty:jetty-server 9.4.58.v20250814 corresponds to the publisher affected range.",
+      "id": "GHSA-7p3p-8qv8-m2vh",
+      "cve": "CVE-2026-6790",
+      "package": "org.eclipse.jetty:jetty-server",
+      "selectedVersion": "9.4.58.v20250814",
+      "source": {
+        "title": "GHSA-7p3p-8qv8-m2vh",
+        "publisher": "Eclipse Jetty maintainers",
+        "url": "https://github.com/jetty/jetty.project/security/advisories/GHSA-7p3p-8qv8-m2vh",
+        "published": "2026-07-13",
+        "reviewedAt": "2026-11-09T00:15:14.879Z"
+      },
+      "provenance": "primary maintainer advisory",
+      "direction": "supports version match; does not establish exploitability",
+      "entailment": {
+        "affected": "9.4.0 through 9.4.60",
+        "patched": "9.4.61",
+        "discovery": "osv_and_maintainer"
+      },
+      "quality": "Direct package/version ranges; prerequisites reviewed; binary reachability not tested.",
+      "independence": "Same publisher as Jetty security index and Eclipse CNA records; these are not independent corroborating votes.",
+      "limitations": "HTTP/2 or HTTP/3 authority mismatch; selected package inventory contains neither HTTP/2 nor HTTP/3 artifacts, but no complete class reachability audit was performed.",
+      "matchClassification": "publisher_package_and_range_candidate"
+    },
+    {
+      "claim": "The selected org.eclipse.jetty:jetty-http 9.4.58.v20250814 corresponds to the publisher affected range.",
+      "id": "GHSA-wjpw-4j6x-6rwh",
+      "cve": "CVE-2025-11143",
+      "package": "org.eclipse.jetty:jetty-http",
+      "selectedVersion": "9.4.58.v20250814",
+      "source": {
+        "title": "GHSA-wjpw-4j6x-6rwh",
+        "publisher": "Eclipse Jetty maintainers",
+        "url": "https://github.com/jetty/jetty.project/security/advisories/GHSA-wjpw-4j6x-6rwh",
+        "published": "2026-03-05",
+        "reviewedAt": "2026-11-09T00:15:14.879Z"
+      },
+      "provenance": "primary maintainer advisory",
+      "direction": "supports version match; does not establish exploitability",
+      "entailment": {
+        "affected": "9.4.0 through 9.4.58",
+        "patched": "9.4 EOL patch availability referred to support providers",
+        "discovery": "maintainer_only"
+      },
+      "quality": "Direct package/version ranges; prerequisites reviewed; binary reachability not tested.",
+      "independence": "Same publisher as Jetty security index and Eclipse CNA records; these are not independent corroborating votes.",
+      "limitations": "URI parser differentials across components; release suffix .v20250814 normalized to the publisher base-release label 9.4.58 for this boundary match.",
+      "matchClassification": "publisher_base_release_boundary_candidate"
+    },
+    {
+      "claim": "The selected org.eclipse.jetty:jetty-http 9.4.58.v20250814 corresponds to the publisher affected range.",
+      "id": "GHSA-xc35-c22g-239h",
+      "cve": "CVE-2026-19203",
+      "package": "org.eclipse.jetty:jetty-http",
+      "selectedVersion": "9.4.58.v20250814",
+      "source": {
+        "title": "GHSA-xc35-c22g-239h",
+        "publisher": "Eclipse Jetty maintainers",
+        "url": "https://github.com/jetty/jetty.project/security/advisories/GHSA-xc35-c22g-239h",
+        "published": "2026-09-17",
+        "reviewedAt": "2026-11-09T00:15:14.879Z"
+      },
+      "provenance": "primary maintainer advisory",
+      "direction": "supports version match; does not establish exploitability",
+      "entailment": {
+        "affected": "9.4.0 through 9.4.63",
+        "patched": "9.4.64",
+        "discovery": "maintainer_only"
+      },
+      "quality": "Direct package/version ranges; prerequisites reviewed; binary reachability not tested.",
+      "independence": "Same publisher as Jetty security index and Eclipse CNA records; these are not independent corroborating votes.",
+      "limitations": "LF chunk-extension parsing difference; exploit prerequisites in this isolated fixture remain untested.",
+      "matchClassification": "publisher_package_and_range_candidate"
+    },
+    {
+      "claim": "The selected org.eclipse.jetty:jetty-security 9.4.58.v20250814 corresponds to the publisher affected range.",
+      "id": "GHSA-q6wx-j9wr-fj7f",
+      "cve": "CVE-2026-19864",
+      "package": "org.eclipse.jetty:jetty-security",
+      "selectedVersion": "9.4.58.v20250814",
+      "source": {
+        "title": "GHSA-q6wx-j9wr-fj7f",
+        "publisher": "Eclipse Jetty maintainers",
+        "url": "https://github.com/jetty/jetty.project/security/advisories/GHSA-q6wx-j9wr-fj7f",
+        "published": "2026-10-15",
+        "reviewedAt": "2026-11-09T00:15:14.879Z"
+      },
+      "provenance": "primary maintainer advisory",
+      "direction": "supports version match; does not establish exploitability",
+      "entailment": {
+        "affected": "9.4.0 through 9.4.64",
+        "patched": "9.4.65",
+        "discovery": "maintainer_only"
+      },
+      "quality": "Direct package/version ranges; prerequisites reviewed; binary reachability not tested.",
+      "independence": "Same publisher as Jetty security index and Eclipse CNA records; these are not independent corroborating votes.",
+      "limitations": "Requires form/session authentication and a persistence backend for plaintext credential persistence; fixture source does not establish these conditions.",
+      "matchClassification": "publisher_package_and_range_candidate"
+    },
+    {
+      "claim": "The selected org.eclipse.jetty:jetty-security 9.4.58.v20250814 corresponds to the publisher affected range.",
+      "id": "GHSA-53x7-f9fc-h7qr",
+      "cve": "CVE-2026-18659",
+      "package": "org.eclipse.jetty:jetty-security",
+      "selectedVersion": "9.4.58.v20250814",
+      "source": {
+        "title": "GHSA-53x7-f9fc-h7qr",
+        "publisher": "Eclipse Jetty maintainers",
+        "url": "https://github.com/jetty/jetty.project/security/advisories/GHSA-53x7-f9fc-h7qr",
+        "published": "2026-10-15",
+        "reviewedAt": "2026-11-09T00:15:14.879Z"
+      },
+      "provenance": "primary maintainer advisory",
+      "direction": "supports version match; does not establish exploitability",
+      "entailment": {
+        "affected": "7.6.13 through 9.4.64",
+        "patched": "9.4.65",
+        "discovery": "maintainer_only"
+      },
+      "quality": "Direct package/version ranges; prerequisites reviewed; binary reachability not tested.",
+      "independence": "Same publisher as Jetty security index and Eclipse CNA records; these are not independent corroborating votes.",
+      "limitations": "Requires relevant http-method-omission authorization constraints; deployed descriptor and dependency call paths are not fully audited.",
+      "matchClassification": "publisher_package_and_range_candidate"
+    },
+    {
+      "claim": "The selected org.eclipse.jetty:jetty-security 9.4.58.v20250814 corresponds to the publisher affected range.",
+      "id": "GHSA-phjh-v7c6-g7mv",
+      "cve": "CVE-2026-18662",
+      "package": "org.eclipse.jetty:jetty-security",
+      "selectedVersion": "9.4.58.v20250814",
+      "source": {
+        "title": "GHSA-phjh-v7c6-g7mv",
+        "publisher": "Eclipse Jetty maintainers",
+        "url": "https://github.com/jetty/jetty.project/security/advisories/GHSA-phjh-v7c6-g7mv",
+        "published": "2026-10-15",
+        "reviewedAt": "2026-11-09T00:15:14.879Z"
+      },
+      "provenance": "primary maintainer advisory",
+      "direction": "supports version match; does not establish exploitability",
+      "entailment": {
+        "affected": "7.6.13 through 9.4.64",
+        "patched": "9.4.65",
+        "discovery": "maintainer_only"
+      },
+      "quality": "Direct package/version ranges; prerequisites reviewed; binary reachability not tested.",
+      "independence": "Same publisher as Jetty security index and Eclipse CNA records; these are not independent corroborating votes.",
+      "limitations": "Requires duplicate method-omission constraint mappings; fixture exploitability remains unverified.",
+      "matchClassification": "publisher_package_and_range_candidate"
+    }
+  ],
+  "nativeExecutions": 0,
+  "credentialReads": 0,
+  "fullVulnerabilityAudit": false,
+  "completedAt": "2026-11-09T00:15:14.880Z",
+  "inventory": {
+    "lockSha256": "80184076d64194810cae394fbc6d8b00e86717c9479d6176f828b042dcd41df1",
+    "selectedJars": 142,
+    "uniqueCoordinates": 137,
+    "jettyPackages": [
+      "org.eclipse.jetty:jetty-http@9.4.58.v20250814",
+      "org.eclipse.jetty:jetty-io@9.4.58.v20250814",
+      "org.eclipse.jetty:jetty-security@9.4.58.v20250814",
+      "org.eclipse.jetty:jetty-server@9.4.58.v20250814",
+      "org.eclipse.jetty:jetty-servlet@9.4.58.v20250814",
+      "org.eclipse.jetty:jetty-util@9.4.58.v20250814",
+      "org.eclipse.jetty:jetty-util-ajax@9.4.58.v20250814",
+      "org.eclipse.jetty:jetty-webapp@9.4.58.v20250814",
+      "org.eclipse.jetty:jetty-xml@9.4.58.v20250814"
+    ]
+  },
+  "osv": {
+    "checkedUtc": "2026-11-09T00:11:14.200Z",
+    "queryCount": 137,
+    "paginationRemaining": false,
+    "matches": 4,
+    "limitation": "Current batch query omits five publisher-listed candidates; dataset completeness versus matching behavior has not been distinguished.",
+    "queries": [
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "ch.qos.reload4j:reload4j"
+        },
+        "version": "1.2.22"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "com.fasterxml.jackson.core:jackson-annotations"
+        },
+        "version": "2.18.12"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "com.fasterxml.jackson.core:jackson-core"
+        },
+        "version": "2.18.12"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "com.fasterxml.jackson.core:jackson-databind"
+        },
+        "version": "2.18.12"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "com.fasterxml.woodstox:woodstox-core"
+        },
+        "version": "5.4.0"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "com.google.code.findbugs:jsr305"
+        },
+        "version": "3.0.2"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "com.google.code.gson:gson"
+        },
+        "version": "2.9.0"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "com.google.guava:failureaccess"
+        },
+        "version": "1.0.3"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "com.google.guava:guava"
+        },
+        "version": "33.7.2-jre"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "com.google.guava:listenablefuture"
+        },
+        "version": "9999.0-empty-to-avoid-conflict-with-guava"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "com.google.j2objc:j2objc-annotations"
+        },
+        "version": "3.1"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "com.google.re2j:re2j"
+        },
+        "version": "1.1"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "com.jcraft:jsch"
+        },
+        "version": "0.1.55"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "com.nimbusds:nimbus-jose-jwt"
+        },
+        "version": "10.4"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "com.sun.activation:jakarta.activation"
+        },
+        "version": "1.2.2"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "com.sun.istack:istack-commons-runtime"
+        },
+        "version": "3.0.12"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "commons-cli:commons-cli"
+        },
+        "version": "1.9.0"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "commons-codec:commons-codec"
+        },
+        "version": "1.15"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "commons-daemon:commons-daemon"
+        },
+        "version": "1.0.13"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "commons-io:commons-io"
+        },
+        "version": "2.22.0"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "commons-logging:commons-logging"
+        },
+        "version": "1.2"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "commons-net:commons-net"
+        },
+        "version": "3.9.0"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "dnsjava:dnsjava"
+        },
+        "version": "3.6.1"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "io.dropwizard.metrics:metrics-core"
+        },
+        "version": "3.2.4"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "io.netty:netty-all"
+        },
+        "version": "4.1.139.Final"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "io.netty:netty-buffer"
+        },
+        "version": "4.1.139.Final"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "io.netty:netty-codec"
+        },
+        "version": "4.1.139.Final"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "io.netty:netty-codec-dns"
+        },
+        "version": "4.1.139.Final"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "io.netty:netty-codec-haproxy"
+        },
+        "version": "4.1.139.Final"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "io.netty:netty-codec-http"
+        },
+        "version": "4.1.139.Final"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "io.netty:netty-codec-http2"
+        },
+        "version": "4.1.139.Final"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "io.netty:netty-codec-memcache"
+        },
+        "version": "4.1.139.Final"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "io.netty:netty-codec-mqtt"
+        },
+        "version": "4.1.139.Final"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "io.netty:netty-codec-redis"
+        },
+        "version": "4.1.139.Final"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "io.netty:netty-codec-smtp"
+        },
+        "version": "4.1.139.Final"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "io.netty:netty-codec-socks"
+        },
+        "version": "4.1.139.Final"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "io.netty:netty-codec-stomp"
+        },
+        "version": "4.1.139.Final"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "io.netty:netty-codec-xml"
+        },
+        "version": "4.1.139.Final"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "io.netty:netty-common"
+        },
+        "version": "4.1.139.Final"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "io.netty:netty-handler"
+        },
+        "version": "4.1.139.Final"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "io.netty:netty-handler-proxy"
+        },
+        "version": "4.1.139.Final"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "io.netty:netty-handler-ssl-ocsp"
+        },
+        "version": "4.1.139.Final"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "io.netty:netty-resolver"
+        },
+        "version": "4.1.139.Final"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "io.netty:netty-resolver-dns"
+        },
+        "version": "4.1.139.Final"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "io.netty:netty-resolver-dns-classes-macos"
+        },
+        "version": "4.1.139.Final"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "io.netty:netty-resolver-dns-native-macos"
+        },
+        "version": "4.1.139.Final"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "io.netty:netty-transport"
+        },
+        "version": "4.1.139.Final"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "io.netty:netty-transport-classes-epoll"
+        },
+        "version": "4.1.139.Final"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "io.netty:netty-transport-classes-kqueue"
+        },
+        "version": "4.1.139.Final"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "io.netty:netty-transport-native-epoll"
+        },
+        "version": "4.1.139.Final"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "io.netty:netty-transport-native-kqueue"
+        },
+        "version": "4.1.139.Final"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "io.netty:netty-transport-native-unix-common"
+        },
+        "version": "4.1.139.Final"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "io.netty:netty-transport-rxtx"
+        },
+        "version": "4.1.139.Final"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "io.netty:netty-transport-sctp"
+        },
+        "version": "4.1.139.Final"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "io.netty:netty-transport-udt"
+        },
+        "version": "4.1.139.Final"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "jakarta.activation:jakarta.activation-api"
+        },
+        "version": "1.2.1"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "jakarta.annotation:jakarta.annotation-api"
+        },
+        "version": "1.3.5"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "jakarta.servlet:jakarta.servlet-api"
+        },
+        "version": "4.0.4"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "jakarta.servlet.jsp:jakarta.servlet.jsp-api"
+        },
+        "version": "2.3.6"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "jakarta.validation:jakarta.validation-api"
+        },
+        "version": "2.0.2"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "jakarta.ws.rs:jakarta.ws.rs-api"
+        },
+        "version": "2.1.6"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "jakarta.xml.bind:jakarta.xml.bind-api"
+        },
+        "version": "2.3.3"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "javax.servlet:javax.servlet-api"
+        },
+        "version": "3.1.0"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "org.apache.avro:avro"
+        },
+        "version": "1.11.5"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "org.apache.commons:commons-collections4"
+        },
+        "version": "4.4"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "org.apache.commons:commons-compress"
+        },
+        "version": "1.26.1"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "org.apache.commons:commons-configuration2"
+        },
+        "version": "2.15.1"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "org.apache.commons:commons-lang3"
+        },
+        "version": "3.18.0"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "org.apache.commons:commons-math3"
+        },
+        "version": "3.6.1"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "org.apache.commons:commons-text"
+        },
+        "version": "1.14.0"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "org.apache.curator:curator-client"
+        },
+        "version": "5.2.0"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "org.apache.curator:curator-framework"
+        },
+        "version": "5.2.0"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "org.apache.curator:curator-recipes"
+        },
+        "version": "5.2.0"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "org.apache.hadoop:hadoop-annotations"
+        },
+        "version": "3.5.0"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "org.apache.hadoop:hadoop-auth"
+        },
+        "version": "3.5.0"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "org.apache.hadoop:hadoop-common"
+        },
+        "version": "3.5.0"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "org.apache.hadoop:hadoop-hdfs"
+        },
+        "version": "3.5.0"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "org.apache.hadoop:hadoop-hdfs-client"
+        },
+        "version": "3.5.0"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "org.apache.hadoop.thirdparty:hadoop-shaded-guava"
+        },
+        "version": "1.5.0"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "org.apache.hadoop.thirdparty:hadoop-shaded-protobuf_3_25"
+        },
+        "version": "1.5.0"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "org.apache.httpcomponents:httpclient"
+        },
+        "version": "4.5.13"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "org.apache.httpcomponents:httpcore"
+        },
+        "version": "4.4.13"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "org.apache.kerby:kerb-admin"
+        },
+        "version": "2.1.2"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "org.apache.kerby:kerb-client"
+        },
+        "version": "2.1.2"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "org.apache.kerby:kerb-common"
+        },
+        "version": "2.1.2"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "org.apache.kerby:kerb-core"
+        },
+        "version": "2.1.2"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "org.apache.kerby:kerb-crypto"
+        },
+        "version": "2.1.2"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "org.apache.kerby:kerb-identity"
+        },
+        "version": "2.1.2"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "org.apache.kerby:kerb-server"
+        },
+        "version": "2.1.2"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "org.apache.kerby:kerb-simplekdc"
+        },
+        "version": "2.1.2"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "org.apache.kerby:kerb-util"
+        },
+        "version": "2.1.2"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "org.apache.kerby:kerby-asn1"
+        },
+        "version": "2.1.2"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "org.apache.kerby:kerby-config"
+        },
+        "version": "2.1.2"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "org.apache.kerby:kerby-pkix"
+        },
+        "version": "2.1.2"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "org.apache.kerby:kerby-util"
+        },
+        "version": "2.1.2"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "org.apache.kerby:kerby-xdr"
+        },
+        "version": "2.1.2"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "org.apache.kerby:token-provider"
+        },
+        "version": "2.1.2"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "org.apache.yetus:audience-annotations"
+        },
+        "version": "0.12.0"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "org.apache.zookeeper:zookeeper"
+        },
+        "version": "3.8.6"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "org.apache.zookeeper:zookeeper-jute"
+        },
+        "version": "3.8.6"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "org.bouncycastle:bcprov-jdk18on"
+        },
+        "version": "1.86"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "org.codehaus.woodstox:stax2-api"
+        },
+        "version": "4.2.1"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "org.eclipse.jetty:jetty-http"
+        },
+        "version": "9.4.58.v20250814"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "org.eclipse.jetty:jetty-io"
+        },
+        "version": "9.4.58.v20250814"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "org.eclipse.jetty:jetty-security"
+        },
+        "version": "9.4.58.v20250814"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "org.eclipse.jetty:jetty-server"
+        },
+        "version": "9.4.58.v20250814"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "org.eclipse.jetty:jetty-servlet"
+        },
+        "version": "9.4.58.v20250814"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "org.eclipse.jetty:jetty-util"
+        },
+        "version": "9.4.58.v20250814"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "org.eclipse.jetty:jetty-util-ajax"
+        },
+        "version": "9.4.58.v20250814"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "org.eclipse.jetty:jetty-webapp"
+        },
+        "version": "9.4.58.v20250814"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "org.eclipse.jetty:jetty-xml"
+        },
+        "version": "9.4.58.v20250814"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "org.fusesource.leveldbjni:leveldbjni-all"
+        },
+        "version": "1.8"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "org.glassfish.hk2:hk2-api"
+        },
+        "version": "2.6.1"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "org.glassfish.hk2:hk2-locator"
+        },
+        "version": "2.6.1"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "org.glassfish.hk2:hk2-utils"
+        },
+        "version": "2.6.1"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "org.glassfish.hk2:osgi-resource-locator"
+        },
+        "version": "1.0.3"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "org.glassfish.hk2.external:aopalliance-repackaged"
+        },
+        "version": "2.6.1"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "org.glassfish.hk2.external:jakarta.inject"
+        },
+        "version": "2.6.1"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "org.glassfish.jaxb:jaxb-runtime"
+        },
+        "version": "2.3.9"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "org.glassfish.jaxb:txw2"
+        },
+        "version": "2.3.9"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "org.glassfish.jersey.containers:jersey-container-servlet"
+        },
+        "version": "2.46"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "org.glassfish.jersey.containers:jersey-container-servlet-core"
+        },
+        "version": "2.46"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "org.glassfish.jersey.core:jersey-client"
+        },
+        "version": "2.46"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "org.glassfish.jersey.core:jersey-common"
+        },
+        "version": "2.46"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "org.glassfish.jersey.core:jersey-server"
+        },
+        "version": "2.46"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "org.glassfish.jersey.inject:jersey-hk2"
+        },
+        "version": "2.46"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "org.javassist:javassist"
+        },
+        "version": "3.30.2-GA"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "org.jboss.logging:jboss-logging"
+        },
+        "version": "3.3.1.Final"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "org.jboss.threads:jboss-threads"
+        },
+        "version": "2.3.6.Final"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "org.jboss.xnio:xnio-api"
+        },
+        "version": "3.8.17.Final"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "org.jline:jline"
+        },
+        "version": "3.30.6"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "org.jspecify:jspecify"
+        },
+        "version": "1.0.1"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "org.slf4j:slf4j-api"
+        },
+        "version": "1.7.36"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "org.slf4j:slf4j-reload4j"
+        },
+        "version": "1.7.36"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "org.wildfly.client:wildfly-client-config"
+        },
+        "version": "1.0.1.Final"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "org.wildfly.common:wildfly-common"
+        },
+        "version": "1.5.4.Final"
+      },
+      {
+        "package": {
+          "ecosystem": "Maven",
+          "name": "org.xerial.snappy:snappy-java"
+        },
+        "version": "1.1.10.9"
+      }
+    ],
+    "results": [
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {
+        "vulns": [
+          {
+            "id": "GHSA-355h-qmc2-wpwf",
+            "modified": "2026-09-10T03:50:42.440988Z"
+          },
+          {
+            "id": "GHSA-qh8g-58pp-2wxh",
+            "modified": "2026-09-10T03:50:19.940231Z"
+          }
+        ]
+      },
+      {},
+      {
+        "vulns": [
+          {
+            "id": "GHSA-2fvj-hgj9-j2gr",
+            "modified": "2026-09-10T03:51:10.292148Z"
+          }
+        ]
+      },
+      {
+        "vulns": [
+          {
+            "id": "GHSA-7p3p-8qv8-m2vh",
+            "modified": "2026-09-10T03:51:11.096731Z"
+          }
+        ]
+      },
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {}
+    ]
+  },
+  "publisherReview": {
+    "additionalToOsv": 5,
+    "boundaryNormalization": "CVE-2025-11143 uses publisher base version 9.4.58; selected Maven release is 9.4.58.v20250814.",
+    "scope": "Reviewed vendor 2026 list relevant to the 9.4 line plus historical URI advisory; not a complete vulnerability or shaded-class audit.",
+    "versionCandidates": 9,
+    "nonBoundaryCandidates": 8,
+    "baseReleaseBoundaryCandidates": 1
+  },
+  "verdicts": [
+    {
+      "claim": "C1",
+      "verdict": "supported",
+      "confidence": "high",
+      "reason": "All four historical package/version matches remain within current primary ranges."
+    },
+    {
+      "claim": "C2",
+      "verdict": "unresolved",
+      "confidence": "high for public-availability limit; low for a fully qualified replacement",
+      "reason": "Maven Central metadata still ends the 9.4 line at 9.4.58.v20250814; later EOL patches require support-provider access, and the older URI advisory lists no 9.4 fixed version. No available compatible replacement was qualified."
+    },
+    {
+      "claim": "C3",
+      "verdict": "contradicted as an inference",
+      "confidence": "high",
+      "reason": "Advisories have additional protocol/configuration prerequisites. Package presence and a matching version do not demonstrate exploitability."
+    },
+    {
+      "claim": "The four OSV matches exhaust the publisher-known issues for selected Jetty packages.",
+      "verdict": "contradicted",
+      "confidence": "high",
+      "reason": "Five additional publisher advisory candidates match selected package/range labels; one boundary match explicitly normalizes the Jetty date suffix."
+    }
+  ],
+  "publicRelease": {
+    "source": "https://repo.maven.apache.org/maven2/org/eclipse/jetty/jetty-server/maven-metadata.xml",
+    "lastUpdated": "20261005105526",
+    "latest94": "9.4.58.v20250814",
+    "supportSource": "https://webtide.com/end-of-life/",
+    "compatibilityTested": false
+  },
+  "exclusions": [
+    {
+      "id": "CVE-2026-77711",
+      "source": "https://github.com/jetty/jetty.project/security/advisories/GHSA-r2c5-3p8g-wpvw",
+      "reason": "Affected package coordinate absent from selected inventory."
+    },
+    {
+      "id": "CVE-2026-76184",
+      "source": "https://github.com/jetty/jetty.project/security/advisories/GHSA-qfr2-43g5-g768",
+      "reason": "Affected package coordinate absent from selected inventory."
+    },
+    {
+      "id": "CVE-2026-18660",
+      "source": "https://github.com/jetty/jetty.project/security/advisories/GHSA-7wfj-j486-mxrf",
+      "reason": "Present jetty-server coordinate is affected only in the listed 12.x ranges; relevant 9.x proxy/FastCGI package is absent."
+    },
+    {
+      "id": "CVE-2026-18661",
+      "source": "https://github.com/jetty/jetty.project/security/advisories/GHSA-v6xf-996f-c35f",
+      "reason": "Affected package coordinate absent from selected inventory."
+    },
+    {
+      "id": "CVE-2026-76182",
+      "source": "https://github.com/jetty/jetty.project/security/advisories/GHSA-4hxv-32vm-5h2m",
+      "reason": "Present jetty-server coordinate is affected only in the listed 12.x ranges; relevant 9.x proxy/FastCGI package is absent."
+    },
+    {
+      "id": "CVE-2026-12611",
+      "source": "https://github.com/jetty/jetty.project/security/advisories/GHSA-gpg9-4257-cfm3",
+      "reason": "org.eclipse.jetty.http2:http2-common is absent from selected runtime."
+    },
+    {
+      "id": "CVE-2026-5795",
+      "source": "https://github.com/jetty/jetty.project/security/advisories/GHSA-r7p8-xq5m-436c",
+      "reason": "jetty-jaspi and all ee*-jaspi packages are absent; CNA URL had an appended https:// suffix, and the canonical maintainer page was independently opened."
+    }
+  ],
+  "configurationEvidence": {
+    "head": "1c094990aea6a3fe3ee872c6a171060a7da1b78a",
+    "javaSha256": "2ad75ab4b1c9c21460f8d19716f9ccb4219bf55de8c83b0b3df5ceb74d32fd89",
+    "facts": [
+      "HTTPS_ONLY; HTTP and HTTPS endpoints explicitly loopback",
+      "Hadoop HTTP authentication explicitly Kerberos",
+      "Network-none container, no published ports or host mounts, read-only root, unprivileged user, capped resources"
+    ],
+    "limits": "These reduce external exposure but do not prove vulnerable classes unreachable within the fixture, nor remediate affected dependency code."
+  },
+  "detractorTest": {
+    "objection": "Only four OSV matches and isolated execution could make the extra findings irrelevant.",
+    "answer": "Publisher package/range records disprove an exhaustive four-match claim. Isolation changes exposure; application prerequisites remain unverified, so no exploitability or security-clearance claim follows."
+  },
+  "alternatives": [
+    "OSV advisory ingestion or version matching may lag primary disclosures; cause not distinguished.",
+    "Some affected packages may be unused or unreachable under the fixture configuration; full call-path/class audit is absent.",
+    "Private EOL patches or a larger supported-version migration might resolve issues, but availability, compatibility, provenance, and native qualification remain unverified."
+  ],
+  "unknowns": [
+    "Full class and descriptor reachability",
+    "Shaded dependencies and complete publisher vulnerability census outside reviewed Jetty cases",
+    "Patched dependency availability and compatibility with Hadoop 3.5.0",
+    "Independent negative security controls for QOP and block tokens"
+  ],
+  "nextChecks": [
+    "Correct documentation that treats four OSV matches as exhaustive.",
+    "For a future dependency change, verify artifact availability and provenance, recompute graph/source identities, and repeat offline/RPC/transfer qualification in the existing isolated environment.",
+    "Treat any current database result as one discovery source; compare publisher records and record exclusions."
+  ],
+  "sourceReviewScope": "Documentation and package/version reconciliation, not a runtime exploit or compatibility assessment.",
+  "conclusion": {
+    "verdict": "OSV-only completeness contradicted; fixture exploitability unresolved",
+    "confidence": "High for eight non-boundary package/range candidates; one further candidate uses the publisher base-release label for Jetty 9.4.58.v20250814.",
+    "nativeExploitability": "not established",
+    "securityAcceptance": false
+  }
+}

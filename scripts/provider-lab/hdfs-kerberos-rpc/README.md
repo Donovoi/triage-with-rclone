@@ -42,6 +42,10 @@ four Jetty advisory matches; the previously matched Guava and Snappy versions
 are no longer selected. This database query does not establish a complete
 security audit or runtime exploitability. Dependency semantics and all
 security, provider, application, vendor and ledger acceptance remain open.
+The [November 9 publisher reconciliation](../hdfs-discovery/advisory-review-2026-11-09.json)
+identifies five additional package/version candidates beyond the four OSV
+matches, including one explicit normalization of the Jetty release date suffix.
+Neither the database count nor a package match establishes exploitability.
 
 Qualification of this graph requires a fresh offline replay and exact-revision
 RPC and transfer controls with complete cleanup. Earlier reports bind earlier
