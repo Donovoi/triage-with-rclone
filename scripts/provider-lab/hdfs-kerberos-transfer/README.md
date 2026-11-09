@@ -252,5 +252,28 @@ transport and malformed-receipt tests verify strict failure and cleanup handling
 Java lexical/source checks are not compilation or native qualification. Hosted
 review must still establish compilation, exact runtime controls, service/child/
 listener/private material cleanup and outer container/image/context cleanup.
-Application integration, real vendor behavior, cancellation/renewal, independent
-negotiated-QOP observation, and a DataNode block-token negative remain separate.
+Application integration, real vendor behavior, cancellation/renewal, and
+negotiated-QOP observation bound to actual rclone connections remain separate.
+
+The added `HdfsDataNodeSecurity.java` control requires three fresh connections
+to the owned DataNode: a valid checksum request, a request with one operation-token
+password byte altered, and the original valid request again. Each connection
+uses the valid token for SASL authentication. Only the checksum operation token
+changes for the negative. The negative must return `ERROR_ACCESS_TOKEN`; generic
+I/O failure cannot pass. Both successful replies must match the independently
+derived MD5 of eight big-endian CRC32C checksums for the known 4,096-byte fixture.
+
+Each owned SASL client must complete negotiation and report `auth-conf` before
+the protected request is sent. This observes those control connections only;
+the receipt always retains `rclone_qop_verified=false`. It does not use the
+client's requested-QOP field or the DataNode's shared last-observation field.
+Frames, per-connection input/output bytes, connection count, socket timeouts,
+and the existing overall deadline are bounded. Channels and SASL clients must
+close/dispose, and the existing zero-residue and outer cleanup gates still apply.
+
+The retained `protocol-native-success.json` is the earlier hosted receipt and
+is intentionally rejected by the new source contract. Pure tests label added
+values as synthetic contract inputs in `security-control-contract.json`; they
+do not modify the recorded wire evidence or establish native qualification.
+Compilation and the new three-connection control remain subject to hosted
+qualification of the exact changed source.
