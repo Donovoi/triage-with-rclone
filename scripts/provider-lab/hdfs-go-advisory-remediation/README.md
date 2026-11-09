@@ -15,3 +15,5 @@ Each variant uses ten owned runtime containers, at most 120 Docker commands, and
 Only sanitized metadata, findings, control results and cleanup receipts are retained. Raw native streams and build context are removed after owned children, containers and image have been removed. Shared base images and build cache remain outside the cleanup scope.
 
 This comparison does not establish malformed-input behavior, exploitability, complete application compatibility, a complete vulnerability audit, or provider/application/vendor acceptance. The stable x/crypto upgrade remains within the frozen advisory's affected range. Publisher advisories absent from that snapshot remain separate. The included COPYING and NOTICE files retain upstream attribution.
+
+The graph command uses Go's structured error output so an offline lookup failure keeps its module coordinate. A bounded native build helper immediately rejects any graph error. Only coordinates drawn from verified public module inputs and a closed error category enter the retained report. Neither structured errors nor the diagnostic helper permit incomplete graphs through the identity admission gate.

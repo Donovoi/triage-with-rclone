@@ -31,6 +31,7 @@ PROBE_RUNTIME = {"platform", "uid", "gid", "samba_version", "rclone_version", "s
 OUTER_CLEANUP = {"container_removed", "image_removed", "temporary_removed"}
 INNER_CLEANUP = {"children_stopped", "listeners_closed", "temporary_removed"}
 BUILD_CODES = {
+    "download_deadline_exceeded",
     "download_started",
     "download_fetch_started",
     "download_fetch_failed",
