@@ -33,7 +33,10 @@ and `hdfs-discovery/artifact-lock-kerberos-remediation.json`. The descriptor SHA
 is `e701b0047f1198614bd590954e8efd15bf05af51b98cc62b2d9298cd721663e7`, ordered
 entry SHA-256 `92533297bdae9e77befdc0c381f25850a08becac726c026ab70bd3a68b90b2a7`,
 and lock SHA-256 `80184076d64194810cae394fbc6d8b00e86717c9479d6176f828b042dcd41df1`.
-There are 73,478,410 runtime bytes. Four Jetty advisory matches remain. The
+There are 73,478,410 runtime bytes. The [November 9 advisory review](../hdfs-discovery/advisory-review-2026-11-09.json)
+reconciles four OSV matches with nine publisher package/version candidates.
+The extra candidates do not establish fixture exploitability; full security
+acceptance and a compatible patched runtime remain unverified. The
 corrected graph selects Commons IO 2.22.0. Each offline replay, RPC and transfer
 result must bind these exact corrected runtime hashes; an online inventory alone
 does not qualify native behavior. Earlier results bound to other hashes cannot
