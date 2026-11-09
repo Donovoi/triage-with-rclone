@@ -24,6 +24,11 @@ class ProtocolEvidenceTests(unittest.TestCase):
         cls.native['result']['datanode_security'] = synthetic['proof']
         cls.native['result']['checks']['block_token_controls'] = True
         cls.native['result']['cleanup']['data_security_closed'] = True
+        qop = E.parse((Path(__file__).parent/'test-data/rclone-qop-contract.json').read_bytes())
+        assert qop['scope'] == 'synthetic_contract_values_only_not_native_evidence'
+        cls.native['result']['rclone_qop'] = qop['proof']
+        cls.native['result']['checks']['rclone_qop'] = True
+        cls.native['result']['cleanup']['qop_observer_closed'] = True
         for key in ('source_sha256', 'context_sha256'):
             cls.native['inputs'][key] = deepcopy(cls.bindings[key])
         cls.now = E.utc(cls.native['finished_utc']) + timedelta(seconds=1)
