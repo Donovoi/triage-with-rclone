@@ -1,0 +1,17 @@
+# Isolated dependency remediation comparison
+
+The automatic pull-request workflow runs original and HDFS-context-patched variants as separate jobs. Each job rebuilds both frozen baseline binaries and their existing context tests, then builds one upgraded rclone binary with a separate pinned module overlay. Production dependencies and the scheduled provider workflow are unchanged.
+
+The overlay upgrades Brotli, klauspost/compress, x/net and their pinned coupled modules. The original root Go directive and godebug setting are preserved. Only the patched variant adds the existing local HDFS replacement. The hosted offline resolver emits its actual module graph; admission binds every selected version and available checksum to the verified source catalogue, and every compiled dependency to that graph. Missing native checksums are rejected rather than synthesized. Source catalogues may include unselected modules.
+
+An owned asset worker downloads 36 pinned public inputs. After that worker has exited and been joined, the supervisor revalidates its complete tree, preflights all 47 cache destinations, transfers the verified cache files, and retains the source assets. Module archive hashes, Go h1 sums and module files are bound. SumDB signed tree heads and inclusion proofs are not independently authenticated.
+
+Both baseline binaries retain their previously qualified hashes and 242 compiled dependency identities. Each job scans its selected baseline and the separately admitted upgraded binary using unmodified govulncheck v1.9.0 and the same immutable Go advisory snapshot. The baseline's 361 OSV messages and 334 unique IDs remain a control; those counts are not imposed on the upgraded graph. Synthetic positive, negative and empty-symbol controls, plus a real stripped baseline binary, remain separate from the real findings.
+
+Benign runtime controls invoke the upgraded rclone CLI for HTTP directory parsing, Brotli archive extraction and a zstd object round trip. The HTTP server is an owned loopback listener inside the network-none container. Files stay in the owned work tmpfs. The patched variant also runs the eleven context cancellation tests compiled with the upgraded module overlay. Each child has a ten-second deadline and two-second WaitDelay; the regression container has a ninety-second outer deadline.
+
+Each variant uses ten owned runtime containers, at most 120 Docker commands, and the unchanged 630-second offline build deadline. Containers use a read-only root, UID 10001, no capabilities, private namespaces, two CPUs, 2 GiB memory, 128 PIDs and a 128 MiB noexec work tmpfs. Scanner deadlines and output limits are unchanged. The combined identity stream has an explicit 256 KiB foundation bound and 2 MiB upgrade bound; each report is parsed separately.
+
+Only sanitized metadata, findings, control results and cleanup receipts are retained. Raw native streams and build context are removed after owned children, containers and image have been removed. Shared base images and build cache remain outside the cleanup scope.
+
+This comparison does not establish malformed-input behavior, exploitability, complete application compatibility, a complete vulnerability audit, or provider/application/vendor acceptance. The stable x/crypto upgrade remains within the frozen advisory's affected range. Publisher advisories absent from that snapshot remain separate. The included COPYING and NOTICE files retain upstream attribution.
