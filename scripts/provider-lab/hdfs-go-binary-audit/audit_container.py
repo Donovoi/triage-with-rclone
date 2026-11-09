@@ -6,7 +6,7 @@ import hashlib,json,os,re,shutil,signal,stat,sys,tempfile,time,types,uuid
 from pathlib import Path
 
 HERE=Path(__file__).resolve().parent
-PINS_SHA='f3086c6e749dabbc04ced4d4438bb3eabacf2d5f3583747b24cb68bf7064e0f6'
+PINS_SHA='3b299f98d3a41ff3b11ca5aa1011385843920e5289584e1858500bb8f895acf0'
 LABEL='org.openai.triage.hdfs-context-build'
 TMPFS='rw,nosuid,nodev,noexec,size=128m,mode=0700,uid=10001,gid=10001'
 MODULES=('audit_contract','advisory_contract','scan_contract','snapshot_contract','tool_bundle',
@@ -20,7 +20,7 @@ REQUIRED_FINDINGS={('GO-2026-5932','golang.org/x/crypto'),('GO-2026-6860','golan
     ('GO-2026-6888','github.com/andybalholm/brotli')}
 WRAPPER_ERRORS=frozenset(('none','unexpected','file_invalid','file_changed','build_info','build_settings','tool_lock',
     'tool_identity','tool_dependencies','capture_control','arguments','runtime','target_identity','control_identity',
-    'work_directory','scanner_deadline','scanner_output','scanner_process'))
+    'work_directory','scanner_deadline','scanner_output','scanner_process','stripped_elf'))
 CODES=frozenset(('input_invalid','input_changed','unsafe_path','hosted_linux_required','python_version',
     'package_worker_failed','package_cleanup_failed','tool_worker_failed','platform_invalid','image_invalid','container_invalid',
     'report_invalid','probe_failed','admission_failed','container_cleanup_failed','image_cleanup_failed','raw_cleanup_failed',
@@ -270,9 +270,9 @@ def run():
             elif target=='stripped':
                 peek=C.parse(raw,90*1024*1024)
                 need(type(peek) is dict and 'target_before' in peek,'report_invalid')
-                expected=dict(file=W.stamp(peek['target_before']),modules=binaries['original']['modules'])
+                expected=dict(file=W.stamp(peek['target_before']),modules=W.runtime_modules(binaries['original']))
             else:
-                b=binaries[target];expected=dict(file=dict(sha256=b['sha256'],bytes=b['bytes']),modules=b['modules'])
+                expected=W.expected_target(binaries[target])
             wrapper,stdout,stderr=W.admit_wrapper(raw,mode,target,expected,tool_lock,code,tool)
             if tool is None:tool=wrapper['tool']
             report['wrappers'].append(wrapper)

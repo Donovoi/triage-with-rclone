@@ -23,7 +23,7 @@ class WrapperAdmission(unittest.TestCase):
             target_before=self.target['file'],target_after=copy.deepcopy(self.target['file']),
             target_identity=identity('github.com/rclone/rclone','github.com/rclone/rclone',
                                      copy.deepcopy(self.target['file']),copy.deepcopy(self.target['modules'])),
-            tool_unchanged=True,target_unchanged=True,exit_code=0,timed_out=False,wait_delay_exceeded=False,
+            stripped_evidence=None,tool_unchanged=True,target_unchanged=True,exit_code=0,timed_out=False,wait_delay_exceeded=False,
             stdout_overflow=False,stderr_overflow=False,stdout_base64=base64.b64encode(out).decode(),stderr_base64='',
             stdout_sha256=hashlib.sha256(out).hexdigest(),stderr_sha256=hashlib.sha256(b'').hexdigest(),
             capture_controls=9,duration_ms=100,vulnerability_audit_completed=False,provider_accepted=False)
@@ -79,14 +79,31 @@ class WrapperAdmission(unittest.TestCase):
         self.reject('duplicate_key',raw=b'{"success":true,'+raw[1:])
         self.value['extra']=True;self.reject('wrapper_shape');del self.value['extra']
         self.value['mode']='scan';self.reject('wrapper_case')
-    def test_stripped_control_must_bind_original_graph_and_flags(self):
+    def make_stripped(self):
         self.value['target']='stripped'
         self.target['file']['sha256']='e'*64;self.target['file']['bytes']=80*1024*1024
         self.value['target_after']=copy.deepcopy(self.target['file'])
         self.value['target_identity']['file']=copy.deepcopy(self.target['file'])
+        self.value['stripped_evidence']=dict(format='ELF64-little-x86_64',sha256='e'*64,bytes=80*1024*1024,
+            symbol_table_absent=True,string_table_absent=True,dwarf_sections_absent=True,pcln_present=True)
+    def test_stripped_control_must_bind_original_graph_and_elf(self):
+        self.make_stripped();evidence=self.value['stripped_evidence'];self.value['stripped_evidence']=None
         self.reject('wrapper_stripped_identity',target='stripped')
-        self.value['target_identity']['settings']['-ldflags']='-s -w -X github.com/rclone/rclone/fs.Version=v1.75.2-kerberos-original'
-        self.run_admit(target='stripped')
+        self.value['stripped_evidence']=evidence;self.run_admit(target='stripped')
+        # The pinned Go compiler omits -ldflags metadata when -trimpath is set.
+        self.value['target_identity']['settings']['-ldflags']='-s -w'
+        self.reject('wrapper_stripped_identity',target='stripped')
+    def test_stripping_evidence_cannot_change_file_or_omit_section_checks(self):
+        self.make_stripped()
+        original=copy.deepcopy(self.value['stripped_evidence'])
+        changes={'format':'ELF32','sha256':'f'*64,'bytes':123,'symbol_table_absent':False,
+            'string_table_absent':False,'dwarf_sections_absent':False,'pcln_present':False}
+        for key,value in changes.items():
+            self.value['stripped_evidence']=dict(original,**{key:value})
+            self.reject('wrapper_stripped_identity',target='stripped')
+    def test_regular_binary_cannot_claim_stripping_evidence(self):
+        self.value['stripped_evidence']={}
+        self.reject('wrapper_unexpected_stripping')
     def test_synthetic_blob_cannot_claim_binary_identity(self):
         self.value['mode']='scan';self.value['target']='positive'
         file=dict(sha256='f'*64,bytes=1000)
@@ -94,3 +111,56 @@ class WrapperAdmission(unittest.TestCase):
         self.reject('wrapper_synthetic_identity',mode='scan',target='positive',expected_target=dict(file=file))
         self.value['target_identity']=None
         self.run_admit(mode='scan',target='positive',expected_target=dict(file=file))
+
+class FoundationReplacementBinding(unittest.TestCase):
+    def setUp(self):
+        from wrapper_contract import runtime_modules,expected_target,extraction_identity
+        self.runtime_modules=runtime_modules;self.expected_target=expected_target;self.extraction_identity=extraction_identity
+        fixture=json.loads((Path(__file__).parent/'fixtures/qualified-foundation-binaries.json').read_bytes())
+        self.binaries={b['variant']:b for b in fixture}
+    def test_original_qualified_graph_is_preserved(self):
+        b=self.binaries['original']
+        self.assertEqual(self.runtime_modules(b),b['modules']);self.assertEqual(len(self.runtime_modules(b)),242)
+    def test_only_hdfs_closed_marker_maps_to_embedded_path(self):
+        b=self.binaries['patched'];before=copy.deepcopy(b)
+        mapped=self.runtime_modules(b)
+        changed=[(a,z) for a,z in zip(b['modules'],mapped) if a!=z]
+        self.assertEqual(len(changed),1);old,new=changed[0]
+        self.assertEqual(old['replacement'],'context-cancellation')
+        self.assertEqual(new['replacement'],'/opt/input/patched-hdfs')
+        self.assertEqual({k:v for k,v in old.items() if k!='replacement'},
+                         {k:v for k,v in new.items() if k!='replacement'})
+        self.assertEqual(self.expected_target(b)['modules'],mapped);self.assertEqual(b,before)
+    def test_unknown_marker_and_raw_path_cannot_bypass_foundation_binding(self):
+        for replacement in ('unknown','/opt/input/patched-hdfs','../patched-hdfs'):
+            b=copy.deepcopy(self.binaries['patched'])
+            next(r for r in b['modules'] if r['replacement'])['replacement']=replacement
+            with self.assertRaisesRegex(ContractError,'expected_binary_replacement'):self.runtime_modules(b)
+    def test_replacement_module_version_and_sum_are_closed(self):
+        for key,value in [('path','github.com/jcmturner/gokrb5/v8'),('version','v9.0.0'),('sum','h1:unexpected')]:
+            b=copy.deepcopy(self.binaries['patched']);next(r for r in b['modules'] if r['replacement'])[key]=value
+            with self.assertRaisesRegex(ContractError,'expected_binary_replacement'):self.runtime_modules(b)
+    def test_missing_replacement_and_changed_binary_are_rejected(self):
+        b=copy.deepcopy(self.binaries['patched']);next(r for r in b['modules'] if r['replacement'])['replacement']=''
+        with self.assertRaisesRegex(ContractError,'expected_binary_replacement'):self.runtime_modules(b)
+        b=copy.deepcopy(self.binaries['patched']);b['sha256']='f'*64
+        with self.assertRaisesRegex(ContractError,'expected_binary'):self.runtime_modules(b)
+    def test_extraction_metadata_uses_checked_path_and_development_versions(self):
+        from audit_contract import admit_extraction
+        import test_audit_contract as extraction_cases
+        for variant in ('original','patched'):
+            expected=self.extraction_identity(self.binaries[variant])
+            for replacement_version in ('','(devel)'):
+                modules=[]
+                for r in self.runtime_modules(self.binaries[variant]):
+                    m=extraction_cases.mod(r['path'],r['version'])
+                    if r['replacement']:m['Replace']=extraction_cases.mod(r['replacement'],replacement_version)
+                    modules.append(m)
+                body=dict(path=expected['path'],main=extraction_cases.mod(expected['path'],'(devel)'),modules=modules,
+                    pkgSymbols=[dict(pkg='github.com/colinmarc/hdfs/v2',name='ContractControl')],
+                    goVersion='go1.26.10',goos='linux',goarch='amd64')
+                raw=json.dumps(dict(name='govulncheck-extract',version='0.1.0')).encode()+b'\n'+json.dumps(body).encode()
+                result,_=admit_extraction(raw,expected)
+                if variant=='patched':
+                    self.assertEqual(result['local_replacements'][0]['replacement_path'],'/opt/input/patched-hdfs')
+                    self.assertEqual(result['local_replacements'][0]['replacement_version'],replacement_version)

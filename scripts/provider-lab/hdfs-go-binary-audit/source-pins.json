@@ -102,12 +102,16 @@
       "sha256": "8f018ef3aadadd495f1ca922af01bd00738f415929f7053ce88a09f76debf6ef"
     },
     "hdfs-go-binary-audit/audit_driver.go": {
-      "bytes": 12230,
-      "sha256": "10ae7f3530d7e9bb2193926c9f79a5061e2dd0ebce24d73e7b19d310b8a2f7b7"
+      "bytes": 13628,
+      "sha256": "3dc5d8f2698232f587aadaf32bba6062781619893cec13b403ae4660f8f0b8e0"
     },
     "hdfs-go-binary-audit/fixtures/extract-example.blob": {
       "bytes": 118415,
       "sha256": "42e636f93fb8049f93a56efcb145d0482f41602f049844f3f22a415cf18dc224"
+    },
+    "hdfs-go-binary-audit/fixtures/qualified-foundation-binaries.json": {
+      "bytes": 93139,
+      "sha256": "ccc2567d74827dac9d442e4626410e8dedd95505a177e7f75e299d1b9d4b8428"
     },
     "hdfs-go-binary-audit/native_controls.py": {
       "bytes": 4698,
@@ -162,8 +166,8 @@
       "sha256": "43a301b2f28992bbeabe1511b6eeff810c64ae6a136e0f1c92a69416ef5aa18e"
     },
     "hdfs-go-binary-audit/test_wrapper_contract.py": {
-      "bytes": 7280,
-      "sha256": "81388e4b4e2ffde6ffd7bb4ddcf1925c52bfea297af93ca1e14e8577d1b29572"
+      "bytes": 12515,
+      "sha256": "76da5ecd92b93fa5d03be27376f1e629550d02c037f08c4d671947f61f7cd679"
     },
     "hdfs-go-binary-audit/tool-assets-lock.json": {
       "bytes": 12986,
@@ -178,8 +182,8 @@
       "sha256": "4959226757886c1417c30e78e9b0a595074f79f18fbbfa28dfd40ae3be4051d6"
     },
     "hdfs-go-binary-audit/wrapper_contract.py": {
-      "bytes": 7502,
-      "sha256": "ad37c508cb0a53ce82257fb8edc37e1c6d994a67c38f741737e44919cacf4e28"
+      "bytes": 9373,
+      "sha256": "26da318a78f290b39b4f21372156a4f0c5df5e0088730f5496ac4b4e02e710ef"
     },
     "hdfs-kerberos-policy-denial/policy_denial_container.py": {
       "bytes": 55021,
