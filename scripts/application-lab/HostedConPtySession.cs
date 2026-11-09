@@ -83,6 +83,66 @@ namespace TriageApplicationLab {
             }
         } }
     }
+    // The injected delegates let hosted pure tests exercise this exact retry loop.
+    // Rejected snapshots never reach child admission; callers own accepted arrays.
+    public sealed class HostedPidListSnapshot {
+        public readonly bool Success;
+        public readonly int Error,Assigned,Count;
+        public readonly long[] ProcessIds;
+        public HostedPidListSnapshot(bool success,int error,int assigned,int count,long[] processIds) {
+            Success=success; Error=error; Assigned=assigned; Count=count; ProcessIds=processIds;
+        }
+    }
+    public static class HostedPidListReader {
+        public const int MaximumProcesses=64,MaximumAttempts=4,RetryDelayMilliseconds=5;
+        static void CheckTime(Func<long> clock,long start,long budget,ref long previous,ref HostedProcessObservation observation) {
+            observation.At(HostedProcessObservationStage.PidListQuery);
+            long now=clock();
+            if(now<previous || now<start || now-start>=budget) throw new InvalidOperationException();
+            previous=now;
+        }
+        public static long[] Read(Func<int,HostedPidListSnapshot> query,Func<long> clock,Action<int> pause,long frequency,
+                ref HostedProcessObservation observation) {
+            try {
+                observation.At(HostedProcessObservationStage.PidListQuery);
+                if(query==null || clock==null || pause==null || frequency<=0) throw new InvalidOperationException();
+                long start=clock(),previous=start,budget=Math.Max(1,frequency/10); // One 100 ms budget; never reset.
+                if(start<0) throw new InvalidOperationException();
+                for(int attempt=0;attempt<MaximumAttempts;attempt++) {
+                    CheckTime(clock,start,budget,ref previous,ref observation);
+                    HostedPidListSnapshot snapshot=null; bool accepted=false;
+                    try {
+                        // Storage may grow, but the admission predicate remains capped at 64.
+                        snapshot=query(MaximumProcesses<<attempt);
+                        CheckTime(clock,start,budget,ref previous,ref observation);
+                        if(snapshot==null) throw new InvalidOperationException();
+                        if(!snapshot.Success) {
+                            // Failed native calls do not supply trustworthy header fields.
+                            if(snapshot.Error!=234) throw new Win32Exception(snapshot.Error); // ERROR_MORE_DATA only.
+                        } else {
+                            observation.At(HostedProcessObservationStage.PidListShape);
+                            if(observation.CheckPidListShape(snapshot.Assigned,snapshot.Count,MaximumProcesses)) {
+                                observation.At(HostedProcessObservationStage.PidValue);
+                                if(snapshot.ProcessIds==null || snapshot.ProcessIds.Length!=snapshot.Count) throw new InvalidOperationException();
+                                foreach(long pid in snapshot.ProcessIds) if(pid<=0 || pid>UInt32.MaxValue) throw new InvalidOperationException();
+                                accepted=true; return snapshot.ProcessIds;
+                            }
+                            // Retry only an incomplete, otherwise admissible snapshot.
+                            if(snapshot.Count<0 || snapshot.Count>=snapshot.Assigned || snapshot.Assigned>MaximumProcesses)
+                                throw new InvalidOperationException();
+                        }
+                        if(attempt==MaximumAttempts-1) throw new InvalidOperationException();
+                    } finally {
+                        if(!accepted && snapshot!=null && snapshot.ProcessIds!=null)
+                            Array.Clear(snapshot.ProcessIds,0,snapshot.ProcessIds.Length);
+                    }
+                    CheckTime(clock,start,budget,ref previous,ref observation);
+                    pause(RetryDelayMilliseconds);
+                }
+                throw new InvalidOperationException();
+            } catch { observation.Capture(); throw; }
+        }
+    }
     public sealed class HostedConPtySession : IDisposable {
         [StructLayout(LayoutKind.Sequential)] struct Coord { public short x,y; }
         [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)] struct Startup {
@@ -407,20 +467,37 @@ namespace TriageApplicationLab {
             jobZero=value.active==0;
             return jobZero;
         }
-        void ObserveChildren() {
-            if(job==IntPtr.Zero) return;
+        HostedPidListSnapshot QueryPidListSnapshot(int capacity) {
             pollObservation.At(HostedProcessObservationStage.PidBufferAllocate);
-            const int maximum=64; int bytes=8+maximum*IntPtr.Size; IntPtr buffer=Marshal.AllocHGlobal(bytes);
+            Require(capacity>=HostedPidListReader.MaximumProcesses && capacity<=512);
+            int bytes=8+capacity*IntPtr.Size; IntPtr buffer=Marshal.AllocHGlobal(bytes);
+            long[] ids=null; bool transferred=false;
             try {
                 uint returned;
                 pollObservation.At(HostedProcessObservationStage.PidListQuery);
-                if(!QueryInformationJobObject(job,3,buffer,(uint)bytes,out returned)) throw new Win32Exception();
+                if(!QueryInformationJobObject(job,3,buffer,(uint)bytes,out returned))
+                    return new HostedPidListSnapshot(false,Marshal.GetLastWin32Error(),0,0,null);
                 pollObservation.At(HostedProcessObservationStage.PidListShape);
-                int assigned=Marshal.ReadInt32(buffer), count=Marshal.ReadInt32(buffer,4);
-                Require(pollObservation.CheckPidListShape(assigned,count,maximum));
-                for(int i=0;i<count;i++) {
-                    pollObservation.At(HostedProcessObservationStage.PidValue);
-                    long number=Marshal.ReadIntPtr(buffer,8+i*IntPtr.Size).ToInt64(); Require(number>0 && number<=UInt32.MaxValue);
+                int assigned=Marshal.ReadInt32(buffer),count=Marshal.ReadInt32(buffer,4);
+                // Never read identifiers from an incomplete or oversized result.
+                if(count>=0 && count<=HostedPidListReader.MaximumProcesses && assigned==count) {
+                    ids=new long[count];
+                    for(int i=0;i<count;i++) ids[i]=Marshal.ReadIntPtr(buffer,8+i*IntPtr.Size).ToInt64();
+                }
+                HostedPidListSnapshot result=new HostedPidListSnapshot(true,0,assigned,count,ids);
+                transferred=true; return result;
+            } catch { pollObservation.Capture(); throw; }
+            finally {
+                if(!transferred && ids!=null) Array.Clear(ids,0,ids.Length);
+                pollObservation.At(HostedProcessObservationStage.PidBufferFree); Marshal.FreeHGlobal(buffer);
+            }
+        }
+        void ObserveChildren() {
+            if(job==IntPtr.Zero) return;
+            long[] numbers=null;
+            try {
+                numbers=HostedPidListReader.Read(QueryPidListSnapshot,Stopwatch.GetTimestamp,Thread.Sleep,Stopwatch.Frequency,ref pollObservation);
+                foreach(long number in numbers) {
                     uint pid=(uint)number; bool already=false;
                     pollObservation.At(HostedProcessObservationStage.RetainedChildWait);
                     foreach(Child old in children) if(old.pid==pid && !Exited(old.handle)) { already=true; break; }
@@ -443,7 +520,7 @@ namespace TriageApplicationLab {
                     finally { pollObservation.At(HostedProcessObservationStage.ChildHandleClose); if(handle!=IntPtr.Zero) CloseHandle(handle); }
                 }
             } catch { pollObservation.Capture(); throw; }
-            finally { pollObservation.At(HostedProcessObservationStage.PidBufferFree); Marshal.FreeHGlobal(buffer); }
+            finally { if(numbers!=null) Array.Clear(numbers,0,numbers.Length); }
         }
         public Dictionary<string,object> Poll() {
             lock(api) {
