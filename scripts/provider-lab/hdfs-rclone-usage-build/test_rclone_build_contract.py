@@ -214,6 +214,17 @@ class Admission(unittest.TestCase):
         out=U.build_diagnostics(b'inspect_build.go:12: secret words\n')
         self.assertEqual(out['source_errors'],[dict(file='inspect_build.go',line=12)])
         self.assertNotIn('secret',str(out))
+    def test_checksum_manifest_preserves_upstream_unicode_filenames(self):
+        names=['original/cmd/bisync/testdata/test_normalization/modfiles/測試_filtersfile.txt',
+               'original/cmd/bisync/testdata/test_extended_filenames/initial/Русский.txt']
+        hashes={names[0]:'a'*64,names[1]:'b'*64}
+        raw=U.checksum_manifest(hashes)
+        self.assertFalse(raw.startswith(b'\xef\xbb\xbf'))
+        self.assertNotIn(b'\r',raw)
+        lines=raw.decode('utf-8').splitlines()
+        self.assertEqual([line[66:] for line in lines],sorted(names))
+        self.assertEqual({line[66:]:line[:64] for line in lines},hashes)
+        with self.assertRaises(UnicodeEncodeError):raw.decode('utf-8').encode('ascii')
     def test_worker_error_projection_has_no_raw_message(self):
         import urllib.error
         cases=[(urllib.error.HTTPError('https://invalid.invalid/',503,'private text',{},None),('http_error',503)),
