@@ -17,6 +17,8 @@ namespace TriageApplicationLab {
     // Pure diagnostic state. No exception/native values enter this vocabulary.
     public enum HostedProcessObservationStage {
         Unknown,PidBufferAllocate,PidListQuery,PidListShape,PidValue,RetainedChildWait,
+        PidListCountNegative,PidListCountCapacity,PidListAssignedCapacity,
+        PidListCountBelowAssigned,PidListCountAboveAssigned,
         ChildOpen,ChildMembership,ChildExitWait,ChildCapacity,ChildCreated,ChildHandleClose,
         PidBufferFree,JobAccounting,AppExitWait,AppExitCode
     }
@@ -27,6 +29,18 @@ namespace TriageApplicationLab {
         public void At(HostedProcessObservationStage value) { if(active) current=value; }
         public void Capture() { if(active && !failed) { first=current; failed=true; } }
         public void End() { active=false; }
+        // Preserve the exact original conjunction and short-circuit order.
+        // Publish only its failed predicate, never native counts or identifiers.
+        public bool CheckPidListShape(int assigned,int count,int maximum) {
+            At(HostedProcessObservationStage.PidListCountNegative);
+            if(count<0) return false;
+            At(HostedProcessObservationStage.PidListCountCapacity);
+            if(count>maximum) return false;
+            At(HostedProcessObservationStage.PidListAssignedCapacity);
+            if(assigned>maximum) return false;
+            At(assigned>count ? HostedProcessObservationStage.PidListCountBelowAssigned : HostedProcessObservationStage.PidListCountAboveAssigned);
+            return assigned==count;
+        }
         // Project only a copied snapshot. Never consume a slot in the session's
         // original error list or replace a later cleanup error at its 24-code cap.
         public string[] Project(string[] original) {
@@ -48,6 +62,11 @@ namespace TriageApplicationLab {
                 case HostedProcessObservationStage.PidBufferAllocate: return "process_observation_stage_pid_buffer_allocate";
                 case HostedProcessObservationStage.PidListQuery: return "process_observation_stage_pid_list_query";
                 case HostedProcessObservationStage.PidListShape: return "process_observation_stage_pid_list_shape";
+                case HostedProcessObservationStage.PidListCountNegative: return "process_observation_stage_pid_list_count_negative";
+                case HostedProcessObservationStage.PidListCountCapacity: return "process_observation_stage_pid_list_count_capacity";
+                case HostedProcessObservationStage.PidListAssignedCapacity: return "process_observation_stage_pid_list_assigned_capacity";
+                case HostedProcessObservationStage.PidListCountBelowAssigned: return "process_observation_stage_pid_list_count_below_assigned";
+                case HostedProcessObservationStage.PidListCountAboveAssigned: return "process_observation_stage_pid_list_count_above_assigned";
                 case HostedProcessObservationStage.PidValue: return "process_observation_stage_pid_value";
                 case HostedProcessObservationStage.RetainedChildWait: return "process_observation_stage_retained_child_wait";
                 case HostedProcessObservationStage.ChildOpen: return "process_observation_stage_child_open";
@@ -398,7 +417,7 @@ namespace TriageApplicationLab {
                 if(!QueryInformationJobObject(job,3,buffer,(uint)bytes,out returned)) throw new Win32Exception();
                 pollObservation.At(HostedProcessObservationStage.PidListShape);
                 int assigned=Marshal.ReadInt32(buffer), count=Marshal.ReadInt32(buffer,4);
-                Require(count>=0 && count<=maximum && assigned<=maximum && assigned==count);
+                Require(pollObservation.CheckPidListShape(assigned,count,maximum));
                 for(int i=0;i<count;i++) {
                     pollObservation.At(HostedProcessObservationStage.PidValue);
                     long number=Marshal.ReadIntPtr(buffer,8+i*IntPtr.Size).ToInt64(); Require(number>0 && number<=UInt32.MaxValue);
