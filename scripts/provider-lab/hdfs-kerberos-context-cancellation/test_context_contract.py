@@ -249,6 +249,24 @@ class ContextReceiptTests(unittest.TestCase):
         value = positive(); value["stage"] = "CANARY"; self.rejected(value)
         with self.assertRaises(F.ProbeError): F.validate_java(b'{"success":true,"success":false}', 0)
 
+    def test_final_cache_barrier_failure_keeps_observations_without_acceptance(self):
+        for variant, case in F.CASES:
+            value = positive(variant, case)
+            value.update(success=False, stage="cancellation_recovery", error="path_invalid")
+            value["diagnostic"]["category"] = "assertion"
+            for key in ("cache_preserved", "cancellation_recovery", "kdc_exchange_classified",
+                        "owner_filesystem_lifecycle", "source_preserved"):
+                value["checks"][key] = False
+            value["service_cache_lifecycle"].update(original_cache_preserved=False, new_tgs_acquisition_verified=False)
+            result = validate(value, exit_code=1)
+            self.assertFalse(result["success"])
+            self.assertEqual(result["cancellation_lifecycle"]["terminal_while_held"], variant == "patched")
+            self.assertFalse(result["application_accepted"])
+            self.assertFalse(result["provider_accepted"])
+            self.assertFalse(result["cancellation_lifecycle"]["cancellation_verified"])
+            value["success"] = True
+            self.rejected(value)
+
     def test_partial_state_before_vectors_is_reportable_without_credit(self):
         value = positive()
         value.update(success=False, stage="cancellation_vectors", error="relay_invalid")

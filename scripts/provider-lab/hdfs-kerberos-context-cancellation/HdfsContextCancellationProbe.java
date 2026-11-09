@@ -429,9 +429,12 @@ public final class HdfsContextCancellationProbe {
         need(now - serviceEnd >= 1 && now - serviceEnd <= 15 && tgtEnd > now + 30, Code.ticket_time_mismatch);
         expiredBySeconds = (int)(now - serviceEnd); serviceExpired = true; inventory(); topology();
     }
-    private static void retainedTgtValid() throws Exception {
+    private static void retainedTgtTimeValid() throws Exception {
         long remaining = tgtEnd - System.currentTimeMillis() / 1000;
         need(remaining > 0 && remaining <= 120, Code.ticket_time_mismatch); remainingTgtSeconds = (int)remaining;
+    }
+    private static void retainedTgtValid() throws Exception {
+        retainedTgtTimeValid();
         OWNED_FILES.get(CACHE).verify(CACHE);
     }
     private static String serviceCacheJson() {
@@ -1899,7 +1902,9 @@ public final class HdfsContextCancellationProbe {
         need(daemon.entries() == 1 && relay.counts[2] == 1 && !relay.failed.get(), Code.relay_invalid);
         if (contextPatched) { relay.verifyRecoveryStream(); freshRecoveryVerified = true; }
         else need(relay.counts[3] == 0 && relay.recoveryKerberosHeaders == 0, Code.relay_invalid);
-        daemon.alive(); cacheIdentity(0); retainedTgtValid(); CHECKS.put("cancellation_recovery", true);
+        // Keep the read barrier active through recovery. The full file snapshot
+        // is verified after restoreCache() in retainedControls.
+        daemon.alive(); cacheIdentity(0); retainedTgtTimeValid(); CHECKS.put("cancellation_recovery", true);
     }
     private static String cancellationJson() {
         return "{\"rpc_parser_vectors\":" + cancellationParserVectors
