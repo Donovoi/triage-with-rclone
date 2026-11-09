@@ -547,7 +547,7 @@ def validate_base(value, manifest, config_id):
 
 def run(rclone=None, *, loader=load_helpers, downloader=download, runner_factory=None, profile="kerberos"):
     started = time.monotonic()
-    report = dict(schema_version=1, scope="hdfs_kerberos_rpc_container_feasibility", success=False,
+    report = dict(schema_version=1, scope="hdfs_kerberos_cache_expiry_container_feasibility", success=False,
         started_utc=datetime.now(timezone.utc).isoformat(), finished_utc=None, duration_seconds=None,
         stage="preflight", candidate_profile=None, inputs=None, result=None, errors=[], cleanup=dict(container_removed=False,
         image_removed=False, context_removed=False, raw_evidence_removed=False),

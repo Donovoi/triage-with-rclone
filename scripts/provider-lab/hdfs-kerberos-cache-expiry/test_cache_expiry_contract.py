@@ -465,6 +465,11 @@ class TicketTests(unittest.TestCase):
         self.assertIn("base_invalid", report["errors"])
         self.assertFalse(any(args[0] in {"build", "create", "start"} for args in (call[0] for call in docker.calls)))
 
+    def test_outer_receipt_names_the_cache_expiry_experiment(self):
+        report, _ = self.fake_run(profile="kerberos-remediation")
+        self.assertTrue(report["success"])
+        self.assertEqual(report["scope"], "hdfs_kerberos_cache_expiry_container_feasibility")
+
     def fake_run(self, action=None, failure=None, *, profile="kerberos", real_helpers=False):
         here = self.root / "input"; discovery = self.root / "discovery"
         here.mkdir(); discovery.mkdir()
