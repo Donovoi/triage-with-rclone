@@ -1,0 +1,13 @@
+# Contained HDFS cancellation observation
+
+This experimental fixture adds two owned response holds to the previously qualified retained-client reconnect scenario. Both service-ticket cases retain the existing cache read barrier, actual service expiry, original-TGT recovery, source preservation, and cleanup requirements. The cancellation extension is unqualified until its complete hosted receipts are independently reviewed.
+
+The first async listing is a baseline: its exact successful empty-directory RPC response is held while three job/status observations over at least 500 milliseconds must remain unfinished. Releasing the same response must complete that job successfully.
+
+The second async listing receives job/stop while its own matching response remains held. The receipt separately records acknowledgement, three held-window observations, whether the identified job finished while held, the release, and the terminal result. A stop acknowledgement alone grants no cancellation credit. A job still unfinished throughout the window is reported as a limitation even if it completes after release. Completion while held must report context cancellation. All provider, application, vendor, renewal, vulnerability, and overall cancellation acceptance flags remain false.
+
+The job ID and daemon execution ID are checked locally and never exported. Requests and responses use strict bounded JSON with duplicate/trailing rejection. The NameNode relay parses bounded canonical frames, distinguishes getListing from getFileInfo, renewLease and SASL control messages, and holds only a complete successful empty listing response matching the pending request on the same owned connection. Frames are forwarded unchanged and erased after use. Three helper sources are hash pinned and explicitly compiled. Native self-checks cover 85 RPC vectors and 33 job-status vectors; source generation is not native qualification.
+
+Bounds: four child processes, one retained daemon, two held responses, 64 RC requests and 96 connection attempts, 64 frames and 128 KiB per relay direction, a 64 KiB frame payload limit, 8 KiB RC request/header limits, 16 KiB RC responses/streams, and the existing 60-second control deadline. The container has no external network, a read-only root, a private temporary filesystem, two GB memory and a 128-PID limit.
+
+Cleanup closes the owned hold, sockets, streams and processes; restores cache permissions under identity checks; and preserves the existing service, thread and private-material deletion gates. Daemon termination is cleanup, never evidence that the async job was cancelled. The original reconnect fixture remains unchanged.
