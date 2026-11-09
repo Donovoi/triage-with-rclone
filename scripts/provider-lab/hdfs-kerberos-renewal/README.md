@@ -52,6 +52,10 @@ python -I -S -B scripts/provider-lab/hdfs-kerberos-renewal/run_guarded_tests.py
 
 The hosted Java bootstrap first checks pure owner contracts, then requires:
 
+- Real synthetic child controls for graceful termination, forced termination,
+  output overflow, and a prohibited descendant. Each control requires retained
+  process/stream cleanup; the negative conditions must remain visible in the
+  owner's failure flags. These helper JVMs execute only inside the container.
 - A renewable TGT and a short-lived renewable HDFS service ticket.
 - Typed rejection of a wrong password and an absent principal.
 - A successful fresh TGT request after those rejections.
@@ -63,8 +67,8 @@ predicates, and compiler categories with fixed source names and line numbers.
 Raw command output, package archives, credentials, keytabs, and KDC databases
 are not evidence artifacts. Failures remain failures even when cleanup passes.
 
-The bootstrap's native compatibility and lifecycle behavior still require
-hosted qualification. Later renewal acceptance must retain the same rclone
+This workflow qualifies only the bootstrap and its specified owner controls.
+Later renewal acceptance must retain the same rclone
 process/backend, observe actual service expiry, distinguish a RENEW request
 carrying the original service ticket from ordinary TGS fallback, verify a fresh
 reply and ticket bounds, and complete a new NameNode RPC. This prerequisite

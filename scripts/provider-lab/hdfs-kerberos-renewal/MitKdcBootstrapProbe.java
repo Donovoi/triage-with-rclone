@@ -49,7 +49,7 @@ public final class MitKdcBootstrapProbe {
         System.setErr(new PrintStream(OutputStream.nullOutputStream()));
         Thread.setDefaultUncaughtExceptionHandler((thread,error)->backgroundFailure.set(true));
         Map<String,Boolean> checks=new LinkedHashMap<>();
-        for(String key:List.of("managed_contracts","runtime_started","positive_tgt","short_renewable_service","wrong_password_rejected",
+        for(String key:List.of("managed_contracts","lifecycle_controls","runtime_started","positive_tgt","short_renewable_service","wrong_password_rejected",
                 "unknown_principal_rejected","healthy_after_rejection","tasks_reaped","new_threads_reaped","processes_reaped")) checks.put(key,false);
         Set<Long> processBaseline=ProcessHandle.current().descendants().map(ProcessHandle::pid).collect(java.util.stream.Collectors.toSet());
         Set<Thread> threadBaseline=null;
@@ -62,6 +62,8 @@ public final class MitKdcBootstrapProbe {
             owner=new MitKdcOwner(); final MitKdcOwner owned=owner;
             stage="owner_prepare"; owner.prepare(); stage="owner_start"; owner.start(); owner.healthy(); checks.put("runtime_started",true);
             threadBaseline=Set.copyOf(Thread.getAllStackTraces().keySet());
+            stage="lifecycle_controls";
+            MitKdcOwnerLifecycle.run();owner.healthy();checks.put("lifecycle_controls",true);
             stage="client_init";
             KrbConfig config=new KrbConfig();
             config.setBoolean(KrbConfigKey.KRB_DEBUG,false); config.setBoolean(KrbConfigKey.DNS_LOOKUP_KDC,false);
@@ -128,6 +130,7 @@ public final class MitKdcBootstrapProbe {
         Map<String,Object> output=new LinkedHashMap<>(); output.put("schema_version",1); output.put("scope","mit_kdc_bootstrap_only");
         output.put("success",passed); output.put("stage",stage); output.put("error",error); output.put("checks",checks); output.put("owner",ownerReport);
         output.put("tasks",tasks.size()); output.put("managed_assertions",managedAssertions); output.put("tgt_lifetime_seconds",tgtLifetime); output.put("service_lifetime_seconds",serviceLifetime);
+        output.put("lifecycle_checks",MitKdcOwnerLifecycle.projection());output.put("lifecycle_children",MitKdcOwnerLifecycle.children());
         output.put("duration_ms",TimeUnit.NANOSECONDS.toMillis(System.nanoTime()-begun)); output.put("cleanup_complete",closed);
         for(String claim:List.of("renewal_verified","rclone_verified","provider_accepted","application_accepted","vendor_accepted","vulnerability_audited")) output.put(claim,false);
         try { report.println(new ObjectMapper().writeValueAsString(output)); } catch(Exception ignored) { System.exit(3); }
