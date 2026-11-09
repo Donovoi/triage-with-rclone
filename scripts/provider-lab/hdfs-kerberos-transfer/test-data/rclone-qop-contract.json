@@ -1,0 +1,27 @@
+{
+  "scope": "synthetic_contract_values_only_not_native_evidence",
+  "proof": {
+    "attempted": true,
+    "parser_checked": true,
+    "verified": true,
+    "failed": false,
+    "attached": false,
+    "logger_restored": true,
+    "quiescent": true,
+    "phases_completed": 10,
+    "connections": 6,
+    "qop": "auth-conf",
+    "phase_connections": [
+      0,
+      0,
+      1,
+      0,
+      2,
+      0,
+      2,
+      1,
+      0,
+      0
+    ]
+  }
+}
