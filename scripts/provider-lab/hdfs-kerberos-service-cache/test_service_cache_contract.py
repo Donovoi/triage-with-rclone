@@ -86,7 +86,7 @@ def positive():
             dict(phase=2, renew=False, ticket_kind="issued_tgt", response="tgs_rep", error_code=0, fresh_service_ticket=True),
             dict(phase=3, renew=True, ticket_kind="issued_service", response="krb_error", error_code=31, fresh_service_ticket=False),
             dict(phase=3, renew=False, ticket_kind="issued_tgt", response="tgs_rep", error_code=0, fresh_service_ticket=True)],
-            forwarded_bytes=4096, bytes_forwarded_unchanged=True, all_phases_observed=True, parser_checked=True),
+            forwarded_bytes=4096, bytes_forwarded_unchanged=True, all_phases_observed=True, parser_checked=True, failure_stage="none"),
         relay=dict(before_connections=1, negative_connections=1, expired_connections=1, expired_kerberos_headers=1, after_connections=1, none_headers=1,
                    fatal_responses=1, unexpected_connections=0, bytes_forwarded_unchanged=True), error=None, ledger_eligible=False,
         diagnostic=dict(category="none", origin="none"),
@@ -1543,3 +1543,17 @@ class ServiceCacheTests(unittest.TestCase):
             self.assertIn("HdfsKerberosServiceCacheProbe " + case + "\n",driver)
         for bad in ("",None,True,"renewable; echo PRIVATE_CANARY","renewable\nnonrenewable"):
             with self.assertRaises(F.ProbeError): F.build_files([],bad)
+
+
+class KdcFailureDiagnosticTests(unittest.TestCase):
+    def test_finite_failure_stage_is_preserved_without_qualification(self):
+        value=positive(); value.update(success=False,error="relay_invalid",diagnostic=dict(category="assertion",origin="none"))
+        value["checks"]["kdc_exchange_classified"]=False
+        value["kdc_trace"].update(failure_stage="request_canonical",bytes_forwarded_unchanged=False,connections=[0,0,1,0],
+                                  events=[],forwarded_bytes=0,all_phases_observed=False,parser_checked=False)
+        result=F.validate_java(F.canonical(value),1)
+        self.assertFalse(result["success"])
+        self.assertEqual(result["kdc_trace"]["failure_stage"],"request_canonical")
+        for bad in (None,True,"PRIVATE_CANARY","none"):
+            changed=copy.deepcopy(value);changed["kdc_trace"]["failure_stage"]=bad
+            with self.assertRaises(F.ProbeError):F.validate_java(F.canonical(changed),1)
