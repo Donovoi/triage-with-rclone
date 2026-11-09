@@ -37,6 +37,7 @@ def native_success():
         private_material_removed=True,native_qualified=False,renewal_verified=False)
     return dict(schema_version=1,scope='mit_kdc_bootstrap_only',success=True,stage='completed',error='none',
         checks=dict.fromkeys(M.CHECKS,True),owner=owner,tasks=5,managed_assertions=83,tgt_lifetime_seconds=120,service_lifetime_seconds=10,
+        lifecycle_checks=dict.fromkeys(M.LIFECYCLE_CHECKS,True),lifecycle_children=5,
         duration_ms=1000,cleanup_complete=True,**dict.fromkeys(M.FALSE_CLAIMS,False))
 
 def container_fixture():
@@ -120,6 +121,10 @@ class ContainerContracts(unittest.TestCase):
             changed=copy.deepcopy(value);changed['checks'][key]=False
             with self.subTest(check=key):
                 with self.assertRaises(M.ProbeError):M.validate_java(self.C,M.canonical(changed),0)
+        for key in M.LIFECYCLE_CHECKS:
+            changed=copy.deepcopy(value);changed['lifecycle_checks'][key]=False
+            with self.subTest(lifecycle=key):
+                with self.assertRaises(M.ProbeError):M.validate_java(self.C,M.canonical(changed),0)
         for key in ['children_reaped','streams_reaped','modules_verified','listener_verified','private_material_removed']:
             changed=copy.deepcopy(value);changed['owner'][key]=False
             with self.assertRaises(M.ProbeError):M.validate_java(self.C,M.canonical(changed),0)
@@ -130,7 +135,7 @@ class ContainerContracts(unittest.TestCase):
     def test_native_report_rejects_scope_claim_type_and_bound_mutations(self):
         value=native_success()
         edits=[('scope','provider_accepted'),('schema_version',True),('stage',[]),('error','private raw error'),('tasks',True),
-            ('tasks',6),('managed_assertions',82),('duration_ms',190001),('tgt_lifetime_seconds',121),('service_lifetime_seconds',0),('cleanup_complete',False)]
+            ('tasks',6),('managed_assertions',82),('lifecycle_children',4),('lifecycle_children',True),('lifecycle_checks',{}),('duration_ms',190001),('tgt_lifetime_seconds',121),('service_lifetime_seconds',0),('cleanup_complete',False)]
         edits += [(key,True) for key in M.FALSE_CLAIMS]
         for key,bad in edits:
             changed=copy.deepcopy(value);changed[key]=bad

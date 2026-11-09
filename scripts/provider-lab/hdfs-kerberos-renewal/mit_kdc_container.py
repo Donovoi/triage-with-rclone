@@ -28,14 +28,15 @@ BUNDLE_SHA='732376a8580b5f7da8605714026ef57358bd5233e4621cc112aa50dd8db867d7'
 PROFILE='kerberos-remediation'
 LABEL='org.openai.triage.mit-kdc-renewal'
 TMPFS='rw,nosuid,nodev,noexec,size=128m,mode=0700,uid=10001,gid=10001'
-SOURCES=('MitKdcOwner.java','MitKdcOwnerContracts.java','MitKdcBootstrapProbe.java','mit-kdc-plan-template.json')
-CHECKS=frozenset(('managed_contracts','runtime_started','positive_tgt','short_renewable_service','wrong_password_rejected',
+SOURCES=('MitKdcOwner.java','MitKdcOwnerContracts.java','MitKdcOwnerLifecycle.java','MitKdcLifecycleChild.java','MitKdcBootstrapProbe.java','mit-kdc-plan-template.json')
+LIFECYCLE_CHECKS=frozenset(('graceful_termination','forced_termination_rejected','output_overflow_rejected','descendant_rejected'))
+CHECKS=frozenset(('managed_contracts','lifecycle_controls','runtime_started','positive_tgt','short_renewable_service','wrong_password_rejected',
     'unknown_principal_rejected','healthy_after_rejection','tasks_reaped','new_threads_reaped','processes_reaped'))
 OWNER_KEYS=frozenset(('stage','setup_completed','children','children_reaped','streams_reaped','modules_verified',
     'listener_verified','forced','descendants_seen','stream_failure','private_material_removed','native_qualified','renewal_verified'))
 FALSE_CLAIMS=frozenset(('renewal_verified','rclone_verified','provider_accepted','application_accepted',
     'vendor_accepted','vulnerability_audited'))
-JAVA_STAGES=frozenset(('managed_contracts','owner_construct','owner_prepare','owner_start','client_init','positive_tgt','service_ticket',
+JAVA_STAGES=frozenset(('managed_contracts','owner_construct','owner_prepare','owner_start','lifecycle_controls','client_init','positive_tgt','service_ticket',
     'wrong_password','unknown_principal','healthy_after_rejection','completed'))
 JAVA_ERRORS=frozenset(('none','plan_invalid','environment_invalid','path_invalid','file_changed','file_bound',
     'setup_nonzero','child_failed','output_bound','child_descendant','deadline','listener_mismatch',
@@ -170,10 +171,10 @@ def build_files(C,rows,members,sources):
     checks+=''.join(pin['sha256']+'  /opt/'+name+'\n' for name,pin in sorted(members.items()))
     checks+=''.join(sha(raw)+'  /opt/rpc/'+name+'\n' for name,raw in sorted({**sources,'driver.sh':driver,'classpath':classpath}.items()))
     dockerfile=('FROM '+C.BASE+'\nUSER 0\nCOPY jars /opt/rpc/jars/\nCOPY mit /opt/mit/\n'
-        'COPY MitKdcOwner.java MitKdcOwnerContracts.java MitKdcBootstrapProbe.java mit-kdc-plan-template.json checksums driver.sh classpath /opt/rpc/\n'
+        'COPY MitKdcOwner.java MitKdcOwnerContracts.java MitKdcOwnerLifecycle.java MitKdcLifecycleChild.java MitKdcBootstrapProbe.java mit-kdc-plan-template.json checksums driver.sh classpath /opt/rpc/\n'
         'RUN sha256sum -c /opt/rpc/checksums && mkdir /opt/rpc/classes && '
         "/opt/java/openjdk/bin/javac -J-Xmx512m -proc:none -implicit:none -encoding UTF-8 -cp '"+cp+
-        "' -d /opt/rpc/classes /opt/rpc/MitKdcOwner.java /opt/rpc/MitKdcOwnerContracts.java /opt/rpc/MitKdcBootstrapProbe.java && "
+        "' -d /opt/rpc/classes /opt/rpc/MitKdcOwner.java /opt/rpc/MitKdcOwnerContracts.java /opt/rpc/MitKdcOwnerLifecycle.java /opt/rpc/MitKdcLifecycleChild.java /opt/rpc/MitKdcBootstrapProbe.java && "
         'chmod -R a=rX /opt/rpc /opt/mit && chmod 0555 /opt/mit/bin/krb5kdc /opt/mit/bin/kdb5_util /opt/mit/bin/kadmin.local\n'
         'USER 10001:10001\nWORKDIR /work\n').encode()
     return dict(Dockerfile=dockerfile,checksums=checks.encode(),**{'driver.sh':driver,'classpath':classpath})
@@ -192,7 +193,7 @@ def build_diagnostics(raw):
     """Project only fixed source names, bounded line numbers and finite categories."""
     need(type(raw) is bytes and len(raw)<=8388608,'input_invalid')
     text=raw.decode('utf-8',errors='replace');errors=[]
-    pattern=r'/opt/rpc/(MitKdcOwner|MitKdcOwnerContracts|MitKdcBootstrapProbe)[.]java:([0-9]{1,5}): error: ([^\r\n]*)'
+    pattern=r'/opt/rpc/(MitKdcOwner|MitKdcOwnerContracts|MitKdcOwnerLifecycle|MitKdcLifecycleChild|MitKdcBootstrapProbe)[.]java:([0-9]{1,5}): error: ([^\r\n]*)'
     for match in re.finditer(pattern,text):
         line=int(match[2]);need(1<=line<=10000 and len(errors)<32,'input_invalid')
         message=match[3]
@@ -222,13 +223,14 @@ def inspect_container(value,name,image,run_id):
 
 def validate_java(C,raw,exit_code):
     need(type(raw) is bytes and len(raw)<=32768,'java_report_invalid');value=C.parse(raw)
-    keys={'schema_version','scope','success','stage','error','checks','owner','tasks','managed_assertions','tgt_lifetime_seconds','service_lifetime_seconds','duration_ms','cleanup_complete'}|FALSE_CLAIMS
+    keys={'schema_version','scope','success','stage','error','checks','owner','tasks','managed_assertions','lifecycle_checks','lifecycle_children','tgt_lifetime_seconds','service_lifetime_seconds','duration_ms','cleanup_complete'}|FALSE_CLAIMS
     need(type(value) is dict and set(value)==keys and type(value['schema_version']) is int and value['schema_version']==1
         and value['scope']=='mit_kdc_bootstrap_only' and type(value['success']) is bool and type(value['cleanup_complete']) is bool,'java_report_invalid')
     need(type(value['stage']) is str and value['stage'] in JAVA_STAGES and type(value['error']) is str
         and value['error'] in JAVA_ERRORS and all(value[k] is False for k in FALSE_CLAIMS),'java_report_invalid')
     checks=value['checks'];need(type(checks) is dict and set(checks)==CHECKS and all(type(v) is bool for v in checks.values()),'java_report_invalid')
-    for name,maximum in [('tasks',5),('managed_assertions',1000),('tgt_lifetime_seconds',120),('service_lifetime_seconds',10),('duration_ms',190000)]:
+    lifecycle=value['lifecycle_checks'];need(type(lifecycle) is dict and set(lifecycle)==LIFECYCLE_CHECKS and all(type(v) is bool for v in lifecycle.values()),'java_report_invalid')
+    for name,maximum in [('tasks',5),('managed_assertions',1000),('lifecycle_children',5),('tgt_lifetime_seconds',120),('service_lifetime_seconds',10),('duration_ms',190000)]:
         need(type(value[name]) is int and 0<=value[name]<=maximum,'java_report_invalid')
     owner=value['owner'];need(type(owner) is dict and (not owner or set(owner)==OWNER_KEYS),'java_report_invalid')
     if owner:
@@ -239,7 +241,8 @@ def validate_java(C,raw,exit_code):
             and owner['native_qualified'] is False and owner['renewal_verified'] is False,'java_report_invalid')
     if value['success']:
         need(exit_code==0 and value['stage']=='completed' and value['error']=='none' and value['cleanup_complete']
-            and all(checks.values()) and value['tasks']==5 and value['managed_assertions']==83 and 118<=value['tgt_lifetime_seconds']<=120
+            and all(checks.values()) and all(lifecycle.values()) and value['lifecycle_children']==5
+            and value['tasks']==5 and value['managed_assertions']==83 and 118<=value['tgt_lifetime_seconds']<=120
             and 8<=value['service_lifetime_seconds']<=10 and owner and owner['stage']=='closed'
             and owner['setup_completed']==6 and owner['children']==7,'java_report_invalid')
         need(all(owner[k] for k in ('children_reaped','streams_reaped','modules_verified','listener_verified','private_material_removed'))
