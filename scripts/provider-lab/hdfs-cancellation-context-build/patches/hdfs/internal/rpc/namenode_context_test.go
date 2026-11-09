@@ -59,6 +59,20 @@ func contextTestCall(c *NamenodeConnection, ctx context.Context) <-chan error {
 	return done
 }
 
+// The admission signal is raised when LockContext evaluates its cancellation
+// channel while the unrelated owning request still holds the request lock.
+// Waiting for it prevents this case from collapsing into a pre-cancelled call.
+type contextObservedAdmission struct {
+	context.Context
+	once sync.Once
+	entered chan struct{}
+}
+
+func (c *contextObservedAdmission) Done() <-chan struct{} {
+	c.once.Do(func() { close(c.entered) })
+	return c.Context.Done()
+}
+
 func TestContextAdmissionCancellationPreservesOwner(t *testing.T) {
 	client, peer := net.Pipe()
 	defer client.Close()
@@ -74,7 +88,10 @@ func TestContextAdmissionCancellationPreservesOwner(t *testing.T) {
 	ownerDone := contextTestCall(c, owner)
 	contextTestEntered(t, entered)
 	ctx, cancel := context.WithCancel(context.Background())
-	done := contextTestCall(c, ctx)
+	defer cancel()
+	admission := &contextObservedAdmission{Context: ctx, entered: make(chan struct{})}
+	done := contextTestCall(c, admission)
+	contextTestEntered(t, admission.entered)
 	cancel()
 	contextTestWait(t, done, context.Canceled)
 	if _, err := peer.Write([]byte{1}); err != nil {
