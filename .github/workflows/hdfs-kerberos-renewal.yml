@@ -1,0 +1,51 @@
+name: Isolated MIT KDC renewal prerequisite
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/hdfs-kerberos-renewal.yml
+      - scripts/provider-lab/hdfs-kerberos-renewal/**
+      - scripts/provider-lab/hdfs-kerberos-policy-denial/policy_denial_container.py
+      - scripts/provider-lab/hdfs-kerberos-rpc/runtime-classpath-remediation.json
+      - scripts/provider-lab/hdfs-discovery/artifact-lock-kerberos-remediation.json
+      - scripts/provider-lab/hdfs-discovery/bootstrap_material.py
+      - scripts/provider-lab/hdfs-discovery/graph_export.py
+      - scripts/provider-lab/hdfs-discovery/offline_cache.py
+      - scripts/provider-lab/hdfs-discovery/resolver_discovery.py
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hdfs-kerberos-renewal-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bootstrap:
+    name: Check pinned MIT KDC bootstrap and cleanup
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.14'
+      - name: Check guarded parsers, configuration and admission
+        run: python -I -S -B scripts/provider-lab/hdfs-kerberos-renewal/run_guarded_tests.py
+      # Synthetic credentials are generated only inside the private container.
+      # Bootstrap qualification does not prove retained-rclone service renewal.
+      - name: Compile and check the contained MIT KDC prerequisite
+        run: >-
+          python -I -S -B scripts/provider-lab/hdfs-kerberos-renewal/mit_kdc_container.py
+          --report "${{ runner.temp }}/mit-kdc-bootstrap-experiment.json"
+      - name: Retain only the sanitized result
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: mit-kdc-bootstrap-experiment
+          path: ${{ runner.temp }}/mit-kdc-bootstrap-experiment.json
+          if-no-files-found: warn
+          retention-days: 14

@@ -1,0 +1,383 @@
+{
+  "schema_version": 1,
+  "scope": "mit_kdc_renewal_runtime",
+  "base_image": "docker.io/library/eclipse-temurin@sha256:e1c09a9ee23feb81f94016547826c1e694086cd927356fb57fccc312fcc32f85",
+  "architecture": "amd64",
+  "interpreter": "python3.14",
+  "packages": [
+    {
+      "name": "krb5-admin-server",
+      "version": "1.20.1-6ubuntu2.10",
+      "filename": "krb5-admin-server_1.20.1-6ubuntu2.10_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/universe/k/krb5/krb5-admin-server_1.20.1-6ubuntu2.10_amd64.deb",
+      "bytes": 95832,
+      "sha256": "091d2d13ec52da92233920b275a67bc289c9ceddcb0812ea79f7192b70c7720b",
+      "members": [
+        {
+          "source": "./usr/sbin/kadmin.local",
+          "destination": "mit/bin/kadmin.local",
+          "bytes": 84424,
+          "sha256": "a18b2da4dd25f3a513dcc90841df223036363d8282d4c1f8d57b2ac4a7715c3a",
+          "kind": "executable"
+        },
+        {
+          "source": "./usr/share/doc/krb5-admin-server/copyright",
+          "destination": "mit/licenses/krb5-admin-server.copyright",
+          "bytes": 63047,
+          "sha256": "936728f4181718f42951b881c1e8f1386bf6b2723c4fbc533c374d6f42c71816",
+          "kind": "notice"
+        }
+      ]
+    },
+    {
+      "name": "krb5-kdc",
+      "version": "1.20.1-6ubuntu2.10",
+      "filename": "krb5-kdc_1.20.1-6ubuntu2.10_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/universe/k/krb5/krb5-kdc_1.20.1-6ubuntu2.10_amd64.deb",
+      "bytes": 181640,
+      "sha256": "478584ff77c02b3f14eee9a89449946742b6647550e2a9ba583eec0934edc100",
+      "members": [
+        {
+          "source": "./usr/sbin/kdb5_util",
+          "destination": "mit/bin/kdb5_util",
+          "bytes": 101928,
+          "sha256": "682b9563da81830940dcae77f7d443e323838004a6ff86e6014bf5347918c2ae",
+          "kind": "executable"
+        },
+        {
+          "source": "./usr/sbin/krb5kdc",
+          "destination": "mit/bin/krb5kdc",
+          "bytes": 154224,
+          "sha256": "6bd734ff54e1cc53189989628717ffcc9bc5a4ca2aed14e556d7b1a987307a11",
+          "kind": "executable"
+        },
+        {
+          "source": "./usr/lib/x86_64-linux-gnu/krb5/plugins/kdb/db2.so",
+          "destination": "mit/lib/krb5/plugins/kdb/db2.so",
+          "bytes": 93424,
+          "sha256": "ea5e0817da49ca0bfd1e4b9dacc6796a92f21833bfee2906c23751cf8b43e521",
+          "kind": "database_module"
+        },
+        {
+          "source": "./usr/share/doc/krb5-kdc/copyright",
+          "destination": "mit/licenses/krb5-kdc.copyright",
+          "bytes": 63047,
+          "sha256": "936728f4181718f42951b881c1e8f1386bf6b2723c4fbc533c374d6f42c71816",
+          "kind": "notice"
+        }
+      ]
+    },
+    {
+      "name": "libcom-err2",
+      "version": "1.47.0-2.4~exp1ubuntu4.1",
+      "filename": "libcom-err2_1.47.0-2.4~exp1ubuntu4.1_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/e/e2fsprogs/libcom-err2_1.47.0-2.4~exp1ubuntu4.1_amd64.deb",
+      "bytes": 22982,
+      "sha256": "7ab24d3057dabf86db8f771ad6e43f073ed86b6b950d6e8ba22cb9fe6707bbc9",
+      "members": [
+        {
+          "source": "./usr/lib/x86_64-linux-gnu/libcom_err.so.2.1",
+          "destination": "mit/lib/libcom_err.so.2",
+          "bytes": 18504,
+          "sha256": "022943b3b11c860b049bce41342f1c2594941b7b401d95dfdf235521099fee08",
+          "kind": "shared_library"
+        },
+        {
+          "source": "./usr/share/doc/libcom-err2/copyright",
+          "destination": "mit/licenses/libcom-err2.copyright",
+          "bytes": 15209,
+          "sha256": "1ca415a294c0e56958c4f795b3f1f69ea3479bca53d7811f5cdd020a258949db",
+          "kind": "notice"
+        }
+      ]
+    },
+    {
+      "name": "libevent-2.1-7t64",
+      "version": "2.1.12-stable-9ubuntu2.2",
+      "filename": "libevent-2.1-7t64_2.1.12-stable-9ubuntu2.2_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/libe/libevent/libevent-2.1-7t64_2.1.12-stable-9ubuntu2.2_amd64.deb",
+      "bytes": 145930,
+      "sha256": "083ced6efb23476cb4de4e441b741af02db5653e67fa7fcd6cf7e5f7b78f6101",
+      "members": [
+        {
+          "source": "./usr/lib/x86_64-linux-gnu/libevent-2.1.so.7.0.1",
+          "destination": "mit/lib/libevent-2.1.so.7",
+          "bytes": 330288,
+          "sha256": "a061bf2e348c9fd59dcf636d458a46706b0ebe234534066df19ef7c75ce8872e",
+          "kind": "shared_library"
+        },
+        {
+          "source": "./usr/share/doc/libevent-2.1-7t64/copyright",
+          "destination": "mit/licenses/libevent-2.1-7t64.copyright",
+          "bytes": 13148,
+          "sha256": "d32d223a2f96bb222faa1f6d2b4573b512465b2b234f56e040a4d7daab060d69",
+          "kind": "notice"
+        }
+      ]
+    },
+    {
+      "name": "libgssapi-krb5-2",
+      "version": "1.20.1-6ubuntu2.10",
+      "filename": "libgssapi-krb5-2_1.20.1-6ubuntu2.10_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/k/krb5/libgssapi-krb5-2_1.20.1-6ubuntu2.10_amd64.deb",
+      "bytes": 142830,
+      "sha256": "0d4a0187bcdbbe3e6a10bfa574100087d12052d0d0ef28614fd6210021c587b2",
+      "members": [
+        {
+          "source": "./usr/lib/x86_64-linux-gnu/libgssapi_krb5.so.2.2",
+          "destination": "mit/lib/libgssapi_krb5.so.2",
+          "bytes": 338696,
+          "sha256": "c7aa00cf51646f7c32f196d329a562bc873ff32906c9caf6554ca489dd657507",
+          "kind": "shared_library"
+        },
+        {
+          "source": "./usr/share/doc/libgssapi-krb5-2/copyright",
+          "destination": "mit/licenses/libgssapi-krb5-2.copyright",
+          "bytes": 63047,
+          "sha256": "936728f4181718f42951b881c1e8f1386bf6b2723c4fbc533c374d6f42c71816",
+          "kind": "notice"
+        }
+      ]
+    },
+    {
+      "name": "libgssrpc4t64",
+      "version": "1.20.1-6ubuntu2.10",
+      "filename": "libgssrpc4t64_1.20.1-6ubuntu2.10_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/k/krb5/libgssrpc4t64_1.20.1-6ubuntu2.10_amd64.deb",
+      "bytes": 57256,
+      "sha256": "eb9003ae3127b654412e1da892854f173dab9a6aefff0edfc46e6c73a8e7e229",
+      "members": [
+        {
+          "source": "./usr/lib/x86_64-linux-gnu/libgssrpc.so.4.2",
+          "destination": "mit/lib/libgssrpc.so.4",
+          "bytes": 118808,
+          "sha256": "30a75870faf2142b6a89daa44221d6b2b15a66dfd78328f1e0398fb7d3215e30",
+          "kind": "shared_library"
+        },
+        {
+          "source": "./usr/share/doc/libgssrpc4t64/copyright",
+          "destination": "mit/licenses/libgssrpc4t64.copyright",
+          "bytes": 63047,
+          "sha256": "936728f4181718f42951b881c1e8f1386bf6b2723c4fbc533c374d6f42c71816",
+          "kind": "notice"
+        }
+      ]
+    },
+    {
+      "name": "libk5crypto3",
+      "version": "1.20.1-6ubuntu2.10",
+      "filename": "libk5crypto3_1.20.1-6ubuntu2.10_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/k/krb5/libk5crypto3_1.20.1-6ubuntu2.10_amd64.deb",
+      "bytes": 81944,
+      "sha256": "273f7cc95a68d927d7f71c3e78b7717a16a8d86e646a206bae7bf797150ae9db",
+      "members": [
+        {
+          "source": "./usr/lib/x86_64-linux-gnu/libk5crypto.so.3.1",
+          "destination": "mit/lib/libk5crypto.so.3",
+          "bytes": 178648,
+          "sha256": "b37407fb2930939bf78b47267019cd201a8af1f4b6a3852249c849cf3a985798",
+          "kind": "shared_library"
+        },
+        {
+          "source": "./usr/share/doc/libk5crypto3/copyright",
+          "destination": "mit/licenses/libk5crypto3.copyright",
+          "bytes": 63047,
+          "sha256": "936728f4181718f42951b881c1e8f1386bf6b2723c4fbc533c374d6f42c71816",
+          "kind": "notice"
+        }
+      ]
+    },
+    {
+      "name": "libkadm5srv-mit12",
+      "version": "1.20.1-6ubuntu2.10",
+      "filename": "libkadm5srv-mit12_1.20.1-6ubuntu2.10_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/k/krb5/libkadm5srv-mit12_1.20.1-6ubuntu2.10_amd64.deb",
+      "bytes": 53024,
+      "sha256": "97baa912d3f56359077318be8391e9947926f1dbc8ea726a76d947b3a115ddd9",
+      "members": [
+        {
+          "source": "./usr/lib/x86_64-linux-gnu/libkadm5srv_mit.so.12.0",
+          "destination": "mit/lib/libkadm5srv_mit.so.12",
+          "bytes": 114128,
+          "sha256": "56f48ad47107712963c29a4cd56182fd3233bb20337d41c34ac6ec73b06ddc0c",
+          "kind": "shared_library"
+        },
+        {
+          "source": "./usr/share/doc/libkadm5srv-mit12/copyright",
+          "destination": "mit/licenses/libkadm5srv-mit12.copyright",
+          "bytes": 63047,
+          "sha256": "936728f4181718f42951b881c1e8f1386bf6b2723c4fbc533c374d6f42c71816",
+          "kind": "notice"
+        }
+      ]
+    },
+    {
+      "name": "libkdb5-10t64",
+      "version": "1.20.1-6ubuntu2.10",
+      "filename": "libkdb5-10t64_1.20.1-6ubuntu2.10_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/k/krb5/libkdb5-10t64_1.20.1-6ubuntu2.10_amd64.deb",
+      "bytes": 40392,
+      "sha256": "f8837fa6ba3c82c3bc30321f64b17f2aa2ff80dcefe753e83df02ca35f9e9a71",
+      "members": [
+        {
+          "source": "./usr/lib/x86_64-linux-gnu/libkdb5.so.10.0",
+          "destination": "mit/lib/libkdb5.so.10",
+          "bytes": 77008,
+          "sha256": "582eb9d989e384cfb5d375ab6632a1750c2a329fe28b1b09ae04b47e0f794ad9",
+          "kind": "shared_library"
+        },
+        {
+          "source": "./usr/share/doc/libkdb5-10t64/copyright",
+          "destination": "mit/licenses/libkdb5-10t64.copyright",
+          "bytes": 63047,
+          "sha256": "936728f4181718f42951b881c1e8f1386bf6b2723c4fbc533c374d6f42c71816",
+          "kind": "notice"
+        }
+      ]
+    },
+    {
+      "name": "libkeyutils1",
+      "version": "1.6.3-3build1",
+      "filename": "libkeyutils1_1.6.3-3build1_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/k/keyutils/libkeyutils1_1.6.3-3build1_amd64.deb",
+      "bytes": 9490,
+      "sha256": "0679f198b0128179e46cdf956fb2022c23c758664c00bc8efa0382d509683a8a",
+      "members": [
+        {
+          "source": "./usr/lib/x86_64-linux-gnu/libkeyutils.so.1.10",
+          "destination": "mit/lib/libkeyutils.so.1",
+          "bytes": 22600,
+          "sha256": "f48214417757f18793ed6e180cc14ee1d6f04252a518fc7270e8ca1d0b4260fe",
+          "kind": "shared_library"
+        },
+        {
+          "source": "./usr/share/doc/libkeyutils1/copyright",
+          "destination": "mit/licenses/libkeyutils1.copyright",
+          "bytes": 2104,
+          "sha256": "c62fe37d22203046611112bc10a9e03a39a7f73bec1b061e7c615326166d9ff5",
+          "kind": "notice"
+        }
+      ]
+    },
+    {
+      "name": "libkrb5-3",
+      "version": "1.20.1-6ubuntu2.10",
+      "filename": "libkrb5-3_1.20.1-6ubuntu2.10_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/k/krb5/libkrb5-3_1.20.1-6ubuntu2.10_amd64.deb",
+      "bytes": 347568,
+      "sha256": "60b48c5a3233f1d8caba30d6573edc8e131911ab6d63adcd664f7cbe62708362",
+      "members": [
+        {
+          "source": "./usr/lib/x86_64-linux-gnu/libkrb5.so.3.3",
+          "destination": "mit/lib/libkrb5.so.3",
+          "bytes": 823488,
+          "sha256": "fad617a72b5839d30143e7db03281279089def6f18788cbb0b7f86385301bf04",
+          "kind": "shared_library"
+        },
+        {
+          "source": "./usr/share/doc/libkrb5-3/copyright",
+          "destination": "mit/licenses/libkrb5-3.copyright",
+          "bytes": 63047,
+          "sha256": "936728f4181718f42951b881c1e8f1386bf6b2723c4fbc533c374d6f42c71816",
+          "kind": "notice"
+        }
+      ]
+    },
+    {
+      "name": "libkrb5support0",
+      "version": "1.20.1-6ubuntu2.10",
+      "filename": "libkrb5support0_1.20.1-6ubuntu2.10_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/k/krb5/libkrb5support0_1.20.1-6ubuntu2.10_amd64.deb",
+      "bytes": 34942,
+      "sha256": "9224ede3246a82a845ea97652ecfae57f88e8d8f520d8a186f9157167574fb34",
+      "members": [
+        {
+          "source": "./usr/lib/x86_64-linux-gnu/libkrb5support.so.0.1",
+          "destination": "mit/lib/libkrb5support.so.0",
+          "bytes": 47904,
+          "sha256": "936bae947a838bd47676a419dfcfb036d0163249215b58ec706ec7d46b7497aa",
+          "kind": "shared_library"
+        },
+        {
+          "source": "./usr/share/doc/libkrb5support0/copyright",
+          "destination": "mit/licenses/libkrb5support0.copyright",
+          "bytes": 63047,
+          "sha256": "936728f4181718f42951b881c1e8f1386bf6b2723c4fbc533c374d6f42c71816",
+          "kind": "notice"
+        }
+      ]
+    },
+    {
+      "name": "libss2",
+      "version": "1.47.0-2.4~exp1ubuntu4.1",
+      "filename": "libss2_1.47.0-2.4~exp1ubuntu4.1_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/e/e2fsprogs/libss2_1.47.0-2.4~exp1ubuntu4.1_amd64.deb",
+      "bytes": 16976,
+      "sha256": "e3b6140b815970461c4312f1dc3d6b1f0d62d99f4ebe2ad087bffa630010035a",
+      "members": [
+        {
+          "source": "./usr/lib/x86_64-linux-gnu/libss.so.2.0",
+          "destination": "mit/lib/libss.so.2",
+          "bytes": 30800,
+          "sha256": "74ec695f8d344c0a6a48f85d38b8ecf98f675de5ce30ed6e458c75c97f4f387d",
+          "kind": "shared_library"
+        },
+        {
+          "source": "./usr/share/doc/libss2/copyright",
+          "destination": "mit/licenses/libss2.copyright",
+          "bytes": 15209,
+          "sha256": "1ca415a294c0e56958c4f795b3f1f69ea3479bca53d7811f5cdd020a258949db",
+          "kind": "notice"
+        }
+      ]
+    },
+    {
+      "name": "libverto-libevent1t64",
+      "version": "0.3.1-1.2ubuntu3",
+      "filename": "libverto-libevent1t64_0.3.1-1.2ubuntu3_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/libv/libverto/libverto-libevent1t64_0.3.1-1.2ubuntu3_amd64.deb",
+      "bytes": 6424,
+      "sha256": "c831b05794c3c8210a2138fc833248d5d28974e9da62d7df19f9df8b0eaf9c3d",
+      "members": [
+        {
+          "source": "./usr/lib/x86_64-linux-gnu/libverto-libevent.so.1.0.0",
+          "destination": "mit/lib/libverto-libevent.so.1",
+          "bytes": 14752,
+          "sha256": "671b580f076fcb4f3232996e8d8c0d1b024f2314481962d83fbff8ea0d8d8d5a",
+          "kind": "event_module"
+        },
+        {
+          "source": "./usr/share/doc/libverto-libevent1t64/copyright",
+          "destination": "mit/licenses/libverto-libevent1t64.copyright",
+          "bytes": 1382,
+          "sha256": "fc0e7cdfa52afaa60fab00cceac5b116cabeac38aefbdb58c475c772c490cd6a",
+          "kind": "notice"
+        }
+      ]
+    },
+    {
+      "name": "libverto1t64",
+      "version": "0.3.1-1.2ubuntu3",
+      "filename": "libverto1t64_0.3.1-1.2ubuntu3_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/libv/libverto/libverto1t64_0.3.1-1.2ubuntu3_amd64.deb",
+      "bytes": 10520,
+      "sha256": "42ef3987828f5aa245778c1567cd3bd6aa9a2932cd3e8785fe8801d596d141ed",
+      "members": [
+        {
+          "source": "./usr/lib/x86_64-linux-gnu/libverto.so.1.0.0",
+          "destination": "mit/lib/libverto.so.1",
+          "bytes": 26896,
+          "sha256": "34bfcf170a1a09cfab68008aec778ed64e45c07148df2eb213729a460e377757",
+          "kind": "shared_library"
+        },
+        {
+          "source": "./usr/share/doc/libverto1t64/copyright",
+          "destination": "mit/licenses/libverto1t64.copyright",
+          "bytes": 1382,
+          "sha256": "fc0e7cdfa52afaa60fab00cceac5b116cabeac38aefbdb58c475c772c490cd6a",
+          "kind": "notice"
+        }
+      ]
+    }
+  ]
+}
