@@ -50,6 +50,24 @@ public final class MitKdcOwner implements AutoCloseable {
             && before.lastModifiedTime().equals(after.lastModifiedTime()),Code.file_changed);
         return result;
     }
+    static Path procPath(long pid,String name) throws Exception {
+        need(pid>0 && Set.of("maps","tcp","tcp6","udp","udp6").contains(name),Code.path_invalid);
+        return Path.of("/proc/"+pid+(name.equals("maps")?"/maps":"/net/"+name));
+    }
+    byte[] ownedProc(String name) throws Exception {
+        need(kdc!=null && kdc.process.isAlive(),Code.child_failed);
+        Path file=procPath(kdc.process.pid(),name);
+        int maximum=name.equals("maps")?1048576:262144;
+        BasicFileAttributes attributes=Files.readAttributes(file,BasicFileAttributes.class,NOFOLLOW);
+        need(attributes.isRegularFile() && attributes.fileKey()!=null,Code.file_bound);
+        // procfs synthesizes metadata and contents. Bind the fixed path to the
+        // retained live child and bound the read; do not require stable mtimes.
+        byte[] result;
+        try(InputStream input=Files.newInputStream(file,NOFOLLOW)) { result=input.readNBytes(maximum+1); }
+        need(result.length<=maximum,Code.file_bound);
+        need(kdc.process.isAlive(),Code.child_failed);
+        return result;
+    }
     static String hex(SecureRandom random, int bytes) {
         byte[] value=new byte[bytes]; random.nextBytes(value);
         try { return HexFormat.of().formatHex(value); } finally { Arrays.fill(value,(byte)0); }
@@ -226,7 +244,7 @@ public final class MitKdcOwner implements AutoCloseable {
     boolean ownedListener(boolean required) throws Exception {
         Set<String> inodes=socketInodes(); int tcp=0;
         for(String table:List.of("tcp","tcp6","udp","udp6")) {
-            String data=new String(boundedFile(Path.of("/proc/net/"+table),262144),StandardCharsets.US_ASCII);
+            String data=new String(ownedProc(table),StandardCharsets.US_ASCII);
             for(String line:data.split("\n")) {
                 String[] row=line.trim().split("\\s+");
                 if(row.length<10 || !inodes.contains(row[9])) continue;
@@ -243,7 +261,7 @@ public final class MitKdcOwner implements AutoCloseable {
             || BASE_LIBRARIES.contains(name) && file.equals("/usr/lib/x86_64-linux-gnu/"+name);
     }
     void verifyModules() throws Exception {
-        String maps=new String(boundedFile(Path.of("/proc/"+kdc.process.pid()+"/maps"),1048576),StandardCharsets.US_ASCII);
+        String maps=new String(ownedProc("maps"),StandardCharsets.US_ASCII);
         Set<String> mapped=new HashSet<>();
         for(String line:maps.split("\n")) {
             String[] row=line.trim().split("\\s+",6); if(row.length<6 || !row[5].startsWith("/")) continue;
@@ -283,14 +301,16 @@ public final class MitKdcOwner implements AutoCloseable {
             boolean interrupted=Thread.interrupted(); boolean clean=true;
             try {
                 try { capture(); } catch(Exception error) { clean=false; }
-                if(process.isAlive() && terminate) process.destroy();
+                // Process.destroy() also closes Java's pipe streams. Signal
+                // through the retained handle so drainers can observe EOF.
+                if(process.isAlive() && terminate) process.toHandle().destroy();
                 for(ProcessHandle handle:descendants) if(handle.isAlive()) handle.destroy();
                 long until=System.nanoTime()+TimeUnit.SECONDS.toNanos(3);
                 while(process.isAlive() || descendants.stream().anyMatch(ProcessHandle::isAlive)) {
                     if(System.nanoTime()>=until) break;
                     try { Thread.sleep(20); } catch(InterruptedException error) { interrupted=true; }
                 }
-                if(process.isAlive()) { forced=true; process.destroyForcibly(); }
+                if(process.isAlive()) { forced=true; process.toHandle().destroyForcibly(); }
                 for(ProcessHandle handle:descendants) if(handle.isAlive()) { forced=true; handle.destroyForcibly(); }
                 until=System.nanoTime()+TimeUnit.SECONDS.toNanos(3);
                 while(process.isAlive() || descendants.stream().anyMatch(ProcessHandle::isAlive)) {

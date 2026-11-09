@@ -8,7 +8,7 @@ import java.util.Arrays;
 import java.util.List;
 
 public final class MitKdcOwnerContracts {
-    public static final int EXPECTED_ASSERTIONS=68;
+    public static final int EXPECTED_ASSERTIONS=83;
     private static int assertions;
     public static int observedAssertions() { return assertions; }
     interface Action { void run() throws Exception; }
@@ -65,6 +65,12 @@ public final class MitKdcOwnerContracts {
         }
         for(String table:List.of("tcp6","udp","udp6"))
             rejected(()->MitKdcOwner.validateOwnedSocket(table,listener),MitKdcOwner.Code.listener_mismatch);
+        for(String name:List.of("maps","tcp","tcp6","udp","udp6"))
+            check(MitKdcOwner.procPath(123,name).toString().equals("/proc/123/"+(name.equals("maps")?name:"net/"+name)));
+        for(String name:List.of("../maps","/maps","status","fd","maps/","TCP",""))
+            rejected(()->MitKdcOwner.procPath(123,name),MitKdcOwner.Code.path_invalid);
+        for(long pid:new long[]{0,-1,Long.MIN_VALUE})
+            rejected(()->MitKdcOwner.procPath(pid,"maps"),MitKdcOwner.Code.path_invalid);
         Arrays.fill(raw,(byte)0);Arrays.fill(changed,(byte)0);
         if(assertions!=EXPECTED_ASSERTIONS)throw new IllegalStateException("managed_count_mismatch");
         return assertions;
