@@ -118,6 +118,19 @@ def validate_sasl(value, complete, fresh):
 def validate_new_evidence(value, complete, service_case, variant):
     need(type(service_case) is str and service_case in SERVICE_CASES and type(variant) is str and variant in VARIANTS
          and type(value["binary_variant"]) is str and value["binary_variant"] == variant, "java_report_invalid")
+    observations=value["ticket_flag_observations"]
+    need(type(observations) is list and len(observations)<=2, "java_report_invalid")
+    for index, observed in enumerate(observations):
+        need(type(observed) is dict and set(observed)=={"kind","cache_flags","issued_flags","renewable_expected"}
+             and observed["kind"]==("issued_tgt" if index==0 else "issued_service")
+             and type(observed["renewable_expected"]) is bool
+             and observed["renewable_expected"] is (index==0 or service_case=="renewable"), "java_report_invalid")
+        integer(observed["cache_flags"],0,4294967295); integer(observed["issued_flags"],0,4294967295)
+        if complete:
+            flags=observed["cache_flags"]
+            need(flags==observed["issued_flags"] and flags & ~0x00e00000 == 0
+                 and bool(flags & 0x00800000) is observed["renewable_expected"], "java_report_invalid")
+    if complete: need(len(observations)==2, "java_report_invalid")
     integer(value["rpc_gate_vectors"], 0, 85)
     validate_owner(value["mit_owner"], complete)
     validate_sasl(value["initial_sasl_binding"], complete, False)
@@ -174,7 +187,7 @@ def validate_java(raw, exit_code, service_case="renewable", variant="patched"):
     try:
         value = parse(raw, 32768)
         keys = {"schema_version", "scope", "success", "expected_kerby_version", "runtime_binding_required", "checks",
-                "cleanup", "cache_bytes", "observed_lifetime_seconds", "child_count", "service_cache_lifecycle", "stage", "wire_hex", "rclone_wire_hex", "relay", "error", "diagnostic", "remaining_threads", "remaining_thread_intervals", "remaining_thread_matrix", "remaining_timer_kinds", "remaining_rpc_kinds", "cleanup_entry_rpc_kinds", "thread_observation_complete", "owned_thread_cleanup", "kdc_trace", "reconnect_lifecycle", "renewal_evidence", "mit_owner", "binary_variant", "rpc_gate_vectors", "initial_sasl_binding", "fresh_sasl_binding"} | JAVA_FALSE
+                "cleanup", "cache_bytes", "observed_lifetime_seconds", "child_count", "service_cache_lifecycle", "stage", "wire_hex", "rclone_wire_hex", "relay", "error", "diagnostic", "remaining_threads", "remaining_thread_intervals", "remaining_thread_matrix", "remaining_timer_kinds", "remaining_rpc_kinds", "cleanup_entry_rpc_kinds", "thread_observation_complete", "owned_thread_cleanup", "kdc_trace", "reconnect_lifecycle", "renewal_evidence", "mit_owner", "binary_variant", "rpc_gate_vectors", "initial_sasl_binding", "fresh_sasl_binding", "ticket_flag_observations"} | JAVA_FALSE
         need(type(value) is dict and set(value) == keys and type(value["schema_version"]) is int
              and value["schema_version"] == 1 and value["scope"] == "hdfs_mit_retained_renewal"
              and value["expected_kerby_version"] == "2.1.2" and value["runtime_binding_required"] is True

@@ -336,6 +336,7 @@ public final class HdfsMitRenewalProbe {
     private static String rcloneBinary;
     private static boolean renewableCase, serviceExpired, cacheBound, serviceIssued;
     private static int issuedCacheBindings, serviceLifetime, expiredBySeconds, remainingTgtSeconds;
+    private static final List<Map<String,Object>> ticketFlagObservations = new ArrayList<>();
     private static long tgtEnd, serviceEnd;
     private static byte[] issuedTgtBytes, issuedServiceBytes;
     private static KdcRelay kdcRelay;
@@ -371,7 +372,11 @@ public final class HdfsMitRenewalProbe {
             Code.ticket_time_mismatch);
         need(Byte.toUnsignedInt(data.get()) == 0, Code.cache_invalid);
         long flags = u32(data);
-        need(flags == Integer.toUnsignedLong(part.getFlags().getFlags())
+        long issuedFlags = Integer.toUnsignedLong(part.getFlags().getFlags());
+        need(ticketFlagObservations.size() < 2, Code.cache_invalid);
+        ticketFlagObservations.add(Map.of("kind", lifetime == 120 ? "issued_tgt" : "issued_service",
+            "cache_flags", flags, "issued_flags", issuedFlags, "renewable_expected", renewable));
+        need(flags == issuedFlags
             && (flags & ~0x00e00000L) == 0 && ((flags & 0x00800000L) != 0) == renewable, Code.ticket_flags_mismatch);
         need(u32(data) == 0 && u32(data) == 0, Code.cache_invalid);
         byte[] ticket = counted(data, MAX_BYTES);
@@ -2001,6 +2006,7 @@ public final class HdfsMitRenewalProbe {
             + ",\"kdc_trace\":" + (kdcRelay == null ? "null" : kdcRelay.json())
             + ",\"renewal_evidence\":" + (renewalEvidence == null ? "null" : new com.fasterxml.jackson.databind.ObjectMapper().valueToTree(renewalEvidence.projection()).toString())
             + ",\"mit_owner\":" + (mitOwner == null ? "null" : new com.fasterxml.jackson.databind.ObjectMapper().valueToTree(mitOwner.projection()).toString())
+            + ",\"ticket_flag_observations\":" + new com.fasterxml.jackson.databind.ObjectMapper().valueToTree(ticketFlagObservations).toString()
             + ",\"binary_variant\":\"" + binaryVariant + "\""
             + ",\"rpc_gate_vectors\":" + rpcGateVectors
             + ",\"initial_sasl_binding\":" + (relay == null || relay.initialBinding == null ? "null" : new com.fasterxml.jackson.databind.ObjectMapper().valueToTree(relay.initialBinding.projection()).toString())
