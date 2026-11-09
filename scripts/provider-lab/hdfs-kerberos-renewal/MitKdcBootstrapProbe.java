@@ -59,7 +59,7 @@ public final class MitKdcBootstrapProbe {
         System.setErr(new PrintStream(OutputStream.nullOutputStream()));
         Thread.setDefaultUncaughtExceptionHandler((thread,error)->backgroundFailure.set(true));
         Map<String,Boolean> checks=new LinkedHashMap<>();
-        for(String key:List.of("managed_contracts","lifecycle_controls","runtime_started","positive_tgt","short_renewable_service","wrong_password_rejected",
+        for(String key:List.of("managed_contracts","lifecycle_controls","runtime_started","positive_tgt","short_renewable_service","manual_service_renewal","wrong_password_rejected",
                 "unknown_principal_rejected","healthy_after_rejection","tasks_reaped","new_threads_reaped","processes_reaped")) checks.put(key,false);
         Set<Long> processBaseline=ProcessHandle.current().descendants().map(ProcessHandle::pid).collect(java.util.stream.Collectors.toSet());
         Set<Thread> threadBaseline=null;
@@ -104,6 +104,14 @@ public final class MitKdcBootstrapProbe {
             need(serviceLifetime>=8 && serviceLifetime<=10 && renew>serviceEnd && renew-serviceStart<=60
                 && renew-serviceStart>=50 && (service.getEncKdcRepPart().getFlags().getFlags() & 0x00800000)!=0);
             checks.put("short_renewable_service",true);
+            stage="await_service_expiry";
+            long expiryDeadline=System.nanoTime()+TimeUnit.SECONDS.toNanos(13);
+            while(System.currentTimeMillis()<serviceEnd*1000+1000) {
+                need(System.nanoTime()<expiryDeadline);owner.healthy();Thread.sleep(100);
+            }
+            stage="manual_service_renewal";
+            bounded(()->{ MitServiceRenewalControl.run(owned.realm(),owned.reader(),service);return Boolean.TRUE; });
+            checks.put("manual_service_renewal",true);owner.healthy();
             stage="wrong_password"; boolean denied=false;
             String wrong=owner.readerPassword().equals("0".repeat(32))?"1".repeat(32):"0".repeat(32);
             try { bounded(()->client.requestTgt(tgtOptions(owned.reader(),wrong))); }
@@ -123,6 +131,7 @@ public final class MitKdcBootstrapProbe {
                 failure instanceof TimeoutException?"request_timeout":failure instanceof KrbException?"krb_failure":
                 failure instanceof InterruptedException?"interrupted":"bootstrap_failed";
         } finally {
+            MitServiceRenewalControl.close();
             for(Thread task:tasks) {
                 if(task.isAlive()) task.interrupt();
                 try { task.join(1000); } catch(InterruptedException ignored) { Thread.currentThread().interrupt(); }
@@ -152,6 +161,7 @@ public final class MitKdcBootstrapProbe {
         Map<String,Object> output=new LinkedHashMap<>(); output.put("schema_version",1); output.put("scope","mit_kdc_bootstrap_only");
         output.put("success",passed); output.put("stage",stage); output.put("error",error); output.put("checks",checks); output.put("owner",ownerReport);
         output.put("tasks",tasks.size()); output.put("managed_assertions",managedAssertions); output.put("tgt_lifetime_seconds",tgtLifetime); output.put("service_lifetime_seconds",serviceLifetime);
+        output.put("manual_service_renewal",MitServiceRenewalControl.projection());
         output.put("lifecycle_checks",MitKdcOwnerLifecycle.projection());output.put("lifecycle_children",MitKdcOwnerLifecycle.children());
         output.put("initial_new_threads",initialThreads);output.put("remaining_new_threads",remainingThreads);
         output.put("thread_wait_ms",threadWaitMillis);output.put("thread_quiet_observations",quietObservations);
