@@ -26,3 +26,10 @@ python -I -S -B scripts/provider-lab/hdfs-kerberos-cache-expiry/run_pure_tests.p
 ```
 
 Native execution is restricted to the explicit hosted workflow. Existing transfer/protocol evidence and its six-capability boundary remain unchanged.
+
+Cleanup receipts also classify remaining Hadoop RPC threads into three fixed
+categories: client request sender, client connection, or other. A separate
+snapshot at cleanup entry can show a transient sender while the final snapshot
+still requires zero residual threads. These categories and first-observed
+intervals are diagnostics, not ownership proofs or cleanup exemptions. No raw
+thread names, addresses, or stacks are published.

@@ -89,6 +89,8 @@ def positive():
             filesystem=0, reader=0, controls=0, shutdown=0, unattributed=0),
         remaining_thread_matrix=empty_thread_matrix(),
         remaining_timer_kinds=dict(namenode_metrics=0, rpc_idle=0, snapshot_gc=0, shell_timeout=0, ssl_store=0, unknown=0),
+        remaining_rpc_kinds=dict(client_request_sender=0, client_connection=0, other=0),
+        cleanup_entry_rpc_kinds=dict(client_request_sender=0, client_connection=0, other=0),
         authentication_verified=False, hdfs_authenticated=False, renewal_verified=False,
         daemon_accepted=False, provider_accepted=False, application_accepted=False,
         vendor_accepted=False, vulnerability_audited=False)
@@ -230,11 +232,13 @@ class TicketTests(unittest.TestCase):
         value = self.startup_failure(); value["remaining_threads"] = None; value["remaining_thread_intervals"] = None
         value["remaining_thread_matrix"] = None
         value["remaining_timer_kinds"] = None
+        value["remaining_rpc_kinds"] = None
         self.assertFalse(F.validate_java(F.canonical(value), 1)["cleanup"]["threads_terminated"])
         value["remaining_threads"] = positive()["remaining_threads"]
         value["remaining_thread_intervals"] = positive()["remaining_thread_intervals"]
         value["remaining_thread_matrix"] = empty_thread_matrix()
         value["remaining_timer_kinds"] = positive()["remaining_timer_kinds"]
+        value["remaining_rpc_kinds"] = positive()["remaining_rpc_kinds"]
         self.assertFalse(F.validate_java(F.canonical(value), 1)["cleanup"]["threads_terminated"])
 
     def test_new_thread_categories_only_subdivide_failing_residuals(self):
@@ -1020,7 +1024,8 @@ class JavaSourceTests(unittest.TestCase):
         self.assertIn('statisticsCleanup = stopOwnedHelper(false, baseline, until)', body)
         self.assertIn('sslCleanup = stopOwnedFormatSsl(baseline, until)', body)
         self.assertLess(body.index('long until ='), body.index('stopOwnedHelper(true'))
-        self.assertLess(body.index('stopOwnedHelper(false'), body.index('remainingThreadCounts(baseline)'))
+        self.assertLess(body.index('long until ='), body.index('cleanupEntryRpcKinds ='))
+        self.assertLess(body.index('stopOwnedHelper(false'), body.index('remainingThreads = remainingThreadCounts(baseline)'))
         private_gate = body[body.index('if (rootOwned'):body.index('try {\n                guardRoot();')]
         self.assertIn('"gc_monitor_reaped", "fs_statistics_cleaner_reaped", "format_ssl_timer_reaped"', private_gate)
 
@@ -1444,3 +1449,40 @@ class CacheExpiryTests(unittest.TestCase):
         self.assertFalse(observed["provider_accepted"])
         value["success"] = True
         with self.assertRaises(F.ProbeError): F.validate_java(F.canonical(value), 0)
+
+
+class RpcDiagnosticTests(unittest.TestCase):
+    def test_residual_sender_never_passes_cleanup(self):
+        value = positive()
+        value.update(success=False, error="cleanup_failed")
+        value["cleanup"].update(threads_terminated=False, private_material_removed=False)
+        value["remaining_threads"]["hadoop_rpc"] = 1
+        value["remaining_thread_intervals"]["filesystem"] = 1
+        value["remaining_thread_matrix"]["hadoop_rpc"]["filesystem"] = 1
+        value["remaining_rpc_kinds"]["client_request_sender"] = 1
+        value["cleanup_entry_rpc_kinds"]["client_request_sender"] = 1
+        result = F.validate_java(F.canonical(value), 1)
+        self.assertFalse(result["success"])
+        self.assertFalse(result["cleanup"]["threads_terminated"])
+        self.assertEqual(result["remaining_rpc_kinds"]["client_request_sender"], 1)
+        value["cleanup"].update(threads_terminated=True, private_material_removed=True)
+        value.update(success=True, error=None)
+        with self.assertRaises(F.ProbeError): F.validate_java(F.canonical(value), 0)
+
+    def test_rpc_categories_are_closed_bounded_and_cross_counted(self):
+        for field in ("remaining_rpc_kinds", "cleanup_entry_rpc_kinds"):
+            for bad in (None, {}, {"private thread name": 1},
+                        {"client_request_sender": True, "client_connection": 0, "other": 0},
+                        {"client_request_sender": 129, "client_connection": 0, "other": 0}):
+                value = positive(); value[field] = bad
+                with self.subTest(field=field, bad=bad), self.assertRaises(F.ProbeError):
+                    F.validate_java(F.canonical(value), 0)
+        value = positive(); value["remaining_rpc_kinds"]["client_request_sender"] = 1
+        with self.assertRaises(F.ProbeError): F.validate_java(F.canonical(value), 0)
+
+    def test_cleanup_entry_is_diagnostic_and_final_count_remains_zero(self):
+        value = positive(); value["cleanup_entry_rpc_kinds"]["client_request_sender"] = 1
+        result = F.validate_java(F.canonical(value), 0)
+        self.assertTrue(result["success"])
+        self.assertEqual(sum(result["remaining_rpc_kinds"].values()), 0)
+        self.assertFalse(result["provider_accepted"])

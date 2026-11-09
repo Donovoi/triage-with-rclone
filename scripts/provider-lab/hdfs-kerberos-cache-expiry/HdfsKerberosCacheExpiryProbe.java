@@ -123,6 +123,8 @@ public final class HdfsKerberosCacheExpiryProbe {
     private static Map<String, Map<String, Integer>> remainingThreadMatrix;
     private static final List<String> TIMER_KINDS = List.of("namenode_metrics", "rpc_idle", "snapshot_gc", "shell_timeout", "ssl_store", "unknown");
     private static Map<String, Integer> remainingTimerKinds;
+    private static final List<String> RPC_KINDS = List.of("client_request_sender", "client_connection", "other");
+    private static Map<String, Integer> remainingRpcKinds, cleanupEntryRpcKinds;
     private enum OwnedCleanupState {
         not_attempted, observation_incomplete, services_not_stopped, scan_failed,
         missing, ambiguous, preexisting, unobserved, late, not_daemon, deadline,
@@ -565,6 +567,22 @@ public final class HdfsKerberosCacheExpiryProbe {
         } catch (Throwable ignored) { return "other"; }
         return selected;
     }
+    private static String rpcKind(Thread thread) {
+        // Exact pinned stack classes; finite diagnostics only, never ownership.
+        // Unknown RPC threads still count and fail the unchanged cleanup gate.
+        try {
+            StackTraceElement[] frames = thread.getStackTrace();
+            for (int i = 0; i < frames.length && i < 32; i++) {
+                if (frames[i].getClassName().equals("org.apache.hadoop.ipc.Client$Connection$RpcRequestSender")
+                    && frames[i].getMethodName().equals("run")) return "client_request_sender";
+            }
+            for (int i = 0; i < frames.length && i < 32; i++) {
+                if (frames[i].getClassName().equals("org.apache.hadoop.ipc.Client$Connection")
+                    && frames[i].getMethodName().equals("work")) return "client_connection";
+            }
+        } catch (Throwable ignored) { }
+        return "other";
+    }
     private static String timerKind(Thread thread) {
         // Exact names from pinned source; diagnostic hints only, never ownership.
         // No raw thread name leaves this process; unknown timers remain failures.
@@ -601,6 +619,8 @@ public final class HdfsKerberosCacheExpiryProbe {
         for (String phase : THREAD_PHASES) intervals.put(phase, 0);
         Map<String, Integer> timers = new LinkedHashMap<>();
         for (String kind : TIMER_KINDS) timers.put(kind, 0);
+        Map<String, Integer> rpcKinds = new LinkedHashMap<>();
+        for (String kind : RPC_KINDS) rpcKinds.put(kind, 0);
         Map<String, Map<String, Integer>> matrix = new LinkedHashMap<>();
         for (String category : THREAD_CATEGORIES) {
             Map<String, Integer> row = new LinkedHashMap<>();
@@ -612,6 +632,9 @@ public final class HdfsKerberosCacheExpiryProbe {
             if (!thread.isAlive() || baseline.contains(thread.getId())) continue;
             need(++total <= 128, Code.cleanup_failed);
             String category = threadCategory(thread); counts.put(category, counts.get(category) + 1);
+            if (category.equals("hadoop_rpc")) {
+                String kind = rpcKind(thread); rpcKinds.put(kind, rpcKinds.get(kind) + 1);
+            }
             if (category.equals("jdk_timer")) {
                 String kind = timerKind(thread); timers.put(kind, timers.get(kind) + 1);
             }
@@ -630,6 +653,8 @@ public final class HdfsKerberosCacheExpiryProbe {
         remainingThreadMatrix = matrix;
         need(timers.values().stream().mapToInt(Integer::intValue).sum() == counts.get("jdk_timer"), Code.cleanup_failed);
         remainingTimerKinds = timers;
+        need(rpcKinds.values().stream().mapToInt(Integer::intValue).sum() == counts.get("hadoop_rpc"), Code.cleanup_failed);
+        remainingRpcKinds = rpcKinds;
         return counts;
     }
     private static boolean statisticsCleanerFrame(Thread thread) {
@@ -749,6 +774,8 @@ public final class HdfsKerberosCacheExpiryProbe {
         observeThreads("shutdown", baseline);
         boolean threadsClean = false;
         long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+        try { remainingThreadCounts(baseline); cleanupEntryRpcKinds = new LinkedHashMap<>(remainingRpcKinds); }
+        catch (Throwable ignored) { cleanupEntryRpcKinds = null; threadObservationIncomplete = true; }
         gcCleanup = stopOwnedHelper(true, baseline, until);
         CLEANUP.put("gc_monitor_reaped", gcCleanup == OwnedCleanupState.terminated);
         statisticsCleanup = stopOwnedHelper(false, baseline, until);
@@ -757,7 +784,7 @@ public final class HdfsKerberosCacheExpiryProbe {
         CLEANUP.put("format_ssl_timer_reaped", sslCleanup == OwnedCleanupState.terminated);
         do {
             try { remainingThreads = remainingThreadCounts(baseline); }
-            catch (Throwable ignored) { remainingThreads = null; remainingThreadIntervals = null; remainingThreadMatrix = null; remainingTimerKinds = null; break; }
+            catch (Throwable ignored) { remainingThreads = null; remainingThreadIntervals = null; remainingThreadMatrix = null; remainingTimerKinds = null; remainingRpcKinds = null; break; }
             // Every residual thread still fails cleanup, including JDK/unknown categories.
             threadsClean = remainingThreads.values().stream().allMatch(count -> count == 0)
                 && TASKS.stream().noneMatch(Thread::isAlive);
@@ -1321,6 +1348,8 @@ public final class HdfsKerberosCacheExpiryProbe {
             + ",\"remaining_thread_intervals\":" + threadCountsJson(remainingThreadIntervals, THREAD_PHASES)
             + ",\"remaining_thread_matrix\":" + threadMatrixJson()
             + ",\"remaining_timer_kinds\":" + threadCountsJson(remainingTimerKinds, TIMER_KINDS)
+            + ",\"remaining_rpc_kinds\":" + threadCountsJson(remainingRpcKinds, RPC_KINDS)
+            + ",\"cleanup_entry_rpc_kinds\":" + threadCountsJson(cleanupEntryRpcKinds, RPC_KINDS)
             + ",\"owned_thread_cleanup\":{\"gc_monitor\":\"" + gcCleanup.name()
             + "\",\"fs_statistics_cleaner\":\"" + statisticsCleanup.name()
             + "\",\"format_ssl_timer\":\"" + sslCleanup.name() + "\"}"

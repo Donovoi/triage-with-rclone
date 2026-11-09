@@ -40,9 +40,10 @@ THREAD_CATEGORIES = frozenset("probe_task jdk_process_reaper jdk_timer jdk_execu
 THREAD_INTERVALS = frozenset("kdc owner_login format namenode filesystem reader controls shutdown unattributed".split())
 OWNED_CLEANUP_STATES = frozenset("not_attempted observation_incomplete services_not_stopped scan_failed missing ambiguous preexisting unobserved late not_daemon deadline shutdown_failed still_alive terminated".split())
 TIMER_KINDS = frozenset("namenode_metrics rpc_idle snapshot_gc shell_timeout ssl_store unknown".split())
+RPC_KINDS = frozenset("client_request_sender client_connection other".split())
 BASE = "docker.io/library/eclipse-temurin@sha256:e1c09a9ee23feb81f94016547826c1e694086cd927356fb57fccc312fcc32f85"
 BASE_ID = "sha256:d0e6e16acb7f941e5206d99ec38e5bba18545c43462541958f84b22e0fc006e8"
-JAVA_SHA = "90f7d5c437247f54f6e80100a16340e0788db499c8a14e2aa207d570f4534766"
+JAVA_SHA = "056da3c4d69c9e053b137ad3cac11a66a15bb84df4eee72730b072f54f4d101c"
 RUNTIME_SHA = "8944f0db4899d9e8f166feb28ce56d99278321ce0d3b1a9b9b993b5c0d508c2a"
 ORDER_SHA = "a482109e5170b0a6885af7c52902e89600c226f6e1fe1487083d736c13187632"
 LOCK_SHA = "a62e2a60bbb3f6c8b95b849760ff597e4e05e1c93bf61987c175502c3fe2ac74"
@@ -437,6 +438,22 @@ def validate_diagnostics(value, remaining, intervals, matrix, timers, observatio
              and not any(remaining.values()) and observation_complete, "java_report_invalid")
 
 
+def validate_rpc_diagnostics(remaining, kinds, entry, passed):
+    for value in (kinds, entry):
+        if value is None:
+            need(not passed, "java_report_invalid")
+        else:
+            need(type(value) is dict and set(value) == RPC_KINDS
+                 and all(type(count) is int and 0 <= count <= 128 for count in value.values())
+                 and sum(value.values()) <= 128, "java_report_invalid")
+    if remaining is None:
+        need(kinds is None, "java_report_invalid")
+    else:
+        need(kinds is not None and sum(kinds.values()) == remaining["hadoop_rpc"], "java_report_invalid")
+    if passed:
+        need(kinds is not None and entry is not None and not any(kinds.values()), "java_report_invalid")
+
+
 def validate_owned_cleanup(value, cleanup):
     need(type(value) is dict and set(value) == {"gc_monitor", "fs_statistics_cleaner", "format_ssl_timer"}, "java_report_invalid")
     for helper, state in value.items():
@@ -473,7 +490,7 @@ def validate_java(raw, exit_code):
     try:
         value = parse(raw, 32768)
         keys = {"schema_version", "scope", "success", "expected_kerby_version", "runtime_binding_required", "checks",
-                "cleanup", "cache_bytes", "observed_lifetime_seconds", "child_count", "cache_lifecycle", "stage", "wire_hex", "rclone_wire_hex", "relay", "error", "diagnostic", "remaining_threads", "remaining_thread_intervals", "remaining_thread_matrix", "remaining_timer_kinds", "thread_observation_complete", "owned_thread_cleanup"} | JAVA_FALSE
+                "cleanup", "cache_bytes", "observed_lifetime_seconds", "child_count", "cache_lifecycle", "stage", "wire_hex", "rclone_wire_hex", "relay", "error", "diagnostic", "remaining_threads", "remaining_thread_intervals", "remaining_thread_matrix", "remaining_timer_kinds", "remaining_rpc_kinds", "cleanup_entry_rpc_kinds", "thread_observation_complete", "owned_thread_cleanup"} | JAVA_FALSE
         need(type(value) is dict and set(value) == keys and type(value["schema_version"]) is int
              and value["schema_version"] == 1 and value["scope"] == "hdfs_kerberos_cache_expiry_feasibility"
              and value["expected_kerby_version"] == "2.1.2" and value["runtime_binding_required"] is True
@@ -498,6 +515,7 @@ def validate_java(raw, exit_code):
         validate_expiry(value["cache_lifecycle"], passed, value["child_count"])
         validate_diagnostics(value["diagnostic"], value["remaining_threads"], value["remaining_thread_intervals"],
                              value["remaining_thread_matrix"], value["remaining_timer_kinds"], value["thread_observation_complete"], value["error"], value["cleanup"], passed)
+        validate_rpc_diagnostics(value["remaining_threads"], value["remaining_rpc_kinds"], value["cleanup_entry_rpc_kinds"], passed)
         validate_owned_cleanup(value["owned_thread_cleanup"], value["cleanup"])
         if passed:
             need(value["stage"] == "completed" and value["wire_hex"] == value["rclone_wire_hex"], "java_report_invalid")
