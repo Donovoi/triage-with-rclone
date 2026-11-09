@@ -239,7 +239,7 @@ def validate_java(C,raw,exit_code):
             and owner['native_qualified'] is False and owner['renewal_verified'] is False,'java_report_invalid')
     if value['success']:
         need(exit_code==0 and value['stage']=='completed' and value['error']=='none' and value['cleanup_complete']
-            and all(checks.values()) and value['tasks']==5 and value['managed_assertions']==68 and 118<=value['tgt_lifetime_seconds']<=120
+            and all(checks.values()) and value['tasks']==5 and value['managed_assertions']==83 and 118<=value['tgt_lifetime_seconds']<=120
             and 8<=value['service_lifetime_seconds']<=10 and owner and owner['stage']=='closed'
             and owner['setup_completed']==6 and owner['children']==7,'java_report_invalid')
         need(all(owner[k] for k in ('children_reaped','streams_reaped','modules_verified','listener_verified','private_material_removed'))

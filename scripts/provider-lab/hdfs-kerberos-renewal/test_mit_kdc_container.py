@@ -36,7 +36,7 @@ def native_success():
         modules_verified=True,listener_verified=True,forced=False,descendants_seen=False,stream_failure=False,
         private_material_removed=True,native_qualified=False,renewal_verified=False)
     return dict(schema_version=1,scope='mit_kdc_bootstrap_only',success=True,stage='completed',error='none',
-        checks=dict.fromkeys(M.CHECKS,True),owner=owner,tasks=5,managed_assertions=68,tgt_lifetime_seconds=120,service_lifetime_seconds=10,
+        checks=dict.fromkeys(M.CHECKS,True),owner=owner,tasks=5,managed_assertions=83,tgt_lifetime_seconds=120,service_lifetime_seconds=10,
         duration_ms=1000,cleanup_complete=True,**dict.fromkeys(M.FALSE_CLAIMS,False))
 
 def container_fixture():
@@ -130,7 +130,7 @@ class ContainerContracts(unittest.TestCase):
     def test_native_report_rejects_scope_claim_type_and_bound_mutations(self):
         value=native_success()
         edits=[('scope','provider_accepted'),('schema_version',True),('stage',[]),('error','private raw error'),('tasks',True),
-            ('tasks',6),('managed_assertions',67),('duration_ms',190001),('tgt_lifetime_seconds',121),('service_lifetime_seconds',0),('cleanup_complete',False)]
+            ('tasks',6),('managed_assertions',82),('duration_ms',190001),('tgt_lifetime_seconds',121),('service_lifetime_seconds',0),('cleanup_complete',False)]
         edits += [(key,True) for key in M.FALSE_CLAIMS]
         for key,bad in edits:
             changed=copy.deepcopy(value);changed[key]=bad
