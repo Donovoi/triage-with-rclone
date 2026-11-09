@@ -19,7 +19,7 @@ import uuid
 HERE=Path(__file__).resolve().parent
 SUPPORT=HERE.parent/'hdfs-kerberos-policy-denial/policy_denial_container.py'
 SUPPORT_SHA='99304f8183f6068140e9e6f364bb96e1cc5c7c28408f1437b6a85b85fdfec2bd'
-BUNDLE_SHA='c9ebac3ca8c1afb51bf0d404db60f1437a9edd7fb93bc80111eb34014a5ee1b3'
+BUNDLE_SHA='38668bb0d413644cb71388e4f86554f9c5cb0949318599f937f794f6751678f4'
 LABEL='org.openai.triage.rclone-usage-build'
 TMPFS='rw,nosuid,nodev,noexec,size=32m,mode=0700,uid=10001,gid=10001'
 SOURCES={'inspect_build.go':HERE/'inspect_build.go','COPYING-rclone':HERE/'COPYING-rclone','patches/APReq.go':HERE.parent/'hdfs-gokrb-usage/patches/APReq.go','patches/KDCReq.go':HERE.parent/'hdfs-gokrb-usage/patches/KDCReq.go'}
@@ -72,13 +72,65 @@ def tree_hashes(C,root):
             hashes[p.relative_to(root).as_posix()]=C.file_hash(p)
     return hashes
 
+WORKER_PHASES=frozenset(('startup','download','prepare','verify_sources','complete'))
+WORKER_ERRORS=frozenset(('none','http_error','network_io','timeout','asset_validation','archive_invalid','filesystem_error','unexpected','status_unavailable'))
+
+def worker_error(B,error):
+    import urllib.error
+    if isinstance(error,urllib.error.HTTPError):
+        return 'http_error',error.code if type(error.code) is int and 100<=error.code<=599 else 0
+    if isinstance(error,urllib.error.URLError):
+        return ('timeout' if isinstance(error.reason,TimeoutError) else 'network_io'),0
+    if isinstance(error,TimeoutError):return 'timeout',0
+    if isinstance(error,(B.zipfile.BadZipFile,B.tarfile.TarError,EOFError)):return 'archive_invalid',0
+    if isinstance(error,ValueError):return 'asset_validation',0
+    if isinstance(error,OSError):return 'filesystem_error',0
+    return 'unexpected',0
+
+def validate_worker_status(value):
+    need(type(value) is dict and set(value)=={'schema_version','phase','asset_index','processed_assets','error','http_status'},'report_invalid')
+    need(type(value['schema_version']) is int and value['schema_version']==1 and type(value['phase']) is str and value['phase'] in WORKER_PHASES
+         and type(value['asset_index']) is int and -1<=value['asset_index']<1137
+         and type(value['processed_assets']) is int and 0<=value['processed_assets']<=1137
+         and type(value['error']) is str and value['error'] in WORKER_ERRORS and type(value['http_status']) is int
+         and (value['http_status']==0 or 100<=value['http_status']<=599),'report_invalid')
+    need((value['error']=='http_error')==(value['http_status']!=0),'report_invalid')
+    if value['phase'] in ('download','prepare'):
+        need(value['asset_index']>=0 and value['processed_assets'] in (value['asset_index'],value['asset_index']+1),'report_invalid')
+    else:need(value['asset_index']==-1,'report_invalid')
+    if value['phase']=='complete':
+        need(value['asset_index']==-1 and value['processed_assets']==1137 and value['error']=='none','report_invalid')
+    return value
+
+def read_worker_status(C,context):
+    return validate_worker_status(C.parse(C.read(context/'worker-status.json',2048),2048))
+
 def package_worker(C,B,context,identity,source_hash):
     C.hosted_guard();need(sys.version_info[:2]==(3,14),'python_version')
     need(context.is_absolute() and context.name=='context'
          and re.fullmatch('rclone-usage-[a-f0-9]{32}-[a-z0-9_]+',context.parent.name),'unsafe_path')
     C.directory(context,identity);need(C.file_hash(Path(__file__),524288)==source_hash,'input_changed')
-    lock=B.load_lock(C.read(HERE/'assets-lock.json',1048576))
-    B.download(context,lock);B.prepare(context,lock,C.read)
+    state=dict(schema_version=1,phase='startup',asset_index=-1,processed_assets=0,error='none',http_status=0)
+    def record(phase,index,processed):
+        state.update(phase=phase,asset_index=index,processed_assets=processed)
+        validate_worker_status(state);C.directory(context,identity)
+        target=context/'worker-status.json';temporary=context/'worker-status.next'
+        if target.exists() or target.is_symlink():C.regular(target,2048)
+        raw=canonical(state)+b'\n';need(len(raw)<=2048,'report_invalid')
+        fd=os.open(temporary,os.O_WRONLY|os.O_CREAT|os.O_EXCL|getattr(os,'O_NOFOLLOW',0),0o600)
+        with os.fdopen(fd,'wb') as stream:stream.write(raw);stream.flush();os.fsync(stream.fileno())
+        os.replace(temporary,target);C.directory(context,identity)
+    try:
+        record('startup',-1,0)
+        lock=B.load_lock(C.read(HERE/'assets-lock.json',1048576))
+        B.download(context,lock,observer=record)
+        B.prepare(context,lock,C.read,observer=record)
+        record('complete',-1,1137)
+    except BaseException as error:
+        state['error'],state['http_status']=worker_error(B,error)
+        try:record(state['phase'],state['asset_index'],state['processed_assets'])
+        except BaseException:pass
+        raise
 
 def prepare_packages(C,B,context):
     process=None;identity=C.directory(context);source=Path(__file__).resolve();source_hash=C.file_hash(source,524288)
@@ -226,7 +278,7 @@ def inspect_container(value,name,image,run_id):
 def run():
     began=time.monotonic();report=dict(schema_version=1,scope='rclone_usage_candidate_build',success=False,
         started_utc=datetime.now(timezone.utc).isoformat(),finished_utc=None,duration_seconds=None,
-        stage='preflight',inputs=None,result=None,build_diagnostics=None,errors=[],
+        stage='preflight',inputs=None,result=None,build_diagnostics=None,worker_diagnostics=None,errors=[],
         cleanup=dict(container_removed=False,image_removed=False,context_removed=False,raw_evidence_removed=False),
         cleanup_excludes=['shared_base_image','shared_build_cache'],**dict.fromkeys(FALSE_CLAIMS,False))
     C=B=D=docker=root=context=root_id=context_id=image=container=None
@@ -247,6 +299,8 @@ def run():
         root=Path(tempfile.mkdtemp(prefix=name+'-',dir='/tmp'));root_id=C.directory(root)
         context=root/'context';context.mkdir(mode=0o700);context_id=C.directory(context)
         report['stage']='download_assets';prepare_packages(C,B,context)
+        report['worker_diagnostics']=read_worker_status(C,context)
+        need(report['worker_diagnostics']['phase']=='complete' and report['worker_diagnostics']['error']=='none','package_worker_failed')
         for filename,raw in {**sources,**build_files(C,sources,C.read(context/'original/go.mod',131072),C.read(context/'original/go.sum',131072))}.items():
             target=context/filename;target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes(raw)
         before=tree_hashes(C,context)
@@ -280,7 +334,11 @@ def run():
         report['result']=validate_native(C,C.read(result.stdout,262144),result.code,lock)
         report['success']=True;report['stage']='completed'
     except KeyboardInterrupt:report['errors'].append('interrupted')
-    except BaseException as error:report['errors'].append(getattr(error,'code',None) if getattr(error,'code',None) in CODES else 'probe_failed')
+    except BaseException as error:
+        report['errors'].append(getattr(error,'code',None) if getattr(error,'code',None) in CODES else 'probe_failed')
+        if context is not None and C is not None and report['worker_diagnostics'] is None:
+            try:report['worker_diagnostics']=read_worker_status(C,context)
+            except BaseException:report['worker_diagnostics']=dict(schema_version=1,phase='startup',asset_index=-1,processed_assets=0,error='status_unavailable',http_status=0)
     finally:
         for kind,attempted,reference,exact in (('container',created_attempted,container or name,container),('image',built_attempted,image or tag,image)):
             try:

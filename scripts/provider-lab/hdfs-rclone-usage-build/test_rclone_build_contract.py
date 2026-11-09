@@ -130,6 +130,42 @@ class Admission(unittest.TestCase):
         out=U.build_diagnostics(b'inspect_build.go:12: secret words\n')
         self.assertEqual(out['source_errors'],[dict(file='inspect_build.go',line=12)])
         self.assertNotIn('secret',str(out))
+    def test_worker_error_projection_has_no_raw_message(self):
+        import urllib.error
+        cases=[(urllib.error.HTTPError('https://invalid.invalid/',503,'private text',{},None),('http_error',503)),
+               (urllib.error.URLError(TimeoutError('private text')),('timeout',0)),
+               (urllib.error.URLError('private text'),('network_io',0)),
+               (ValueError('private text'),('asset_validation',0)),
+               (zipfile.BadZipFile('private text'),('archive_invalid',0)),
+               (OSError('private text'),('filesystem_error',0)),
+               (RuntimeError('private text'),('unexpected',0))]
+        for error,expected in cases:
+            with self.subTest(error=type(error).__name__):
+                self.assertEqual(U.worker_error(B,error),expected)
+                self.assertNotIn('private',str(U.worker_error(B,error)))
+    def test_worker_status_closed_and_typed(self):
+        valid=dict(schema_version=1,phase='download',asset_index=17,processed_assets=17,error='http_error',http_status=503)
+        self.assertEqual(U.validate_worker_status(valid),valid)
+        for key,value in [('phase',[]),('phase','unknown'),('asset_index',True),('asset_index',1137),
+                          ('processed_assets',True),('processed_assets',1140),('error','raw traceback'),
+                          ('http_status',0),('extra','url')]:
+            changed={**valid,key:value}
+            with self.subTest(key=key,value=value),self.assertRaises(U.ProbeError):U.validate_worker_status(changed)
+        self.assertEqual(U.validate_worker_status(dict(schema_version=1,phase='complete',asset_index=-1,
+                         processed_assets=1137,error='none',http_status=0))['phase'],'complete')
+    def test_download_failure_preserves_asset_ordinal(self):
+        import tempfile,urllib.error
+        from pathlib import Path
+        class Opener:
+            def open(self,*args,**kwargs):
+                raise urllib.error.HTTPError('https://invalid.invalid/',503,'not emitted',{},None)
+        events=[]
+        row=dict(file='module-000.mod',url='https://proxy.golang.org/m/@v/v1.0.0.mod',bytes=1,sha256=B.sha(b'x'))
+        with tempfile.TemporaryDirectory(dir=U.HERE) as tmp:
+            with self.assertRaises(urllib.error.HTTPError):
+                B.download(Path(tmp),{'assets':[row]},opener=Opener(),clock=lambda:0,observer=lambda *event:events.append(event))
+        self.assertEqual(events,[('download',0,0)])
+
     def test_shared_helpers_are_bound(self):
         self.assertEqual(U.sha(U.SUPPORT.read_bytes()),U.SUPPORT_SHA)
         self.assertEqual(U.sha((U.HERE/'rclone_build_bundle.py').read_bytes()),U.BUNDLE_SHA)

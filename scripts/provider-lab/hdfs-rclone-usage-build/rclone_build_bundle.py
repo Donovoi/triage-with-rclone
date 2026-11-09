@@ -129,10 +129,12 @@ class Redirect(urllib.request.HTTPRedirectHandler):
              and parsed.username is None and parsed.password is None and parsed.port in (None,443))
         return super().redirect_request(req,fp,code,msg,headers,newurl)
 
-def download(context,lock,*,opener=None,clock=time.monotonic):
+def download(context,lock,*,opener=None,clock=time.monotonic,observer=None):
     opener=opener or urllib.request.build_opener(urllib.request.ProxyHandler({}),Redirect())
     target=context/'assets';target.mkdir(mode=0o700);deadline=clock()+570
-    for row in lock['assets']:
+    observer=observer or (lambda *_:None)
+    for index,row in enumerate(lock['assets']):
+        observer('download',index,index)
         need(clock()<deadline)
         request=urllib.request.Request(row['url'],headers={'User-Agent':'triage-offline-gokrb','Accept-Encoding':'identity'})
         count=0;digest=hashlib.sha256()
@@ -152,14 +154,17 @@ def download(context,lock,*,opener=None,clock=time.monotonic):
                     count+=len(chunk);need(count<=row['bytes']);stream.write(chunk);digest.update(chunk)
         need(count==row['bytes'] and digest.hexdigest()==row['sha256'])
     need(clock()<deadline)
+    observer('download',len(lock['assets'])-1,len(lock['assets']))
 
-def prepare(context,lock,read):
+def prepare(context,lock,read,*,observer=None):
     cache=context/'module-cache/cache/download';cache.mkdir(parents=True,mode=0o700)
     original=context/'original';original.mkdir(mode=0o700)
     patched=context/'patched-gokrb';patched.mkdir(mode=0o700)
     escape=lambda s:''.join('!'+c.lower() if 'A'<=c<='Z' else c for c in s)
     archives=members=expanded=0
-    for row in lock['assets']:
+    observer=observer or (lambda *_:None)
+    for index,row in enumerate(lock['assets']):
+        observer('prepare',index,index)
         raw=read(context/'assets'/row['file'],row['bytes'])
         verify_asset(raw,row)
         if row['kind']=='toolchain':
@@ -177,6 +182,7 @@ def prepare(context,lock,read):
                 for relative,data in files.items():
                     target=target_root/relative;target.parent.mkdir(parents=True,exist_ok=True)
                     with target.open('xb') as stream:stream.write(data)
+    observer('verify_sources',-1,len(lock['assets']))
     for name,digest in lock['original_sources'].items():need(sha(read(original/name,131072))==digest)
     for name,digest in lock['patch_module']['original_sources'].items():need(sha(read(patched/'messages'/name,131072))==digest)
     need(archives==334 and members==71206 and expanded==1387141663)

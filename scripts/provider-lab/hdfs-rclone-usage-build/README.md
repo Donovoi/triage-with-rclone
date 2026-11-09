@@ -14,7 +14,7 @@ Host work is limited to guarded Python contracts, passive downloads/archive proc
 
 The download worker has a 600-second kill/reap bound; image compilation has a separate 600-second bound. Runtime checks have 10-second child deadlines and a 45-second outer bound, with UID 10001, read-only root, no capabilities, no new privileges, private namespaces, 128 PIDs, 2 GiB RAM, 2 CPUs and a private 32 MiB tmpfs. Version-output files are size-limited. Owned containers, images, contexts and raw command output are removed and verified; shared base-image/build caches are explicitly excluded.
 
-Only a bounded JSON report is retained. Candidate binaries are not published or installed. Their source dependencies retain their upstream licenses; the rclone license is included as COPYING-rclone.
+Only a bounded JSON report is retained. Asset-worker diagnostics contain a closed phase, asset ordinal, completed count, error category and HTTP status; they exclude raw exception text and redirect URLs. Candidate binaries are not published or installed. Their source dependencies retain their upstream licenses; the rclone license is included as COPYING-rclone.
 
 Run only the pure contracts locally:
 
