@@ -1,0 +1,339 @@
+{
+  "schema_version": 1,
+  "tool": {
+    "module": "golang.org/x/vuln",
+    "version": "v1.9.0",
+    "originCommit": "e672cbe8fbc8c76e28fcb6db0efd9ce354e0dac5"
+  },
+  "assets": [
+    {
+      "module": "golang.org/x/vuln",
+      "version": "v1.9.0",
+      "kind": "zip",
+      "h1": "h1:12VaqnI9kJfqwRoPptxoqsUhQtdfrSbdksT7X/KY/sc=",
+      "file": "asset-000.zip",
+      "url": "https://proxy.golang.org/golang.org/x/vuln/@v/v1.9.0.zip",
+      "bytes": 871403,
+      "sha256": "e4bcdca4303ab3e57e913d0b086bbf7916b97ed4d0b069c8e0eede39e8782c2c"
+    },
+    {
+      "module": "golang.org/x/vuln",
+      "version": "v1.9.0",
+      "kind": "mod",
+      "h1": "h1:E/Frwm0xp49fTyBW+6CQHdkvobknbwUM49yEpMGUauw=",
+      "file": "asset-001.mod",
+      "url": "https://proxy.golang.org/golang.org/x/vuln/@v/v1.9.0.mod",
+      "bytes": 510,
+      "sha256": "9495a2000c06e8cf6770a80e715276a95008f41730bad3a08ed55f7fdd10a56b"
+    },
+    {
+      "module": "github.com/google/go-cmdtest",
+      "version": "v0.4.1-0.20220921163831-55ab3332a786",
+      "kind": "zip",
+      "h1": "h1:rcv+Ippz6RAtvaGgKxc+8FQIpxHgsF+HBzPyYL2cyVU=",
+      "file": "asset-002.zip",
+      "url": "https://proxy.golang.org/github.com/google/go-cmdtest/@v/v0.4.1-0.20220921163831-55ab3332a786.zip",
+      "bytes": 29538,
+      "sha256": "e07133eb5bbe14426c30ddd4095ee2f754d1122d97376f0d565c8da8630e841c"
+    },
+    {
+      "module": "github.com/google/go-cmdtest",
+      "version": "v0.4.1-0.20220921163831-55ab3332a786",
+      "kind": "mod",
+      "h1": "h1:apVn/GCasLZUVpAJ6oWAuyP7Ne7CEsQbTnc0plM3m+o=",
+      "file": "asset-003.mod",
+      "url": "https://proxy.golang.org/github.com/google/go-cmdtest/@v/v0.4.1-0.20220921163831-55ab3332a786.mod",
+      "bytes": 126,
+      "sha256": "601082c1eff896cd4627c3c23d156b583fbce42461e5484734b6467b964eb64d"
+    },
+    {
+      "module": "github.com/google/go-cmp",
+      "version": "v0.3.1",
+      "kind": "mod",
+      "h1": "h1:8QqcDgzrUqlUb/G2PQTWiueGozuR1884gddMywk6iLU=",
+      "file": "asset-004.mod",
+      "url": "https://proxy.golang.org/github.com/google/go-cmp/@v/v0.3.1.mod",
+      "bytes": 40,
+      "sha256": "81df7917c225a9da7604b230d952fa278c60a8832c10d799385d134b05d5b087"
+    },
+    {
+      "module": "github.com/google/go-cmp",
+      "version": "v0.6.0",
+      "kind": "zip",
+      "h1": "h1:ofyhxvXcZhMsU5ulbFiLKl/XBFqE1GSq7atu8tAmTRI=",
+      "file": "asset-005.zip",
+      "url": "https://proxy.golang.org/github.com/google/go-cmp/@v/v0.6.0.zip",
+      "bytes": 129773,
+      "sha256": "4b4e9bf6c48211080651b491dfb48d68b736c66a305bcf94605606e1ba2eaa4a"
+    },
+    {
+      "module": "github.com/google/go-cmp",
+      "version": "v0.6.0",
+      "kind": "mod",
+      "h1": "h1:17dUlkBOakJ0+DkrSSNjCkIjxS6bF9zb3elmeNGIjoY=",
+      "file": "asset-006.mod",
+      "url": "https://proxy.golang.org/github.com/google/go-cmp/@v/v0.6.0.mod",
+      "bytes": 41,
+      "sha256": "e7c7669d4a1dd589ba3e024ba27f43f293db611fe075ce20d7b884370d63febd"
+    },
+    {
+      "module": "github.com/google/renameio",
+      "version": "v0.1.0",
+      "kind": "zip",
+      "h1": "h1:GOZbcHa3HfsPKPlmyPyN2KEohoMXOhdMbHrvbpl2QaA=",
+      "file": "asset-007.zip",
+      "url": "https://proxy.golang.org/github.com/google/renameio/@v/v0.1.0.zip",
+      "bytes": 14941,
+      "sha256": "b8510bb34078691a20b8e4902d371afe0eb171b2daf953f67cb3960d1926ccf3"
+    },
+    {
+      "module": "github.com/google/renameio",
+      "version": "v0.1.0",
+      "kind": "mod",
+      "h1": "h1:KWCgfxg9yswjAJkECMjeO8J8rahYeXnNhOm40UhjYkI=",
+      "file": "asset-008.mod",
+      "url": "https://proxy.golang.org/github.com/google/renameio/@v/v0.1.0.mod",
+      "bytes": 34,
+      "sha256": "ba9b5eb0878008a891e16b08c17922b03f92c76a03e7bfe1832635eada1c1a35"
+    },
+    {
+      "module": "golang.org/x/mod",
+      "version": "v0.42.0",
+      "kind": "zip",
+      "h1": "h1:ICeL3t2L30ljSPHHxDnR4fqVcBt/zR2zJAb9juavmQg=",
+      "file": "asset-009.zip",
+      "url": "https://proxy.golang.org/golang.org/x/mod/@v/v0.42.0.zip",
+      "bytes": 185160,
+      "sha256": "2770e372e42c30dd498d63bb094fe257edfad6882c611f8e0d82925feac159f3"
+    },
+    {
+      "module": "golang.org/x/mod",
+      "version": "v0.42.0",
+      "kind": "mod",
+      "h1": "h1:u5fzIrRInkL8MaO1cbRkUHT64v303YIT5KEqpNr7jRs=",
+      "file": "asset-010.mod",
+      "url": "https://proxy.golang.org/golang.org/x/mod/@v/v0.42.0.mod",
+      "bytes": 86,
+      "sha256": "92defdc3237bf4f850e9e5c7d7ad6d06b9ef6a10caa12c2c8e54150a4c370270"
+    },
+    {
+      "module": "golang.org/x/sync",
+      "version": "v0.24.0",
+      "kind": "zip",
+      "h1": "h1:iqiDrGoDgyuvAKrhLQthUEzU/R378N78gXbBjxed7oA=",
+      "file": "asset-011.zip",
+      "url": "https://proxy.golang.org/golang.org/x/sync/@v/v0.24.0.zip",
+      "bytes": 26232,
+      "sha256": "ca3fcf3ea8259e75891f7947e1a816a5b89402c542d45d8bbbd9e061b0c58019"
+    },
+    {
+      "module": "golang.org/x/sync",
+      "version": "v0.24.0",
+      "kind": "mod",
+      "h1": "h1:sUUOizhqBxiL6pEWpqNLUiaJn1ShEbZ6BBqskPbjZm0=",
+      "file": "asset-012.mod",
+      "url": "https://proxy.golang.org/golang.org/x/sync/@v/v0.24.0.mod",
+      "bytes": 36,
+      "sha256": "febf4fed5dc12c0de24528f7065bf071cc74a2424070194aaf24617b91066cda"
+    },
+    {
+      "module": "golang.org/x/sys",
+      "version": "v0.49.0",
+      "kind": "zip",
+      "h1": "h1:XbzkgYJHdqh/8m2Uu0W/dQv8nktxx4BFHp1M0gROTXA=",
+      "file": "asset-013.zip",
+      "url": "https://proxy.golang.org/golang.org/x/sys/@v/v0.49.0.zip",
+      "bytes": 2115196,
+      "sha256": "e73a06591ca0d7016ce3ccb45c36a8ed7128468aecc1a357f94d815c760c6b31"
+    },
+    {
+      "module": "golang.org/x/sys",
+      "version": "v0.49.0",
+      "kind": "mod",
+      "h1": "h1:hNLxWAXmnKAxqDtdwIYC4bM9oQPEecfsnNMuSxOs3og=",
+      "file": "asset-014.mod",
+      "url": "https://proxy.golang.org/golang.org/x/sys/@v/v0.49.0.mod",
+      "bytes": 35,
+      "sha256": "9522f4c9806d1c26586ea80fa56292929bd295865e71981927f52996c6b1c831"
+    },
+    {
+      "module": "golang.org/x/telemetry",
+      "version": "v0.0.0-20261010193011-f71dc92da45e",
+      "kind": "zip",
+      "h1": "h1:P6NGsugec4oASJ+yKMNgTndeo0h2CbixZLvQIe9h5R4=",
+      "file": "asset-015.zip",
+      "url": "https://proxy.golang.org/golang.org/x/telemetry/@v/v0.0.0-20261010193011-f71dc92da45e.zip",
+      "bytes": 1052736,
+      "sha256": "79c856b4cd58b57548b1aa794bcf173a0d160db1a514f147ca892d1125818cb1"
+    },
+    {
+      "module": "golang.org/x/telemetry",
+      "version": "v0.0.0-20261010193011-f71dc92da45e",
+      "kind": "mod",
+      "h1": "h1:GNu+nb+E5axfGmP+Uu3ZVQu5lE/Xk42MjZOHWUD94/o=",
+      "file": "asset-016.mod",
+      "url": "https://proxy.golang.org/golang.org/x/telemetry/@v/v0.0.0-20261010193011-f71dc92da45e.mod",
+      "bytes": 133,
+      "sha256": "dbd1d6b5f97ff68705f11945f8b80e5275eb70dc434374b05504d3b830065a68"
+    },
+    {
+      "module": "golang.org/x/tools",
+      "version": "v0.52.0",
+      "kind": "zip",
+      "h1": "h1:ryxg4U63oaUYk7uOLTF37n43f4qgtGvqV4Ioit1BaEs=",
+      "file": "asset-017.zip",
+      "url": "https://proxy.golang.org/golang.org/x/tools/@v/v0.52.0.zip",
+      "bytes": 2874579,
+      "sha256": "90b2a941aa5f2fe87564b8e38c3f03796de2e3597b7f4c52a9a6a53201b32c48"
+    },
+    {
+      "module": "golang.org/x/tools",
+      "version": "v0.52.0",
+      "kind": "mod",
+      "h1": "h1:ItcP5UNaVGG+Yc4eIYmaFLNJ4soEopkx5Y2d4lcEurs=",
+      "file": "asset-018.mod",
+      "url": "https://proxy.golang.org/golang.org/x/tools/@v/v0.52.0.mod",
+      "bytes": 301,
+      "sha256": "b4272bcb2c99901b1878e04a56c8a584ac1dce9d5844a3c1cc68a627546fe6fe"
+    },
+    {
+      "module": "golang.org/x/tools/go/expect",
+      "version": "v0.1.1-deprecated",
+      "kind": "zip",
+      "h1": "h1:jpBZDwmgPhXsKZC6WhL20P4b/wmnpsEAGHaNy0n/rJM=",
+      "file": "asset-019.zip",
+      "url": "https://proxy.golang.org/golang.org/x/tools/go/expect/@v/v0.1.1-deprecated.zip",
+      "bytes": 10326,
+      "sha256": "b2389159ddd768c6bd83a0cc92bbf9be01c32ca973c366fc224b79762d90dd79"
+    },
+    {
+      "module": "golang.org/x/tools/go/expect",
+      "version": "v0.1.1-deprecated",
+      "kind": "mod",
+      "h1": "h1:eihoPOH+FgIqa3FpoTwguz/bVUSGBlGQU67vpBeOrBY=",
+      "file": "asset-020.mod",
+      "url": "https://proxy.golang.org/golang.org/x/tools/go/expect/@v/v0.1.1-deprecated.mod",
+      "bytes": 125,
+      "sha256": "0995d960f35334cd5c1caa9748e280ce531f2e06fe092466c77817ceb7a32f08"
+    },
+    {
+      "module": "golang.org/x/tools/go/packages/packagestest",
+      "version": "v0.1.1-deprecated",
+      "kind": "zip",
+      "h1": "h1:1h2MnaIAIXISqTFKdENegdpAgUXz6NrPEsbIeWaBRvM=",
+      "file": "asset-021.zip",
+      "url": "https://proxy.golang.org/golang.org/x/tools/go/packages/packagestest/@v/v0.1.1-deprecated.zip",
+      "bytes": 27197,
+      "sha256": "15792a78ef9338b2c08d5010b24211f85c4d39e8c31db316f1ca4a891605ed01"
+    },
+    {
+      "module": "golang.org/x/tools/go/packages/packagestest",
+      "version": "v0.1.1-deprecated",
+      "kind": "mod",
+      "h1": "h1:RVAQXBGNv1ib0J382/DPCRS/BPnsGebyM1Gj5VSDpG8=",
+      "file": "asset-022.mod",
+      "url": "https://proxy.golang.org/golang.org/x/tools/go/packages/packagestest/@v/v0.1.1-deprecated.mod",
+      "bytes": 315,
+      "sha256": "f61084d3a3625bc96725aaf19c6a0341ea42715254bc1e617943d2ff836383fd"
+    },
+    {
+      "module": "golang.org/x/vuln",
+      "version": "v1.9.0",
+      "kind": "info",
+      "file": "asset-023.info",
+      "url": "https://proxy.golang.org/golang.org/x/vuln/@v/v1.9.0.info",
+      "bytes": 189,
+      "sha256": "1566e4dda29884833f8bf901c79e795ece9d2da3616ba191ad01c4301d4bc5ad"
+    },
+    {
+      "module": "github.com/google/go-cmdtest",
+      "version": "v0.4.1-0.20220921163831-55ab3332a786",
+      "kind": "info",
+      "file": "asset-024.info",
+      "url": "https://proxy.golang.org/github.com/google/go-cmdtest/@v/v0.4.1-0.20220921163831-55ab3332a786.info",
+      "bytes": 198,
+      "sha256": "ec219ac1e9c52c72261202eb9ebce6710ca5759e62335d32bdfaffcff81d27c1"
+    },
+    {
+      "module": "github.com/google/go-cmp",
+      "version": "v0.6.0",
+      "kind": "info",
+      "file": "asset-025.info",
+      "url": "https://proxy.golang.org/github.com/google/go-cmp/@v/v0.6.0.info",
+      "bytes": 189,
+      "sha256": "e624a2c1fe53ae5c8cdce4707290e8282c2c89f3143951670eb175957aa9cfa9"
+    },
+    {
+      "module": "github.com/google/renameio",
+      "version": "v0.1.0",
+      "kind": "info",
+      "file": "asset-026.info",
+      "url": "https://proxy.golang.org/github.com/google/renameio/@v/v0.1.0.info",
+      "bytes": 50,
+      "sha256": "df7aad34ef9db3501dc3a431f529d9cc83195093f4f38842e225ffa1eeeb8f40"
+    },
+    {
+      "module": "golang.org/x/mod",
+      "version": "v0.42.0",
+      "kind": "info",
+      "file": "asset-027.info",
+      "url": "https://proxy.golang.org/golang.org/x/mod/@v/v0.42.0.info",
+      "bytes": 190,
+      "sha256": "df5239db2018ccccd1716cd51244a1d37e2b1b6567a4d9d235eadcb9c4a4a40d"
+    },
+    {
+      "module": "golang.org/x/sync",
+      "version": "v0.24.0",
+      "kind": "info",
+      "file": "asset-028.info",
+      "url": "https://proxy.golang.org/golang.org/x/sync/@v/v0.24.0.info",
+      "bytes": 191,
+      "sha256": "d12e1a2d422a79235baceab349c3c55ab3de707214338884cade9af3bb1a5b70"
+    },
+    {
+      "module": "golang.org/x/sys",
+      "version": "v0.49.0",
+      "kind": "info",
+      "file": "asset-029.info",
+      "url": "https://proxy.golang.org/golang.org/x/sys/@v/v0.49.0.info",
+      "bytes": 190,
+      "sha256": "b1eeba05824e4c555cee0454171f3dbc0b9bce51e322237b5bd98ceb14a62346"
+    },
+    {
+      "module": "golang.org/x/telemetry",
+      "version": "v0.0.0-20261010193011-f71dc92da45e",
+      "kind": "info",
+      "file": "asset-030.info",
+      "url": "https://proxy.golang.org/golang.org/x/telemetry/@v/v0.0.0-20261010193011-f71dc92da45e.info",
+      "bytes": 197,
+      "sha256": "44f6f3d7df8339bd865457c574d47f38bb1acb220a68406df6addd92b58f6917"
+    },
+    {
+      "module": "golang.org/x/tools",
+      "version": "v0.52.0",
+      "kind": "info",
+      "file": "asset-031.info",
+      "url": "https://proxy.golang.org/golang.org/x/tools/@v/v0.52.0.info",
+      "bytes": 192,
+      "sha256": "0bbc32e1b866c61f8f63659aa1f08bdac5cd4675b41f6ce4e60725498b51e8a9"
+    },
+    {
+      "module": "golang.org/x/tools/go/expect",
+      "version": "v0.1.1-deprecated",
+      "kind": "info",
+      "file": "asset-032.info",
+      "url": "https://proxy.golang.org/golang.org/x/tools/go/expect/@v/v0.1.1-deprecated.info",
+      "bytes": 243,
+      "sha256": "f17b12bec957629a6da655b8c242d605831ac21f5d503265d2a34040a62e3599"
+    },
+    {
+      "module": "golang.org/x/tools/go/packages/packagestest",
+      "version": "v0.1.1-deprecated",
+      "kind": "info",
+      "file": "asset-033.info",
+      "url": "https://proxy.golang.org/golang.org/x/tools/go/packages/packagestest/@v/v0.1.1-deprecated.info",
+      "bytes": 273,
+      "sha256": "9490716febde2ff69de31b8028d33c4bf33f1d7c687bbf788c98c25ce3d4d79e"
+    }
+  ]
+}

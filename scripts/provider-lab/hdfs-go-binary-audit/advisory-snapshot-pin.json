@@ -1,0 +1,20 @@
+{
+  "compressed_bytes": 1089577,
+  "compressed_sha256": "03db0fe354042148332cf66f4de65709a143dd619a1b5c1ca59d5edbf56d4dbe",
+  "payload_bytes": 8201369,
+  "payload_sha256": "8c91a83fad97bc6cd43ddb54bb2277963a62a1c3a17a737c09b067a58ec3f014",
+  "source_archive_sha256": "0a54b7eb56bf031dc214fc4f29ca6db71073ab324595c3de9485f97a334e9e22",
+  "files": 4792,
+  "records": 4789,
+  "original_file_bytes": 7316406,
+  "database_modified": "2026-11-05T23:49:57Z",
+  "module_index_entries": 1457,
+  "module_references": 6843,
+  "known_ids": [
+    "GO-2026-5932",
+    "GO-2026-6860",
+    "GO-2026-6865",
+    "GO-2026-6866",
+    "GO-2026-6888"
+  ]
+}
