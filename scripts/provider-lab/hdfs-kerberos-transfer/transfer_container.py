@@ -41,9 +41,10 @@ OWNED_CLEANUP_STATES = frozenset("not_attempted observation_incomplete services_
 TIMER_KINDS = frozenset("namenode_metrics rpc_idle snapshot_gc shell_timeout ssl_store unknown".split())
 BASE = "docker.io/library/eclipse-temurin@sha256:e1c09a9ee23feb81f94016547826c1e694086cd927356fb57fccc312fcc32f85"
 BASE_ID = "sha256:d0e6e16acb7f941e5206d99ec38e5bba18545c43462541958f84b22e0fc006e8"
-JAVA_SHA = "7635cf9a0888de7b3ba6af8760913403fea96c0cb05217bde7e001053969a971"
+JAVA_SHA = "541531ab1e116d9baed2b6159fcc5d0ad07438ba68d532d5faaf00bd08942e21"
 JSON_SHA = "72950bcefb1bd0b6b669df6748594771dc7554a799ec3a5c7615a7863557002a"
 SECURITY_SHA = "6650b1baa6a9d1f4942b720328cbae820a189ae10e3e5c357dacd6a23277fb55"
+QOP_SHA = "4cd654a59fda00f93b74be08823ae24b2a91cca8a2b7e632113e68dbd3cbb7c4"
 REMEDIATION_RUNTIME_SHA = "e701b0047f1198614bd590954e8efd15bf05af51b98cc62b2d9298cd721663e7"
 REMEDIATION_ORDER_SHA = "92533297bdae9e77befdc0c381f25850a08becac726c026ab70bd3a68b90b2a7"
 REMEDIATION_LOCK_SHA = "80184076d64194810cae394fbc6d8b00e86717c9479d6176f828b042dcd41df1"
@@ -57,9 +58,9 @@ FALSE_CLAIMS = dict(ledger_eligible=False, authentication_verified=False, hdfs_a
 JAVA_FALSE = set(FALSE_CLAIMS) - {"publisher_audit_completed"}
 JAVA_CHECKS = frozenset(("environment", "metrics_mode_enabled", "endpoint_settings", "positive_tgt", "file_cache_v3",
     "nonrenewable", "secure_namenode", "secure_datanode", "tls_material", "tls_endpoints", "registered_datanode", "seed_hashes", "empty_acquired", "small_acquired", "missing_path_rejected", "json_validator_controls", "rc_hash_verified", "missing_object_rejected", "payload_before", "payload_after", "listing_before", "rclone_auth_boundary_rejection",
-    "wire_auth_boundary_rejection", "listing_after", "source_preserved", "cache_preserved", "block_token_controls"))
+    "wire_auth_boundary_rejection", "listing_after", "source_preserved", "cache_preserved", "block_token_controls", "rclone_qop"))
 JAVA_CLEANUP = frozenset(("replica_pool_stopped", "seed_lease_renewer_stopped", "pipeline_server_observer_detached", "pipeline_observer_detached", "children_reaped", "relay_closed", "filesystem_closed", "namenode_stop_returned", "owner_logged_out", "kdc_stop_returned", "threads_terminated", "listeners_absent",
-    "private_material_removed", "process_property_restored", "metrics_mode_restored", "cleanup_completed", "gc_monitor_reaped", "fs_statistics_cleaner_reaped", "format_ssl_timer_reaped", "datanode_stop_returned", "datanode_ssl_timer_reaped", "data_security_closed"))
+    "private_material_removed", "process_property_restored", "metrics_mode_restored", "cleanup_completed", "gc_monitor_reaped", "fs_statistics_cleaner_reaped", "format_ssl_timer_reaped", "datanode_stop_returned", "datanode_ssl_timer_reaped", "data_security_closed", "qop_observer_closed"))
 JAVA_CODES = frozenset("""environment_invalid path_invalid source_changed unexpected_files
 listener_mismatch configuration_invalid deadline_exceeded positive_ticket_failed
 wrong_password_failure_mismatch wrong_principal_not_rejected cache_invalid ticket_time_mismatch
@@ -79,7 +80,7 @@ class ProbeError(Exception):
         super().__init__(self.code)
 
 
-JAVA_VALIDATION_STAGES = frozenset(["parse","schema","boolean_maps","metrics_mode","ssl_capture","seed_checkpoint","pipeline_server","pipeline_origin","rclone_observation","scalars","stage","wire","exit_status","relay","acquisitions","diagnostics","owned_cleanup","datanode_security","completion"])
+JAVA_VALIDATION_STAGES = frozenset(["parse","schema","boolean_maps","metrics_mode","ssl_capture","seed_checkpoint","pipeline_server","pipeline_origin","rclone_observation","scalars","stage","wire","exit_status","relay","acquisitions","diagnostics","owned_cleanup","datanode_security","rclone_qop","completion"])
 
 
 class JavaReportError(ProbeError):
@@ -300,13 +301,14 @@ def build_files(rows):
     checks += JAVA_SHA + "  /opt/transfer/HdfsKerberosTransferProbe.java\n" + sha(driver.encode()) + "  /opt/transfer/driver.sh\n"
     checks += JSON_SHA + "  /opt/transfer/HdfsTransferJson.java\n"
     checks += SECURITY_SHA + "  /opt/transfer/HdfsDataNodeSecurity.java\n"
+    checks += QOP_SHA + "  /opt/transfer/HdfsRcloneQop.java\n"
     classpath = "/opt/transfer/classes:" + cp + ":/work/tls-resources\n"
     checks += sha(classpath.encode()) + "  /opt/transfer/classpath\n"
     dockerfile = ("FROM " + BASE + "\nUSER 0\nCOPY jars /opt/transfer/jars/\nCOPY rclone /opt/transfer/rclone\nCOPY resources /opt/transfer/resources\n"
-        "COPY HdfsKerberosTransferProbe.java HdfsTransferJson.java HdfsDataNodeSecurity.java checksums driver.sh classpath /opt/transfer/\n"
+        "COPY HdfsKerberosTransferProbe.java HdfsTransferJson.java HdfsDataNodeSecurity.java HdfsRcloneQop.java checksums driver.sh classpath /opt/transfer/\n"
         "RUN sha256sum -c /opt/transfer/checksums && mkdir /opt/transfer/classes && "
         "/opt/java/openjdk/bin/javac -J-Xmx512m -XDrawDiagnostics -proc:none -implicit:none -encoding UTF-8 -cp '" + cp +
-        "' -d /opt/transfer/classes /opt/transfer/HdfsKerberosTransferProbe.java /opt/transfer/HdfsTransferJson.java /opt/transfer/HdfsDataNodeSecurity.java && cp -R /opt/transfer/resources/webapps /opt/transfer/classes/ && chmod -R a=rX /opt/transfer && chmod 0555 /opt/transfer/rclone\n"
+        "' -d /opt/transfer/classes /opt/transfer/HdfsKerberosTransferProbe.java /opt/transfer/HdfsTransferJson.java /opt/transfer/HdfsDataNodeSecurity.java /opt/transfer/HdfsRcloneQop.java && cp -R /opt/transfer/resources/webapps /opt/transfer/classes/ && chmod -R a=rX /opt/transfer && chmod 0555 /opt/transfer/rclone\n"
         "USER 10001:10001\nWORKDIR /work\n")
     return {"Dockerfile": dockerfile.encode(), "checksums": checks.encode(), "driver.sh": driver.encode(), "classpath": classpath.encode()}
 
@@ -593,12 +595,49 @@ def validate_data_security(value, checked, cleaned):
              and value['wire_bytes_read'] > 0 and value['wire_bytes_written'] > 0, 'java_report_invalid')
 
 
+def validate_rclone_qop(value, checked, cleaned):
+    booleans = {'attempted', 'parser_checked', 'verified', 'failed', 'attached', 'logger_restored', 'quiescent', 'original_debug'}
+    expected = [0, 0, 1, 0, 2, 0, 2, 1, 0, 0]
+    need(type(value) is dict and set(value) == booleans | {'phases_completed', 'connections', 'qop', 'phase_connections', 'setup_stage', 'cipher_streams', 'phase_cipher_streams', 'failure'}, 'java_report_invalid')
+    need(all(type(value[k]) is bool for k in booleans) and type(checked) is bool and type(cleaned) is bool,
+         'java_report_invalid')
+    for key, limit in (('phases_completed', 10), ('connections', 6), ('cipher_streams', 6)):
+        need(type(value[key]) is int and 0 <= value[key] <= limit, 'java_report_invalid')
+    need(type(value['setup_stage']) is str and value['setup_stage'] in {'not_attempted', 'appender_check', 'configuring', 'opened'}, 'java_report_invalid')
+    need((value['setup_stage'] != 'not_attempted') is value['attempted'], 'java_report_invalid')
+    counts = value['phase_connections']; completed = value['phases_completed']
+    need(type(counts) is list and len(counts) == 10
+         and all(type(n) is int and 0 <= n <= cap for n, cap in zip(counts, expected)), 'java_report_invalid')
+    ciphers = value['phase_cipher_streams']
+    need(type(ciphers) is list and len(ciphers) == 10
+         and all(type(n) is int and 0 <= n <= cap for n, cap in zip(ciphers, counts))
+         and sum(ciphers) == value['cipher_streams'], 'java_report_invalid')
+    need(type(value['failure']) is str and value['failure'] in {'none', 'phase_or_thread', 'cipher_binding', 'unsupported_event', 'duplicate_or_excess', 'observer_error'}
+         and (value['failure'] != 'none') is value['failed'], 'java_report_invalid')
+    need(sum(counts) == value['connections'] and counts[:completed] == expected[:completed]
+         and not any(counts[completed + 1:]), 'java_report_invalid')
+    need(type(value['qop']) is str and value['qop'] == ('auth-conf' if value['connections'] else 'not_observed'),
+         'java_report_invalid')
+    need(cleaned is (value['logger_restored'] and not value['attached'] and value['quiescent']), 'java_report_invalid')
+    need(not value['attached'] or value['attempted'] and not value['logger_restored'], 'java_report_invalid')
+    if not value['attempted']:
+        need(completed == value['connections'] == 0 and cleaned and not value['verified'] and not value['failed'],
+             'java_report_invalid')
+    else:
+        need(value['parser_checked'], 'java_report_invalid')
+    if value['verified']:
+        need(value['attempted'] and value['setup_stage'] == 'opened' and not value['failed'] and completed == 10 and counts == expected,
+             'java_report_invalid')
+    if checked:
+        need(value['verified'] and cleaned, 'java_report_invalid')
+
+
 def validate_java(raw, exit_code):
     checkpoint = "parse"
     try:
         value = parse(raw, 32768)
         checkpoint = "schema"
-        keys = {"schema_version", "scope", "success", "expected_kerby_version", "runtime_binding_required", "datanode_security", "checks",
+        keys = {"schema_version", "scope", "success", "expected_kerby_version", "runtime_binding_required", "datanode_security", "rclone_qop", "checks",
                 "cleanup", "metrics_mode", "ssl_capture", "seed_checkpoint", "cache_bytes", "child_count", "acquired_bytes", "acquisitions", "missing_category", "rc_hash_sha256", "missing_object_category", "observed_lifetime_seconds", "stage", "wire_hex", "rclone_wire_hex", "relay", "error", "diagnostic", "pipeline_origin", "pipeline_server_diagnostic", "rclone_observation", "remaining_executor_kind", "remaining_threads", "remaining_thread_intervals", "remaining_thread_matrix", "remaining_timer_kinds", "thread_observation_complete", "owned_thread_cleanup"} | JAVA_FALSE
         need(type(value) is dict and set(value) == keys and type(value["schema_version"]) is int
              and value["schema_version"] == 1 and value["scope"] == "hdfs_kerberos_transfer_feasibility"
@@ -619,6 +658,8 @@ def validate_java(raw, exit_code):
         checkpoint = "datanode_security"
         validate_data_security(value['datanode_security'], value['checks']['block_token_controls'],
                                value['cleanup']['data_security_closed'])
+        checkpoint = "rclone_qop"
+        validate_rclone_qop(value['rclone_qop'], value['checks']['rclone_qop'], value['cleanup']['qop_observer_closed'])
         checkpoint = "pipeline_origin"
         need(type(value["pipeline_origin"]) is str and value["pipeline_origin"] in DIAGNOSTIC_ORIGINS | {"not_observed"}, "java_report_invalid")
         checkpoint = "scalars"
@@ -740,13 +781,16 @@ def run(rclone=None, *, loader=load_helpers, downloader=download, runner_factory
         security_path = HERE / "HdfsDataNodeSecurity.java"
         security_source = read(security_path, 128 * 1024)
         need(sha(security_source) == SECURITY_SHA, "input_invalid")
+        qop_path = HERE / "HdfsRcloneQop.java"
+        qop_source = read(qop_path, 128 * 1024)
+        need(sha(qop_source) == QOP_SHA, "input_invalid")
         need(sha(java) == JAVA_SHA, "input_invalid"); rows = runtime_rows(runtime_raw, lock_raw, profile=profile)
         rclone_pins = read(PIN_FILE, 4096).decode("ascii").splitlines()
         need("RCLONE_VERSION=" + RCLONE_VERSION in rclone_pins and "RCLONE_LINUX_EXE_SHA256=" + RCLONE_SHA in rclone_pins, "input_invalid")
         rclone = Path(rclone); binary = read(rclone, 128 * 1024 * 1024)
         need(sha(binary) == RCLONE_SHA, "input_invalid")
         source_hashes[rclone] = RCLONE_SHA; source_hashes[PIN_FILE] = sha(read(PIN_FILE, 4096))
-        for path, raw in ((java_path, java), (json_path, json_source), (security_path, security_source), (runtime_path, runtime_raw), (lock_path, lock_raw),
+        for path, raw in ((java_path, java), (json_path, json_source), (security_path, security_source), (qop_path, qop_source), (runtime_path, runtime_raw), (lock_path, lock_raw),
                 (Path(__file__).resolve(), read(Path(__file__).resolve(), 512 * 1024))): source_hashes[path] = sha(raw)
         report["inputs"] = dict(candidate_profile=profile, source_sha256={p.name: h for p, h in source_hashes.items()}, jdk_manifest=BASE,
             jdk_config_id=BASE_ID, hadoop_version="3.5.0", kerby_version="2.1.2",
@@ -762,6 +806,7 @@ def run(rclone=None, *, loader=load_helpers, downloader=download, runner_factory
         (context / "HdfsKerberosTransferProbe.java").write_bytes(java)
         (context / "HdfsTransferJson.java").write_bytes(json_source)
         (context / "HdfsDataNodeSecurity.java").write_bytes(security_source)
+        (context / "HdfsRcloneQop.java").write_bytes(qop_source)
         (context / "rclone").write_bytes(binary)
         need(file_hash(context / "rclone") == RCLONE_SHA, "input_changed")
         for filename, data in webapp_resources().items():

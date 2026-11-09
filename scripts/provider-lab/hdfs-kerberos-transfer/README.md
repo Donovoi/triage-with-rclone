@@ -252,8 +252,8 @@ transport and malformed-receipt tests verify strict failure and cleanup handling
 Java lexical/source checks are not compilation or native qualification. Hosted
 review must still establish compilation, exact runtime controls, service/child/
 listener/private material cleanup and outer container/image/context cleanup.
-Application integration, real vendor behavior, cancellation/renewal, and
-negotiated-QOP observation bound to actual rclone connections remain separate.
+Application integration, real vendor behavior, and cancellation/renewal remain
+separate. The rclone QOP observer below also requires exact-source qualification.
 
 The added `HdfsDataNodeSecurity.java` control requires three fresh connections
 to the owned DataNode: a valid checksum request, a request with one operation-token
@@ -265,7 +265,7 @@ derived MD5 of eight big-endian CRC32C checksums for the known 4,096-byte fixtur
 
 Each owned SASL client must complete negotiation and report `auth-conf` before
 the protected request is sent. This observes those control connections only;
-the receipt always retains `rclone_qop_verified=false`. It does not use the
+that independent control retains `rclone_qop_verified=false`. It does not use the
 client's requested-QOP field or the DataNode's shared last-observation field.
 Frames, per-connection input/output bytes, connection count, socket timeouts,
 and the existing overall deadline are bounded. Channels and SASL clients must
@@ -277,3 +277,33 @@ values as synthetic contract inputs in `security-control-contract.json`; they
 do not modify the recorded wire evidence or establish native qualification.
 Compilation and the new three-connection control remain subject to hosted
 qualification of the exact changed source.
+
+`HdfsRcloneQop.java` separately observes completed server handshakes during each
+rclone phase. The synchronous observer accepts only the exact finite Hadoop
+`DataTransferSaslUtil.checkSaslComplete` DEBUG message reporting server `auth-conf`,
+with the live call stack through `SaslDataTransferServer.doSaslHandshake` and
+`DataXceiver.run`. Each observation must belong to a new thread absent from that
+phase's baseline. Duplicate, stale, foreign, unexpected, or downgraded observations
+fail the run. No raw log event, thread name, address, token, or payload is retained.
+
+The fixed phase connection counts are `[0,0,1,0,2,0,2,1,0,0]`: one for the
+small file, two for each two-block payload read, and one for the RC SHA-256 read.
+The pinned hdfs/v2 v2.4.0 reader creates a new BlockReader/connection per block.
+Seed reads finish before observation begins; independent controls and preservation
+reads occur after it ends. Each observed DataXceiver must terminate before the
+next phase. This is fixture-bound observation, not a cryptographic attestation
+or a claim about other clients, runtime versions, or future sessions.
+
+The observer disables parent logger delivery before enabling DEBUG, requires no
+preexisting appender, and restores the exact previous level and additivity. Logger
+operations never run while holding the observer lock. Counts, stack depth, thread
+snapshot size, and joins are bounded by the existing control deadline. Success
+requires all ten phases, six unique handshakes, quiescence and restored logger
+state. Pure `rclone-qop-contract.json` values remain explicitly synthetic;
+compilation and actual rclone observations require the contained native run.
+
+The separate finite encrypted-stream creation event is tracked only after a QOP
+observation on the same DataXceiver thread, with at most one per connection. It
+cannot substitute for a completed handshake. Unknown events still fail, with
+only a fixed failure category retained. Initial DEBUG state may be enabled or
+disabled; the exact original logger state must still be restored.
