@@ -23,6 +23,11 @@ final class MitServiceRenewalControl {
                 "reply_authenticated","nonce_client_server_bound","renewed_times_bound",
                 "fresh_ticket_and_key","reply_controls","sockets_closed")) checks.put(key,false);
     }
+    static Map<String,Boolean> replyFields=new LinkedHashMap<>();
+    static {
+        for(String name:List.of("fields_present","nonce","server","auth_time","start_time","validity","renewal_horizon","flags","key"))
+            replyFields.put(name,false);
+    }
     static int exchanges,wrongUsageError,correctUsageError,replyControls,renewedLifetime;
     static String stage="not_started";
     static void need(boolean ok) { if(!ok) throw new IllegalStateException("manual_renewal_predicate_failed"); }
@@ -32,7 +37,7 @@ final class MitServiceRenewalControl {
     }
     static Map<String,Object> projection() {
         Map<String,Object> out=new LinkedHashMap<>();
-        out.put("stage",stage);out.put("checks",new LinkedHashMap<>(checks));
+        out.put("stage",stage);out.put("checks",new LinkedHashMap<>(checks));out.put("reply_fields",new LinkedHashMap<>(replyFields));
         out.put("exchanges",exchanges);out.put("wrong_usage_error",wrongUsageError);
         out.put("correct_usage_error",correctUsageError);out.put("reply_controls",replyControls);out.put("renewed_lifetime_seconds",renewedLifetime);
         out.put("manual_reply_verified",checks.values().stream().allMatch(Boolean::booleanValue));
@@ -76,19 +81,27 @@ final class MitServiceRenewalControl {
             throw failure;
         } finally { Arrays.fill(copy,(byte)0); }
     }
-    static boolean boundPart(EncTgsRepPart part,EncKdcRepPart original,String realm,int nonce,long requestTime) {
-        if(part.getFlags()==null || part.getKey()==null || part.getSname()==null
-            || part.getAuthTime()==null || part.getStartTime()==null || part.getEndTime()==null || part.getRenewTill()==null)return false;
+
+    static Map<String,Boolean> partBindings(EncTgsRepPart part,EncKdcRepPart original,String realm,int nonce,long requestTime) {
+        Map<String,Boolean> fields=new LinkedHashMap<>();
+        for(String name:List.of("fields_present","nonce","server","auth_time","start_time","validity","renewal_horizon","flags","key"))
+            fields.put(name,false);
+        boolean present=part.getFlags()!=null && part.getKey()!=null && part.getSname()!=null
+            && part.getAuthTime()!=null && part.getStartTime()!=null && part.getEndTime()!=null && part.getRenewTill()!=null;
+        fields.put("fields_present",present);if(!present)return fields;
         long start=part.getStartTime().getTime(),end=part.getEndTime().getTime();
-        return part.getNonce()==nonce && realm.equals(part.getSrealm())
-            && part.getSname().getNameStrings().equals(List.of("hdfs","127.0.0.1"))
-            && part.getAuthTime().getTime()==original.getAuthTime().getTime()
-            && start>=original.getEndTime().getTime()+1000 && Math.abs(start-requestTime)<=3000
-            && end-start>=8000 && end-start<=10000 && end>original.getEndTime().getTime()
-            && part.getRenewTill().getTime()==original.getRenewTill().getTime() && end<=part.getRenewTill().getTime()
-            && (part.getFlags().getFlags() & 0x00800000)!=0
-            && (part.getFlags().getFlags() & 0x50000000)==0
-            && part.getKey().getKeyType()==EncryptionType.AES128_CTS_HMAC_SHA1_96 && part.getKey().getKeyData().length==16;
+        fields.put("nonce",part.getNonce()==nonce);
+        fields.put("server",realm.equals(part.getSrealm()) && part.getSname().getNameStrings().equals(List.of("hdfs","127.0.0.1")));
+        fields.put("auth_time",part.getAuthTime().getTime()==original.getAuthTime().getTime());
+        fields.put("start_time",start>=original.getEndTime().getTime()+1000 && Math.abs(start-requestTime)<=3000);
+        fields.put("validity",end-start>=8000 && end-start<=10000 && end>original.getEndTime().getTime());
+        fields.put("renewal_horizon",part.getRenewTill().getTime()==original.getRenewTill().getTime() && end<=part.getRenewTill().getTime());
+        fields.put("flags",(part.getFlags().getFlags() & 0x00800000)!=0 && (part.getFlags().getFlags() & 0x50000000)==0);
+        fields.put("key",part.getKey().getKeyType()==EncryptionType.AES128_CTS_HMAC_SHA1_96 && part.getKey().getKeyData().length==16);
+        return fields;
+    }
+    static boolean boundPart(EncTgsRepPart part,EncKdcRepPart original,String realm,int nonce,long requestTime) {
+        return partBindings(part,original,realm,nonce,requestTime).values().stream().allMatch(Boolean::booleanValue);
     }
     static void run(String realm,String reader,SgtTicket issued) throws Exception {
         stage="prepare";
@@ -103,10 +116,10 @@ final class MitServiceRenewalControl {
         try {
             PrincipalName client=new PrincipalName(reader);
             need(client.getNameStrings().size()==1 && realm.equals(client.getRealm()));
-            KdcReqBody body=new KdcReqBody();body.setKdcOptions(new KdcOptions(KdcOption.RENEW.getValue()));
+            KdcReqBody body=new KdcReqBody();body.setKdcOptions(new KdcOptions(KdcOption.RENEW.getValue() | KdcOption.RENEWABLE.getValue()));
             body.setCname(client);body.setRealm(realm);body.setSname(issued.getTicket().getSname());
             int nonce=new SecureRandom().nextInt(Integer.MAX_VALUE);body.setNonce(nonce);
-            body.setTill(new KerberosTime(now+10000));body.setEtypes(List.of(EncryptionType.AES128_CTS_HMAC_SHA1_96));
+            body.setRtime(original.getRenewTill());body.setTill(new KerberosTime(now+10000));body.setEtypes(List.of(EncryptionType.AES128_CTS_HMAC_SHA1_96));
             bodyBytes=KrbCodec.encode(body);ticketBytes=KrbCodec.encode(issued.getTicket());
             Authenticator auth=new Authenticator();auth.setCrealm(realm);auth.setCname(client);
             auth.setCtime(new KerberosTime((now/1000)*1000));auth.setCusec((int)(now%1000)*1000);
@@ -143,7 +156,8 @@ final class MitServiceRenewalControl {
             part=KrbCodec.decode(plain,EncTgsRepPart.class);
             need(Arrays.equals(plain,KrbCodec.encode(part)));
             checks.put("reply_authenticated",true);
-            need(boundPart(part,original,realm,nonce,now));
+            replyFields=partBindings(part,original,realm,nonce,now);
+            need(replyFields.values().stream().allMatch(Boolean::booleanValue));
             checks.put("nonce_client_server_bound",true);checks.put("renewed_times_bound",true);
             renewedLifetime=(int)((part.getEndTime().getTime()-part.getStartTime().getTime())/1000);
             need(!Arrays.equals(ticketBytes,KrbCodec.encode(reply.getTicket()))

@@ -41,7 +41,8 @@ def native_success():
         manual_service_renewal=dict(stage='completed',checks=dict.fromkeys(('expired_original','same_request_binding',
             'wrong_usage_rejected','reply_authenticated','nonce_client_server_bound','renewed_times_bound',
             'fresh_ticket_and_key','reply_controls','sockets_closed'),True),exchanges=2,wrong_usage_error=31,
-            correct_usage_error=0,reply_controls=4,renewed_lifetime_seconds=10,manual_reply_verified=True,rclone_renewal_verified=False),
+            correct_usage_error=0,reply_controls=4,renewed_lifetime_seconds=10,manual_reply_verified=True,rclone_renewal_verified=False,
+            reply_fields=dict.fromkeys(('fields_present','nonce','server','auth_time','start_time','validity','renewal_horizon','flags','key'),True)),
         initial_new_threads=dict(process_reaper=1,owned_mit=0,other=0),remaining_new_threads=dict(process_reaper=0,owned_mit=0,other=0),thread_wait_ms=60000,thread_quiet_observations=3,
         duration_ms=1000,cleanup_complete=True,**dict.fromkeys(M.FALSE_CLAIMS,False))
 
@@ -159,6 +160,7 @@ class ContainerContracts(unittest.TestCase):
         manual=value['manual_service_renewal']
         manual.update(stage='not_started',exchanges=0,wrong_usage_error=0,correct_usage_error=0,reply_controls=0,renewed_lifetime_seconds=0,manual_reply_verified=False)
         manual['checks']=dict.fromkeys(manual['checks'],False);manual['checks']['sockets_closed']=True
+        manual['reply_fields']=dict.fromkeys(manual['reply_fields'],False)
         self.assertFalse(M.validate_java(self.C,M.canonical(value),2)['success'])
         with self.assertRaises(M.ProbeError):M.validate_java(self.C,M.canonical(value),0)
 
@@ -225,3 +227,11 @@ class ManualRenewalContracts(unittest.TestCase):
         value=native_success();value['manual_service_renewal']['rclone_renewal_verified']=True;self.reject(value)
         value=native_success();value['manual_service_renewal']['stage']='correct_usage';self.reject(value)
         value=native_success();value['manual_service_renewal']['manual_reply_verified']=False;self.reject(value)
+
+
+    def test_each_authenticated_reply_binding_is_required_and_private_values_rejected(self):
+        for field in native_success()['manual_service_renewal']['reply_fields']:
+            for bad in (False,1,'PRIVATE_CANARY'):
+                value=native_success();value['manual_service_renewal']['reply_fields'][field]=bad;self.reject(value)
+            value=native_success();del value['manual_service_renewal']['reply_fields'][field];self.reject(value)
+        value=native_success();value['manual_service_renewal']['reply_fields']['raw_nonce']=123;self.reject(value)

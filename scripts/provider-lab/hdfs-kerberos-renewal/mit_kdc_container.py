@@ -235,10 +235,14 @@ def validate_java(C,raw,exit_code):
     manual_checks={'expired_original','same_request_binding','wrong_usage_rejected','reply_authenticated',
         'nonce_client_server_bound','renewed_times_bound','fresh_ticket_and_key','reply_controls','sockets_closed'}
     need(type(manual) is dict and set(manual)=={'stage','checks','exchanges','wrong_usage_error','correct_usage_error',
-        'reply_controls','renewed_lifetime_seconds','manual_reply_verified','rclone_renewal_verified'},'java_report_invalid')
+        'reply_controls','renewed_lifetime_seconds','manual_reply_verified','rclone_renewal_verified','reply_fields'},'java_report_invalid')
     need(type(manual['stage']) is str and manual['stage'] in {'not_started','prepare','wrong_usage','correct_usage','reply_controls','completed'}
         and type(manual['checks']) is dict and set(manual['checks'])==manual_checks
         and all(type(flag) is bool for flag in manual['checks'].values()),'java_report_invalid')
+    fields=manual['reply_fields']
+    need(type(fields) is dict and set(fields)=={'fields_present','nonce','server','auth_time','start_time','validity','renewal_horizon','flags','key'}
+        and all(type(flag) is bool for flag in fields.values())
+        and (not any(fields.values()) or manual['checks']['reply_authenticated']),'java_report_invalid')
     for name,maximum in [('exchanges',2),('wrong_usage_error',255),('correct_usage_error',255),('reply_controls',4),('renewed_lifetime_seconds',10)]:
         need(type(manual[name]) is int and 0<=manual[name]<=maximum,'java_report_invalid')
     need(type(manual['manual_reply_verified']) is bool and manual['rclone_renewal_verified'] is False
@@ -247,7 +251,7 @@ def validate_java(C,raw,exit_code):
     if manual['manual_reply_verified']:
         need(manual['stage']=='completed' and manual['exchanges']==2 and manual['wrong_usage_error']==31
             and manual['correct_usage_error']==0 and manual['reply_controls']==4
-            and 8<=manual['renewed_lifetime_seconds']<=10,'java_report_invalid')
+            and 8<=manual['renewed_lifetime_seconds']<=10 and all(fields.values()),'java_report_invalid')
     lifecycle=value['lifecycle_checks'];need(type(lifecycle) is dict and set(lifecycle)==LIFECYCLE_CHECKS and all(type(v) is bool for v in lifecycle.values()),'java_report_invalid')
     for key in ('initial_new_threads','remaining_new_threads'):
         counts=value[key];need(type(counts) is dict and set(counts)=={'process_reaper','owned_mit','other'}
