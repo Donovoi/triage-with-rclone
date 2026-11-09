@@ -368,11 +368,55 @@ def inspect_container(value,name,image,run_id):
     need(type(mounts) is list and len(mounts)<=1 and all(type(m) is dict and m.get('Type')=='tmpfs' and m.get('Destination')=='/work' for m in mounts),'container_invalid')
 
 
+CLEANUP_ERROR_CODES=frozenset(('command_timeout','command_failed','command_output_limit','command_start_failed',
+    'command_cleanup_failed','container_binding_invalid','docker_json_invalid','container_cleanup_failed',
+    'image_cleanup_failed','input_invalid'))
+
+def cleanup_error(error):
+    code=getattr(error,'code',None)
+    if type(code) is str and code in CLEANUP_ERROR_CODES:return code
+    if isinstance(error,KeyboardInterrupt):return 'interrupted'
+    if isinstance(error,OSError):return 'filesystem'
+    return 'unexpected'
+
+def cleanup_owned(docker,kind,reference,exact,run_id,name,tag,image,diagnostic):
+    # Preserve the existing ownership and removal bounds. Diagnostics contain
+    # only the operation phase and a closed error category, never raw output.
+    try:
+        diagnostic['stage']='preflight'
+        need(kind in ('container','image'),'input_invalid')
+        diagnostic['stage']='inspect'
+        current=docker.inspect(kind,reference,allow_missing=True)
+        if current is not None:
+            diagnostic['stage']='bind_label'
+            need(current.get('Config',{}).get('Labels',{}).get(LABEL)==run_id,kind+'_cleanup_failed')
+            owned=current.get('Id')
+            diagnostic['stage']='bind_identity'
+            need(type(owned) is str and (exact is None or owned==exact)
+                 and re.fullmatch('[a-f0-9]{64}' if kind=='container' else 'sha256:[a-f0-9]{64}',owned),kind+'_cleanup_failed')
+            if kind=='container':
+                diagnostic['stage']='bind_container_name'
+                need(current.get('Name')=='/'+name,'container_cleanup_failed')
+                diagnostic['stage']='bind_container_image'
+                need(current.get('Image')==image,'container_cleanup_failed')
+            else:
+                diagnostic['stage']='bind_image_tags'
+                need(current.get('RepoTags')==[tag+':latest'],'image_cleanup_failed')
+            diagnostic['stage']='remove'
+            docker.call([kind,'rm',*(['--force'] if kind=='container' else []),owned])
+            diagnostic['stage']='confirm_absence'
+            need(docker.inspect(kind,owned,allow_missing=True) is None,kind+'_cleanup_failed')
+        diagnostic['stage']='complete'
+    except BaseException as error:
+        diagnostic['error']=cleanup_error(error)
+        raise
+
 def run():
     began=time.monotonic();report=dict(schema_version=1,scope='hdfs_context_candidate_build',success=False,
         started_utc=datetime.now(timezone.utc).isoformat(),finished_utc=None,duration_seconds=None,
         stage='preflight',inputs=None,result=None,test_diagnostics=None,build_diagnostics=None,worker_diagnostics=None,failure_diagnostics=None,errors=[],
         cleanup=dict(container_removed=False,image_removed=False,context_removed=False,raw_evidence_removed=False),
+        cleanup_diagnostics={kind:dict(stage='not_attempted',error='none') for kind in ('container','image')},
         cleanup_excludes=['shared_base_image','shared_build_cache'],**dict.fromkeys(FALSE_CLAIMS,False))
     C=B=D=docker=root=context=root_id=context_id=image=container=None
     source_hashes={};built_attempted=created_attempted=False
@@ -440,14 +484,7 @@ def run():
     finally:
         for kind,attempted,reference,exact in (('container',created_attempted,container or name,container),('image',built_attempted,image or tag,image)):
             try:
-                if attempted:
-                    current=docker.inspect(kind,reference,allow_missing=True)
-                    if current is not None:
-                        need(current.get('Config',{}).get('Labels',{}).get(LABEL)==run_id and (exact is None or current.get('Id')==exact),kind+'_cleanup_failed')
-                        owned=current.get('Id')
-                        if kind=='container':need(re.fullmatch('[a-f0-9]{64}',owned or '') and current.get('Name')=='/'+name and current.get('Image')==image,'container_cleanup_failed')
-                        else:need(re.fullmatch('sha256:[a-f0-9]{64}',owned or '') and current.get('RepoTags')==[tag+':latest'],'image_cleanup_failed')
-                        docker.call([kind,'rm',*(['--force'] if kind=='container' else []),owned]);need(docker.inspect(kind,owned,allow_missing=True) is None,kind+'_cleanup_failed')
+                if attempted:cleanup_owned(docker,kind,reference,exact,run_id,name,tag,image,report['cleanup_diagnostics'][kind])
                 report['cleanup'][kind+'_removed']=True
             except BaseException as error:
                 if getattr(error,'code',None)=='command_cleanup_failed':report['errors'].append('command_cleanup_failed')
