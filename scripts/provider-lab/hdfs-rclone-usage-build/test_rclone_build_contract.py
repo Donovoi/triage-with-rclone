@@ -46,6 +46,90 @@ class Bundle(unittest.TestCase):
                 raw,row=self.archive(name,mode=mode)
                 with self.assertRaises(ValueError):B.module_files(raw,row)
 
+
+class Downloads(unittest.TestCase):
+    def row(self):
+        return dict(file='module-000.mod',url='https://proxy.golang.org/m/@v/v1.0.0.mod',bytes=3,sha256=B.sha(b'abc'))
+    def response(self,body=b'abc',partial_timeout=False):
+        from email.message import Message
+        class Response(io.BytesIO):
+            status=200
+            url='https://proxy.golang.org/m/@v/v1.0.0.mod'
+            headers=Message()
+            reads=0
+            def read(self,size=-1):
+                self.reads+=1
+                if partial_timeout and self.reads>1:raise TimeoutError('read timeout')
+                return super().read(1 if partial_timeout else size)
+        return Response(body)
+    def execute(self,results,*,clock=None,limit=None):
+        import tempfile
+        from pathlib import Path
+        outer=self
+        class Opener:
+            calls=0
+            def open(self,*args,**kwargs):
+                value=results[self.calls];self.calls+=1
+                if isinstance(value,BaseException):raise value
+                return value
+        opener=Opener();sleeps=[];events=[]
+        with tempfile.TemporaryDirectory(dir=U.HERE) as tmp:
+            context=Path(tmp)
+            B.download(context,{'assets':[self.row()]},opener=opener,clock=clock or (lambda:0),
+                       sleeper=sleeps.append,observer=lambda *e:events.append(e))
+            outer.assertEqual((context/'assets/module-000.mod').read_bytes(),b'abc')
+        return opener.calls,sleeps,events
+    def test_transient_open_errors_retry_then_succeed(self):
+        import urllib.error
+        result=self.execute([TimeoutError(),urllib.error.HTTPError('https://invalid.invalid/',503,'unused',{},None),self.response()])
+        self.assertEqual(result,(3,[1,2],[('download',0,0),('download',0,1)]))
+    def test_partial_timeout_restarts_with_fresh_digest_and_file(self):
+        self.assertEqual(self.execute([self.response(partial_timeout=True),self.response()])[:2],(2,[1]))
+    def test_retry_attempts_have_fixed_limit(self):
+        import tempfile
+        from pathlib import Path
+        class Opener:
+            calls=0
+            def open(self,*a,**k):self.calls+=1;raise TimeoutError()
+        opener=Opener();sleeps=[]
+        with tempfile.TemporaryDirectory(dir=U.HERE) as tmp,self.assertRaises(TimeoutError):
+            B.download(Path(tmp),{'assets':[self.row()]},opener=opener,clock=lambda:0,sleeper=sleeps.append)
+        self.assertEqual((opener.calls,sleeps),(3,[1,2]))
+    def test_integrity_and_nontransient_errors_are_not_retried(self):
+        import urllib.error
+        cases=[self.response(b'bad'),self.response(b'ab'),self.response(b'abcd'),
+               urllib.error.HTTPError('https://invalid.invalid/',403,'unused',{},None),urllib.error.URLError(ValueError('permanent'))]
+        for first in cases:
+            with self.subTest(first=type(first).__name__),self.assertRaises((ValueError,urllib.error.URLError)):
+                self.execute([first])
+    def test_backoff_cannot_extend_total_deadline(self):
+        import tempfile
+        from pathlib import Path
+        now=[0];sleeps=[]
+        class Opener:
+            calls=0
+            def open(self,*a,**k):self.calls+=1;now[0]=569;raise TimeoutError()
+        opener=Opener()
+        with tempfile.TemporaryDirectory(dir=U.HERE) as tmp,self.assertRaises(ValueError):
+            B.download(Path(tmp),{'assets':[self.row()]},opener=opener,clock=lambda:now[0],sleeper=sleeps.append)
+        self.assertEqual((opener.calls,sleeps),(1,[]))
+    def test_partial_retry_bytes_count_toward_global_bound(self):
+        old=B.MAX_TOTAL;B.MAX_TOTAL=3
+        try:
+            with self.assertRaises(ValueError):self.execute([self.response(partial_timeout=True),self.response()])
+        finally:B.MAX_TOTAL=old
+    def test_existing_file_is_preserved(self):
+        import tempfile
+        from pathlib import Path
+        response=self.response()
+        with tempfile.TemporaryDirectory(dir=U.HERE) as tmp:
+            context=Path(tmp);destination=context/'assets/module-000.mod'
+            class Opener:
+                def open(self,*a,**k):destination.write_bytes(b'preserved');return response
+            with self.assertRaises(FileExistsError):
+                B.download(context,{'assets':[self.row()]},opener=Opener(),clock=lambda:0,sleeper=lambda _:None)
+            self.assertEqual(destination.read_bytes(),b'preserved')
+
 class Admission(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -163,7 +247,7 @@ class Admission(unittest.TestCase):
         row=dict(file='module-000.mod',url='https://proxy.golang.org/m/@v/v1.0.0.mod',bytes=1,sha256=B.sha(b'x'))
         with tempfile.TemporaryDirectory(dir=U.HERE) as tmp:
             with self.assertRaises(urllib.error.HTTPError):
-                B.download(Path(tmp),{'assets':[row]},opener=Opener(),clock=lambda:0,observer=lambda *event:events.append(event))
+                B.download(Path(tmp),{'assets':[row]},opener=Opener(),clock=lambda:0,observer=lambda *event:events.append(event),sleeper=lambda _:None)
         self.assertEqual(events,[('download',0,0)])
 
     def test_shared_helpers_are_bound(self):
