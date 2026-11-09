@@ -1,0 +1,197 @@
+{
+  "schema_version": 1,
+  "files": {
+    "hdfs-cancellation-context-build/COPYING-hdfs": {
+      "bytes": 1089,
+      "sha256": "8900f7361a2860cdeca7194ff689e97a0e23ed5a5aa382d995cfbb37e5f8e330"
+    },
+    "hdfs-cancellation-context-build/COPYING-rclone": {
+      "bytes": 1095,
+      "sha256": "8cd2e9e750b90a04b7d82dbbca3930c696ae0309d7c10464f90a44f45754cd04"
+    },
+    "hdfs-cancellation-context-build/hdfs_context_build.py": {
+      "bytes": 40392,
+      "sha256": "876f4e2db4220685d2178e686422db0f9bf797872fef98032da34f08797999aa"
+    },
+    "hdfs-cancellation-context-build/inspect_context_build.go": {
+      "bytes": 10666,
+      "sha256": "0ae948a9f46c14126d2b2fd5efcb842d9a5874097434234a35cd65064345a88a"
+    },
+    "hdfs-cancellation-context-build/patch-pins.json": {
+      "bytes": 1929,
+      "sha256": "fb63871ad79138aa98e3e113735828e491473ae19e6344290c8a354167c602e8"
+    },
+    "hdfs-cancellation-context-build/patches/hdfs/file_reader.go": {
+      "bytes": 11380,
+      "sha256": "216b35142d147811f6b4c5b48c5ca7757acc3a712b938bba6486c58da4d75547"
+    },
+    "hdfs-cancellation-context-build/patches/hdfs/internal/rpc/namenode.go": {
+      "bytes": 8236,
+      "sha256": "f69a2bef64de42e9ab5d1cb08a346baf8d9b4078e22bed0b92f9d353283b1072"
+    },
+    "hdfs-cancellation-context-build/patches/hdfs/internal/rpc/namenode_context.go": {
+      "bytes": 3930,
+      "sha256": "f29d421740704451c80da27340ddee48f947c91d3a50f99479c67e0a8e4397df"
+    },
+    "hdfs-cancellation-context-build/patches/hdfs/internal/rpc/namenode_context_test.go": {
+      "bytes": 11559,
+      "sha256": "790626fd030d16fb80e0dc4fec6d215537158c92da53e01a07947c700c3a0647"
+    },
+    "hdfs-cancellation-context-build/patches/hdfs/readdir.go": {
+      "bytes": 668,
+      "sha256": "95f74bb7dfad4d12ca4fa9e56381ef89a12e2da00abacf49977116702af4a745"
+    },
+    "hdfs-cancellation-context-build/patches/hdfs/stat.go": {
+      "bytes": 2947,
+      "sha256": "93710528153ca05ce36b9244ac43bf387907fc281ef649e183ba580cfe7185e7"
+    },
+    "hdfs-cancellation-context-build/patches/rclone/backend/hdfs/fs.go": {
+      "bytes": 10224,
+      "sha256": "720ba739dbcef16f6f778f22e765949018fb63c972f59cb13e2e97cd6279888b"
+    },
+    "hdfs-discovery/bootstrap_material.py": {
+      "bytes": 27702,
+      "sha256": "beb10b494abf7a60be303deba995bd0223dde006011ec2b72f8860207dc13eeb"
+    },
+    "hdfs-discovery/graph_export.py": {
+      "bytes": 26745,
+      "sha256": "1b280fd6cb919628cc91a568188712171a8946f3bae59443c5fc3eda93610c88"
+    },
+    "hdfs-discovery/offline_cache.py": {
+      "bytes": 18718,
+      "sha256": "56964ec36a26d118f6b887dac959e4030152bdae73ef496d036aa0254bf12410"
+    },
+    "hdfs-discovery/resolver_discovery.py": {
+      "bytes": 48490,
+      "sha256": "7053f9990f1bb2a57cba0038be7ccc98231dad4bd2659c5023314130c76b5222"
+    },
+    "hdfs-go-binary-audit/COPYING-Go-vulndb": {
+      "bytes": 16215,
+      "sha256": "79c7317f4757f42cc3539abe8955d2021215a8510ffdbf71494dad051939cdaf"
+    },
+    "hdfs-go-binary-audit/COPYING-govulncheck": {
+      "bytes": 1453,
+      "sha256": "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad"
+    },
+    "hdfs-go-binary-audit/NOTICE-Go-vulndb": {
+      "bytes": 943,
+      "sha256": "891fc97ac4bc31ed64f2369cc9cdea40c30a79c756ba5a7fcd08f16717202b27"
+    },
+    "hdfs-go-binary-audit/README.md": {
+      "bytes": 2677,
+      "sha256": "0a32717a17ba204eec9ae3eca8182024251485fb967fdb22dc942b7cb06a5b30"
+    },
+    "hdfs-go-binary-audit/advisory-snapshot-pin.json": {
+      "bytes": 635,
+      "sha256": "7e06150e25af6ccd1ad4125fbda9fe64694386f07f0bbb34596a0421eb657805"
+    },
+    "hdfs-go-binary-audit/advisory-snapshot.json.gz": {
+      "bytes": 1089577,
+      "sha256": "03db0fe354042148332cf66f4de65709a143dd619a1b5c1ca59d5edbf56d4dbe"
+    },
+    "hdfs-go-binary-audit/advisory_contract.py": {
+      "bytes": 5733,
+      "sha256": "f381143115b5d7e668512eb9a4a7c57385c7668887eb1f7d7d20cc55904fc056"
+    },
+    "hdfs-go-binary-audit/audit_build.py": {
+      "bytes": 2542,
+      "sha256": "ed520556a104453e47049d2a46789b2592fbddb6d3fa9cf26b9eb298524b91c5"
+    },
+    "hdfs-go-binary-audit/audit_contract.py": {
+      "bytes": 6768,
+      "sha256": "8f018ef3aadadd495f1ca922af01bd00738f415929f7053ce88a09f76debf6ef"
+    },
+    "hdfs-go-binary-audit/audit_driver.go": {
+      "bytes": 12230,
+      "sha256": "10ae7f3530d7e9bb2193926c9f79a5061e2dd0ebce24d73e7b19d310b8a2f7b7"
+    },
+    "hdfs-go-binary-audit/fixtures/extract-example.blob": {
+      "bytes": 118415,
+      "sha256": "42e636f93fb8049f93a56efcb145d0482f41602f049844f3f22a415cf18dc224"
+    },
+    "hdfs-go-binary-audit/native_controls.py": {
+      "bytes": 4698,
+      "sha256": "5fe176d987b53213dd661a5cdb8b7b9bda283087f8248f923af308c359342f41"
+    },
+    "hdfs-go-binary-audit/run_guarded_tests.py": {
+      "bytes": 824,
+      "sha256": "42da684f0fe74689a8b0662a7d0d2b9d764dcb1e097d0563134d0a7de8174d55"
+    },
+    "hdfs-go-binary-audit/scan_contract.py": {
+      "bytes": 7986,
+      "sha256": "723c3b97eb51f9c17c55e9215e5d66a630a7466b61120a991bdd6e720b08aadb"
+    },
+    "hdfs-go-binary-audit/snapshot_contract.py": {
+      "bytes": 6510,
+      "sha256": "6ffeb5aaf4d627fe698c13268a74291e79f1b3a22d23cd12f09c2329f92fe7d9"
+    },
+    "hdfs-go-binary-audit/test_advisory_contract.py": {
+      "bytes": 4610,
+      "sha256": "467c66b55658f49537cf560741fc06a0c748dc970e6bbb77455d4a776d0c185e"
+    },
+    "hdfs-go-binary-audit/test_audit_build.py": {
+      "bytes": 3292,
+      "sha256": "c4933af2d1ceeaeb9a4f6ded993e57ad683fe3b8e0446c4f68457377061b85d4"
+    },
+    "hdfs-go-binary-audit/test_audit_container.py": {
+      "bytes": 9334,
+      "sha256": "aac831beb28690fad3d05feadda2398426d7c16d18f28adb7205ac22814888c5"
+    },
+    "hdfs-go-binary-audit/test_audit_contract.py": {
+      "bytes": 6784,
+      "sha256": "d6849e50841639bdf5c7c6b2463464d812e5a7ce0c1341a110677b58bda67c27"
+    },
+    "hdfs-go-binary-audit/test_native_controls.py": {
+      "bytes": 3808,
+      "sha256": "1de46fd3f2b300e0db3edd0afcb5919f12103a341ccb8ad3db7d15355f4c9c01"
+    },
+    "hdfs-go-binary-audit/test_scan_contract.py": {
+      "bytes": 6173,
+      "sha256": "492f8a8717ed678b700dcbe8e6d378e175f91f891f9667a452a2c3540695e02d"
+    },
+    "hdfs-go-binary-audit/test_snapshot_contract.py": {
+      "bytes": 4209,
+      "sha256": "d16cf67f5f29834c7a8707688a17dc325c69e5edb841d9f9e35458d07565642b"
+    },
+    "hdfs-go-binary-audit/test_tool_bundle.py": {
+      "bytes": 2676,
+      "sha256": "a9e04d3772e445f0e63a6e4a86024f52291bdcdf85c647446c0e809abbb4e5fe"
+    },
+    "hdfs-go-binary-audit/test_tool_worker.py": {
+      "bytes": 5510,
+      "sha256": "43a301b2f28992bbeabe1511b6eeff810c64ae6a136e0f1c92a69416ef5aa18e"
+    },
+    "hdfs-go-binary-audit/test_wrapper_contract.py": {
+      "bytes": 7280,
+      "sha256": "81388e4b4e2ffde6ffd7bb4ddcf1925c52bfea297af93ca1e14e8577d1b29572"
+    },
+    "hdfs-go-binary-audit/tool-assets-lock.json": {
+      "bytes": 12986,
+      "sha256": "d9cb60f32fe2c837a5ed6109403e401033b143824e4fb4a1a33e8c5c8e472917"
+    },
+    "hdfs-go-binary-audit/tool_bundle.py": {
+      "bytes": 8128,
+      "sha256": "f1f7fe84c49a0e9a4d86cc941d442134c48b0ba80ab99700893afa5c1352b651"
+    },
+    "hdfs-go-binary-audit/tool_worker.py": {
+      "bytes": 5969,
+      "sha256": "4959226757886c1417c30e78e9b0a595074f79f18fbbfa28dfd40ae3be4051d6"
+    },
+    "hdfs-go-binary-audit/wrapper_contract.py": {
+      "bytes": 7502,
+      "sha256": "ad37c508cb0a53ce82257fb8edc37e1c6d994a67c38f741737e44919cacf4e28"
+    },
+    "hdfs-kerberos-policy-denial/policy_denial_container.py": {
+      "bytes": 55021,
+      "sha256": "99304f8183f6068140e9e6f364bb96e1cc5c7c28408f1437b6a85b85fdfec2bd"
+    },
+    "hdfs-rclone-usage-build/assets-lock.json": {
+      "bytes": 374994,
+      "sha256": "c21b5c5aee74f44a12eb4607d53fd0857f2e1d8d3d78d5583737c2dc4dace6c0"
+    },
+    "hdfs-rclone-usage-build/rclone_build_bundle.py": {
+      "bytes": 11794,
+      "sha256": "5fe229670dfc48755df3f296359d9d09359c18b7861d1cc867de0f5567c1400d"
+    }
+  }
+}
