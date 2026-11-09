@@ -18,6 +18,15 @@ class HdfsCoverageTests(unittest.TestCase):
         cls.helper=C.hdfs_evidence_module()
         cls.bindings=C.compute_hdfs_bindings(ROOT/'scripts/provider-lab/hdfs-kerberos-transfer')
         cls.native=cls.helper.parse((ROOT/'scripts/provider-lab/hdfs-kerberos-transfer/test-data/protocol-native-success.json').read_bytes())
+        # The recorded prior receipt is unchanged. Added values are explicit
+        # synthetic contract inputs and grant no native qualification.
+        synthetic=cls.helper.parse((ROOT/'scripts/provider-lab/hdfs-kerberos-transfer/test-data/security-control-contract.json').read_bytes())
+        assert synthetic['scope']=='synthetic_contract_values_only_not_native_evidence'
+        cls.native['result']['datanode_security']=synthetic['proof']
+        cls.native['result']['checks']['block_token_controls']=True
+        cls.native['result']['cleanup']['data_security_closed']=True
+        for key in ('source_sha256','context_sha256'):
+            cls.native['inputs'][key]=deepcopy(cls.bindings[key])
         cls.now=cls.helper.utc(cls.native['finished_utc'])+timedelta(seconds=1)
         cls.receipt=cls.helper.make_receipt(cls.native,cls.bindings,cls.now)
         cls.runtime=dict(cls.receipt['runtime'],platform='linux')

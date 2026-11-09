@@ -1,4 +1,7 @@
-"""Mutation checks of a reviewed hosted proof, with no native execution."""
+"""Synthetic schema mutations plus rejection of the retained older hosted proof.
+
+The added control values are test inputs, never new native qualification.
+"""
 from copy import deepcopy
 from contextlib import redirect_stdout
 from datetime import timedelta
@@ -13,8 +16,16 @@ import protocol_evidence as E
 class ProtocolEvidenceTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.native = E.parse((Path(__file__).parent/'test-data/protocol-native-success.json').read_bytes())
+        cls.recorded_native = E.parse((Path(__file__).parent/'test-data/protocol-native-success.json').read_bytes())
         cls.bindings = E.compute_bindings()
+        cls.native = deepcopy(cls.recorded_native)
+        synthetic = E.parse((Path(__file__).parent/'test-data/security-control-contract.json').read_bytes())
+        assert synthetic['scope'] == 'synthetic_contract_values_only_not_native_evidence'
+        cls.native['result']['datanode_security'] = synthetic['proof']
+        cls.native['result']['checks']['block_token_controls'] = True
+        cls.native['result']['cleanup']['data_security_closed'] = True
+        for key in ('source_sha256', 'context_sha256'):
+            cls.native['inputs'][key] = deepcopy(cls.bindings[key])
         cls.now = E.utc(cls.native['finished_utc']) + timedelta(seconds=1)
         cls.receipt = E.make_receipt(cls.native, cls.bindings, cls.now)
         cls.runtime = cls.receipt['runtime']
@@ -26,7 +37,7 @@ class ProtocolEvidenceTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.validate(value, **kwargs)
 
-    def test_reviewed_native_proof_validates_and_false_claims_stay_false(self):
+    def test_synthetic_contract_validates_and_false_claims_stay_false(self):
         self.validate(self.receipt)
         self.assertEqual(set(self.receipt['backends'][0]['capabilities']), set(E.CAPABILITIES))
         self.assertEqual(self.receipt['native_evidence'], self.native)
@@ -34,6 +45,20 @@ class ProtocolEvidenceTests(unittest.TestCase):
         for obj in (self.native, self.native['result']):
             for key in ('provider_accepted','application_accepted','vendor_accepted','ledger_eligible','vulnerability_audited'):
                 self.assertIs(obj[key], False)
+
+    def test_prior_native_proof_cannot_qualify_new_control_sources(self):
+        with self.assertRaises(ValueError):
+            E.make_receipt(self.recorded_native, self.bindings, self.now)
+
+    def test_control_is_required_without_promoting_rclone_qop(self):
+        for field, bad in (('qop', 'auth'), ('qop_observations', 2), ('valid_before', False),
+                           ('invalid_operation_token', False), ('valid_after', False),
+                           ('closed', 2), ('disposed', 2), ('rclone_qop_verified', True),
+                           ('wire_bytes_read', 0), ('parser_checked', False)):
+            value = deepcopy(self.receipt)
+            value['native_evidence']['result']['datanode_security'][field] = bad
+            with self.subTest(field=field):
+                self.reject(value)
 
     def test_every_proof_check_and_cleanup_predicate_is_required(self):
         for route in (('native_evidence','cleanup'), ('native_evidence','result','checks'),

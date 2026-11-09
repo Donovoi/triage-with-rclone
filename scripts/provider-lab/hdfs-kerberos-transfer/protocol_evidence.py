@@ -19,7 +19,7 @@ CAPABILITIES = ('listing', 'download_hash', 'missing_object_rejection',
                 'authentication_rejection', 'source_preservation', 'cleanup')
 MAX_RECEIPT = 128 * 1024
 SOURCES = (
-    'HdfsKerberosTransferProbe.java', 'HdfsTransferJson.java', 'transfer_container.py',
+    'HdfsKerberosTransferProbe.java', 'HdfsTransferJson.java', 'HdfsDataNodeSecurity.java', 'transfer_container.py',
     '../hdfs-discovery/bootstrap_material.py', '../hdfs-discovery/graph_export.py',
     '../hdfs-discovery/offline_cache.py', '../hdfs-discovery/resolver_discovery.py',
     '../hdfs-discovery/artifact-lock-kerberos-remediation.json',
@@ -28,7 +28,7 @@ SOURCES = (
 TOP_KEYS = set('schema_version scope runtime platform architecture harness_sha256 fixture_manifest_sha256 started_utc finished_utc success cleanup_passed backends errors native_evidence'.split())
 NATIVE_KEYS = set('build_diagnostic candidate_profile cleanup cleanup_excludes duration_seconds errors finished_utc inputs java_validation_stage result schema_version scope stage started_utc success'.split())
 INPUT_KEYS = set('base_observation candidate_profile container_id context_sha256 hadoop_version image_id jdk_config_id jdk_manifest kerby_version lock_sha256 rclone_sha256 rclone_version runtime_bytes runtime_classpath_sha256 runtime_file_sha256 runtime_jars source_sha256'.split())
-RESULT_KEYS = set('acquired_bytes acquisitions cache_bytes checks child_count cleanup diagnostic error expected_kerby_version metrics_mode missing_category missing_object_category observed_lifetime_seconds owned_thread_cleanup pipeline_origin pipeline_server_diagnostic rc_hash_sha256 rclone_observation rclone_wire_oracle relay remaining_executor_kind remaining_thread_intervals remaining_thread_matrix remaining_threads remaining_timer_kinds runtime_binding_required schema_version scope seed_checkpoint ssl_capture stage success thread_observation_complete wire_oracle'.split())
+RESULT_KEYS = set('datanode_security acquired_bytes acquisitions cache_bytes checks child_count cleanup diagnostic error expected_kerby_version metrics_mode missing_category missing_object_category observed_lifetime_seconds owned_thread_cleanup pipeline_origin pipeline_server_diagnostic rc_hash_sha256 rclone_observation rclone_wire_oracle relay remaining_executor_kind remaining_thread_intervals remaining_thread_matrix remaining_threads remaining_timer_kinds runtime_binding_required schema_version scope seed_checkpoint ssl_capture stage success thread_observation_complete wire_oracle'.split())
 OUTER_CLEANUP = {'container_removed', 'context_removed', 'image_removed', 'raw_evidence_removed'}
 ORACLE = dict(bounded_single_response=True, category='simple_disabled_kerberos_offered',
               detail='FATAL_UNAUTHORIZED', endpoint='namenode_loopback', rpc_version=9, status='FATAL')
@@ -116,7 +116,8 @@ def compute_bindings(root=HERE):
     sources = {Path(name).name: file_bytes(HERE / name, 131072 if name.endswith('.java') else 524288)
                for name in SOURCES}
     require(sha(sources['HdfsKerberosTransferProbe.java']) == f.JAVA_SHA
-            and sha(sources['HdfsTransferJson.java']) == f.JSON_SHA, 'hdfs_java_pin_mismatch')
+            and sha(sources['HdfsTransferJson.java']) == f.JSON_SHA
+            and sha(sources['HdfsDataNodeSecurity.java']) == f.SECURITY_SHA, 'hdfs_java_pin_mismatch')
     pins = f.profile_settings('kerberos-remediation')
     runtime_raw = sources['runtime-classpath-remediation.json']
     lock_raw = sources['artifact-lock-kerberos-remediation.json']
@@ -130,6 +131,7 @@ def compute_bindings(root=HERE):
     context = {f'jars/{i:03d}.jar': row['sha256'] for i, row in enumerate(rows)}
     context.update({'runtime-classpath.json': sha(runtime_raw), pins['lock'].name: sha(lock_raw),
                     'HdfsKerberosTransferProbe.java': f.JAVA_SHA, 'HdfsTransferJson.java': f.JSON_SHA,
+                    'HdfsDataNodeSecurity.java': f.SECURITY_SHA,
                     'rclone': f.RCLONE_SHA})
     context.update({'resources/' + name: sha(raw) for name, raw in f.webapp_resources().items()})
     context.update({name: sha(raw) for name, raw in f.build_files(rows).items()})
@@ -216,6 +218,8 @@ def validate_native(native, bindings, now, max_age_hours=24):
         f.validate_ssl_capture(value['ssl_capture'], value['checks'], value['cleanup'], None)
         f.validate_seed_checkpoint(value['seed_checkpoint'], value['checks'])
         f.validate_pipeline_server(value['pipeline_server_diagnostic'])
+        f.validate_data_security(value['datanode_security'], value['checks']['block_token_controls'],
+                                 value['cleanup']['data_security_closed'])
         f.validate_rclone_observation(value['rclone_observation'], True)
         f.validate_relay(value['relay'], True)
         f.validate_acquisitions(value, True)
