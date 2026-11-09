@@ -327,6 +327,7 @@ func TestContextCancelledStreamRequiresFreshDial(t *testing.T) {
 	entered := make(chan struct{})
 	host := &namenodeHost{address: "fixture"}
 	c := &NamenodeConnection{
+		ClientID: []byte("context-fixture1"), User: "fixture",
 		conn: firstClient, host: host, hostList: []*namenodeHost{host},
 		transport: contextTestTransport{read: func(r io.Reader) error {
 			close(entered)
