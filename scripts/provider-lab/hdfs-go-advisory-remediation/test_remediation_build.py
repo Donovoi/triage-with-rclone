@@ -134,3 +134,26 @@ class StructuredResolverDiagnostics(unittest.TestCase):
   self.assertIn(' -e -json ',lines[graph])
   self.assertIn('/usr/bin/timeout --signal=TERM --kill-after=2s 10s /opt/probes/resolver-diagnostics',lines[graph+1])
   self.assertTrue(any(l.endswith(' -o /opt/probes/resolver-diagnostics /opt/input/resolver_diagnostics.go') for l in lines[:graph]))
+
+class ResolverDiagnosticBounds(unittest.TestCase):
+ def inspect(self,raw):
+  import types
+  foundation=types.SimpleNamespace(build_diagnostics=lambda value:dict(module_resolution_failed=False))
+  return M.diagnostics(foundation,raw,{('example.org/known','v1.2.3')})
+ def test_closed_invalid_stage_and_counts_survive(self):
+  value=self.inspect(b'GO_REMEDIATION_GRAPH_STATUS=invalid\nGO_REMEDIATION_DIAGNOSTIC_STAGE=graph_read\nGO_REMEDIATION_GRAPH_BYTES=0\nGO_REMEDIATION_GRAPH_MODULES=0\nGO_REMEDIATION_ERROR_MODULES=0\nGO_REMEDIATION_COORDINATES=1426\n')
+  self.assertEqual(value['resolver_graph_status'],'invalid');self.assertEqual(value['resolver_diagnostic_stage'],'graph_read')
+  self.assertEqual(value['resolver_diagnostic_counts'],dict(graph_bytes=0,graph_modules=0,error_modules=0,coordinates=1426))
+ def test_truncated_errors_remain_explicit(self):
+  value=self.inspect(b'GO_REMEDIATION_MODULE_ERROR=example.org/known@v1.2.3:lookup_disabled\nGO_REMEDIATION_GRAPH_STATUS=errors_truncated\nGO_REMEDIATION_ERROR_MODULES=64\n')
+  self.assertEqual(value['resolver_graph_status'],'errors_truncated');self.assertEqual(value['resolver_diagnostic_counts']['error_modules'],64)
+  self.assertEqual(len(value['module_errors']),1)
+ def test_unrecognized_stage_never_escapes(self):
+  value=self.inspect(b'GO_REMEDIATION_DIAGNOSTIC_STAGE=private_details\n')
+  self.assertIsNone(value['resolver_diagnostic_stage']);self.assertNotIn('private',str(value))
+ def test_counts_cannot_exceed_bounds(self):
+  for key,value in ((b'GRAPH_BYTES',4194305),(b'GRAPH_MODULES',2049),(b'ERROR_MODULES',2049),(b'COORDINATES',20001)):
+   with self.assertRaises(ContractError):self.inspect(b'GO_REMEDIATION_'+key+b'='+str(value).encode()+b'\n')
+ def test_only_last_closed_state_is_reported(self):
+  value=self.inspect(b'GO_REMEDIATION_DIAGNOSTIC_STAGE=graph_read\nGO_REMEDIATION_DIAGNOSTIC_STAGE=graph_summary\nGO_REMEDIATION_GRAPH_MODULES=1\nGO_REMEDIATION_GRAPH_MODULES=300\n')
+  self.assertEqual(value['resolver_diagnostic_stage'],'graph_summary');self.assertEqual(value['resolver_diagnostic_counts']['graph_modules'],300)

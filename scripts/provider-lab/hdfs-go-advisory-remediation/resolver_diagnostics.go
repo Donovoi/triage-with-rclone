@@ -9,6 +9,12 @@ import (
  "sort"
  "strings"
 )
+var diagnosticPhase="coordinate_read"
+var graphBytes,graphModules,errorModules,coordinateCount int
+func emitState(){
+ fmt.Println("GO_REMEDIATION_DIAGNOSTIC_STAGE="+diagnosticPhase)
+ fmt.Printf("GO_REMEDIATION_GRAPH_BYTES=%d\nGO_REMEDIATION_GRAPH_MODULES=%d\nGO_REMEDIATION_ERROR_MODULES=%d\nGO_REMEDIATION_COORDINATES=%d\n",graphBytes,graphModules,errorModules,coordinateCount)
+}
 type coordinate struct {Module string `json:"module"`;Version string `json:"version"`}
 type module struct {Path string;Version string;Error json.RawMessage;Replace *module}
 func need(ok bool){if !ok {panic("invalid")}}
@@ -31,22 +37,27 @@ func kind(raw json.RawMessage)string {
 }
 func run()bool {
  raw:=read("/opt/input/remediation-coordinate-pins.json",2*1024*1024)
+ diagnosticPhase="coordinate_parse"
  var coordinates []coordinate;decoder:=json.NewDecoder(bytes.NewReader(raw));decoder.DisallowUnknownFields()
  need(decoder.Decode(&coordinates)==nil&&len(coordinates)>0&&len(coordinates)<=20000)
- var tail any;need(decoder.Decode(&tail)==io.EOF);allowed:=map[coordinate]bool{}
+ var tail any;need(decoder.Decode(&tail)==io.EOF);coordinateCount=len(coordinates);allowed:=map[coordinate]bool{}
  for _,c:=range coordinates {need(c.Module!=""&&c.Version!=""&&len(c.Module)<=4096&&len(c.Version)<=256&&!allowed[c]);allowed[c]=true}
- graph:=read("/opt/probes/upgraded-module-graph.json",4*1024*1024)
+ diagnosticPhase="graph_read"
+ graph:=read("/opt/probes/upgraded-module-graph.json",4*1024*1024);graphBytes=len(graph);diagnosticPhase="graph_parse"
  decoder=json.NewDecoder(bytes.NewReader(graph));failures:=map[string]bool{};seen:=map[string]bool{};count:=0
  for {var row module;err:=decoder.Decode(&row);if err==io.EOF{break};need(err==nil&&row.Path!=""&&len(row.Path)<=4096&&len(row.Version)<=256&&!seen[row.Path]);seen[row.Path]=true
-  count++;need(count<=2048);reason:=kind(row.Error)
+  count++;need(count<=2048);graphModules=count;diagnosticPhase="graph_error_parse";reason:=kind(row.Error)
   if row.Replace!=nil {need(row.Replace.Replace==nil);replacementReason:=kind(row.Replace.Error);if reason==""{reason=replacementReason}}
   if reason!="" {
+   errorModules++
    if allowed[coordinate{row.Path,row.Version}] {failures[row.Path+"@"+row.Version+":"+reason]=true} else {failures["unbound"]=true}
   }
+  diagnosticPhase="graph_parse"
  }
- need(count>0&&len(failures)<=32);ordered:=[]string{};for failure:=range failures{ordered=append(ordered,failure)};sort.Strings(ordered)
- for _,failure:=range ordered{fmt.Println("GO_REMEDIATION_MODULE_ERROR="+failure)}
+ need(count>0);diagnosticPhase="graph_summary";ordered:=[]string{};for failure:=range failures{ordered=append(ordered,failure)};sort.Strings(ordered)
+ for i,failure:=range ordered{if i>=32{break};fmt.Println("GO_REMEDIATION_MODULE_ERROR="+failure)}
+ if len(ordered)>32 {fmt.Println("GO_REMEDIATION_GRAPH_STATUS=errors_truncated");return false}
  if len(ordered)>0 {fmt.Println("GO_REMEDIATION_GRAPH_STATUS=errors");return false}
  fmt.Println("GO_REMEDIATION_GRAPH_STATUS=complete");return true
 }
-func main(){success:=false;func(){defer func(){if recover()!=nil{fmt.Println("GO_REMEDIATION_GRAPH_STATUS=invalid")}}();success=run()}();if !success{os.Exit(1)}}
+func main(){success:=false;func(){defer func(){if recover()!=nil{fmt.Println("GO_REMEDIATION_GRAPH_STATUS=invalid")}}();success=run()}();emitState();if !success{os.Exit(1)}}
