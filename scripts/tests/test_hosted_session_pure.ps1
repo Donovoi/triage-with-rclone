@@ -162,6 +162,8 @@ namespace TriageApplicationLab.PureTests {
         [TriageApplicationLab.HostedPidListSnapshot]::new($Success,$ErrorCode,$Assigned,$Count,$Ids)
     }
     function InvokePidReadCase([hashtable]$Case) {
+        # A single snapshot also has a Count field; normalize the sequence before indexing.
+        $queryFrames=[TriageApplicationLab.HostedPidListSnapshot[]]@($Case.Frames)
         $state = @{ Tick=[long]0; Queries=0; ClockCalls=0; Pauses=0; Capacities=[Collections.Generic.List[int]]::new() }
         if ($Case.ContainsKey('Start')) { $state.Tick=[long]$Case.Start }
         $queryBlock = {
@@ -170,7 +172,7 @@ namespace TriageApplicationLab.PureTests {
             $index=$state.Queries; $state.Queries++
             if ($Case.ContainsKey('QueryThrows') -and $index -eq $Case.QueryThrows) { throw 'synthetic_query_failure' }
             if ($Case.ContainsKey('QueryAdvance')) { $state.Tick += [long]$Case.QueryAdvance }
-            $Case.Frames[[Math]::Min($index,$Case.Frames.Count-1)]
+            $queryFrames[[Math]::Min($index,$queryFrames.Length-1)]
         }.GetNewClosure()
         $clockBlock = {
             $index=$state.ClockCalls; $state.ClockCalls++
