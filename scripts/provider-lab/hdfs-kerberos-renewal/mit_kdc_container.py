@@ -223,14 +223,18 @@ def inspect_container(value,name,image,run_id):
 
 def validate_java(C,raw,exit_code):
     need(type(raw) is bytes and len(raw)<=32768,'java_report_invalid');value=C.parse(raw)
-    keys={'schema_version','scope','success','stage','error','checks','owner','tasks','managed_assertions','lifecycle_checks','lifecycle_children','tgt_lifetime_seconds','service_lifetime_seconds','duration_ms','cleanup_complete'}|FALSE_CLAIMS
+    keys={'schema_version','scope','success','stage','error','checks','owner','tasks','managed_assertions','lifecycle_checks','lifecycle_children',
+        'initial_new_threads','remaining_new_threads','thread_wait_ms','thread_quiet_observations','tgt_lifetime_seconds','service_lifetime_seconds','duration_ms','cleanup_complete'}|FALSE_CLAIMS
     need(type(value) is dict and set(value)==keys and type(value['schema_version']) is int and value['schema_version']==1
         and value['scope']=='mit_kdc_bootstrap_only' and type(value['success']) is bool and type(value['cleanup_complete']) is bool,'java_report_invalid')
     need(type(value['stage']) is str and value['stage'] in JAVA_STAGES and type(value['error']) is str
         and value['error'] in JAVA_ERRORS and all(value[k] is False for k in FALSE_CLAIMS),'java_report_invalid')
     checks=value['checks'];need(type(checks) is dict and set(checks)==CHECKS and all(type(v) is bool for v in checks.values()),'java_report_invalid')
     lifecycle=value['lifecycle_checks'];need(type(lifecycle) is dict and set(lifecycle)==LIFECYCLE_CHECKS and all(type(v) is bool for v in lifecycle.values()),'java_report_invalid')
-    for name,maximum in [('tasks',5),('managed_assertions',1000),('lifecycle_children',5),('tgt_lifetime_seconds',120),('service_lifetime_seconds',10),('duration_ms',190000)]:
+    for key in ('initial_new_threads','remaining_new_threads'):
+        counts=value[key];need(type(counts) is dict and set(counts)=={'process_reaper','owned_mit','other'}
+            and all(type(n) is int and 0<=n<=128 for n in counts.values()) and sum(counts.values())<=128,'java_report_invalid')
+    for name,maximum in [('tasks',5),('managed_assertions',1000),('lifecycle_children',5),('thread_wait_ms',71000),('thread_quiet_observations',3),('tgt_lifetime_seconds',120),('service_lifetime_seconds',10),('duration_ms',190000)]:
         need(type(value[name]) is int and 0<=value[name]<=maximum,'java_report_invalid')
     owner=value['owner'];need(type(owner) is dict and (not owner or set(owner)==OWNER_KEYS),'java_report_invalid')
     if owner:
@@ -242,6 +246,7 @@ def validate_java(C,raw,exit_code):
     if value['success']:
         need(exit_code==0 and value['stage']=='completed' and value['error']=='none' and value['cleanup_complete']
             and all(checks.values()) and all(lifecycle.values()) and value['lifecycle_children']==5
+            and value['thread_quiet_observations']==3 and all(n==0 for n in value['remaining_new_threads'].values())
             and value['tasks']==5 and value['managed_assertions']==83 and 118<=value['tgt_lifetime_seconds']<=120
             and 8<=value['service_lifetime_seconds']<=10 and owner and owner['stage']=='closed'
             and owner['setup_completed']==6 and owner['children']==7,'java_report_invalid')

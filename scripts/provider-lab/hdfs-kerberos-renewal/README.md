@@ -61,6 +61,10 @@ The hosted Java bootstrap first checks pure owner contracts, then requires:
 - A successful fresh TGT request after those rejections.
 - Reaped request tasks, new threads, owned processes, and private files.
 
+After process cleanup, new threads must actually reach zero for three
+observations within a 70-second bound. The result records initial and final
+counts in fixed thread categories; no category is exempt from that gate.
+
 Only the sanitized `mit-kdc-bootstrap-experiment.json` is uploaded. It includes
 closed result fields, input hashes, bounded stage/error labels, cleanup
 predicates, and compiler categories with fixed source names and line numbers.
