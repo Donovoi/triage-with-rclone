@@ -1,0 +1,54 @@
+name: Isolated retained MIT HDFS renewal
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/hdfs-mit-retained-renewal.yml
+      - scripts/provider-lab/hdfs-kerberos-positive-renewal/**
+      - scripts/provider-lab/hdfs-kerberos-renewal/**
+      - scripts/provider-lab/hdfs-kerberos-reconnect/reconnect_container.py
+      - scripts/provider-lab/hdfs-kerberos-rpc/runtime-classpath-remediation.json
+      - scripts/provider-lab/hdfs-discovery/artifact-lock-kerberos-remediation.json
+      - scripts/provider-lab/hdfs-rclone-usage-build/**
+      - scripts/provider-lab/hdfs-gokrb-usage/patches/**
+      - scripts/provider-lab/hdfs-kerberos-policy-denial/policy_denial_container.py
+      - scripts/provider-lab/hdfs-discovery/bootstrap_material.py
+      - scripts/provider-lab/hdfs-discovery/graph_export.py
+      - scripts/provider-lab/hdfs-discovery/offline_cache.py
+      - scripts/provider-lab/hdfs-discovery/resolver_discovery.py
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hdfs-mit-retained-renewal-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Check retained MIT HDFS renewal matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.14'
+      - name: Check guarded parsers, configuration and admission
+        run: python -I -S -B scripts/provider-lab/hdfs-kerberos-positive-renewal/run_guarded_tests.py
+      # This matrix has no provider/application/vendor acceptance credit.
+      - name: Build and check the retained renewal matrix
+        run: >-
+          python -I -S -B scripts/provider-lab/hdfs-kerberos-positive-renewal/positive_container.py
+          --report "${{ runner.temp }}/hdfs-mit-retained-renewal-experiment.json"
+      - name: Retain only the sanitized result
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: hdfs-mit-retained-renewal-experiment
+          path: ${{ runner.temp }}/hdfs-mit-retained-renewal-experiment.json
+          if-no-files-found: warn
+          retention-days: 14
