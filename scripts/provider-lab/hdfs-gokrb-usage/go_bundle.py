@@ -148,7 +148,7 @@ def download(context,lock,*,opener=None,clock=time.monotonic):
     need(clock()<deadline)
 
 def prepare(context,lock,read):
-    cache=context/'cache/download';cache.mkdir(parents=True,mode=0o700)
+    cache=context/'module-cache/cache/download';cache.mkdir(parents=True,mode=0o700)
     original=context/'original';original.mkdir(mode=0o700)
     for row in lock['assets']:
         raw=read(context/'assets'/row['file'],row['bytes'])

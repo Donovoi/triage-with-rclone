@@ -117,10 +117,38 @@ class Admission(unittest.TestCase):
         built=U.build_files(self.C,sources)
         self.assertIn(b'GOPROXY=off GOSUMDB=off',built['build.sh'])
         self.assertIn(b'CGO_ENABLED=0',built['build.sh'])
+        self.assertIn(b'GOMODCACHE=/opt/input/module-cache',built['build.sh'])
         self.assertIn(b'GOTOOLCHAIN=local',built['build.sh'])
         self.assertIn(b'for variant in original context-fix global-control',built['build.sh'])
         self.assertIn(b'--kill-after=2s 10s',built['driver.sh'])
         self.assertNotEqual(built['global-APReq.go'],sources['patches/APReq.go'])
+    def test_cache_layout_matches_actual_build_environment(self):
+        sources={p:(U.HERE/p).read_bytes() for p in U.SOURCES}
+        build=U.build_files(self.C,sources)['build.sh'].decode()
+        cache_root=build.split('GOMODCACHE=',1)[1].split(' ',1)[0]
+        self.assertTrue(cache_root.startswith('/opt/input/'))
+        with tempfile.TemporaryDirectory() as tmp:
+            context=Path(tmp).resolve();(context/'assets').mkdir()
+            rows=[]
+            contents={'messages/APReq.go':b'original ap','messages/KDCReq.go':b'original tgs',
+                      'go.mod':b'module '+B.MODULE.encode()+b'\n','go.sum':b''}
+            for index,(module,version,files) in enumerate(((B.MODULE,B.VERSION,contents),
+                    ('example.test/dependency','v1.0.0',{'go.mod':b'module example.test/dependency\n','a.go':b'package dependency\n'}))):
+                stream=io.BytesIO();prefix=module+'@'+version+'/';digest=hashlib.sha256()
+                with zipfile.ZipFile(stream,'w') as z:
+                    for name,data in sorted(files.items()):
+                        z.writestr(prefix+name,data);digest.update((B.sha(data)+'  '+prefix+name+'\n').encode())
+                raw=stream.getvalue();row=dict(file='module-%03d.zip'%index,kind='zip',module=module,version=version,
+                    bytes=len(raw),sha256=B.sha(raw),h1='h1:'+B.base64.b64encode(digest.digest()).decode())
+                (context/'assets'/row['file']).write_bytes(raw);rows.append(row)
+            lock={'assets':rows,'original_sources':{p:B.sha(contents['messages/'+p]) for p in ('APReq.go','KDCReq.go')}}
+            B.prepare(context,lock,self.C.read)
+            download=context/cache_root.removeprefix('/opt/input/')/'cache/download'
+            for row in rows:
+                artifact=download/row['module']/'@v'/(row['version']+'.zip')
+                self.assertEqual(artifact.read_bytes(),(context/'assets'/row['file']).read_bytes())
+                self.assertEqual(artifact.with_suffix('.ziphash').read_text(),row['h1'])
+
     def test_bounded_build_diagnostics(self):
         value=U.build_diagnostics(b'cmd/usage-regression/main.go:12: unknown symbol secret\n')
         self.assertEqual(value['source_errors'],[{'file':'cmd/usage-regression/main.go','line':12}])
