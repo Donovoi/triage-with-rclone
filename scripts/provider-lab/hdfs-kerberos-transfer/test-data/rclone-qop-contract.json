@@ -22,6 +22,8 @@
       1,
       0,
       0
-    ]
+    ],
+    "setup_stage": "opened",
+    "original_debug": true
   }
 }

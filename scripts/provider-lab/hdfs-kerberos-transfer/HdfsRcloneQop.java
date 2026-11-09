@@ -26,7 +26,8 @@ final class HdfsRcloneQop {
     private static Level originalLevel;
     private static boolean originalAdditivity, attempted, parserChecked;
     private static volatile boolean attached, restored = true;
-    private static boolean failed, verified;
+    private static boolean failed, verified, originalDebug;
+    private static String setupStage = "not_attempted";
     private static int phase = -1, completed;
     private static long deadline;
 
@@ -108,17 +109,21 @@ final class HdfsRcloneQop {
             attempted = true;
             deadline = until;
             logger = Logger.getLogger(CATEGORY);
-            need(!logger.getAllAppenders().hasMoreElements() && !logger.isDebugEnabled());
+            originalDebug = logger.isDebugEnabled();
+            setupStage = "appender_check";
+            need(!logger.getAllAppenders().hasMoreElements());
             originalLevel = logger.getLevel();
             originalAdditivity = logger.getAdditivity();
             observer = new Observer();
             restored = false;
+            setupStage = "configuring";
             // Suppress parent delivery before enabling debug; restore the exact prior state later.
             logger.setAdditivity(false);
             logger.addAppender(observer);
             attached = logger.isAttached(observer);
             logger.setLevel(Level.DEBUG);
             need(attached && logger.isDebugEnabled() && !logger.getAdditivity());
+            setupStage = "opened";
     }
 
     static void begin(int next) throws IOException {
@@ -185,6 +190,7 @@ final class HdfsRcloneQop {
         synchronized (LOCK) {
             StringBuilder text = new StringBuilder("{\"attempted\":").append(attempted)
                 .append(",\"parser_checked\":").append(parserChecked).append(",\"verified\":").append(verified && !failed)
+                .append(",\"setup_stage\":\"").append(setupStage).append("\",\"original_debug\":").append(originalDebug)
                 .append(",\"failed\":").append(failed).append(",\"attached\":").append(attached)
                 .append(",\"logger_restored\":").append(restored)
                 .append(",\"quiescent\":").append(OWNED.stream().noneMatch(Thread::isAlive))

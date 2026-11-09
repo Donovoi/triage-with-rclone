@@ -61,10 +61,11 @@ class QopContractTests(unittest.TestCase):
     def test_unattempted_and_partial_failure_are_honest(self):
         value = deepcopy(self.proof)
         value.update(attempted=False, parser_checked=False, verified=False, phases_completed=0,
-                     connections=0, qop='not_observed', phase_connections=[0]*10)
+                     connections=0, qop='not_observed', phase_connections=[0]*10,
+                     setup_stage='not_attempted', original_debug=False)
         F.validate_rclone_qop(value, False, True)
         self.reject(value)
-        value.update(attempted=True, parser_checked=True, failed=True, phases_completed=2,
+        value.update(attempted=True, parser_checked=True, failed=True, phases_completed=2, setup_stage='opened',
                      connections=1, qop='auth-conf', phase_connections=[0,0,1,0,0,0,0,0,0,0])
         F.validate_rclone_qop(value, False, True)
         self.reject(value)
@@ -75,6 +76,17 @@ class QopContractTests(unittest.TestCase):
         F.validate_rclone_qop(value, False, False)
         value.update(logger_restored=True)
         self.reject(value, False, False)
+
+    def test_logger_setup_diagnostic_is_finite_and_does_not_require_prior_debug_off(self):
+        for prior in (False, True):
+            value = deepcopy(self.proof); value['original_debug'] = prior
+            F.validate_rclone_qop(value, True, True)
+        for stage in ('not_attempted', 'appender_check', 'configuring', 'unknown', None):
+            value = deepcopy(self.proof); value['setup_stage'] = stage; self.reject(value)
+        value = deepcopy(self.proof)
+        value.update(verified=False, phases_completed=0, connections=0, qop='not_observed',
+                     phase_connections=[0]*10, setup_stage='appender_check')
+        F.validate_rclone_qop(value, False, True)
 
     def test_source_pin_matches_helper_and_probe_stays_bounded(self):
         self.assertEqual(F.sha((HERE/'HdfsRcloneQop.java').read_bytes()), F.QOP_SHA)
