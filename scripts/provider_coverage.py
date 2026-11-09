@@ -151,6 +151,11 @@ MEMORY_REQUIRED_CAPABILITIES = frozenset({
     "source_preservation", "config_preservation", "cleanup",
 })
 SMB_MODE = "smb_samba_ntlm_read_v1"
+HDFS_MODE = "hdfs_kerberos_transfer_read_v1"
+HDFS_REQUIRED_CAPABILITIES = frozenset({
+    "listing", "download_hash", "missing_object_rejection", "authentication_rejection",
+    "source_preservation", "cleanup",
+})
 SMB_REQUIRED_CAPABILITIES = frozenset({
     "listing", "download_hash", "missing_object_rejection", "authentication_rejection",
     "source_preservation", "config_preservation", "cleanup",
@@ -641,6 +646,42 @@ def validate_gcs_receipt(receipt, runtime, bindings, now, max_age_hours, fixture
     return receipt
 
 
+def hdfs_evidence_module():
+    path = plain_path(ROOT / "scripts" / "provider-lab" / "hdfs-kerberos-transfer" / "protocol_evidence.py")
+    try:
+        source = path.read_bytes()
+        if len(source) > 128 * 1024:
+            fail("hdfs_evidence_helper_size_limit")
+        spec = importlib.util.spec_from_file_location("coverage_hdfs_evidence", path)
+        module = importlib.util.module_from_spec(spec)
+        exec(compile(source, str(path), "exec"), module.__dict__)
+        return module
+    except (OSError, ValueError, TypeError, AttributeError):
+        fail("hdfs_evidence_helper_unavailable")
+
+
+def compute_hdfs_bindings(root):
+    try:
+        return hdfs_evidence_module().compute_bindings(plain_path(Path(root).absolute()))
+    except (OSError, ValueError, RuntimeError, TypeError, KeyError, AttributeError, OverflowError):
+        fail("hdfs_evidence_bindings_invalid")
+
+
+def validate_hdfs_receipt(receipt, runtime, bindings, now, max_age_hours):
+    if bindings is None:
+        fail("unknown_receipt_schema")
+    if runtime.get("platform") != "linux":
+        fail("receipt_runtime_mismatch")
+    try:
+        hdfs_evidence_module().validate_evidence(receipt, runtime, bindings, now, max_age_hours)
+    except ValueError as error:
+        code = str(error)
+        fail(code if re.fullmatch(r"[a-z][a-z0-9_]{0,80}", code) else "invalid_hdfs_evidence")
+    except (OSError, TypeError, KeyError, AttributeError, OverflowError):
+        fail("invalid_hdfs_evidence")
+    return receipt
+
+
 def validate_smb_receipt(receipt, runtime, bindings, now, max_age_hours, fixture_manifest_sha256):
     if bindings is None:
         # Existing callers have not opted into the separately bound format.
@@ -835,7 +876,9 @@ def parse_utc(value):
 
 
 def validate_receipt(receipt, runtime, harness_sha256, now, max_age_hours=MAX_AGE_HOURS,
-                     fixture_manifest_sha256=None, smb_bindings=None, pcloud_bindings=None, gcs_bindings=None):
+                     fixture_manifest_sha256=None, smb_bindings=None, pcloud_bindings=None, gcs_bindings=None, hdfs_bindings=None):
+    if isinstance(receipt, dict) and type(receipt.get("schema_version")) is int and receipt["schema_version"] == 7:
+        return validate_hdfs_receipt(receipt, runtime, hdfs_bindings, now, max_age_hours)
     if isinstance(receipt, dict) and type(receipt.get("schema_version")) is int and receipt["schema_version"] == 3:
         return validate_smb_receipt(receipt, runtime, smb_bindings, now, max_age_hours, fixture_manifest_sha256)
     if isinstance(receipt, dict) and type(receipt.get("schema_version")) is int and receipt["schema_version"] == 5:
@@ -984,7 +1027,7 @@ def merge_fixture_observation(observed, capabilities, failed, run):
 
 
 def evaluate(catalog, policy, runtime, receipts, harness_sha256, now=None, max_age_hours=MAX_AGE_HOURS,
-             fixture_manifest_sha256=None, smb_bindings=None, pcloud_bindings=None, gcs_bindings=None,
+             fixture_manifest_sha256=None, smb_bindings=None, pcloud_bindings=None, gcs_bindings=None, hdfs_bindings=None,
              application_receipts=(), application_bindings=None):
     """Receipts are explicit batch inputs. Failed current evidence stays failed."""
     now = now or datetime.now(timezone.utc)
@@ -1011,7 +1054,7 @@ def evaluate(catalog, policy, runtime, receipts, harness_sha256, now=None, max_a
     for receipt in receipts:
         try:
             validate_receipt(receipt, runtime, harness_sha256, now, max_age_hours, fixture_manifest_sha256,
-                             smb_bindings=smb_bindings, pcloud_bindings=pcloud_bindings, gcs_bindings=gcs_bindings)
+                             smb_bindings=smb_bindings, pcloud_bindings=pcloud_bindings, gcs_bindings=gcs_bindings, hdfs_bindings=hdfs_bindings)
             for row in receipt["backends"]:
                 if row["backend"] not in {entry["backend"] for entry in catalog}:
                     fail("fixture_backend_absent_from_catalog")
@@ -1048,6 +1091,15 @@ def evaluate(catalog, policy, runtime, receipts, harness_sha256, now=None, max_a
                                harness_sha256=receipt["harness_sha256"])
                     mode_observed = observed.setdefault("modes", {}).setdefault(
                         SMB_MODE, {"capabilities": {}, "failed": False, "runs": []})
+                    merge_fixture_observation(mode_observed, contributed, failed, run)
+                if row["backend"] == "hdfs":
+                    inputs = receipt["native_evidence"]["inputs"]
+                    run.update(fixture_mode=HDFS_MODE, platform="linux", architecture="amd64",
+                               jdk_manifest=inputs["jdk_manifest"], image_id=inputs["image_id"],
+                               context_sha256=inputs["context_sha256"], source_sha256=dict(inputs["source_sha256"]),
+                               harness_sha256=receipt["harness_sha256"])
+                    mode_observed = observed.setdefault("modes", {}).setdefault(
+                        HDFS_MODE, {"capabilities": {}, "failed": False, "runs": []})
                     merge_fixture_observation(mode_observed, contributed, failed, run)
                 if row["backend"] == "internetarchive":
                     mode = row.get("fixture_mode", INTERNETARCHIVE_ANONYMOUS_MODE)
@@ -1174,9 +1226,10 @@ def evaluate(catalog, policy, runtime, receipts, harness_sha256, now=None, max_a
                     if value in ("passed", "failed"):
                         capabilities[capability] = value
                 evidence["runs"] = observed["runs"]
-                if backend in ("filefabric", "smb", "internetarchive", "pcloud", "gcs"):
+                if backend in ("filefabric", "smb", "hdfs", "internetarchive", "pcloud", "gcs"):
                     evidence["modes"] = {}
                     contracts = ({SMB_MODE: SMB_REQUIRED_CAPABILITIES} if backend == "smb"
+                                 else {HDFS_MODE: HDFS_REQUIRED_CAPABILITIES} if backend == "hdfs"
                                  else {GCS_STATIC_TOKEN_MODE: GCS_REQUIRED_CAPABILITIES,
                                        GCS_LIFECYCLE_MODE: GCS_LIFECYCLE_CAPABILITIES} if backend == "gcs"
                                  else {PCLOUD_SAVED_TOKEN_MODE: PCLOUD_REQUIRED_CAPABILITIES,
@@ -1633,8 +1686,11 @@ def main(argv=None):
         gcs_bindings = (compute_gcs_bindings(ROOT / "scripts" / "provider-lab" / "gcs-oauth")
                         if any(isinstance(receipt, dict) and type(receipt.get("schema_version")) is int
                                and receipt["schema_version"] == 6 for receipt in receipts) else None)
+        hdfs_bindings = (compute_hdfs_bindings(ROOT / "scripts" / "provider-lab" / "hdfs-kerberos-transfer")
+                         if any(isinstance(receipt, dict) and type(receipt.get("schema_version")) is int
+                                and receipt["schema_version"] == 7 for receipt in receipts) else None)
         report = evaluate(catalog, policy, runtime, receipts, harness_sha, max_age_hours=args.max_age_hours,
-                          fixture_manifest_sha256=fixture_sha, smb_bindings=smb_bindings, pcloud_bindings=pcloud_bindings, gcs_bindings=gcs_bindings,
+                          fixture_manifest_sha256=fixture_sha, smb_bindings=smb_bindings, pcloud_bindings=pcloud_bindings, gcs_bindings=gcs_bindings, hdfs_bindings=hdfs_bindings,
                           application_receipts=application_receipts, application_bindings=application_bindings)
         report["errors"] = sorted(set(report["errors"] + receipt_errors))
         report["all_complete"] = report["all_complete"] and not report["errors"]

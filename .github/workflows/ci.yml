@@ -1370,9 +1370,15 @@ jobs:
             rclone-version.env
           if-no-files-found: error
           retention-days: 14
+  hdfs-protocol:
+    name: Isolated HDFS Kerberos protocol
+    needs: revision
+    uses: ./.github/workflows/hdfs-kerberos-transfer.yml
+    permissions:
+      contents: read
   linux-provider-evidence:
     name: Combined Linux provider evidence
-    needs: [test, smb-protocol, pcloud-oauth-authentication, gcs-oauth-lifecycle]
+    needs: [test, smb-protocol, pcloud-oauth-authentication, gcs-oauth-lifecycle, hdfs-protocol]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -1401,9 +1407,13 @@ jobs:
         with:
           name: gcs-oauth-lifecycle
           path: ${{ runner.temp }}/provider-gcs
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: hdfs-protocol
+          path: ${{ runner.temp }}/provider-hdfs
       - name: Prepare verified Linux runtime
         run: bash scripts/download-rclone.sh --linux "$RUNNER_TEMP/rclone-ledger"
-      - name: Require all 21 reviewed Linux protocol profiles
+      - name: Require all 22 reviewed Linux protocol profiles
         run: |
           python -B scripts/provider_coverage.py --rclone "$RUNNER_TEMP/rclone-ledger" \
             --report "$RUNNER_TEMP/provider-evidence-linux-combined.json" \
@@ -1413,7 +1423,8 @@ jobs:
             --fixture-receipt "$RUNNER_TEMP/provider-smb/smb-protocol.json" \
             --fixture-receipt "$RUNNER_TEMP/provider-pcloud/pcloud-oauth-authentication.json" \
             --fixture-receipt "$RUNNER_TEMP/provider-gcs/gcs-oauth-lifecycle.json" \
-            --require-plans --require-fixtures local,archive,http,webdav,ftp,sftp,s3,swift,b2,azureblob,azurefiles,seafile,memory,koofr,pixeldrain,filefabric,netstorage,internetarchive,gcs,smb,pcloud
+            --fixture-receipt "$RUNNER_TEMP/provider-hdfs/hdfs-protocol.json" \
+            --require-plans --require-fixtures local,archive,http,webdav,ftp,sftp,s3,swift,b2,azureblob,azurefiles,seafile,memory,koofr,pixeldrain,filefabric,netstorage,internetarchive,gcs,smb,pcloud,hdfs
       - name: Retain sanitized combined ledger
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

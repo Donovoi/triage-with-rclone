@@ -1,6 +1,7 @@
 name: Isolated HDFS remediation Kerberos transfer experiment
 
 on:
+  workflow_call:
   workflow_dispatch:
   pull_request:
     paths:
@@ -19,8 +20,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: hdfs-kerberos-transfer-${{ github.ref }}
-  cancel-in-progress: true
+  group: hdfs-kerberos-transfer-${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_id || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   transfer:
@@ -48,6 +49,11 @@ jobs:
           --profile kerberos-remediation
           --rclone "${{ runner.temp }}/rclone-hdfs-transfer"
           --report "${{ runner.temp }}/hdfs-kerberos-transfer-experiment.json"
+      - name: Qualify only the six HDFS protocol capabilities
+        run: >-
+          python -I -S -B scripts/provider-lab/hdfs-kerberos-transfer/protocol_evidence.py
+          --native-report "${{ runner.temp }}/hdfs-kerberos-transfer-experiment.json"
+          --report "${{ runner.temp }}/hdfs-protocol.json"
       - name: Retain only the sanitized result
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -55,4 +61,11 @@ jobs:
           name: hdfs-kerberos-transfer-experiment
           path: ${{ runner.temp }}/hdfs-kerberos-transfer-experiment.json
           if-no-files-found: warn
+          retention-days: 14
+      - name: Retain the validated HDFS protocol envelope
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: hdfs-protocol
+          path: ${{ runner.temp }}/hdfs-protocol.json
+          if-no-files-found: error
           retention-days: 14
