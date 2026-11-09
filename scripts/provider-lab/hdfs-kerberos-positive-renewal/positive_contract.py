@@ -140,8 +140,21 @@ def validate_new_evidence(value, complete, service_case, variant):
         need(not complete, "java_report_invalid"); return
     counters = dict(requests=4, authenticator_controls=32, renewal_replies=1, ordinary_replies=1,
                     reply_controls=4, initial_ap_bindings=1, fresh_ap_bindings=1, ap_controls=8)
-    need(type(evidence) is dict and set(evidence) == set(counters) | {"renewal_fields", "closed", "renewal_verified"}, "java_report_invalid")
+    need(type(evidence) is dict and set(evidence) == set(counters) | {"renewal_fields", "closed", "renewal_verified", "response_observations"}, "java_report_invalid")
     for key, limit in counters.items(): integer(evidence[key], 0, limit)
+    responses=evidence["response_observations"]
+    need(type(responses) is list and len(responses)<=evidence["requests"], "java_report_invalid")
+    for response in responses:
+        need(type(response) is dict and set(response)=={"renew","authenticator_usage","response","error_code","stage"}
+             and type(response["renew"]) is bool and type(response["authenticator_usage"]) is int
+             and response["authenticator_usage"] in (7,11)
+             and type(response["response"]) is str and response["response"] in ("unclassified","krb_error","tgs_rep")
+             and type(response["stage"]) is str and response["stage"] in ["start","error_decode","error_identity","expected_error","reply_decode","reply_identity","reply_decrypt","reply_part_decode","reply_part_canonical","reply_nonce","reply_server","reply_key","reply_start_present","reply_end_present","reply_end_future","reply_end_extended","renewal_bindings","fresh_ticket","reply_controls","complete"]
+             and type(response["error_code"]) is int and 0<=response["error_code"]<=255, "java_report_invalid")
+    if complete:
+        expected=[dict(renew=e["renew"],authenticator_usage=e["authenticator_usage"],response=e["response"],
+                       error_code=e["error_code"],stage="complete") for e in expected_events(service_case,variant)]
+        need(responses==expected, "java_report_invalid")
     fields = evidence["renewal_fields"]
     need(type(fields) is dict and (not fields or set(fields) == RENEWAL_FIELDS)
          and all(type(x) is bool for x in fields.values()) and type(evidence["closed"]) is bool

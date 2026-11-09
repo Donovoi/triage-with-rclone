@@ -25,6 +25,7 @@ final class MitRenewalEvidence implements AutoCloseable {
     int requests,authenticatorControls,renewalReplies,ordinaryReplies,replyControls;
     boolean closed;
     final Map<String,Boolean> renewalFields=new LinkedHashMap<>();
+    final List<Map<String,Object>> responseObservations=new ArrayList<>();
     static final class Request {
         final boolean renew;final String ticketKind;final int usage,nonce;final long requestTime;
         boolean replied;
@@ -79,41 +80,60 @@ final class MitRenewalEvidence implements AutoCloseable {
     }
     synchronized Reply response(byte[] raw,Request request) throws Exception {
         need(!closed && request!=null && !request.replied && raw.length>2 && raw.length<=65536,Code.wire_invalid);
+        need(responseObservations.size()<4,Code.wire_invalid);
+        Map<String,Object> observed=new LinkedHashMap<>();
+        observed.put("renew",request.renew);observed.put("authenticator_usage",request.usage);
+        observed.put("response","unclassified");observed.put("error_code",0);observed.put("stage","start");
+        responseObservations.add(observed);
         if(Byte.toUnsignedInt(raw[0])==0x7e){
+            observed.put("response","krb_error");observed.put("stage","error_decode");
             KrbError error=KrbCodec.decode(raw,KrbError.class);
+            observed.put("stage","error_identity");
             need(Arrays.equals(raw,KrbCodec.encode(error)) && error.getErrorCode()!=null
-                && request.renew && variant.equals("original") && request.usage==11
+                && error.getPvno()==5 && error.getMsgType()==KrbMessageType.KRB_ERROR
+                && error.getErrorCode().getValue()>=0 && error.getErrorCode().getValue()<=255,Code.wire_invalid);
+            observed.put("error_code",error.getErrorCode().getValue());observed.put("stage","expected_error");
+            need(request.renew && variant.equals("original") && request.usage==11
                 && error.getErrorCode().getValue()==31,Code.wire_invalid);
-            request.replied=true;return new Reply("krb_error",31,false);
+            observed.put("stage","complete");request.replied=true;return new Reply("krb_error",31,false);
         }
         need(!request.renew || variant.equals("patched"),Code.wire_invalid);
+        observed.put("response","tgs_rep");observed.put("stage","reply_decode");
         TgsRep reply=KrbCodec.decode(raw,TgsRep.class);
+        observed.put("stage","reply_identity");
         need(reply.getPvno()==5 && reply.getMsgType()==KrbMessageType.TGS_REP && Arrays.equals(raw,KrbCodec.encode(reply))
             && realm.equals(reply.getCrealm()) && reply.getCname()!=null
             && reply.getCname().getNameStrings().equals(List.of(reader)) && reply.getTicket()!=null
             && realm.equals(reply.getTicket().getRealm()) && reply.getTicket().getSname().getNameStrings().equals(List.of("hdfs","127.0.0.1")),Code.wire_invalid);
         EncryptionKey key=request.renew?serviceKey:tgtKey;
+        observed.put("stage","reply_decrypt");
         byte[] plain=decryptAuthenticator(reply.getEncryptedEncPart(),key,KeyUsage.TGS_REP_ENCPART_SESSKEY);
         need(plain!=null,Code.wire_invalid);EncTgsRepPart part=null;
         try {
-            part=KrbCodec.decode(plain,EncTgsRepPart.class);
-            need(Arrays.equals(plain,KrbCodec.encode(part)) && part.getNonce()==request.nonce
-                && realm.equals(part.getSrealm()) && part.getSname()!=null
-                && part.getSname().getNameStrings().equals(List.of("hdfs","127.0.0.1"))
-                && part.getKey()!=null && part.getKey().getKeyType().getValue()==17 && part.getKey().getKeyData().length==16
-                && part.getStartTime()!=null && part.getEndTime()!=null
-                && part.getEndTime().getTime()>System.currentTimeMillis()
-                && part.getEndTime().getTime()>original.getEndTime().getTime(),Code.wire_invalid);
+            observed.put("stage","reply_part_decode");part=KrbCodec.decode(plain,EncTgsRepPart.class);
+            observed.put("stage","reply_part_canonical");need(Arrays.equals(plain,KrbCodec.encode(part)),Code.wire_invalid);
+            observed.put("stage","reply_nonce");need(part.getNonce()==request.nonce,Code.wire_invalid);
+            observed.put("stage","reply_server");need(realm.equals(part.getSrealm()) && part.getSname()!=null
+                && part.getSname().getNameStrings().equals(List.of("hdfs","127.0.0.1")),Code.wire_invalid);
+            observed.put("stage","reply_key");need(part.getKey()!=null && part.getKey().getKeyType().getValue()==17
+                && part.getKey().getKeyData().length==16,Code.wire_invalid);
+            observed.put("stage","reply_start_present");need(part.getStartTime()!=null,Code.wire_invalid);
+            observed.put("stage","reply_end_present");need(part.getEndTime()!=null,Code.wire_invalid);
+            observed.put("stage","reply_end_future");need(part.getEndTime().getTime()>System.currentTimeMillis(),Code.wire_invalid);
+            observed.put("stage","reply_end_extended");need(part.getEndTime().getTime()>original.getEndTime().getTime(),Code.wire_invalid);
             if(request.renew){
+                observed.put("stage","renewal_bindings");
                 renewalFields.putAll(partBindings(part,original,realm,request.nonce,request.requestTime));
                 need(renewalFields.values().stream().allMatch(Boolean::booleanValue),Code.wire_invalid);
                 renewalReplies++;
             }else ordinaryReplies++;
+            observed.put("stage","fresh_ticket");
             byte[] ticket=KrbCodec.encode(reply.getTicket());
             need(!Arrays.equals(ticket,serviceBytes) && !Arrays.equals(part.getKey().getKeyData(),serviceKey.getKeyData())
                 && freshTicket==null && freshKey==null,Code.wire_invalid);
             freshTicket=ticket;freshKey=new EncryptionKey(17,part.getKey().getKeyData().clone());
-            replyMutationControls(reply,part,key,request);request.replied=true;
+            observed.put("stage","reply_controls");replyMutationControls(reply,part,key,request);
+            observed.put("stage","complete");request.replied=true;
             return new Reply("tgs_rep",0,true);
         }finally {Arrays.fill(plain,(byte)0);if(part!=null && part.getKey()!=null)Arrays.fill(part.getKey().getKeyData(),(byte)0);}
     }
@@ -223,6 +243,7 @@ final class MitRenewalEvidence implements AutoCloseable {
         Map<String,Object> out=new LinkedHashMap<>();out.put("requests",requests);out.put("authenticator_controls",authenticatorControls);
         out.put("renewal_replies",renewalReplies);out.put("ordinary_replies",ordinaryReplies);out.put("reply_controls",replyControls);
         out.put("renewal_fields",new LinkedHashMap<>(renewalFields));out.put("closed",closed);
+        out.put("response_observations",new ArrayList<>(responseObservations));
         out.put("initial_ap_bindings",initialApBindings);out.put("fresh_ap_bindings",freshApBindings);out.put("ap_controls",apControls);
         out.put("renewal_verified",false);return out;
     }
