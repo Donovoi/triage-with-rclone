@@ -3,6 +3,7 @@ import hashlib
 import io
 import json
 import unittest
+import types
 import zipfile
 
 import hdfs_context_build as U
@@ -348,5 +349,97 @@ class Admission(unittest.TestCase):
         self.assertIn('-mod=readonly',build)
         self.assertIn('GOPROXY=off GOSUMDB=off CGO_ENABLED=0',build)
         self.assertNotIn('go test -race',build)
+
+class CleanupDiagnostics(unittest.TestCase):
+    run_id='a'*32
+    name='rclone-usage-'+'a'*32
+    tag=name
+    image='sha256:'+'b'*64
+    container='c'*64
+
+    class Error(Exception):
+        def __init__(self,code):
+            self.code=code
+            super().__init__('SECRET raw command details')
+
+    def record(self,kind):
+        if kind=='container':
+            return dict(Id=self.container,Name='/'+self.name,Image=self.image,Config=dict(Labels={U.LABEL:self.run_id}))
+        return dict(Id=self.image,RepoTags=[self.tag+':latest'],Config=dict(Labels={U.LABEL:self.run_id}))
+
+    def driver(self,snapshots,call_error=None):
+        pending=iter(snapshots);calls=[]
+        def inspect(*args,**kwargs):
+            value=next(pending)
+            if isinstance(value,BaseException):raise value
+            return value
+        def call(args):
+            calls.append(args)
+            if call_error is not None:raise call_error
+        return types.SimpleNamespace(inspect=inspect,call=call),calls
+
+    def invoke(self,docker,kind,diagnostic):
+        identity=self.container if kind=='container' else self.image
+        U.cleanup_owned(docker,kind,identity,identity,self.run_id,self.name,self.tag,self.image,diagnostic)
+
+    def test_exact_container_and_image_removal_commands(self):
+        for kind,identity,force in (('container',self.container,['--force']),('image',self.image,[])):
+            docker,calls=self.driver([self.record(kind),None]);diagnostic=dict(stage='not_attempted',error='none')
+            self.invoke(docker,kind,diagnostic)
+            self.assertEqual(diagnostic,dict(stage='complete',error='none'))
+            self.assertEqual(calls,[[kind,'rm',*force,identity]])
+
+    def test_verified_absence_performs_no_removal(self):
+        for kind in ('container','image'):
+            docker,calls=self.driver([None]);diagnostic=dict(stage='not_attempted',error='none')
+            self.invoke(docker,kind,diagnostic)
+            self.assertEqual(calls,[]);self.assertEqual(diagnostic,dict(stage='complete',error='none'))
+
+    def test_binding_failure_identifies_phase_and_never_removes(self):
+        mutations=[('container','Config',{},'bind_label'),('image','Config',{},'bind_label'),
+            ('container','Id','d'*64,'bind_identity'),('image','Id','sha256:'+'d'*64,'bind_identity'),
+            ('container','Name','/unowned','bind_container_name'),('container','Image','sha256:'+'e'*64,'bind_container_image'),
+            ('image','RepoTags',['unowned:latest'],'bind_image_tags')]
+        for kind,key,bad,phase in mutations:
+            record=self.record(kind);record[key]=bad;docker,calls=self.driver([record]);diagnostic=dict(stage='not_attempted',error='none')
+            with self.assertRaises(U.ProbeError):self.invoke(docker,kind,diagnostic)
+            self.assertEqual(calls,[]);self.assertEqual(diagnostic,dict(stage=phase,error=kind+'_cleanup_failed'))
+
+    def test_initial_inspect_timeout_is_not_absence(self):
+        for kind in ('container','image'):
+            docker,calls=self.driver([self.Error('command_timeout')]);diagnostic=dict(stage='not_attempted',error='none')
+            with self.assertRaises(self.Error):self.invoke(docker,kind,diagnostic)
+            self.assertEqual(calls,[]);self.assertEqual(diagnostic,dict(stage='inspect',error='command_timeout'))
+
+    def test_remove_timeout_preserves_failure_without_retry(self):
+        docker,calls=self.driver([self.record('image')],self.Error('command_timeout'));diagnostic=dict(stage='not_attempted',error='none')
+        with self.assertRaises(self.Error):self.invoke(docker,'image',diagnostic)
+        self.assertEqual(calls,[['image','rm',self.image]])
+        self.assertEqual(diagnostic,dict(stage='remove',error='command_timeout'))
+
+    def test_post_removal_inspect_failure_remains_unqualified(self):
+        docker,calls=self.driver([self.record('image'),self.Error('container_binding_invalid')]);diagnostic=dict(stage='not_attempted',error='none')
+        with self.assertRaises(self.Error):self.invoke(docker,'image',diagnostic)
+        self.assertEqual(diagnostic,dict(stage='confirm_absence',error='container_binding_invalid'))
+        self.assertEqual(len(calls),1)
+
+    def test_still_present_image_is_not_cleanup_success(self):
+        docker,calls=self.driver([self.record('image'),self.record('image')]);diagnostic=dict(stage='not_attempted',error='none')
+        with self.assertRaises(U.ProbeError):self.invoke(docker,'image',diagnostic)
+        self.assertEqual(diagnostic,dict(stage='confirm_absence',error='image_cleanup_failed'))
+        self.assertEqual(len(calls),1)
+
+    def test_unknown_errors_never_export_raw_text(self):
+        docker,calls=self.driver([self.Error('SECRET')]);diagnostic=dict(stage='not_attempted',error='none')
+        with self.assertRaises(self.Error):self.invoke(docker,'image',diagnostic)
+        self.assertEqual(diagnostic,dict(stage='inspect',error='unexpected'))
+        self.assertNotIn('SECRET',str(diagnostic))
+        self.assertEqual(U.cleanup_error(OSError('SECRET')),'filesystem')
+        self.assertEqual(U.cleanup_error(KeyboardInterrupt()),'interrupted')
+
+    def test_invalid_kind_cannot_invoke_docker(self):
+        docker,calls=self.driver([]);diagnostic=dict(stage='not_attempted',error='none')
+        with self.assertRaises(U.ProbeError):self.invoke(docker,'volume',diagnostic)
+        self.assertEqual(calls,[]);self.assertEqual(diagnostic,dict(stage='preflight',error='input_invalid'))
 
 if __name__=='__main__':unittest.main()

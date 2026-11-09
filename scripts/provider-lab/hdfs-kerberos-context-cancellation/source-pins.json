@@ -10,8 +10,8 @@
       "sha256": "8cd2e9e750b90a04b7d82dbbca3930c696ae0309d7c10464f90a44f45754cd04"
     },
     "hdfs-cancellation-context-build/hdfs_context_build.py": {
-      "bytes": 38703,
-      "sha256": "2ab053bd55aa530dcd321461593acafee01e8e400cf7224d06c274a5d90c55d8"
+      "bytes": 40392,
+      "sha256": "876f4e2db4220685d2178e686422db0f9bf797872fef98032da34f08797999aa"
     },
     "hdfs-cancellation-context-build/inspect_context_build.go": {
       "bytes": 10666,
