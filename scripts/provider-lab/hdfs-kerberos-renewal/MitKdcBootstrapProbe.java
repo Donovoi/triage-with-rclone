@@ -43,6 +43,16 @@ public final class MitKdcBootstrapProbe {
         return (part.getStartTime()==null?part.getAuthTime():part.getStartTime()).getTime()/1000;
     }
     static void need(boolean value) { if(!value) throw new IllegalStateException("bootstrap_predicate_failed"); }
+    static Map<String,Integer> remainingThreads(Set<Thread> baseline) {
+        Map<String,Integer> counts=new LinkedHashMap<>();
+        for(String key:List.of("process_reaper","owned_mit","other"))counts.put(key,0);
+        for(Thread thread:Thread.getAllStackTraces().keySet()) if(thread.isAlive() && !baseline.contains(thread)) {
+            String kind=thread.getName().startsWith("process reaper")?"process_reaper":
+                thread.getName().startsWith("owned-mit-")?"owned_mit":"other";
+            counts.put(kind,counts.get(kind)+1);
+        }
+        return counts;
+    }
     public static void main(String[] args) {
         PrintStream report=System.out;
         System.setOut(new PrintStream(OutputStream.nullOutputStream()));
@@ -55,6 +65,8 @@ public final class MitKdcBootstrapProbe {
         Set<Thread> threadBaseline=null;
         MitKdcOwner owner=null; String stage="owner_construct",error="none"; boolean closed=false;
         int serviceLifetime=0,tgtLifetime=0,managedAssertions=0; long begun=System.nanoTime();
+        Map<String,Integer> initialThreads=Map.of("process_reaper",0,"owned_mit",0,"other",0),remainingThreads=initialThreads;
+        int quietObservations=0;long threadWaitMillis=0;
         try {
             need(args.length==0 && processBaseline.isEmpty());
             stage="managed_contracts";managedAssertions=MitKdcOwnerContracts.run();checks.put("managed_contracts",true);
@@ -119,8 +131,18 @@ public final class MitKdcBootstrapProbe {
             if(owner!=null) try { owner.close(); closed=true; } catch(Exception failure) { if(error.equals("none")) error="cleanup_failed"; }
             checks.put("processes_reaped",ProcessHandle.current().descendants().map(ProcessHandle::pid).collect(java.util.stream.Collectors.toSet()).equals(processBaseline));
             if(threadBaseline!=null) {
-                Set<Thread> retained=threadBaseline;
-                checks.put("new_threads_reaped",Thread.getAllStackTraces().keySet().stream().noneMatch(t->t.isAlive() && !retained.contains(t)));
+                // JVM process reapers use an idle cache. Require eventual actual
+                // quiescence, without exempting any newly created thread kind.
+                long waitStarted=System.nanoTime(),until=waitStarted+TimeUnit.SECONDS.toNanos(70);
+                initialThreads=remainingThreads(threadBaseline);remainingThreads=initialThreads;
+                while(true) {
+                    quietObservations=remainingThreads.values().stream().allMatch(n->n==0)?quietObservations+1:0;
+                    if(quietObservations==3 || System.nanoTime()>=until)break;
+                    try { Thread.sleep(100); } catch(InterruptedException interrupted) { Thread.currentThread().interrupt();break; }
+                    remainingThreads=remainingThreads(threadBaseline);
+                }
+                threadWaitMillis=TimeUnit.NANOSECONDS.toMillis(System.nanoTime()-waitStarted);
+                checks.put("new_threads_reaped",quietObservations==3 && remainingThreads.values().stream().allMatch(n->n==0));
             }
         }
         Map<String,Object> ownerReport=owner==null?Map.of():owner.projection();
@@ -131,6 +153,8 @@ public final class MitKdcBootstrapProbe {
         output.put("success",passed); output.put("stage",stage); output.put("error",error); output.put("checks",checks); output.put("owner",ownerReport);
         output.put("tasks",tasks.size()); output.put("managed_assertions",managedAssertions); output.put("tgt_lifetime_seconds",tgtLifetime); output.put("service_lifetime_seconds",serviceLifetime);
         output.put("lifecycle_checks",MitKdcOwnerLifecycle.projection());output.put("lifecycle_children",MitKdcOwnerLifecycle.children());
+        output.put("initial_new_threads",initialThreads);output.put("remaining_new_threads",remainingThreads);
+        output.put("thread_wait_ms",threadWaitMillis);output.put("thread_quiet_observations",quietObservations);
         output.put("duration_ms",TimeUnit.NANOSECONDS.toMillis(System.nanoTime()-begun)); output.put("cleanup_complete",closed);
         for(String claim:List.of("renewal_verified","rclone_verified","provider_accepted","application_accepted","vendor_accepted","vulnerability_audited")) output.put(claim,false);
         try { report.println(new ObjectMapper().writeValueAsString(output)); } catch(Exception ignored) { System.exit(3); }
