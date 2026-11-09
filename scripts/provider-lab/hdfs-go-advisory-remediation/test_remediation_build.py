@@ -157,3 +157,34 @@ class ResolverDiagnosticBounds(unittest.TestCase):
  def test_only_last_closed_state_is_reported(self):
   value=self.inspect(b'GO_REMEDIATION_DIAGNOSTIC_STAGE=graph_read\nGO_REMEDIATION_DIAGNOSTIC_STAGE=graph_summary\nGO_REMEDIATION_GRAPH_MODULES=1\nGO_REMEDIATION_GRAPH_MODULES=300\n')
   self.assertEqual(value['resolver_diagnostic_stage'],'graph_summary');self.assertEqual(value['resolver_diagnostic_counts']['graph_modules'],300)
+
+class ResolverInventoryDiagnostics(unittest.TestCase):
+ def inspect(self,rows,trailer=b''):
+  import json,types
+  raw=b''.join(b'GO_REMEDIATION_GRAPH_ROW='+json.dumps(row).encode()+b'\n' for row in rows)+trailer
+  return M.diagnostics(types.SimpleNamespace(build_diagnostics=lambda value:dict(module_resolution_failed=False)),raw,{('example.org/known','v1.2.3')})
+ def row(self,**changes):
+  return dict(dict(module='example.org/known',version='v1.2.3',kind='lookup_disabled',has_sum=False,has_go_mod_sum=True),**changes)
+ def test_complete_error_inventory_has_explicit_bounds(self):
+  row=self.row();value=self.inspect([row],b'GO_REMEDIATION_GRAPH_STATUS=errors\nGO_REMEDIATION_GRAPH_MODULES=2\nGO_REMEDIATION_ERROR_MODULES=1\n')
+  self.assertEqual(value['resolver_inventory'],[row]);self.assertTrue(value['resolver_inventory_complete'])
+ def test_unknown_coordinates_are_redacted(self):
+  value=self.inspect([self.row(module='private.example/secret')]);self.assertEqual(value['resolver_inventory'],[])
+  self.assertTrue(value['unbound_module_error_present']);self.assertNotIn('private',str(value))
+ def test_identical_repeated_log_rows_are_deduplicated(self):
+  row=self.row();self.assertEqual(self.inspect([row,row])['resolver_inventory'],[row])
+ def test_conflicting_rows_are_rejected(self):
+  with self.assertRaises(ContractError):self.inspect([self.row(),self.row(kind='none')])
+ def test_inventory_type_and_field_checks(self):
+  for row in (self.row(kind='private_details'),self.row(has_sum=1),self.row(extra='private'),self.row(version=[])):
+   with self.assertRaises(ContractError):self.inspect([row])
+ def test_missing_counts_cannot_establish_completeness(self):
+  self.assertFalse(self.inspect([self.row()])['resolver_inventory_complete'])
+ def test_error_count_mismatch_cannot_establish_completeness(self):
+  trailer=b'GO_REMEDIATION_GRAPH_STATUS=complete\nGO_REMEDIATION_GRAPH_MODULES=2\nGO_REMEDIATION_ERROR_MODULES=0\n'
+  self.assertFalse(self.inspect([self.row()],trailer)['resolver_inventory_complete'])
+ def test_marker_count_is_bounded(self):
+  with self.assertRaises(ContractError):self.inspect([self.row()]*2049)
+ def test_duplicate_json_fields_are_rejected(self):
+  raw=b'GO_REMEDIATION_GRAPH_ROW={"module":"example.org/known","module":"private"}\n'
+  with self.assertRaises(ContractError):self.inspect([],raw)
