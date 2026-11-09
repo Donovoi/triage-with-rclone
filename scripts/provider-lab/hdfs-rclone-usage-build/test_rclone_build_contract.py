@@ -227,6 +227,30 @@ class Admission(unittest.TestCase):
             with self.subTest(error=type(error).__name__):
                 self.assertEqual(U.worker_error(B,error),expected)
                 self.assertNotIn('private',str(U.worker_error(B,error)))
+    def test_parent_diagnostics_keep_bound_source_location_only(self):
+        try:U.sha(None)
+        except TypeError as error:result=U.failure_diagnostics(error)
+        self.assertEqual(result['category'],'type_error')
+        self.assertIsNone(result['errno'])
+        self.assertEqual(len(result['frames']),1)
+        self.assertEqual(result['frames'][0]['file'],'rclone_usage_build.py')
+        self.assertTrue(1<=result['frames'][0]['line']<=10000)
+        for error,category,number in [(ValueError('private text'),'value_error',None),
+                                      (OSError(13,'private path'),'io_error',13),
+                                      (RuntimeError('private text'),'unexpected',None)]:
+            projected=U.failure_diagnostics(error)
+            self.assertEqual(projected,dict(category=category,errno=number,frames=[]))
+            self.assertNotIn('private',str(projected))
+    def test_parent_diagnostics_bound_trace_depth_and_frames(self):
+        import types
+        code=types.SimpleNamespace(co_filename=str(U.HERE/'rclone_usage_build.py'))
+        frame=types.SimpleNamespace(f_code=code)
+        trace=None
+        for _ in range(70):trace=types.SimpleNamespace(tb_frame=frame,tb_lineno=42,tb_next=trace)
+        fake=types.SimpleNamespace(__traceback__=trace,errno=True)
+        result=U.failure_diagnostics(fake)
+        self.assertEqual(result['frames'],[dict(file='rclone_usage_build.py',line=42)]*8)
+        self.assertIsNone(result['errno'])
     def test_worker_status_closed_and_typed(self):
         valid=dict(schema_version=1,phase='download',asset_index=17,processed_assets=17,error='http_error',http_status=503)
         self.assertEqual(U.validate_worker_status(valid),valid)

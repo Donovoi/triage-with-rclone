@@ -39,6 +39,22 @@ def need(value,code):
 def canonical(value):return json.dumps(value,sort_keys=True,separators=(',',':'),ensure_ascii=True,allow_nan=False).encode('ascii')
 def sha(raw):return hashlib.sha256(raw).hexdigest()
 
+def failure_diagnostics(error):
+    # Source locations are from bound fixture files; never retain exception text.
+    category='unexpected'
+    for kind,label in ((ProbeError,'probe_error'),(ValueError,'value_error'),(KeyError,'key_error'),
+                       (AttributeError,'attribute_error'),(TypeError,'type_error'),(OSError,'io_error')):
+        if isinstance(error,kind):category=label;break
+    allowed={str(Path(__file__)):'rclone_usage_build.py',str(HERE/'rclone_build_bundle.py'):'rclone_build_bundle.py',
+             str(SUPPORT):'policy_denial_container.py'}
+    frames=[];trace=error.__traceback__;depth=0
+    while trace is not None and depth<64:
+        name=allowed.get(trace.tb_frame.f_code.co_filename)
+        if name is not None and 1<=trace.tb_lineno<=10000:frames.append(dict(file=name,line=trace.tb_lineno))
+        trace=trace.tb_next;depth+=1
+    number=getattr(error,'errno',None)
+    return dict(category=category,errno=number if type(number) is int and 1<=number<=255 else None,frames=frames[-8:])
+
 def load_support():
     # Reject links and changed bytes before compiling the already reviewed helper.
     for path in (SUPPORT,*SUPPORT.parents):
@@ -132,7 +148,7 @@ def package_worker(C,B,context,identity,source_hash):
         except BaseException:pass
         raise
 
-def prepare_packages(C,B,context):
+def prepare_packages(C,B,context,progress=None):
     process=None;identity=C.directory(context);source=Path(__file__).resolve();source_hash=C.file_hash(source,524288)
     env={key:os.environ[key] for key in ('PATH','LANG','LC_ALL','GITHUB_ACTIONS','RUNNER_ENVIRONMENT','RUNNER_OS') if key in os.environ}
     try:
@@ -149,6 +165,7 @@ def prepare_packages(C,B,context):
                 process.wait(timeout=3)
             except (OSError,subprocess.TimeoutExpired):raise ProbeError('package_cleanup_failed') from None
     C.directory(context,identity);need(C.file_hash(source,524288)==source_hash,'input_changed')
+    if progress is not None:progress('verify_packages')
     lock=B.load_lock(C.read(HERE/'assets-lock.json',1048576))
     escape=lambda s:''.join('!'+c.lower() if 'A'<=c<='Z' else c for c in s)
     for row in lock['assets']:
@@ -278,7 +295,7 @@ def inspect_container(value,name,image,run_id):
 def run():
     began=time.monotonic();report=dict(schema_version=1,scope='rclone_usage_candidate_build',success=False,
         started_utc=datetime.now(timezone.utc).isoformat(),finished_utc=None,duration_seconds=None,
-        stage='preflight',inputs=None,result=None,build_diagnostics=None,worker_diagnostics=None,errors=[],
+        stage='preflight',inputs=None,result=None,build_diagnostics=None,worker_diagnostics=None,failure_diagnostics=None,errors=[],
         cleanup=dict(container_removed=False,image_removed=False,context_removed=False,raw_evidence_removed=False),
         cleanup_excludes=['shared_base_image','shared_build_cache'],**dict.fromkeys(FALSE_CLAIMS,False))
     C=B=D=docker=root=context=root_id=context_id=image=container=None
@@ -298,12 +315,13 @@ def run():
         need(shutil.disk_usage('/tmp').free>=12*1024**3,'unsafe_path')
         root=Path(tempfile.mkdtemp(prefix=name+'-',dir='/tmp'));root_id=C.directory(root)
         context=root/'context';context.mkdir(mode=0o700);context_id=C.directory(context)
-        report['stage']='download_assets';prepare_packages(C,B,context)
+        report['stage']='download_assets';prepare_packages(C,B,context,progress=lambda stage:report.update(stage=stage))
         report['worker_diagnostics']=read_worker_status(C,context)
         need(report['worker_diagnostics']['phase']=='complete' and report['worker_diagnostics']['error']=='none','package_worker_failed')
+        report['stage']='stage_context'
         for filename,raw in {**sources,**build_files(C,sources,C.read(context/'original/go.mod',131072),C.read(context/'original/go.sum',131072))}.items():
             target=context/filename;target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes(raw)
-        before=tree_hashes(C,context)
+        report['stage']='hash_context';before=tree_hashes(C,context)
         (context/'checksums').write_text(''.join(h+'  '+p+'\n' for p,h in sorted(before.items())),encoding='ascii')
         context_hashes=tree_hashes(C,context);report['inputs']['context_sha256']=sha(canonical(context_hashes))
         docker=D.Docker(root,max_calls=40);host=C.parse(C.read(docker.call(['info','--format','{{json .}}']).stdout,1048576))
@@ -335,6 +353,7 @@ def run():
         report['success']=True;report['stage']='completed'
     except KeyboardInterrupt:report['errors'].append('interrupted')
     except BaseException as error:
+        report['failure_diagnostics']=failure_diagnostics(error)
         report['errors'].append(getattr(error,'code',None) if getattr(error,'code',None) in CODES else 'probe_failed')
         if context is not None and C is not None and report['worker_diagnostics'] is None:
             try:report['worker_diagnostics']=read_worker_status(C,context)
