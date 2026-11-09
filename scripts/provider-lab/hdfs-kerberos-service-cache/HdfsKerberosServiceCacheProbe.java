@@ -1018,6 +1018,8 @@ public final class HdfsKerberosServiceCacheProbe {
         private enum TraceStage { none, accept, upstream_connect, request_frame, request_decode,
             request_envelope, request_canonical, request_target, request_padata, request_ap_decode,
             request_ap_canonical, request_identity, request_renew_binding, parser_self_check,
+            self_frame_valid, self_frame_rejected, self_truncated, self_trailing, self_wrong_type,
+            self_wrong_realm, self_renew_mutation, self_renew_rejected,
             upstream_send, response_frame, response_decode, client_send, client_eof, cleanup }
         final ThreadLocal<TraceStage> traceStage = ThreadLocal.withInitial(() -> TraceStage.none);
         private TraceStage failureStage = TraceStage.none;
@@ -1152,26 +1154,44 @@ public final class HdfsKerberosServiceCacheProbe {
             catch (Exception expected) { return true; }
         }
         void parserSelfTest(byte[] body, int ownedPhase) throws Exception {
+            traceStage.set(TraceStage.self_frame_valid);
             byte[] validFrame = new byte[]{0,0,0,3,1,2,3};
             need(Arrays.equals(frame(new DataInputStream(new java.io.ByteArrayInputStream(validFrame))), new byte[]{1,2,3}), Code.wire_invalid);
+            traceStage.set(TraceStage.self_frame_rejected);
             for (byte[] bad : List.of(new byte[]{0,0,0,0}, new byte[]{-1,-1,-1,-1},
                     new byte[]{0,1,0,1}, new byte[]{0,0,0,2,1})) need(rejectsFrame(bad), Code.wire_invalid);
-            need(body.length > 2 && rejects(Arrays.copyOf(body, body.length - 1), ownedPhase)
-                && rejects(Arrays.copyOf(body, body.length + 1), ownedPhase), Code.wire_invalid);
+            traceStage.set(TraceStage.self_truncated);
+            need(body.length > 2 && rejects(Arrays.copyOf(body, body.length - 1), ownedPhase), Code.wire_invalid);
+            traceStage.set(TraceStage.self_trailing);
+            need(rejects(Arrays.copyOf(body, body.length + 1), ownedPhase), Code.wire_invalid);
+            traceStage.set(TraceStage.self_wrong_type);
             byte[] wrongType = body.clone(); wrongType[0] = 0x6a;
             need(rejects(wrongType, ownedPhase), Code.wire_invalid); Arrays.fill(wrongType, (byte)0);
             var changed = org.apache.kerby.kerberos.kerb.KrbCodec.decode(body,
                 org.apache.kerby.kerberos.kerb.type.kdc.TgsReq.class);
+            traceStage.set(TraceStage.self_wrong_realm);
             changed.getReqBody().setRealm(ownedRealm + ".INVALID");
             byte[] altered = org.apache.kerby.kerberos.kerb.KrbCodec.encode(changed);
             try { need(rejects(altered, ownedPhase), Code.wire_invalid); } finally { Arrays.fill(altered, (byte)0); }
             changed = org.apache.kerby.kerberos.kerb.KrbCodec.decode(body,
                 org.apache.kerby.kerberos.kerb.type.kdc.TgsReq.class);
+            traceStage.set(TraceStage.self_renew_mutation);
             var flags = changed.getReqBody().getKdcOptions();
             var renew = org.apache.kerby.kerberos.kerb.type.kdc.KdcOption.RENEW;
-            if (flags.isFlagSet(renew)) flags.clearFlag(renew); else flags.setFlag(renew);
+            boolean originalRenew = flags.isFlagSet(renew);
+            // Parsed Asn1Simple retains encoded bytes. Replace the value object so the negative
+            // request changes on the wire; mutating decoded flags can re-emit the original bytes.
+            var alteredFlags = new org.apache.kerby.kerberos.kerb.type.kdc.KdcOptions(flags.getFlags() ^ renew.getValue());
+            changed.getReqBody().setKdcOptions(alteredFlags);
             altered = org.apache.kerby.kerberos.kerb.KrbCodec.encode(changed);
-            try { need(rejects(altered, ownedPhase), Code.wire_invalid); } finally { Arrays.fill(altered, (byte)0); }
+            try {
+                var decoded = org.apache.kerby.kerberos.kerb.KrbCodec.decode(altered,
+                    org.apache.kerby.kerberos.kerb.type.kdc.TgsReq.class);
+                need(!Arrays.equals(altered, body)
+                    && decoded.getReqBody().getKdcOptions().isFlagSet(renew) != originalRenew, Code.wire_invalid);
+                traceStage.set(TraceStage.self_renew_rejected);
+                need(rejects(altered, ownedPhase), Code.wire_invalid);
+            } finally { Arrays.fill(altered, (byte)0); }
         }
         void handle(Socket incoming, int ownedPhase) {
             Socket upstream = new Socket(); sockets.add(upstream);
