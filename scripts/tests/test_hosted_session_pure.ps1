@@ -3,6 +3,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $script:passed = 0
+$script:pidReadFailureKind = 'none'
 function Check([bool]$Value) {
     if (-not $Value) { throw 'pure_assertion_failed' }
     $script:passed++
@@ -14,7 +15,7 @@ function Reject([scriptblock]$Action) {
 }
 
 function CompileObservation([string]$Result) {
-    [pscustomobject]@{ phase=$script:phase; result=$Result; elapsed_ms=$script:clock.ElapsedMilliseconds } | ConvertTo-Json -Compress
+    [pscustomobject]@{ phase=$script:phase; result=$Result; elapsed_ms=$script:clock.ElapsedMilliseconds; checks=$script:passed; pid_read_failure=$script:pidReadFailureKind } | ConvertTo-Json -Compress
 }
 $script:phase = 'prepare_source_validation'
 $script:clock = [Diagnostics.Stopwatch]::StartNew()
@@ -66,8 +67,30 @@ try {
     $script:phase = 'hosted_conpty_add_type'
     $script:clock.Restart()
     CompileObservation 'started'
-    Add-Type -Path (Join-Path $root 'application-lab/HostedConPtySession.cs') -ErrorAction Stop -WarningAction SilentlyContinue 2>$null
+    # A managed holder preserves the by-ref observation even when Read throws.
+    # This test-only adapter calls the production loop; it has no native methods.
+    $pidObservationHarness = @'
+namespace TriageApplicationLab.PureTests {
+    public sealed class PidListObservation {
+        HostedProcessObservation observation;
+        public PidListObservation(bool sticky) {
+            observation.Begin();
+            if(sticky) { observation.At(HostedProcessObservationStage.ChildOpen); observation.Capture(); }
+        }
+        public long[] Read(System.Func<int,HostedPidListSnapshot> query,System.Func<long> clock,
+                System.Action<int> pause,long frequency) {
+            try { return HostedPidListReader.Read(query,clock,pause,frequency,ref observation); }
+            finally { observation.End(); }
+        }
+        public string Code { get { return observation.Code; } }
+    }
+}
+'@
+    $sessionSource=[IO.File]::ReadAllText((Join-Path $root 'application-lab/HostedConPtySession.cs'))
+    Add-Type -TypeDefinition ($sessionSource + [Environment]::NewLine + $pidObservationHarness) -ErrorAction Stop -WarningAction SilentlyContinue 2>$null
 
+    CompileObservation 'passed'
+    $script:phase = 'poll_observation_pure'
     # BEGIN PURE POLL OBSERVATION TESTS: uses only the isolated diagnostic enum/struct.
     $observation = [TriageApplicationLab.HostedProcessObservation]::new()
     Check ($null -eq $observation.Code)
@@ -77,6 +100,11 @@ try {
     $stageCases = [ordered]@{
         Unknown='unknown'; PidBufferAllocate='pid_buffer_allocate'; PidListQuery='pid_list_query'
         PidListShape='pid_list_shape'; PidValue='pid_value'; RetainedChildWait='retained_child_wait'
+        PidListCountNegative='pid_list_count_negative'
+        PidListCountCapacity='pid_list_count_capacity'
+        PidListAssignedCapacity='pid_list_assigned_capacity'
+        PidListCountBelowAssigned='pid_list_count_below_assigned'
+        PidListCountAboveAssigned='pid_list_count_above_assigned'
         ChildOpen='child_open'; ChildMembership='child_membership'; ChildExitWait='child_exit_wait'
         ChildCapacity='child_capacity'; ChildCreated='child_created'; ChildHandleClose='child_handle_close'
         PidBufferFree='pid_buffer_free'; JobAccounting='job_accounting'; AppExitWait='app_exit_wait'; AppExitCode='app_exit_code'
@@ -96,6 +124,195 @@ try {
     }
     $observation.Begin(); $observation.At([Enum]::ToObject([TriageApplicationLab.HostedProcessObservationStage], 2147483647)); $observation.Capture()
     Check ($observation.Code -ceq 'process_observation_stage_unknown')
+
+
+    # Exercise the production shape predicate with synthetic integers only.
+    # The expected truth table is the original native observer conjunction.
+    $shapeValues = @([int]::MinValue,-1,0,1,63,64,65,[int]::MaxValue)
+    foreach ($assigned in $shapeValues) {
+        foreach ($count in $shapeValues) {
+            $expected = $count -ge 0 -and $count -le 64 -and $assigned -le 64 -and $assigned -eq $count
+            $shape = [TriageApplicationLab.HostedProcessObservation]::new()
+            $shape.Begin()
+            $actual = $shape.CheckPidListShape($assigned,$count,64)
+            Check ($actual -eq $expected)
+            if ($actual) { Check ($null -eq $shape.Code) }
+            else {
+                $shape.Capture(); $shape.End()
+                $reason = if ($count -lt 0) { 'pid_list_count_negative' }
+                    elseif ($count -gt 64) { 'pid_list_count_capacity' }
+                    elseif ($assigned -gt 64) { 'pid_list_assigned_capacity' }
+                    elseif ($assigned -gt $count) { 'pid_list_count_below_assigned' }
+                    else { 'pid_list_count_above_assigned' }
+                Check ($shape.Code -ceq ('process_observation_stage_' + $reason))
+                $shape.At([TriageApplicationLab.HostedProcessObservationStage]::PidBufferFree)
+                $shape.Capture()
+                Check ($shape.Code -ceq ('process_observation_stage_' + $reason))
+            }
+            $inactive = [TriageApplicationLab.HostedProcessObservation]::new()
+            Check ($inactive.CheckPidListShape($assigned,$count,64) -eq $expected)
+            $inactive.Capture()
+            Check ($null -eq $inactive.Code)
+        }
+    }
+
+    # Exercise the production retry loop with managed fake queries and a virtual clock.
+    # No HostedConPtySession is constructed and no native entry point is called.
+    function PidSnapshot([int]$Assigned,[int]$Count,[long[]]$Ids,[bool]$Success=$true,[int]$ErrorCode=0) {
+        [TriageApplicationLab.HostedPidListSnapshot]::new($Success,$ErrorCode,$Assigned,$Count,$Ids)
+    }
+    function InvokePidReadCase([hashtable]$Case) {
+        # A single snapshot also has a Count field; normalize the sequence before indexing.
+        $queryFrames=[TriageApplicationLab.HostedPidListSnapshot[]]@($Case.Frames)
+        $state = @{ Tick=[long]0; Queries=0; ClockCalls=0; Pauses=0; Capacities=[Collections.Generic.List[int]]::new() }
+        if ($Case.ContainsKey('Start')) { $state.Tick=[long]$Case.Start }
+        $queryBlock = {
+            param([int]$capacity)
+            $state.Capacities.Add($capacity)
+            $index=$state.Queries; $state.Queries++
+            if ($Case.ContainsKey('QueryThrows') -and $index -eq $Case.QueryThrows) { throw 'synthetic_query_failure' }
+            if ($Case.ContainsKey('QueryAdvance')) { $state.Tick += [long]$Case.QueryAdvance }
+            $queryFrames[[Math]::Min($index,$queryFrames.Length-1)]
+        }.GetNewClosure()
+        $clockBlock = {
+            $index=$state.ClockCalls; $state.ClockCalls++
+            if ($Case.ContainsKey('ClockThrows') -and $index -eq $Case.ClockThrows) { throw 'synthetic_clock_failure' }
+            if ($Case.ContainsKey('ClockSequence')) { return [long]$Case.ClockSequence[[Math]::Min($index,$Case.ClockSequence.Count-1)] }
+            return [long]$state.Tick
+        }.GetNewClosure()
+        $pauseBlock = {
+            param([int]$delay)
+            if ($delay -ne 5) { throw 'unexpected_pause' }
+            $state.Pauses++
+            if ($Case.ContainsKey('PauseThrows')) { throw 'synthetic_pause_failure' }
+            if ($Case.ContainsKey('PauseAdvance')) { $state.Tick += [long]$Case.PauseAdvance }
+            else { $state.Tick += $delay }
+        }.GetNewClosure()
+        $query = [Func[int,TriageApplicationLab.HostedPidListSnapshot]]$queryBlock
+        $clock = [Func[long]]$clockBlock
+        $pause = [Action[int]]$pauseBlock
+        $frequency = if ($Case.ContainsKey('Frequency')) { [long]$Case.Frequency } else { [long]1000 }
+        $readObservation=[TriageApplicationLab.PureTests.PidListObservation]::new($Case.ContainsKey('Sticky'))
+        $ids=$null; $rejected=$false; $script:pidReadFailureKind='none'
+        try { $ids=$readObservation.Read($query,$clock,$pause,$frequency) }
+        catch {
+            $rejected=$true
+            $failure=$_.Exception
+            for ($depth=0; $depth -lt 8 -and $null -ne $failure.InnerException; $depth++) { $failure=$failure.InnerException }
+            $script:pidReadFailureKind=if($failure -is [ComponentModel.Win32Exception]) { 'native_error' }
+                elseif($failure -is [InvalidOperationException]) { 'invalid_operation' }
+                elseif($failure -is [InvalidCastException]) { 'invalid_cast' }
+                elseif($failure -is [Management.Automation.RuntimeException]) { 'powershell_runtime' }
+                elseif($failure -is [ArgumentException]) { 'argument' }
+                else { 'other' }
+        }
+        [pscustomobject]@{ Rejected=$rejected; Ids=$ids; Code=$readObservation.Code; State=$state }
+    }
+    $script:phase = 'pid_snapshot_recovery'
+    $frames=@((PidSnapshot 2 1 @(101)),(PidSnapshot 2 2 @(41,42)))
+    $read=InvokePidReadCase @{ Frames=$frames }
+    Check (-not $read.Rejected -and $null -eq $read.Code)
+    Check (($read.Ids -join ',') -ceq '41,42')
+    Check (($read.State.Capacities -join ',') -ceq '64,128' -and $read.State.Pauses -eq 1)
+    Check ($frames[0].ProcessIds[0] -eq 0 -and $frames[1].ProcessIds[0] -eq 41)
+    $script:phase = 'pid_snapshot_empty'
+    $read=InvokePidReadCase @{ Frames=@((PidSnapshot 0 0 @())) }
+    Check (-not $read.Rejected -and $read.State.Queries -eq 1 -and $read.State.Pauses -eq 0 -and $null -eq $read.Code)
+    $script:phase = 'pid_snapshot_more_data'
+    $frames=@((PidSnapshot 0 0 @(9) $false 234),(PidSnapshot 1 1 @(77)))
+    $read=InvokePidReadCase @{ Frames=$frames }
+    Check (-not $read.Rejected -and $read.Ids[0] -eq 77 -and $read.State.Queries -eq 2)
+    Check ($frames[0].ProcessIds[0] -eq 0)
+    $script:phase = 'pid_snapshot_fourth'
+    # Success is possible on the fourth attempt, including at the exact 64-process cap.
+    $frames=@((PidSnapshot 4 2 @(1,2)),(PidSnapshot 0 0 @() $false 234),(PidSnapshot 64 63 @(1)),(PidSnapshot 64 64 (1..64)))
+    $read=InvokePidReadCase @{ Frames=$frames }
+    Check (-not $read.Rejected -and $read.Ids.Count -eq 64 -and $read.State.Pauses -eq 3)
+    Check (($read.State.Capacities -join ',') -ceq '64,128,256,512')
+    $script:phase = 'pid_snapshot_exhaustion'
+    # A frozen clock cannot evade the independent attempt bound.
+    foreach ($nativeFailure in @($false,$true)) {
+        $frame=if($nativeFailure) { PidSnapshot 999 -1 @(9) $false 234 } else { PidSnapshot 2 1 @(9) }
+        $read=InvokePidReadCase @{ Frames=@($frame); PauseAdvance=0 }
+        Check ($read.Rejected -and $read.State.Queries -eq 4 -and $read.State.Pauses -eq 3)
+        Check (($read.State.Capacities -join ',') -ceq '64,128,256,512' -and $frame.ProcessIds[0] -eq 0)
+        $expected=if($nativeFailure) { 'pid_list_query' } else { 'pid_list_count_below_assigned' }
+        Check ($read.Code -ceq ('process_observation_stage_'+$expected))
+    }
+    $script:phase = 'pid_snapshot_malformed'
+    # Every other malformed shape is fatal on its first query, even after storage growth.
+    foreach ($shapeCase in @(
+        @{ Assigned=1; Count=-1; Code='pid_list_count_negative' },
+        @{ Assigned=65; Count=65; Code='pid_list_count_capacity' },
+        @{ Assigned=65; Count=1; Code='pid_list_assigned_capacity' },
+        @{ Assigned=0; Count=1; Code='pid_list_count_above_assigned' },
+        @{ Assigned=-1; Count=0; Code='pid_list_count_above_assigned' }
+    )) {
+        foreach ($prefix in @($false,$true)) {
+            $bad=PidSnapshot $shapeCase.Assigned $shapeCase.Count @(123)
+            $frames=if($prefix) { @((PidSnapshot 2 1 @()),$bad) } else { @($bad) }
+            $read=InvokePidReadCase @{ Frames=$frames }
+            Check ($read.Rejected -and $read.State.Queries -eq (1+[int]$prefix))
+            Check ($read.Code -ceq ('process_observation_stage_'+$shapeCase.Code) -and $bad.ProcessIds[0] -eq 0)
+        }
+    }
+    $script:phase = 'pid_snapshot_pid_values'
+    foreach ($ids in @([long[]]@(0),[long[]]@(-1),[long[]]@(4294967296),[long[]]@(4,5))) {
+        $bad=PidSnapshot 1 1 $ids
+        $read=InvokePidReadCase @{ Frames=@($bad) }
+        Check ($read.Rejected -and $read.State.Queries -eq 1 -and $read.Code -ceq 'process_observation_stage_pid_value')
+        Check (@($bad.ProcessIds | Where-Object { $_ -ne 0 }).Count -eq 0)
+    }
+    $read=InvokePidReadCase @{ Frames=@((PidSnapshot 1 1 $null)) }
+    Check ($read.Rejected -and $read.Code -ceq 'process_observation_stage_pid_value')
+    $read=InvokePidReadCase @{ Frames=@((PidSnapshot 1 1 @(4294967295))) }
+    Check (-not $read.Rejected -and $read.Ids[0] -eq 4294967295)
+    $script:phase = 'pid_snapshot_native_errors'
+    foreach ($errorCode in @(0,5,87,233)) {
+        $frame=PidSnapshot 1 1 @(41) $false $errorCode
+        $read=InvokePidReadCase @{ Frames=@($frame) }
+        Check ($read.Rejected -and $read.State.Queries -eq 1 -and $read.Code -ceq 'process_observation_stage_pid_list_query')
+        Check ($frame.ProcessIds[0] -eq 0)
+    }
+    $script:phase = 'pid_snapshot_null'
+    $read=InvokePidReadCase @{ Frames=@($null) }
+    Check ($read.Rejected -and $read.State.Queries -eq 1 -and $read.Code -ceq 'process_observation_stage_pid_list_query')
+    $read=InvokePidReadCase @{ Frames=@((PidSnapshot 1 1 @(41))); QueryAdvance=99 }
+    Check (-not $read.Rejected -and $read.Ids[0] -eq 41)
+    $script:phase = 'pid_snapshot_budget'
+    # A query that crosses the single budget cannot publish even a complete snapshot.
+    $frame=PidSnapshot 1 1 @(41)
+    $read=InvokePidReadCase @{ Frames=@($frame); QueryAdvance=100 }
+    Check ($read.Rejected -and $read.State.Queries -eq 1 -and $frame.ProcessIds[0] -eq 0)
+    Check ($read.Code -ceq 'process_observation_stage_pid_list_query')
+    $frames=@((PidSnapshot 2 1 @(3)),(PidSnapshot 1 1 @(41)))
+    $read=InvokePidReadCase @{ Frames=$frames; QueryAdvance=50 }
+    Check ($read.Rejected -and $read.State.Queries -eq 2 -and $read.State.Pauses -eq 1)
+    Check ($frames[0].ProcessIds[0] -eq 0 -and $frames[1].ProcessIds[0] -eq 0)
+    $read=InvokePidReadCase @{ Frames=@((PidSnapshot 2 1 @())); PauseAdvance=100 }
+    Check ($read.Rejected -and $read.State.Queries -eq 1 -and $read.Code -ceq 'process_observation_stage_pid_list_query')
+    $script:phase = 'pid_snapshot_clock'
+    foreach ($settings in @(
+        @{ Frequency=0 },@{ Frequency=-1 },@{ Start=-1 },
+        @{ ClockSequence=@(10,9) },@{ ClockSequence=@(10,10,9) },
+        @{ ClockThrows=0 },@{ ClockThrows=2 },@{ QueryThrows=0 },@{ PauseThrows=$true }
+    )) {
+        $settings.Frames=@((PidSnapshot 2 1 @(31)))
+        $read=InvokePidReadCase $settings
+        Check ($read.Rejected -and $read.State.Queries -le 1 -and $read.Code -ceq 'process_observation_stage_pid_list_query')
+    }
+    $script:phase = 'pid_snapshot_arithmetic'
+    # The deadline arithmetic remains bounded near Int64.MaxValue.
+    $read=InvokePidReadCase @{ Frames=@((PidSnapshot 1 1 @(41))); Start=([long]::MaxValue-10); Frequency=[long]::MaxValue }
+    Check (-not $read.Rejected -and $read.State.Queries -eq 1)
+    $read=InvokePidReadCase @{ Frames=@((PidSnapshot 1 1 @(41))); ClockSequence=@(0,0,1); Frequency=1 }
+    Check ($read.Rejected -and $read.Code -ceq 'process_observation_stage_pid_list_query')
+    $script:phase = 'pid_snapshot_sticky'
+    foreach ($frames in @(@((PidSnapshot 1 1 @(41))),@((PidSnapshot 0 1 @(41))))) {
+        $read=InvokePidReadCase @{ Frames=$frames; Sticky=$true }
+        Check ($read.Code -ceq 'process_observation_stage_child_open')
+    }
+    # END PURE PID SNAPSHOT RETRY TESTS.
 
     $originalErrors = [string[]]@('process_observation_failed','forced_termination','console_cleanup_failed')
     $projected = $observation.Project($originalErrors)
@@ -182,7 +399,6 @@ try {
         }
     }
     # END PURE POLL OBSERVATION TESTS
-    CompileObservation 'passed'
     $script:phase = 'pure_checks'
     $script:clock.Restart()
 
@@ -365,6 +581,8 @@ Check (($guard.Clauses[0].Item1.Extent.Text -replace '\s+', ' ') -ceq $expectedG
 [pscustomobject]@{ passed=$script:passed; failed=0; native_calls=0; session_started=$false } | ConvertTo-Json -Compress
 } catch {
     CompileObservation 'failed'
+    $compilerCodes=@([regex]::Matches($_.Exception.ToString(), '(?<![A-Z0-9])CS[0-9]{4}(?![0-9])') | ForEach-Object { $_.Value } | Sort-Object -Unique | Select-Object -First 8)
+    [pscustomobject]@{ compiler_codes=$compilerCodes } | ConvertTo-Json -Compress
     # Do not expose compiler output, source paths, exception text or identities.
     [Console]::Error.WriteLine('hosted_harness_validation_failed')
     exit 1
