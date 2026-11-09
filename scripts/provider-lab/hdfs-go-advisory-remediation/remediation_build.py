@@ -26,7 +26,9 @@ def extend_build(files,variant):
  anchor=stripped if variant=='original' else patched
  additions=[ENV+' /opt/go/bin/go build '+AB.BUILD_FLAGS+' '+MOD+
   ' -ldflags "-X github.com/rclone/rclone/fs.Version=v1.75.2-advisory-upgraded-'+variant+'" -o /opt/probes/rclone-upgraded .',
-  ENV+' /opt/go/bin/go list -m -json -mod=readonly '+MOD+' all > /opt/probes/upgraded-module-graph.json']
+  ENV+' /opt/go/bin/go build '+AB.BUILD_FLAGS+' '+MOD+' -o /opt/probes/resolver-diagnostics /opt/input/resolver_diagnostics.go',
+  ENV+' /opt/go/bin/go list -m -e -json -mod=readonly '+MOD+' all > /opt/probes/upgraded-module-graph.json',
+  ENV+' /usr/bin/timeout --signal=TERM --kill-after=2s 10s /opt/probes/resolver-diagnostics']
  lines[anchor+1:anchor+1]=additions
  driver_index=index_one(lines,' -o /opt/probes/audit-driver /opt/input/audit_driver.go')
  lines[driver_index]+=' /opt/input/remediation_driver.go'
@@ -57,7 +59,7 @@ def extend_build(files,variant):
 BUILD_TARGETS={'rclone-original':'baseline_original','rclone-stripped':'baseline_stripped','rclone-patched':'baseline_patched',
  'rclone-upgraded':'upgraded_binary','context-tests':'baseline_context_tests','inspect-context-build':'foundation_reporter',
  'govulncheck':'analyzer','audit-driver':'audit_wrapper','remediation-regression':'benign_regression',
- 'upgraded-context-tests':'upgraded_context_tests'}
+ 'upgraded-context-tests':'upgraded_context_tests','resolver-diagnostics':'resolver_diagnostics'}
 PHASES=set(BUILD_TARGETS.values())|{'upgraded_graph'}
 PHASE=re.compile(rb"^(?:#[0-9]+ +[0-9.]+ +)?GO_REMEDIATION_BUILD_PHASE=("+
  b'|'.join(x.encode('ascii') for x in sorted(PHASES))+rb")\r?$",re.MULTILINE)
@@ -87,10 +89,22 @@ def diagnostics(R,raw,allowed):
    if coordinate in allowed:found.add((*coordinate,kind))
    else:unbound=True
  need(len(found)<=32,'remediation_diagnostic_limit')
+ for match in re.finditer(rb'^(?:#[0-9]+ +[0-9.]+ +)?GO_REMEDIATION_MODULE_ERROR=([^\r\n]+)\r?$',raw,re.MULTILINE):
+  payload=match[1]
+  if payload==b'unbound':unbound=True;continue
+  coordinate,sep,kind=payload.rpartition(b':')
+  match_coord=COORD.fullmatch(coordinate)
+  need(sep and match_coord is not None and kind in (b'lookup_disabled',b'sum_missing',b'unclassified'),'remediation_diagnostic_marker')
+  pair=(match_coord[1].decode('ascii'),match_coord[2].decode('ascii'))
+  if pair in allowed:found.add((*pair,kind.decode('ascii')))
+  else:unbound=True
+ need(len(found)<=32,'remediation_diagnostic_limit')
  result['module_errors']=[dict(module=m,version=v,kind=k) for m,v,k in sorted(found)]
+ statuses=re.findall(rb'^(?:#[0-9]+ +[0-9.]+ +)?GO_REMEDIATION_GRAPH_STATUS=(errors|complete|invalid)\r?$',raw,re.MULTILINE)
+ result['resolver_graph_status']=statuses[-1].decode('ascii') if statuses else None
  result['unbound_module_error_present']=unbound
  errors=set()
- for match in re.finditer(rb'(remediation_(?:driver|regression)[.]go):([0-9]{1,5}):[^\r\n]*',raw):
+ for match in re.finditer(rb'(remediation_(?:driver|regression)[.]go|resolver_diagnostics[.]go):([0-9]{1,5}):[^\r\n]*',raw):
   line=int(match[2]);need(1<=line<=10000,'remediation_diagnostic_limit');errors.add((match[1].decode('ascii'),line))
  need(len(errors)<=32,'remediation_diagnostic_limit')
  result['remediation_source_errors']=[dict(file=f,line=n) for f,n in sorted(errors)]

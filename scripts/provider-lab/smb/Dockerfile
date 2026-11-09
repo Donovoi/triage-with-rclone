@@ -140,10 +140,19 @@ printf '%s\n' 'SMB_BUILD_DIAGNOSTIC=download_started'
 while IFS="$(printf '\t')" read -r name version digest size url; do
     target="/tmp/smb-locked-debs/$name.deb"
     printf '%s\n' 'SMB_BUILD_DIAGNOSTIC=download_fetch_started'
-    if /usr/lib/apt/apt-helper -o Acquire::Retries=0 -o Acquire::http::Timeout=30 download-file "$url" "$target" "SHA256:$digest"; then
+    # APT 3.0.3 retries only transient failures; each delay is capped at two seconds.
+    # The owned acquisition also has a 95-second deadline and two-second kill grace.
+    if /usr/bin/timeout --signal=TERM --kill-after=2s 95s /usr/lib/apt/apt-helper \
+        -o Acquire::Retries=2 -o Acquire::Retries::Delay=true -o Acquire::Retries::Delay::Maximum=2 \
+        -o Acquire::http::Timeout=30 download-file "$url" "$target" "SHA256:$digest"; then
         printf '%s\n' 'SMB_BUILD_DIAGNOSTIC=download_fetch_passed'
     else
-        printf '%s\n' 'SMB_BUILD_DIAGNOSTIC=download_fetch_failed'
+        status=$?
+        if test "$status" -eq 124 || test "$status" -eq 137; then
+            printf '%s\n' 'SMB_BUILD_DIAGNOSTIC=download_deadline_exceeded'
+        else
+            printf '%s\n' 'SMB_BUILD_DIAGNOSTIC=download_fetch_failed'
+        fi
         exit 1
     fi
     if ! printf '%s  %s\n' "$digest" "$target" | sha256sum -c -; then

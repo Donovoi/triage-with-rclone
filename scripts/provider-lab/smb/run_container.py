@@ -38,6 +38,7 @@ PROBE_RUNTIME = {"platform", "uid", "gid", "samba_version", "rclone_version", "s
                  "rclone_sha256", "probe_sha256", "lock_sha256"}
 BUILD_PHASE = re.compile(rb"^(?:#[0-9]+ +[0-9.]+ +)?SMB_BUILD_PHASE=(metadata|deb-download|install|seed|manifest)\r?$", re.MULTILINE)
 BUILD_CODES = {
+    "download_deadline_exceeded",
     "download_started",
     "download_fetch_started",
     "download_fetch_failed",

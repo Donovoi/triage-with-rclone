@@ -6,7 +6,7 @@ import hashlib,json,os,re,shutil,signal,stat,sys,tempfile,time,types,uuid
 from pathlib import Path
 
 HERE=Path(__file__).resolve().parent
-PINS_SHA='de9da7d71b6d36d5031e96d7482dba99d84f7c2cf8b336b22b4bef4d7efcf191'
+PINS_SHA='cd0f272b9131fb927ee93235f67d81c866c26b894b0f49526806b91a80aca69b'
 LABEL='org.openai.triage.hdfs-context-build'
 TMPFS='rw,nosuid,nodev,noexec,size=128m,mode=0700,uid=10001,gid=10001'
 MODULES=('audit_contract','advisory_contract','scan_contract','snapshot_contract','tool_bundle',
@@ -257,7 +257,9 @@ def run(variant):
         build=RBUILD.extend_build(AB.extend_build(R.build_files(C,go_sources,original_mod,original_sum)),variant)
         control_files,blobs,_,_=N.fixture()
         additions={**go_sources,**build,**overlay,'audit_driver.go':get('audit_driver.go'),
-                   'remediation_driver.go':get('remediation_driver.go'),'remediation_regression.go':get('remediation_regression.go'),**control_files,
+                   'remediation_driver.go':get('remediation_driver.go'),'remediation_regression.go':get('remediation_regression.go'),
+                   'resolver_diagnostics.go':get('resolver_diagnostics.go'),
+                   'remediation-coordinate-pins.json':canonical([dict(module=m,version=v) for m,v in sorted(diagnostic_coordinates)]),**control_files,
                    **{'advisories/'+p:raw for p,raw in db_files.items()}}
         for filename,raw in additions.items():
             target=context/filename;target.parent.mkdir(parents=True,exist_ok=True)

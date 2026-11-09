@@ -14,7 +14,11 @@ class RemediationBuild(unittest.TestCase):
   lines=[l for l in M.extend_build(self.files,'original')['build.sh'].decode().splitlines() if 'GO_REMEDIATION_BUILD_PHASE=' not in l]
   i=next(i for i,l in enumerate(lines) if l.endswith(' -o /opt/probes/rclone-upgraded .'))
   self.assertTrue(lines[i-1].endswith(' -o /opt/probes/rclone-stripped .'))
-  self.assertEqual(lines[i+2],'cp frozen-rclone-patch target')
+  mutation=lines.index('cp frozen-rclone-patch target')
+  self.assertLess(i,mutation)
+  graph=next(j for j,l in enumerate(lines) if ' /opt/go/bin/go list ' in l)
+  self.assertLess(graph,mutation)
+  self.assertIn('/usr/bin/timeout --signal=TERM --kill-after=2s 10s /opt/probes/resolver-diagnostics',lines[graph+1])
  def test_patched_upgrade_follows_source_mutation(self):
   lines=[l for l in M.extend_build(self.files,'patched')['build.sh'].decode().splitlines() if 'GO_REMEDIATION_BUILD_PHASE=' not in l]
   i=lines.index(self.patched)
@@ -29,7 +33,7 @@ class RemediationBuild(unittest.TestCase):
   lines=[l for l in M.extend_build(self.files,'original')['build.sh'].decode().splitlines() if 'GO_REMEDIATION_BUILD_PHASE=' not in l]
   resolver=next(l for l in lines if ' go list ' in l or '/go list ' in l)
   self.assertTrue(resolver.startswith(M.ENV));self.assertIn('GOPROXY=off GOSUMDB=off',resolver)
-  self.assertIn('-m -json -mod=readonly -modfile=/opt/input/upgraded-rclone.mod all',resolver)
+  self.assertIn('-m -e -json -mod=readonly -modfile=/opt/input/upgraded-rclone.mod all',resolver)
  def test_upgrade_build_uses_closed_variant_version(self):
   for variant in ('original','patched'):
    line=next(l for l in M.extend_build(self.files,variant)['build.sh'].decode().splitlines() if l.endswith(' -o /opt/probes/rclone-upgraded .'))
@@ -104,3 +108,29 @@ class RemediationBuildDiagnostics(unittest.TestCase):
    lines=M.extend_build(base.files,variant)['build.sh'].decode().splitlines()
    for i,line in enumerate(lines):
     if ' /opt/go/bin/go ' in line:self.assertIn('GO_REMEDIATION_BUILD_PHASE=',lines[i-1])
+
+class StructuredResolverDiagnostics(unittest.TestCase):
+ def admit(self,raw,allowed=None):
+  import types
+  foundation=types.SimpleNamespace(build_diagnostics=lambda data:dict(module_resolution_failed=False))
+  return M.diagnostics(foundation,raw,allowed if allowed is not None else {('example.org/known','v1.2.3')})
+ def test_structured_error_coordinate_is_admitted(self):
+  raw=b'#8 0.200 GO_REMEDIATION_MODULE_ERROR=example.org/known@v1.2.3:lookup_disabled\nGO_REMEDIATION_GRAPH_STATUS=errors\n'
+  value=self.admit(raw)
+  self.assertEqual(value['module_errors'],[dict(module='example.org/known',version='v1.2.3',kind='lookup_disabled')])
+  self.assertEqual(value['resolver_graph_status'],'errors')
+ def test_unbound_coordinate_is_never_exported(self):
+  value=self.admit(b'GO_REMEDIATION_MODULE_ERROR=private.example/secret@v1.0.0:lookup_disabled\n')
+  self.assertEqual(value['module_errors'],[]);self.assertTrue(value['unbound_module_error_present']);self.assertNotIn('private',str(value))
+ def test_explicit_unbound_marker(self):
+  value=self.admit(b'GO_REMEDIATION_MODULE_ERROR=unbound\n')
+  self.assertTrue(value['unbound_module_error_present']);self.assertEqual(value['module_errors'],[])
+ def test_arbitrary_error_kind_rejected(self):
+  with self.assertRaises(ContractError):self.admit(b'GO_REMEDIATION_MODULE_ERROR=example.org/known@v1.2.3:private_details\n')
+ def test_evidence_flag_does_not_bypass_native_failure_gate(self):
+  base=RemediationBuild();base.setUp()
+  lines=M.extend_build(base.files,'original')['build.sh'].decode().splitlines()
+  graph=next(i for i,l in enumerate(lines) if '/go list ' in l)
+  self.assertIn(' -e -json ',lines[graph])
+  self.assertIn('/usr/bin/timeout --signal=TERM --kill-after=2s 10s /opt/probes/resolver-diagnostics',lines[graph+1])
+  self.assertTrue(any(l.endswith(' -o /opt/probes/resolver-diagnostics /opt/input/resolver_diagnostics.go') for l in lines[:graph]))

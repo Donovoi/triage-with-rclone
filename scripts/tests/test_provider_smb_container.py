@@ -374,4 +374,24 @@ class DownloadDiagnostics(unittest.TestCase):
                      "download_checksum_failed","download_size_failed","download_package_name_failed",
                      "download_package_version_failed","download_complete"):
             self.assertIn("SMB_BUILD_DIAGNOSTIC="+code,source)
-        self.assertIn("Acquire::Retries=0 -o Acquire::http::Timeout=30 download-file",source)
+        self.assertIn("SMB_BUILD_DIAGNOSTIC=download_deadline_exceeded",source)
+
+    def test_retry_policy_has_finite_attempts_and_fits_acquisition_deadline(self):
+        import shlex
+        source=SOURCE.with_name("Dockerfile").read_text().replace("\\\n", " ")
+        line=next(line.strip() for line in source.splitlines() if line.strip().startswith("if /usr/bin/timeout "))
+        args=shlex.split(line.removeprefix("if ").removesuffix("; then"))
+        self.assertEqual(args[:5],["/usr/bin/timeout","--signal=TERM","--kill-after=2s","95s","/usr/lib/apt/apt-helper"])
+        options=dict(args[i+1].split("=",1) for i,value in enumerate(args) if value=="-o")
+        self.assertEqual(set(options),{"Acquire::Retries","Acquire::Retries::Delay","Acquire::Retries::Delay::Maximum","Acquire::http::Timeout"})
+        retries=int(options["Acquire::Retries"]);delay=int(options["Acquire::Retries::Delay::Maximum"])
+        timeout=int(options["Acquire::http::Timeout"])
+        self.assertEqual(retries,2);self.assertEqual(delay,2);self.assertEqual(timeout,30)
+        self.assertEqual(options["Acquire::Retries::Delay"],"true")
+        self.assertLessEqual((retries+1)*timeout+sum(min(2**i,delay) for i in range(retries)),95)
+        self.assertEqual(args[-4:],["download-file","$url","$target","SHA256:$digest"])
+        self.assertIn("apt-get -o Acquire::Retries=0 -o Acquire::http::Timeout=30 update",source)
+
+    def test_acquisition_deadline_remains_a_closed_failure(self):
+        raw=b"SMB_BUILD_DIAGNOSTIC=download_fetch_started\nSMB_BUILD_DIAGNOSTIC=download_deadline_exceeded\n"
+        self.assertEqual(SUBJECT.build_diagnostic(raw),"download_deadline_exceeded")
