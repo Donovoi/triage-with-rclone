@@ -43,7 +43,7 @@ TIMER_KINDS = frozenset("namenode_metrics rpc_idle snapshot_gc shell_timeout ssl
 RPC_KINDS = frozenset("client_request_sender client_connection other".split())
 BASE = "docker.io/library/eclipse-temurin@sha256:e1c09a9ee23feb81f94016547826c1e694086cd927356fb57fccc312fcc32f85"
 BASE_ID = "sha256:d0e6e16acb7f941e5206d99ec38e5bba18545c43462541958f84b22e0fc006e8"
-JAVA_SHA = "e60fdd7ce6df7b4a7e1d8f81d5db78f5697586409cd35f0659732c3891e7c4dc"
+JAVA_SHA = "744f27cd85cf2d73a8d66b2df1f4c3fe0e514218166e5a663de5dfbde623f3c5"
 RUNTIME_SHA = "8944f0db4899d9e8f166feb28ce56d99278321ce0d3b1a9b9b993b5c0d508c2a"
 ORDER_SHA = "a482109e5170b0a6885af7c52902e89600c226f6e1fe1487083d736c13187632"
 LOCK_SHA = "a62e2a60bbb3f6c8b95b849760ff597e4e05e1c93bf61987c175502c3fe2ac74"
@@ -60,7 +60,7 @@ FALSE_CLAIMS = dict(ledger_eligible=False, authentication_verified=False, hdfs_a
     renewal_verified=False, daemon_accepted=False, provider_accepted=False, application_accepted=False,
     vendor_accepted=False, vulnerability_audited=False, publisher_audit_completed=False)
 JAVA_FALSE = set(FALSE_CLAIMS) - {"publisher_audit_completed"}
-JAVA_CHECKS = frozenset(("policy_snapshot", "policy_disabled", "policy_restored", "environment", "endpoint_settings", "positive_tgt", "file_cache_v3",
+JAVA_CHECKS = frozenset(("policy_snapshot", "policy_disabled", "policy_restored", "policy_relay_quiescence", "environment", "endpoint_settings", "positive_tgt", "file_cache_v3",
     "nonrenewable_tgt", "issued_service_ticket", "secure_namenode", "listing_before", "rclone_auth_boundary_rejection",
     "wire_auth_boundary_rejection", "policy_denial", "listing_after_restore", "source_preserved", "cache_preserved",
     "cache_ticket_bound", "actual_service_expiry", "kdc_exchange_classified", "owner_filesystem_lifecycle"))

@@ -525,11 +525,7 @@ public final class HdfsKerberosPolicyDenialProbe {
             long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
             while (true) {
                 boolean kdcQuiet = true;
-                if (kdcRelay != null) synchronized (kdcRelay) {
-                    // threads[0] is the exclusively owned acceptor, which stays open.
-                    kdcQuiet = kdcRelay.phase == -1 && kdcRelay.active == 0
-                        && kdcRelay.threads.stream().skip(1).noneMatch(Thread::isAlive);
-                }
+                if (kdcRelay != null) kdcQuiet = kdcRelay.quietForPolicy();
                 if (CHILDREN.stream().noneMatch(Process::isAlive)
                     && (relay == null || relay.sessions.stream().noneMatch(Thread::isAlive))
                     && kdcQuiet) return;
@@ -1176,6 +1172,36 @@ public final class HdfsKerberosPolicyDenialProbe {
         final int[] connections = new int[4]; final boolean[] visited = new boolean[4];
         final AtomicBoolean failed = new AtomicBoolean();
         volatile boolean stopping, parserChecked; int phase = -1, active, accepted, forwardedBytes;
+        static boolean policyQuiet(int phase, int active, boolean workersStopped, boolean stopping,
+                boolean listenerClosed, boolean socketsClosed, boolean allThreadsStopped) {
+            if (phase < -1 || phase > 3 || active != 0 || !workersStopped) return false;
+            // A failed end() preserves its phase. Only complete owned shutdown may
+            // bypass that phase gate; requesting shutdown alone is not quiescence.
+            return phase == -1 || (stopping && listenerClosed && socketsClosed && allThreadsStopped);
+        }
+        synchronized boolean quietForPolicy() {
+            // threads[0] is the owned acceptor, which may remain open between phases.
+            return policyQuiet(phase, active, threads.stream().skip(1).noneMatch(Thread::isAlive),
+                stopping, listener.isClosed(), sockets.stream().allMatch(Socket::isClosed),
+                threads.stream().noneMatch(Thread::isAlive));
+        }
+        static void policyQuietSelfTest() throws Exception {
+            need(policyQuiet(-1, 0, true, false, false, false, false), Code.policy_state_invalid);
+            for (int phase = 0; phase < 4; phase++) {
+                need(policyQuiet(phase, 0, true, true, true, true, true), Code.policy_state_invalid);
+                need(!policyQuiet(phase, 0, true, false, true, true, true), Code.policy_state_invalid);
+                need(!policyQuiet(phase, 0, true, true, false, true, true), Code.policy_state_invalid);
+                need(!policyQuiet(phase, 0, true, true, true, false, true), Code.policy_state_invalid);
+                need(!policyQuiet(phase, 0, true, true, true, true, false), Code.policy_state_invalid);
+            }
+            for (int phase = -1; phase < 4; phase++) {
+                need(!policyQuiet(phase, 1, true, true, true, true, true), Code.policy_state_invalid);
+                need(!policyQuiet(phase, -1, true, true, true, true, true), Code.policy_state_invalid);
+                need(!policyQuiet(phase, 0, false, true, true, true, true), Code.policy_state_invalid);
+            }
+            need(!policyQuiet(-2, 0, true, true, true, true, true), Code.policy_state_invalid);
+            need(!policyQuiet(4, 0, true, true, true, true, true), Code.policy_state_invalid);
+        }
         KdcRelay() throws Exception {
             try {
                 listener.bind(new InetSocketAddress(InetAddress.getByAddress(new byte[]{127,0,0,1}), 19008), 4);
@@ -1642,7 +1668,7 @@ public final class HdfsKerberosPolicyDenialProbe {
                 "nonrenewable_tgt", "issued_service_ticket", "secure_namenode", "listing_before", "rclone_auth_boundary_rejection",
                 "wire_auth_boundary_rejection", "policy_denial", "listing_after_restore", "source_preserved", "cache_preserved",
                 "cache_ticket_bound", "actual_service_expiry", "kdc_exchange_classified", "owner_filesystem_lifecycle")) CHECKS.put(name, false);
-        for (String name : List.of("policy_snapshot", "policy_disabled", "policy_restored")) CHECKS.put(name, false);
+        for (String name : List.of("policy_snapshot", "policy_disabled", "policy_restored", "policy_relay_quiescence")) CHECKS.put(name, false);
         for (String name : List.of("kdc_identity_restored", "children_reaped", "relay_closed", "kdc_relay_closed", "filesystem_closed", "namenode_stop_returned", "owner_logged_out",
                 "gc_monitor_reaped", "fs_statistics_cleaner_reaped", "format_ssl_timer_reaped",
                 "kdc_stop_returned", "threads_terminated", "listeners_absent", "private_material_removed",
@@ -1652,6 +1678,7 @@ public final class HdfsKerberosPolicyDenialProbe {
         byte[] serialized = null;
         try {
             environment(args); processBaseline = processIds(); CHECKS.put("environment", true);
+            KdcRelay.policyQuietSelfTest(); CHECKS.put("policy_relay_quiescence", true);
             // Prime only the JDK child reaper before the service-thread baseline.
             // The version child uses the same pinned binary and bounded supervisor.
             controlDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(12);
