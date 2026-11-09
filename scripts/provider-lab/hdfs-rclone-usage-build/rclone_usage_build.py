@@ -39,6 +39,10 @@ def need(value,code):
 def canonical(value):return json.dumps(value,sort_keys=True,separators=(',',':'),ensure_ascii=True,allow_nan=False).encode('ascii')
 def sha(raw):return hashlib.sha256(raw).hexdigest()
 
+def checksum_manifest(hashes):
+    # Upstream test data includes Unicode filenames. Preserve their UTF-8 bytes.
+    return ''.join(h+'  '+p+'\n' for p,h in sorted(hashes.items())).encode('utf-8')
+
 def failure_diagnostics(error):
     # Source locations are from bound fixture files; never retain exception text.
     category='unexpected'
@@ -322,7 +326,7 @@ def run():
         for filename,raw in {**sources,**build_files(C,sources,C.read(context/'original/go.mod',131072),C.read(context/'original/go.sum',131072))}.items():
             target=context/filename;target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes(raw)
         report['stage']='hash_context';before=tree_hashes(C,context)
-        (context/'checksums').write_text(''.join(h+'  '+p+'\n' for p,h in sorted(before.items())),encoding='ascii')
+        (context/'checksums').write_bytes(checksum_manifest(before))
         context_hashes=tree_hashes(C,context);report['inputs']['context_sha256']=sha(canonical(context_hashes))
         docker=D.Docker(root,max_calls=40);host=C.parse(C.read(docker.call(['info','--format','{{json .}}']).stdout,1048576))
         need(host.get('OSType')=='linux' and host.get('Architecture') in ('amd64','x86_64'),'platform_invalid')
