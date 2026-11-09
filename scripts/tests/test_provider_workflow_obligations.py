@@ -112,7 +112,7 @@ class WorkflowObligationTests(unittest.TestCase):
                 {"hdfs", "smb", "pcloud", "gcs"},  # Windows keeps static GCS; no borrowed lifecycle.
                 set(),                    # Combined Linux evidence includes the qualified HDFS protocol.
             ],
-            "provider-smoke.yml": [{"hdfs"}],
+            "provider-smoke.yml": [set()],
         }
         self.assertTrue(required)
         for filename, exceptions in unresolved.items():
@@ -130,7 +130,7 @@ class WorkflowObligationTests(unittest.TestCase):
                         self.assertEqual(gates[index].count("--require-gcs-static-token"), 1)
                         self.assertNotIn("gcs-oauth-lifecycle.json", gates[index])
                     else:
-                        self.assertEqual(len(gated), 22 if filename == "ci.yml" else 21)
+                        self.assertEqual(len(gated), 22)
                         self.assertNotIn("--require-gcs-static-token", gates[index])
                         self.assertIn("gcs-oauth-lifecycle.json", gates[index])
                     self.assertFalse(gated & missing, "Resolved exceptions must be removed")

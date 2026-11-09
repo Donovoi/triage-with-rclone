@@ -56,8 +56,14 @@ jobs:
           path: ${{ runner.temp }}/python-dependency-audit.json
           if-no-files-found: warn
           retention-days: 14
-  provider-smoke-linux:
+  hdfs-protocol:
+    name: Isolated HDFS Kerberos protocol
     needs: python-audit
+    uses: ./.github/workflows/hdfs-kerberos-transfer.yml
+    permissions:
+      contents: read
+  provider-smoke-linux:
+    needs: [python-audit, hdfs-protocol]
     runs-on: ubuntu-latest
     timeout-minutes: 45
     defaults:
@@ -127,7 +133,13 @@ jobs:
           python -B ../scripts/provider-lab/gcs-oauth/run_container.py \
             --rclone "$RUNNER_TEMP/rclone-smoke" --lifecycle-evidence \
             --report "$RUNNER_TEMP/gcs-oauth-lifecycle.json"
-      # All 21 Linux profiles: both IA modes, both pCloud modes and both GCS modes.
+      - name: Download same-run HDFS protocol evidence
+        if: ${{ !cancelled() }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: hdfs-protocol
+          path: ${{ runner.temp }}/provider-hdfs
+      # All 22 Linux profiles, including the separately qualified HDFS proof.
       - name: Require current provider plans and protocol evidence
         if: ${{ !cancelled() }}
         run: |
@@ -139,7 +151,8 @@ jobs:
             --fixture-receipt "$RUNNER_TEMP/smb-protocol.json" \
             --fixture-receipt "$RUNNER_TEMP/pcloud-oauth-authentication.json" \
             --fixture-receipt "$RUNNER_TEMP/gcs-oauth-lifecycle.json" \
-            --require-plans --require-fixtures local,archive,http,webdav,ftp,sftp,s3,swift,b2,azureblob,azurefiles,seafile,memory,koofr,pixeldrain,filefabric,netstorage,internetarchive,gcs,smb,pcloud
+            --fixture-receipt "$RUNNER_TEMP/provider-hdfs/hdfs-protocol.json" \
+            --require-plans --require-fixtures local,archive,http,webdav,ftp,sftp,s3,swift,b2,azureblob,azurefiles,seafile,memory,koofr,pixeldrain,filefabric,netstorage,internetarchive,gcs,smb,pcloud,hdfs
       - name: Offline provider contracts
         run: cargo test --locked --release --test provider_smoke --test provider_matrix -- --test-threads=1
       - name: Login and credential regressions without accounts
@@ -234,6 +247,7 @@ jobs:
             ${{ runner.temp }}/smb-protocol.json
             ${{ runner.temp }}/pcloud-oauth-authentication.json
             ${{ runner.temp }}/gcs-oauth-lifecycle.json
+            ${{ runner.temp }}/provider-hdfs/hdfs-protocol.json
             ${{ runner.temp }}/provider-evidence.json
           if-no-files-found: warn
           retention-days: 14
