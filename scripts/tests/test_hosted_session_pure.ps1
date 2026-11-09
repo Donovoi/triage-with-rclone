@@ -77,6 +77,11 @@ try {
     $stageCases = [ordered]@{
         Unknown='unknown'; PidBufferAllocate='pid_buffer_allocate'; PidListQuery='pid_list_query'
         PidListShape='pid_list_shape'; PidValue='pid_value'; RetainedChildWait='retained_child_wait'
+        PidListCountNegative='pid_list_count_negative'
+        PidListCountCapacity='pid_list_count_capacity'
+        PidListAssignedCapacity='pid_list_assigned_capacity'
+        PidListCountBelowAssigned='pid_list_count_below_assigned'
+        PidListCountAboveAssigned='pid_list_count_above_assigned'
         ChildOpen='child_open'; ChildMembership='child_membership'; ChildExitWait='child_exit_wait'
         ChildCapacity='child_capacity'; ChildCreated='child_created'; ChildHandleClose='child_handle_close'
         PidBufferFree='pid_buffer_free'; JobAccounting='job_accounting'; AppExitWait='app_exit_wait'; AppExitCode='app_exit_code'
@@ -96,6 +101,37 @@ try {
     }
     $observation.Begin(); $observation.At([Enum]::ToObject([TriageApplicationLab.HostedProcessObservationStage], 2147483647)); $observation.Capture()
     Check ($observation.Code -ceq 'process_observation_stage_unknown')
+
+
+    # Exercise the production shape predicate with synthetic integers only.
+    # The expected truth table is the original native observer conjunction.
+    $shapeValues = @([int]::MinValue,-1,0,1,63,64,65,[int]::MaxValue)
+    foreach ($assigned in $shapeValues) {
+        foreach ($count in $shapeValues) {
+            $expected = $count -ge 0 -and $count -le 64 -and $assigned -le 64 -and $assigned -eq $count
+            $shape = [TriageApplicationLab.HostedProcessObservation]::new()
+            $shape.Begin()
+            $actual = $shape.CheckPidListShape($assigned,$count,64)
+            Check ($actual -eq $expected)
+            if ($actual) { Check ($null -eq $shape.Code) }
+            else {
+                $shape.Capture(); $shape.End()
+                $reason = if ($count -lt 0) { 'pid_list_count_negative' }
+                    elseif ($count -gt 64) { 'pid_list_count_capacity' }
+                    elseif ($assigned -gt 64) { 'pid_list_assigned_capacity' }
+                    elseif ($assigned -gt $count) { 'pid_list_count_below_assigned' }
+                    else { 'pid_list_count_above_assigned' }
+                Check ($shape.Code -ceq ('process_observation_stage_' + $reason))
+                $shape.At([TriageApplicationLab.HostedProcessObservationStage]::PidBufferFree)
+                $shape.Capture()
+                Check ($shape.Code -ceq ('process_observation_stage_' + $reason))
+            }
+            $inactive = [TriageApplicationLab.HostedProcessObservation]::new()
+            Check ($inactive.CheckPidListShape($assigned,$count,64) -eq $expected)
+            $inactive.Capture()
+            Check ($null -eq $inactive.Code)
+        }
+    }
 
     $originalErrors = [string[]]@('process_observation_failed','forced_termination','console_cleanup_failed')
     $projected = $observation.Project($originalErrors)
