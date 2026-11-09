@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "files": {
+    "hdfs-rclone-usage-build/rclone_usage_build.py": {
+      "bytes": 29841,
+      "sha256": "1c3ec3afdefda2ec7303de53ad631625af85cd9bcee57eed9ecead0ddac6dcca"
+    },
+    "hdfs-kerberos-renewal/mit_kdc_container.py": {
+      "bytes": 30625,
+      "sha256": "32fcdd4c332b1542e5e1bda0116bcae15f39099870339b614f727d3a4dae202e"
+    },
+    "hdfs-kerberos-positive-renewal/positive_contract.py": {
+      "bytes": 16164,
+      "sha256": "56bc806c556ea1969469525d282ee7ee18e427e0e2cb0778fe6c12d368fda524"
+    },
+    "hdfs-kerberos-reconnect/reconnect_container.py": {
+      "bytes": 55293,
+      "sha256": "fd0e805383ee7be022c702874f0c4d29fb5a0ca1c44f928a99dac02f793c1caa"
+    },
+    "hdfs-kerberos-renewal/MitKdcOwner.java": {
+      "bytes": 23979,
+      "sha256": "759666c5dd5e70a7294cf34be84ea78d9bab4ddf4660bdf36dc623f3187ea0bd"
+    },
+    "hdfs-kerberos-renewal/mit-kdc-plan-template.json": {
+      "bytes": 8203,
+      "sha256": "c6910dfbfa5e909e921010fe3c7f1c9d2df0e7cda4b36fda84db608d0a94ee06"
+    },
+    "hdfs-kerberos-positive-renewal/HdfsMitRenewalProbe.java": {
+      "bytes": 135205,
+      "sha256": "9e917e3611b53d4075c92a19cee719edd8a5467eb2f968a63d07ff50a4f159db"
+    },
+    "hdfs-kerberos-positive-renewal/MitRenewalEvidence.java": {
+      "bytes": 24688,
+      "sha256": "41a9d2bea7d1bc8083725e8d8e25b05d47263c111534136058600518607d2b69"
+    },
+    "hdfs-kerberos-positive-renewal/HdfsRenewalSaslGate.java": {
+      "bytes": 7641,
+      "sha256": "a64d645e9d2a8c9b5a6e873c92f095747cc0e37e7cc11b7829b64d96b24dbceb"
+    },
+    "hdfs-kerberos-positive-renewal/HdfsRenewalRpcGate.java": {
+      "bytes": 9506,
+      "sha256": "a71ff6a8a29c3d968c0222df2d8708a6b1d5bafeff704ecc6e641d00b6387e0f"
+    },
+    "hdfs-kerberos-positive-renewal/HdfsRenewalRpcGateVectors.java": {
+      "bytes": 60835,
+      "sha256": "d0a04364779cf46e1d47868c2447145b468ead84dd7a4d31519c6b389b1219e9"
+    }
+  }
+}
