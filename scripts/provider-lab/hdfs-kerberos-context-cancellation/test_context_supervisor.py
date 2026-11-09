@@ -42,6 +42,18 @@ class SupervisorTests(unittest.TestCase):
             return raw+b" " if path.name=="HdfsContextHeldResponse.java" else raw
         with patch.object(U,"frozen_read",changed),self.assertRaises(U.ProbeError):U.load_inputs()
 
+    def test_package_root_reaches_the_frozen_worker_identity_guard(self):
+        class ReachedIdentity(Exception): pass
+        def identity(*args): raise ReachedIdentity()
+        reader=types.SimpleNamespace(hosted_guard=lambda:None,directory=identity)
+        valid=Path(__file__).resolve().parent/(U.PACKAGE_PREFIX+"-"+RUN+"-owned")/"context"
+        with patch.object(self.R.sys,"version_info",(3,14)),self.assertRaises(ReachedIdentity):
+            self.R.package_worker(reader,None,valid,(1,2),"0"*64)
+        invalid=valid.parent.parent/("hdfs-context-"+RUN+"-owned")/"context"
+        with patch.object(self.R.sys,"version_info",(3,14)),self.assertRaises(self.R.ProbeError) as caught:
+            self.R.package_worker(reader,None,invalid,(1,2),"0"*64)
+        self.assertEqual(caught.exception.code,"unsafe_path")
+
     def test_local_native_execution_rejected(self):
         with patch.dict(U.os.environ,{},clear=True),self.assertRaises(Exception):self.C.hosted_guard()
 

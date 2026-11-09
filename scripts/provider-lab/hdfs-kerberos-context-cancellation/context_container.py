@@ -25,6 +25,7 @@ PINS_SHA="723e67806b330f6271b609ff004724d7add946d61ed703c3cc16c5d04514259e"
 LABEL="org.openai.triage.hdfs-retained-context"
 TMPFS="rw,nosuid,nodev,noexec,size=128m,mode=0700,uid=10001,gid=10001"
 PROFILE="kerberos-remediation"
+PACKAGE_PREFIX="rclone-usage"
 CASES=(("original","renewable"),("patched","renewable"),("original","nonrenewable"),("patched","nonrenewable"))
 JAVA_NAMES=("HdfsContextCancellationProbe.java","HdfsContextHeldResponse.java","HdfsContextHeldResponseVectors.java",
             "HdfsCancellationRpcGate.java","HdfsCancellationRpcGateVectors.java")
@@ -275,7 +276,7 @@ def run():
             runtime_classpath_sha256=pins["order_sha256"],lock_sha256=pins["lock_sha256"],
             context_sha256=None,image_id=None,containers=[])
         need(shutil.disk_usage("/tmp").free>=12*1024**3,"unsafe_path")
-        context=new_root("hdfs-context")
+        context=new_root(PACKAGE_PREFIX)
         stage("download_assets"); R.prepare_packages(C,B,context,progress=stage)
         report["worker_diagnostics"]=R.read_worker_status(C,context)
         need(report["worker_diagnostics"]["phase"]=="complete" and report["worker_diagnostics"]["error"]=="none","package_worker_failed")
