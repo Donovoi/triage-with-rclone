@@ -19,7 +19,7 @@ import uuid
 HERE=Path(__file__).resolve().parent
 SUPPORT=HERE.parent/'hdfs-kerberos-policy-denial/policy_denial_container.py'
 SUPPORT_SHA='99304f8183f6068140e9e6f364bb96e1cc5c7c28408f1437b6a85b85fdfec2bd'
-BUNDLE_SHA='e772649f3ff9266ea4ec254f611094c4c30acfeca9f4e7d22e28f8ba3b03813c'
+BUNDLE_SHA='9ec9ce6d2032c8aaa22f8ad87511f7a2e70b8327ee795d5e09e1e5eed1570d2b'
 LABEL='org.openai.triage.gokrb-usage'
 TMPFS='rw,nosuid,nodev,noexec,size=32m,mode=0700,uid=10001,gid=10001'
 SOURCES=('main.go','patches/APReq.go','patches/KDCReq.go','LICENSE-gokrb5')
@@ -105,7 +105,7 @@ def prepare_packages(C,B,context):
     for row in lock['assets']:
         raw=C.read(context/'assets'/row['file'],row['bytes']);B.verify_asset(raw,row)
         if row['kind']=='toolchain':continue
-        cached=context/'cache/download'/row['module']/'@v'/(row['version']+'.'+row['kind'])
+        cached=context/'module-cache/cache/download'/row['module']/'@v'/(row['version']+'.'+row['kind'])
         need(C.read(cached,row['bytes'])==raw,'input_changed')
         if row['kind']=='zip':
             need(C.read(cached.with_suffix('.ziphash'),128)==row['h1'].encode(),'input_changed')
@@ -136,7 +136,7 @@ def build_files(C,sources):
         ' fi\n'
         ' if [ "$variant" = global-control ]; then cp /opt/input/global-APReq.go messages/APReq.go; fi\n'
         ' env -i HOME=/opt/home PATH=/opt/go/bin:/usr/bin:/bin GOROOT=/opt/go '
-        'GOMODCACHE=/opt/input/cache GOCACHE=/opt/cache GOTMPDIR=/opt/tmp '
+        'GOMODCACHE=/opt/input/module-cache GOCACHE=/opt/cache GOTMPDIR=/opt/tmp '
         'GOENV=off GOTOOLCHAIN=local GOWORK=off GOTELEMETRY=off GOPROXY=off GOSUMDB=off '
         'CGO_ENABLED=0 GOOS=linux GOARCH=amd64 GOMAXPROCS=2 GOMEMLIMIT=512MiB '
         '/opt/go/bin/go build -mod=readonly -trimpath -buildvcs=false -p 2 '
