@@ -42,7 +42,8 @@ aes-gcm = "0.11"
 pbkdf2 = "0.13"
 
 # Database
-rusqlite = { version = "0.32", features = ["bundled", "backup"] }
+# Preserve native statement caching without enabling the optional WebAssembly backend.
+rusqlite = { version = "0.41", default-features = false, features = ["bundled", "backup", "cache"] }
 
 # Regex
 regex = "1.10"
