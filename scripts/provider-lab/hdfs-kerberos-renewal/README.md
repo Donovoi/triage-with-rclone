@@ -77,3 +77,5 @@ process/backend, observe actual service expiry, distinguish a RENEW request
 carrying the original service ticket from ordinary TGS fallback, verify a fresh
 reply and ticket bounds, and complete a new NameNode RPC. This prerequisite
 does not satisfy any of those later acceptance conditions.
+
+The manual service-renewal control waits for the issued ten-second service ticket to expire, then sends two requests with the same original ticket, client, request body and authenticator plaintext. Usage 11 must receive integrity error 31; usage 7 must receive a TGS reply authenticated with the original service session key and usage 8. The reply must bind the request nonce, client, service, original authentication time, new validity window, unchanged renewal horizon and a fresh ticket/session key. Four reply controls reject the wrong decryption usage, corrupt ciphertext, a changed nonce and an extended renewal horizon. This is a contained MIT/Kerby counterfactual, not successful renewal by rclone. All rclone/provider acceptance flags remain false.
