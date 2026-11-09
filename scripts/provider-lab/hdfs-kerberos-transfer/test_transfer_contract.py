@@ -105,8 +105,8 @@ def positive():
         expected_kerby_version="2.1.2", runtime_binding_required=True,
         checks=dict(environment=True, metrics_mode_enabled=True, endpoint_settings=True, positive_tgt=True, file_cache_v3=True,
             nonrenewable=True, secure_namenode=True, secure_datanode=True, tls_material=True, tls_endpoints=True, registered_datanode=True, seed_hashes=True, empty_acquired=True, small_acquired=True, missing_path_rejected=True, json_validator_controls=True, rc_hash_verified=True, missing_object_rejected=True, payload_before=True, payload_after=True, listing_before=True, rclone_auth_boundary_rejection=True,
-            wire_auth_boundary_rejection=True, listing_after=True, source_preserved=True, cache_preserved=True),
-        cleanup=dict(replica_pool_stopped=True, seed_lease_renewer_stopped=True, pipeline_server_observer_detached=True, pipeline_observer_detached=True, children_reaped=True, relay_closed=True, filesystem_closed=True, namenode_stop_returned=True, owner_logged_out=True, kdc_stop_returned=True, threads_terminated=True, listeners_absent=True,
+            wire_auth_boundary_rejection=True, listing_after=True, source_preserved=True, cache_preserved=True, block_token_controls=True),
+        cleanup=dict(data_security_closed=True, replica_pool_stopped=True, seed_lease_renewer_stopped=True, pipeline_server_observer_detached=True, pipeline_observer_detached=True, children_reaped=True, relay_closed=True, filesystem_closed=True, namenode_stop_returned=True, owner_logged_out=True, kdc_stop_returned=True, threads_terminated=True, listeners_absent=True,
             private_material_removed=True, process_property_restored=True, metrics_mode_restored=True, cleanup_completed=True,
             gc_monitor_reaped=True, fs_statistics_cleaner_reaped=True, format_ssl_timer_reaped=True, datanode_stop_returned=True, datanode_ssl_timer_reaped=True),
         metrics_mode=dict(attempted=True, captured=True, prior_enabled=False, enable_attempted=True,
@@ -115,6 +115,7 @@ def positive():
         seed_checkpoint=dict(operation='complete',role='none'),
         owned_thread_cleanup=dict(gc_monitor='terminated', fs_statistics_cleaner='terminated', format_ssl_timer='terminated'),
         rclone_observation=dict(phase=9, exit=0, stdout_bytes=512, stderr_bytes=0, failure="empty"),
+        datanode_security=json.loads((HERE/"test-data/security-control-contract.json").read_text())["proof"],
         child_count=12, acquired_bytes=2109442, missing_category="directory_not_found",
         rc_hash_sha256=F.SMALL_SHA, missing_object_category="object_not_found",
         acquisitions=dict(empty=dict(bytes=0,sha256="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"),
@@ -477,6 +478,7 @@ class TicketTests(unittest.TestCase):
         java = b"inert Java source"
         (here / "HdfsKerberosTransferProbe.java").write_bytes(java)
         (here / "HdfsTransferJson.java").write_bytes(b"inert JSON helper")
+        (here / "HdfsDataNodeSecurity.java").write_bytes(b"inert security helper")
         (here / "runtime-classpath.json").write_bytes(b"{}")
         binary = here / "rclone"; binary.write_bytes(b"inert rclone")
         pin = here / "rclone-version.env"
@@ -502,7 +504,7 @@ class TicketTests(unittest.TestCase):
         real_mkdtemp = tempfile.mkdtemp
         selected_profile = profile
         chosen_discovery = F.DISCOVERY if real_helpers else discovery
-        with patch.multiple(F, HERE=here, DISCOVERY=chosen_discovery, JAVA_SHA=F.sha(java), JSON_SHA=F.sha(b"inert JSON helper"),
+        with patch.multiple(F, HERE=here, DISCOVERY=chosen_discovery, JAVA_SHA=F.sha(java), JSON_SHA=F.sha(b"inert JSON helper"), SECURITY_SHA=F.sha(b"inert security helper"),
              REMEDIATION_RUNTIME=here / "runtime-classpath.json",
              PIN_FILE=pin, RCLONE_SHA=F.sha(b"inert rclone")), \
              patch.object(F, "hosted_guard"), patch.object(F, "runtime_rows", return_value=rows), \
@@ -934,7 +936,9 @@ class ReviewRegressionTests(unittest.TestCase):
             self.assertLessEqual(roots,{b'/opt/transfer',b'/opt/java'},name)
         docker=generated['Dockerfile']
         self.assertIn(b'COPY jars /opt/transfer/jars/',docker)
-        self.assertIn(b'COPY HdfsKerberosTransferProbe.java HdfsTransferJson.java checksums driver.sh classpath /opt/transfer/',docker)
+        self.assertIn(b'COPY HdfsKerberosTransferProbe.java HdfsTransferJson.java HdfsDataNodeSecurity.java checksums driver.sh classpath /opt/transfer/',docker)
+        self.assertIn((F.SECURITY_SHA+'  /opt/transfer/HdfsDataNodeSecurity.java\n').encode(),generated['checksums'])
+        self.assertIn(b'/opt/transfer/HdfsDataNodeSecurity.java && cp -R',docker)
         self.assertIn(b'cp -R /opt/transfer/resources/webapps /opt/transfer/classes/ && chmod -R a=rX /opt/transfer && chmod 0555 /opt/transfer/rclone',docker)
         self.assertTrue(all(line.split(b'  ',1)[1].startswith(b'/opt/transfer/') for line in generated['checksums'].splitlines()))
 

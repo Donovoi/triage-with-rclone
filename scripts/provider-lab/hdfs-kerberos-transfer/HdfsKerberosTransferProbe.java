@@ -1892,18 +1892,18 @@ public final class HdfsKerberosTransferProbe {
 	Thread.setDefaultUncaughtExceptionHandler((thread, error) -> BACKGROUND_FAILURE.set(true));
 	for (String name : List.of("environment", "metrics_mode_enabled", "endpoint_settings", "positive_tgt", "file_cache_v3",
 			"nonrenewable", "secure_namenode", "secure_datanode", "tls_material", "tls_endpoints", "registered_datanode", "seed_hashes", "listing_before", "empty_acquired", "small_acquired", "missing_path_rejected", "json_validator_controls", "rc_hash_verified", "missing_object_rejected", "payload_before", "payload_after", "rclone_auth_boundary_rejection",
-			"wire_auth_boundary_rejection", "listing_after", "source_preserved", "cache_preserved")) CHECKS.put(name, false);
+			"wire_auth_boundary_rejection", "listing_after", "source_preserved", "cache_preserved", "block_token_controls")) CHECKS.put(name, false);
 	for (String name : List.of("children_reaped", "relay_closed", "filesystem_closed", "namenode_stop_returned", "owner_logged_out",
 			"datanode_stop_returned", "datanode_ssl_timer_reaped", "gc_monitor_reaped", "fs_statistics_cleaner_reaped", "format_ssl_timer_reaped",
 			"kdc_stop_returned", "threads_terminated", "listeners_absent", "private_material_removed",
-			"process_property_restored", "metrics_mode_restored", "pipeline_observer_detached", "pipeline_server_observer_detached", "seed_lease_renewer_stopped", "replica_pool_stopped", "cleanup_completed")) CLEANUP.put(name, false);
+			"process_property_restored", "metrics_mode_restored", "pipeline_observer_detached", "pipeline_server_observer_detached", "seed_lease_renewer_stopped", "replica_pool_stopped", "data_security_closed", "cleanup_completed")) CLEANUP.put(name, false);
 	Set<Long> baseline = threadIds(); SimpleKdcServer server = null; Code error = null;
 	totalDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(185);
 	deadline = Math.min(totalDeadline, System.nanoTime() + TimeUnit.SECONDS.toNanos(70));
 	byte[] serialized = null;
 	try {
 		environment(args); processBaseline = processIds(); CHECKS.put("environment", true);
-		HdfsTransferJson.selfCheck(HASHES[1]); CHECKS.put("json_validator_controls", true);
+		HdfsTransferJson.selfCheck(HASHES[1]); HdfsDataNodeSecurity.selfCheck(); CHECKS.put("json_validator_controls", true);
 		// Prime only the JDK child reaper before the service-thread baseline.
 		// The version child uses the same pinned binary and bounded supervisor.
 		controlDeadline = deadline;
@@ -1992,6 +1992,7 @@ public final class HdfsKerberosTransferProbe {
 		stage = "rc_missing"; objectControl(reader, true); CHECKS.put("missing_object_rejected", true);
 		stage = "listing_after"; listing(reader, 9); CHECKS.put("listing_after", true);
 		need(acquiredBytes == 2109442, Code.acquisition_invalid);
+		stage = "datanode_security"; bounded(() -> { HdfsDataNodeSecurity.run(filesystem, dnUuid, controlDeadline); return null; }, 12, controlDeadline); CHECKS.put("block_token_controls", true);
 		stage = "preservation"; bounded(() -> { verifyMember(); return null; }, 5, controlDeadline);
 		need(configurationDigest.equals(configurationDigest()), Code.source_invalid);
 		CHECKS.put("source_preserved", true);
@@ -2015,6 +2016,7 @@ public final class HdfsKerberosTransferProbe {
 		try { cleanup(server, baseline); } catch (Throwable ignored) { CLEANUP.put("cleanup_completed", false); }
 		finally { THREAD_ORIGINS.clear(); }
 	}
+	CLEANUP.put("data_security_closed", HdfsDataNodeSecurity.clean());
 	CLEANUP.put("pipeline_observer_detached", pipelineDetached);
 	CLEANUP.put("pipeline_server_observer_detached", pipelineServerDetached);
 	boolean clean = CLEANUP.values().stream().allMatch(Boolean.TRUE::equals);
@@ -2033,6 +2035,7 @@ public final class HdfsKerberosTransferProbe {
 		+ (error == null ? "null" : "\"" + error.name() + "\"")
 		+ ",\"diagnostic\":{\"category\":\"" + diagnosticCategory + "\",\"origin\":\"" + diagnosticOrigin + "\"}"
 		+ ",\"rclone_observation\":" + rcloneObservationJson()
+		+ ",\"datanode_security\":" + HdfsDataNodeSecurity.json()
 		+ ",\"pipeline_origin\":\"" + pipelineOrigin + "\""
 		+ ",\"pipeline_server_diagnostic\":{\"category\":\"" + serverFailure.category() + "\",\"origin\":\"" + serverFailure.origin() + "\"}"
 		+ ",\"remaining_executor_kind\":\"" + remainingExecutorKind + "\""
