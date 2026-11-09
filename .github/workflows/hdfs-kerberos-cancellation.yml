@@ -1,0 +1,63 @@
+name: Isolated HDFS remediation Kerberos cancellation experiment
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/hdfs-kerberos-cancellation.yml
+      - scripts/provider-lab/hdfs-kerberos-cancellation/**
+      - scripts/provider-lab/hdfs-kerberos-rpc/runtime-classpath-remediation.json
+      - scripts/provider-lab/hdfs-discovery/artifact-lock-kerberos-remediation.json
+      - scripts/provider-lab/hdfs-discovery/bootstrap_material.py
+      - scripts/provider-lab/hdfs-discovery/graph_export.py
+      - scripts/provider-lab/hdfs-discovery/offline_cache.py
+      - scripts/provider-lab/hdfs-discovery/resolver_discovery.py
+      - scripts/download-rclone.sh
+      - rclone-version.env
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hdfs-kerberos-cancellation-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rpc:
+    name: Check cancellation ${{ matrix.service_case }} acquisition and cleanup
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service_case: [renewable, nonrenewable]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - name: Check pure source contracts without native tools
+        run: python -I -S -B scripts/provider-lab/hdfs-kerberos-cancellation/run_pure_tests.py
+      - name: Prepare the verified rclone binary
+        run: bash scripts/download-rclone.sh --linux "$RUNNER_TEMP/rclone-hdfs-cancellation"
+      # Exact proposed graph only. Offline replay is dependency evidence;
+      # this separate experiment checks its NameNode RPC behavior and cleanup.
+      # Runtime advisory review remains open; no security or provider acceptance.
+      - name: Check remediation profile cancellation controls and cleanup
+        run: >-
+          python -I -S -B scripts/provider-lab/hdfs-kerberos-cancellation/cancellation_container.py
+          --profile kerberos-remediation
+          --service-case "${{ matrix.service_case }}"
+          --rclone "${{ runner.temp }}/rclone-hdfs-cancellation"
+          --report "${{ runner.temp }}/hdfs-kerberos-cancellation-${{ matrix.service_case }}-experiment.json"
+      - name: Retain only the sanitized result
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: hdfs-kerberos-cancellation-${{ matrix.service_case }}-experiment
+          path: ${{ runner.temp }}/hdfs-kerberos-cancellation-${{ matrix.service_case }}-experiment.json
+          if-no-files-found: warn
+          retention-days: 14
