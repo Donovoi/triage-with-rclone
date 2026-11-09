@@ -9,6 +9,7 @@ import re
 import stat
 import tarfile
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
@@ -129,30 +130,49 @@ class Redirect(urllib.request.HTTPRedirectHandler):
              and parsed.username is None and parsed.password is None and parsed.port in (None,443))
         return super().redirect_request(req,fp,code,msg,headers,newurl)
 
-def download(context,lock,*,opener=None,clock=time.monotonic,observer=None):
+def retryable_download_error(error):
+    if isinstance(error,urllib.error.HTTPError):return error.code in (429,500,502,503,504)
+    if isinstance(error,urllib.error.URLError):error=error.reason
+    return isinstance(error,(TimeoutError,ConnectionError))
+
+def download(context,lock,*,opener=None,clock=time.monotonic,observer=None,sleeper=time.sleep):
     opener=opener or urllib.request.build_opener(urllib.request.ProxyHandler({}),Redirect())
     target=context/'assets';target.mkdir(mode=0o700);deadline=clock()+570
     observer=observer or (lambda *_:None)
+    transferred=0
     for index,row in enumerate(lock['assets']):
         observer('download',index,index)
         need(clock()<deadline)
         request=urllib.request.Request(row['url'],headers={'User-Agent':'triage-offline-gokrb','Accept-Encoding':'identity'})
-        count=0;digest=hashlib.sha256()
-        with opener.open(request,timeout=min(20,max(1,int(deadline-clock())))) as response:
-            parsed=urllib.parse.urlsplit(response.url)
-            need(response.status==200 and parsed.scheme=='https'
-                 and parsed.hostname in ('proxy.golang.org','storage.googleapis.com','dl.google.com')
-                 and not response.headers.get_all('Content-Encoding',[]))
-            lengths=response.headers.get_all('Content-Length',[])
-            need(not lengths or lengths==[str(row['bytes'])])
-            with (target/row['file']).open('xb') as stream:
-                while True:
-                    need(clock()<deadline)
-                    chunk=response.read(min(65536,row['bytes']-count+1))
-                    need(clock()<deadline)
-                    if not chunk:break
-                    count+=len(chunk);need(count<=row['bytes']);stream.write(chunk);digest.update(chunk)
-        need(count==row['bytes'] and digest.hexdigest()==row['sha256'])
+        for attempt in range(3):
+            need(clock()<deadline)
+            count=0;digest=hashlib.sha256();created=False;destination=target/row['file']
+            try:
+                with opener.open(request,timeout=min(20,max(1,int(deadline-clock())))) as response:
+                    parsed=urllib.parse.urlsplit(response.url)
+                    need(response.status==200 and parsed.scheme=='https'
+                         and parsed.hostname in ('proxy.golang.org','storage.googleapis.com','dl.google.com')
+                         and not response.headers.get_all('Content-Encoding',[]))
+                    lengths=response.headers.get_all('Content-Length',[])
+                    need(not lengths or lengths==[str(row['bytes'])])
+                    with destination.open('xb') as stream:
+                        created=True
+                        while True:
+                            need(clock()<deadline)
+                            chunk=response.read(min(65536,row['bytes']-count+1))
+                            need(clock()<deadline)
+                            if not chunk:break
+                            count+=len(chunk);transferred+=len(chunk)
+                            need(count<=row['bytes'] and transferred<=MAX_TOTAL)
+                            stream.write(chunk);digest.update(chunk)
+                need(count==row['bytes'] and digest.hexdigest()==row['sha256'])
+                break
+            except (urllib.error.URLError,TimeoutError,ConnectionError) as error:
+                if isinstance(error,urllib.error.HTTPError):error.close()
+                if not retryable_download_error(error) or attempt==2:raise
+                if created:destination.unlink()
+                delay=attempt+1
+                need(clock()+delay<deadline);sleeper(delay);need(clock()<deadline)
     need(clock()<deadline)
     observer('download',len(lock['assets'])-1,len(lock['assets']))
 

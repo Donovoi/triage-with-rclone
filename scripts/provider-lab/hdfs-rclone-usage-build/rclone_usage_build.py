@@ -19,7 +19,7 @@ import uuid
 HERE=Path(__file__).resolve().parent
 SUPPORT=HERE.parent/'hdfs-kerberos-policy-denial/policy_denial_container.py'
 SUPPORT_SHA='99304f8183f6068140e9e6f364bb96e1cc5c7c28408f1437b6a85b85fdfec2bd'
-BUNDLE_SHA='38668bb0d413644cb71388e4f86554f9c5cb0949318599f937f794f6751678f4'
+BUNDLE_SHA='5fe229670dfc48755df3f296359d9d09359c18b7861d1cc867de0f5567c1400d'
 LABEL='org.openai.triage.rclone-usage-build'
 TMPFS='rw,nosuid,nodev,noexec,size=32m,mode=0700,uid=10001,gid=10001'
 SOURCES={'inspect_build.go':HERE/'inspect_build.go','COPYING-rclone':HERE/'COPYING-rclone','patches/APReq.go':HERE.parent/'hdfs-gokrb-usage/patches/APReq.go','patches/KDCReq.go':HERE.parent/'hdfs-gokrb-usage/patches/KDCReq.go'}
