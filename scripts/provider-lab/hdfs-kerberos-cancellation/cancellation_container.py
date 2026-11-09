@@ -45,7 +45,7 @@ BASE = "docker.io/library/eclipse-temurin@sha256:e1c09a9ee23feb81f94016547826c1e
 BASE_ID = "sha256:d0e6e16acb7f941e5206d99ec38e5bba18545c43462541958f84b22e0fc006e8"
 JAVA_SHA = "4d40246e30beee5087e7625aa8a8cd547213f7008fc72576471cfb796e0accc5"
 JAVA_HELPERS = {
-    "HdfsCancellationRpcGate.java": "65b0f3c231fed7fc56548a83da732137d33663e2aed92358420a39d01ac99cdc",
+    "HdfsCancellationRpcGate.java": "bca359ee8bac65d0e7cd4cbf531dbfa362f04a094bc0d06d77c6085cf9edb542",
     "HdfsCancellationHeldResponse.java": "6c0b8cbed14a27b7e1c1d35d09bbeb7d06eefbc7fe682765c309c0b6fb0b4a05",
     "HdfsCancellationRpcGateVectors.java": "7021fab1ecca3a459d5898037391a6ed5cacd39c1f439449e3051fb1fa720002"
 }
