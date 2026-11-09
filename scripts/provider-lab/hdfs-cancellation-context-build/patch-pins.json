@@ -47,8 +47,8 @@
       "path": "hdfs/internal/rpc/namenode_context_test.go",
       "beforeBytes": 0,
       "beforeSha256": null,
-      "afterBytes": 10951,
-      "afterSha256": "df48d0c17ff4e774392570c33cabc2ac5016f54a33178de5208f7b02ce33f172"
+      "afterBytes": 11559,
+      "afterSha256": "790626fd030d16fb80e0dc4fec6d215537158c92da53e01a07947c700c3a0647"
     }
   ]
 }
