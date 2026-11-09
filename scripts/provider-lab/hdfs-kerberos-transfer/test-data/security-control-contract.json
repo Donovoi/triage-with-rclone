@@ -1,0 +1,21 @@
+{
+  "scope": "synthetic_contract_values_only_not_native_evidence",
+  "proof": {
+    "attempted": true,
+    "parser_checked": true,
+    "quiescent": true,
+    "connections": 3,
+    "closed": 3,
+    "participants": 3,
+    "disposed": 3,
+    "qop_observations": 3,
+    "protected_frames": 3,
+    "wire_bytes_read": 4096,
+    "wire_bytes_written": 4096,
+    "qop": "auth-conf",
+    "valid_before": true,
+    "invalid_operation_token": true,
+    "valid_after": true,
+    "rclone_qop_verified": false
+  }
+}
