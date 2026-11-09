@@ -26,8 +26,8 @@
       "sha256": "c6910dfbfa5e909e921010fe3c7f1c9d2df0e7cda4b36fda84db608d0a94ee06"
     },
     "hdfs-kerberos-positive-renewal/HdfsMitRenewalProbe.java": {
-      "bytes": 135205,
-      "sha256": "9e917e3611b53d4075c92a19cee719edd8a5467eb2f968a63d07ff50a4f159db"
+      "bytes": 135471,
+      "sha256": "cf7a9a78f06f96d451c618be063356d91c2053fc8506642f98c525c3b78524b8"
     },
     "hdfs-kerberos-positive-renewal/MitRenewalEvidence.java": {
       "bytes": 24688,

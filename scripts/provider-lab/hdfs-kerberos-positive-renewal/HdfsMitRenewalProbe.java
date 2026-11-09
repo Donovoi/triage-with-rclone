@@ -1203,6 +1203,11 @@ public final class HdfsMitRenewalProbe {
             MitRenewalEvidence.Reply reply = renewalEvidence.response(body, event.authenticated);
             event.response = reply.type; event.errorCode = reply.error; event.freshService = reply.fresh;
         }
+        boolean rejects(byte[] body, int ownedPhase) {
+            TraceStage saved = traceStage.get();
+            try { request(body, ownedPhase); return false; } catch (Exception expected) { return true; }
+            finally { traceStage.set(saved); }
+        }
         static boolean rejectsFrame(byte[] body) {
             try { frame(new DataInputStream(new java.io.ByteArrayInputStream(body))); return false; }
             catch (Exception expected) { return true; }

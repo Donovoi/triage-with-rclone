@@ -21,7 +21,7 @@ import types
 import uuid
 
 HERE=Path(__file__).resolve().parent
-PINS_SHA="b8e539bc5742e99b6eff764ada3f1f8e13016825bc7fd841a30b1db617f3f268"
+PINS_SHA="f32738abec87d926a511e1ece63b0f968a46ef259983419689160460b361cf40"
 LABEL="org.openai.triage.mit-retained-renewal"
 TMPFS="rw,nosuid,nodev,noexec,size=128m,mode=0700,uid=10001,gid=10001"
 PROFILE="kerberos-remediation"
