@@ -128,8 +128,8 @@ def validate_new_evidence(value, complete, service_case, variant):
         integer(observed["cache_flags"],0,4294967295); integer(observed["issued_flags"],0,4294967295)
         if complete:
             flags=observed["cache_flags"]
-            need(flags==observed["issued_flags"] and flags & ~0x00e00000 == 0
-                 and bool(flags & 0x00800000) is observed["renewable_expected"], "java_report_invalid")
+            expected=0x00e10000 if index==0 else 0x00a90000 if service_case=="renewable" else 0x00290000
+            need(flags==observed["issued_flags"]==expected, "java_report_invalid")
     if complete: need(len(observations)==2, "java_report_invalid")
     integer(value["rpc_gate_vectors"], 0, 85)
     validate_owner(value["mit_owner"], complete)

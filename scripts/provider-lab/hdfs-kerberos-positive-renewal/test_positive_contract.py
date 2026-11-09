@@ -93,9 +93,9 @@ def fixture(case="renewable", variant="patched"):
     value["checks"]["renewable_tgt"] = value["checks"].pop("nonrenewable_tgt")
     value["binary_variant"] = variant
     value["rpc_gate_vectors"] = 85
-    value["ticket_flag_observations"] = [dict(kind="issued_tgt",cache_flags=0x00e00000,issued_flags=0x00e00000,renewable_expected=True),
-        dict(kind="issued_service",cache_flags=0x00a00000 if case=="renewable" else 0x00200000,
-             issued_flags=0x00a00000 if case=="renewable" else 0x00200000,renewable_expected=case=="renewable")]
+    value["ticket_flag_observations"] = [dict(kind="issued_tgt",cache_flags=0x00e10000,issued_flags=0x00e10000,renewable_expected=True),
+        dict(kind="issued_service",cache_flags=0x00a90000 if case=="renewable" else 0x00290000,
+             issued_flags=0x00a90000 if case=="renewable" else 0x00290000,renewable_expected=case=="renewable")]
     positive = case == "renewable" and variant == "patched"
     cache = value["service_cache_lifecycle"]
     cache.update(case=case, service_renewable=case == "renewable", new_tgs_acquisition_verified=not positive)
@@ -254,10 +254,25 @@ class ContractTests(unittest.TestCase):
         v["mit_owner"]["children"]=100; self.reject(v, exit_code=1)
 
     def test_ticket_flags_cannot_weaken_acceptance(self):
-        for bad in (True,-1,4294967296,0x00e10000):
+        for bad in (True,-1,4294967296,0x00e90000):
             v=fixture();v["ticket_flag_observations"][0]["cache_flags"]=bad;v["ticket_flag_observations"][0]["issued_flags"]=bad;self.reject(v)
         v=fixture();v["ticket_flag_observations"]=[];self.reject(v)
         v=fixture();v["ticket_flag_observations"][1]["kind"]="issued_tgt";self.reject(v)
+
+    def test_mit_flags_reject_privilege_or_semantic_drift(self):
+        forbidden=(0x40000000,0x20000000,0x10000000,0x08000000,0x04000000,0x02000000,0x01000000,0x00040000,0x00008000,0x00000001)
+        for index in (0,1):
+            for bit in forbidden:
+                with self.subTest(index=index,bit=bit):
+                    v=fixture();obs=v["ticket_flag_observations"][index]
+                    obs["cache_flags"] |= bit;obs["issued_flags"] |= bit;self.reject(v)
+            for bit in (0x00200000,0x00010000,0x00800000):
+                v=fixture();obs=v["ticket_flag_observations"][index]
+                obs["cache_flags"] &= ~bit;obs["issued_flags"] &= ~bit;self.reject(v)
+        v=fixture();v["ticket_flag_observations"][0]["cache_flags"] ^= 0x00010000;self.reject(v)
+        for index,bit in ((0,0x00400000),(1,0x00080000)):
+            v=fixture();obs=v["ticket_flag_observations"][index]
+            obs["cache_flags"] &= ~bit;obs["issued_flags"] &= ~bit;self.reject(v)
 
     def test_partial_flag_failure_preserves_bounded_observation(self):
         v=fixture();v.update(success=False,error="ticket_flags_mismatch",stage="service_ticket")

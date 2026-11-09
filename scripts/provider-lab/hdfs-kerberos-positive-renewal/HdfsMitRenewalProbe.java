@@ -376,8 +376,11 @@ public final class HdfsMitRenewalProbe {
         need(ticketFlagObservations.size() < 2, Code.cache_invalid);
         ticketFlagObservations.add(Map.of("kind", lifetime == 120 ? "issued_tgt" : "issued_service",
             "cache_flags", flags, "issued_flags", issuedFlags, "renewable_expected", renewable));
-        need(flags == issuedFlags
-            && (flags & ~0x00e00000L) == 0 && ((flags & 0x00800000L) != 0) == renewable, Code.ticket_flags_mismatch);
+        // MIT 1.20.1 always sets ENC_PA_REP (RFC6806). Its local-realm TGS path
+        // also marks TRANSIT_POLICY_CHECKED; INITIAL belongs only to the TGT.
+        // Exact flags retain the denial of forwarding, proxying and delegation.
+        long expectedFlags = lifetime == 120 ? 0x00e10000L : renewable ? 0x00a90000L : 0x00290000L;
+        need(flags == issuedFlags && flags == expectedFlags, Code.ticket_flags_mismatch);
         need(u32(data) == 0 && u32(data) == 0, Code.cache_invalid);
         byte[] ticket = counted(data, MAX_BYTES);
         try { need(ticket.length > 0 && Arrays.equals(ticket, org.apache.kerby.kerberos.kerb.KrbCodec.encode(issued.getTicket()))
