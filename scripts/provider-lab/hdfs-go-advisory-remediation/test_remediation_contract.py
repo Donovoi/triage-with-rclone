@@ -3,6 +3,7 @@ from pathlib import Path
 from audit_contract import ContractError
 import remediation_bundle as B
 import remediation_contract as R
+import graph_metadata as G
 
 HERE=Path(__file__).resolve().parent
 def fingerprint(raw):return dict(bytes=len(raw),sha256=hashlib.sha256(raw).hexdigest())
@@ -10,14 +11,17 @@ class RemediationIdentityTests(unittest.TestCase):
  def setUp(self):
   self.lock=B.load_lock((HERE/'remediation-assets-lock.json').read_bytes())
   baseline=json.loads((HERE.parent/'hdfs-rclone-usage-build/assets-lock.json').read_bytes())
-  self.catalog=B.source_catalog(baseline,self.lock)
+  source=B.source_catalog(baseline,self.lock);raw=(HERE/'graph-metadata-snapshot.json').read_bytes()
+  versions,_=G.load_snapshot(raw)
+  mod_sums={(r['module'],r['version']):r['h1'] for lock in (baseline,self.lock) for r in lock['assets'] if r['kind']=='mod'}
+  self.catalog=G.extend_catalog(source,raw,(HERE/'upgraded-rclone.sum').read_bytes(),mod_sums,set(versions.items()))
   self.baselines={x['variant']:x for x in json.loads((HERE/'fixtures/qualified-foundation-binaries.json').read_bytes())}
  def fixture(self,variant='original'):
   files=B.overlay_files(self.lock,(HERE/'fixtures/original-rclone.mod').read_bytes(),(HERE/'fixtures/original-rclone.sum').read_bytes(),
    (HERE/'upgraded-rclone.mod').read_bytes(),(HERE/'upgraded-rclone.sum').read_bytes(),variant)
   graph=[]
   for module,c in sorted(self.catalog.items()):
-   row=dict(c,main=False,indirect=True,go_version='',replacement='')
+   row=dict({k:v for k,v in c.items() if k!='source_available'},main=False,indirect=True,go_version='',replacement='')
    if module==B.MODULE:row.update(version='',sum='',go_mod_sum='',main=True,indirect=False,go_version='1.26.0')
    elif variant=='patched' and module==R.HDFS:row.update(sum='',go_mod_sum='',replacement=R.LOCAL_HDFS)
    graph.append(row)
@@ -45,14 +49,30 @@ class RemediationIdentityTests(unittest.TestCase):
    self.assertTrue(result['native_module_resolution_verified']);self.assertTrue(result['native_build_identity_verified'])
    self.assertFalse(result['native_compatibility_verified']);self.assertFalse(result['exploitability_verified'])
    self.assertFalse(result['vulnerability_audit_completed']);self.assertFalse(result['provider_accepted'])
-   self.assertEqual(result['graph_modules'],336)
+   self.assertEqual(result['graph_modules'],654)
    self.assertEqual(len(R.wrapper_target(result)['modules']),242)
    self.assertEqual(R.extraction_identity(result)['path'],B.MODULE)
- def test_unused_allowed_source_need_not_be_selected(self):
+ def test_full_selected_source_inventory_is_required(self):
   value,files,baseline=self.fixture();module='github.com/pelletier/go-toml'
   self.assertNotIn(module,{x['path'] for x in value['binary']['modules']})
   value['graph']=[x for x in value['graph'] if x['path']!=module]
-  self.assertEqual(self.admit(value,files,baseline)['graph_modules'],335)
+  with self.assertRaises(ContractError):self.admit(value,files,baseline)
+ def test_metadata_only_graph_nodes_are_retained_with_recorded_sums(self):
+  value,files,baseline=self.fixture();result=self.admit(value,files,baseline)
+  metadata=[x for x in result['graph'] if not self.catalog[x['path']]['source_available']]
+  self.assertEqual(len(metadata),318);self.assertTrue(all(x['sum']=='' for x in metadata))
+  self.assertEqual(sum(bool(x['go_mod_sum']) for x in metadata),9)
+ def test_missing_metadata_only_node_is_rejected(self):
+  module=next(m for m,c in self.catalog.items() if not c['source_available'])
+  self.reject(lambda v:v.update(graph=[x for x in v['graph'] if x['path']!=module]))
+ def test_metadata_only_compiled_module_is_explicitly_rejected(self):
+  value,files,baseline=self.fixture();graph=R.admit_graph(value['graph'],self.catalog,files['upgraded-rclone.mod'],'original')
+  module=next(m for m,c in self.catalog.items() if not c['source_available'])
+  graph[module]['sum']='h1:'+'A'*43+'='
+  row={k:graph[module][k] for k in ('path','version','sum','replacement')}
+  value['binary']['modules'].append(row);value['binary']['modules'].sort(key=lambda x:x['path'])
+  with self.assertRaisesRegex(ContractError,'remediation_compiled_metadata_only'):
+   R.admit_compiled(value['binary'],graph,baseline,'original')
  def test_old_dependency_version_rejected(self):
   self.reject(lambda v:self.row(v).update(version='v0.60.0'))
  def test_wrong_archive_hash_rejected(self):

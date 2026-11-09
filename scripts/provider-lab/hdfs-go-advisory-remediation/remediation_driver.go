@@ -102,7 +102,7 @@ func resolverGraph(raw []byte,variant string) []graphModule {
  for {
   var m resolverModule
   err:=dec.Decode(&m);if err==io.EOF {break};require(err==nil,"remediation_graph")
-  validResolver(m);require(!seen[m.Path]&&len(rows)<336,"remediation_graph");seen[m.Path]=true
+  validResolver(m);require(!seen[m.Path]&&len(rows)<654,"remediation_graph");seen[m.Path]=true
   row:=graphModule{m.Path,m.Version,m.Sum,m.GoModSum,m.Main,m.Indirect,m.GoVersion,""}
   if m.Main {
    mains++
@@ -122,7 +122,7 @@ func resolverGraph(raw []byte,variant string) []graphModule {
   rows=append(rows,row)
  }
  wantReplacements:=0;if variant=="patched" {wantReplacements=1}
- require(len(rows)>=276&&mains==1&&replacements==wantReplacements,"remediation_graph")
+ require(len(rows)==654&&mains==1&&replacements==wantReplacements,"remediation_graph")
  sort.Slice(rows,func(i,j int)bool{return rows[i].Path<rows[j].Path})
  return rows
 }
