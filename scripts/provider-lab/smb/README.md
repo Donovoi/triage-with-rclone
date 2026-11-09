@@ -64,3 +64,5 @@ requires the same complete profiles.
 
 The Python tests use mocks and local temporary files and do not start Docker,
 Samba, rclone, or a service. Native execution requires the isolated CI job.
+
+Package acquisition reports closed classifications for HTTP rejection, throttling, server errors, timeouts, name resolution and hash mismatches. Classification is limited to the last failed package request. Separate markers identify checksum, size, package-name and package-version validation failures. Raw download output is not retained in the public result. These diagnostics preserve the package pins, disabled acquisition retries and existing deadlines; they do not establish the cause of an earlier unclassified failure.

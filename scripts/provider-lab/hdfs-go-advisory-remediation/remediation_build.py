@@ -1,5 +1,6 @@
 """Deterministic offline upgrades; foundation build commands retain their order."""
 from __future__ import annotations
+import re
 from audit_contract import need
 import audit_build as AB
 
@@ -39,5 +40,58 @@ def extend_build(files,variant):
  driver=files['driver.sh'].decode('utf-8')
  need(driver.count(IDENTITY)==1 and driver.endswith(IDENTITY+'\n'),'remediation_build_driver')
  driver=driver[:-len(IDENTITY+'\n')]+IDENTITY.removeprefix('exec ')+'\n'+  'exec /usr/bin/timeout --signal=TERM --kill-after=2s 15s /opt/probes/audit-driver identity\n'
- result=dict(files);result['build.sh']=('\n'.join(lines)+'\n').encode();result['driver.sh']=driver.encode()
+ marked=[]
+ for line in lines:
+  phase=None
+  if ' /opt/go/bin/go ' in line:
+   if ' /opt/go/bin/go list ' in line:phase='upgraded_graph'
+   else:
+    for name,label in BUILD_TARGETS.items():
+     if ' -o /opt/probes/'+name+' ' in line:phase=label;break
+   need(phase is not None,'remediation_build_phase')
+   marked.append("printf '%s\\n' 'GO_REMEDIATION_BUILD_PHASE="+phase+"'")
+  marked.append(line)
+ result=dict(files);result['build.sh']=('\n'.join(marked)+'\n').encode();result['driver.sh']=driver.encode()
+ return result
+
+BUILD_TARGETS={'rclone-original':'baseline_original','rclone-stripped':'baseline_stripped','rclone-patched':'baseline_patched',
+ 'rclone-upgraded':'upgraded_binary','context-tests':'baseline_context_tests','inspect-context-build':'foundation_reporter',
+ 'govulncheck':'analyzer','audit-driver':'audit_wrapper','remediation-regression':'benign_regression',
+ 'upgraded-context-tests':'upgraded_context_tests'}
+PHASES=set(BUILD_TARGETS.values())|{'upgraded_graph'}
+PHASE=re.compile(rb"^(?:#[0-9]+ +[0-9.]+ +)?GO_REMEDIATION_BUILD_PHASE=("+
+ b'|'.join(x.encode('ascii') for x in sorted(PHASES))+rb")\r?$",re.MULTILINE)
+COORD=re.compile(rb'([A-Za-z0-9][A-Za-z0-9./_~!+-]*)@(v[0-9][A-Za-z0-9.+-]*)')
+REQUIRE=re.compile(rb'^\s*(?:require\s+)?([A-Za-z0-9][A-Za-z0-9./_~!+-]*)[ \t]+(v[0-9][A-Za-z0-9.+-]*)(?:[ \t]*(?://[^\r\n]*)?)\r?$',re.MULTILINE)
+
+def diagnostic_coordinates(inputs,known):
+ """Only coordinates present in already verified public module inputs may escape."""
+ need(type(inputs) is list and len(inputs)<=512 and all(type(x) is bytes and len(x)<=2*1024*1024 for x in inputs)
+  and sum(map(len,inputs))<=16*1024*1024,'remediation_diagnostic_inputs')
+ result=set(known)
+ for raw in inputs:
+  for match in REQUIRE.finditer(raw):result.add((match[1].decode('ascii'),match[2].decode('ascii')))
+ need(len(result)<=20000,'remediation_diagnostic_inputs')
+ return result
+
+def diagnostics(R,raw,allowed):
+ need(type(raw) is bytes and len(raw)<=8*1024*1024 and type(allowed) is set,'remediation_diagnostic_inputs')
+ result=AB.diagnostics(R,raw);phases=PHASE.findall(raw)
+ result['remediation_phase']=phases[-1].decode('ascii') if phases else None
+ found=set();unbound=False
+ for line in raw.splitlines():
+  kind='lookup_disabled' if b'module lookup disabled by GOPROXY=off' in line else 'sum_missing' if b'missing go.sum entry' in line else None
+  if kind is None:continue
+  for match in COORD.finditer(line):
+   coordinate=(match[1].decode('ascii'),match[2].decode('ascii'))
+   if coordinate in allowed:found.add((*coordinate,kind))
+   else:unbound=True
+ need(len(found)<=32,'remediation_diagnostic_limit')
+ result['module_errors']=[dict(module=m,version=v,kind=k) for m,v,k in sorted(found)]
+ result['unbound_module_error_present']=unbound
+ errors=set()
+ for match in re.finditer(rb'(remediation_(?:driver|regression)[.]go):([0-9]{1,5}):[^\r\n]*',raw):
+  line=int(match[2]);need(1<=line<=10000,'remediation_diagnostic_limit');errors.add((match[1].decode('ascii'),line))
+ need(len(errors)<=32,'remediation_diagnostic_limit')
+ result['remediation_source_errors']=[dict(file=f,line=n) for f,n in sorted(errors)]
  return result

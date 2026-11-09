@@ -31,6 +31,22 @@ PROBE_RUNTIME = {"platform", "uid", "gid", "samba_version", "rclone_version", "s
 OUTER_CLEANUP = {"container_removed", "image_removed", "temporary_removed"}
 INNER_CLEANUP = {"children_stopped", "listeners_closed", "temporary_removed"}
 BUILD_CODES = {
+    "download_started",
+    "download_fetch_started",
+    "download_fetch_failed",
+    "download_fetch_passed",
+    "download_checksum_failed",
+    "download_size_failed",
+    "download_package_name_failed",
+    "download_package_version_failed",
+    "download_complete",
+    "download_http_not_found",
+    "download_http_throttled",
+    "download_http_denied",
+    "download_http_server_error",
+    "download_connection_timeout",
+    "download_name_resolution_failed",
+    "download_hash_mismatch",
     "bootstrap_cleanup_complete", "bootstrap_cleanup_failed", "bootstrap_cleanup_started",
     "install_apt_failed", "install_apt_passed", "install_apt_started",
     "install_cache_failed", "install_cache_passed", "install_cache_started",
