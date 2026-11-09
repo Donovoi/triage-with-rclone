@@ -93,6 +93,9 @@ def fixture(case="renewable", variant="patched"):
     value["checks"]["renewable_tgt"] = value["checks"].pop("nonrenewable_tgt")
     value["binary_variant"] = variant
     value["rpc_gate_vectors"] = 85
+    value["ticket_flag_observations"] = [dict(kind="issued_tgt",cache_flags=0x00e00000,issued_flags=0x00e00000,renewable_expected=True),
+        dict(kind="issued_service",cache_flags=0x00a00000 if case=="renewable" else 0x00200000,
+             issued_flags=0x00a00000 if case=="renewable" else 0x00200000,renewable_expected=case=="renewable")]
     positive = case == "renewable" and variant == "patched"
     cache = value["service_cache_lifecycle"]
     cache.update(case=case, service_renewable=case == "renewable", new_tgs_acquisition_verified=not positive)
@@ -249,6 +252,20 @@ class ContractTests(unittest.TestCase):
         v=fixture(); v.update(success=False, error="wire_invalid", stage="bounded_reconnect")
         v["checks"]["listing_after"]=False; v["diagnostic"]["category"]="assertion"
         v["mit_owner"]["children"]=100; self.reject(v, exit_code=1)
+
+    def test_ticket_flags_cannot_weaken_acceptance(self):
+        for bad in (True,-1,4294967296,0x00e10000):
+            v=fixture();v["ticket_flag_observations"][0]["cache_flags"]=bad;v["ticket_flag_observations"][0]["issued_flags"]=bad;self.reject(v)
+        v=fixture();v["ticket_flag_observations"]=[];self.reject(v)
+        v=fixture();v["ticket_flag_observations"][1]["kind"]="issued_tgt";self.reject(v)
+
+    def test_partial_flag_failure_preserves_bounded_observation(self):
+        v=fixture();v.update(success=False,error="ticket_flags_mismatch",stage="service_ticket")
+        v["checks"]["listing_after"]=False;v["diagnostic"]["category"]="assertion"
+        v["ticket_flag_observations"]=[dict(kind="issued_tgt",cache_flags=0x00e10000,issued_flags=0x00e10000,renewable_expected=True)]
+        out=self.accept(v,exit_code=1);self.assertEqual(out["ticket_flag_observations"][0]["cache_flags"],0x00e10000)
+        self.assertFalse(out["success"])
+        v["ticket_flag_observations"][0]["secret"]="not allowed";self.reject(v,exit_code=1)
 
     def test_legacy_fixture_cannot_pass(self):
         self.reject(legacy_fixture())
