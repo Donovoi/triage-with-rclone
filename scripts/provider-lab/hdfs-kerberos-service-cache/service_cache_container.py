@@ -43,7 +43,7 @@ TIMER_KINDS = frozenset("namenode_metrics rpc_idle snapshot_gc shell_timeout ssl
 RPC_KINDS = frozenset("client_request_sender client_connection other".split())
 BASE = "docker.io/library/eclipse-temurin@sha256:e1c09a9ee23feb81f94016547826c1e694086cd927356fb57fccc312fcc32f85"
 BASE_ID = "sha256:d0e6e16acb7f941e5206d99ec38e5bba18545c43462541958f84b22e0fc006e8"
-JAVA_SHA = "77b489dc50e90b1baf11070483d60524a6955cf88bd57f7e78e5226fa2298a91"
+JAVA_SHA = "7ca78c539bb3767a22ca2ae24535b20efeb749d8929dd326b1899ce3a15436ac"
 RUNTIME_SHA = "8944f0db4899d9e8f166feb28ce56d99278321ce0d3b1a9b9b993b5c0d508c2a"
 ORDER_SHA = "a482109e5170b0a6885af7c52902e89600c226f6e1fe1487083d736c13187632"
 LOCK_SHA = "a62e2a60bbb3f6c8b95b849760ff597e4e05e1c93bf61987c175502c3fe2ac74"
@@ -52,6 +52,7 @@ REMEDIATION_ORDER_SHA = "92533297bdae9e77befdc0c381f25850a08becac726c026ab70bd3a
 REMEDIATION_LOCK_SHA = "80184076d64194810cae394fbc6d8b00e86717c9479d6176f828b042dcd41df1"
 PROFILES = ("kerberos", "kerberos-remediation")
 SERVICE_CASES = ("renewable", "nonrenewable")
+TRACE_STAGES = frozenset("none accept upstream_connect request_frame request_decode request_envelope request_canonical request_target request_padata request_ap_decode request_ap_canonical request_identity request_renew_binding parser_self_check upstream_send response_frame response_decode client_send client_eof cleanup".split())
 LABEL = "org.openai.triage.kerberos-service-cache"
 TMPFS = "rw,nosuid,nodev,noexec,size=128m,mode=0700,uid=10001,gid=10001"
 HELPERS = ("bootstrap_material", "graph_export", "offline_cache", "resolver_discovery")
@@ -493,7 +494,9 @@ def validate_kdc_trace(value, complete, service_case):
     if value is None:
         need(not complete, "java_report_invalid"); return
     need(type(value) is dict and set(value) == {"connections", "events", "forwarded_bytes",
-         "bytes_forwarded_unchanged", "all_phases_observed", "parser_checked"}, "java_report_invalid")
+         "bytes_forwarded_unchanged", "all_phases_observed", "parser_checked", "failure_stage"}, "java_report_invalid")
+    need(type(value["failure_stage"]) is str and value["failure_stage"] in TRACE_STAGES
+         and (value["failure_stage"] == "none") is value["bytes_forwarded_unchanged"], "java_report_invalid")
     counts = value["connections"]; events = value["events"]
     need(type(counts) is list and len(counts) == 4 and all(type(x) is int and 0 <= x <= 4 for x in counts)
          and type(events) is list and len(events) <= sum(counts) <= 16, "java_report_invalid")

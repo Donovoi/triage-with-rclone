@@ -1015,6 +1015,16 @@ public final class HdfsKerberosServiceCacheProbe {
         }
     }
     private static final class KdcRelay {
+        private enum TraceStage { none, accept, upstream_connect, request_frame, request_decode,
+            request_envelope, request_canonical, request_target, request_padata, request_ap_decode,
+            request_ap_canonical, request_identity, request_renew_binding, parser_self_check,
+            upstream_send, response_frame, response_decode, client_send, client_eof, cleanup }
+        final ThreadLocal<TraceStage> traceStage = ThreadLocal.withInitial(() -> TraceStage.none);
+        private TraceStage failureStage = TraceStage.none;
+        synchronized void fail(TraceStage stage) {
+            if (!failed.get()) failureStage = stage;
+            failed.set(true);
+        }
         final ServerSocket listener = new ServerSocket();
         final List<Socket> sockets = new java.util.concurrent.CopyOnWriteArrayList<>();
         final List<Thread> threads = new java.util.concurrent.CopyOnWriteArrayList<>();
@@ -1051,7 +1061,7 @@ public final class HdfsKerberosServiceCacheProbe {
                     Thread worker = new Thread(() -> handle(incoming, ownedPhase), "owned-kdc-exchange");
                     worker.setDaemon(true); threads.add(worker); worker.start();
                 }
-            } catch (Throwable failure) { if (!stopping) failed.set(true); }
+            } catch (Throwable failure) { if (!stopping) fail(TraceStage.accept); }
         }
         static byte[] frame(DataInputStream input) throws Exception {
             int length = input.readInt(); need(length > 0 && length <= 65536, Code.wire_invalid);
@@ -1062,16 +1072,21 @@ public final class HdfsKerberosServiceCacheProbe {
             output.writeInt(body.length); output.write(body); output.flush();
         }
         KdcEvent request(byte[] body, int ownedPhase) throws Exception {
+            traceStage.set(TraceStage.request_decode);
             var request = org.apache.kerby.kerberos.kerb.KrbCodec.decode(body,
                 org.apache.kerby.kerberos.kerb.type.kdc.TgsReq.class);
-            need(request.getPvno() == 5 && request.getMsgType() == org.apache.kerby.kerberos.kerb.type.base.KrbMessageType.TGS_REQ
-                && Arrays.equals(body, org.apache.kerby.kerberos.kerb.KrbCodec.encode(request)), Code.wire_invalid);
+            traceStage.set(TraceStage.request_envelope);
+            need(request.getPvno() == 5 && request.getMsgType() == org.apache.kerby.kerberos.kerb.type.base.KrbMessageType.TGS_REQ, Code.wire_invalid);
+            traceStage.set(TraceStage.request_canonical);
+            need(Arrays.equals(body, org.apache.kerby.kerberos.kerb.KrbCodec.encode(request)), Code.wire_invalid);
+            traceStage.set(TraceStage.request_target);
             var requestBody = request.getReqBody();
             need(requestBody != null && ownedRealm.equals(requestBody.getRealm())
                 && requestBody.getSname() != null
                 && requestBody.getSname().getNameStrings().equals(List.of("hdfs", "127.0.0.1"))
                 && requestBody.getKdcOptions() != null && request.getPaData() != null, Code.wire_invalid);
             boolean renew = requestBody.getKdcOptions().isFlagSet(org.apache.kerby.kerberos.kerb.type.kdc.KdcOption.RENEW);
+            traceStage.set(TraceStage.request_padata);
             var entries = request.getPaData().getElements();
             need(entries != null && entries.size() >= 1 && entries.size() <= 4, Code.wire_invalid);
             byte[] apBytes = null; Set<Integer> seen = new HashSet<>();
@@ -1083,11 +1098,14 @@ public final class HdfsKerberosServiceCacheProbe {
                 if (type == 1) apBytes = entry.getPaDataValue();
             }
             need(apBytes != null, Code.wire_invalid);
+            traceStage.set(TraceStage.request_ap_decode);
             var ap = org.apache.kerby.kerberos.kerb.KrbCodec.decode(apBytes,
                 org.apache.kerby.kerberos.kerb.type.ap.ApReq.class);
+            traceStage.set(TraceStage.request_ap_canonical);
             need(ap.getPvno() == 5 && ap.getMsgType() == org.apache.kerby.kerberos.kerb.type.base.KrbMessageType.AP_REQ
                 && Arrays.equals(apBytes, org.apache.kerby.kerberos.kerb.KrbCodec.encode(ap)) && ap.getTicket() != null,
                 Code.wire_invalid);
+            traceStage.set(TraceStage.request_identity);
             byte[] presented = org.apache.kerby.kerberos.kerb.KrbCodec.encode(ap.getTicket());
             String identity;
             try {
@@ -1095,6 +1113,7 @@ public final class HdfsKerberosServiceCacheProbe {
                 else if (Arrays.equals(presented, issuedServiceBytes)) identity = "issued_service";
                 else throw new Failure(Code.wire_invalid);
             } finally { Arrays.fill(presented, (byte)0); }
+            traceStage.set(TraceStage.request_renew_binding);
             need(renew ? renewableCase && identity.equals("issued_service") : identity.equals("issued_tgt"), Code.wire_invalid);
             return new KdcEvent(ownedPhase, renew, identity);
         }
@@ -1124,7 +1143,9 @@ public final class HdfsKerberosServiceCacheProbe {
             } else throw new Failure(Code.wire_invalid);
         }
         boolean rejects(byte[] body, int ownedPhase) {
+            TraceStage saved = traceStage.get();
             try { request(body, ownedPhase); return false; } catch (Exception expected) { return true; }
+            finally { traceStage.set(saved); }
         }
         static boolean rejectsFrame(byte[] body) {
             try { frame(new DataInputStream(new java.io.ByteArrayInputStream(body))); return false; }
@@ -1156,27 +1177,31 @@ public final class HdfsKerberosServiceCacheProbe {
             Socket upstream = new Socket(); sockets.add(upstream);
             byte[] request = null, response = null;
             try {
+                traceStage.set(TraceStage.upstream_connect);
                 upstream.connect(new InetSocketAddress(InetAddress.getByAddress(new byte[]{127,0,0,1}), 19006), 2000);
                 upstream.setSoTimeout(3000);
                 var input = new DataInputStream(incoming.getInputStream());
+                traceStage.set(TraceStage.request_frame);
                 request = frame(input); KdcEvent event = request(request, ownedPhase);
-                if (!parserChecked) { parserSelfTest(request, ownedPhase); parserChecked = true; }
-                send(upstream, request); response = frame(new DataInputStream(upstream.getInputStream()));
-                response(response, event);
+                if (!parserChecked) { traceStage.set(TraceStage.parser_self_check); parserSelfTest(request, ownedPhase); parserChecked = true; }
+                traceStage.set(TraceStage.upstream_send); send(upstream, request);
+                traceStage.set(TraceStage.response_frame); response = frame(new DataInputStream(upstream.getInputStream()));
+                traceStage.set(TraceStage.response_decode); response(response, event);
                 synchronized (this) {
                     need(phase == ownedPhase && events.size() < 16, Code.relay_invalid);
                     forwardedBytes += request.length + response.length + 8;
                     need(forwardedBytes <= 1048576, Code.relay_invalid); events.add(event);
                 }
-                send(incoming, response);
-                need(input.read() == -1, Code.wire_invalid); // One owned exchange per TCP connection.
-            } catch (Throwable failure) { failed.set(true); }
+                traceStage.set(TraceStage.client_send); send(incoming, response);
+                traceStage.set(TraceStage.client_eof); need(input.read() == -1, Code.wire_invalid); // One owned exchange per TCP connection.
+            } catch (Throwable failure) { fail(traceStage.get()); }
             finally {
                 if (request != null) Arrays.fill(request, (byte)0);
                 if (response != null) Arrays.fill(response, (byte)0);
-                try { incoming.close(); } catch (IOException ignored) { failed.set(true); }
-                try { upstream.close(); } catch (IOException ignored) { failed.set(true); }
+                try { incoming.close(); } catch (IOException ignored) { fail(TraceStage.cleanup); }
+                try { upstream.close(); } catch (IOException ignored) { fail(TraceStage.cleanup); }
                 synchronized (this) { active--; }
+                traceStage.remove();
             }
         }
         synchronized void begin(int wanted) throws Exception {
@@ -1211,20 +1236,20 @@ public final class HdfsKerberosServiceCacheProbe {
         }
         boolean stop() {
             stopping = true;
-            try { listener.close(); } catch (IOException ignored) { failed.set(true); }
-            for (Socket socket : sockets) try { socket.close(); } catch (IOException ignored) { failed.set(true); }
+            try { listener.close(); } catch (IOException ignored) { fail(TraceStage.cleanup); }
+            for (Socket socket : sockets) try { socket.close(); } catch (IOException ignored) { fail(TraceStage.cleanup); }
             long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
             for (Thread thread : threads) try {
                 long millis = TimeUnit.NANOSECONDS.toMillis(until - System.nanoTime());
                 if (millis > 0) thread.join(millis);
-            } catch (InterruptedException failure) { Thread.currentThread().interrupt(); failed.set(true); }
+            } catch (InterruptedException failure) { Thread.currentThread().interrupt(); fail(TraceStage.cleanup); }
             return listener.isClosed() && sockets.stream().allMatch(Socket::isClosed) && threads.stream().noneMatch(Thread::isAlive);
         }
         synchronized String json() {
             return "{\"connections\":[" + connections[0] + "," + connections[1] + "," + connections[2] + "," + connections[3]
                 + "],\"events\":[" + String.join(",", events.stream().map(KdcEvent::json).toList())
                 + "],\"forwarded_bytes\":" + forwardedBytes + ",\"bytes_forwarded_unchanged\":" + !failed.get()
-                + ",\"all_phases_observed\":" + (visited[0] && visited[1] && visited[2] && visited[3]) + ",\"parser_checked\":" + parserChecked + "}";
+                + ",\"all_phases_observed\":" + (visited[0] && visited[1] && visited[2] && visited[3]) + ",\"parser_checked\":" + parserChecked + ",\"failure_stage\":\"" + failureStage.name() + "\"}";
         }
     }
 
