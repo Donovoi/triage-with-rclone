@@ -43,9 +43,15 @@ CLEANUP_UNCERTAIN = frozenset({"termination_failed", "process_cleanup_failed", "
 CASE_DIRECTORIES = {"token_replacement": "acquisition", "renewal_denial": "denial"}
 
 
+class SwiftReadyTiming(H._ReadyTiming):
+    """Keep closed failure observations for the fixed Swift case budget."""
+    wait_limit_seconds = 120
+
+
 class SwiftReadyBridge(C.ObservedSourceBridge):
     """Allow readiness only within the original token-replacement case budget."""
     ready_wait_seconds = 120
+    ready_timing_type = SwiftReadyTiming
 
     def __init__(self, case, *, deadline):
         now = time.monotonic()
