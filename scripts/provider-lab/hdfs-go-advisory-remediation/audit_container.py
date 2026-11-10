@@ -6,7 +6,7 @@ import hashlib,json,os,re,shutil,signal,stat,sys,tempfile,time,types,uuid
 from pathlib import Path
 
 HERE=Path(__file__).resolve().parent
-PINS_SHA='57ab0d5bb62a124cfa5fee1170ce009ab3f598055996b2a210f906f3df01862e'
+PINS_SHA='ff1a47367e5e0632c32d8eb244b6fe2657b37a4889d9232945cf41271dc28d97'
 LABEL='org.openai.triage.hdfs-context-build'
 TMPFS='rw,nosuid,nodev,noexec,size=128m,mode=0700,uid=10001,gid=10001'
 MODULES=('audit_contract','advisory_contract','scan_contract','snapshot_contract','tool_bundle',
@@ -117,6 +117,26 @@ def inspect_container(value,name,image,run_id,mode=None,target=None):
     mounts=value.get('Mounts')
     need(type(mounts) is list and len(mounts)<=1 and all(type(m) is dict and m.get('Type')=='tmpfs'
          and m.get('Destination')=='/work' for m in mounts),'container_invalid')
+
+IMAGE_REMOVE_TIMEOUT = 60
+
+
+def cleanup_owned_image(R,docker,reference,exact,run_id,tag,diagnostic):
+    # Removing this large, already-verified owned image exceeded the generic
+    # 15-second command deadline. Only this exact removal receives 60 seconds;
+    # inspections, ownership admission, absence checks and call limits are kept.
+    class ImageRemovalDeadline:
+        def inspect(self,kind,target,allow_missing=False):
+            need(kind=='image','image_cleanup_failed')
+            return docker.inspect(kind,target,allow_missing=allow_missing)
+        def call(self,arguments):
+            need(type(arguments) is list and len(arguments)==3
+                 and arguments[:2]==['image','rm']
+                 and type(arguments[2]) is str and re.fullmatch('sha256:[a-f0-9]{64}',arguments[2])
+                 and (exact is None or arguments[2]==exact),'image_cleanup_failed')
+            return docker.call(arguments,timeout=IMAGE_REMOVE_TIMEOUT)
+    R.cleanup_owned(ImageRemovalDeadline(),'image',reference,exact,run_id,None,tag,exact,diagnostic)
+
 
 def remove_owned_container(R,docker,entry,image,run_id,tag):
     R.cleanup_owned(docker,'container',entry['id'] or entry['name'],entry['id'],run_id,entry['name'],tag,image,
@@ -363,7 +383,7 @@ def run(variant):
         try:
             if built_attempted:
                 need(report['cleanup']['containers_removed'],'image_cleanup_failed')
-                R.cleanup_owned(docker,'image',image or tag,image,run_id,None,tag,image,report['cleanup_diagnostics']['image'])
+                cleanup_owned_image(R,docker,image or tag,image,run_id,tag,report['cleanup_diagnostics']['image'])
             report['cleanup']['image_removed']=True
         except BaseException as error:
             if getattr(error,'code',None)=='command_cleanup_failed':report['errors'].append('command_cleanup_failed')

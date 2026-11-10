@@ -131,6 +131,87 @@ class NativeExecutionOwnership(unittest.TestCase):
             docker.call=alter
             with self.assertRaises(U.ProbeError):U.execute(C,R,docker,IMAGE,RUN,'go-binary-audit-'+RUN,[],'scan','positive')
 
+class OwnedImageRemovalDeadline(unittest.TestCase):
+    def setUp(self):
+        self.R,_,_,_=U.load_inputs()
+        self.tag='go-binary-audit-'+RUN
+        self.diagnostic=dict(stage='not_attempted',error='none')
+        class Fault(Exception):
+            def __init__(self,code):self.code=code;super().__init__(code)
+        self.Fault=Fault
+        class Docker:
+            def __init__(inner):
+                inner.current=dict(Id=IMAGE,Config=dict(Labels={U.LABEL:RUN}),RepoTags=[self.tag+':latest'])
+                inner.calls=[];inner.inspects=[];inner.failure=None;inner.stays=False;inner.minimum_seconds=0
+            def inspect(inner,kind,reference,allow_missing=False):
+                inner.inspects.append((kind,reference,allow_missing))
+                return copy.deepcopy(inner.current)
+            def call(inner,args,timeout=15,**kwargs):
+                inner.calls.append((args,timeout,kwargs))
+                if inner.failure:raise Fault(inner.failure)
+                if timeout<inner.minimum_seconds:raise Fault('command_timeout')
+                if not inner.stays:inner.current=None
+                return types.SimpleNamespace(code=0)
+        self.docker=Docker()
+    def clean(self):
+        return U.cleanup_owned_image(self.R,self.docker,IMAGE,IMAGE,RUN,self.tag,self.diagnostic)
+    def test_slow_owned_removal_exceeds_generic_deadline_but_fits_specific_bound(self):
+        self.docker.minimum_seconds=20
+        with self.assertRaises(self.Fault):
+            self.R.cleanup_owned(self.docker,'image',IMAGE,IMAGE,RUN,None,self.tag,IMAGE,self.diagnostic)
+        self.assertEqual(self.docker.calls[0][1],15)
+        self.docker.calls.clear();self.docker.inspects.clear();self.diagnostic.update(stage='not_attempted',error='none')
+        self.clean()
+        self.assertEqual(self.docker.calls,[(['image','rm',IMAGE],60,{})])
+        self.assertEqual(self.docker.inspects,[('image',IMAGE,True),('image',IMAGE,True)])
+        self.assertEqual(self.diagnostic,dict(stage='complete',error='none'))
+    def test_persistent_timeout_remains_fatal_without_retry(self):
+        self.docker.minimum_seconds=61
+        with self.assertRaises(self.Fault):self.clean()
+        self.assertEqual(self.diagnostic,dict(stage='remove',error='command_timeout'))
+        self.assertEqual(len(self.docker.calls),1)
+        self.assertIsNotNone(self.docker.current)
+    def test_wrong_owner_label_is_preserved(self):
+        self.docker.current['Config']['Labels'][U.LABEL]='9'*32
+        with self.assertRaises(self.R.ProbeError):self.clean()
+        self.assertEqual(self.diagnostic['stage'],'bind_label');self.assertEqual(self.docker.calls,[])
+    def test_wrong_immutable_identity_is_preserved(self):
+        self.docker.current['Id']='sha256:'+'9'*64
+        with self.assertRaises(self.R.ProbeError):self.clean()
+        self.assertEqual(self.diagnostic['stage'],'bind_identity');self.assertEqual(self.docker.calls,[])
+    def test_foreign_or_additional_image_tag_is_preserved(self):
+        self.docker.current['RepoTags'].append('unrelated:latest')
+        with self.assertRaises(self.R.ProbeError):self.clean()
+        self.assertEqual(self.diagnostic['stage'],'bind_image_tags');self.assertEqual(self.docker.calls,[])
+    def test_already_absent_image_does_not_issue_removal(self):
+        self.docker.current=None;self.clean()
+        self.assertEqual(self.diagnostic,dict(stage='complete',error='none'))
+        self.assertEqual(self.docker.calls,[])
+    def test_removal_return_code_cannot_replace_verified_absence(self):
+        self.docker.stays=True
+        with self.assertRaises(self.R.ProbeError):self.clean()
+        self.assertEqual(self.diagnostic['stage'],'confirm_absence')
+        self.assertEqual(len(self.docker.calls),1)
+    def test_command_process_cleanup_failure_is_retained(self):
+        self.docker.failure='command_cleanup_failed'
+        with self.assertRaises(self.Fault):self.clean()
+        self.assertEqual(self.diagnostic,dict(stage='remove',error='command_cleanup_failed'))
+    def test_inspection_failure_is_not_retried_or_misread_as_absence(self):
+        def inspect(*args,**kwargs):raise self.Fault('command_timeout')
+        self.docker.inspect=inspect
+        with self.assertRaises(self.Fault):self.clean()
+        self.assertEqual(self.diagnostic,dict(stage='inspect',error='command_timeout'))
+        self.assertEqual(self.docker.calls,[])
+    def test_deadline_adapter_rejects_unrelated_or_forced_commands(self):
+        for args in (['image','prune'],['image','rm','--force',IMAGE],['container','rm',CID],
+                     ['image','rm','sha256:'+'9'*64]):
+            def unrelated(proxy,*unused):proxy.call(args)
+            with self.subTest(args=args),self.assertRaises(U.ProbeError):
+                U.cleanup_owned_image(types.SimpleNamespace(cleanup_owned=unrelated),self.docker,
+                                      IMAGE,IMAGE,RUN,self.tag,self.diagnostic)
+        self.assertEqual(self.docker.calls,[])
+
+
 class SourceAndDiagnostics(unittest.TestCase):
     def test_source_pins_bind_all_loaded_helpers_and_snapshot(self):
         R,modules,data,hashes=U.load_inputs()
