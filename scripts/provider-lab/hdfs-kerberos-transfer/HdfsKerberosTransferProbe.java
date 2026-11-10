@@ -878,7 +878,8 @@ public final class HdfsKerberosTransferProbe {
 		if (!thread.isAlive() || baseline.contains(thread.getId())) continue;
 		need(++total <= 128, Code.cleanup_failed);
 		String category = threadCategory(thread); counts.put(category, counts.get(category) + 1);
-		if (category.equals("jdk_executor")) {
+		// Hadoop utility wrappers may carry executor/HDFS frames; hints never grant ownership.
+		if (category.equals("jdk_executor") || category.equals("hadoop_util")) {
 			String kind = executorKind(thread);
 			observedExecutor = observedExecutor.equals("not_observed") ? kind : observedExecutor.equals(kind) ? kind : "mixed";
 		}
