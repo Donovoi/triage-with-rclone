@@ -58,6 +58,64 @@ class MetadataCleanupRetryTests(unittest.TestCase):
     def failure(self):
         return self.assert_failure(["metadata_temporary_cleanup_sharing_violation"])
 
+    def test_normalized_owned_path_alias_retains_identity_and_cleans_up(self):
+        # A valid lexical spelling may differ from resolve(), as Windows short
+        # names do. Exercise the distinction with a portable dot-dot spelling.
+        component = self.root / "alias-parent"
+        component.mkdir()
+        original_factory = self.own_temporary
+        def aliased_temporary(**kwargs):
+            item = original_factory(**kwargs)
+            item.name = str(component / ".." / Path(item.name).name)
+            self.assertNotEqual(Path(item.name), Path(item.name).resolve(strict=True))
+            return item
+        self.own_temporary = aliased_temporary
+        self.query()
+        self.assertEqual(self.owned[-1].cleanup_calls, 2)
+        self.assertFalse(Path(self.owned[-1].name).exists())
+        self.assertTrue(component.is_dir())
+        self.assertEqual(self.receipts()[-1][1]["stop_reason"], "verified_absent")
+
+    def test_canonical_resolution_to_different_object_is_rejected(self):
+        replacement = self.root / "unrelated-file"
+        replacement.write_text("preserve")
+        original = Path.resolve
+        def resolve(target, strict=False):
+            return replacement if target.name == "rclone.exe" else original(target, strict=strict)
+        with patch.object(Path, "resolve", resolve):
+            self.assert_failure(["metadata_cleanup_resolution_mismatch",
+                                 "metadata_temporary_cleanup_sharing_violation"])
+        self.sleep.assert_not_called()
+        self.metadata.assert_not_called()
+        self.assertEqual(replacement.read_text(), "preserve")
+
+    def test_changed_canonical_spelling_refuses_recursive_retry(self):
+        original_identity = C._metadata_cleanup_identity
+        def identity(target, directory=False):
+            value = original_identity(target, directory)
+            return (*value[:3], value[3] + "-changed") if self.sleep.called else value
+        with patch.object(C, "_metadata_cleanup_identity", side_effect=identity):
+            self.failure()
+        self.assertEqual(self.owned[-1].cleanup_calls, 1)
+        self.assertEqual(self.receipts()[-1][1]["stop_reason"], "ownership_rejected")
+
+    def test_zero_inode_and_multiple_links_remain_fatal(self):
+        original = Path.lstat
+        for field, value, code in (("st_ino", 0, "metadata_cleanup_inode_unavailable"),
+                                   ("st_nlink", 2, "metadata_cleanup_hardlink_rejected")):
+            def changed(target):
+                info = original(target)
+                if target.name == "rclone.exe":
+                    fields = {key: getattr(info, key) for key in dir(info) if key.startswith("st_")}
+                    fields[field] = value
+                    return types.SimpleNamespace(**fields)
+                return info
+            with self.subTest(field=field), patch.object(Path, "lstat", changed):
+                self.assert_failure([code, "metadata_temporary_cleanup_sharing_violation"])
+                self.assertEqual(self.owned[-1].cleanup_calls, 1)
+        self.sleep.assert_not_called()
+        self.metadata.assert_not_called()
+
     def test_transient_lock_retries_only_cleanup_and_verifies_absence(self):
         runtime, catalog = self.query()
         self.assertEqual(runtime["platform"], "windows")
