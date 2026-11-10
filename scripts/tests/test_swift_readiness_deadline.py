@@ -1,5 +1,6 @@
 """Exercise real transport methods with fake owners; no native import or execution."""
 import ast
+from contextlib import redirect_stdout
 import io
 import json
 from pathlib import Path
@@ -18,6 +19,24 @@ def selected_classes(filename, names, namespace):
     nodes = [node for node in tree.body if isinstance(node, ast.ClassDef) and node.name in names]
     if [node.name for node in nodes] != list(names):
         raise AssertionError('class_inventory')
+    exec(compile(ast.Module(body=nodes, type_ignores=[]), str(path), 'exec'), namespace)
+
+
+def selected_timing(namespace):
+    path = LAB / 'run_windows_http.py'
+    tree = ast.parse(path.read_bytes(), filename=str(path))
+    constants = {'BRIDGE_PHASES', 'BRIDGE_OUTCOMES', 'READY_TIMING_FIELDS'}
+    definitions = {'bridge_stage', 'ready_timing_projection', '_ReadyTiming'}
+    nodes, found = [], set()
+    for node in tree.body:
+        name = (node.targets[0].id if isinstance(node, ast.Assign) and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name) else
+                node.name if isinstance(node, (ast.FunctionDef, ast.ClassDef)) else None)
+        if name in constants | definitions:
+            nodes.append(node)
+            found.add(name)
+    if found != constants | definitions or len(nodes) != len(found):
+        raise AssertionError('timing_definition_inventory')
     exec(compile(ast.Module(body=nodes, type_ignores=[]), str(path), 'exec'), namespace)
 
 
@@ -43,28 +62,30 @@ class DeadlineTests(unittest.TestCase):
                 self.thread = Mock()
             def start(self):
                 starts.append(self.bridge.deadline)
-        self.timing = Mock()
         actions = frozenset({'invalid','ready','close_ready','start','poll','observe_runtime','ctrl_c','finish','close'})
         def ready(value):
             need(value == dict(schema_version=1, action='ready', ok=True, state='ready'), 'session_failed')
             return value
         env = dict(__name__='pure_deadline_transport', time=self.time, threading=threading, queue=queue,
-            ProducerError=self.error, need=need, BRIDGE_ACTIONS=actions, _ReadyTiming=lambda origin: self.timing,
+            ProducerError=self.error, need=need, BRIDGE_ACTIONS=actions,
             environment=self.environment, private_file=self.private, _BridgeWorker=Worker,
             O=types.SimpleNamespace(spawn=self.spawn), powershell=lambda: 'owned-powershell',
             HERE=Path('owned-source'), subprocess=types.SimpleNamespace(PIPE=-1), hidden=lambda: {},
             E=types.SimpleNamespace(compact=lambda v: json.dumps(v, sort_keys=True, separators=(',',':')).encode()),
             strict_json=lambda raw, limit: json.loads(raw), validate_ready=ready,
-            validate_close_ready=lambda value: value, bridge_stage=lambda raw: None,
+            validate_close_ready=lambda value: value,
             session_diagnostic=Mock(), session_failure_diagnostic=Mock(), validate_session=lambda value, action: value)
+        selected_timing(env)
         selected_classes('run_windows_http.py', ('Bridge',), env)
         self.H = types.SimpleNamespace(Bridge=env['Bridge'], BRIDGE_ACTIONS=actions,
-            ProducerError=self.error, need=need, hosted_guard=Mock())
+            ProducerError=self.error, need=need, hosted_guard=Mock(),
+            _ReadyTiming=env['_ReadyTiming'], ready_timing_projection=env['ready_timing_projection'],
+            READY_TIMING_FIELDS=env['READY_TIMING_FIELDS'])
         controller = dict(__name__='pure_deadline_source', H=self.H)
         selected_classes('filesystem_controller.py', ('SourceBridge','ObservedSourceBridge'), controller)
         self.C = types.SimpleNamespace(SourceBridge=controller['SourceBridge'], ObservedSourceBridge=controller['ObservedSourceBridge'])
-        swift = dict(__name__='pure_deadline_swift', C=self.C, time=self.time, need=need)
-        selected_classes('run_windows_swift.py', ('SwiftReadyBridge',), swift)
+        swift = dict(__name__='pure_deadline_swift', H=self.H, C=self.C, time=self.time, need=need)
+        selected_classes('run_windows_swift.py', ('SwiftReadyTiming', 'SwiftReadyBridge'), swift)
         self.Swift = swift['SwiftReadyBridge']
 
     def make(self, cls, **kwargs):
@@ -233,3 +254,122 @@ class DeadlineTests(unittest.TestCase):
         bridge.command('ready')
         self.assertEqual(bridge.waits, [40])
         self.assertEqual(bridge.deadline, 120)
+
+    def mark_compile(self, bridge, compiled=False):
+        raw = b'application_bridge_stage=compile\n'
+        if compiled:
+            raw += b'application_bridge_stage=compiled\n'
+        bridge.stage_bytes[:] = raw
+        bridge.ready_timing.stage(raw, False)
+
+    def recorded_ready_failure(self, bridge):
+        output = io.StringIO()
+        with redirect_stdout(output), self.assertRaisesRegex(self.error, '^session_failed$'):
+            bridge.command('ready')
+        lines = [line for line in output.getvalue().splitlines()
+                 if line.startswith('application_helper_ready_timing=')]
+        self.assertEqual(len(lines), 1)
+        self.assertLess(len(lines[0]), 1024)
+        value = json.loads(lines[0].split('=', 1)[1])
+        self.assertEqual(set(value), {'schema_version', 'clock', 'action', 'phase', 'outcome',
+                                     'status', *self.H.READY_TIMING_FIELDS})
+        self.assertFalse(bridge.ready)
+        self.assertTrue(bridge.failed.is_set())
+        return value
+
+    def test_extended_timeout_keeps_real_compile_marker_and_remaining_budget(self):
+        bridge = self.make(self.Swift, deadline=120)
+        self.assertIsInstance(bridge.ready_timing, self.H._ReadyTiming)
+        self.clock.now = 1
+        self.mark_compile(bridge)
+        self.clock.now = 20
+        self.replies_after(bridge, 101)
+        value = self.recorded_ready_failure(bridge)
+        self.assertEqual(value, dict(schema_version=1, clock='parent_monotonic', action='ready',
+            phase='wait', outcome='timeout', status='observed', compile_seen_ms=1000,
+            compiled_seen_ms=None, write_returned_ms=20000, wait_started_ms=20000,
+            wait_budget_ms=100000, failure_seen_ms=120000))
+        self.assertEqual(bridge.calls, 1)
+
+    def test_malformed_late_reply_keeps_real_compiled_marker(self):
+        bridge = self.make(self.Swift, deadline=120)
+        self.clock.now = 1
+        self.mark_compile(bridge)
+        self.clock.now = 20
+        self.replies_after(bridge, 92)
+        def malformed(*, timeout):
+            bridge.waits.append(timeout)
+            self.clock.now = 95
+            self.mark_compile(bridge, compiled=True)
+            self.clock.now = 112
+            bridge.responses = bridge.calls
+            return json.dumps(dict(schema_version=1, action='ready', ok=False, state='ready')).encode()
+        bridge.messages.get.side_effect = malformed
+        value = self.recorded_ready_failure(bridge)
+        self.assertEqual(value['status'], 'observed')
+        self.assertEqual((value['phase'], value['outcome']), ('reply', 'protocol_failed'))
+        self.assertEqual(value['compile_seen_ms'], 1000)
+        self.assertEqual(value['compiled_seen_ms'], 95000)
+        self.assertEqual(value['wait_budget_ms'], 100000)
+        self.assertEqual(value['failure_seen_ms'], 112000)
+
+    def test_full_120_second_wait_is_projected_without_acceptance(self):
+        bridge = self.make(self.Swift, deadline=120)
+        self.mark_compile(bridge)
+        self.replies_after(bridge, 121)
+        value = self.recorded_ready_failure(bridge)
+        self.assertEqual(value['status'], 'observed')
+        self.assertEqual(value['compile_seen_ms'], 0)
+        self.assertEqual(value['wait_budget_ms'], 120000)
+        self.assertEqual(value['failure_seen_ms'], 120000)
+
+    def test_default_timing_policy_still_rejects_budgets_above_90(self):
+        snapshot = (0, 1, None, 20, 20, 100, 120)
+        value = self.H.ready_timing_projection(snapshot, 'wait', 'timeout')
+        self.assertEqual(value['status'], 'unavailable')
+        self.assertTrue(all(value[k] is None for k in self.H.READY_TIMING_FIELDS))
+        self.assertEqual(self.H._ReadyTiming.wait_limit_seconds, 90)
+
+    def test_swift_projection_rejects_budgets_beyond_its_fixed_policy(self):
+        for budget in (120.001, 165, True, float('nan'), float('inf'), '100'):
+            with self.subTest(budget=budget):
+                value = self.H.ready_timing_projection((0, 1, None, 20, 20, budget, 200),
+                    'wait', 'timeout', wait_limit_seconds=120)
+                self.assertEqual(value['status'], 'unavailable')
+                self.assertTrue(all(value[k] is None for k in self.H.READY_TIMING_FIELDS))
+
+    def test_timing_policy_selector_is_closed(self):
+        for limit in (True, False, 90.0, 120.0, 91, 121, 165, None, '120'):
+            with self.subTest(limit=limit), self.assertRaises(self.error):
+                self.H.ready_timing_projection((0, 1, None, 20, 20, 100, 120),
+                    'wait', 'timeout', wait_limit_seconds=limit)
+
+    def test_swift_invalid_marker_stays_unavailable_with_long_budget(self):
+        bridge = self.make(self.Swift, deadline=120)
+        self.clock.now = 1
+        self.mark_compile(bridge)
+        bridge.stage_bytes[:] = b'application_bridge_stage=compile\nprivate-extra\n'
+        bridge.ready_timing.stage(bytes(bridge.stage_bytes), False)
+        self.clock.now = 20
+        self.replies_after(bridge, 101)
+        value = self.recorded_ready_failure(bridge)
+        self.assertEqual(value['status'], 'unavailable')
+        self.assertTrue(all(value[k] is None for k in self.H.READY_TIMING_FIELDS))
+        self.assertNotIn('private-extra', json.dumps(value))
+
+    def test_swift_failure_snapshot_is_frozen_before_cleanup_markers(self):
+        bridge = self.make(self.Swift, deadline=120)
+        self.clock.now = 1
+        self.mark_compile(bridge)
+        self.clock.now = 20
+        self.replies_after(bridge, 101)
+        value = self.recorded_ready_failure(bridge)
+        frozen = bridge.ready_timing.snapshot
+        self.clock.now = 121
+        self.mark_compile(bridge, compiled=True)
+        later = io.StringIO()
+        with redirect_stdout(later):
+            bridge.ready_timing.failure(bytes(bridge.stage_bytes), False, 'wait', 'timeout')
+        self.assertEqual(later.getvalue(), '')
+        self.assertEqual(bridge.ready_timing.snapshot, frozen)
+        self.assertIsNone(value['compiled_seen_ms'])
