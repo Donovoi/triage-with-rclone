@@ -785,10 +785,11 @@ READY_TIMING_FIELDS = ("compile_seen_ms", "compiled_seen_ms", "write_returned_ms
                        "wait_started_ms", "wait_budget_ms", "failure_seen_ms")
 
 
-def ready_timing_projection(snapshot, phase, outcome):
+def ready_timing_projection(snapshot, phase, outcome, *, wait_limit_seconds=90):
     """Closed parent-arrival facts, never helper duration or acceptance evidence."""
     need(type(phase) is str and phase in BRIDGE_PHASES and type(outcome) is str and
          outcome in BRIDGE_OUTCOMES, "session_failed")
+    need(type(wait_limit_seconds) is int and wait_limit_seconds in (90, 120), "session_failed")
     value = dict(schema_version=1, clock="parent_monotonic", action="ready", phase=phase,
                  outcome=outcome, status="unavailable", **dict.fromkeys(READY_TIMING_FIELDS))
     if type(snapshot) is not tuple or len(snapshot) != 7:
@@ -803,7 +804,7 @@ def ready_timing_projection(snapshot, phase, outcome):
             (second is None or first is not None and first <= second) and
             (waiting is None or written is not None and written <= waiting) and
             ((waiting is None and budget is None) or waiting is not None and
-             type(budget) in (int, float) and 0.01 <= budget <= 90)):
+             type(budget) in (int, float) and 0.01 <= budget <= wait_limit_seconds)):
         return value
     if (phase in {"wait", "reply"} and (written is None or waiting is None) or
             phase not in {"wait", "reply"} and (written is not None or waiting is not None) or
@@ -820,6 +821,8 @@ def ready_timing_projection(snapshot, phase, outcome):
 
 class _ReadyTiming:
     """Fixed cached observations; the first failure snapshot cannot be backfilled."""
+    wait_limit_seconds = 90
+
     def __init__(self, origin):
         self.origin = origin
         self.stage_value = (b"", None, None)
@@ -877,7 +880,8 @@ class _ReadyTiming:
                           bridge_stage(raw) == "compiled" and first is not None and second is not None)
         self.snapshot = snapshot if not self.invalid and not invalid and raw == stage and coherent_stage else None
         payload = "application_helper_ready_timing=" + E.compact(
-            ready_timing_projection(self.snapshot, phase, outcome)).decode("ascii")
+            ready_timing_projection(self.snapshot, phase, outcome,
+                                    wait_limit_seconds=self.wait_limit_seconds)).decode("ascii")
         need(len(payload) < 1024, "session_failed")
         print(payload, flush=True)
 
@@ -945,7 +949,8 @@ class Bridge:
     """One owned hidden PS5 process; fixed JSON protocol and bounded pipe readers."""
     script_name = "hosted_session.ps1"
     actions = BRIDGE_ACTIONS
-    # Fixed subclass policies are reserved for the no-application calibration.
+    # Ordinary sessions keep this cap. Fixed subclasses also consume the
+    # absolute helper lifetime, which may be shortened to a case deadline.
     ready_wait_seconds = 90
     ready_timing_type = _ReadyTiming
 
@@ -955,7 +960,7 @@ class Bridge:
     def failure_diagnostic(self, value, action):
         return session_failure_diagnostic(value, action)
 
-    def __init__(self, case):
+    def __init__(self, case, *, deadline=None):
         need(self.script_name in {"hosted_session.ps1", "hosted_tui_session.ps1"}, "session_failed")
         self.case, self.last = case, None
         self.messages = queue.Queue(maxsize=4)
@@ -967,7 +972,9 @@ class Bridge:
         self.stage_invalid = False
         self.transport = {}
         origin = time.monotonic()
-        self.deadline = origin + 165
+        need(deadline is None or type(deadline) in (int, float) and
+             origin < deadline <= origin + 165, "session_failed")
+        self.deadline = origin + 165 if deadline is None else deadline
         self._startup_best_effort(lambda: setattr(self, "ready_timing", self.ready_timing_type(origin)))
         env = environment(case / "helper-env")
         env.update(GITHUB_ACTIONS="true", RUNNER_OS="Windows", RUNNER_ENVIRONMENT="github-hosted")

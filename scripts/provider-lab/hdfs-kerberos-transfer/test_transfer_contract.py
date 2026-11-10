@@ -2527,3 +2527,32 @@ class ObjectControlTests(unittest.TestCase):
             self.assertFalse(report['success'])
             self.assertIn('input_changed', report['errors'])
         finally: helper.tearDown()
+
+
+class HadoopWrappedExecutorHintTests(unittest.TestCase):
+    def test_utility_wrapped_hints_preserve_failure_and_cannot_promote_cleanup(self):
+        for kind in ('hdfs_frame','scheduled_executor','cached_executor','timeunit_sleeper','readahead','process_reaper','shortcircuit_cleaner','shortcircuit_releaser','striped_read','hedged_read','completable_delay','forkjoin_common','unnamed_pool','other','mixed'):
+            with self.subTest(kind=kind):
+                value=positive();value.update(success=False,error='cleanup_failed',remaining_executor_kind=kind)
+                value['cleanup'].update(threads_terminated=False,private_material_removed=False)
+                value['remaining_threads']['hadoop_util']=1
+                value['remaining_thread_intervals']['datanode']=1
+                value['remaining_thread_matrix']['hadoop_util']['datanode']=1
+                result=F.validate_java(F.canonical(value),1)
+                self.assertEqual(result['remaining_executor_kind'],kind)
+                self.assertFalse(result['success'])
+                self.assertFalse(result['cleanup']['threads_terminated'])
+                self.assertFalse(result['cleanup']['private_material_removed'])
+                with self.assertRaises(F.ProbeError):F.validate_java(F.canonical(value),0)
+                value['success']=True;value['error']=None
+                with self.assertRaises(F.ProbeError):F.validate_java(F.canonical(value),0)
+
+    def test_utility_wrapper_observation_reuses_closed_classifier_without_cleanup_exemption(self):
+        source=(HERE/'HdfsKerberosTransferProbe.java').read_text()
+        marker='if (category.equals("jdk_executor") || category.equals("hadoop_util")) {'
+        self.assertEqual(source.count(marker),1)
+        block=source[source.index(marker):source.index('if (category.equals("jdk_timer")) {',source.index(marker))]
+        self.assertIn('String kind = executorKind(thread);',block)
+        for forbidden in ('getName(', 'System.out', 'System.err', 'interrupt(', '.stop(', 'continue;', 'counts.put', 'CLEANUP.put'):
+            self.assertNotIn(forbidden,block)
+        self.assertIn('threadsClean = remainingThreads.values().stream().allMatch(count -> count == 0)',source)

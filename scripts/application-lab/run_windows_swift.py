@@ -43,6 +43,22 @@ CLEANUP_UNCERTAIN = frozenset({"termination_failed", "process_cleanup_failed", "
 CASE_DIRECTORIES = {"token_replacement": "acquisition", "renewal_denial": "denial"}
 
 
+class SwiftReadyTiming(H._ReadyTiming):
+    """Keep closed failure observations for the fixed Swift case budget."""
+    wait_limit_seconds = 120
+
+
+class SwiftReadyBridge(C.ObservedSourceBridge):
+    """Allow readiness only within the original token-replacement case budget."""
+    ready_wait_seconds = 120
+    ready_timing_type = SwiftReadyTiming
+
+    def __init__(self, case, *, deadline):
+        now = time.monotonic()
+        need(type(deadline) in (int, float) and now < deadline <= now + 120, "session_failed")
+        super().__init__(case, deadline=deadline)
+
+
 def bindings(application, commit):
     H.loaded_sources_preserved()
     W.bindings(application, commit)  # Includes W's loaded transitive dependencies.
@@ -252,7 +268,7 @@ def execute(name, suite, application, app_sha, runtime, errors):
         need(H.sha(body) == app_sha, "binding_failed")
         H.private_write(case, "application.exe", body)
         H.private_write(case, "queue.csv", queue_bytes())
-        bridge = C.ObservedSourceBridge(case)
+        bridge = SwiftReadyBridge(case, deadline=deadline)
         H.validate_ready(bridge.command("ready"))
         ready = True
         # Capture helper-only identity/layout before later fixture/config setup
