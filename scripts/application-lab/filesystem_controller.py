@@ -47,10 +47,13 @@ class SourceBridge(H.Bridge):
     """Use only the helper's fixed case/source mode; no caller-selected cwd."""
     actions = (H.BRIDGE_ACTIONS - {"start"}) | {"start_source"}
 
-    def __init__(self, case):
+    def __init__(self, case, *, deadline=None):
         # Refuse before the base constructor creates files or starts a helper.
         H.hosted_guard()
-        super().__init__(case)
+        if deadline is None:
+            super().__init__(case)
+        else:
+            super().__init__(case, deadline=deadline)
 
     def validate_session(self, value, action):
         return validate_snapshot(value, action)
@@ -170,7 +173,7 @@ class ObservedSourceBridge(SourceBridge):
     """Prearmed launch-image mode. No live-image or Ctrl+C substitution."""
     actions = frozenset({"invalid", "ready", "close_ready", "start_source_observed", "poll", "finish", "observe_continuity", "close"})
 
-    def __init__(self, case):
+    def __init__(self, case, *, deadline=None):
         self.observer_started = False
         self.expected_runtime_sha256 = None
         self.max_runtime_processes = self.max_runtime_launches = 0
@@ -178,7 +181,11 @@ class ObservedSourceBridge(SourceBridge):
         self.observer_helper_hash = None
         self.continuity_phase = None
         self.continuity_requested = None
-        super().__init__(case)  # The unchanged SourceBridge guard precedes native work.
+        # The unchanged SourceBridge guard precedes native work.
+        if deadline is None:
+            super().__init__(case)
+        else:
+            super().__init__(case, deadline=deadline)
 
     def command(self, action, **fields):
         try:

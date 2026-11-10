@@ -286,7 +286,7 @@ class ProducerTests(unittest.TestCase):
                         (P.E,"compute_bindings",lambda *a:bound),(P,"bindings",lambda *a:bound),
                         (P.H,"prepare",prepare),(P.H,"create_private_roots",lambda c:{}),
                         (P.H,"private_directory",lambda c,n:(c/n).mkdir()),(P.H,"private_write",lambda c,n,b:(c/n).write_bytes(b)),
-                        (P,"create_source",source),(P.C,"ObservedSourceBridge",lambda c:bridge),
+                        (P,"create_source",source),(P,"SwiftReadyBridge",lambda c, deadline:bridge),
                         (P.H,"application_roots_empty",Mock()),(P.H,"helper_baseline",lambda *a:{}),
                         (P.H,"helper_cleanup_preserved",Mock()),(P.H,"remove_owned",remove),
                         (P.F,"AppSwiftState",lambda *a:state),(P.F,"serve_swift",lambda s:context)):
@@ -352,7 +352,7 @@ class ProducerTests(unittest.TestCase):
                 def source(case): (case / "source").mkdir(); return P.H.identity(case / "source")
                 for obj, key, value in ((P.H, "prepare", prepare), (P.H, "create_private_roots", lambda c: {}),
                         (P.H, "private_directory", lambda c, n: (c/n).mkdir()), (P.H, "private_write", lambda c,n,b: (c/n).write_bytes(b)),
-                        (P.H, "environment", lambda c: {}), (P, "create_source", source), (P.C, "ObservedSourceBridge", lambda c: bridge),
+                        (P.H, "environment", lambda c: {}), (P, "create_source", source), (P, "SwiftReadyBridge", lambda c, deadline: bridge),
                         (P.H, "application_roots_empty", Mock()), (P.H, "helper_baseline", lambda *a: {}),
                         (P.H, "helper_cleanup_preserved", Mock()), (P.H, "configuration_preserved", lambda c,v: c/"working.conf"),
                         (P, "manifest", lambda *a: dict.fromkeys(extra, True)), (P.W, "fingerprint", lambda c: "a"*64),
