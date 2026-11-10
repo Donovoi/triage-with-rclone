@@ -14,6 +14,8 @@ Benign runtime controls invoke the upgraded rclone CLI for HTTP directory parsin
 
 Each variant uses ten owned runtime containers, at most 120 Docker commands, and the unchanged 630-second offline build deadline. Containers use a read-only root, UID 10001, no capabilities, private namespaces, two CPUs, 2 GiB memory, 128 PIDs and a 128 MiB noexec work tmpfs. Scanner deadlines and output limits are unchanged. The combined identity stream has an explicit 256 KiB foundation bound and 2 MiB upgrade bound; each report is parsed separately.
 
+Removing the exact owned build image has a 60-second deadline after a hosted removal exceeded the generic 15-second command bound. The unchanged ownership helper still checks the run label, immutable image ID and sole expected tag before deletion, then verifies absence. Inspections retain their ordinary deadline. This adds no retries, force flag, deletion scope or Docker calls; a timeout or unverified absence remains fatal.
+
 Only sanitized metadata, findings, control results and cleanup receipts are retained. Raw native streams and build context are removed after owned children, containers and image have been removed. Shared base images and build cache remain outside the cleanup scope.
 
 This comparison does not establish malformed-input behavior, exploitability, complete application compatibility, a complete vulnerability audit, or provider/application/vendor acceptance. The stable x/crypto upgrade remains within the frozen advisory's affected range. Publisher advisories absent from that snapshot remain separate. The included COPYING and NOTICE files retain upstream attribution.
