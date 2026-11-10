@@ -364,13 +364,25 @@ METADATA_CLEANUP_BUDGET_NS = 2_000_000_000
 
 def _metadata_cleanup_identity(target, directory=False):
     target = plain_path(target)
-    info = target.lstat()
     kind = stat.S_ISDIR if directory else stat.S_ISREG
-    if (not kind(info.st_mode) or not info.st_ino
-            or (not directory and info.st_nlink != 1)
-            or target.resolve(strict=True) != target):
-        fail("metadata_cleanup_identity_invalid")
-    return (info.st_dev, info.st_ino, stat.S_IFMT(info.st_mode))
+
+    def identity(info):
+        if not kind(info.st_mode):
+            fail("metadata_cleanup_kind_invalid")
+        if not info.st_ino:
+            fail("metadata_cleanup_inode_unavailable")
+        if not directory and info.st_nlink != 1:
+            fail("metadata_cleanup_hardlink_rejected")
+        return (info.st_dev, info.st_ino, stat.S_IFMT(info.st_mode))
+
+    before = identity(target.lstat())
+    # A valid Windows short-name spelling need not equal its canonical path.
+    # Verify both spellings and all parents, then retain canonical identity for
+    # the retry. A different filesystem object is never admitted as an alias.
+    resolved = plain_path(target.resolve(strict=True))
+    if identity(resolved.lstat()) != before:
+        fail("metadata_cleanup_resolution_mismatch")
+    return (*before, str(resolved))
 
 
 def metadata_cleanup_ownership(targets):
