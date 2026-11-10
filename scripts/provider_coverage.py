@@ -212,7 +212,7 @@ METADATA_STAGES = frozenset({
     "runtime_preflight", "runtime_verification", "temporary_create",
     "temporary_permissions", "runtime_copy", "runtime_permissions", "runtime_rehash",
     "config_create", "version_probe", "providers_probe", "catalog_parse",
-    "temporary_cleanup", "initial_catalog_summary",
+    "temporary_cleanup", "cleanup_ownership", "initial_catalog_summary",
 })
 METADATA_CATEGORIES = frozenset({
     "access_denied", "sharing_violation", "not_found", "os_error", "timeout",
@@ -285,7 +285,7 @@ def _metadata_cleanup_clock():
         return None
 
 
-def metadata_cleanup_record(error, targets, started, completed):
+def metadata_cleanup_record(error, targets, started, completed, attempt=1):
     """Project existing exception attributes only; never probe a failed path."""
     def attribute(name):
         try:
@@ -313,7 +313,7 @@ def metadata_cleanup_record(error, targets, started, completed):
         if milliseconds <= 2_147_483_647:
             elapsed = milliseconds
     return {
-        "schema_version": 1, "stage": "temporary_cleanup", "attempt": 1,
+        "schema_version": 1, "stage": "temporary_cleanup", "attempt": attempt,
         "errno": number("errno", 2_147_483_647),
         "winerror": number("winerror", 4_294_967_295),
         "target": target, "suboperation": None, "elapsed_ms": elapsed,
@@ -325,7 +325,7 @@ def metadata_cleanup_record(error, targets, started, completed):
 def format_metadata_cleanup_diagnostic(record):
     if (type(record) is not dict or set(record) != METADATA_CLEANUP_KEYS
             or type(record["schema_version"]) is not int or record["schema_version"] != 1
-            or type(record["attempt"]) is not int or record["attempt"] != 1
+            or type(record["attempt"]) is not int or not 1 <= record["attempt"] <= 5
             or type(record["stage"]) is not str or record["stage"] != "temporary_cleanup"
             or type(record["target"]) is not str
             or record["target"] not in (*METADATA_CLEANUP_TARGETS, "unavailable")
@@ -345,14 +345,139 @@ def format_metadata_cleanup_diagnostic(record):
     return line
 
 
-def emit_metadata_cleanup_diagnostic(error, targets, started, completed):
+def emit_metadata_cleanup_diagnostic(error, targets, started, completed, attempt=1):
     # A diagnostic failure must never replace the original cleanup failure.
-    # attempt=1 counts this explicit cleanup() call, not CPython's internal deletes.
+    # Count explicit cleanup() calls, not CPython's internal deletes.
     try:
-        record = metadata_cleanup_record(error, targets, started, completed)
+        record = metadata_cleanup_record(error, targets, started, completed, attempt)
         print(format_metadata_cleanup_diagnostic(record), file=sys.stderr)
     except Exception:
         pass
+
+
+# Retry only the observed Windows runtime-copy sharing violation. Delays total
+# 1.5 seconds; the 2-second monotonic budget bounds scheduling, not filesystem
+# syscall duration. No metadata child or acceptance check is rerun.
+METADATA_CLEANUP_DELAYS = (0.1, 0.2, 0.4, 0.8)
+METADATA_CLEANUP_BUDGET_NS = 2_000_000_000
+
+
+def _metadata_cleanup_identity(target, directory=False):
+    target = plain_path(target)
+    info = target.lstat()
+    kind = stat.S_ISDIR if directory else stat.S_ISREG
+    if (not kind(info.st_mode) or not info.st_ino
+            or (not directory and info.st_nlink != 1)
+            or target.resolve(strict=True) != target):
+        fail("metadata_cleanup_identity_invalid")
+    return (info.st_dev, info.st_ino, stat.S_IFMT(info.st_mode))
+
+
+def metadata_cleanup_ownership(targets):
+    root = Path(targets["temporary_root"])
+    if any(Path(targets[name]).parent != root for name in ("runtime_copy", "empty_config")):
+        fail("metadata_cleanup_identity_invalid")
+    return {name: _metadata_cleanup_identity(Path(targets[name]), name == "temporary_root")
+            for name in METADATA_CLEANUP_TARGETS}
+
+
+def _metadata_cleanup_still_owned(targets, identities):
+    # Recheck all parents, root identity, and every surviving leaf immediately
+    # before a recursive retry. Reject new entries, links, hardlinks and swaps.
+    try:
+        root = Path(targets["temporary_root"])
+        if _metadata_cleanup_identity(root, True) != identities["temporary_root"]:
+            return False
+        expected = {Path(targets[name]).name: name for name in ("runtime_copy", "empty_config")}
+        for child in root.iterdir():
+            name = expected.get(child.name)
+            if name is None or _metadata_cleanup_identity(child) != identities[name]:
+                return False
+        return True
+    except (CoverageError, *METADATA_EXCEPTIONS):
+        return False
+
+
+def _metadata_cleanup_absent(targets):
+    try:
+        root = plain_path(Path(targets["temporary_root"]), allow_missing_leaf=True)
+        root.lstat()
+    except FileNotFoundError:
+        return True
+    except (CoverageError, *METADATA_EXCEPTIONS):
+        pass
+    return False
+
+
+def emit_metadata_cleanup_retry(attempts, reason):
+    # This closed receipt reports only the cleanup retry; it gives no provider
+    # acceptance credit and never reveals a path, child output or exception.
+    try:
+        if (type(attempts) is not int or not 1 <= attempts <= 5
+                or reason not in {"verified_absent", "ownership_rejected", "budget_exhausted",
+                                  "attempts_exhausted", "cleanup_failed", "absence_unverified"}):
+            return
+        record = {"schema_version": 1, "attempts": attempts, "stop_reason": reason,
+                  "cleanup_verified": reason == "verified_absent"}
+        print("provider_metadata_cleanup_retry=" + json.dumps(record, sort_keys=True,
+                                                               separators=(",", ":")), file=sys.stderr)
+    except Exception:
+        pass
+
+
+def cleanup_metadata_temporary(temporary, targets, completed, system, identities, primary_failed):
+    started = _metadata_cleanup_clock()
+    last_code = None
+    retry_started = False
+    for attempt in range(1, 6):
+        eligible = False
+        try:
+            temporary.cleanup()
+        except METADATA_EXCEPTIONS as error:
+            last_code = metadata_diagnostic("temporary_cleanup", error)
+            emit_metadata_cleanup_diagnostic(error, targets, started, completed, attempt)
+            # Do not retain the exception or its traceback across another cleanup.
+            try:
+                eligible = (system == "windows" and not primary_failed and all(completed)
+                            and identities is not None and isinstance(error, OSError)
+                            and type(error.winerror) is int and error.winerror == 32
+                            and type(error.filename) is str
+                            and error.filename == targets.get("runtime_copy"))
+            except (AttributeError, *METADATA_EXCEPTIONS):
+                eligible = False
+        else:
+            if attempt == 1:
+                return []
+            verified = _metadata_cleanup_absent(targets)
+            emit_metadata_cleanup_retry(attempt, "verified_absent" if verified else "absence_unverified")
+            return [] if verified else [last_code]
+        if not eligible:
+            if retry_started:
+                emit_metadata_cleanup_retry(attempt, "cleanup_failed")
+            return [last_code]
+        retry_started = True
+        if attempt == 5:
+            emit_metadata_cleanup_retry(attempt, "attempts_exhausted")
+            return [last_code]
+        delay = METADATA_CLEANUP_DELAYS[attempt - 1]
+        now = _metadata_cleanup_clock()
+        if (started is None or now is None or now < started
+                or now - started + int(delay * 1_000_000_000) >= METADATA_CLEANUP_BUDGET_NS):
+            emit_metadata_cleanup_retry(attempt, "budget_exhausted")
+            return [last_code]
+        try:
+            time.sleep(delay)
+        except METADATA_EXCEPTIONS:
+            emit_metadata_cleanup_retry(attempt, "cleanup_failed")
+            return [last_code]
+        if not _metadata_cleanup_still_owned(targets, identities):
+            emit_metadata_cleanup_retry(attempt, "ownership_rejected")
+            return [last_code]
+        now = _metadata_cleanup_clock()
+        if (now is None or now < started or now - started >= METADATA_CLEANUP_BUDGET_NS):
+            emit_metadata_cleanup_retry(attempt, "budget_exhausted")
+            return [last_code]
+    raise AssertionError("metadata_cleanup_attempt_bound")
 
 
 def fail(code):
@@ -1479,6 +1604,8 @@ def run_metadata(binary, arguments, config, environment):
 def query_runtime(binary, manifest_path):
     temporary = None
     cleanup_targets = {}
+    cleanup_identities = None
+    system = None
     version_probe_completed = providers_probe_completed = catalog_parsed = False
     primary_code, diagnostics = None, []
     stage = "runtime_preflight"
@@ -1534,6 +1661,9 @@ def query_runtime(binary, manifest_path):
         cleanup_targets["empty_config"] = str(config)
         fd = os.open(config, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         os.close(fd)
+        if system == "windows":
+            stage = "cleanup_ownership"
+            cleanup_identities = metadata_cleanup_ownership(cleanup_targets)
         environment = isolated_environment(root)
         stage = "version_probe"
         reported = run_metadata(executable, ["version"], config, environment)
@@ -1556,14 +1686,10 @@ def query_runtime(binary, manifest_path):
         diagnostics.append(metadata_diagnostic(stage, error))
     finally:
         if temporary is not None:
-            cleanup_started = _metadata_cleanup_clock()
-            try:
-                temporary.cleanup()
-            except METADATA_EXCEPTIONS as error:
-                diagnostics.append(metadata_diagnostic("temporary_cleanup", error))
-                emit_metadata_cleanup_diagnostic(error, cleanup_targets, cleanup_started,
-                                                (version_probe_completed,
-                                                 providers_probe_completed, catalog_parsed))
+            diagnostics.extend(cleanup_metadata_temporary(
+                temporary, cleanup_targets,
+                (version_probe_completed, providers_probe_completed, catalog_parsed),
+                system, cleanup_identities, primary_code is not None or bool(diagnostics)))
     if diagnostics:
         raise MetadataDiagnosticError(primary_code, diagnostics)
     if primary_code is not None:
