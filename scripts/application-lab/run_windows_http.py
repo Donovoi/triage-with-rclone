@@ -945,7 +945,8 @@ class Bridge:
     """One owned hidden PS5 process; fixed JSON protocol and bounded pipe readers."""
     script_name = "hosted_session.ps1"
     actions = BRIDGE_ACTIONS
-    # Fixed subclass policies are reserved for the no-application calibration.
+    # Ordinary sessions keep this cap. Fixed subclasses also consume the
+    # absolute helper lifetime, which may be shortened to a case deadline.
     ready_wait_seconds = 90
     ready_timing_type = _ReadyTiming
 
@@ -955,7 +956,7 @@ class Bridge:
     def failure_diagnostic(self, value, action):
         return session_failure_diagnostic(value, action)
 
-    def __init__(self, case):
+    def __init__(self, case, *, deadline=None):
         need(self.script_name in {"hosted_session.ps1", "hosted_tui_session.ps1"}, "session_failed")
         self.case, self.last = case, None
         self.messages = queue.Queue(maxsize=4)
@@ -967,7 +968,9 @@ class Bridge:
         self.stage_invalid = False
         self.transport = {}
         origin = time.monotonic()
-        self.deadline = origin + 165
+        need(deadline is None or type(deadline) in (int, float) and
+             origin < deadline <= origin + 165, "session_failed")
+        self.deadline = origin + 165 if deadline is None else deadline
         self._startup_best_effort(lambda: setattr(self, "ready_timing", self.ready_timing_type(origin)))
         env = environment(case / "helper-env")
         env.update(GITHUB_ACTIONS="true", RUNNER_OS="Windows", RUNNER_ENVIRONMENT="github-hosted")
