@@ -64,3 +64,7 @@ requires the same complete profiles.
 
 The Python tests use mocks and local temporary files and do not start Docker,
 Samba, rclone, or a service. Native execution requires the isolated CI job.
+
+Package acquisition reports closed classifications for HTTP rejection, throttling, server errors, timeouts, name resolution and hash mismatches. Classification is limited to the last failed package request. Separate markers identify checksum, size, package-name and package-version validation failures. Raw download output is not retained in the public result. Package downloads retain their exact pins and permit at most two APT retries for transient failures, with retry delays capped at two seconds. Every acquisition has a 95-second deadline and a two-second kill grace; the existing 30-second HTTP timeout and 600-second build deadline remain. Hash, size, package-name and package-version validation still fail closed. Metadata acquisition remains unchanged. The diagnostics do not establish the cause of an earlier unclassified failure.
+
+The retry policy follows pinned APT 3.0.3 source: [HTTP transient status classes](https://github.com/Debian/apt/blob/3.0.3/methods/basehttp.cc#L891-L916), [retry budget and delay cap](https://github.com/Debian/apt/blob/3.0.3/apt-pkg/acquire-worker.cc#L695-L729), and [apt-helper checksum-bound downloads](https://github.com/Debian/apt/blob/3.0.3/cmdline/apt-helper.cc#L55-L108).
