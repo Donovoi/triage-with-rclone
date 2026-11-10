@@ -498,7 +498,7 @@ class MetadataCleanupProjectionTests(unittest.TestCase):
                                      "providers_probe_completed", "catalog_parsed"})
         changes = ({"extra": CANARY}, {"stage": "temporary_cleanup\0" + CANARY},
                    {"target": "runtime_copy\0"}, {"suboperation": "unlink"},
-                   {"schema_version": True}, {"attempt": 2}, {"attempt": True},
+                   {"schema_version": True}, {"attempt": 6}, {"attempt": True},
                    {"errno": True}, {"winerror": "32"}, {"elapsed_ms": -1},
                    {"version_probe_completed": 1}, {"providers_probe_completed": None},
                    {"catalog_parsed": "true"})

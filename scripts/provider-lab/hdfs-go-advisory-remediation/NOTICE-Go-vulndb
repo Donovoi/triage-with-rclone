@@ -1,0 +1,13 @@
+Go Vulnerability Database snapshot
+
+Source: https://vuln.go.dev/vulndb.zip
+Retrieved: 2026-11-09T19:09:20.949Z
+Database modified: 2026-11-05T23:49:57Z
+Database authors: The Go Authors and the contributors credited in the individual records.
+Data license: Creative Commons Attribution 4.0 International (CC-BY-4.0).
+Full license and copyright notice: COPYING-Go-vulndb.
+License source: https://github.com/golang/vulndb/blob/e22db6528018f9725b3230c4e6429c791f40bb15/LICENSE
+
+Packaging change: the 4,792 original UTF-8 files are stored in one deterministic gzip-compressed JSON bundle. Every original file byte is preserved, including per-record credits and references. The bundle is reconstructed only in an owned build context.
+
+Analysis projections preserve the fields serialized by the pinned scanner. Custom version ranges omitted by that scanner are retained separately and assessed explicitly. The original advisory records are unchanged.

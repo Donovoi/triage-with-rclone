@@ -1,0 +1,454 @@
+{
+  "schema_version": 1,
+  "scope": "isolated_go_advisory_remediation_sources",
+  "source_module": "github.com/rclone/rclone",
+  "source_version": "v1.75.2",
+  "go_version": "go1.26.10",
+  "assets": [
+    {
+      "module": "github.com/andybalholm/brotli",
+      "version": "v1.2.7",
+      "kind": "info",
+      "file": "upgrade-000.info",
+      "url": "https://proxy.golang.org/github.com/andybalholm/brotli/@v/v1.2.7.info",
+      "bytes": 194,
+      "sha256": "3c1e5b39c018930bf624715dd35f6b6cc54c8ce3d6fa46255725eaaf2dbafb54",
+      "h1": "h1:UgafRPGMam5ySHfRkhthMqOFA6IFoeF3D7mWIDLjG5A="
+    },
+    {
+      "module": "github.com/andybalholm/brotli",
+      "version": "v1.2.7",
+      "kind": "mod",
+      "file": "upgrade-000.mod",
+      "url": "https://proxy.golang.org/github.com/andybalholm/brotli/@v/v1.2.7.mod",
+      "bytes": 151,
+      "sha256": "9836ed7059e6b6be9d42e666c866deea8646d5815216fcf6216966074744cb1f",
+      "h1": "h1:rzTDkvFWvIrjDXZHkuS16NPggd91W3kUSvPlQ1pLaKY="
+    },
+    {
+      "module": "github.com/andybalholm/brotli",
+      "version": "v1.2.7",
+      "kind": "zip",
+      "file": "upgrade-000.zip",
+      "url": "https://proxy.golang.org/github.com/andybalholm/brotli/@v/v1.2.7.zip",
+      "bytes": 1952671,
+      "sha256": "e7b105fd7ca3cc32bee46a23133e9fc2d81b324fec2440c698eb7cc8f03bfc13",
+      "h1": "h1:UgafRPGMam5ySHfRkhthMqOFA6IFoeF3D7mWIDLjG5A="
+    },
+    {
+      "module": "github.com/klauspost/compress",
+      "version": "v1.20.2",
+      "kind": "info",
+      "file": "upgrade-001.info",
+      "url": "https://proxy.golang.org/github.com/klauspost/compress/@v/v1.20.2.info",
+      "bytes": 196,
+      "sha256": "2e2aa978189f42d4ac65ba9bf7bfd43f11e4fed8111b647be70579eb947774dc",
+      "h1": "h1:v5tiZvm1KGLyg5d5oXdXe3lsSPrbEUiKoXGia//I7Qo="
+    },
+    {
+      "module": "github.com/klauspost/compress",
+      "version": "v1.20.2",
+      "kind": "mod",
+      "file": "upgrade-001.mod",
+      "url": "https://proxy.golang.org/github.com/klauspost/compress/@v/v1.20.2.mod",
+      "bytes": 201,
+      "sha256": "0d4e90d99acbc19eea5706e7390f8c925b26b1f5861385bb4f1321d454a1d48c",
+      "h1": "h1:LUdAzn7YLVvxLpc7y3V1m40wESHTgc1422pwwBSKYuI="
+    },
+    {
+      "module": "github.com/klauspost/compress",
+      "version": "v1.20.2",
+      "kind": "zip",
+      "file": "upgrade-001.zip",
+      "url": "https://proxy.golang.org/github.com/klauspost/compress/@v/v1.20.2.zip",
+      "bytes": 40342158,
+      "sha256": "f85b4729a966a3d0313310482a11b585f0be445a20b2ea0c967937fe14c17acc",
+      "h1": "h1:v5tiZvm1KGLyg5d5oXdXe3lsSPrbEUiKoXGia//I7Qo="
+    },
+    {
+      "module": "golang.org/x/net",
+      "version": "v0.62.0",
+      "kind": "info",
+      "file": "upgrade-002.info",
+      "url": "https://proxy.golang.org/golang.org/x/net/@v/v0.62.0.info",
+      "bytes": 190,
+      "sha256": "6adc90d9df36b729ca3e6bb697f9743faf486b09dce49afffb731f724b508c7d",
+      "h1": "h1:18ELalfM5+XNRwzM2nYqXsZQ9ByS1uhj2O/U7+5jqRY="
+    },
+    {
+      "module": "golang.org/x/net",
+      "version": "v0.62.0",
+      "kind": "mod",
+      "file": "upgrade-002.mod",
+      "url": "https://proxy.golang.org/golang.org/x/net/@v/v0.62.0.mod",
+      "bytes": 157,
+      "sha256": "7bbcec6b6af859939ec01bbe5234e556c867bf80e171abc23ad16c2c8e3951fe",
+      "h1": "h1:WgDCOTH8iwtB66T4/GfI94AHo/hhdb7Hah9NDseQfiI="
+    },
+    {
+      "module": "golang.org/x/net",
+      "version": "v0.62.0",
+      "kind": "zip",
+      "file": "upgrade-002.zip",
+      "url": "https://proxy.golang.org/golang.org/x/net/@v/v0.62.0.zip",
+      "bytes": 1876204,
+      "sha256": "50e869800f4921e910eb6550369f937c7187d130a7f7f78a26ef9b589a7071a6",
+      "h1": "h1:18ELalfM5+XNRwzM2nYqXsZQ9ByS1uhj2O/U7+5jqRY="
+    },
+    {
+      "module": "golang.org/x/crypto",
+      "version": "v0.58.0",
+      "kind": "info",
+      "file": "upgrade-003.info",
+      "url": "https://proxy.golang.org/golang.org/x/crypto/@v/v0.58.0.info",
+      "bytes": 193,
+      "sha256": "b11aa615962a25256853dcf67838352d2f5523f6719a8d75181ebcbb7ce615ec",
+      "h1": "h1:COkYLr4k7nDI4r6QtMML2AfzeIswWHAJthLS6K/M/54="
+    },
+    {
+      "module": "golang.org/x/crypto",
+      "version": "v0.58.0",
+      "kind": "mod",
+      "file": "upgrade-003.mod",
+      "url": "https://proxy.golang.org/golang.org/x/crypto/@v/v0.58.0.mod",
+      "bytes": 192,
+      "sha256": "938883ec4a74e7fc05c46269e924dda334c2b7ca7ca219e4d27ca56d1891ccd3",
+      "h1": "h1:Xh+kl5A+M0gMiWDytH2Hhr5Z7WbNCpv/eB/EFgfSk+w="
+    },
+    {
+      "module": "golang.org/x/crypto",
+      "version": "v0.58.0",
+      "kind": "zip",
+      "file": "upgrade-003.zip",
+      "url": "https://proxy.golang.org/golang.org/x/crypto/@v/v0.58.0.zip",
+      "bytes": 2344115,
+      "sha256": "b0a45594cda20ddb4264d84aeff9b588b8570bf6a2833c51a0b821734a298d95",
+      "h1": "h1:COkYLr4k7nDI4r6QtMML2AfzeIswWHAJthLS6K/M/54="
+    },
+    {
+      "module": "golang.org/x/sys",
+      "version": "v0.49.0",
+      "kind": "info",
+      "file": "upgrade-004.info",
+      "url": "https://proxy.golang.org/golang.org/x/sys/@v/v0.49.0.info",
+      "bytes": 190,
+      "sha256": "b1eeba05824e4c555cee0454171f3dbc0b9bce51e322237b5bd98ceb14a62346",
+      "h1": "h1:XbzkgYJHdqh/8m2Uu0W/dQv8nktxx4BFHp1M0gROTXA="
+    },
+    {
+      "module": "golang.org/x/sys",
+      "version": "v0.49.0",
+      "kind": "mod",
+      "file": "upgrade-004.mod",
+      "url": "https://proxy.golang.org/golang.org/x/sys/@v/v0.49.0.mod",
+      "bytes": 35,
+      "sha256": "9522f4c9806d1c26586ea80fa56292929bd295865e71981927f52996c6b1c831",
+      "h1": "h1:hNLxWAXmnKAxqDtdwIYC4bM9oQPEecfsnNMuSxOs3og="
+    },
+    {
+      "module": "golang.org/x/sys",
+      "version": "v0.49.0",
+      "kind": "zip",
+      "file": "upgrade-004.zip",
+      "url": "https://proxy.golang.org/golang.org/x/sys/@v/v0.49.0.zip",
+      "bytes": 2115196,
+      "sha256": "e73a06591ca0d7016ce3ccb45c36a8ed7128468aecc1a357f94d815c760c6b31",
+      "h1": "h1:XbzkgYJHdqh/8m2Uu0W/dQv8nktxx4BFHp1M0gROTXA="
+    },
+    {
+      "module": "golang.org/x/term",
+      "version": "v0.47.0",
+      "kind": "info",
+      "file": "upgrade-005.info",
+      "url": "https://proxy.golang.org/golang.org/x/term/@v/v0.47.0.info",
+      "bytes": 191,
+      "sha256": "cb0fa8a9dcf9f9ab5849f254e285d0465691f97825b19d0eda8e82bdad64bb23",
+      "h1": "h1:cpyOwQkr2Nzxe2p6KnrTG7Ei2wtzjsuSjhpXXepZ/BM="
+    },
+    {
+      "module": "golang.org/x/term",
+      "version": "v0.47.0",
+      "kind": "mod",
+      "file": "upgrade-005.mod",
+      "url": "https://proxy.golang.org/golang.org/x/term/@v/v0.47.0.mod",
+      "bytes": 70,
+      "sha256": "cfc437810b8822bf57ca3ea4e39ebd418dd5671d72f2b110ce5a3164fa541b0b",
+      "h1": "h1:efAfAuG6RKABvg1ArGebRkvX6LXul14SM67o2e4mUCY="
+    },
+    {
+      "module": "golang.org/x/term",
+      "version": "v0.47.0",
+      "kind": "zip",
+      "file": "upgrade-005.zip",
+      "url": "https://proxy.golang.org/golang.org/x/term/@v/v0.47.0.zip",
+      "bytes": 22601,
+      "sha256": "d990d5ab94dfa41ba980645b721bba7490064337a01bb03e6cacace70e8df0bf",
+      "h1": "h1:cpyOwQkr2Nzxe2p6KnrTG7Ei2wtzjsuSjhpXXepZ/BM="
+    },
+    {
+      "module": "golang.org/x/text",
+      "version": "v0.43.0",
+      "kind": "info",
+      "file": "upgrade-006.info",
+      "url": "https://proxy.golang.org/golang.org/x/text/@v/v0.43.0.info",
+      "bytes": 191,
+      "sha256": "9bcbfda1bbd803b06a02932a06d8a1ba56e2bc944ce30674e415e010b48580fb",
+      "h1": "h1:1QivrlhwAsnMOcqgOdl9my7s9OyZl8O5/UGUTJVXoWc="
+    },
+    {
+      "module": "golang.org/x/text",
+      "version": "v0.43.0",
+      "kind": "mod",
+      "file": "upgrade-006.mod",
+      "url": "https://proxy.golang.org/golang.org/x/text/@v/v0.43.0.mod",
+      "bytes": 190,
+      "sha256": "63270b8ca6290a720212e1d6e58b8d12a8aa315a1cb960411d7ec2998c0aab59",
+      "h1": "h1:hbSIYA/amXcRXTFSZqh8tWHEoqRvvbKPJ2uz/KU+a+s="
+    },
+    {
+      "module": "golang.org/x/text",
+      "version": "v0.43.0",
+      "kind": "zip",
+      "file": "upgrade-006.zip",
+      "url": "https://proxy.golang.org/golang.org/x/text/@v/v0.43.0.zip",
+      "bytes": 7337809,
+      "sha256": "b75131f628f6e2e4892fd638d33127e952a5027775e0162b94ba069cb4e13863",
+      "h1": "h1:1QivrlhwAsnMOcqgOdl9my7s9OyZl8O5/UGUTJVXoWc="
+    },
+    {
+      "module": "golang.org/x/tools",
+      "version": "v0.51.0",
+      "kind": "info",
+      "file": "upgrade-007.info",
+      "url": "https://proxy.golang.org/golang.org/x/tools/@v/v0.51.0.info",
+      "bytes": 192,
+      "sha256": "bc599612a9c2f6f84a7295b4e592344f6d8326b957fa636fef38e6528c8320d9",
+      "h1": "h1:k4Xc/1Om9jwkBJBo4NVLMSARBoWtK10mx+W5BnXCeAI="
+    },
+    {
+      "module": "golang.org/x/tools",
+      "version": "v0.51.0",
+      "kind": "mod",
+      "file": "upgrade-007.mod",
+      "url": "https://proxy.golang.org/golang.org/x/tools/@v/v0.51.0.mod",
+      "bytes": 301,
+      "sha256": "9b1d543349c9346f85900c656a566d1780d59ff479cf0d888b9516d21ec7df7b",
+      "h1": "h1:9eEncMayCV6zRMGhR5eZEC2iBx98qWcF1HZ9Z7wJOoA="
+    },
+    {
+      "module": "golang.org/x/tools",
+      "version": "v0.51.0",
+      "kind": "zip",
+      "file": "upgrade-007.zip",
+      "url": "https://proxy.golang.org/golang.org/x/tools/@v/v0.51.0.zip",
+      "bytes": 2859044,
+      "sha256": "176a49a54ed781feb196235cc640f0454884f4e59d0b859ab4ecc9169cde513c",
+      "h1": "h1:k4Xc/1Om9jwkBJBo4NVLMSARBoWtK10mx+W5BnXCeAI="
+    },
+    {
+      "module": "golang.org/x/mod",
+      "version": "v0.41.0",
+      "kind": "info",
+      "file": "upgrade-008.info",
+      "url": "https://proxy.golang.org/golang.org/x/mod/@v/v0.41.0.info",
+      "bytes": 190,
+      "sha256": "bed4e9e321ace8501613625b04436dbbaebc1821d01b9bc5306da23fcc9a7dfc",
+      "h1": "h1:qJmnOUb4YB+FsEuM3HcWucdZASCPGhsX6uljO6pog0c="
+    },
+    {
+      "module": "golang.org/x/mod",
+      "version": "v0.41.0",
+      "kind": "mod",
+      "file": "upgrade-008.mod",
+      "url": "https://proxy.golang.org/golang.org/x/mod/@v/v0.41.0.mod",
+      "bytes": 86,
+      "sha256": "fc5b64ef51fd92f4b8763ebbd6fa95a70069d299c7de0f7c66661ef24283eb0c",
+      "h1": "h1:Ek9pY8RKWXwsWvd3rQiHYtMqkjSUV+s1Rj7j4H5Ur6o="
+    },
+    {
+      "module": "golang.org/x/mod",
+      "version": "v0.41.0",
+      "kind": "zip",
+      "file": "upgrade-008.zip",
+      "url": "https://proxy.golang.org/golang.org/x/mod/@v/v0.41.0.zip",
+      "bytes": 180455,
+      "sha256": "201e678d0a35b18b246abe58d80017b75d60be21cbaf4cbb9e963b48872565a9",
+      "h1": "h1:qJmnOUb4YB+FsEuM3HcWucdZASCPGhsX6uljO6pog0c="
+    },
+    {
+      "module": "golang.org/x/sync",
+      "version": "v0.24.0",
+      "kind": "info",
+      "file": "upgrade-009.info",
+      "url": "https://proxy.golang.org/golang.org/x/sync/@v/v0.24.0.info",
+      "bytes": 191,
+      "sha256": "d12e1a2d422a79235baceab349c3c55ab3de707214338884cade9af3bb1a5b70",
+      "h1": "h1:iqiDrGoDgyuvAKrhLQthUEzU/R378N78gXbBjxed7oA="
+    },
+    {
+      "module": "golang.org/x/sync",
+      "version": "v0.24.0",
+      "kind": "mod",
+      "file": "upgrade-009.mod",
+      "url": "https://proxy.golang.org/golang.org/x/sync/@v/v0.24.0.mod",
+      "bytes": 36,
+      "sha256": "febf4fed5dc12c0de24528f7065bf071cc74a2424070194aaf24617b91066cda",
+      "h1": "h1:sUUOizhqBxiL6pEWpqNLUiaJn1ShEbZ6BBqskPbjZm0="
+    },
+    {
+      "module": "golang.org/x/sync",
+      "version": "v0.24.0",
+      "kind": "zip",
+      "file": "upgrade-009.zip",
+      "url": "https://proxy.golang.org/golang.org/x/sync/@v/v0.24.0.zip",
+      "bytes": 26232,
+      "sha256": "ca3fcf3ea8259e75891f7947e1a816a5b89402c542d45d8bbbd9e061b0c58019",
+      "h1": "h1:iqiDrGoDgyuvAKrhLQthUEzU/R378N78gXbBjxed7oA="
+    },
+    {
+      "module": "golang.org/x/telemetry",
+      "version": "v0.0.0-20260924152758-ed294f943157",
+      "kind": "info",
+      "file": "upgrade-010.info",
+      "url": "https://proxy.golang.org/golang.org/x/telemetry/@v/v0.0.0-20260924152758-ed294f943157.info",
+      "bytes": 197,
+      "sha256": "82e44721c61bf4d6069d72a1baedb2ec6a709cc8861ba87dcf552a10201c848d",
+      "h1": "h1:DftxASHKl6JolFPqoN+2WrFO53JvkHwRXvFqf8gsivA="
+    },
+    {
+      "module": "golang.org/x/telemetry",
+      "version": "v0.0.0-20260924152758-ed294f943157",
+      "kind": "mod",
+      "file": "upgrade-010.mod",
+      "url": "https://proxy.golang.org/golang.org/x/telemetry/@v/v0.0.0-20260924152758-ed294f943157.mod",
+      "bytes": 133,
+      "sha256": "b3db3a6093c95190ba4c799a41b18ed8cab5f9d5329e6d327eecd8bb54d7ff76",
+      "h1": "h1:i+ivNqjDnTF3WTElsdk5g9V5DTSBYgdNo7xTU9SDwYA="
+    },
+    {
+      "module": "golang.org/x/telemetry",
+      "version": "v0.0.0-20260924152758-ed294f943157",
+      "kind": "zip",
+      "file": "upgrade-010.zip",
+      "url": "https://proxy.golang.org/golang.org/x/telemetry/@v/v0.0.0-20260924152758-ed294f943157.zip",
+      "bytes": 1052738,
+      "sha256": "fd337baf7135f8e4c98ea04830184b23b81bd1f6b86c925f82a7d0fcbb54c971",
+      "h1": "h1:DftxASHKl6JolFPqoN+2WrFO53JvkHwRXvFqf8gsivA="
+    },
+    {
+      "module": "github.com/google/go-cmp",
+      "version": "v0.6.0",
+      "kind": "mod",
+      "file": "upgrade-011.mod",
+      "url": "https://proxy.golang.org/github.com/google/go-cmp/@v/v0.6.0.mod",
+      "bytes": 41,
+      "sha256": "e7c7669d4a1dd589ba3e024ba27f43f293db611fe075ce20d7b884370d63febd",
+      "h1": "h1:17dUlkBOakJ0+DkrSSNjCkIjxS6bF9zb3elmeNGIjoY="
+    },
+    {
+      "module": "golang.org/x/net",
+      "version": "v0.59.0",
+      "kind": "mod",
+      "file": "upgrade-012.mod",
+      "url": "https://proxy.golang.org/golang.org/x/net/@v/v0.59.0.mod",
+      "bytes": 157,
+      "sha256": "f7034587fa012c43de66d8c276ddab161032931abf116a629daa8d66f1c80023",
+      "h1": "h1:2DA/G1UfVbCpQPeWTmMPGY7Cs2PkBkwu743bVX5PIVg="
+    },
+    {
+      "module": "github.com/pelletier/go-toml",
+      "version": "v1.9.5",
+      "kind": "mod",
+      "file": "upgrade-013.mod",
+      "url": "https://proxy.golang.org/github.com/pelletier/go-toml/@v/v1.9.5.mod",
+      "bytes": 45,
+      "sha256": "c0ec26c7f843d368a2d5a9390359c567ebe316171bd651d31dcead1bb2e07ad9",
+      "h1": "h1:u1nR/EPcESfeI/szUZKdtJ0xRNbUoANCkoOuaOx1Y+c="
+    }
+  ],
+  "original_sources": {
+    "go.mod": "1c9531778eb026c13390af728f882adbeb30581bd6a10905f95190aab0379906",
+    "go.sum": "7ae53fe95455765a14c3e3b17354dd9ade1d26ba574261fc34f217e79053b89a"
+  },
+  "overlay_sources": {
+    "upgraded-rclone.mod": {
+      "bytes": 13920,
+      "sha256": "dd715ac9d1cfb3103ae24271a166619a8e77012834d8d91859f298cbf0f091c3"
+    },
+    "upgraded-rclone.sum": {
+      "bytes": 76799,
+      "sha256": "cd6e6e7f11e16e6ebf71bfc3cec72995172f0a7b05397eef6f88352c9184851d"
+    }
+  },
+  "version_updates": [
+    {
+      "module": "github.com/andybalholm/brotli",
+      "original": "v1.2.2",
+      "candidate": "v1.2.7"
+    },
+    {
+      "module": "github.com/klauspost/compress",
+      "original": "v1.19.2",
+      "candidate": "v1.20.2"
+    },
+    {
+      "module": "golang.org/x/net",
+      "original": "v0.60.0",
+      "candidate": "v0.62.0"
+    },
+    {
+      "module": "golang.org/x/crypto",
+      "original": "v0.57.0",
+      "candidate": "v0.58.0"
+    },
+    {
+      "module": "golang.org/x/sys",
+      "original": "v0.48.0",
+      "candidate": "v0.49.0"
+    },
+    {
+      "module": "golang.org/x/term",
+      "original": "v0.46.0",
+      "candidate": "v0.47.0"
+    },
+    {
+      "module": "golang.org/x/text",
+      "original": "v0.42.0",
+      "candidate": "v0.43.0"
+    },
+    {
+      "module": "golang.org/x/tools",
+      "original": "v0.49.0",
+      "candidate": "v0.51.0"
+    },
+    {
+      "module": "golang.org/x/sync",
+      "original": "v0.23.0",
+      "candidate": "v0.24.0"
+    }
+  ],
+  "new_indirect_requirements": [
+    {
+      "module": "golang.org/x/mod",
+      "version": "v0.41.0"
+    },
+    {
+      "module": "golang.org/x/telemetry",
+      "version": "v0.0.0-20260924152758-ed294f943157"
+    }
+  ],
+  "metadata_only_inputs": [
+    {
+      "module": "github.com/google/go-cmp",
+      "version": "v0.6.0"
+    },
+    {
+      "module": "golang.org/x/net",
+      "version": "v0.59.0"
+    },
+    {
+      "module": "github.com/pelletier/go-toml",
+      "version": "v1.9.5"
+    }
+  ]
+}

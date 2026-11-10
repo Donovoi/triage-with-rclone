@@ -315,3 +315,83 @@ class CleanupContract(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DownloadDiagnostics(unittest.TestCase):
+    def transcript(self,detail):
+        return b"#8 0.100 SMB_BUILD_DIAGNOSTIC=download_fetch_started\n"+detail+b"\n#8 0.200 SMB_BUILD_DIAGNOSTIC=download_fetch_failed\n"
+
+    def test_download_failure_classes_are_closed(self):
+        cases=[(b"E: Failed to fetch http://private.example/secret  404 Not Found", "download_http_not_found"),
+               (b"E: Failed to fetch http://private.example/secret  429 Too Many Requests", "download_http_throttled"),
+               (b"E: Failed to fetch http://private.example/secret  403 Forbidden", "download_http_denied"),
+               (b"E: Failed to fetch http://private.example/secret  502 Bad Gateway", "download_http_server_error"),
+               (b"Connection timed out [private address]", "download_connection_timeout"),
+               (b"Temporary failure resolving private.example", "download_name_resolution_failed"),
+               (b"Hash Sum mismatch with private details", "download_hash_mismatch")]
+        for detail,want in cases:
+            with self.subTest(want=want):
+                result=SUBJECT.build_diagnostic(self.transcript(detail))
+                self.assertEqual(result,want);self.assertNotIn("private",result)
+
+    def test_unknown_failure_retains_generic_code(self):
+        self.assertEqual(SUBJECT.build_diagnostic(self.transcript(b"arbitrary private error text")),"download_fetch_failed")
+
+    def test_only_last_failed_acquisition_is_classified(self):
+        before=self.transcript(b"E: Failed to fetch http://example.invalid/old  404 Not Found")
+        after=self.transcript(b"E: Failed to fetch http://example.invalid/new  429 Too Many Requests")
+        self.assertEqual(SUBJECT.build_diagnostic(before+after),"download_http_throttled")
+
+    def test_failure_without_started_marker_is_not_inferred(self):
+        raw=b"E: Failed to fetch http://example.invalid/  404 Not Found\nSMB_BUILD_DIAGNOSTIC=download_fetch_failed\n"
+        self.assertEqual(SUBJECT.build_diagnostic(raw),"download_fetch_failed")
+
+    def test_text_after_failure_is_excluded(self):
+        self.assertEqual(SUBJECT.build_diagnostic(self.transcript(b"unclassified")+
+            b"E: Failed to fetch http://example.invalid/  404 Not Found\n"),"download_fetch_failed")
+
+    def test_success_and_validation_markers_are_preserved(self):
+        for code in ("download_fetch_passed","download_complete","download_checksum_failed","download_size_failed",
+                     "download_package_name_failed","download_package_version_failed","bootstrap_cleanup_complete"):
+            raw=self.transcript(b"E: Failed to fetch http://example.invalid/  404 Not Found")
+            raw+=("SMB_BUILD_DIAGNOSTIC="+code+"\n").encode()
+            self.assertEqual(SUBJECT.build_diagnostic(raw),code)
+
+    def test_unrecognized_transcript_returns_no_diagnostic(self):
+        for raw in (b"",b"private error",b"echo SMB_BUILD_DIAGNOSTIC=download_fetch_failed\n"):
+            self.assertIsNone(SUBJECT.build_diagnostic(raw))
+
+    def test_protocol_evidence_has_same_closed_diagnostic_codes(self):
+        import ast
+        source=SOURCE.with_name("protocol_evidence.py").read_text()
+        tree=ast.parse(source)
+        assignment=next(n for n in tree.body if isinstance(n,ast.Assign) and any(isinstance(t,ast.Name) and t.id=="BUILD_CODES" for t in n.targets))
+        self.assertEqual(ast.literal_eval(assignment.value),SUBJECT.BUILD_CODES)
+
+    def test_download_validation_markers_cover_all_failure_boundaries(self):
+        source=SOURCE.with_name("Dockerfile").read_text()
+        for code in ("download_started","download_fetch_started","download_fetch_failed","download_fetch_passed",
+                     "download_checksum_failed","download_size_failed","download_package_name_failed",
+                     "download_package_version_failed","download_complete"):
+            self.assertIn("SMB_BUILD_DIAGNOSTIC="+code,source)
+        self.assertIn("SMB_BUILD_DIAGNOSTIC=download_deadline_exceeded",source)
+
+    def test_retry_policy_has_finite_attempts_and_fits_acquisition_deadline(self):
+        import shlex
+        source=SOURCE.with_name("Dockerfile").read_text().replace("\\\n", " ")
+        line=next(line.strip() for line in source.splitlines() if line.strip().startswith("if /usr/bin/timeout "))
+        args=shlex.split(line.removeprefix("if ").removesuffix("; then"))
+        self.assertEqual(args[:5],["/usr/bin/timeout","--signal=TERM","--kill-after=2s","95s","/usr/lib/apt/apt-helper"])
+        options=dict(args[i+1].split("=",1) for i,value in enumerate(args) if value=="-o")
+        self.assertEqual(set(options),{"Acquire::Retries","Acquire::Retries::Delay","Acquire::Retries::Delay::Maximum","Acquire::http::Timeout"})
+        retries=int(options["Acquire::Retries"]);delay=int(options["Acquire::Retries::Delay::Maximum"])
+        timeout=int(options["Acquire::http::Timeout"])
+        self.assertEqual(retries,2);self.assertEqual(delay,2);self.assertEqual(timeout,30)
+        self.assertEqual(options["Acquire::Retries::Delay"],"true")
+        self.assertLessEqual((retries+1)*timeout+sum(min(2**i,delay) for i in range(retries)),95)
+        self.assertEqual(args[-4:],["download-file","$url","$target","SHA256:$digest"])
+        self.assertIn("apt-get -o Acquire::Retries=0 -o Acquire::http::Timeout=30 update",source)
+
+    def test_acquisition_deadline_remains_a_closed_failure(self):
+        raw=b"SMB_BUILD_DIAGNOSTIC=download_fetch_started\nSMB_BUILD_DIAGNOSTIC=download_deadline_exceeded\n"
+        self.assertEqual(SUBJECT.build_diagnostic(raw),"download_deadline_exceeded")
