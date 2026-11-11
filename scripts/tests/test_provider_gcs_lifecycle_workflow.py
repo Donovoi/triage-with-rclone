@@ -43,7 +43,7 @@ def validate(ci, smoke):
     require(command(parts[3]) == ["python", "-B", "scripts/provider-lab/gcs-oauth/run_container.py", "--rclone",
             "$RUNNER_TEMP/rclone-gcs-lifecycle", "--lifecycle-evidence", "--report", "$RUNNER_TEMP/gcs-oauth-lifecycle.json"], "fresh_qualification_required")
     require(scalar(parts[4], "if", 8) == "always()"
-            and scalar(parts[4], "uses", 8).split(" #", 1)[0] == "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
+            and scalar(parts[4], "uses", 8).split(" #", 1)[0] == "actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9"
             and scalar(parts[4], "name", 10) == "gcs-oauth-lifecycle"
             and scalar(parts[4], "path", 10) == "${{ runner.temp }}/gcs-oauth-lifecycle.json"
             and scalar(parts[4], "if-no-files-found", 10) == "error", "sanitized_failure_artifact")
