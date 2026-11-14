@@ -1098,6 +1098,46 @@
       "unresolved_applicability": [
         "reauthentication"
       ]
+    },
+    "sia-legacy-daemon-read-fixture": {
+      "required": {
+        "application": [
+          "listing",
+          "download_hash",
+          "manifest_integrity",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation"
+        ],
+        "vendor": [
+          "listing",
+          "download_hash",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation"
+        ],
+        "local_protocol": [
+          "listing",
+          "download_hash",
+          "missing_object_rejection",
+          "authentication_rejection",
+          "read_denial",
+          "source_preservation",
+          "config_preservation",
+          "fixture_write_rejection",
+          "cleanup"
+        ]
+      },
+      "review_required": false,
+      "unresolved_applicability": [
+        "reauthentication"
+      ]
     }
   },
   "providers": {
@@ -3264,17 +3304,18 @@
     "sia": {
       "canonical_name": "sia",
       "schema_sha256": "d867d95aab13cd2c5127a23b6a16898b30aaf01f5e27a41abf2af7fa435d1409",
-      "profile": "hosted-static-credentials-session-review",
+      "profile": "sia-legacy-daemon-read-fixture",
       "notes": [
         "Rclone targets legacy Sia siad daemon API, not arbitrary current renter software. Local daemon API can be mocked, but real storage needs compatible network/contracts; free usable acceptance is not established.",
         "Free account/API eligibility: review_required",
         "Decentralized storage contracts, wallet funding and legacy-daemon compatibility remain separate feasibility issues.",
-        "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension."
+        "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension.",
+        "The independent loopback fixture covers the pinned legacy siad API with a configured static Basic password: exact reads, wrong-password and content denial, missing objects, config/source preservation and cleanup. It does not qualify renterd, storage contracts, fresh setup, renewal, reauthentication, cancellation, TLS or application/vendor acceptance."
       ],
       "source_links": [
         "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/sia.md",
         "https://github.com/rclone/rclone/blob/v1.75.2/backend/sia/sia.go",
-        "https://github.com/rclone/rclone/blob/v1.75.2/backend/sia/sia.go"
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/sia/api/types.go"
       ],
       "renewal_modes": [
         {

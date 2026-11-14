@@ -259,6 +259,16 @@ The receipt binds the root rclone runtime pins, independent fixture manifest, fi
 
 CI's `provider-evidence-Linux-combined` artifact combines only that workflow run's Linux baseline, FileFabric renewal, IA LOW, SMB, pCloud authentication and GCS OAuth lifecycle receipts; its gate requires twenty-one complete local protocol profiles. `provider-evidence-Windows` requires eighteen complete profiles plus the GCS static-token mode; SMB, pCloud authentication and GCS OAuth lifecycle remain unverified on Windows. The separate baseline Linux artifact is intentionally a partial input to the combined report. The scheduled Linux provider workflow requires the same complete profiles. All application and real-vendor evidence remains separate.
 
+## Sia legacy daemon protocol fixture
+
+The account-free baseline now includes a bounded, independent Sia daemon API fixture. It uses the verified rclone 1.75.2 binary against an owned loopback HTTP server, with a generated static Basic password and the required `Sia-Agent` header. The wire contract follows the [pinned backend](https://github.com/rclone/rclone/blob/v1.75.2/backend/sia/sia.go) and [API types](https://github.com/rclone/rclone/blob/v1.75.2/backend/sia/api/types.go).
+
+The nine-capability receipt requires exact recursive file names and sizes, separate object metadata checks, three downloads with independent SHA256 hashes, missing-object rejection, wrong-password rejection without payload bytes, denied content reads after successful metadata access, a separately observed fixture write guard, unchanged source/configuration and owned process/socket cleanup. Request, connection, byte and whole-request time limits are enforced. Fixture transport regressions also exercise bounded ranges and malformed requests; native range/resume acceptance is not claimed.
+
+CI now runs 21 portable baseline fixtures. Its baseline ledger requires 19 complete protocol profiles plus the existing GCS static-token mode; the combined Linux gate requires 23 profiles, including the separate SMB, pCloud, GCS lifecycle and HDFS evidence. Existing obligations remain required. Sia receipts must match the current runtime, harness, corpus, platform and exact capability set; omitted capabilities, stale receipts, unknown fields and failures cannot promote coverage.
+
+This tests the legacy `siad` API read path. It does not test `renterd`, a wallet or storage contracts, real decentralized storage, account provisioning, TLS, cancellation, credential renewal or connection reauthentication. Existing application/vendor requirements and the unresolved reauthentication review remain unchanged; this fixture cannot mark the full Sia provider complete.
+
 ## Python test environment
 
 The full Python regression suite includes the HTTPS fixture foundation and requires `cryptography`. These are test dependencies only; the pCloud native fixture uses them, while the application and other nineteen native fixtures do not require certificate generation. The wheel locks support CPython 3.12 on Windows x64 and glibc Linux x86_64 (the CI targets), plus CPython 3.14 on Windows x64 for local validation. Other operating systems, architectures and Python versions need a separately reviewed lock.

@@ -33,11 +33,12 @@ import zipfile
 import zlib
 
 from fixture_servers import FILES, State, SwiftState, B2State, AzureBlobState, AzureFilesState, SeafileState, KoofrState, PixeldrainState, FileFabricState, FileFabricSessionState, InternetArchiveState, InternetArchiveLowState, NetStorageState, azure_string_to_sign, probe_write_rejection, serve
+from fixture_sia import SiaState, serve_sia
 from email.utils import format_datetime
 
 
-BACKENDS = ("local", "http", "webdav", "ftp", "sftp", "s3", "archive", "swift", "b2", "azureblob", "azurefiles", "seafile", "memory", "koofr", "pixeldrain", "filefabric", "internetarchive", "netstorage", "pcloud", "gcs")
-HARNESS_FILES = ("fixture_servers.py", "run_lab.py", "fixture_tls.py", "fixture_pcloud.py", "fixture_gcs.py", "requirements-fixture.txt")
+BACKENDS = ("local", "http", "webdav", "ftp", "sftp", "s3", "archive", "swift", "b2", "azureblob", "azurefiles", "seafile", "memory", "koofr", "pixeldrain", "filefabric", "internetarchive", "netstorage", "pcloud", "gcs", "sia")
+HARNESS_FILES = ("fixture_servers.py", "run_lab.py", "fixture_tls.py", "fixture_pcloud.py", "fixture_gcs.py", "fixture_sia.py", "requirements-fixture.txt")
 MAX_OUTPUT = 2 * 1024 * 1024
 COMMAND_TIMEOUT = 20
 
@@ -3298,9 +3299,83 @@ def checked_write_rejection_probe(backend, port, state):
         raise LabError("fixture_write_probe_runtime_error") from None
 
 
+SIA_CAPABILITIES = frozenset({
+    "listing", "download_hash", "missing_object_rejection", "authentication_rejection",
+    "read_denial", "source_preservation", "config_preservation", "fixture_write_rejection", "cleanup",
+})
+
+
+def sia_flow_matches(state, expected):
+    """Require observed native reads and denials, not just successful exits."""
+    content = sorted(name for kind, name in state.events if kind == "content")
+    return (not state.unexpected and not state.budget_exceeded and not state.rejected_payload_bytes
+            and content == sorted(item["path"] for item in expected)
+            and state.payload_bytes == sum(item["size"] for item in expected)
+            and state.denied > 0 and state.read_denied > 0 and state.missing > 0
+            and state.rejected_mutations == 1
+            and all(state.events.count(("listing", path)) == 2 for path in ("", "nested"))
+            and ("file_missing", "absent-synthetic.txt") in state.events
+            and ("read_denied", "README-synthetic.txt") in state.events
+            and ("write_denied", "README-synthetic.txt") in state.events)
+
+
+def sia_checks(runtime, root, row, expected):
+    caps = row["capabilities"]
+    password = "synthetic-" + uuid.uuid4().hex
+    obscured = []
+    for value in (password, "wrong-synthetic-password"):
+        code, output, _ = runtime.run(["obscure", value])
+        check(code == 0 and re.fullmatch(rb"[A-Za-z0-9_-]{22,512}", output.strip()), "sia_password_setup_failed")
+        obscured.append(output.decode("ascii").strip())
+    state, port, preserved = SiaState(password), None, {}
+    before = len(runtime.children)
+    try:
+        with serve_sia(state) as port:
+            options = {"type": "sia", "api_url": f"http://127.0.0.1:{port}", "api_password": obscured[0],
+                       "user_agent": "Sia-Agent"}
+            good = config_file(root, "sia-good.conf", options)
+            bad = config_file(root, "sia-wrong.conf", dict(options, api_password=obscured[1]))
+            preserved = {path: path.read_bytes() for path in (good, bad)}
+            common_checks(runtime, root, good, bad, "Synthetic:", row, state, expected=expected)
+            code, output, _ = runtime.run(["lsjson", "--recursive", "--files-only", "--no-modtime", "--no-mimetype", "Synthetic:"], good)
+            check(code == 0, "sia_final_listing_failed")
+            try:
+                entries = json.loads(output)
+                got = sorted((entry["Path"], entry["Size"], entry["IsDir"]) for entry in entries)
+            except (ValueError, TypeError, KeyError):
+                raise LabError("sia_final_listing_invalid") from None
+            check(got == [(item["path"], item["size"], False) for item in expected], "sia_final_listing_mismatch")
+            state.mode = "read_denied"
+            denied = root / "denied"
+            denied.mkdir(mode=0o700)
+            code, output, error = exact_copy(runtime, good, "Synthetic:", "README-synthetic.txt", str(denied), "denied.bin")
+            check(code != 0 and b"403" in output + error and not list(denied.iterdir()), "sia_read_denial_not_observed")
+            state.mode = "normal"
+            client = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
+            try:
+                client.request("POST", "/renter/delete/README-synthetic.txt", headers={
+                    "Authorization": "Basic " + base64.b64encode((":" + password).encode()).decode(),
+                    "User-Agent": "Sia-Agent"})
+                response = client.getresponse()
+                check(response.status == 405 and json.loads(response.read(1025)) == {"message": "synthetic fixture is read-only"},
+                      "sia_write_guard_failed")
+            finally:
+                client.close()
+            check(sia_flow_matches(state, expected), "sia_protocol_flow_mismatch")
+            check(served_source_unchanged(state, expected), "sia_source_changed")
+            check(all(path.read_bytes() == data for path, data in preserved.items()), "sia_config_changed")
+        for name in caps:
+            caps[name] = "passed"
+    finally:
+        closed = (state.cleanup_complete and (port is None or listener_closed(port))
+                  and all(record[0].poll() is not None for record in runtime.children[before:]))
+        caps["cleanup"] = "passed" if closed else "failed"
+        check(closed, "sia_cleanup_failed")
+
+
 def run_backend(runtime, backend, root):
     root.mkdir(mode=0o700)
-    independent = backend in ("http", "webdav", "ftp", "swift", "b2", "azureblob", "azurefiles", "seafile", "koofr", "pixeldrain", "filefabric", "internetarchive", "netstorage", "pcloud", "gcs")
+    independent = backend in ("http", "webdav", "ftp", "swift", "b2", "azureblob", "azurefiles", "seafile", "koofr", "pixeldrain", "filefabric", "internetarchive", "netstorage", "pcloud", "gcs", "sia")
     row = {"backend": backend,
            "fixture_kind": "local" if backend in ("local", "archive", "memory") else "independent_loopback" if independent else "rclone_loopback",
            "capabilities": {key: "not_run" for key in (
@@ -3308,6 +3383,8 @@ def run_backend(runtime, backend, root):
            "errors": []}
     if backend in ("local", "archive", "memory"):
         row["capabilities"]["authentication_rejection"] = "not_applicable"
+    if backend == "sia":
+        row["capabilities"] = {key: "not_run" for key in SIA_CAPABILITIES}
     if backend == "netstorage":
         row["capabilities"] = {key: "not_run" for key in NETSTORAGE_CAPABILITIES}
     if backend == "pcloud":
@@ -3343,6 +3420,9 @@ def run_backend(runtime, backend, root):
         prepare_files(files_root)
     port = None
     try:
+        if backend == "sia":
+            sia_checks(runtime, root, row, expected)
+            return row
         if backend == "gcs":
             gcs_checks(runtime, root, row, expected)
             return row
