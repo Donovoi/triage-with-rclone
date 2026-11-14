@@ -126,11 +126,11 @@ class WorkflowObligationTests(unittest.TestCase):
                     gated = set(names)
                     self.assertEqual(len(names), len(gated), "Duplicate fixture gate")
                     if filename == "ci.yml" and index < 2:
-                        self.assertEqual(len(gated), 18)
+                        self.assertEqual(len(gated), 19)
                         self.assertEqual(gates[index].count("--require-gcs-static-token"), 1)
                         self.assertNotIn("gcs-oauth-lifecycle.json", gates[index])
                     else:
-                        self.assertEqual(len(gated), 22)
+                        self.assertEqual(len(gated), 23)
                         self.assertNotIn("--require-gcs-static-token", gates[index])
                         self.assertIn("gcs-oauth-lifecycle.json", gates[index])
                     self.assertFalse(gated & missing, "Resolved exceptions must be removed")
