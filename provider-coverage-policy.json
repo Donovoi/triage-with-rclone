@@ -2155,6 +2155,46 @@
       "unresolved_applicability": [
         "reauthentication"
       ]
+    },
+    "protocol-dosya-api-key-workspace-read": {
+      "required": {
+        "application": [
+          "listing",
+          "download_hash",
+          "manifest_integrity",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation"
+        ],
+        "vendor": [
+          "listing",
+          "download_hash",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation"
+        ],
+        "local_protocol": [
+          "listing",
+          "download_hash",
+          "missing_object_rejection",
+          "authentication_rejection",
+          "read_denial",
+          "source_preservation",
+          "config_preservation",
+          "fixture_write_rejection",
+          "cleanup"
+        ]
+      },
+      "review_required": false,
+      "unresolved_applicability": [
+        "reauthentication"
+      ]
     }
   },
   "providers": {
@@ -4814,16 +4854,18 @@
     "dosya": {
       "canonical_name": "dosya",
       "schema_sha256": "eac901fddecb1c8979db3e05b3d602a83f0552e9aeca601ac8ac240955525ff7",
-      "profile": "hosted-static-credentials-session-review",
+      "profile": "protocol-dosya-api-key-workspace-read",
       "notes": [
         "Added by rclone 1.76.0. This is a reviewed acceptance plan only; no native protocol, application or vendor pass is claimed.",
         "Free account/API eligibility: review_required",
         "Use a dedicated synthetic root and explicit drive/workspace scope. Preserve source bytes, validate missing/denied objects, and observe cleanup independently.",
-        "Connection/session reauthentication remains unresolved and is not inferred from the credential-renewal decision."
+        "Connection/session reauthentication remains unresolved and is not inferred from the credential-renewal decision.",
+        "Schema-28 dosya_api_key_workspace_read_v1 qualifies only source-current Linux container evidence for a saved API key and explicit workspace_id at api.dosya.dev. All nine capabilities, exact private TLS/SNI/Host binding, complete workspace/folder/page/sort inventories, observed file IDs, exact X-Dosya-Workspace hints and issued presigned content links are required. API bearer credentials and workspace hints must not reach content downloads. Native SHA-256 metadata must match independent known values; downloaded bytes receive independent SHA-256 checks. Wrong-key rejection, missing-name rejection, native cat/copy rejection of HTTP403 with identical expected bytes, source/config preservation and cleanup are mandatory. The direct DELETE guard does not qualify native writes. Workspace discovery, pagination/throttling, uploads including multipart hash availability, native writes and application/live-provider acceptance remain unverified. Raw feasibility/schema-1 rows are ineligible; the original credential-renewal applicability and independent session-review obligation remain."
       ],
       "source_links": [
         "https://github.com/rclone/rclone/blob/v1.76.0/backend/dosya/dosya.go",
-        "https://raw.githubusercontent.com/rclone/rclone/v1.76.0/docs/content/dosya.md"
+        "https://raw.githubusercontent.com/rclone/rclone/v1.76.0/docs/content/dosya.md",
+        "https://github.com/rclone/rclone/blob/v1.76.0/backend/dosya/dosya_api.go"
       ],
       "auth_applicability": "credentials",
       "refresh_applicability": "not_applicable",
