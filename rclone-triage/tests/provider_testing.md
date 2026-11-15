@@ -563,3 +563,13 @@ Complete inventories require exact workspace/folder/page/sort parameters and con
 Schema-28 dosya_api_key_workspace_read_v1 binds the current 39-file source closure, pinned runtime/dependencies, native output/timing, nine capabilities and containment/cleanup. Forty-eight provider regressions cover wire contracts, authority/framing, containment and evidence substitution. Both combined Linux and provider-smoke gates require 49 reviewed profiles and the same-run receipt; raw feasibility evidence cannot qualify this mode.
 
 The direct DELETE guard does not qualify native writes. Existing credential-renewal applicability and the independent session-review obligation remain. Workspace discovery, pagination/throttling, uploads including multipart hash availability, native writes and application/live-provider acceptance remain unverified. See [the isolated fixture](../../scripts/provider-lab/dosya-fixed-api/README.md).
+
+### kDrive saved-token folder read protocol
+
+The isolated Linux kDrive profile uses a saved OAuth bearer, explicit drive_id and numeric root_folder_id at api.infomaniak.com. Private exact TLS/SNI/Host binding preserves the ordinary authority on 127.0.0.1:443; the native client receives the private CA. Account, drive and private/common-folder discovery are excluded.
+
+Complete version-3 inventories require exact limit/with/depth parameters, preserve recursive and nested-root scope, and contain numeric identities/sizes/timestamps and single-chunk XXH3 metadata. Native lsjson hashes match independently computed literal values; downloaded bytes receive independent SHA-256 checks. Name lookup rejects missing members with HTTP404/object_not_found. Version-2 downloads require an observed file identity and saved bearer. Both native cat and copy reject HTTP403 containing identical expected bytes. Wrong-token rejection, source/config preservation and cleanup are mandatory.
+
+Schema-29 kdrive_saved_token_folder_read_v1 binds the current 40-file source closure, pinned runtime/dependencies, native output/timing, nine capabilities and containment/cleanup. Fifty provider regressions cover wire contracts, authority/framing, containment and evidence substitution. Both combined Linux and provider-smoke gates require 50 reviewed profiles and the same-run receipt; raw feasibility evidence cannot qualify this mode.
+
+The direct DELETE guard does not qualify native writes. Independent renewal and session-review obligations remain. OAuth login/refresh, account/drive discovery, pagination/throttling, nested multipart hash encodings, native writes and application/live-provider acceptance remain unverified. See [the isolated fixture](../../scripts/provider-lab/kdrive-fixed-api/README.md).

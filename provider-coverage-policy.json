@@ -2195,6 +2195,48 @@
       "unresolved_applicability": [
         "reauthentication"
       ]
+    },
+    "protocol-kdrive-saved-token-folder-read": {
+      "required": {
+        "application": [
+          "listing",
+          "download_hash",
+          "manifest_integrity",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation",
+          "refresh"
+        ],
+        "vendor": [
+          "listing",
+          "download_hash",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation",
+          "refresh"
+        ],
+        "local_protocol": [
+          "listing",
+          "download_hash",
+          "missing_object_rejection",
+          "authentication_rejection",
+          "read_denial",
+          "source_preservation",
+          "config_preservation",
+          "fixture_write_rejection",
+          "cleanup"
+        ]
+      },
+      "review_required": false,
+      "unresolved_applicability": [
+        "reauthentication"
+      ]
     }
   },
   "providers": {
@@ -4890,12 +4932,13 @@
     "kdrive": {
       "canonical_name": "kdrive",
       "schema_sha256": "4d355602abdf56653b66d39ddf9e9e470cf17867fa7e152dbf6bc22ddd341833",
-      "profile": "hosted-renewal-session-review",
+      "profile": "protocol-kdrive-saved-token-folder-read",
       "notes": [
         "Added by rclone 1.76.0. This is a reviewed acceptance plan only; no native protocol, application or vendor pass is claimed.",
         "Free account/API eligibility: review_required",
         "Use a dedicated synthetic root and explicit drive/workspace scope. Preserve source bytes, validate missing/denied objects, and observe cleanup independently.",
-        "Connection/session reauthentication remains unresolved and is not inferred from the credential-renewal decision."
+        "Connection/session reauthentication remains unresolved and is not inferred from the credential-renewal decision.",
+        "Schema-29 kdrive_saved_token_folder_read_v1 qualifies only source-current Linux container evidence for a saved OAuth bearer, explicit drive_id and numeric root_folder_id at api.infomaniak.com. All nine capabilities, exact private TLS/SNI/Host binding, complete root/nested/recursive listings, observed file IDs, name lookups and versioned authenticated downloads are mandatory. Native single-chunk XXH3 metadata must match independent literal values; downloaded bytes receive independent SHA-256 checks. Wrong-token and missing-name rejection, native cat/copy rejection of HTTP403 with identical expected bytes, source/config preservation and cleanup are required. The direct DELETE guard does not qualify native writes. OAuth login/refresh, account and drive discovery, pagination/throttling, nested multipart hash encodings, native writes and application/live-provider acceptance remain unverified. Raw feasibility/schema-1 rows are ineligible; independent renewal/session-review obligations remain."
       ],
       "source_links": [
         "https://github.com/rclone/rclone/blob/v1.76.0/backend/kdrive/kdrive.go",
