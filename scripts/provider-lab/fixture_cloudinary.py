@@ -80,7 +80,12 @@ class CloudinaryHandler(ReadHandler):
                 if type(data) is not dict:
                     raise ValueError("invalid_json")
             return url.path, query, data
-        except (ValueError, UnicodeError, OSError):
+        except OSError:
+            # A timed-out/broken body is no longer an HTTP exchange we can
+            # answer. The TLS transport records the deadline and owns cleanup.
+            self.close_connection = True
+            return None
+        except (ValueError, UnicodeError):
             self.reject()
             return None
 

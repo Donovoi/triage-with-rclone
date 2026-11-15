@@ -8,6 +8,7 @@ import socket
 import ssl
 import sys
 import tempfile
+import threading
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -158,7 +159,10 @@ class CloudinaryWireTests(unittest.TestCase):
         self.assertEqual(self.search()[0], 429)
 
     def test_tls_deadline_stops_a_partial_json_body(self):
-        with T.FixtureCertificates.create(self.root) as certificates:
+        timer = threading.Timer
+        # Exercise the socket-timeout-first race independently of scheduling.
+        with T.FixtureCertificates.create(self.root) as certificates, patch.object(
+                T.threading, "Timer", side_effect=lambda delay, callback: timer(delay + 0.3, callback)):
             with T.BoundedHttpsServer(certificates, C.CloudinaryHandler, state=C.CloudinaryState(KEY, SECRET),
                     limits=T.TlsLimits(request_seconds=0.15)) as transport:
                 with socket.create_connection(("127.0.0.1", transport.port), timeout=2) as raw:
