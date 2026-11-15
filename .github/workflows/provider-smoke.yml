@@ -222,6 +222,12 @@ jobs:
           python -B ../scripts/provider-lab/jottacloud-fixed-api/run_container.py \
             --rclone "$RUNNER_TEMP/rclone-smoke" --protocol-evidence \
             --report "$RUNNER_TEMP/jottacloud-read-protocol.json"
+      - name: Isolated SugarSync saved authorization folder reads
+        if: ${{ !cancelled() }}
+        run: |
+          python -B ../scripts/provider-lab/sugarsync-fixed-api/run_container.py \
+            --rclone "$RUNNER_TEMP/rclone-smoke" --protocol-evidence \
+            --report "$RUNNER_TEMP/sugarsync-read-protocol.json"
       - name: Isolated pCloud OAuth positive feasibility
         if: ${{ !cancelled() }}
         run: |
@@ -247,7 +253,7 @@ jobs:
         with:
           name: hdfs-protocol
           path: ${{ runner.temp }}/provider-hdfs
-      # All 46 Linux profiles, including the separately qualified HDFS, Cloudinary, OpenDrive, GoFile, Drime, 1Fichier, Premiumize, Put.io, Linkbox, Yandex, Box, OneDrive, FileLu, QingStor, Google Drive, Dropbox, Oracle Object Storage, Zoho and Jottacloud proofs.
+      # All 47 Linux profiles, including the separately qualified HDFS, Cloudinary, OpenDrive, GoFile, Drime, 1Fichier, Premiumize, Put.io, Linkbox, Yandex, Box, OneDrive, FileLu, QingStor, Google Drive, Dropbox, Oracle Object Storage, Zoho, Jottacloud and SugarSync proofs.
       - name: Require current provider plans and protocol evidence
         if: ${{ !cancelled() }}
         run: |
@@ -272,13 +278,14 @@ jobs:
             --fixture-receipt "$RUNNER_TEMP/dropbox-read-protocol.json" \
             --fixture-receipt "$RUNNER_TEMP/zoho-read-protocol.json" \
             --fixture-receipt "$RUNNER_TEMP/jottacloud-read-protocol.json" \
+            --fixture-receipt "$RUNNER_TEMP/sugarsync-read-protocol.json" \
             --fixture-receipt "$RUNNER_TEMP/drive-read-protocol.json" \
             --fixture-receipt "$RUNNER_TEMP/qingstor-read-protocol.json" \
             --fixture-receipt "$RUNNER_TEMP/oos-read-protocol.json" \
             --fixture-receipt "$RUNNER_TEMP/filelu-read-protocol.json" \
             --fixture-receipt "$RUNNER_TEMP/onedrive-read-protocol.json" \
             --fixture-receipt "$RUNNER_TEMP/box-read-protocol.json" \
-            --require-plans --require-fixtures local,archive,http,webdav,ftp,sftp,s3,swift,b2,azureblob,azurefiles,seafile,memory,koofr,pixeldrain,filefabric,netstorage,internetarchive,gcs,smb,pcloud,hdfs,sia,hidrive,doi,quatrix,shade,sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio,linkbox,yandex,box,onedrive,filelu,qingstor,drive,dropbox,oos,zoho,jottacloud
+            --require-plans --require-fixtures local,archive,http,webdav,ftp,sftp,s3,swift,b2,azureblob,azurefiles,seafile,memory,koofr,pixeldrain,filefabric,netstorage,internetarchive,gcs,smb,pcloud,hdfs,sia,hidrive,doi,quatrix,shade,sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio,linkbox,yandex,box,onedrive,filelu,qingstor,drive,dropbox,oos,zoho,jottacloud,sugarsync
       - name: Offline provider contracts
         run: cargo test --locked --release --test provider_smoke --test provider_matrix -- --test-threads=1
       - name: Login and credential regressions without accounts
@@ -382,6 +389,7 @@ jobs:
             ${{ runner.temp }}/dropbox-read-protocol.json
             ${{ runner.temp }}/zoho-read-protocol.json
             ${{ runner.temp }}/jottacloud-read-protocol.json
+            ${{ runner.temp }}/sugarsync-read-protocol.json
             ${{ runner.temp }}/drive-read-protocol.json
             ${{ runner.temp }}/qingstor-read-protocol.json
             ${{ runner.temp }}/oos-read-protocol.json
