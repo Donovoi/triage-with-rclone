@@ -6,7 +6,7 @@ import hashlib,json,os,re,shutil,signal,stat,sys,tempfile,time,types,uuid
 from pathlib import Path
 
 HERE=Path(__file__).resolve().parent
-PINS_SHA='ff1a47367e5e0632c32d8eb244b6fe2657b37a4889d9232945cf41271dc28d97'
+PINS_SHA='22f2ea14eb09b245930c088fae1a4ae7665c760fd8b97b1714e0b90c104c0d2e'
 LABEL='org.openai.triage.hdfs-context-build'
 TMPFS='rw,nosuid,nodev,noexec,size=128m,mode=0700,uid=10001,gid=10001'
 MODULES=('audit_contract','advisory_contract','scan_contract','snapshot_contract','tool_bundle',

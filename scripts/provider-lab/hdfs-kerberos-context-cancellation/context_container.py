@@ -21,7 +21,7 @@ import types
 import uuid
 
 HERE=Path(__file__).resolve().parent
-PINS_SHA="2762ed7356ee8f6483b9208f7c30b7f94d7c6898e38320ef2f39d5fb71c761e6"
+PINS_SHA="6b62fd4882350990b595f3c813609e45186d1827104c9b8c2a5aee53585e5a0d"
 LABEL="org.openai.triage.hdfs-retained-context"
 TMPFS="rw,nosuid,nodev,noexec,size=128m,mode=0700,uid=10001,gid=10001"
 PROFILE="kerberos-remediation"

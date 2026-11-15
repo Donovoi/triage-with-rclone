@@ -29,8 +29,8 @@ DISCOVERY = HERE.parent / "hdfs-discovery"
 RUNTIME = HERE.parent / "hdfs-kerberos-ticket" / "runtime-classpath.json"
 REMEDIATION_RUNTIME = HERE.parent / "hdfs-kerberos-rpc" / "runtime-classpath-remediation.json"
 PIN_FILE = HERE.parents[2] / "rclone-version.env"
-RCLONE_VERSION = "1.75.2"
-RCLONE_SHA = "ed7ab1f17876bb006c3df3949a3044959671afd9112362dacaa5dd1647735bc1"
+RCLONE_VERSION = "1.76.0"
+RCLONE_SHA = "62e4d3e5432f2c685f1834b8bb342058ff0611c99d048aeb44bb8d8fd611527e"
 DENIAL = "SIMPLE authentication is not enabled.  Available:[TOKEN, KERBEROS]"
 EXCEPTION = "org.apache.hadoop.security.AccessControlException"
 STAGES = frozenset("environment rclone_version kdc_init principals kdc_start owner_login format namenode_start relay_start seed reader_tgt service_ticket rc_start cache_read_barrier retained_after_expiry force_connection_loss bounded_reconnect listing_before rclone_none wire_none await_service_expiry listing_after listing_repeat cancellation_baseline cancellation_stop cancellation_observation cancellation_release preservation completed".split())
@@ -43,7 +43,7 @@ TIMER_KINDS = frozenset("namenode_metrics rpc_idle snapshot_gc shell_timeout ssl
 RPC_KINDS = frozenset("client_request_sender client_connection other".split())
 BASE = "docker.io/library/eclipse-temurin@sha256:e1c09a9ee23feb81f94016547826c1e694086cd927356fb57fccc312fcc32f85"
 BASE_ID = "sha256:d0e6e16acb7f941e5206d99ec38e5bba18545c43462541958f84b22e0fc006e8"
-JAVA_SHA = "4d40246e30beee5087e7625aa8a8cd547213f7008fc72576471cfb796e0accc5"
+JAVA_SHA = "fed910f2f2a73e9dec80a00f9d2ef9c6242f983f8071a39e5fbf897c237453d1"
 JAVA_HELPERS = {
     "HdfsCancellationRpcGate.java": "bca359ee8bac65d0e7cd4cbf531dbfa362f04a094bc0d06d77c6085cf9edb542",
     "HdfsCancellationHeldResponse.java": "6c0b8cbed14a27b7e1c1d35d09bbeb7d06eefbc7fe682765c309c0b6fb0b4a05",
