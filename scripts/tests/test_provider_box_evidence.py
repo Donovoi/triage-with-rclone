@@ -279,11 +279,11 @@ class BoxWorkflowTests(unittest.TestCase):
         for before, after in (
             ("  box-fixed-api:\n", "  box-fixed-api:\n    if: false\n"),
             ("--rclone \"$RUNNER_TEMP/rclone-box\" --protocol-evidence", "--rclone \"$RUNNER_TEMP/rclone-box\""),
-            ("yandex-fixed-api, box-fixed-api, onedrive-fixed-api]", "yandex-fixed-api, onedrive-fixed-api]"),
+            ("yandex-fixed-api, box-fixed-api, onedrive-fixed-api, filelu-fixed-api]", "yandex-fixed-api, onedrive-fixed-api, filelu-fixed-api]"),
             ("          path: ${{ runner.temp }}/provider-box",
              "          run-id: 123\n          path: ${{ runner.temp }}/provider-box"),
             ('--fixture-receipt "$RUNNER_TEMP/provider-box/box-read-protocol.json"', ""),
-            ("sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio,linkbox,yandex,box,onedrive\n", "sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio,linkbox,yandex,onedrive\n")):
+            ("sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio,linkbox,yandex,box,onedrive,filelu\n", "sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio,linkbox,yandex,onedrive,filelu\n")):
             with self.subTest(before=before):
                 self.assertIn(before, self.ci)
                 with self.assertRaises(ValueError):
@@ -293,7 +293,7 @@ class BoxWorkflowTests(unittest.TestCase):
         for before, after in (
             ('../scripts/provider-lab/box-fixed-api/run_container.py \\\n            --rclone "$RUNNER_TEMP/rclone-smoke" --protocol-evidence', '../scripts/provider-lab/box-fixed-api/run_container.py \\\n            --rclone "$RUNNER_TEMP/rclone-smoke"'),
             ('--fixture-receipt "$RUNNER_TEMP/box-read-protocol.json"', ""),
-            ("sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio,linkbox,yandex,box,onedrive\n", "sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio,linkbox,yandex,onedrive\n"),
+            ("sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio,linkbox,yandex,box,onedrive,filelu\n", "sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio,linkbox,yandex,onedrive,filelu\n"),
             ("            ${{ runner.temp }}/box-read-protocol.json\n", "")):
             with self.subTest(before=before):
                 self.assertIn(before, self.smoke)
