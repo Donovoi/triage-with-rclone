@@ -385,3 +385,7 @@ borrows Linux lifecycle evidence. Historical default experiment receipts remain
 ineligible. These protocol modes do not establish application/vendor acceptance,
 revocation, session reauthentication, service-account, ADC or workload-identity
 coverage. See [the GCS lifecycle contract](../../scripts/provider-lab/gcs-oauth/README.md).
+
+## Cloudinary fixed-API read feasibility
+
+The [contained Cloudinary experiment](../../scripts/provider-lab/cloudinary-fixed-api/README.md) runs the pinned native backend against an independent HTTPS service with container-only DNS. It checks configured raw-asset reads and exact negative cases. The separate CI job and 28 regressions do not change the portable fixture count or any acceptance requirement: its receipt is explicitly ineligible for the coverage ledger.

@@ -5,7 +5,9 @@ from pathlib import Path
 import socket
 import sys
 import tempfile
+import threading
 import unittest
+from unittest.mock import patch
 
 LAB = Path(__file__).resolve().parents[1] / "provider-lab"
 sys.path.insert(0, str(LAB))
@@ -170,7 +172,11 @@ class QuatrixWireTests(unittest.TestCase):
 
     def test_slow_json_body_has_an_absolute_tls_deadline(self):
         state = Q.QuatrixState(TOKEN, WRONG)
-        with FixtureCertificates.create(self.root) as certificates:
+        timer = threading.Timer
+        # Force the socket deadline to win over the timer thread, as on a busy
+        # Windows runner. A stalled request must still close without an HTTP reply.
+        with FixtureCertificates.create(self.root) as certificates, patch(
+                "fixture_tls.threading.Timer", side_effect=lambda delay, callback: timer(delay + 0.3, callback)):
             with BoundedHttpsServer(certificates, Q.QuatrixHandler, state=state,
                                     limits=TlsLimits(request_seconds=0.15)) as transport:
                 with socket.create_connection(("127.0.0.1", transport.port), timeout=2) as raw:

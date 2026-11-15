@@ -222,7 +222,7 @@ FIXTURE_CAPABILITIES = {
     "authentication_rejection", "cleanup", "truncated_download_rejection", "read_denial",
     "cancellation_cleanup", "fixture_write_rejection", "host_key_rejection", "renewal_denial",
 } | ARCHIVE_CAPABILITIES | SWIFT_ONLY_CAPABILITIES | B2_ONLY_CAPABILITIES | FILEFABRIC_ONLY_CAPABILITIES | INTERNETARCHIVE_ONLY_CAPABILITIES | PCLOUD_ONLY_CAPABILITIES | DOI_ONLY_CAPABILITIES | HIDRIVE_ONLY_CAPABILITIES | SHADE_ONLY_CAPABILITIES | SHAREFILE_ONLY_CAPABILITIES
-HARNESSES = ("fixture_servers.py", "run_lab.py", "fixture_tls.py", "fixture_pcloud.py", "fixture_gcs.py", "fixture_sia.py", "fixture_read_api.py", "fixture_hidrive.py", "fixture_doi.py", "fixture_quatrix.py", "fixture_shade.py", "fixture_sharefile.py", "requirements-fixture.txt")
+HARNESSES = ("fixture_servers.py", "run_lab.py", "fixture_tls.py", "fixture_pcloud.py", "fixture_gcs.py", "fixture_sia.py", "fixture_read_api.py", "fixture_hidrive.py", "fixture_doi.py", "fixture_quatrix.py", "fixture_shade.py", "fixture_sharefile.py", "fixture_cloudinary.py", "requirements-fixture.txt")
 HASH_PATTERN = re.compile(r"[a-f0-9]{64}")
 ID_PATTERN = re.compile(r"[a-z0-9_]{1,80}")
 MAX_JSON = 32 * 1024 * 1024
