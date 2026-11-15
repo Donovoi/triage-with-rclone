@@ -40,7 +40,7 @@ from email.utils import format_datetime
 
 
 BACKENDS = ("local", "http", "webdav", "ftp", "sftp", "s3", "archive", "swift", "b2", "azureblob", "azurefiles", "seafile", "memory", "koofr", "pixeldrain", "filefabric", "internetarchive", "netstorage", "pcloud", "gcs", "sia", "hidrive", "doi", "quatrix", "shade", "sharefile")
-HARNESS_FILES = ("fixture_servers.py", "run_lab.py", "fixture_tls.py", "fixture_pcloud.py", "fixture_gcs.py", "fixture_sia.py", "fixture_read_api.py", "fixture_hidrive.py", "fixture_doi.py", "fixture_quatrix.py", "fixture_shade.py", "fixture_sharefile.py", "fixture_cloudinary.py", "requirements-fixture.txt")
+HARNESS_FILES = ("fixture_servers.py", "run_lab.py", "fixture_tls.py", "fixture_pcloud.py", "fixture_gcs.py", "fixture_sia.py", "fixture_read_api.py", "fixture_hidrive.py", "fixture_doi.py", "fixture_quatrix.py", "fixture_shade.py", "fixture_sharefile.py", "fixture_cloudinary.py", "fixture_opendrive.py", "requirements-fixture.txt")
 MAX_OUTPUT = 2 * 1024 * 1024
 COMMAND_TIMEOUT = 20
 
@@ -3698,9 +3698,76 @@ def cloudinary_checks(runtime, root, row, expected):
         check(closed, "cloudinary_cleanup_failed")
 
 
+def opendrive_checks(runtime, root, row, expected):
+    from fixture_opendrive import OpenDriveState, serve_opendrive
+    key, secret = "synthetic-user-" + uuid.uuid4().hex, "synthetic-password-" + uuid.uuid4().hex
+    state, port, transport, certificates = OpenDriveState(key, secret), None, None, None
+    before = len(runtime.children)
+    caps = row["capabilities"]
+    try:
+        pcloud_dependencies()
+        with serve_opendrive(root, state) as (certificates, transport):
+            port = transport.port
+            class TrustedRuntime:
+                def run(self, args, config=None, **kwargs):
+                    pcloud_dependencies()
+                    return runtime.run([*certificates.rclone_ca_args(), *args], config, **kwargs)
+            native = TrustedRuntime()
+            obscured = []
+            for value in (secret, "wrong-synthetic-password"):
+                code, output, _ = native.run(["obscure", value])
+                check(code == 0 and re.fullmatch(rb"[A-Za-z0-9_-]{22,512}", output.strip()), "opendrive_password_setup_failed")
+                obscured.append(output.decode("ascii").strip())
+            options = {"type": "opendrive", "username": key, "password": obscured[0]}
+            good = config_file(root, "opendrive-good.conf", options)
+            bad = config_file(root, "opendrive-wrong.conf", dict(options, password=obscured[1]))
+            preserved = {path: path.read_bytes() for path in (good, bad)}
+            metadata_before = {name: state.metadata(name) for name in state.files}
+            auth_destination = root / "bad-auth"
+            auth_destination.mkdir(mode=0o700)
+            code, output, error = exact_copy(native, bad, "Synthetic:", "README-synthetic.txt",
+                                             str(auth_destination), "must-not-exist")
+            check(code != 0 and not list(auth_destination.iterdir()) and state.denied > 0
+                  and state.payload_bytes == 0, "opendrive_credential_rejection_missing")
+            caps["authentication_rejection"] = "passed"
+            common_checks(native, root, good, None, "Synthetic:", row, state, expected=expected)
+            read_api_listing(native, good, expected)
+            state.mode = "read_denied"
+            denied = root / "denied"
+            denied.mkdir(mode=0o700)
+            code, output, error = exact_copy(native, good, "Synthetic:", "README-synthetic.txt", str(denied), "denied.bin")
+            check(code != 0 and b"403" in output + error and not list(denied.iterdir()), "opendrive_read_denial_missing")
+            state.mode = "normal"
+            connection = http.client.HTTPSConnection(transport.authority, port, timeout=3,
+                                                     context=certificates.client_context())
+            try:
+                connection.request("DELETE", "/api/v1/file.json/" + sorted(state.sessions)[0] + "/601")
+                response = connection.getresponse()
+                check(response.status == 405 and len(response.read(4097)) <= 4096,
+                      "opendrive_write_guard_missing")
+            finally:
+                connection.close()
+            check(read_api_flow_matches(state, expected) and state.denied > 0 and state.missing > 0
+                  and all(state.events.count(("listing", path)) >= 2 for path in ("", "nested")), "opendrive_protocol_flow_mismatch")
+            check(served_source_unchanged(state, expected) and (state.user, state.password) == (key, secret)
+                  and {name: state.metadata(name) for name in state.files} == metadata_before,
+                  "opendrive_source_changed")
+            check(all(path.read_bytes() == data for path, data in preserved.items()), "opendrive_config_changed")
+        observed = transport.snapshot()
+        check(not observed["failure_codes"] and observed["handshake_successes"] > 0, "opendrive_tls_failed")
+        for name in caps:
+            caps[name] = "passed"
+    finally:
+        closed = (state.cleanup_complete and (port is None or listener_closed(port))
+                  and (certificates is None or certificates.cleanup_complete)
+                  and all(record[0].poll() is not None for record in runtime.children[before:]))
+        caps["cleanup"] = "passed" if closed else "failed"
+        check(closed, "opendrive_cleanup_failed")
+
+
 def run_backend(runtime, backend, root):
     root.mkdir(mode=0o700)
-    independent = backend in ("http", "webdav", "ftp", "swift", "b2", "azureblob", "azurefiles", "seafile", "koofr", "pixeldrain", "filefabric", "internetarchive", "netstorage", "pcloud", "gcs", "sia", "hidrive", "doi", "quatrix", "shade", "sharefile", "cloudinary")
+    independent = backend in ("http", "webdav", "ftp", "swift", "b2", "azureblob", "azurefiles", "seafile", "koofr", "pixeldrain", "filefabric", "internetarchive", "netstorage", "pcloud", "gcs", "sia", "hidrive", "doi", "quatrix", "shade", "sharefile", "cloudinary", "opendrive")
     row = {"backend": backend,
            "fixture_kind": "local" if backend in ("local", "archive", "memory") else "independent_loopback" if independent else "rclone_loopback",
            "capabilities": {key: "not_run" for key in (
@@ -3712,7 +3779,7 @@ def run_backend(runtime, backend, root):
         row["capabilities"] = {key: "not_run" for key in (HIDRIVE_CAPABILITIES if backend == "hidrive" else DOI_CAPABILITIES)}
     if backend in CACHED_TOKEN_BACKENDS:
         row["capabilities"] = {key: "not_run" for key in CACHED_TOKEN_COMMON_CAPABILITIES | {backend + "_saved_token_read", backend + "_saved_token_rejection"}}
-    if backend == "cloudinary":
+    if backend in ("cloudinary", "opendrive"):
         row["capabilities"] = {key: "not_run" for key in QUATRIX_CAPABILITIES}
     if backend == "quatrix":
         row["capabilities"] = {key: "not_run" for key in QUATRIX_CAPABILITIES}
@@ -3755,6 +3822,9 @@ def run_backend(runtime, backend, root):
     try:
         if backend in CACHED_TOKEN_BACKENDS:
             cached_token_checks(runtime, root, row, expected)
+            return row
+        if backend == "opendrive":
+            opendrive_checks(runtime, root, row, expected)
             return row
         if backend == "cloudinary":
             cloudinary_checks(runtime, root, row, expected)
