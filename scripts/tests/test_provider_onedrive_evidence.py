@@ -279,11 +279,11 @@ class OneDriveWorkflowTests(unittest.TestCase):
         for before, after in (
             ("  onedrive-fixed-api:\n", "  onedrive-fixed-api:\n    if: false\n"),
             ("--rclone \"$RUNNER_TEMP/rclone-onedrive\" --protocol-evidence", "--rclone \"$RUNNER_TEMP/rclone-onedrive\""),
-            ("linkbox-fixed-api, yandex-fixed-api, box-fixed-api, onedrive-fixed-api, filelu-fixed-api, qingstor-fixed-api, drive-fixed-api, dropbox-fixed-api, oos-fixed-api]", "linkbox-fixed-api, box-fixed-api, filelu-fixed-api, qingstor-fixed-api, drive-fixed-api, dropbox-fixed-api, oos-fixed-api]"),
+            ("linkbox-fixed-api, yandex-fixed-api, box-fixed-api, onedrive-fixed-api, filelu-fixed-api, qingstor-fixed-api, drive-fixed-api, dropbox-fixed-api, oos-fixed-api, zoho-fixed-api]", "linkbox-fixed-api, box-fixed-api, filelu-fixed-api, qingstor-fixed-api, drive-fixed-api, dropbox-fixed-api, oos-fixed-api, zoho-fixed-api]"),
             ("          path: ${{ runner.temp }}/provider-onedrive",
              "          run-id: 123\n          path: ${{ runner.temp }}/provider-onedrive"),
             ('--fixture-receipt "$RUNNER_TEMP/provider-onedrive/onedrive-read-protocol.json"', ""),
-            ("sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio,linkbox,yandex,box,onedrive,filelu,qingstor,drive,dropbox,oos\n", "sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio,linkbox,box,filelu,qingstor,drive,dropbox,oos\n")):
+            ("sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio,linkbox,yandex,box,onedrive,filelu,qingstor,drive,dropbox,oos,zoho\n", "sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio,linkbox,box,filelu,qingstor,drive,dropbox,oos,zoho\n")):
             with self.subTest(before=before):
                 self.assertIn(before, self.ci)
                 with self.assertRaises(ValueError):
@@ -293,7 +293,7 @@ class OneDriveWorkflowTests(unittest.TestCase):
         for before, after in (
             ('../scripts/provider-lab/onedrive-fixed-api/run_container.py \\\n            --rclone "$RUNNER_TEMP/rclone-smoke" --protocol-evidence', '../scripts/provider-lab/onedrive-fixed-api/run_container.py \\\n            --rclone "$RUNNER_TEMP/rclone-smoke"'),
             ('--fixture-receipt "$RUNNER_TEMP/onedrive-read-protocol.json"', ""),
-            ("sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio,linkbox,yandex,box,onedrive,filelu,qingstor,drive,dropbox,oos\n", "sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio,linkbox,box,filelu,qingstor,drive,dropbox,oos\n"),
+            ("sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio,linkbox,yandex,box,onedrive,filelu,qingstor,drive,dropbox,oos,zoho\n", "sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio,linkbox,box,filelu,qingstor,drive,dropbox,oos,zoho\n"),
             ("            ${{ runner.temp }}/onedrive-read-protocol.json\n", "")):
             with self.subTest(before=before):
                 self.assertIn(before, self.smoke)

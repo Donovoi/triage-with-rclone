@@ -1987,6 +1987,48 @@
         "refresh",
         "reauthentication"
       ]
+    },
+    "protocol-zoho-saved-token-folder-read": {
+      "required": {
+        "application": [
+          "listing",
+          "download_hash",
+          "manifest_integrity",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation",
+          "refresh"
+        ],
+        "vendor": [
+          "listing",
+          "download_hash",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation",
+          "refresh"
+        ],
+        "local_protocol": [
+          "listing",
+          "download_hash",
+          "missing_object_rejection",
+          "authentication_rejection",
+          "read_denial",
+          "source_preservation",
+          "config_preservation",
+          "fixture_write_rejection",
+          "cleanup"
+        ]
+      },
+      "review_required": false,
+      "unresolved_applicability": [
+        "reauthentication"
+      ]
     }
   },
   "providers": {
@@ -4594,11 +4636,12 @@
     "zoho": {
       "canonical_name": "zoho",
       "schema_sha256": "4c64da1eeacac9968bc54a32f502d0dc386bbb6ae78f908097fd116c95b9768d",
-      "profile": "hosted-renewal-session-review",
+      "profile": "protocol-zoho-saved-token-folder-read",
       "notes": [
         "Zoho WorkDrive account/team, app consent and correct region/root setup. Regional endpoint and token-type handling are required; paid/free entitlement unresolved.",
         "Free account/API eligibility: review_required",
-        "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension."
+        "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension.",
+        "Schema-24 zoho_saved_token_folder_read_v1 qualifies only source-current Linux container evidence for an unexpired saved Zoho-oauthtoken and explicit synthetic root_folder_id in region eu. All nine capabilities, separate workdrive.zoho.eu and download.zoho.eu TLS/SNI/Host bindings, exact page/Accept contracts, complete known inventories, observed-ID downloads and independent SHA-256 checks, wrong-token rejection, equal-length HTTP403 denial, source/config preservation and both-listener cleanup are required. Missing-name rejection uses complete inventories; no native remote hash is claimed. The direct DELETE download guard does not qualify native writes. OAuth login/refresh, account/private-space/team discovery, entitlement/editions, other regions, pagination, throttling/reauthentication, native writes and application/vendor acceptance remain unverified. Raw feasibility/schema-1 rows are ineligible; original renewal and session-review obligations remain."
       ],
       "source_links": [
         "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/zoho.md"

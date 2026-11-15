@@ -201,6 +201,11 @@ DROPBOX_REQUIRED_CAPABILITIES = frozenset({"listing", "download_hash", "missing_
 OOS_MODE = "oos_user_principal_bucket_read_v1"
 OOS_REQUIRED_CAPABILITIES = frozenset({"listing", "download_hash", "missing_object_rejection",
     "authentication_rejection", "read_denial", "source_preservation", "config_preservation", "fixture_write_rejection", "cleanup"})
+
+ZOHO_MODE = "zoho_saved_token_folder_read_v1"
+ZOHO_REQUIRED_CAPABILITIES = frozenset({"listing", "download_hash", "missing_object_rejection",
+    "authentication_rejection", "read_denial", "source_preservation", "config_preservation", "fixture_write_rejection", "cleanup"})
+
 HDFS_REQUIRED_CAPABILITIES = frozenset({
     "listing", "download_hash", "missing_object_rejection", "authentication_rejection",
     "source_preservation", "cleanup",
@@ -271,7 +276,7 @@ FIXTURE_CAPABILITIES = {
     "authentication_rejection", "cleanup", "truncated_download_rejection", "read_denial",
     "cancellation_cleanup", "fixture_write_rejection", "host_key_rejection", "renewal_denial",
 } | ARCHIVE_CAPABILITIES | SWIFT_ONLY_CAPABILITIES | B2_ONLY_CAPABILITIES | FILEFABRIC_ONLY_CAPABILITIES | INTERNETARCHIVE_ONLY_CAPABILITIES | PCLOUD_ONLY_CAPABILITIES | DOI_ONLY_CAPABILITIES | HIDRIVE_ONLY_CAPABILITIES | SHADE_ONLY_CAPABILITIES | SHAREFILE_ONLY_CAPABILITIES
-HARNESSES = ("fixture_servers.py", "run_lab.py", "fixture_tls.py", "fixture_pcloud.py", "fixture_gcs.py", "fixture_sia.py", "fixture_read_api.py", "fixture_hidrive.py", "fixture_doi.py", "fixture_quatrix.py", "fixture_shade.py", "fixture_sharefile.py", "fixture_cloudinary.py", "fixture_opendrive.py", "fixture_gofile.py", "fixture_drime.py", "fixture_fichier.py", "fixture_premiumizeme.py", "fixture_putio.py", "fixture_linkbox.py", "fixture_yandex.py", "fixture_box.py", "fixture_onedrive.py", "fixture_filelu.py", "fixture_qingstor.py", "fixture_drive.py", "fixture_dropbox.py", "fixture_oos.py", "requirements-fixture.txt")
+HARNESSES = ("fixture_servers.py", "run_lab.py", "fixture_tls.py", "fixture_pcloud.py", "fixture_gcs.py", "fixture_sia.py", "fixture_read_api.py", "fixture_hidrive.py", "fixture_doi.py", "fixture_quatrix.py", "fixture_shade.py", "fixture_sharefile.py", "fixture_cloudinary.py", "fixture_opendrive.py", "fixture_gofile.py", "fixture_drime.py", "fixture_fichier.py", "fixture_premiumizeme.py", "fixture_putio.py", "fixture_linkbox.py", "fixture_yandex.py", "fixture_box.py", "fixture_onedrive.py", "fixture_filelu.py", "fixture_qingstor.py", "fixture_drive.py", "fixture_dropbox.py", "fixture_oos.py", "fixture_zoho.py", "requirements-fixture.txt")
 HASH_PATTERN = re.compile(r"[a-f0-9]{64}")
 ID_PATTERN = re.compile(r"[a-z0-9_]{1,80}")
 MAX_JSON = 32 * 1024 * 1024
@@ -1391,6 +1396,44 @@ def validate_oos_receipt(receipt, runtime, bindings, now, max_age_hours, fixture
     return receipt
 
 
+def zoho_evidence_module():
+    """Import definitions only from the current owned stdlib supervisor."""
+    path = plain_path(ROOT / "scripts" / "provider-lab" / "zoho-fixed-api" / "run_container.py")
+    try:
+        source = path.read_bytes()
+        if len(source) > MAX_RECEIPT:
+            fail("zoho_evidence_helper_size_limit")
+        spec = importlib.util.spec_from_file_location("coverage_zoho_evidence", path)
+        module = importlib.util.module_from_spec(spec)
+        exec(compile(source, str(path), "exec"), module.__dict__)
+        return module
+    except (ImportError, OSError, SyntaxError, AttributeError, TypeError):
+        fail("zoho_evidence_helper_unavailable")
+
+
+def compute_zoho_bindings(root):
+    try:
+        return zoho_evidence_module().compute_bindings(plain_path(Path(root).absolute()))
+    except (OSError, ValueError, TypeError, KeyError, RuntimeError):
+        fail("zoho_evidence_bindings_invalid")
+
+
+def validate_zoho_receipt(receipt, runtime, bindings, now, max_age_hours, fixture_manifest_sha256):
+    if bindings is None:
+        fail("unknown_receipt_schema")
+    if (not isinstance(bindings, dict) or not valid_hash(fixture_manifest_sha256)
+            or bindings.get("fixture_manifest_sha256") != fixture_manifest_sha256):
+        fail("zoho_evidence_bindings_invalid")
+    try:
+        zoho_evidence_module().validate_read_evidence(receipt, runtime, bindings, now, max_age_hours)
+    except (ValueError, RuntimeError) as error:
+        code = str(error)
+        fail(code if re.fullmatch(r"[a-z][a-z0-9_]{0,80}", code) else "invalid_zoho_evidence")
+    except (TypeError, KeyError, AttributeError, OverflowError):
+        fail("invalid_zoho_evidence")
+    return receipt
+
+
 def pcloud_evidence_module():
     """Import definitions only from the current owned stdlib supervisor."""
     path = plain_path(ROOT / "scripts" / "provider-lab" / "pcloud-oauth" / "run_container.py")
@@ -1697,7 +1740,7 @@ def parse_utc(value):
 
 
 def validate_receipt(receipt, runtime, harness_sha256, now, max_age_hours=MAX_AGE_HOURS,
-                     fixture_manifest_sha256=None, smb_bindings=None, pcloud_bindings=None, gcs_bindings=None, hdfs_bindings=None, cloudinary_bindings=None, opendrive_bindings=None, gofile_bindings=None, drime_bindings=None, fichier_bindings=None, premiumizeme_bindings=None, putio_bindings=None, linkbox_bindings=None, yandex_bindings=None, box_bindings=None, onedrive_bindings=None, filelu_bindings=None, qingstor_bindings=None, drive_bindings=None, dropbox_bindings=None, oos_bindings=None):
+                     fixture_manifest_sha256=None, smb_bindings=None, pcloud_bindings=None, gcs_bindings=None, hdfs_bindings=None, cloudinary_bindings=None, opendrive_bindings=None, gofile_bindings=None, drime_bindings=None, fichier_bindings=None, premiumizeme_bindings=None, putio_bindings=None, linkbox_bindings=None, yandex_bindings=None, box_bindings=None, onedrive_bindings=None, filelu_bindings=None, qingstor_bindings=None, drive_bindings=None, dropbox_bindings=None, oos_bindings=None, zoho_bindings=None):
     if isinstance(receipt, dict) and type(receipt.get("schema_version")) is int and receipt["schema_version"] == 17:
         return validate_box_receipt(receipt, runtime, box_bindings, now, max_age_hours, fixture_manifest_sha256)
     if isinstance(receipt, dict) and type(receipt.get("schema_version")) is int and receipt["schema_version"] == 18:
@@ -1710,6 +1753,8 @@ def validate_receipt(receipt, runtime, harness_sha256, now, max_age_hours=MAX_AG
         return validate_qingstor_receipt(receipt, runtime, qingstor_bindings, now, max_age_hours, fixture_manifest_sha256)
     if isinstance(receipt, dict) and type(receipt.get("schema_version")) is int and receipt["schema_version"] == 21:
         return validate_drive_receipt(receipt, runtime, drive_bindings, now, max_age_hours, fixture_manifest_sha256)
+    if isinstance(receipt, dict) and type(receipt.get("schema_version")) is int and receipt["schema_version"] == 24:
+        return validate_zoho_receipt(receipt, runtime, zoho_bindings, now, max_age_hours, fixture_manifest_sha256)
     if isinstance(receipt, dict) and type(receipt.get("schema_version")) is int and receipt["schema_version"] == 22:
         return validate_dropbox_receipt(receipt, runtime, dropbox_bindings, now, max_age_hours, fixture_manifest_sha256)
     if isinstance(receipt, dict) and type(receipt.get("schema_version")) is int and receipt["schema_version"] == 16:
@@ -1885,7 +1930,7 @@ def merge_fixture_observation(observed, capabilities, failed, run):
 
 def evaluate(catalog, policy, runtime, receipts, harness_sha256, now=None, max_age_hours=MAX_AGE_HOURS,
              fixture_manifest_sha256=None, smb_bindings=None, pcloud_bindings=None, gcs_bindings=None, hdfs_bindings=None,
-             application_receipts=(), application_bindings=None, cloudinary_bindings=None, opendrive_bindings=None, gofile_bindings=None, drime_bindings=None, fichier_bindings=None, premiumizeme_bindings=None, putio_bindings=None, linkbox_bindings=None, yandex_bindings=None, box_bindings=None, onedrive_bindings=None, filelu_bindings=None, qingstor_bindings=None, drive_bindings=None, dropbox_bindings=None, oos_bindings=None):
+             application_receipts=(), application_bindings=None, cloudinary_bindings=None, opendrive_bindings=None, gofile_bindings=None, drime_bindings=None, fichier_bindings=None, premiumizeme_bindings=None, putio_bindings=None, linkbox_bindings=None, yandex_bindings=None, box_bindings=None, onedrive_bindings=None, filelu_bindings=None, qingstor_bindings=None, drive_bindings=None, dropbox_bindings=None, oos_bindings=None, zoho_bindings=None):
     """Receipts are explicit batch inputs. Failed current evidence stays failed."""
     now = now or datetime.now(timezone.utc)
     validate_policy(policy)
@@ -1911,7 +1956,7 @@ def evaluate(catalog, policy, runtime, receipts, harness_sha256, now=None, max_a
     for receipt in receipts:
         try:
             validate_receipt(receipt, runtime, harness_sha256, now, max_age_hours, fixture_manifest_sha256,
-                             smb_bindings=smb_bindings, pcloud_bindings=pcloud_bindings, gcs_bindings=gcs_bindings, hdfs_bindings=hdfs_bindings, cloudinary_bindings=cloudinary_bindings, opendrive_bindings=opendrive_bindings, gofile_bindings=gofile_bindings, drime_bindings=drime_bindings, fichier_bindings=fichier_bindings, premiumizeme_bindings=premiumizeme_bindings, putio_bindings=putio_bindings, linkbox_bindings=linkbox_bindings, yandex_bindings=yandex_bindings, box_bindings=box_bindings, onedrive_bindings=onedrive_bindings, filelu_bindings=filelu_bindings, qingstor_bindings=qingstor_bindings, drive_bindings=drive_bindings, dropbox_bindings=dropbox_bindings, oos_bindings=oos_bindings)
+                             smb_bindings=smb_bindings, pcloud_bindings=pcloud_bindings, gcs_bindings=gcs_bindings, hdfs_bindings=hdfs_bindings, cloudinary_bindings=cloudinary_bindings, opendrive_bindings=opendrive_bindings, gofile_bindings=gofile_bindings, drime_bindings=drime_bindings, fichier_bindings=fichier_bindings, premiumizeme_bindings=premiumizeme_bindings, putio_bindings=putio_bindings, linkbox_bindings=linkbox_bindings, yandex_bindings=yandex_bindings, box_bindings=box_bindings, onedrive_bindings=onedrive_bindings, filelu_bindings=filelu_bindings, qingstor_bindings=qingstor_bindings, drive_bindings=drive_bindings, dropbox_bindings=dropbox_bindings, oos_bindings=oos_bindings, zoho_bindings=zoho_bindings)
             for row in receipt["backends"]:
                 if row["backend"] not in {entry["backend"] for entry in catalog}:
                     fail("fixture_backend_absent_from_catalog")
@@ -2086,6 +2131,16 @@ def evaluate(catalog, policy, runtime, receipts, harness_sha256, now=None, max_a
                     mode_observed = observed.setdefault("modes", {}).setdefault(
                         OOS_MODE, {"capabilities": {}, "failed": False, "runs": []})
                     merge_fixture_observation(mode_observed, contributed, failed, run)
+                if row["backend"] == "zoho":
+                    native = receipt["native_evidence"]
+                    run.update(fixture_mode=ZOHO_MODE, platform="linux", architecture="amd64",
+                               base_image=native["base_image"], image_id=native["image_id"],
+                               python_version=native["python_version"],
+                               dependency_lock_sha256=native["dependency_lock_sha256"],
+                               source_sha256=dict(native["source_sha256"]), harness_sha256=receipt["harness_sha256"])
+                    mode_observed = observed.setdefault("modes", {}).setdefault(
+                        ZOHO_MODE, {"capabilities": {}, "failed": False, "runs": []})
+                    merge_fixture_observation(mode_observed, contributed, failed, run)
                 if row["backend"] == "gcs":
                     mode = row.get("fixture_mode", GCS_STATIC_TOKEN_MODE)
                     run["fixture_mode"] = mode
@@ -2243,7 +2298,7 @@ def evaluate(catalog, policy, runtime, receipts, harness_sha256, now=None, max_a
                     if value in ("passed", "failed"):
                         capabilities[capability] = value
                 evidence["runs"] = observed["runs"]
-                if backend in ("filefabric", "smb", "hdfs", "internetarchive", "pcloud", "gcs", "cloudinary", "opendrive", "gofile", "drime", "fichier", "premiumizeme", "putio", "linkbox", "yandex", "box", "onedrive", "filelu", "qingstor", "drive", "dropbox", "oos"):
+                if backend in ("filefabric", "smb", "hdfs", "internetarchive", "pcloud", "gcs", "cloudinary", "opendrive", "gofile", "drime", "fichier", "premiumizeme", "putio", "linkbox", "yandex", "box", "onedrive", "filelu", "qingstor", "drive", "dropbox", "oos", "zoho"):
                     evidence["modes"] = {}
                     contracts = ({SMB_MODE: SMB_REQUIRED_CAPABILITIES} if backend == "smb"
                                  else {HDFS_MODE: HDFS_REQUIRED_CAPABILITIES} if backend == "hdfs"
@@ -2257,6 +2312,7 @@ def evaluate(catalog, policy, runtime, receipts, harness_sha256, now=None, max_a
                                  else {LINKBOX_MODE: LINKBOX_REQUIRED_CAPABILITIES} if backend == "linkbox"
                                  else {YANDEX_MODE: YANDEX_REQUIRED_CAPABILITIES} if backend == "yandex"
                                  else {DROPBOX_MODE: DROPBOX_REQUIRED_CAPABILITIES} if backend == "dropbox"
+                                 else {ZOHO_MODE: ZOHO_REQUIRED_CAPABILITIES} if backend == "zoho"
                                  else {DRIVE_MODE: DRIVE_REQUIRED_CAPABILITIES} if backend == "drive"
                                  else {QINGSTOR_MODE: QINGSTOR_REQUIRED_CAPABILITIES} if backend == "qingstor"
                                  else {OOS_MODE: OOS_REQUIRED_CAPABILITIES} if backend == "oos"
@@ -2771,9 +2827,12 @@ def main(argv=None):
         oos_bindings = (compute_oos_bindings(ROOT / "scripts" / "provider-lab" / "oos-fixed-api")
                                if any(isinstance(receipt, dict) and type(receipt.get("schema_version")) is int
                                       and receipt["schema_version"] == 23 for receipt in receipts) else None)
+        zoho_bindings = (compute_zoho_bindings(ROOT / "scripts" / "provider-lab" / "zoho-fixed-api")
+                               if any(isinstance(receipt, dict) and type(receipt.get("schema_version")) is int
+                                      and receipt["schema_version"] == 24 for receipt in receipts) else None)
         report = evaluate(catalog, policy, runtime, receipts, harness_sha, max_age_hours=args.max_age_hours,
                           fixture_manifest_sha256=fixture_sha, smb_bindings=smb_bindings, pcloud_bindings=pcloud_bindings, gcs_bindings=gcs_bindings, hdfs_bindings=hdfs_bindings,
-                          application_receipts=application_receipts, application_bindings=application_bindings, cloudinary_bindings=cloudinary_bindings, opendrive_bindings=opendrive_bindings, gofile_bindings=gofile_bindings, drime_bindings=drime_bindings, fichier_bindings=fichier_bindings, premiumizeme_bindings=premiumizeme_bindings, putio_bindings=putio_bindings, linkbox_bindings=linkbox_bindings, yandex_bindings=yandex_bindings, box_bindings=box_bindings, onedrive_bindings=onedrive_bindings, filelu_bindings=filelu_bindings, qingstor_bindings=qingstor_bindings, drive_bindings=drive_bindings, dropbox_bindings=dropbox_bindings, oos_bindings=oos_bindings)
+                          application_receipts=application_receipts, application_bindings=application_bindings, cloudinary_bindings=cloudinary_bindings, opendrive_bindings=opendrive_bindings, gofile_bindings=gofile_bindings, drime_bindings=drime_bindings, fichier_bindings=fichier_bindings, premiumizeme_bindings=premiumizeme_bindings, putio_bindings=putio_bindings, linkbox_bindings=linkbox_bindings, yandex_bindings=yandex_bindings, box_bindings=box_bindings, onedrive_bindings=onedrive_bindings, filelu_bindings=filelu_bindings, qingstor_bindings=qingstor_bindings, drive_bindings=drive_bindings, dropbox_bindings=dropbox_bindings, oos_bindings=oos_bindings, zoho_bindings=zoho_bindings)
         report["errors"] = sorted(set(report["errors"] + receipt_errors))
         report["all_complete"] = report["all_complete"] and not report["errors"]
         report["gate_errors"] = gate_errors(report, args.require_plans, required, args.require_complete,

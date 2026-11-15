@@ -509,3 +509,13 @@ Independent RSA PKCS1v15 SHA256 verification binds canonical Date, exact escaped
 Schema-23 oos_user_principal_bucket_read_v1 binds the current 34-file source closure, pinned runtime/dependencies, native output/timing, nine read capabilities, containment and cleanup. Forty-nine provider regressions validate wire behavior, containment and receipt substitution. Both combined Linux and provider-smoke gates require 44 reviewed profiles and the same-run receipt; raw feasibility evidence cannot qualify this mode.
 
 The direct signed DELETE guard does not qualify native writes. Application/vendor and unresolved renewal/session obligations remain. SDK principal/session/environment modes, IAM eligibility, anonymous access, broad bucket discovery, other regions/realms, pagination, native writes and application/live-provider acceptance remain unverified. See [the isolated fixture](../../scripts/provider-lab/oos-fixed-api/README.md).
+
+### Zoho saved-token folder read protocol
+
+The isolated Linux Zoho profile uses a saved unexpired Zoho-oauthtoken, explicit root_folder_id and region eu. Separate private TLS/SNI/Host bindings map workdrive.zoho.eu to 127.0.0.1:443 and download.zoho.eu to 127.0.0.2:443, with both CA roots supplied to native rclone.
+
+Exact Accept and page controls select complete inventories with typed attributes, byte sizes and millisecond timestamps. Native missing-name rejection uses those complete inventories, with no fabricated missing-object route. Downloads require an observed file ID and retained OAuth token; three known payloads receive independent SHA-256 checks. No remote native hash is claimed. The HTTP403 body has the advertised file length so size mismatch cannot mask status-check failure. Wrong-token rejection, source/config preservation and both-listener cleanup are required.
+
+Schema-24 zoho_saved_token_folder_read_v1 binds the current 35-file source closure, pinned runtime/dependencies, native output/timing, nine read capabilities and containment/cleanup. Fifty provider regressions cover exact routes/metadata, cross-authority rejection, second-listener failures and evidence substitution. Both combined Linux and provider-smoke gates require 45 reviewed profiles and the same-run receipt; raw feasibility evidence cannot qualify this mode.
+
+The direct DELETE guard does not qualify native writes. Existing application/vendor renewal and unresolved session obligations remain. OAuth login/refresh, account/private-space/team discovery, entitlement/editions, other regions, pagination, throttling/reauthentication, native writes and application/live-provider acceptance remain unverified. See [the isolated fixture](../../scripts/provider-lab/zoho-fixed-api/README.md).
