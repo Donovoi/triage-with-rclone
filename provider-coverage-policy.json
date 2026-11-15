@@ -1218,6 +1218,128 @@
       },
       "review_required": false,
       "unresolved_applicability": []
+    },
+    "protocol-quatrix-static-key-read": {
+      "required": {
+        "application": [
+          "listing",
+          "download_hash",
+          "manifest_integrity",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation"
+        ],
+        "vendor": [
+          "listing",
+          "download_hash",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation"
+        ],
+        "local_protocol": [
+          "listing",
+          "download_hash",
+          "missing_object_rejection",
+          "authentication_rejection",
+          "read_denial",
+          "source_preservation",
+          "config_preservation",
+          "fixture_write_rejection",
+          "cleanup"
+        ]
+      },
+      "review_required": false,
+      "unresolved_applicability": []
+    },
+    "protocol-shade-saved-token-read": {
+      "required": {
+        "application": [
+          "listing",
+          "download_hash",
+          "manifest_integrity",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation",
+          "refresh"
+        ],
+        "vendor": [
+          "listing",
+          "download_hash",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation",
+          "refresh"
+        ],
+        "local_protocol": [
+          "listing",
+          "download_hash",
+          "missing_object_rejection",
+          "shade_saved_token_read",
+          "shade_saved_token_rejection",
+          "read_denial",
+          "source_preservation",
+          "config_preservation",
+          "fixture_write_rejection",
+          "cleanup"
+        ]
+      },
+      "review_required": false,
+      "unresolved_applicability": []
+    },
+    "protocol-sharefile-saved-token-read": {
+      "required": {
+        "application": [
+          "listing",
+          "download_hash",
+          "manifest_integrity",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation",
+          "refresh"
+        ],
+        "vendor": [
+          "listing",
+          "download_hash",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation",
+          "refresh"
+        ],
+        "local_protocol": [
+          "listing",
+          "download_hash",
+          "missing_object_rejection",
+          "sharefile_saved_token_read",
+          "sharefile_saved_token_rejection",
+          "read_denial",
+          "source_preservation",
+          "config_preservation",
+          "fixture_write_rejection",
+          "cleanup"
+        ]
+      },
+      "review_required": false,
+      "unresolved_applicability": [
+        "reauthentication"
+      ]
     }
   },
   "providers": {
@@ -3081,7 +3203,7 @@
     "quatrix": {
       "canonical_name": "quatrix",
       "schema_sha256": "f90fa0650d2d29240abe716966a00a67fe2cbebb8c11404c719867ee814a8b49",
-      "profile": "hosted-static-credentials",
+      "profile": "protocol-quatrix-static-key-read",
       "notes": [
         "Quatrix endpoint/account and profile API key; enterprise/trial entitlement unresolved.",
         "Free account/API eligibility: review_required",
@@ -3317,7 +3439,7 @@
     "shade": {
       "canonical_name": "shade",
       "schema_sha256": "11fae1d2dbe98923f926912b19dde9d1e24390d55e89d65eb642d30675f41621",
-      "profile": "hosted-renewal",
+      "profile": "protocol-shade-saved-token-read",
       "notes": [
         "Shade account, API key and Drive ID. Rclone documents a free account; current API entitlement/availability requires confirmation.",
         "Free account/API eligibility: free_plan_documented_api_entitlement_review_required",
@@ -3352,7 +3474,7 @@
     "sharefile": {
       "canonical_name": "sharefile",
       "schema_sha256": "93f298c423ecefef1f719c07812642728abd3c8fb4e741194b3167a70e8aeccf",
-      "profile": "hosted-renewal-session-review",
+      "profile": "protocol-sharefile-saved-token-read",
       "notes": [
         "ShareFile tenant/account and OAuth app setup; callback tenant/API metadata must be retained. Enterprise/trial entitlement unresolved.",
         "Free account/API eligibility: review_required",
