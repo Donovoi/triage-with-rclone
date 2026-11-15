@@ -583,3 +583,13 @@ Root and nested albums retain scope and creation times. Issued content base URLs
 Schema-30 gphotos_saved_token_album_read_v1 binds the current 41-file source closure, pinned runtime/dependencies, native output/timing, nine capabilities and containment/cleanup. Fifty-two provider regressions cover wire, separate authorities, containment and evidence substitution. Both combined Linux and provider-smoke gates require 51 reviewed profiles and the same-run receipt; raw feasibility evidence cannot qualify this mode.
 
 The current backend limits access to app-created media. Synthetic transport does not prove a live upload grant, media decoding, full resolution or EXIF fidelity. OAuth login/refresh, non-app-created library access, shared albums, date/feature filters, pagination, duplicate filenames, videos, native writes and application/live-provider acceptance remain unverified. Independent renewal/session-review obligations remain. See [the isolated fixture](../../scripts/provider-lab/gphotos-fixed-api/README.md).
+
+### Huawei Drive saved-token folder read protocol
+
+The isolated Linux Huawei Drive profile uses a saved OAuth bearer and an explicit synthetic root_folder_id. The normal driveapis.cloud.huawei.com.cn authority retains its private TLS/SNI/Host/address binding at 127.0.0.1:443. Authenticated about discovery returns the global authority. Complete folder inventories use fields=*, containers=drive, pageSize=1000 and the exact selected-parent query.
+
+Root and nested folders retain scope, timestamps, parent arrays and independent SHA-256 hashes. Content requests require an observed file ID, form=content and the saved bearer. Three payloads receive independent SHA-256 checks. Both native cat and copy reject HTTP403 with identical expected bytes. Wrong-token and missing-name rejection, source/config preservation and cleanup are mandatory.
+
+Schema-31 huaweidrive_saved_token_folder_read_v1 binds the current 42-file source closure, pinned runtime/dependencies, native output/timing, nine capabilities and containment/cleanup. Forty-eight provider regressions cover wire, containment and evidence substitution. Both combined Linux and provider-smoke gates require 52 reviewed profiles and the same-run receipt; raw feasibility evidence cannot qualify this mode.
+
+OAuth login/refresh, root autodiscovery, regional authority switching, pagination, throttling, native empty-object handling, uploads, native writes and application/live-provider acceptance remain unverified. Independent renewal/session-review obligations remain. See [the isolated fixture](../../scripts/provider-lab/huaweidrive-fixed-api/README.md).

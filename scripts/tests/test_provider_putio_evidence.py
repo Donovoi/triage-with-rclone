@@ -279,11 +279,11 @@ class PutioWorkflowTests(unittest.TestCase):
         for before, after in (
             ("  putio-fixed-api:\n", "  putio-fixed-api:\n    if: false\n"),
             ("--rclone \"$RUNNER_TEMP/rclone-putio\" --protocol-evidence", "--rclone \"$RUNNER_TEMP/rclone-putio\""),
-            ("premiumizeme-fixed-api, putio-fixed-api, linkbox-fixed-api, yandex-fixed-api, box-fixed-api, onedrive-fixed-api, filelu-fixed-api, qingstor-fixed-api, drive-fixed-api, dropbox-fixed-api, oos-fixed-api, zoho-fixed-api, jottacloud-fixed-api, sugarsync-fixed-api, pikpak-fixed-api, dosya-fixed-api, kdrive-fixed-api, gphotos-fixed-api]", "premiumizeme-fixed-api, linkbox-fixed-api, yandex-fixed-api, box-fixed-api, onedrive-fixed-api, filelu-fixed-api, qingstor-fixed-api, drive-fixed-api, dropbox-fixed-api, oos-fixed-api, zoho-fixed-api, jottacloud-fixed-api, sugarsync-fixed-api, pikpak-fixed-api, dosya-fixed-api]"),
+            ("premiumizeme-fixed-api, putio-fixed-api, linkbox-fixed-api, yandex-fixed-api, box-fixed-api, onedrive-fixed-api, filelu-fixed-api, qingstor-fixed-api, drive-fixed-api, dropbox-fixed-api, oos-fixed-api, zoho-fixed-api, jottacloud-fixed-api, sugarsync-fixed-api, pikpak-fixed-api, dosya-fixed-api, kdrive-fixed-api, gphotos-fixed-api, huaweidrive-fixed-api]", "premiumizeme-fixed-api, linkbox-fixed-api, yandex-fixed-api, box-fixed-api, onedrive-fixed-api, filelu-fixed-api, qingstor-fixed-api, drive-fixed-api, dropbox-fixed-api, oos-fixed-api, zoho-fixed-api, jottacloud-fixed-api, sugarsync-fixed-api, pikpak-fixed-api, dosya-fixed-api]"),
             ("          path: ${{ runner.temp }}/provider-putio",
              "          run-id: 123\n          path: ${{ runner.temp }}/provider-putio"),
             ('--fixture-receipt "$RUNNER_TEMP/provider-putio/putio-read-protocol.json"', ""),
-            ("sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio,linkbox,yandex,box,onedrive,filelu,qingstor,drive,dropbox,oos,zoho,jottacloud,sugarsync,pikpak,dosya,kdrive,gphotos\n", "sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,linkbox,yandex,box,onedrive,filelu,qingstor,drive,dropbox,oos,zoho,jottacloud,sugarsync,pikpak,dosya\n")):
+            ("sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio,linkbox,yandex,box,onedrive,filelu,qingstor,drive,dropbox,oos,zoho,jottacloud,sugarsync,pikpak,dosya,kdrive,gphotos,huaweidrive\n", "sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,linkbox,yandex,box,onedrive,filelu,qingstor,drive,dropbox,oos,zoho,jottacloud,sugarsync,pikpak,dosya\n")):
             with self.subTest(before=before):
                 self.assertIn(before, self.ci)
                 with self.assertRaises(ValueError):
@@ -293,7 +293,7 @@ class PutioWorkflowTests(unittest.TestCase):
         for before, after in (
             ('../scripts/provider-lab/putio-fixed-api/run_container.py \\\n            --rclone "$RUNNER_TEMP/rclone-smoke" --protocol-evidence', '../scripts/provider-lab/putio-fixed-api/run_container.py \\\n            --rclone "$RUNNER_TEMP/rclone-smoke"'),
             ('--fixture-receipt "$RUNNER_TEMP/putio-read-protocol.json"', ""),
-            ("sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio,linkbox,yandex,box,onedrive,filelu,qingstor,drive,dropbox,oos,zoho,jottacloud,sugarsync,pikpak,dosya,kdrive,gphotos\n", "sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,linkbox,yandex,box,onedrive,filelu,qingstor,drive,dropbox,oos,zoho,jottacloud,sugarsync,pikpak,dosya\n"),
+            ("sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio,linkbox,yandex,box,onedrive,filelu,qingstor,drive,dropbox,oos,zoho,jottacloud,sugarsync,pikpak,dosya,kdrive,gphotos,huaweidrive\n", "sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,linkbox,yandex,box,onedrive,filelu,qingstor,drive,dropbox,oos,zoho,jottacloud,sugarsync,pikpak,dosya\n"),
             ("            ${{ runner.temp }}/putio-read-protocol.json\n", "")):
             with self.subTest(before=before):
                 self.assertIn(before, self.smoke)
