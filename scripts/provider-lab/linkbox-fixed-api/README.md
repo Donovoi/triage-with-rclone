@@ -34,12 +34,12 @@ A fresh network-none container maps only www.linkbox.to to loopback. Exact
 SNI/Host checks and a private CA contain synthetic requests. The supervisor
 enforces nonroot identity, read-only root, no capabilities or host mounts/ports,
 private namespaces, bounded resources and private noexec tmpfs. Schema-15
-linkbox_saved_web_token_read_v1 binds the current 30-file source closure,
+linkbox_saved_web_token_read_v1 binds the current 31-file source closure,
 runtime/dependency pins, exact native output/timing, nine capabilities and
 owned cleanup. Generated credentials, keys and URLs remain ephemeral; the
 shared build cache and pinned public base image remain.
 
-Both combined Linux and provider-smoke gates require 40 reviewed profiles and
+Both combined Linux and provider-smoke gates require 41 reviewed profiles and
 the same-run named receipt. Raw feasibility/schema-1 rows remain ineligible;
 the 26 portable experiments remain unchanged. Forty-five wire, TLS, container,
 workflow and receipt tests run without Docker or fixed port/DNS requirements

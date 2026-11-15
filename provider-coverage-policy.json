@@ -1821,6 +1821,47 @@
       },
       "review_required": false,
       "unresolved_applicability": []
+    },
+    "protocol-qingstor-configured-key-bucket-read": {
+      "required": {
+        "application": [
+          "listing",
+          "download_hash",
+          "manifest_integrity",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation"
+        ],
+        "vendor": [
+          "listing",
+          "download_hash",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation"
+        ],
+        "local_protocol": [
+          "listing",
+          "download_hash",
+          "missing_object_rejection",
+          "authentication_rejection",
+          "read_denial",
+          "source_preservation",
+          "config_preservation",
+          "fixture_write_rejection",
+          "cleanup"
+        ]
+      },
+      "review_required": false,
+      "unresolved_applicability": [
+        "refresh",
+        "reauthentication"
+      ]
     }
   },
   "providers": {
@@ -3649,13 +3690,14 @@
     "qingstor": {
       "canonical_name": "qingstor",
       "schema_sha256": "7bebff45a7b8bc30d64ddf8c4c9f75040c65778b139b50561cec8528e856f4c3",
-      "profile": "hosted-renewal-review-session-review",
+      "profile": "protocol-qingstor-configured-key-bucket-read",
       "notes": [
         "QingCloud/QingStor account, bucket/zone and access/secret key. Public anonymous buckets are separate; free/API entitlement unresolved.",
         "Free account/API eligibility: review_required",
         "Policy integration conservatively leaves connection/session applicability unresolved for the untraced alternative auth profile; frozen research is preserved and no N/A conclusion is inferred from a helper default.",
         "An explicit blank-credential anonymous route is separate from identity-provider authentication.",
-        "Runtime/environment credential-provider behavior is not source-resolved in this pass."
+        "Runtime/environment credential-provider behavior is not source-resolved in this pass.",
+        "Schema-20 qingstor_configured_key_bucket_read_v1 qualifies only source-current Linux container evidence for a configured key pair, default pek3a regional endpoint and explicit synthetic bucket. All nine capabilities, exact TLS/SNI and SDK port-qualified Host, fresh signed Date and HMAC-SHA256, complete recursive and nonrecursive scoped inventories, MD5 ETag metadata, known-byte reads, signed read denial and cleanup are required. Listing controls are not signed by the SDK and are validated independently. The direct signed DELETE guard does not qualify native writes. IAM/environment/config fallback, temporary tokens, key rotation, account-wide buckets, other regions, continuations, multipart/SSE/other subresources, native writes and application/vendor acceptance remain unverified. Raw feasibility/schema-1 receipts are ineligible; original refresh and session applicability reviews remain unresolved."
       ],
       "source_links": [
         "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/qingstor.md",
