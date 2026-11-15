@@ -1,10 +1,10 @@
-# GoFile configured-token read feasibility
+# GoFile configured-token read protocol
 
 Run only inside a disposable Linux VM with Docker:
 
 ~~~sh
 python -B scripts/provider-lab/gofile-fixed-api/run_container.py \
-  --rclone /absolute/path/to/verified/rclone \
+  --rclone /absolute/path/to/verified/rclone --protocol-evidence \
   --report /absolute/new/path/gofile-fixed-api-feasibility.json
 ~~~
 
@@ -34,11 +34,19 @@ Shared build cache and the pinned public base image remain; synthetic credential
 and private TLS material exist only in ephemeral tmpfs. Published receipts contain
 no raw transcripts.
 
-This first feasibility receipt is ledger-ineligible. It cannot satisfy the
-30 qualified Linux profiles or claim application/vendor acceptance. Account
-creation/discovery, token renewal, real content-host redirects, pagination beyond
-one page, native writes and Windows application behavior remain unverified.
-Wire, TLS and container contract tests run without Docker or fixed port/DNS
-requirements on the unit-test platforms.
+The explicit --protocol-evidence option emits closed schema-10
+gofile_configured_token_read_v1 evidence. The importer recomputes the current
+21-file source closure and runtime bindings, and validates isolation, dependencies,
+native probe, timestamps, exact output, all nine capabilities and cleanup before
+accepting only the Linux local-protocol tier. Both combined Linux and provider-smoke
+gates require 31 profiles; GoFile remains outside the 26 portable experiments.
+
+Without that option, feasibility receipts remain ledger-ineligible. Historical
+feasibility and schema-1 rows cannot satisfy this mode. Application/vendor
+requirements and lifecycle applicability remain unchanged. Account creation and
+discovery, explicit token replacement, real content-host redirects, pagination
+beyond one page, native writes and Windows application behavior remain unverified.
+Forty-four wire, TLS, container, workflow and receipt regressions run without Docker
+or fixed port/DNS requirements on the unit-test platforms.
 
 Source: [rclone GoFile v1.75.2](https://github.com/rclone/rclone/tree/v1.75.2/backend/gofile).

@@ -35,6 +35,7 @@ HARNESS = ("fixture_servers.py", "run_lab.py", "fixture_tls.py", "fixture_pcloud
 SOURCE_FILES = tuple(sorted([PREFIX + p for p in ("Dockerfile", "build-lock.json", "run_container.py", "probe.py")]
     + ["scripts/provider-lab/" + p for p in HARNESS] + ["rclone-version.env"]))
 FIXTURE_SHA256 = "c990bbd4909b227aae4c70d26f9da5534740a2eb10337ced47977f915fa617be"
+READ_MODE = "gofile_configured_token_read_v1"
 CAPABILITIES = {"listing", "download_hash", "missing_object_rejection", "read_denial", "source_preservation",
                 "config_preservation", "fixture_write_rejection", "authentication_rejection", "cleanup"}
 PROBE_CHECKS = {"environment", "authority_preserved", "runtime_binding", "source_binding", "protocol"}
@@ -158,7 +159,7 @@ def create_args(name, image, run_id):
     return ["create", "--name", name, "--label", LABEL + "=" + run_id, "--label", KIND + "=gofile-fixed-api-probe",
             "--network", "none", "--add-host", "api.gofile.io:127.0.0.1", "--read-only", "--user", "10001:10001", "--cap-drop", "ALL",
             "--security-opt", "no-new-privileges", "--pids-limit", "96", "--memory", "512m", "--cpus", "1",
-            "--sysctl", "net.ipv4.ip_unprivileged_port_start=0", "--cgroupns", "private", "--ipc", "private", "--init", "--hostname", "synthetic-cloudinary",
+            "--sysctl", "net.ipv4.ip_unprivileged_port_start=0", "--cgroupns", "private", "--ipc", "private", "--init", "--hostname", "synthetic-gofile",
             "--tmpfs", "/work:" + TMPFS, "--entrypoint", ENTRYPOINT[0], image, *COMMAND]
 
 def validate_image(info, image, run_id, source_digest):
@@ -348,7 +349,111 @@ def validate_probe(probe, identity, sources, lock, started, finished):
     return probe
 
 
-def run(binary, report_path):
+def compute_bindings(root=None):
+    """Read the fixed reviewed source closure; no executable or network actions."""
+    root = ROOT if root is None else Path(root)
+    check(plain(root) and root.is_dir(), "invalid_binding_root")
+    sources = source_hashes(root.parents[2])
+    return {"harness_sha256": canonical_hash(sources), "fixture_manifest_sha256": FIXTURE_SHA256,
+            "source_sha256": sources, "lock": read_lock(root)}
+
+
+def validate_native_read(native, identity, bindings):
+    keys = {"schema_version", "scope", "ledger_eligible", "started_utc", "finished_utc", "success", "runtime",
+            "platform", "source_sha256", "source_digest", "dependency_lock_sha256", "dependency_versions",
+            "python_version", "base_image", "base_config_digest", "image_id", "container_isolation_verified", "probe",
+            "errors", "cleanup", "stage", "build_phase", "container_exit_code", "container_stdout_bytes",
+            "container_stderr_bytes", "container_oom_killed", "container_start_error_present", "build_cache_scope",
+            "probe_started_utc", "probe_finished_utc"}
+    check(type(native) is dict and set(native) == keys, "native_schema_mismatch")
+    check(type(native["schema_version"]) is int and native["schema_version"] == 1
+          and native["scope"] == "gofile_fixed_api_read_supervision" and native["ledger_eligible"] is False
+          and type(native["success"]) is bool and native["platform"] == "linux/amd64", "native_scope_mismatch")
+    sources, lock = bindings["source_sha256"], bindings["lock"]
+    check(native["runtime"] == identity and type(native["runtime"]) is dict and set(native["runtime"]) == {"version", "sha256"}
+          and native["source_sha256"] == sources and native["source_digest"] == bindings["harness_sha256"], "native_source_mismatch")
+    check(native["dependency_lock_sha256"] == lock["requirements"]["sha256"]
+          and native["dependency_versions"] == lock["requirements"]["distributions"]
+          and native["python_version"] == lock["python_version"] and native["base_image"] == lock["base_image"]
+          and native["base_config_digest"] == lock["base_config_digest"], "native_dependency_mismatch")
+    start, finish = parse_time(native["started_utc"]), parse_time(native["finished_utc"])
+    check(0 <= (finish - start).total_seconds() <= 900, "native_time_invalid")
+    check(type(native["container_isolation_verified"]) is bool
+          and (native["image_id"] is None or type(native["image_id"]) is str and re.fullmatch(r"sha256:[a-f0-9]{64}", native["image_id"]))
+          and native["build_cache_scope"] == "shared_daemon_cache_not_pruned"
+          and native["stage"] in ("preflight", "pull", "build", "create", "probe", "completed")
+          and native["build_phase"] in (None, "verify", "dependencies", "manifest"), "native_state_invalid")
+    check(type(native["cleanup"]) is dict and set(native["cleanup"]) == {"container_removed", "image_removed", "temporary_removed"}
+          and all(type(v) is bool for v in native["cleanup"].values()), "native_cleanup_invalid")
+    check(type(native["errors"]) is list and len(native["errors"]) <= 32
+          and all(type(x) is str and re.fullmatch(r"[a-z][a-z0-9_]{0,79}", x) for x in native["errors"]), "native_errors_invalid")
+    for field, maximum in (("container_exit_code", 255), ("container_stdout_bytes", 262144), ("container_stderr_bytes", 262144)):
+        value = native[field]
+        check(value is None or type(value) is int and (-255 if field == "container_exit_code" else 0) <= value <= maximum,
+              "native_diagnostic_invalid")
+    for field in ("container_oom_killed", "container_start_error_present"):
+        check(native[field] is None or type(native[field]) is bool, "native_diagnostic_invalid")
+    probe = native["probe"]
+    if probe is not None:
+        check(native["container_isolation_verified"] and native["image_id"] is not None
+              and all(native[key] is not None for key in ("container_exit_code", "container_stdout_bytes", "container_stderr_bytes",
+                                                          "container_oom_killed", "container_start_error_present")), "native_probe_unbound")
+        first, last = parse_time(native["probe_started_utc"]), parse_time(native["probe_finished_utc"])
+        check(start <= first <= last <= finish and (last - first).total_seconds() <= 120, "native_probe_time_invalid")
+        validate_probe(probe, identity, sources, lock, native["probe_started_utc"], native["probe_finished_utc"])
+        check(native["container_stdout_bytes"] == len((json.dumps(probe, sort_keys=True, separators=(",", ":")) + "\n").encode())
+              and native["container_stdout_bytes"] + native["container_stderr_bytes"] <= 262144,
+              "native_probe_output_unbound")
+    else:
+        check(native["success"] is False, "native_probe_missing")
+        for value in (native["probe_started_utc"], native["probe_finished_utc"]):
+            check(value is None or start <= parse_time(value) <= finish, "native_probe_time_invalid")
+    inner_cleanup = probe is not None and all(probe["cleanup"].values())
+    cleaned = inner_cleanup and all(native["cleanup"].values())
+    complete = (probe is not None and probe["success"] and cleaned and native["stage"] == "completed"
+                and native["build_phase"] == "manifest" and native["container_exit_code"] == 0
+                and native["container_stdout_bytes"] > 0 and native["container_stderr_bytes"] == 0
+                and native["container_oom_killed"] is False and native["container_start_error_present"] is False
+                and not native["errors"])
+    check(native["success"] == complete, "native_success_contradiction")
+    return cleaned
+
+
+def read_evidence(native, bindings):
+    cleaned = validate_native_read(native, native["runtime"], bindings)
+    errors = [] if native["success"] else ["gofile_protocol_failed"]
+    return {"schema_version": 10, "scope": "rclone_backend_protocol_fixture", "runtime": dict(native["runtime"]),
+            "platform": "linux", "architecture": "amd64", "harness_sha256": bindings["harness_sha256"],
+            "fixture_manifest_sha256": bindings["fixture_manifest_sha256"],
+            "started_utc": native["started_utc"], "finished_utc": native["finished_utc"],
+            "success": native["success"], "cleanup_passed": cleaned, "errors": errors,
+            "backends": [{"backend": "gofile", "fixture_kind": "independent_api_container", "fixture_mode": READ_MODE,
+                          "capabilities": {key: "passed" if native["success"] else "failed" for key in CAPABILITIES}, "errors": errors.copy()}],
+            "native_evidence": native}
+
+
+def validate_read_evidence(receipt, runtime, bindings, now, max_age_hours=24):
+    check(type(bindings) is dict and set(bindings) == {"harness_sha256", "fixture_manifest_sha256", "source_sha256", "lock"}
+          and bindings["fixture_manifest_sha256"] == FIXTURE_SHA256
+          and set(bindings["source_sha256"]) == set(SOURCE_FILES)
+          and all(type(v) is str and HASH.fullmatch(v) for v in bindings["source_sha256"].values())
+          and bindings["harness_sha256"] == canonical_hash(bindings["source_sha256"]), "gofile_bindings_invalid")
+    check(type(receipt) is dict and set(receipt) == {"schema_version", "scope", "runtime", "platform", "architecture",
+          "harness_sha256", "fixture_manifest_sha256", "started_utc", "finished_utc", "success", "cleanup_passed",
+          "errors", "backends", "native_evidence"}, "gofile_receipt_schema_invalid")
+    identity = {key: runtime[key] for key in ("version", "sha256")}
+    check(runtime.get("platform") == "linux", "gofile_platform_invalid")
+    expected = read_evidence(receipt["native_evidence"], bindings)
+    # Canonical JSON preserves bool/int distinctions at every nested level.
+    check(canonical_hash(receipt) == canonical_hash(expected) and receipt["runtime"] == identity, "gofile_receipt_mismatch")
+    finished = parse_time(receipt["finished_utc"])
+    check(type(max_age_hours) is int and 1 <= max_age_hours <= 168
+          and 0 <= (now - finished).total_seconds() <= max_age_hours * 3600,
+          "gofile_receipt_stale_or_future")
+    return receipt
+
+
+def run(binary, report_path, protocol=False):
     check(sys.platform == "linux", "linux_required")
     check(report_path.is_absolute() and plain(report_path.parent) and report_path.parent.is_dir()
           and not report_path.exists() and not report_path.is_symlink(), "new_absolute_report_required")
@@ -368,6 +473,9 @@ def run(binary, report_path):
               "container_stdout_bytes": None, "container_stderr_bytes": None,
               "container_oom_killed": None, "container_start_error_present": None,
               "build_cache_scope": "shared_daemon_cache_not_pruned"}
+    if protocol:
+        report.update(scope="gofile_fixed_api_read_supervision", probe_started_utc=None, probe_finished_utc=None)
+    bindings = {"harness_sha256": source_digest, "fixture_manifest_sha256": FIXTURE_SHA256, "source_sha256": sources, "lock": lock}
     root = Path(tempfile.mkdtemp(prefix="triage-gofile-fixed-api-"))
     root_identity = (root.stat().st_dev, root.stat().st_ino)
     docker, image, attempted_build, attempted_create = None, None, False, False
@@ -409,8 +517,12 @@ def run(binary, report_path):
         report["container_isolation_verified"] = True
         report["stage"] = "probe"
         probe_started = utc_now()
+        if protocol:
+            report["probe_started_utc"] = probe_started
         code, raw = docker.run(["start", "--attach", container_id], timeout=120, allow_failure=True, output_limit=262144)
         probe_finished = utc_now()
+        if protocol:
+            report["probe_finished_utc"] = probe_finished
         stderr = docker.last_stderr
         final = docker.inspect("container", container_id) or {}
         validate_container(final, image, run_id, expected_env)
@@ -450,6 +562,8 @@ def run(binary, report_path):
             report["errors"].append("source_or_runtime_changed")
         report["success"] = report["success"] and not report["errors"] and all(report["cleanup"].values())
         report["finished_utc"] = utc_now()
+        if protocol:
+            report = read_evidence(report, bindings)
         with report_path.open("x", encoding="utf-8") as stream:
             json.dump(report, stream, indent=2, sort_keys=True)
             stream.write("\n")
@@ -460,16 +574,18 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--rclone", required=True, type=Path)
     parser.add_argument("--report", required=True, type=Path)
+    parser.add_argument("--protocol-evidence", action="store_true", help="Emit closed schema-10 configured raw-read evidence")
     args = parser.parse_args()
     def interrupted(_signum, _frame):
         raise KeyboardInterrupt
     signal.signal(signal.SIGTERM, interrupted)
     try:
-        report = run(args.rclone, args.report)
+        report = run(args.rclone, args.report, protocol=args.protocol_evidence)
     except (SupervisorError, OSError, ValueError, KeyError, TypeError, KeyboardInterrupt):
         print("GoFile fixed-API preflight failed", file=sys.stderr)
         return 1
-    print(json.dumps({"success": report["success"], "errors": report["errors"], "ledger_eligible": False}))
+    print(json.dumps({"success": report["success"], "errors": report["errors"],
+                      "schema_version": report["schema_version"], "scope": report["scope"]}))
     return 0 if report["success"] else 1
 
 

@@ -393,6 +393,12 @@ The [contained Cloudinary protocol](../../scripts/provider-lab/cloudinary-fixed-
 
 ### OpenDrive configured-session read protocol
 
-The isolated Linux OpenDrive profile checks configured username/password session creation, exact listing and metadata, three known-byte reads, missing objects, wrong credentials, authenticated read denial, a direct fixture DELETE guard, source/configuration preservation and cleanup. Schema-9 opendrive_configured_session_read_v1 evidence binds the current 20-file source closure, runtime, dependencies, isolation, native probe and timestamps. The combined Linux and provider-smoke gates require all 30 reviewed profiles. Raw feasibility receipts and schema-1 rows remain ineligible.
+The isolated Linux OpenDrive profile checks configured username/password session creation, exact listing and metadata, three known-byte reads, missing objects, wrong credentials, authenticated read denial, a direct fixture DELETE guard, source/configuration preservation and cleanup. Schema-9 opendrive_configured_session_read_v1 evidence binds the current 21-file source closure, runtime, dependencies, isolation, native probe and timestamps. The combined Linux and provider-smoke gates require all 31 reviewed profiles. Raw feasibility receipts and schema-1 rows remain ineligible.
 
 Only local-protocol coverage is qualified. Existing application/vendor requirements and unresolved connection/session reauthentication remain unchanged. This does not establish session expiry recovery, native writes, real service consistency, pagination or live-provider acceptance. See scripts/provider-lab/opendrive-fixed-api/README.md.
+
+### GoFile configured-token read protocol
+
+The isolated Linux GoFile profile checks explicitly configured account token/account/root IDs, recursive listing, exact lookup and metadata, three known-byte reads, wrong credentials, missing objects, authenticated read denial, a direct fixture DELETE guard, source/configuration preservation and cleanup. Schema-10 gofile_configured_token_read_v1 binds the current 21-file source closure, runtime, dependencies, isolation, native probe and timestamps. Both combined Linux and provider-smoke gates require all 31 reviewed profiles. Raw feasibility receipts and schema-1 rows remain ineligible.
+
+Only local-protocol coverage is qualified. Existing application/vendor requirements and lifecycle applicability are preserved. Account bootstrap, explicit token replacement, real content-host redirects, multi-page listing, native writes and Windows application/live-provider acceptance remain unverified. See scripts/provider-lab/gofile-fixed-api/README.md.
