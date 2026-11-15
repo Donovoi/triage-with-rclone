@@ -117,7 +117,7 @@ class FtpWorkflowTests(unittest.TestCase):
                           "windows-azureblob", "windows-swift-cancellation", "windows-swift-listing",
                           "windows-architectures", "audit", "python-audit", "smb-protocol",
                           "linux-provider-evidence", "pcloud-oauth-feasibility", "pcloud-oauth-authentication",
-                          "gcs-oauth-lifecycle", "windows-webdav-bearer", "opendrive-fixed-api"])
+                          "gcs-oauth-lifecycle", "windows-webdav-bearer", "opendrive-fixed-api", "gofile-fixed-api"])
 
 
 if __name__ == "__main__":
