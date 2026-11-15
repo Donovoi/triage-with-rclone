@@ -30,13 +30,13 @@ bounded ranges, budgets and deterministic TLS request deadlines.
 
 The supervisor enforces nonroot identity, read-only root, no capabilities or host
 mounts/ports, private namespaces, bounded resources and private noexec tmpfs.
-Schema-14 putio_saved_token_read_v1 binds the current 25-file source closure,
+Schema-14 putio_saved_token_read_v1 binds the current 26-file source closure,
 pinned runtime/dependencies, exact native output/timing, all nine capabilities
 and owned cleanup. Private keys, generated tokens, cursors and download links
 stay ephemeral. Shared build cache and the pinned public base image remain;
 raw transcripts are never published.
 
-Both combined Linux and provider-smoke gates require 35 reviewed profiles and
+Both combined Linux and provider-smoke gates require 36 reviewed profiles and
 the same-run named receipt. Raw feasibility and historical schema-1 rows cannot
 qualify this profile; the 26 portable experiments remain unchanged. Forty-seven
 wire, TLS, container, workflow and receipt tests run without Docker or fixed

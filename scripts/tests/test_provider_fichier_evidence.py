@@ -278,11 +278,11 @@ class FichierWorkflowTests(unittest.TestCase):
         for before, after in (
             ("  fichier-fixed-api:\n", "  fichier-fixed-api:\n    if: false\n"),
             ("--rclone \"$RUNNER_TEMP/rclone-fichier\" --protocol-evidence", "--rclone \"$RUNNER_TEMP/rclone-fichier\""),
-            ("drime-fixed-api, fichier-fixed-api, premiumizeme-fixed-api, putio-fixed-api]", "drime-fixed-api, premiumizeme-fixed-api, putio-fixed-api]"),
+            ("drime-fixed-api, fichier-fixed-api, premiumizeme-fixed-api, putio-fixed-api, linkbox-fixed-api]", "drime-fixed-api, premiumizeme-fixed-api, putio-fixed-api, linkbox-fixed-api]"),
             ("          path: ${{ runner.temp }}/provider-fichier",
              "          run-id: 123\n          path: ${{ runner.temp }}/provider-fichier"),
             ('--fixture-receipt "$RUNNER_TEMP/provider-fichier/fichier-read-protocol.json"', ""),
-            ("sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio\n", "sharefile,cloudinary,opendrive,gofile,drime,premiumizeme,putio\n")):
+            ("sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio,linkbox\n", "sharefile,cloudinary,opendrive,gofile,drime,premiumizeme,putio,linkbox\n")):
             with self.subTest(before=before):
                 self.assertIn(before, self.ci)
                 with self.assertRaises(ValueError):
@@ -292,7 +292,7 @@ class FichierWorkflowTests(unittest.TestCase):
         for before, after in (
             ('../scripts/provider-lab/fichier-fixed-api/run_container.py \\\n            --rclone "$RUNNER_TEMP/rclone-smoke" --protocol-evidence', '../scripts/provider-lab/fichier-fixed-api/run_container.py \\\n            --rclone "$RUNNER_TEMP/rclone-smoke"'),
             ('--fixture-receipt "$RUNNER_TEMP/fichier-read-protocol.json"', ""),
-            ("sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio\n", "sharefile,cloudinary,opendrive,gofile,drime,premiumizeme,putio\n"),
+            ("sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio,linkbox\n", "sharefile,cloudinary,opendrive,gofile,drime,premiumizeme,putio,linkbox\n"),
             ("            ${{ runner.temp }}/fichier-read-protocol.json\n", "")):
             with self.subTest(before=before):
                 self.assertIn(before, self.smoke)

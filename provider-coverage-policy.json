@@ -1615,6 +1615,48 @@
         "refresh",
         "reauthentication"
       ]
+    },
+    "protocol-linkbox-saved-web-token-read": {
+      "required": {
+        "application": [
+          "listing",
+          "download_hash",
+          "manifest_integrity",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation",
+          "refresh"
+        ],
+        "vendor": [
+          "listing",
+          "download_hash",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation",
+          "refresh"
+        ],
+        "local_protocol": [
+          "listing",
+          "download_hash",
+          "missing_object_rejection",
+          "authentication_rejection",
+          "read_denial",
+          "source_preservation",
+          "config_preservation",
+          "fixture_write_rejection",
+          "cleanup"
+        ]
+      },
+      "review_required": false,
+      "unresolved_applicability": [
+        "reauthentication"
+      ]
     }
   },
   "providers": {
@@ -2830,12 +2872,13 @@
     "linkbox": {
       "canonical_name": "linkbox",
       "schema_sha256": "1ebfd137bed095822e22a7ea7c9b07e5b62d6f815c4693355dd58bbf89f4d9b2",
-      "profile": "hosted-renewal-session-review",
+      "profile": "protocol-linkbox-saved-web-token-read",
       "notes": [
         "Linkbox account email/password plus API token: pinned rclone requires credentials for reads and token for modifications. Token-only setup is insufficient.",
         "Free account/API eligibility: review_required",
         "Web API errors are broader than expiration. Only an intentionally expired-session scenario proves that cause; raw URLs contain credentials and must never be evidence output.",
-        "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension."
+        "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension.",
+        "Schema-15 linkbox_saved_web_token_read_v1 qualifies only source-current Linux container evidence for a configured saved web token. All nine protocol capabilities, private TLS/authority checks, complete inventories, client-side exact-name selection, three literal payload SHA-256 oracles and cleanup are required. Native content downloads use private inventory-issued URLs with the pinned CDN browser User-Agent and without API credentials/cookies. The required email/password fields contain synthetic unused values; no login endpoint is supplied. Login, token replacement/renewal, public API token modes, account queries, full-page pagination, native mutations, real CDN origins and live service policies remain unverified. Raw feasibility/schema-1 receipts remain ineligible. Existing application/vendor and lifecycle obligations are preserved."
       ],
       "source_links": [
         "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/linkbox.md",
