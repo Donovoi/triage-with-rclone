@@ -1138,6 +1138,86 @@
       "unresolved_applicability": [
         "reauthentication"
       ]
+    },
+    "protocol-hidrive-saved-token-read": {
+      "required": {
+        "application": [
+          "listing",
+          "download_hash",
+          "manifest_integrity",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation",
+          "refresh"
+        ],
+        "vendor": [
+          "listing",
+          "download_hash",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation",
+          "refresh"
+        ],
+        "local_protocol": [
+          "listing",
+          "download_hash",
+          "missing_object_rejection",
+          "hidrive_saved_token_read",
+          "hidrive_saved_token_rejection",
+          "read_denial",
+          "source_preservation",
+          "config_preservation",
+          "fixture_write_rejection",
+          "cleanup"
+        ]
+      },
+      "review_required": false,
+      "unresolved_applicability": [
+        "reauthentication"
+      ]
+    },
+    "protocol-doi-three-format-read": {
+      "required": {
+        "application": [
+          "listing",
+          "download_hash",
+          "manifest_integrity",
+          "source_preservation",
+          "cancellation",
+          "cleanup"
+        ],
+        "vendor": [
+          "listing",
+          "download_hash",
+          "source_preservation",
+          "cancellation",
+          "cleanup"
+        ],
+        "local_protocol": [
+          "listing",
+          "download_hash",
+          "missing_object_rejection",
+          "anonymous_read",
+          "read_denial",
+          "source_preservation",
+          "config_preservation",
+          "fixture_write_rejection",
+          "cleanup",
+          "dataverse_read",
+          "invenio_read",
+          "zenodo_read",
+          "resolver_rejection",
+          "native_write_rejection"
+        ]
+      },
+      "review_required": false,
+      "unresolved_applicability": []
     }
   },
   "providers": {
@@ -1501,7 +1581,7 @@
     "doi": {
       "canonical_name": "doi",
       "schema_sha256": "bf1688a020f582f70c21120e596325f8f84f03877b8e70cc1ef79d870a8217f0",
-      "profile": "public-read",
+      "profile": "protocol-doi-three-format-read",
       "notes": [
         "Public read-only DOI dataset from a supported InvenioRDM or Dataverse host. Publishing a permanent DOI solely for a test is not automatically authorized; use approved reusable fixture.",
         "Free account/API eligibility: public_read_no_account",
@@ -2014,7 +2094,7 @@
     "hidrive": {
       "canonical_name": "hidrive",
       "schema_sha256": "5170bdd6ed2be46aa6d09a4ad70ba0251db0d979b06710feca5977789338fd3c",
-      "profile": "hosted-renewal-session-review",
+      "profile": "protocol-hidrive-saved-token-read",
       "notes": [
         "HiDrive account and approved OAuth app/consent with read-only scope; product/API entitlement unresolved.",
         "Free account/API eligibility: review_required",
