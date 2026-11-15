@@ -34,11 +34,13 @@ import zlib
 
 from fixture_servers import FILES, State, SwiftState, B2State, AzureBlobState, AzureFilesState, SeafileState, KoofrState, PixeldrainState, FileFabricState, FileFabricSessionState, InternetArchiveState, InternetArchiveLowState, NetStorageState, azure_string_to_sign, probe_write_rejection, serve
 from fixture_sia import SiaState, serve_sia
+from fixture_hidrive import HiDriveState, serve_hidrive
+from fixture_doi import DoiState, serve_doi, FORMATS as DOI_FORMATS, DOI as DOI_VALUE, MISSING_DOI as DOI_MISSING
 from email.utils import format_datetime
 
 
-BACKENDS = ("local", "http", "webdav", "ftp", "sftp", "s3", "archive", "swift", "b2", "azureblob", "azurefiles", "seafile", "memory", "koofr", "pixeldrain", "filefabric", "internetarchive", "netstorage", "pcloud", "gcs", "sia")
-HARNESS_FILES = ("fixture_servers.py", "run_lab.py", "fixture_tls.py", "fixture_pcloud.py", "fixture_gcs.py", "fixture_sia.py", "requirements-fixture.txt")
+BACKENDS = ("local", "http", "webdav", "ftp", "sftp", "s3", "archive", "swift", "b2", "azureblob", "azurefiles", "seafile", "memory", "koofr", "pixeldrain", "filefabric", "internetarchive", "netstorage", "pcloud", "gcs", "sia", "hidrive", "doi")
+HARNESS_FILES = ("fixture_servers.py", "run_lab.py", "fixture_tls.py", "fixture_pcloud.py", "fixture_gcs.py", "fixture_sia.py", "fixture_read_api.py", "fixture_hidrive.py", "fixture_doi.py", "requirements-fixture.txt")
 MAX_OUTPUT = 2 * 1024 * 1024
 COMMAND_TIMEOUT = 20
 
@@ -3373,9 +3375,141 @@ def sia_checks(runtime, root, row, expected):
         check(closed, "sia_cleanup_failed")
 
 
+HIDRIVE_CAPABILITIES = frozenset({
+    "listing", "download_hash", "missing_object_rejection", "hidrive_saved_token_read",
+    "hidrive_saved_token_rejection", "read_denial", "source_preservation", "config_preservation",
+    "fixture_write_rejection", "cleanup",
+})
+DOI_CAPABILITIES = frozenset({
+    "listing", "download_hash", "missing_object_rejection", "anonymous_read",
+    "read_denial", "source_preservation", "config_preservation", "fixture_write_rejection", "cleanup",
+    "dataverse_read", "invenio_read", "zenodo_read", "resolver_rejection", "native_write_rejection",
+})
+
+
+def read_api_listing(runtime, config, expected):
+    code, output, _ = runtime.run(["lsjson", "--recursive", "--files-only", "--no-modtime", "--no-mimetype", "Synthetic:"], config)
+    check(code == 0, "read_api_final_listing_failed")
+    try:
+        rows = json.loads(output)
+        got = sorted((entry["Path"], entry["Size"], entry["IsDir"]) for entry in rows)
+    except (ValueError, TypeError, KeyError):
+        raise LabError("read_api_final_listing_invalid") from None
+    check(got == [(item["path"], item["size"], False) for item in expected], "read_api_final_listing_mismatch")
+
+
+def read_api_flow_matches(state, expected):
+    return (not state.unexpected and not state.budget_exceeded and not state.rejected_payload_bytes
+            and sorted(name for kind, name in state.events if kind == "content") == sorted(item["path"] for item in expected)
+            and state.payload_bytes == sum(item["size"] for item in expected)
+            and state.read_denied == 1 and state.rejected_mutations == 1
+            and ("read_denied", "README-synthetic.txt") in state.events
+            and ("write_denied", "README-synthetic.txt") in state.events)
+
+
+def read_api_write_guard(port, target, authorization=None):
+    client = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
+    try:
+        client.request("DELETE", target, headers={} if authorization is None else {"Authorization": authorization})
+        response = client.getresponse()
+        check(response.status == 405 and json.loads(response.read(1025)) == {"error": "synthetic fixture is read-only"},
+              "read_api_write_guard_failed")
+    finally:
+        client.close()
+
+
+def hidrive_checks(runtime, root, row, expected):
+    token = "synthetic-" + uuid.uuid4().hex
+    state, port, preserved = HiDriveState(token), None, {}
+    before = len(runtime.children)
+    caps = row["capabilities"]
+    try:
+        with serve_hidrive(state) as port:
+            options = {"type": "hidrive", "endpoint": f"http://127.0.0.1:{port}", "root_prefix": "/",
+                       "token_url": f"http://127.0.0.1:{port}/unreviewed-token",
+                       "token": json.dumps({"access_token": token, "token_type": "Bearer", "expiry": "0001-01-01T00:00:00Z"})}
+            bad_options = dict(options, token=json.dumps({"access_token": "wrong-synthetic-token", "token_type": "Bearer",
+                                                         "expiry": "0001-01-01T00:00:00Z"}))
+            good = config_file(root, "hidrive-good.conf", options)
+            bad = config_file(root, "hidrive-wrong.conf", bad_options)
+            preserved = {path: path.read_bytes() for path in (good, bad)}
+            code, output, error = runtime.run(["cat", "Synthetic:README-synthetic.txt"], bad)
+            check(code != 0 and not output and b"401" in error and state.denied > 0 and not state.payload_bytes,
+                  "hidrive_saved_token_rejection_missing")
+            caps["hidrive_saved_token_rejection"] = "passed"
+            common_checks(runtime, root, good, None, "Synthetic:", row, state, expected=expected)
+            read_api_listing(runtime, good, expected)
+            state.mode = "read_denied"
+            denied = root / "denied"
+            denied.mkdir(mode=0o700)
+            code, output, error = exact_copy(runtime, good, "Synthetic:", "README-synthetic.txt", str(denied), "denied.bin")
+            check(code != 0 and b"403" in output + error and not list(denied.iterdir()), "hidrive_read_denial_missing")
+            state.mode = "normal"
+            read_api_write_guard(port, "/file?path=%2FREADME-synthetic.txt", "Bearer " + token)
+            check(read_api_flow_matches(state, expected) and state.authenticated > 0 and state.missing > 0
+                  and all(state.events.count(("listing", path)) == 2 for path in ("", "nested")),
+                  "hidrive_protocol_flow_mismatch")
+            check(served_source_unchanged(state, expected), "hidrive_source_changed")
+            check(all(path.read_bytes() == data for path, data in preserved.items()), "hidrive_config_changed")
+        for name in caps:
+            caps[name] = "passed"
+    finally:
+        closed = (state.cleanup_complete and (port is None or listener_closed(port))
+                  and all(record[0].poll() is not None for record in runtime.children[before:]))
+        caps["cleanup"] = "passed" if closed else "failed"
+        check(closed, "hidrive_cleanup_failed")
+
+
+def doi_checks(runtime, root, row, expected):
+    caps = row["capabilities"]
+    for provider in DOI_FORMATS:
+        case = root / provider
+        case.mkdir(mode=0o700)
+        state, port, preserved = DoiState(provider), None, {}
+        before = len(runtime.children)
+        try:
+            with serve_doi(state) as port:
+                options = {"type": "doi", "provider": provider, "doi": DOI_VALUE,
+                           "doi_resolver_api_url": f"http://127.0.0.1:{port}/resolver"}
+                good = config_file(case, "doi-good.conf", options)
+                bad = config_file(case, "doi-missing.conf", dict(options, doi=DOI_MISSING))
+                preserved = {path: path.read_bytes() for path in (good, bad)}
+                code, output, error = runtime.run(["lsjson", "Synthetic:"], bad)
+                check(code != 0 and not output and b"error code 100" in error
+                      and state.resolver_denied > 0 and not state.payload_bytes, "doi_resolver_rejection_missing")
+                common_checks(runtime, case, good, None, "Synthetic:", row, state, expected=expected)
+                read_api_listing(runtime, good, expected)
+                code, output, error = runtime.run(["deletefile", "Synthetic:README-synthetic.txt"], good)
+                check(code != 0 and b"doi remotes are read only" in output + error and not state.rejected_mutations,
+                      "doi_native_write_rejection_missing")
+                state.mode = "read_denied"
+                denied = case / "denied"
+                denied.mkdir(mode=0o700)
+                code, output, error = exact_copy(runtime, good, "Synthetic:", "README-synthetic.txt", str(denied), "denied.bin")
+                check(code != 0 and b"403" in output + error and not list(denied.iterdir()), "doi_read_denial_missing")
+                state.mode = "normal"
+                route = "/api/access/datafile/101?format=original" if provider == "dataverse" else "/content/101"
+                read_api_write_guard(port, route)
+                check(read_api_flow_matches(state, expected) and state.resolver_denied > 0
+                      and ("resolver", provider) in state.events and ("catalog", provider) in state.events
+                      and (provider == "dataverse" or ("record", provider) in state.events)
+                      and (provider != "invenio" or ("landing", provider) in state.events),
+                      "doi_protocol_flow_mismatch")
+                check(served_source_unchanged(state, expected), "doi_source_changed")
+                check(all(path.read_bytes() == data for path, data in preserved.items()), "doi_config_changed")
+                caps[provider + "_read"] = "passed"
+        finally:
+            closed = (state.cleanup_complete and (port is None or listener_closed(port))
+                      and all(record[0].poll() is not None for record in runtime.children[before:]))
+            caps["cleanup"] = "passed" if closed else "failed"
+            check(closed, "doi_cleanup_failed")
+    for name in caps:
+        caps[name] = "passed"
+
+
 def run_backend(runtime, backend, root):
     root.mkdir(mode=0o700)
-    independent = backend in ("http", "webdav", "ftp", "swift", "b2", "azureblob", "azurefiles", "seafile", "koofr", "pixeldrain", "filefabric", "internetarchive", "netstorage", "pcloud", "gcs", "sia")
+    independent = backend in ("http", "webdav", "ftp", "swift", "b2", "azureblob", "azurefiles", "seafile", "koofr", "pixeldrain", "filefabric", "internetarchive", "netstorage", "pcloud", "gcs", "sia", "hidrive", "doi")
     row = {"backend": backend,
            "fixture_kind": "local" if backend in ("local", "archive", "memory") else "independent_loopback" if independent else "rclone_loopback",
            "capabilities": {key: "not_run" for key in (
@@ -3383,6 +3517,8 @@ def run_backend(runtime, backend, root):
            "errors": []}
     if backend in ("local", "archive", "memory"):
         row["capabilities"]["authentication_rejection"] = "not_applicable"
+    if backend in ("hidrive", "doi"):
+        row["capabilities"] = {key: "not_run" for key in (HIDRIVE_CAPABILITIES if backend == "hidrive" else DOI_CAPABILITIES)}
     if backend == "sia":
         row["capabilities"] = {key: "not_run" for key in SIA_CAPABILITIES}
     if backend == "netstorage":
@@ -3420,6 +3556,12 @@ def run_backend(runtime, backend, root):
         prepare_files(files_root)
     port = None
     try:
+        if backend == "hidrive":
+            hidrive_checks(runtime, root, row, expected)
+            return row
+        if backend == "doi":
+            doi_checks(runtime, root, row, expected)
+            return row
         if backend == "sia":
             sia_checks(runtime, root, row, expected)
             return row
