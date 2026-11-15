@@ -15,6 +15,7 @@ try:
     import fixture_fichier as F
     import fixture_putio as P
     import fixture_box as B
+    import fixture_dropbox as D
 finally:
     sys.path.pop(0)
 
@@ -24,6 +25,7 @@ CASES = (
     ("fichier", F.FichierHandler, lambda: F.FichierState("synthetic"), "api.1fichier.com", "POST"),
     ("putio", P.PutioHandler, lambda: P.PutioState("synthetic"), "api.put.io", "POST"),
     ("box", B.BoxHandler, lambda: B.BoxState("synthetic"), "api.box.com", "OPTIONS"),
+    ("dropbox", D.DropboxHandler, lambda: D.DropboxState("synthetic"), "api.dropboxapi.com", "POST"),
 )
 
 class JsonBudgetOrderingTests(unittest.TestCase):
@@ -31,9 +33,9 @@ class JsonBudgetOrderingTests(unittest.TestCase):
         h = object.__new__(cls)
         state = make_state()
         state.request_limit = 0
-        h.server = SimpleNamespace(state=state, authority=authority)
-        h.command, h.path = method, "/synthetic"
-        h.raw_requestline = (method + " /synthetic HTTP/1.1\r\n").encode("ascii")
+        h.server = SimpleNamespace(state=state, authority=authority, transport=SimpleNamespace(_server_name=None))
+        h.command, h.path = method, "/2/files/get_metadata" if cls is D.DropboxHandler else "/synthetic"
+        h.raw_requestline = (method + " " + h.path + " HTTP/1.1\r\n").encode("ascii")
         headers = ("Host: " + authority + "\r\nContent-Type: application/json\r\nContent-Length: "
                    + str(length) + "\r\n\r\n").encode()
         h.headers = http.client.parse_headers(io.BytesIO(headers))

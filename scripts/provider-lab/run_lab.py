@@ -40,7 +40,7 @@ from email.utils import format_datetime
 
 
 BACKENDS = ("local", "http", "webdav", "ftp", "sftp", "s3", "archive", "swift", "b2", "azureblob", "azurefiles", "seafile", "memory", "koofr", "pixeldrain", "filefabric", "internetarchive", "netstorage", "pcloud", "gcs", "sia", "hidrive", "doi", "quatrix", "shade", "sharefile")
-HARNESS_FILES = ("fixture_servers.py", "run_lab.py", "fixture_tls.py", "fixture_pcloud.py", "fixture_gcs.py", "fixture_sia.py", "fixture_read_api.py", "fixture_hidrive.py", "fixture_doi.py", "fixture_quatrix.py", "fixture_shade.py", "fixture_sharefile.py", "fixture_cloudinary.py", "fixture_opendrive.py", "fixture_gofile.py", "fixture_drime.py", "fixture_fichier.py", "fixture_premiumizeme.py", "fixture_putio.py", "fixture_linkbox.py", "fixture_yandex.py", "fixture_box.py", "fixture_onedrive.py", "fixture_filelu.py", "fixture_qingstor.py", "fixture_drive.py", "requirements-fixture.txt")
+HARNESS_FILES = ("fixture_servers.py", "run_lab.py", "fixture_tls.py", "fixture_pcloud.py", "fixture_gcs.py", "fixture_sia.py", "fixture_read_api.py", "fixture_hidrive.py", "fixture_doi.py", "fixture_quatrix.py", "fixture_shade.py", "fixture_sharefile.py", "fixture_cloudinary.py", "fixture_opendrive.py", "fixture_gofile.py", "fixture_drime.py", "fixture_fichier.py", "fixture_premiumizeme.py", "fixture_putio.py", "fixture_linkbox.py", "fixture_yandex.py", "fixture_box.py", "fixture_onedrive.py", "fixture_filelu.py", "fixture_qingstor.py", "fixture_drive.py", "fixture_dropbox.py", "requirements-fixture.txt")
 MAX_OUTPUT = 2 * 1024 * 1024
 COMMAND_TIMEOUT = 20
 
@@ -4086,6 +4086,78 @@ def drive_checks(runtime, root, row, expected):
 
 
 
+
+def dropbox_checks(runtime, root, row, expected):
+    from fixture_dropbox import DropboxState, serve_dropbox, ROOT, listeners_closed
+    secret = "synthetic-token-" + uuid.uuid4().hex
+    state = DropboxState(secret)
+    transports, certificates = [], []
+    before = len(runtime.children)
+    caps = row["capabilities"]
+    try:
+        pcloud_dependencies()
+        with serve_dropbox(root, state) as (certificates, transports):
+            class TrustedRuntime:
+                def run(self, args, config=None, **kwargs):
+                    pcloud_dependencies()
+                    return runtime.run([*[part for cert in certificates for part in cert.rclone_ca_args()], *args], config, **kwargs)
+            native = TrustedRuntime()
+            expiry = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat().replace("+00:00", "Z")
+            token = lambda value: json.dumps({"access_token": value, "token_type": "Bearer", "refresh_token": "synthetic-unused-refresh", "expiry": expiry})
+            options = {"type": "dropbox", "token": token(secret)}
+            good = config_file(root, "dropbox-good.conf", options)
+            bad = config_file(root, "dropbox-wrong.conf", dict(options, token=token("wrong-synthetic-token")))
+            target = "Synthetic:" + ROOT + "/"
+            preserved = {path: path.read_bytes() for path in (good, bad)}
+            metadata_before = {name: state.metadata(name) for name in state.files}
+            auth_destination = root / "bad-auth"
+            auth_destination.mkdir(mode=0o700)
+            code, output, error = exact_copy(native, bad, target, "README-synthetic.txt",
+                                             str(auth_destination), "must-not-exist")
+            check(code != 0 and not list(auth_destination.iterdir()) and state.denied > 0
+                  and state.payload_bytes == 0, "dropbox_credential_rejection_missing")
+            caps["authentication_rejection"] = "passed"
+            common_checks(native, root, good, None, target, row, state, expected=expected)
+            read_api_listing(native, good, expected, target)
+            state.mode = "read_denied"
+            denied = root / "denied"
+            denied.mkdir(mode=0o700)
+            code, output, error = exact_copy(native, good, target, "README-synthetic.txt", str(denied), "denied.bin")
+            check(code != 0 and b"restricted_content" in output + error and not list(denied.iterdir()), "dropbox_read_denial_missing")
+            state.mode = "normal"
+            connection = http.client.HTTPSConnection(transports[1].authority, transports[1].port, timeout=3,
+                                                     context=certificates[1].client_context())
+            try:
+                connection.request("DELETE", "/2/files/download", headers={"Authorization": "Bearer " + secret,
+                                   "Content-Type": "application/octet-stream", "Dropbox-API-Arg": json.dumps({"path": "id:file2001"})})
+                response = connection.getresponse()
+                check(response.status == 405 and len(response.read(4097)) <= 4096,
+                      "dropbox_write_guard_missing")
+            finally:
+                connection.close()
+            check(read_api_flow_matches(state, expected) and state.denied > 0
+                  and all(state.events.count(("listing", path)) >= 2 for path in ("", "nested"))
+                  and state.observed == set(state.files)  and state.missing > 0, "dropbox_protocol_flow_mismatch")
+            check(served_source_unchanged(state, expected) and state.password == secret
+                  and {name: state.metadata(name) for name in state.files} == metadata_before,
+                  "dropbox_source_changed")
+            check(all(path.read_bytes() == data for path, data in preserved.items()), "dropbox_config_changed")
+        for transport in transports:
+            observed = transport.snapshot()
+            check(not observed["failure_codes"] and observed["handshake_successes"] > 0, "dropbox_tls_failed")
+        for name in caps:
+            caps[name] = "passed"
+    finally:
+        closed = (state.cleanup_complete and listeners_closed(transports)
+                  and all(cert.cleanup_complete for cert in certificates)
+                  and all(record[0].poll() is not None for record in runtime.children[before:]))
+        caps["cleanup"] = "passed" if closed else "failed"
+        check(closed, "dropbox_cleanup_failed")
+
+
+
+
+
 def yandex_checks(runtime, root, row, expected):
     from fixture_yandex import YandexState, serve_yandex
     secret = "synthetic-token-" + uuid.uuid4().hex
@@ -4567,7 +4639,7 @@ def fichier_checks(runtime, root, row, expected):
 
 def run_backend(runtime, backend, root):
     root.mkdir(mode=0o700)
-    independent = backend in ("http", "webdav", "ftp", "swift", "b2", "azureblob", "azurefiles", "seafile", "koofr", "pixeldrain", "filefabric", "internetarchive", "netstorage", "pcloud", "gcs", "sia", "hidrive", "doi", "quatrix", "shade", "sharefile", "cloudinary", "opendrive", "gofile", "drime", "fichier", "premiumizeme", "putio", "linkbox", "yandex", "box", "onedrive", "filelu", "qingstor", "drive")
+    independent = backend in ("http", "webdav", "ftp", "swift", "b2", "azureblob", "azurefiles", "seafile", "koofr", "pixeldrain", "filefabric", "internetarchive", "netstorage", "pcloud", "gcs", "sia", "hidrive", "doi", "quatrix", "shade", "sharefile", "cloudinary", "opendrive", "gofile", "drime", "fichier", "premiumizeme", "putio", "linkbox", "yandex", "box", "onedrive", "filelu", "qingstor", "drive", "dropbox")
     row = {"backend": backend,
            "fixture_kind": "local" if backend in ("local", "archive", "memory") else "independent_loopback" if independent else "rclone_loopback",
            "capabilities": {key: "not_run" for key in (
@@ -4579,7 +4651,7 @@ def run_backend(runtime, backend, root):
         row["capabilities"] = {key: "not_run" for key in (HIDRIVE_CAPABILITIES if backend == "hidrive" else DOI_CAPABILITIES)}
     if backend in CACHED_TOKEN_BACKENDS:
         row["capabilities"] = {key: "not_run" for key in CACHED_TOKEN_COMMON_CAPABILITIES | {backend + "_saved_token_read", backend + "_saved_token_rejection"}}
-    if backend in ("cloudinary", "opendrive", "gofile", "drime", "fichier", "premiumizeme", "putio", "linkbox", "yandex", "box", "onedrive", "filelu", "qingstor", "drive"):
+    if backend in ("cloudinary", "opendrive", "gofile", "drime", "fichier", "premiumizeme", "putio", "linkbox", "yandex", "box", "onedrive", "filelu", "qingstor", "drive", "dropbox"):
         row["capabilities"] = {key: "not_run" for key in QUATRIX_CAPABILITIES}
     if backend == "quatrix":
         row["capabilities"] = {key: "not_run" for key in QUATRIX_CAPABILITIES}
@@ -4622,6 +4694,9 @@ def run_backend(runtime, backend, root):
     try:
         if backend in CACHED_TOKEN_BACKENDS:
             cached_token_checks(runtime, root, row, expected)
+            return row
+        if backend == "dropbox":
+            dropbox_checks(runtime, root, row, expected)
             return row
         if backend == "drive":
             drive_checks(runtime, root, row, expected)

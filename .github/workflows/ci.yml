@@ -571,6 +571,36 @@ jobs:
           path: ${{ runner.temp }}/drive-read-protocol.json
           if-no-files-found: warn
           retention-days: 14
+  dropbox-fixed-api:
+    name: Isolated Dropbox saved OAuth folder reads
+    needs: revision
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - name: Prepare verified Linux runtime
+        shell: bash
+        run: bash scripts/download-rclone.sh --linux "$RUNNER_TEMP/rclone-dropbox"
+      - name: Check fixed-authority HTTPS reads in an isolated container
+        shell: bash
+        run: |
+          python -B scripts/provider-lab/dropbox-fixed-api/run_container.py \
+            --rclone "$RUNNER_TEMP/rclone-dropbox" --protocol-evidence \
+            --report "$RUNNER_TEMP/dropbox-read-protocol.json"
+      # Only the source-bound schema-22 read profile is eligible for the Linux ledger.
+      - name: Retain sanitized Dropbox read result
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dropbox-read-protocol
+          path: ${{ runner.temp }}/dropbox-read-protocol.json
+          if-no-files-found: warn
+          retention-days: 14
   pcloud-oauth-feasibility:
     name: Isolated pCloud OAuth feasibility
     needs: revision
@@ -1798,7 +1828,7 @@ jobs:
       contents: read
   linux-provider-evidence:
     name: Combined Linux provider evidence
-    needs: [test, smb-protocol, pcloud-oauth-authentication, gcs-oauth-lifecycle, hdfs-protocol, cloudinary-fixed-api, opendrive-fixed-api, gofile-fixed-api, drime-fixed-api, fichier-fixed-api, premiumizeme-fixed-api, putio-fixed-api, linkbox-fixed-api, yandex-fixed-api, box-fixed-api, onedrive-fixed-api, filelu-fixed-api, qingstor-fixed-api, drive-fixed-api]
+    needs: [test, smb-protocol, pcloud-oauth-authentication, gcs-oauth-lifecycle, hdfs-protocol, cloudinary-fixed-api, opendrive-fixed-api, gofile-fixed-api, drime-fixed-api, fichier-fixed-api, premiumizeme-fixed-api, putio-fixed-api, linkbox-fixed-api, yandex-fixed-api, box-fixed-api, onedrive-fixed-api, filelu-fixed-api, qingstor-fixed-api, drive-fixed-api, dropbox-fixed-api]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -1869,6 +1899,10 @@ jobs:
           path: ${{ runner.temp }}/provider-yandex
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
+          name: dropbox-read-protocol
+          path: ${{ runner.temp }}/provider-dropbox
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
           name: drive-read-protocol
           path: ${{ runner.temp }}/provider-drive
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -1889,7 +1923,7 @@ jobs:
           path: ${{ runner.temp }}/provider-box
       - name: Prepare verified Linux runtime
         run: bash scripts/download-rclone.sh --linux "$RUNNER_TEMP/rclone-ledger"
-      - name: Require all 42 reviewed Linux protocol profiles
+      - name: Require all 43 reviewed Linux protocol profiles
         run: |
           python -B scripts/provider_coverage.py --rclone "$RUNNER_TEMP/rclone-ledger" \
             --report "$RUNNER_TEMP/provider-evidence-linux-combined.json" \
@@ -1909,12 +1943,13 @@ jobs:
             --fixture-receipt "$RUNNER_TEMP/provider-putio/putio-read-protocol.json" \
             --fixture-receipt "$RUNNER_TEMP/provider-linkbox/linkbox-read-protocol.json" \
             --fixture-receipt "$RUNNER_TEMP/provider-yandex/yandex-read-protocol.json" \
+            --fixture-receipt "$RUNNER_TEMP/provider-dropbox/dropbox-read-protocol.json" \
             --fixture-receipt "$RUNNER_TEMP/provider-drive/drive-read-protocol.json" \
             --fixture-receipt "$RUNNER_TEMP/provider-qingstor/qingstor-read-protocol.json" \
             --fixture-receipt "$RUNNER_TEMP/provider-filelu/filelu-read-protocol.json" \
             --fixture-receipt "$RUNNER_TEMP/provider-onedrive/onedrive-read-protocol.json" \
             --fixture-receipt "$RUNNER_TEMP/provider-box/box-read-protocol.json" \
-            --require-plans --require-fixtures local,archive,http,webdav,ftp,sftp,s3,swift,b2,azureblob,azurefiles,seafile,memory,koofr,pixeldrain,filefabric,netstorage,internetarchive,gcs,smb,pcloud,hdfs,sia,hidrive,doi,quatrix,shade,sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio,linkbox,yandex,box,onedrive,filelu,qingstor,drive
+            --require-plans --require-fixtures local,archive,http,webdav,ftp,sftp,s3,swift,b2,azureblob,azurefiles,seafile,memory,koofr,pixeldrain,filefabric,netstorage,internetarchive,gcs,smb,pcloud,hdfs,sia,hidrive,doi,quatrix,shade,sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio,linkbox,yandex,box,onedrive,filelu,qingstor,drive,dropbox
       - name: Retain sanitized combined ledger
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -1925,7 +1960,7 @@ jobs:
           retention-days: 14
   release:
     name: Publish Windows nightly
-    needs: [test, windows-filesystem, windows-ftp, windows-b2, windows-swift, windows-azureblob, windows-swift-cancellation, windows-swift-listing, windows-architectures, audit, python-audit, smb-protocol, linux-provider-evidence, pcloud-oauth-feasibility, pcloud-oauth-authentication, gcs-oauth-lifecycle, windows-webdav-bearer, opendrive-fixed-api, gofile-fixed-api, drime-fixed-api, fichier-fixed-api, premiumizeme-fixed-api, putio-fixed-api, linkbox-fixed-api, yandex-fixed-api, box-fixed-api, onedrive-fixed-api, filelu-fixed-api, qingstor-fixed-api, drive-fixed-api]
+    needs: [test, windows-filesystem, windows-ftp, windows-b2, windows-swift, windows-azureblob, windows-swift-cancellation, windows-swift-listing, windows-architectures, audit, python-audit, smb-protocol, linux-provider-evidence, pcloud-oauth-feasibility, pcloud-oauth-authentication, gcs-oauth-lifecycle, windows-webdav-bearer, opendrive-fixed-api, gofile-fixed-api, drime-fixed-api, fichier-fixed-api, premiumizeme-fixed-api, putio-fixed-api, linkbox-fixed-api, yandex-fixed-api, box-fixed-api, onedrive-fixed-api, filelu-fixed-api, qingstor-fixed-api, drive-fixed-api, dropbox-fixed-api]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:

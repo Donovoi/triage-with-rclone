@@ -38,10 +38,12 @@ ONEDRIVE_API_NAME = "graph.microsoft.com"
 FILELU_API_NAME = "filelu.com"
 QINGSTOR_API_NAME = "pek3a.qingstor.com"
 DRIVE_API_NAME = "www.googleapis.com"
+DROPBOX_API_NAME = "api.dropboxapi.com"
+DROPBOX_CONTENT_NAME = "content.dropboxapi.com"
 
 
 def _server_name(value):
-    if value is not None and (type(value) is not str or value not in (PCLOUD_OAUTH_NAME, CLOUDINARY_API_NAME, OPENDRIVE_API_NAME, GOFILE_API_NAME, DRIME_API_NAME, FICHIER_API_NAME, PREMIUMIZEME_API_NAME, PUTIO_API_NAME, LINKBOX_API_NAME, YANDEX_API_NAME, BOX_API_NAME, ONEDRIVE_API_NAME, FILELU_API_NAME, QINGSTOR_API_NAME, DRIVE_API_NAME)):
+    if value is not None and (type(value) is not str or value not in (PCLOUD_OAUTH_NAME, CLOUDINARY_API_NAME, OPENDRIVE_API_NAME, GOFILE_API_NAME, DRIME_API_NAME, FICHIER_API_NAME, PREMIUMIZEME_API_NAME, PUTIO_API_NAME, LINKBOX_API_NAME, YANDEX_API_NAME, BOX_API_NAME, ONEDRIVE_API_NAME, FILELU_API_NAME, QINGSTOR_API_NAME, DRIVE_API_NAME, DROPBOX_API_NAME, DROPBOX_CONTENT_NAME)):
         raise TlsError("tls_unreviewed_authority")
     return value
 
@@ -133,6 +135,18 @@ def _qingstor_sni(_socket, name, _context):
 
 def _drive_sni(_socket, name, _context):
     if name != DRIVE_API_NAME:
+        return ssl.ALERT_DESCRIPTION_UNRECOGNIZED_NAME
+    return None
+
+
+def _dropbox_api_sni(_socket, name, _context):
+    if name != DROPBOX_API_NAME:
+        return ssl.ALERT_DESCRIPTION_UNRECOGNIZED_NAME
+    return None
+
+
+def _dropbox_content_sni(_socket, name, _context):
+    if name != DROPBOX_CONTENT_NAME:
         return ssl.ALERT_DESCRIPTION_UNRECOGNIZED_NAME
     return None
 
@@ -295,7 +309,7 @@ class FixtureCertificates(AbstractContextManager):
             context.set_alpn_protocols(["http/1.1"])
             if server_name is not None:
                 context.set_servername_callback({PCLOUD_OAUTH_NAME: _pcloud_sni, CLOUDINARY_API_NAME: _cloudinary_sni,
-                                                 OPENDRIVE_API_NAME: _opendrive_sni, GOFILE_API_NAME: _gofile_sni, DRIME_API_NAME: _drime_sni, FICHIER_API_NAME: _fichier_sni, PREMIUMIZEME_API_NAME: _premiumizeme_sni, PUTIO_API_NAME: _putio_sni, LINKBOX_API_NAME: _linkbox_sni, YANDEX_API_NAME: _yandex_sni, BOX_API_NAME: _box_sni, ONEDRIVE_API_NAME: _onedrive_sni, FILELU_API_NAME: _filelu_sni, QINGSTOR_API_NAME: _qingstor_sni, DRIVE_API_NAME: _drive_sni}[server_name])
+                                                 OPENDRIVE_API_NAME: _opendrive_sni, GOFILE_API_NAME: _gofile_sni, DRIME_API_NAME: _drime_sni, FICHIER_API_NAME: _fichier_sni, PREMIUMIZEME_API_NAME: _premiumizeme_sni, PUTIO_API_NAME: _putio_sni, LINKBOX_API_NAME: _linkbox_sni, YANDEX_API_NAME: _yandex_sni, BOX_API_NAME: _box_sni, ONEDRIVE_API_NAME: _onedrive_sni, FILELU_API_NAME: _filelu_sni, QINGSTOR_API_NAME: _qingstor_sni, DRIVE_API_NAME: _drive_sni, DROPBOX_API_NAME: _dropbox_api_sni, DROPBOX_CONTENT_NAME: _dropbox_content_sni}[server_name])
             if hasattr(context, "num_tickets"):
                 context.num_tickets = 0
             _validated(leaf_binding)
@@ -464,7 +478,10 @@ class _HttpServer(HTTPServer):
             # Linux REUSEADDR permits sequential TIME_WAIT reuse, not a second
             # live listener. REUSEPORT stays off; prior cleanup is still required.
             self.allow_reuse_address = True
-        super().__init__(("127.0.0.1", 443 if transport._server_name is not None else 0), handler)
+        # The reviewed Dropbox pair needs distinct simultaneous HTTPS listeners.
+        # Only its content authority selects the second private loopback address.
+        address = "127.0.0.2" if transport._server_name == DROPBOX_CONTENT_NAME else "127.0.0.1"
+        super().__init__((address, 443 if transport._server_name is not None else 0), handler)
         self.authority = transport._server_name or f"127.0.0.1:{self.server_address[1]}"
 
     def get_request(self):
