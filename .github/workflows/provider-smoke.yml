@@ -246,6 +246,12 @@ jobs:
           python -B ../scripts/provider-lab/kdrive-fixed-api/run_container.py \
             --rclone "$RUNNER_TEMP/rclone-smoke" --protocol-evidence \
             --report "$RUNNER_TEMP/kdrive-read-protocol.json"
+      - name: Isolated Google Photos saved OAuth album reads
+        if: ${{ !cancelled() }}
+        run: |
+          python -B ../scripts/provider-lab/gphotos-fixed-api/run_container.py \
+            --rclone "$RUNNER_TEMP/rclone-smoke" --protocol-evidence \
+            --report "$RUNNER_TEMP/gphotos-read-protocol.json"
       - name: Isolated pCloud OAuth positive feasibility
         if: ${{ !cancelled() }}
         run: |
@@ -271,7 +277,7 @@ jobs:
         with:
           name: hdfs-protocol
           path: ${{ runner.temp }}/provider-hdfs
-      # All 50 Linux profiles, including the separately qualified HDFS, Cloudinary, OpenDrive, GoFile, Drime, 1Fichier, Premiumize, Put.io, Linkbox, Yandex, Box, OneDrive, FileLu, QingStor, Google Drive, Dropbox, Oracle Object Storage, Zoho, Jottacloud, SugarSync, PikPak, Dosya and kDrive proofs.
+      # All 51 Linux profiles, including the separately qualified HDFS, Cloudinary, OpenDrive, GoFile, Drime, 1Fichier, Premiumize, Put.io, Linkbox, Yandex, Box, OneDrive, FileLu, QingStor, Google Drive, Dropbox, Oracle Object Storage, Zoho, Jottacloud, SugarSync, PikPak, Dosya and kDrive proofs.
       - name: Require current provider plans and protocol evidence
         if: ${{ !cancelled() }}
         run: |
@@ -300,13 +306,14 @@ jobs:
             --fixture-receipt "$RUNNER_TEMP/pikpak-read-protocol.json" \
             --fixture-receipt "$RUNNER_TEMP/dosya-read-protocol.json" \
             --fixture-receipt "$RUNNER_TEMP/kdrive-read-protocol.json" \
+            --fixture-receipt "$RUNNER_TEMP/gphotos-read-protocol.json" \
             --fixture-receipt "$RUNNER_TEMP/drive-read-protocol.json" \
             --fixture-receipt "$RUNNER_TEMP/qingstor-read-protocol.json" \
             --fixture-receipt "$RUNNER_TEMP/oos-read-protocol.json" \
             --fixture-receipt "$RUNNER_TEMP/filelu-read-protocol.json" \
             --fixture-receipt "$RUNNER_TEMP/onedrive-read-protocol.json" \
             --fixture-receipt "$RUNNER_TEMP/box-read-protocol.json" \
-            --require-plans --require-fixtures local,archive,http,webdav,ftp,sftp,s3,swift,b2,azureblob,azurefiles,seafile,memory,koofr,pixeldrain,filefabric,netstorage,internetarchive,gcs,smb,pcloud,hdfs,sia,hidrive,doi,quatrix,shade,sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio,linkbox,yandex,box,onedrive,filelu,qingstor,drive,dropbox,oos,zoho,jottacloud,sugarsync,pikpak,dosya,kdrive
+            --require-plans --require-fixtures local,archive,http,webdav,ftp,sftp,s3,swift,b2,azureblob,azurefiles,seafile,memory,koofr,pixeldrain,filefabric,netstorage,internetarchive,gcs,smb,pcloud,hdfs,sia,hidrive,doi,quatrix,shade,sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio,linkbox,yandex,box,onedrive,filelu,qingstor,drive,dropbox,oos,zoho,jottacloud,sugarsync,pikpak,dosya,kdrive,gphotos
       - name: Offline provider contracts
         run: cargo test --locked --release --test provider_smoke --test provider_matrix -- --test-threads=1
       - name: Login and credential regressions without accounts
@@ -414,6 +421,7 @@ jobs:
             ${{ runner.temp }}/pikpak-read-protocol.json
             ${{ runner.temp }}/dosya-read-protocol.json
             ${{ runner.temp }}/kdrive-read-protocol.json
+            ${{ runner.temp }}/gphotos-read-protocol.json
             ${{ runner.temp }}/drive-read-protocol.json
             ${{ runner.temp }}/qingstor-read-protocol.json
             ${{ runner.temp }}/oos-read-protocol.json

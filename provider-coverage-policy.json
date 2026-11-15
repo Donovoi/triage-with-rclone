@@ -2237,6 +2237,48 @@
       "unresolved_applicability": [
         "reauthentication"
       ]
+    },
+    "protocol-gphotos-saved-token-album-read": {
+      "required": {
+        "application": [
+          "listing",
+          "download_hash",
+          "manifest_integrity",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation",
+          "refresh"
+        ],
+        "vendor": [
+          "listing",
+          "download_hash",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation",
+          "refresh"
+        ],
+        "local_protocol": [
+          "listing",
+          "download_hash",
+          "missing_object_rejection",
+          "authentication_rejection",
+          "read_denial",
+          "source_preservation",
+          "config_preservation",
+          "fixture_write_rejection",
+          "cleanup"
+        ]
+      },
+      "review_required": false,
+      "unresolved_applicability": [
+        "reauthentication"
+      ]
     }
   },
   "providers": {
@@ -3038,15 +3080,17 @@
     "gphotos": {
       "canonical_name": "google photos",
       "schema_sha256": "d62d321238a77057998a0c02f35882ddf00a77319d91e32f2f8c39ccc1aeb138",
-      "profile": "hosted-renewal-session-review",
+      "profile": "protocol-gphotos-saved-token-album-read",
       "notes": [
         "Google account and own OAuth client/project; current API permits app-created media only. Fixture must be created through the authorized app, not arbitrary library photos.",
         "Free account/API eligibility: review_required",
-        "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension."
+        "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension.",
+        "Schema-30 gphotos_saved_token_album_read_v1 qualifies only source-current Linux container evidence for a saved OAuth bearer, selected synthetic app-created album and read_size=true. The normal photoslibrary.googleapis.com and lh3.googleusercontent.com authorities retain separate private TLS/SNI/Host and address bindings. Complete album/media inventories require exact page limits, string album counts, selected observed album IDs, numeric search limits, omitted continuations and issued base URLs. HEAD supplies known sizes; GET uses the issued image download suffix and saved bearer. All nine capabilities require independently SHA-256-checked opaque payloads, wrong-token and missing-name rejection, native cat/copy rejection of HTTP403 with identical expected bytes, source/config preservation and cleanup. These payloads qualify transport, not media decoding, full resolution or EXIF fidelity. The direct DELETE guard does not qualify native writes. OAuth login/refresh, actual app-created upload authorization, non-app-created library access, shared albums, date/feature filters, pagination, duplicate filenames, videos and application/live-provider acceptance remain unverified. Raw feasibility/schema-1 rows are ineligible; independent renewal/session-review obligations remain."
       ],
       "source_links": [
         "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/googlephotos.md",
-        "https://developers.google.com/photos/support/updates"
+        "https://developers.google.com/photos/support/updates",
+        "https://github.com/rclone/rclone/blob/v1.76.0/backend/googlephotos/googlephotos.go"
       ],
       "auth_applicability": "oauth",
       "refresh_applicability": "required",
