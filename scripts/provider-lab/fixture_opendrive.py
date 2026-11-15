@@ -43,10 +43,12 @@ class OpenDriveHandler(ReadHandler):
     def wire(self):
         state = self.server.state
         state.requests += 1
-        if state.requests > state.request_limit or time.monotonic() > state.deadline:
+        limited = state.requests > state.request_limit or time.monotonic() > state.deadline
+        if limited:
             state.budget_exceeded = True
-            self.json_reply(429, {"error": {"message": "synthetic request limit"}})
-            return None
+        # Validate and consume a bounded JSON body before sending a budget
+        # rejection. Closing TLS with an unread POST body can discard the
+        # response when the peer is still sending that body.
         headers = list(self.headers.items())
         names = [key.lower() for key, _ in headers]
         try:
@@ -80,6 +82,9 @@ class OpenDriveHandler(ReadHandler):
                 data = json.loads(raw.decode("utf-8"), object_pairs_hook=unique_object)
                 if type(data) is not dict:
                     raise ValueError("invalid_json")
+            if limited:
+                self.json_reply(429, {"error": {"message": "synthetic request limit"}})
+                return None
             return url.path, query, data
         except OSError:
             # A timed-out/broken body is no longer an HTTP exchange we can

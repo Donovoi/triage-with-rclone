@@ -279,11 +279,11 @@ class PremiumizemeWorkflowTests(unittest.TestCase):
         for before, after in (
             ("  premiumizeme-fixed-api:\n", "  premiumizeme-fixed-api:\n    if: false\n"),
             ("--rclone \"$RUNNER_TEMP/rclone-premiumizeme\" --protocol-evidence", "--rclone \"$RUNNER_TEMP/rclone-premiumizeme\""),
-            ("fichier-fixed-api, premiumizeme-fixed-api]", "fichier-fixed-api]"),
+            ("fichier-fixed-api, premiumizeme-fixed-api, putio-fixed-api]", "fichier-fixed-api, putio-fixed-api]"),
             ("          path: ${{ runner.temp }}/provider-premiumizeme",
              "          run-id: 123\n          path: ${{ runner.temp }}/provider-premiumizeme"),
             ('--fixture-receipt "$RUNNER_TEMP/provider-premiumizeme/premiumizeme-read-protocol.json"', ""),
-            ("sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme\n", "sharefile,cloudinary,opendrive,gofile,drime,fichier\n")):
+            ("sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio\n", "sharefile,cloudinary,opendrive,gofile,drime,fichier,putio\n")):
             with self.subTest(before=before):
                 self.assertIn(before, self.ci)
                 with self.assertRaises(ValueError):
@@ -293,7 +293,7 @@ class PremiumizemeWorkflowTests(unittest.TestCase):
         for before, after in (
             ('../scripts/provider-lab/premiumizeme-fixed-api/run_container.py \\\n            --rclone "$RUNNER_TEMP/rclone-smoke" --protocol-evidence', '../scripts/provider-lab/premiumizeme-fixed-api/run_container.py \\\n            --rclone "$RUNNER_TEMP/rclone-smoke"'),
             ('--fixture-receipt "$RUNNER_TEMP/premiumizeme-read-protocol.json"', ""),
-            ("sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme\n", "sharefile,cloudinary,opendrive,gofile,drime,fichier\n"),
+            ("sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio\n", "sharefile,cloudinary,opendrive,gofile,drime,fichier,putio\n"),
             ("            ${{ runner.temp }}/premiumizeme-read-protocol.json\n", "")):
             with self.subTest(before=before):
                 self.assertIn(before, self.smoke)

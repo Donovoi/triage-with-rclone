@@ -290,6 +290,51 @@ class TlsTests(unittest.TestCase):
             handler.wfile.close()
             server._release(connection)
 
+    def test_socket_timeout_before_wall_deadline_is_sticky_even_when_stdlib_swallows_it(self):
+        for phase in ("request_line", "headers", "body_read", "body_read1"):
+            with self.subTest(phase=phase):
+                class TimedReader(io.BytesIO):
+                    def readline(self, *args):
+                        if phase == "request_line" or phase == "headers" and self.tell() > 0:
+                            raise TimeoutError("synthetic socket deadline")
+                        return super().readline(*args)
+                    def read(self, *args):
+                        if phase == "body_read":
+                            raise TimeoutError("synthetic socket deadline")
+                        return super().read(*args)
+                    def read1(self, *args):
+                        if phase == "body_read1":
+                            raise TimeoutError("synthetic socket deadline")
+                        return super().read1(*args)
+                class BodyHandler(BaseHTTPRequestHandler):
+                    def do_POST(self):
+                        method = self.rfile.read1 if phase == "body_read1" else self.rfile.read
+                        method(2)
+                        self.server.state.append("must-not-dispatch-after-timeout")
+                state = []
+                server = tls.BoundedHttpsServer(self.material(), BodyHandler, state=state)
+                self.servers.append(server)
+                connection = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                server._sockets.add(connection); server._socket_deadlines[connection] = 20
+                handler = object.__new__(server._server.RequestHandlerClass)
+                handler.connection = handler.request = connection
+                handler.server = server._server; handler.client_address = ("127.0.0.1", 1)
+                handler.rfile = TimedReader(b"POST /synthetic HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 2\r\n\r\n")
+                handler.wfile = io.BytesIO(); handler.close_connection = True
+                try:
+                    with patch.object(BaseHTTPRequestHandler, "setup", lambda instance: None):
+                        handler.setup()
+                    with patch.object(tls.time, "monotonic", return_value=19):
+                        handler.handle_one_request()
+                    self.assertTrue(handler.close_connection)
+                    self.assertEqual(state, [])
+                    self.assertEqual(server.snapshot()["request_timeouts"], 1)
+                    self.assertIn("tls_request_deadline", server.snapshot()["failure_codes"])
+                    server._mark_expired(connection)
+                    self.assertEqual(server.snapshot()["request_timeouts"], 1)
+                finally:
+                    handler.rfile.close(); handler.wfile.close(); server._release(connection)
+
     def test_active_limit_rejection_is_sticky(self):
         server, _ = self.server(active_limit=1)
         with socket.create_connection(("127.0.0.1", server.port), timeout=1):

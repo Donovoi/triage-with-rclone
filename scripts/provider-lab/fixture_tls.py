@@ -30,10 +30,11 @@ GOFILE_API_NAME = "api.gofile.io"
 DRIME_API_NAME = "app.drime.cloud"
 FICHIER_API_NAME = "api.1fichier.com"
 PREMIUMIZEME_API_NAME = "www.premiumize.me"
+PUTIO_API_NAME = "api.put.io"
 
 
 def _server_name(value):
-    if value is not None and (type(value) is not str or value not in (PCLOUD_OAUTH_NAME, CLOUDINARY_API_NAME, OPENDRIVE_API_NAME, GOFILE_API_NAME, DRIME_API_NAME, FICHIER_API_NAME, PREMIUMIZEME_API_NAME)):
+    if value is not None and (type(value) is not str or value not in (PCLOUD_OAUTH_NAME, CLOUDINARY_API_NAME, OPENDRIVE_API_NAME, GOFILE_API_NAME, DRIME_API_NAME, FICHIER_API_NAME, PREMIUMIZEME_API_NAME, PUTIO_API_NAME)):
         raise TlsError("tls_unreviewed_authority")
     return value
 
@@ -86,6 +87,15 @@ class TlsError(RuntimeError):
 
 def _premiumizeme_sni(_socket, name, _context):
     if name != PREMIUMIZEME_API_NAME:
+        return ssl.ALERT_DESCRIPTION_UNRECOGNIZED_NAME
+    return None
+
+
+class TlsError(RuntimeError):
+    """Sanitized fixture failure; never include keys, request bytes or paths."""
+
+def _putio_sni(_socket, name, _context):
+    if name != PUTIO_API_NAME:
         return ssl.ALERT_DESCRIPTION_UNRECOGNIZED_NAME
     return None
 
@@ -248,7 +258,7 @@ class FixtureCertificates(AbstractContextManager):
             context.set_alpn_protocols(["http/1.1"])
             if server_name is not None:
                 context.set_servername_callback({PCLOUD_OAUTH_NAME: _pcloud_sni, CLOUDINARY_API_NAME: _cloudinary_sni,
-                                                 OPENDRIVE_API_NAME: _opendrive_sni, GOFILE_API_NAME: _gofile_sni, DRIME_API_NAME: _drime_sni, FICHIER_API_NAME: _fichier_sni, PREMIUMIZEME_API_NAME: _premiumizeme_sni}[server_name])
+                                                 OPENDRIVE_API_NAME: _opendrive_sni, GOFILE_API_NAME: _gofile_sni, DRIME_API_NAME: _drime_sni, FICHIER_API_NAME: _fichier_sni, PREMIUMIZEME_API_NAME: _premiumizeme_sni, PUTIO_API_NAME: _putio_sni}[server_name])
             if hasattr(context, "num_tickets"):
                 context.num_tickets = 0
             _validated(leaf_binding)
@@ -503,6 +513,37 @@ class BoundedHttpsServer(AbstractContextManager):
                                      "request_timeouts", "handler_failures", "aborted_connections", "closed_connections"), 0)
 
         class QuietHandler(handler_class):
+            def setup(self):
+                super().setup()
+                original = self.rfile
+                transport, connection = self.server.transport, self.connection
+
+                class DeadlineReader:
+                    # BaseHTTPRequestHandler catches socket timeouts itself.
+                    # Record them at the read boundary before they disappear,
+                    # including platforms whose socket timer fires just before
+                    # the monotonic deadline used by the worker/timer checks.
+                    def _read(self, method, *args, **kwargs):
+                        try:
+                            return getattr(original, method)(*args, **kwargs)
+                        except TimeoutError:
+                            transport._mark_expired(connection)
+                            raise
+
+                    def read(self, *args, **kwargs):
+                        return self._read("read", *args, **kwargs)
+
+                    def read1(self, *args, **kwargs):
+                        return self._read("read1", *args, **kwargs)
+
+                    def readline(self, *args, **kwargs):
+                        return self._read("readline", *args, **kwargs)
+
+                    def __getattr__(self, name):
+                        return getattr(original, name)
+
+                self.rfile = DeadlineReader()
+
             def log_message(self, *args):
                 pass
 
