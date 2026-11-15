@@ -1418,6 +1418,44 @@
       "unresolved_applicability": [
         "reauthentication"
       ]
+    },
+    "protocol-gofile-configured-token-read": {
+      "required": {
+        "application": [
+          "listing",
+          "download_hash",
+          "manifest_integrity",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation"
+        ],
+        "vendor": [
+          "listing",
+          "download_hash",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation"
+        ],
+        "local_protocol": [
+          "listing",
+          "download_hash",
+          "missing_object_rejection",
+          "authentication_rejection",
+          "read_denial",
+          "source_preservation",
+          "config_preservation",
+          "fixture_write_rejection",
+          "cleanup"
+        ]
+      },
+      "review_required": false,
+      "unresolved_applicability": []
     }
   },
   "providers": {
@@ -2177,11 +2215,12 @@
     "gofile": {
       "canonical_name": "gofile",
       "schema_sha256": "eb62e6039489d3bae732c6811a5192069ba52e26522b6b9547c403f1286682f7",
-      "profile": "hosted-static-credentials",
+      "profile": "protocol-gofile-configured-token-read",
       "notes": [
         "Gofile account API token; rclone explicitly requires premium account despite free file-sharing offering.",
         "Free account/API eligibility: paid_api_required",
-        "Decision is for the pinned configured-key list/download route, not every vendor login method or future API. Expiring object URLs and transfer sessions need separate transfer-resilience tests."
+        "Decision is for the pinned configured-key list/download route, not every vendor login method or future API. Expiring object URLs and transfer sessions need separate transfer-resilience tests.",
+        "Schema-10 gofile_configured_token_read_v1 qualifies only source-current Linux container evidence for explicitly configured token/account/root IDs and reads. All nine protocol capabilities, private TLS/authority checks, exact payloads and cleanup are required. Account discovery, token replacement, real content-host redirects, multi-page listings and native writes remain outside scope. Raw feasibility/schema-1 receipts remain ineligible. Existing application/vendor and lifecycle applicability obligations are preserved."
       ],
       "source_links": [
         "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/gofile.md",

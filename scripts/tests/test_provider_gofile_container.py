@@ -203,9 +203,9 @@ class GoFileContainerTests(unittest.TestCase):
             parts = steps(job)
             require(len(parts) == 5 and "persist-credentials: false" in parts[0], "closed_job")
             require(command(parts[3]) == ["python", "-B", "scripts/provider-lab/gofile-fixed-api/run_container.py",
-                    "--rclone", "$RUNNER_TEMP/rclone-gofile", "--report", "$RUNNER_TEMP/gofile-fixed-api-feasibility.json"],
+                    "--rclone", "$RUNNER_TEMP/rclone-gofile", "--protocol-evidence", "--report", "$RUNNER_TEMP/gofile-read-protocol.json"],
                     "native_qualification_required")
-            require(scalar(parts[4], "path", 10) == "${{ runner.temp }}/gofile-fixed-api-feasibility.json",
+            require(scalar(parts[4], "path", 10) == "${{ runner.temp }}/gofile-read-protocol.json",
                     "sanitized_receipt_only")
             require("gofile-fixed-api" in scalar(definitions["release"], "needs", 4).strip("[]").split(", "),
                     "nightly_dependency_required")

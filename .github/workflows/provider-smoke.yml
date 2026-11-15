@@ -126,6 +126,12 @@ jobs:
           python -B ../scripts/provider-lab/opendrive-fixed-api/run_container.py \
             --rclone "$RUNNER_TEMP/rclone-smoke" --protocol-evidence \
             --report "$RUNNER_TEMP/opendrive-read-protocol.json"
+      - name: Isolated GoFile configured token reads
+        if: ${{ !cancelled() }}
+        run: |
+          python -B ../scripts/provider-lab/gofile-fixed-api/run_container.py \
+            --rclone "$RUNNER_TEMP/rclone-smoke" --protocol-evidence \
+            --report "$RUNNER_TEMP/gofile-read-protocol.json"
       - name: Isolated pCloud OAuth positive feasibility
         if: ${{ !cancelled() }}
         run: |
@@ -151,7 +157,7 @@ jobs:
         with:
           name: hdfs-protocol
           path: ${{ runner.temp }}/provider-hdfs
-      # All 30 Linux profiles, including the separately qualified HDFS, Cloudinary and OpenDrive proofs.
+      # All 31 Linux profiles, including the separately qualified HDFS, Cloudinary, OpenDrive and GoFile proofs.
       - name: Require current provider plans and protocol evidence
         if: ${{ !cancelled() }}
         run: |
@@ -166,7 +172,8 @@ jobs:
             --fixture-receipt "$RUNNER_TEMP/provider-hdfs/hdfs-protocol.json" \
             --fixture-receipt "$RUNNER_TEMP/cloudinary-read-protocol.json" \
             --fixture-receipt "$RUNNER_TEMP/opendrive-read-protocol.json" \
-            --require-plans --require-fixtures local,archive,http,webdav,ftp,sftp,s3,swift,b2,azureblob,azurefiles,seafile,memory,koofr,pixeldrain,filefabric,netstorage,internetarchive,gcs,smb,pcloud,hdfs,sia,hidrive,doi,quatrix,shade,sharefile,cloudinary,opendrive
+            --fixture-receipt "$RUNNER_TEMP/gofile-read-protocol.json" \
+            --require-plans --require-fixtures local,archive,http,webdav,ftp,sftp,s3,swift,b2,azureblob,azurefiles,seafile,memory,koofr,pixeldrain,filefabric,netstorage,internetarchive,gcs,smb,pcloud,hdfs,sia,hidrive,doi,quatrix,shade,sharefile,cloudinary,opendrive,gofile
       - name: Offline provider contracts
         run: cargo test --locked --release --test provider_smoke --test provider_matrix -- --test-threads=1
       - name: Login and credential regressions without accounts
@@ -260,6 +267,7 @@ jobs:
             ${{ runner.temp }}/internetarchive-low-auth-fixture.json
             ${{ runner.temp }}/cloudinary-read-protocol.json
             ${{ runner.temp }}/opendrive-read-protocol.json
+            ${{ runner.temp }}/gofile-read-protocol.json
             ${{ runner.temp }}/smb-protocol.json
             ${{ runner.temp }}/pcloud-oauth-authentication.json
             ${{ runner.temp }}/gcs-oauth-lifecycle.json
