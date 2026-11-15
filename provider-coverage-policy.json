@@ -1532,6 +1532,48 @@
       },
       "review_required": false,
       "unresolved_applicability": []
+    },
+    "protocol-premiumizeme-saved-token-read": {
+      "required": {
+        "application": [
+          "listing",
+          "download_hash",
+          "manifest_integrity",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation",
+          "refresh"
+        ],
+        "vendor": [
+          "listing",
+          "download_hash",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation",
+          "refresh"
+        ],
+        "local_protocol": [
+          "listing",
+          "download_hash",
+          "missing_object_rejection",
+          "authentication_rejection",
+          "read_denial",
+          "source_preservation",
+          "config_preservation",
+          "fixture_write_rejection",
+          "cleanup"
+        ]
+      },
+      "review_required": false,
+      "unresolved_applicability": [
+        "reauthentication"
+      ]
     }
   },
   "providers": {
@@ -3239,11 +3281,12 @@
     "premiumizeme": {
       "canonical_name": "premiumizeme",
       "schema_sha256": "12b5ad80d88d34c7913d81bd059e240b998b4bb2267225ccade7935fe3f36acd",
-      "profile": "hosted-renewal-session-review",
+      "profile": "protocol-premiumizeme-saved-token-read",
       "notes": [
         "Premiumize account and browser OAuth token; current storage/API entitlement unresolved.",
         "Free account/API eligibility: review_required",
-        "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension."
+        "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension.",
+        "Schema-13 premiumizeme_saved_token_read_v1 qualifies only source-current Linux container evidence for a saved, unexpired OAuth Bearer token. All nine protocol capabilities, private TLS/authority checks, complete inventories, client-side exact-name selection, three literal payload SHA-256 oracles and cleanup are required. No grant or refresh endpoint is supplied. API-key mode, OAuth authorization/refresh, account queries, native mutations, real CDN/content origins and live service policies remain outside scope. Raw feasibility/schema-1 receipts remain ineligible. Existing application/vendor, credential-renewal and connection-session obligations are preserved."
       ],
       "source_links": [
         "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/premiumizeme.md"
