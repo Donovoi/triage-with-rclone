@@ -33,11 +33,11 @@ A fresh network-none container maps only api.box.com to loopback. Exact
 SNI/Host checks and a private CA contain requests. Nonroot identity, read-only
 root, no capabilities or host mounts/ports, private namespaces, bounded
 resources and private noexec tmpfs are enforced. Schema-17 box_saved_token_read_v1
-binds the current 28-file source closure, pinned runtime/dependencies, exact
+binds the current 29-file source closure, pinned runtime/dependencies, exact
 native output/timing, nine capabilities and cleanup. Generated credentials are
 ephemeral; the shared build cache and pinned public base image remain.
 
-Both combined Linux and provider-smoke gates require 38 reviewed profiles and
+Both combined Linux and provider-smoke gates require 39 reviewed profiles and
 the same-run receipt. Raw feasibility/schema-1 rows cannot qualify this mode;
 the 26 portable experiments remain unchanged. Forty-six Box wire/TLS, container
 and receipt tests run without Docker or fixed DNS/ports. The shared JSON budget

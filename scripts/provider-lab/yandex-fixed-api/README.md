@@ -32,12 +32,12 @@ A fresh network-none container maps only cloud-api.yandex.com to loopback.
 Exact SNI/Host checks and a private CA contain requests. The supervisor enforces
 nonroot identity, a read-only root, no capabilities or host mounts/ports,
 private namespaces, bounded resources and private noexec tmpfs. Schema-16
-yandex_saved_token_read_v1 binds the current 28-file source closure, pinned
+yandex_saved_token_read_v1 binds the current 29-file source closure, pinned
 runtime/dependencies, exact native output/timing, nine capabilities and cleanup.
 Generated credentials and links remain ephemeral. Shared build cache and the
 pinned public base image remain.
 
-Both combined Linux and provider-smoke gates require 38 reviewed profiles and
+Both combined Linux and provider-smoke gates require 39 reviewed profiles and
 the same-run receipt. Raw feasibility/schema-1 rows cannot qualify this mode.
 The 26 portable experiments remain unchanged. Forty-six wire/TLS, container
 and evidence tests run without Docker or fixed DNS/ports on the unit platforms.
