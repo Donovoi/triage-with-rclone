@@ -51,7 +51,7 @@ def validate(ci, smoke, transfer):
                 "raw_feasibility_refused")
         require(args.count("--require-fixtures") == 1, "one_fixture_gate")
         names = args[args.index("--require-fixtures") + 1].split(",")
-        require(len(names) == len(set(names)) == 22 and "hdfs" in names, "hdfs_gate_required")
+        require(len(names) == len(set(names)) == 23 and "hdfs" in names, "hdfs_gate_required")
         require(parts.index(download) < parts.index(gates[0]), "download_before_import")
     require(re.search(r"^  workflow_call:\n", transfer, re.MULTILINE), "reusable_trigger_required")
     require("${{ github.event.pull_request.head.sha || github.sha }}" in transfer,

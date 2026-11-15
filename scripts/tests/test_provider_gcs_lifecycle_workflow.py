@@ -6,7 +6,7 @@ import unittest
 from test_gcs_oauth_workflow_contract import command, jobs, require, scalar
 
 ROOT = Path(__file__).resolve().parents[2]
-BASELINE = set("local,archive,http,webdav,ftp,sftp,s3,swift,b2,azureblob,azurefiles,seafile,memory,koofr,pixeldrain,filefabric,netstorage,internetarchive".split(","))
+BASELINE = set("local,archive,http,webdav,ftp,sftp,s3,swift,b2,azureblob,azurefiles,seafile,memory,koofr,pixeldrain,filefabric,netstorage,internetarchive,sia".split(","))
 ALL = BASELINE | {"gcs", "smb", "pcloud"}
 
 

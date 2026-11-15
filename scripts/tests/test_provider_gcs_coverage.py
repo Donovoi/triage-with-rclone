@@ -187,8 +187,8 @@ class GcsCoverageTests(unittest.TestCase):
         self.assertEqual(report["providers"][0]["policy_status"], "stale_schema")
         self.assertEqual(self.local(report)["status"], "not_verified")
 
-    def test_each_of_six_harness_files_and_legacy_framing_are_bound(self):
-        names = {"fixture_servers.py", "run_lab.py", "fixture_tls.py", "fixture_pcloud.py", "fixture_gcs.py", "requirements-fixture.txt"}
+    def test_each_of_seven_harness_files_and_legacy_framing_are_bound(self):
+        names = {"fixture_servers.py", "run_lab.py", "fixture_tls.py", "fixture_pcloud.py", "fixture_gcs.py", "fixture_sia.py", "requirements-fixture.txt"}
         self.assertEqual(set(C.HARNESSES), names)
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

@@ -160,7 +160,9 @@ SMB_REQUIRED_CAPABILITIES = frozenset({
     "listing", "download_hash", "missing_object_rejection", "authentication_rejection",
     "source_preservation", "config_preservation", "cleanup",
 })
+SIA_REQUIRED_CAPABILITIES = NETSTORAGE_REQUIRED_CAPABILITIES | {"read_denial"}
 READ_FIXTURE_CONTRACTS = {
+    "sia": SIA_REQUIRED_CAPABILITIES,
     "azureblob": AZUREBLOB_REQUIRED_CAPABILITIES,
     "azurefiles": AZUREFILES_REQUIRED_CAPABILITIES,
     "seafile": SEAFILE_REQUIRED_CAPABILITIES,
@@ -179,6 +181,7 @@ CAPABILITIES = {
     "truncated_download_rejection", "cancellation_cleanup", "fixture_write_rejection", "host_key_rejection", "renewal_denial",
 } | ARCHIVE_CAPABILITIES | SWIFT_ONLY_CAPABILITIES | B2_ONLY_CAPABILITIES | FILEFABRIC_ONLY_CAPABILITIES | INTERNETARCHIVE_ONLY_CAPABILITIES | PCLOUD_ONLY_CAPABILITIES
 FIXTURE_KINDS = {
+    "sia": "independent_loopback",
     "http": "independent_loopback", "webdav": "independent_loopback",
     "ftp": "independent_loopback", "sftp": "rclone_loopback",
     "s3": "rclone_loopback", "local": "local", "archive": "local", "memory": "local",
@@ -195,7 +198,7 @@ FIXTURE_CAPABILITIES = {
     "authentication_rejection", "cleanup", "truncated_download_rejection", "read_denial",
     "cancellation_cleanup", "fixture_write_rejection", "host_key_rejection", "renewal_denial",
 } | ARCHIVE_CAPABILITIES | SWIFT_ONLY_CAPABILITIES | B2_ONLY_CAPABILITIES | FILEFABRIC_ONLY_CAPABILITIES | INTERNETARCHIVE_ONLY_CAPABILITIES | PCLOUD_ONLY_CAPABILITIES
-HARNESSES = ("fixture_servers.py", "run_lab.py", "fixture_tls.py", "fixture_pcloud.py", "fixture_gcs.py", "requirements-fixture.txt")
+HARNESSES = ("fixture_servers.py", "run_lab.py", "fixture_tls.py", "fixture_pcloud.py", "fixture_gcs.py", "fixture_sia.py", "requirements-fixture.txt")
 HASH_PATTERN = re.compile(r"[a-f0-9]{64}")
 ID_PATTERN = re.compile(r"[a-z0-9_]{1,80}")
 MAX_JSON = 32 * 1024 * 1024
@@ -1084,7 +1087,7 @@ def validate_receipt(receipt, runtime, harness_sha256, now, max_age_hours=MAX_AG
                 fail("invalid_fixture_mode")
         elif set(row) & {"fixture_mode", "modes", "subscenarios"}:
             fail("invalid_fixture_mode")
-        if not low_receipt and backend in ("internetarchive", "netstorage", "pcloud", "gcs") and (
+        if not low_receipt and backend in ("internetarchive", "netstorage", "pcloud", "gcs", "sia") and (
                 set(row) != {"backend", "fixture_kind", "capabilities", "errors"}
                 or set(receipt) != {"schema_version", "scope", "runtime", "platform", "harness_sha256",
                                     "fixture_manifest_sha256", "started_utc", "finished_utc", "success",
@@ -1092,21 +1095,21 @@ def validate_receipt(receipt, runtime, harness_sha256, now, max_age_hours=MAX_AG
             # Unknown scope/auth fields cannot redefine these fixed schema-1
             # contracts; another profile needs independent source review.
             fail("invalid_fixture_mode")
-        if backend == "gcs" and set(receipt["runtime"]) != {"version", "sha256"}:
+        if backend in ("gcs", "sia") and set(receipt["runtime"]) != {"version", "sha256"}:
             fail("receipt_runtime_mismatch")
         seen.add(backend)
         capabilities = row.get("capabilities")
         if not isinstance(capabilities, dict) or not capabilities or set(capabilities) - FIXTURE_CAPABILITIES:
             fail("invalid_fixture_capability")
         if (backend not in ("http", "webdav") and set(capabilities) & {"truncated_download_rejection", "cancellation_cleanup"}
-                or backend not in ("http", "webdav", "ftp", "archive", "swift", "b2", "azureblob", "azurefiles", "seafile", "koofr", "pixeldrain", "filefabric", "internetarchive", "netstorage", "pcloud") and "fixture_write_rejection" in capabilities
+                or backend not in ("http", "webdav", "ftp", "archive", "swift", "b2", "azureblob", "azurefiles", "seafile", "koofr", "pixeldrain", "filefabric", "internetarchive", "netstorage", "pcloud", "sia") and "fixture_write_rejection" in capabilities
                 or backend != "sftp" and "host_key_rejection" in capabilities
                 or backend != "archive" and set(capabilities) & ARCHIVE_ONLY_CAPABILITIES
-                or backend not in ("archive", "memory", "swift", "b2", "azureblob", "azurefiles", "seafile", "koofr", "pixeldrain", "filefabric", "internetarchive", "netstorage", "pcloud", "gcs") and "config_preservation" in capabilities
+                or backend not in ("archive", "memory", "swift", "b2", "azureblob", "azurefiles", "seafile", "koofr", "pixeldrain", "filefabric", "internetarchive", "netstorage", "pcloud", "gcs", "sia") and "config_preservation" in capabilities
                 or backend != "swift" and set(capabilities) & SWIFT_ONLY_CAPABILITIES
                 or backend != "b2" and set(capabilities) & B2_ONLY_CAPABILITIES
                 or backend != "internetarchive" and set(capabilities) & INTERNETARCHIVE_ONLY_CAPABILITIES
-                or backend not in ("internetarchive", "pcloud", "gcs") and "read_denial" in capabilities
+                or backend not in ("internetarchive", "pcloud", "gcs", "sia") and "read_denial" in capabilities
                 or backend != "pcloud" and set(capabilities) & PCLOUD_ONLY_CAPABILITIES
                 or not renewal_receipt and set(capabilities) & FILEFABRIC_ONLY_CAPABILITIES
                 or backend not in ("swift", "b2") and not renewal_receipt and "renewal_denial" in capabilities):

@@ -300,7 +300,7 @@ class GcsLifecycleTests(unittest.TestCase):
         self.assertEqual(bindings["source_sha256"], expected)
         self.assertEqual(bindings["harness_sha256"], canonical(expected))
         self.assertEqual(bindings["fixture_manifest_sha256"], C.compute_fixture_manifest_sha256(ROOT / "scripts/provider-lab"))
-        self.assertEqual(len(C.HARNESSES), 6)
+        self.assertEqual(len(C.HARNESSES), 7)
 
     def test_cli_baseline_and_full_modes_compute_only_needed_bindings(self):
         with tempfile.TemporaryDirectory() as temporary:
