@@ -27,10 +27,11 @@ PCLOUD_OAUTH_NAME = "fixture.pcloud.com"
 CLOUDINARY_API_NAME = "api.cloudinary.com"
 OPENDRIVE_API_NAME = "dev.opendrive.com"
 GOFILE_API_NAME = "api.gofile.io"
+DRIME_API_NAME = "app.drime.cloud"
 
 
 def _server_name(value):
-    if value is not None and (type(value) is not str or value not in (PCLOUD_OAUTH_NAME, CLOUDINARY_API_NAME, OPENDRIVE_API_NAME, GOFILE_API_NAME)):
+    if value is not None and (type(value) is not str or value not in (PCLOUD_OAUTH_NAME, CLOUDINARY_API_NAME, OPENDRIVE_API_NAME, GOFILE_API_NAME, DRIME_API_NAME)):
         raise TlsError("tls_unreviewed_authority")
     return value
 
@@ -56,6 +57,15 @@ def _opendrive_sni(_socket, name, _context):
 
 def _gofile_sni(_socket, name, _context):
     if name != GOFILE_API_NAME:
+        return ssl.ALERT_DESCRIPTION_UNRECOGNIZED_NAME
+    return None
+
+
+class TlsError(RuntimeError):
+    """Sanitized fixture failure; never include keys, request bytes or paths."""
+
+def _drime_sni(_socket, name, _context):
+    if name != DRIME_API_NAME:
         return ssl.ALERT_DESCRIPTION_UNRECOGNIZED_NAME
     return None
 
@@ -218,7 +228,7 @@ class FixtureCertificates(AbstractContextManager):
             context.set_alpn_protocols(["http/1.1"])
             if server_name is not None:
                 context.set_servername_callback({PCLOUD_OAUTH_NAME: _pcloud_sni, CLOUDINARY_API_NAME: _cloudinary_sni,
-                                                 OPENDRIVE_API_NAME: _opendrive_sni, GOFILE_API_NAME: _gofile_sni}[server_name])
+                                                 OPENDRIVE_API_NAME: _opendrive_sni, GOFILE_API_NAME: _gofile_sni, DRIME_API_NAME: _drime_sni}[server_name])
             if hasattr(context, "num_tickets"):
                 context.num_tickets = 0
             _validated(leaf_binding)
