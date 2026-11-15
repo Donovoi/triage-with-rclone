@@ -114,6 +114,12 @@ jobs:
           python -B ../scripts/provider-lab/smb/run_container.py \
             --rclone "$RUNNER_TEMP/rclone-smoke" \
             --protocol-evidence --report "$RUNNER_TEMP/smb-protocol.json"
+      - name: Isolated Cloudinary configured raw reads
+        if: ${{ !cancelled() }}
+        run: |
+          python -B ../scripts/provider-lab/cloudinary-fixed-api/run_container.py \
+            --rclone "$RUNNER_TEMP/rclone-smoke" --protocol-evidence \
+            --report "$RUNNER_TEMP/cloudinary-read-protocol.json"
       - name: Isolated pCloud OAuth positive feasibility
         if: ${{ !cancelled() }}
         run: |
@@ -139,7 +145,7 @@ jobs:
         with:
           name: hdfs-protocol
           path: ${{ runner.temp }}/provider-hdfs
-      # All 23 Linux profiles, including the separately qualified HDFS proof.
+      # All 29 Linux profiles, including the separately qualified HDFS and Cloudinary proofs.
       - name: Require current provider plans and protocol evidence
         if: ${{ !cancelled() }}
         run: |
@@ -152,7 +158,8 @@ jobs:
             --fixture-receipt "$RUNNER_TEMP/pcloud-oauth-authentication.json" \
             --fixture-receipt "$RUNNER_TEMP/gcs-oauth-lifecycle.json" \
             --fixture-receipt "$RUNNER_TEMP/provider-hdfs/hdfs-protocol.json" \
-            --require-plans --require-fixtures local,archive,http,webdav,ftp,sftp,s3,swift,b2,azureblob,azurefiles,seafile,memory,koofr,pixeldrain,filefabric,netstorage,internetarchive,gcs,smb,pcloud,hdfs,sia,hidrive,doi,quatrix,shade,sharefile
+            --fixture-receipt "$RUNNER_TEMP/cloudinary-read-protocol.json" \
+            --require-plans --require-fixtures local,archive,http,webdav,ftp,sftp,s3,swift,b2,azureblob,azurefiles,seafile,memory,koofr,pixeldrain,filefabric,netstorage,internetarchive,gcs,smb,pcloud,hdfs,sia,hidrive,doi,quatrix,shade,sharefile,cloudinary
       - name: Offline provider contracts
         run: cargo test --locked --release --test provider_smoke --test provider_matrix -- --test-threads=1
       - name: Login and credential regressions without accounts
@@ -244,6 +251,7 @@ jobs:
             ${{ runner.temp }}/provider-fixtures.json
             ${{ runner.temp }}/filefabric-renewal-fixture.json
             ${{ runner.temp }}/internetarchive-low-auth-fixture.json
+            ${{ runner.temp }}/cloudinary-read-protocol.json
             ${{ runner.temp }}/smb-protocol.json
             ${{ runner.temp }}/pcloud-oauth-authentication.json
             ${{ runner.temp }}/gcs-oauth-lifecycle.json

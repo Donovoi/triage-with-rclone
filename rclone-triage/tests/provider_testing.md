@@ -386,6 +386,6 @@ ineligible. These protocol modes do not establish application/vendor acceptance,
 revocation, session reauthentication, service-account, ADC or workload-identity
 coverage. See [the GCS lifecycle contract](../../scripts/provider-lab/gcs-oauth/README.md).
 
-## Cloudinary fixed-API read feasibility
+## Cloudinary configured raw-read protocol
 
-The [contained Cloudinary experiment](../../scripts/provider-lab/cloudinary-fixed-api/README.md) runs the pinned native backend against an independent HTTPS service with container-only DNS. It checks configured raw-asset reads and exact negative cases. The separate CI job and 28 regressions do not change the portable fixture count or any acceptance requirement: its receipt is explicitly ineligible for the coverage ledger.
+The [contained Cloudinary protocol](../../scripts/provider-lab/cloudinary-fixed-api/README.md) runs the pinned native backend against an independent HTTPS service with container-only DNS. Explicit schema-8 evidence qualifies only cloudinary_static_credentials_raw_read_v1 on Linux. Its closed validator binds all native checks, source/runtime hashes, dependency pins, containment, cleanup and freshness. Raw feasibility receipts and schema-1 rows remain ineligible. The combined Linux and provider-smoke gates require 29 protocol profiles; the portable baseline remains 26 experiments. Application/vendor requirements and lifecycle applicability are unchanged. Media transformations, pagination, eventual consistency, real CDN origins/redirects, native uploads/deletes and credential replacement remain outside this raw-read mode.

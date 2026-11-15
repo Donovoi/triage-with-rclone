@@ -1340,6 +1340,44 @@
       "unresolved_applicability": [
         "reauthentication"
       ]
+    },
+    "protocol-cloudinary-static-raw-read": {
+      "required": {
+        "application": [
+          "listing",
+          "download_hash",
+          "manifest_integrity",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation"
+        ],
+        "vendor": [
+          "listing",
+          "download_hash",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation"
+        ],
+        "local_protocol": [
+          "listing",
+          "download_hash",
+          "missing_object_rejection",
+          "authentication_rejection",
+          "read_denial",
+          "source_preservation",
+          "config_preservation",
+          "fixture_write_rejection",
+          "cleanup"
+        ]
+      },
+      "review_required": false,
+      "unresolved_applicability": []
     }
   },
   "providers": {
@@ -1670,11 +1708,12 @@
     "cloudinary": {
       "canonical_name": "cloudinary",
       "schema_sha256": "d1fd1c22bd060df4a51ee9338ff5590d1371bd04e4fe7297bb47f1ce89576ac0",
-      "profile": "hosted-static-credentials",
+      "profile": "protocol-cloudinary-static-raw-read",
       "notes": [
         "Cloudinary account/environment, cloud name and API key/secret; media resource types require scoped fixtures.",
         "Free account/API eligibility: review_required",
-        "The vendor also offers OAuth in other integrations. That is not configured by this pinned backend constructor and must not inherit this N/A decision."
+        "The vendor also offers OAuth in other integrations. That is not configured by this pinned backend constructor and must not inherit this N/A decision.",
+        "Schema-8 cloudinary_static_credentials_raw_read_v1 requires fresh, source-bound Linux container evidence for configured Basic credentials and raw-asset reads. Container-only DNS preserves the native fixed API authority, with exact private TLS, three independently checked payloads, negative cases and owned cleanup. The write check is a synthetic guard, not native uploader/delete coverage. It does not qualify media transformations, pagination, eventual consistency, real CDN origins or redirects, credential replacement, application or vendor acceptance. Raw feasibility receipts and schema-1 rows remain ineligible; existing application/vendor and lifecycle obligations are unchanged."
       ],
       "source_links": [
         "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/cloudinary.md",
