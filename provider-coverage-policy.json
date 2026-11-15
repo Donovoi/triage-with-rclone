@@ -2071,6 +2071,48 @@
       "unresolved_applicability": [
         "reauthentication"
       ]
+    },
+    "protocol-sugarsync-saved-authorization-folder-read": {
+      "required": {
+        "application": [
+          "listing",
+          "download_hash",
+          "manifest_integrity",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation",
+          "refresh"
+        ],
+        "vendor": [
+          "listing",
+          "download_hash",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation",
+          "refresh"
+        ],
+        "local_protocol": [
+          "listing",
+          "download_hash",
+          "missing_object_rejection",
+          "authentication_rejection",
+          "read_denial",
+          "source_preservation",
+          "config_preservation",
+          "fixture_write_rejection",
+          "cleanup"
+        ]
+      },
+      "review_required": false,
+      "unresolved_applicability": [
+        "reauthentication"
+      ]
     }
   },
   "providers": {
@@ -4390,11 +4432,12 @@
     "sugarsync": {
       "canonical_name": "sugarsync",
       "schema_sha256": "02a4bd83f7809c79f3d41071b1f63c2699f4a72a8117863a86caecf6703232bb",
-      "profile": "hosted-renewal-session-review",
+      "profile": "protocol-sugarsync-saved-authorization-folder-read",
       "notes": [
         "SugarSync account credentials used to obtain application authorization/refresh token; setup and renewal are provider-specific, not generic browser OAuth.",
         "Free account/API eligibility: review_required",
-        "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension."
+        "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension.",
+        "Schema-26 sugarsync_saved_authorization_folder_read_v1 qualifies only source-current Linux container evidence for a saved authorization URI, future authorization_expiry, cached user URI and explicit root_id folder URI on api.sugarsync.com. All nine capabilities, private TLS/SNI/Host binding, exact max=500/start=0 complete collectionContents XML inventories, observed File.Ref/data downloads with independent SHA-256 checks, wrong-authorization rejection, missing-name rejection, HTTP403 with identical expected content bytes, source/config preservation and listener cleanup are required. The backend advertises no remote hashes. The direct DELETE guard does not qualify native writes. Initial password/app authorization, token renewal, account-wide discovery, pagination/throttling, native writes and application/live-provider acceptance remain unverified. Raw feasibility/schema-1 rows are ineligible; original renewal and session-review obligations remain."
       ],
       "source_links": [
         "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/sugarsync.md"
