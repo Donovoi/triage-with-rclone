@@ -1741,6 +1741,48 @@
       "unresolved_applicability": [
         "reauthentication"
       ]
+    },
+    "protocol-onedrive-saved-token-read": {
+      "required": {
+        "application": [
+          "listing",
+          "download_hash",
+          "manifest_integrity",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation",
+          "refresh"
+        ],
+        "vendor": [
+          "listing",
+          "download_hash",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation",
+          "refresh"
+        ],
+        "local_protocol": [
+          "listing",
+          "download_hash",
+          "missing_object_rejection",
+          "authentication_rejection",
+          "read_denial",
+          "source_preservation",
+          "config_preservation",
+          "fixture_write_rejection",
+          "cleanup"
+        ]
+      },
+      "review_required": false,
+      "unresolved_applicability": [
+        "reauthentication"
+      ]
     }
   },
   "providers": {
@@ -3193,11 +3235,12 @@
     "onedrive": {
       "canonical_name": "onedrive",
       "schema_sha256": "1e1d68a0f4adc8099fe074ccea8a914f128f26bd87bec4b86a0af37d3abd99d5",
-      "profile": "hosted-renewal-session-review",
+      "profile": "protocol-onedrive-saved-token-read",
       "notes": [
         "Microsoft account or tenant account, own registered app/consent and exact approved drive/root; personal and business variants need separate evidence.",
         "Free account/API eligibility: review_required",
-        "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension."
+        "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension.",
+        "Schema-18 onedrive_saved_token_read_v1 qualifies only source-current Linux container evidence for a configured synthetic business drive with an unexpired saved OAuth Bearer token. All nine capabilities, private Graph TLS/authority checks, root and normalized item metadata, complete first-page inventories, default QuickXorHash metadata, known-byte reads, credential-free private content redirects and cleanup are required. The direct issued-link DELETE guard does not qualify native writes. Personal/shared drive variants, grant/refresh and token replacement, tenant_url or sovereign regions, malware overrides and OneNote, case-folding/name encoding, continuation/delta, native writes, real CDN and application/vendor acceptance remain unverified. Raw feasibility/schema-1 receipts are ineligible and existing lifecycle obligations remain unchanged."
       ],
       "source_links": [
         "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/onedrive.md"
