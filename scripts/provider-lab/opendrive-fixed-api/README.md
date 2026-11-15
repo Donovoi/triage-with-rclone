@@ -1,10 +1,10 @@
-# OpenDrive fixed-authority read feasibility
+# OpenDrive configured-session read protocol
 
 Run only inside a disposable Linux VM with Docker:
 
 ~~~sh
 python -B scripts/provider-lab/opendrive-fixed-api/run_container.py \
-  --rclone /absolute/path/to/verified/rclone \
+  --rclone /absolute/path/to/verified/rclone --protocol-evidence \
   --report /absolute/new/path/opendrive-fixed-api.json
 ~~~
 
@@ -32,11 +32,20 @@ temporary files. Shared build cache and the pinned public base image remain;
 runtime credentials, session IDs and private TLS material are generated only
 inside ephemeral tmpfs. Raw transcripts and images are never published.
 
-This result is feasibility-only and ledger-ineligible. It is outside the 26
-portable fixtures and does not alter the 29 required Linux protocol profiles.
-The tests do not qualify session expiry/reauthentication, real account policies,
-service consistency, pagination, uploads, native delete, Windows application or
-vendor acceptance. Twenty-nine wire, TLS, container and receipt regressions run
-without Docker or fixed port/DNS requirements on the unit-test platforms.
+The explicit --protocol-evidence option emits closed schema-9
+opendrive_configured_session_read_v1 evidence. The importer recomputes current
+source/runtime bindings and validates isolation, dependencies, native probe,
+timestamps, exact output, all nine capabilities and cleanup before accepting only
+the Linux local-protocol tier. The combined Linux and provider-smoke gates now
+require 30 profiles; OpenDrive remains outside the 26 portable experiments.
+
+Without that option, feasibility receipts remain ledger-ineligible. Historical
+feasibility and schema-1 rows cannot satisfy this mode. Application/vendor
+requirements, credential-renewal applicability and unresolved connection/session
+reauthentication are preserved. Session expiry, transparent reauthentication,
+real account policies, service consistency, pagination, native writes and the
+Windows application remain outside this profile. Forty-four wire, TLS, container,
+workflow and receipt regressions run without Docker or fixed port/DNS requirements
+on the unit-test platforms.
 
 Source: [rclone OpenDrive v1.75.2](https://github.com/rclone/rclone/tree/v1.75.2/backend/opendrive).
