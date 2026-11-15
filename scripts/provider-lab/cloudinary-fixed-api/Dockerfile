@@ -16,7 +16,7 @@ assert hashlib.sha256(lock_path.read_bytes()).hexdigest() == '62f89a3ff2ec710596
 lock = json.loads(lock_path.read_bytes())
 assert platform.python_version() == lock['python_version'] and platform.machine() == 'x86_64'
 expected = {'scripts/provider-lab/cloudinary-fixed-api/' + p for p in ('Dockerfile', 'build-lock.json', 'run_container.py', 'probe.py')}
-expected |= {'scripts/provider-lab/' + p for p in ('fixture_servers.py', 'run_lab.py', 'fixture_tls.py', 'fixture_pcloud.py', 'fixture_gcs.py', 'fixture_sia.py', 'fixture_read_api.py', 'fixture_hidrive.py', 'fixture_doi.py', 'fixture_quatrix.py', 'fixture_shade.py', 'fixture_sharefile.py', 'fixture_cloudinary.py', 'fixture_opendrive.py', 'fixture_gofile.py', 'fixture_drime.py', 'requirements-fixture.txt')}
+expected |= {'scripts/provider-lab/' + p for p in ('fixture_servers.py', 'run_lab.py', 'fixture_tls.py', 'fixture_pcloud.py', 'fixture_gcs.py', 'fixture_sia.py', 'fixture_read_api.py', 'fixture_hidrive.py', 'fixture_doi.py', 'fixture_quatrix.py', 'fixture_shade.py', 'fixture_sharefile.py', 'fixture_cloudinary.py', 'fixture_opendrive.py', 'fixture_gofile.py', 'fixture_drime.py', 'fixture_fichier.py', 'requirements-fixture.txt')}
 expected |= {'rclone-version.env'}
 sources = json.loads((root / 'source-manifest.json').read_bytes())
 assert set(sources) == expected

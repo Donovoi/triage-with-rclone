@@ -214,7 +214,7 @@ class GoFileContainerTests(unittest.TestCase):
         validate(workflow)
         for before, after in (("  gofile-fixed-api:\n", "  gofile-fixed-api:\n    if: false\n"),
                               ('--rclone "$RUNNER_TEMP/rclone-gofile"', '--rclone "$RUNNER_TEMP/other"'),
-                              ("windows-webdav-bearer, opendrive-fixed-api, gofile-fixed-api, drime-fixed-api]", "windows-webdav-bearer, opendrive-fixed-api, drime-fixed-api]")):
+                              ("windows-webdav-bearer, opendrive-fixed-api, gofile-fixed-api, drime-fixed-api, fichier-fixed-api]", "windows-webdav-bearer, opendrive-fixed-api, drime-fixed-api, fichier-fixed-api]")):
             self.assertIn(before, workflow)
             with self.assertRaises(ValueError):
                 validate(workflow.replace(before, after, 1))

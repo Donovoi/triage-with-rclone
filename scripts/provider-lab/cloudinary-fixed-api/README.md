@@ -47,7 +47,7 @@ Application/vendor requirements and lifecycle applicability remain unchanged.
 Without that option, the default feasibility receipt remains ledger-ineligible.
 Historical feasibility receipts and schema-1 rows cannot count as this mode.
 Cloudinary stays outside the 26 portable experiments; the combined Linux and
-provider-smoke gates require 32 protocol profiles. Forty-three wire, authority,
+provider-smoke gates require 33 protocol profiles. Forty-three wire, authority,
 supervisor and receipt regressions run on both supported unit-test platforms
 without fixed DNS or port 443.
 

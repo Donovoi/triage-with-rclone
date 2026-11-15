@@ -1494,6 +1494,44 @@
       },
       "review_required": false,
       "unresolved_applicability": []
+    },
+    "protocol-fichier-configured-key-read": {
+      "required": {
+        "application": [
+          "listing",
+          "download_hash",
+          "manifest_integrity",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation"
+        ],
+        "vendor": [
+          "listing",
+          "download_hash",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation"
+        ],
+        "local_protocol": [
+          "listing",
+          "download_hash",
+          "missing_object_rejection",
+          "authentication_rejection",
+          "read_denial",
+          "source_preservation",
+          "config_preservation",
+          "fixture_write_rejection",
+          "cleanup"
+        ]
+      },
+      "review_required": false,
+      "unresolved_applicability": []
     }
   },
   "providers": {
@@ -1986,11 +2024,12 @@
     "fichier": {
       "canonical_name": "fichier",
       "schema_sha256": "2a2a198b60eda98fae0324220a518d975c98fb8ec2122661bcea3821ae5025e6",
-      "profile": "hosted-static-credentials",
+      "profile": "protocol-fichier-configured-key-read",
       "notes": [
         "1Fichier account and API key; rclone documents Premium subscription for API use. Shared-folder access is a separate restricted profile.",
         "Free account/API eligibility: paid_api_required",
-        "Decision is for the pinned configured-key list/download route, not every vendor login method or future API. Expiring object URLs and transfer sessions need separate transfer-resilience tests."
+        "Decision is for the pinned configured-key list/download route, not every vendor login method or future API. Expiring object URLs and transfer sessions need separate transfer-resilience tests.",
+        "Schema-12 fichier_configured_key_read_v1 qualifies only source-current Linux container evidence for configured API-key reads. All nine protocol capabilities, private TLS/authority checks, literal payload SHA-256 and independent Whirlpool values, issued single-use download links and cleanup are required. Native missing-object checks select names from complete inventories. Replay rejection is a wire regression; no broader transfer recovery or credential replacement is qualified. Shared-folder/password/CDN modes, live origins, native writes and real service policies remain outside scope. Raw feasibility/schema-1 receipts remain ineligible. Existing application/vendor and lifecycle applicability obligations are preserved."
       ],
       "source_links": [
         "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/fichier.md",
