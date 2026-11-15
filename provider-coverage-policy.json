@@ -1574,6 +1574,47 @@
       "unresolved_applicability": [
         "reauthentication"
       ]
+    },
+    "protocol-putio-saved-token-read": {
+      "required": {
+        "application": [
+          "listing",
+          "download_hash",
+          "manifest_integrity",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation"
+        ],
+        "vendor": [
+          "listing",
+          "download_hash",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation"
+        ],
+        "local_protocol": [
+          "listing",
+          "download_hash",
+          "missing_object_rejection",
+          "authentication_rejection",
+          "read_denial",
+          "source_preservation",
+          "config_preservation",
+          "fixture_write_rejection",
+          "cleanup"
+        ]
+      },
+      "review_required": false,
+      "unresolved_applicability": [
+        "refresh",
+        "reauthentication"
+      ]
     }
   },
   "providers": {
@@ -3352,13 +3393,14 @@
     "putio": {
       "canonical_name": "putio",
       "schema_sha256": "79f056951ddacb4371d2b56ba8becb6ef0e6493531811f99e7cd5c2bc6e086a3",
-      "profile": "hosted-renewal-review-session-review",
+      "profile": "protocol-putio-saved-token-read",
       "notes": [
         "put.io account and browser OAuth token; pinned docs show a non-expiring token. Revoke/denial applies; refresh grant is not presumed.",
         "Free account/API eligibility: review_required",
         "Policy integration conservatively leaves connection/session applicability unresolved for the untraced alternative auth profile; frozen research is preserved and no N/A conclusion is inferred from a helper default.",
         "No claim of universal nonexpiry. The precise no-expiry client mode can be tested separately from any future or alternate grant.",
-        "Current provider token lifetime/renewal semantics beyond the documented zero-expiry client configuration are not established."
+        "Current provider token lifetime/renewal semantics beyond the documented zero-expiry client configuration are not established.",
+        "Schema-14 putio_saved_token_read_v1 qualifies only source-current Linux container evidence for a saved, unexpired OAuth token. All nine protocol capabilities, private TLS/authority checks, two-page cursor inventories, exact-name metadata and missing-child responses, CRC32 metadata, three literal payload SHA-256 oracles and cleanup are required. Native content downloads use newly issued private links without forwarding the API Bearer token. No grant/refresh, token replacement, native mutation, live tunnel/CDN origin or real-service policy is qualified. Raw feasibility/schema-1 receipts remain ineligible. Existing application/vendor, renewal-review and connection-session obligations are preserved."
       ],
       "source_links": [
         "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/putio.md",
