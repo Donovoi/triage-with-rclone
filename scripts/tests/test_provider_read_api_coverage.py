@@ -1,4 +1,4 @@
-"""Closed HiDrive saved-token and DOI three-format receipt contracts."""
+"""Closed configured-read protocol receipts never promote broader acceptance."""
 import copy
 import json
 from pathlib import Path
@@ -8,12 +8,24 @@ from test_provider_coverage import coverage as C, NOW, RUNTIME, HARNESS, schema,
 ROOT = Path(__file__).resolve().parents[2]
 COMMON = {"listing", "download_hash", "missing_object_rejection", "read_denial",
           "source_preservation", "config_preservation", "fixture_write_rejection", "cleanup"}
-CAPS = {"hidrive": COMMON | {"hidrive_saved_token_read", "hidrive_saved_token_rejection"},
+CAPS = {"shade": COMMON | {"shade_saved_token_read", "shade_saved_token_rejection"},
+        "sharefile": COMMON | {"sharefile_saved_token_read", "sharefile_saved_token_rejection"},
+        "quatrix": COMMON | {"authentication_rejection"},
+        "hidrive": COMMON | {"hidrive_saved_token_read", "hidrive_saved_token_rejection"},
         "doi": COMMON | {"anonymous_read", "dataverse_read", "invenio_read", "zenodo_read",
                          "resolver_rejection", "native_write_rejection"}}
-PROFILES = {"hidrive": "hosted-renewal-session-review", "doi": "public-read"}
-FINGERPRINTS = {"hidrive": "5170bdd6ed2be46aa6d09a4ad70ba0251db0d979b06710feca5977789338fd3c",
-                "doi": "bf1688a020f582f70c21120e596325f8f84f03877b8e70cc1ef79d870a8217f0"}
+PROFILES = {
+    "shade": "hosted-renewal", "sharefile": "hosted-renewal-session-review",
+    "quatrix": "hosted-static-credentials", "hidrive": "hosted-renewal-session-review",
+    "doi": "public-read",
+}
+FINGERPRINTS = {
+    "shade": "11fae1d2dbe98923f926912b19dde9d1e24390d55e89d65eb642d30675f41621",
+    "sharefile": "93f298c423ecefef1f719c07812642728abd3c8fb4e741194b3167a70e8aeccf",
+    "quatrix": "f90fa0650d2d29240abe716966a00a67fe2cbebb8c11404c719867ee814a8b49",
+    "hidrive": "5170bdd6ed2be46aa6d09a4ad70ba0251db0d979b06710feca5977789338fd3c",
+    "doi": "bf1688a020f582f70c21120e596325f8f84f03877b8e70cc1ef79d870a8217f0",
+}
 
 
 class ReadApiCoverageTests(unittest.TestCase):
@@ -86,7 +98,9 @@ class ReadApiCoverageTests(unittest.TestCase):
             for cap in ({"authentication", "authentication_rejection", "refresh", "reauthentication",
                          "revocation", "cancellation", "anonymous_read", "saved_token_read",
                          "dataverse_read", "invenio_read", "zenodo_read", "native_write_rejection",
-                         "hidrive_saved_token_read", "hidrive_saved_token_rejection"} - CAPS[backend]):
+                         "hidrive_saved_token_read", "hidrive_saved_token_rejection",
+                         "shade_saved_token_read", "shade_saved_token_rejection",
+                         "sharefile_saved_token_read", "sharefile_saved_token_rejection"} - CAPS[backend]):
                 candidate = self.receipt()
                 candidate["backends"][0]["capabilities"][cap] = "passed"
                 self.reject(candidate)

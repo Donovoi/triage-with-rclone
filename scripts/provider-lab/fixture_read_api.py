@@ -1,4 +1,4 @@
-"""Finite read-API transport shared by the HiDrive and DOI fixtures.
+"""Finite read-API transport for independent configured read fixtures.
 
 Only admission, timers and response bounds come from the older Seafile transport;
 provider handlers own all routes, query fields, credentials and wire schemas.

@@ -39,8 +39,8 @@ from fixture_doi import DoiState, serve_doi, FORMATS as DOI_FORMATS, DOI as DOI_
 from email.utils import format_datetime
 
 
-BACKENDS = ("local", "http", "webdav", "ftp", "sftp", "s3", "archive", "swift", "b2", "azureblob", "azurefiles", "seafile", "memory", "koofr", "pixeldrain", "filefabric", "internetarchive", "netstorage", "pcloud", "gcs", "sia", "hidrive", "doi")
-HARNESS_FILES = ("fixture_servers.py", "run_lab.py", "fixture_tls.py", "fixture_pcloud.py", "fixture_gcs.py", "fixture_sia.py", "fixture_read_api.py", "fixture_hidrive.py", "fixture_doi.py", "requirements-fixture.txt")
+BACKENDS = ("local", "http", "webdav", "ftp", "sftp", "s3", "archive", "swift", "b2", "azureblob", "azurefiles", "seafile", "memory", "koofr", "pixeldrain", "filefabric", "internetarchive", "netstorage", "pcloud", "gcs", "sia", "hidrive", "doi", "quatrix", "shade", "sharefile")
+HARNESS_FILES = ("fixture_servers.py", "run_lab.py", "fixture_tls.py", "fixture_pcloud.py", "fixture_gcs.py", "fixture_sia.py", "fixture_read_api.py", "fixture_hidrive.py", "fixture_doi.py", "fixture_quatrix.py", "fixture_shade.py", "fixture_sharefile.py", "requirements-fixture.txt")
 MAX_OUTPUT = 2 * 1024 * 1024
 COMMAND_TIMEOUT = 20
 
@@ -3507,9 +3507,135 @@ def doi_checks(runtime, root, row, expected):
         caps[name] = "passed"
 
 
+QUATRIX_CAPABILITIES = frozenset({
+    "listing", "download_hash", "missing_object_rejection", "authentication_rejection",
+    "read_denial", "source_preservation", "config_preservation", "fixture_write_rejection", "cleanup",
+})
+
+
+def quatrix_checks(runtime, root, row, expected):
+    from fixture_quatrix import QuatrixState, serve_quatrix
+    token, wrong = "synthetic-" + uuid.uuid4().hex, "wrong-" + uuid.uuid4().hex
+    state, transport, certificates, port = QuatrixState(token, wrong), None, None, None
+    before = len(runtime.children)
+    caps = row["capabilities"]
+    snapshot = json.dumps({"files": {k: hashlib.sha256(v).hexdigest() for k, v in state.files.items()},
+                           "metadata": {k: state.metadata(k) for k in state.ids}}, sort_keys=True)
+    try:
+        pcloud_dependencies()  # The shared pinned TLS dependency lock.
+        with serve_quatrix(root, state) as (certificates, transport):
+            port = transport.port
+            class TrustedRuntime:
+                def run(self, args, config=None, **kwargs):
+                    pcloud_dependencies()
+                    return runtime.run([*certificates.rclone_ca_args(), *args], config, **kwargs)
+            native = TrustedRuntime()
+            options = {"type": "quatrix", "host": f"127.0.0.1:{port}", "api_key": token}
+            good = config_file(root, "quatrix-good.conf", options)
+            bad = config_file(root, "quatrix-wrong.conf", dict(options, api_key=wrong))
+            preserved = {path: path.read_bytes() for path in (good, bad)}
+            common_checks(native, root, good, bad, "Synthetic:", row, state, expected=expected)
+            read_api_listing(native, good, expected)
+            state.mode = "read_denied"
+            denied = root / "denied"
+            denied.mkdir(mode=0o700)
+            code, output, error = exact_copy(native, good, "Synthetic:", "README-synthetic.txt", str(denied), "denied.bin")
+            check(code != 0 and b"403" in output + error and not list(denied.iterdir()), "quatrix_read_denial_missing")
+            state.mode = "normal"
+            code, output, error = native.run(["deletefile", "Synthetic:README-synthetic.txt"], good)
+            check(code != 0 and b"405" in output + error, "quatrix_fixture_write_guard_missing")
+            check(read_api_flow_matches(state, expected) and state.denied > 0 and state.missing > 0
+                  and all(state.events.count(("listing", path)) == 2 for path in ("", "nested"))
+                  and all(("download_link", item["path"]) in state.events for item in expected),
+                  "quatrix_protocol_flow_mismatch")
+            after = json.dumps({"files": {k: hashlib.sha256(v).hexdigest() for k, v in state.files.items()},
+                                "metadata": {k: state.metadata(k) for k in state.ids}}, sort_keys=True)
+            check(snapshot == after and served_source_unchanged(state, expected)
+                  and (state.password, state.wrong_token) == (token, wrong), "quatrix_source_changed")
+            check(all(path.read_bytes() == data for path, data in preserved.items()), "quatrix_config_changed")
+        observed = transport.snapshot()
+        check(not observed["failure_codes"] and observed["handshake_successes"] > 0, "quatrix_tls_transport_failed")
+        for name in caps:
+            caps[name] = "passed"
+    finally:
+        closed = (state.cleanup_complete and (port is None or listener_closed(port))
+                  and (certificates is None or certificates.cleanup_complete)
+                  and all(record[0].poll() is not None for record in runtime.children[before:]))
+        caps["cleanup"] = "passed" if closed else "failed"
+        check(closed, "quatrix_cleanup_failed")
+
+
+CACHED_TOKEN_BACKENDS = ("shade", "sharefile")
+CACHED_TOKEN_COMMON_CAPABILITIES = frozenset({
+    "listing", "download_hash", "missing_object_rejection", "read_denial",
+    "source_preservation", "config_preservation", "fixture_write_rejection", "cleanup",
+})
+
+
+def cached_token_checks(runtime, root, row, expected):
+    from fixture_shade import ShadeState, serve_shade
+    from fixture_sharefile import ShareFileState, serve_sharefile
+    backend = row["backend"]
+    check(backend in CACHED_TOKEN_BACKENDS, "unreviewed_cached_token_backend")
+    token = "synthetic-" + uuid.uuid4().hex
+    state_class, server = (ShadeState, serve_shade) if backend == "shade" else (ShareFileState, serve_sharefile)
+    state, port = state_class(token), None
+    before = len(runtime.children)
+    caps = row["capabilities"]
+    metadata_before = {name: state.metadata(name) for name in ("", "nested", *state.files)}
+    try:
+        with server(state) as port:
+            if backend == "shade":
+                # The API-key exchange is hardcoded upstream. Keep the cached
+                # token valid beyond the bounded run; no renewal is exercised.
+                from datetime import timedelta
+                expiry = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat().replace("+00:00", "Z")
+                options = {"type": backend, "drive_id": "synthetic-drive", "api_key": "unused-synthetic-api-key",
+                           "endpoint": f"http://127.0.0.1:{port}", "token": token, "token_expiry": expiry}
+                bad_options = dict(options, token="wrong-synthetic-token")
+            else:
+                options = {"type": backend, "root_folder_id": "100", "endpoint": f"http://127.0.0.1:{port}",
+                           "token": json.dumps({"access_token": token, "token_type": "Bearer", "expiry": "0001-01-01T00:00:00Z"})}
+                bad_options = dict(options, token=json.dumps({"access_token": "wrong-synthetic-token", "token_type": "Bearer",
+                                                             "expiry": "0001-01-01T00:00:00Z"}))
+            good = config_file(root, backend + "-good.conf", options)
+            bad = config_file(root, backend + "-wrong.conf", bad_options)
+            preserved = {path: path.read_bytes() for path in (good, bad)}
+            wrong_destination = root / "wrong-token"
+            wrong_destination.mkdir(mode=0o700)
+            code, output, error = exact_copy(runtime, bad, "Synthetic:", "README-synthetic.txt", str(wrong_destination), "denied.bin")
+            check(code != 0 and b"401" in output + error and not list(wrong_destination.iterdir())
+                  and state.denied > 0 and not state.payload_bytes, backend + "_saved_token_rejection_missing")
+            common_checks(runtime, root, good, None, "Synthetic:", row, state, expected=expected)
+            read_api_listing(runtime, good, expected)
+            state.mode = "read_denied"
+            denied = root / "denied"
+            denied.mkdir(mode=0o700)
+            code, output, error = exact_copy(runtime, good, "Synthetic:", "README-synthetic.txt", str(denied), "denied.bin")
+            check(code != 0 and b"403" in output + error and not list(denied.iterdir()), backend + "_read_denial_missing")
+            state.mode = "normal"
+            code, output, error = runtime.run(["deletefile", "Synthetic:README-synthetic.txt"], good)
+            check(code != 0 and b"405" in output + error, backend + "_fixture_write_guard_missing")
+            check(read_api_flow_matches(state, expected) and state.missing > 0
+                  and all(state.events.count(("listing", path)) == 2 for path in ("", "nested"))
+                  and (backend != "sharefile" or all(("download_link", item["path"]) in state.events for item in expected)),
+                  backend + "_protocol_flow_mismatch")
+            check(served_source_unchanged(state, expected) and state.password == token
+                  and {name: state.metadata(name) for name in ("", "nested", *state.files)} == metadata_before,
+                  backend + "_source_changed")
+            check(all(path.read_bytes() == data for path, data in preserved.items()), backend + "_config_changed")
+        for name in caps:
+            caps[name] = "passed"
+    finally:
+        closed = (state.cleanup_complete and (port is None or listener_closed(port))
+                  and all(record[0].poll() is not None for record in runtime.children[before:]))
+        caps["cleanup"] = "passed" if closed else "failed"
+        check(closed, backend + "_cleanup_failed")
+
+
 def run_backend(runtime, backend, root):
     root.mkdir(mode=0o700)
-    independent = backend in ("http", "webdav", "ftp", "swift", "b2", "azureblob", "azurefiles", "seafile", "koofr", "pixeldrain", "filefabric", "internetarchive", "netstorage", "pcloud", "gcs", "sia", "hidrive", "doi")
+    independent = backend in ("http", "webdav", "ftp", "swift", "b2", "azureblob", "azurefiles", "seafile", "koofr", "pixeldrain", "filefabric", "internetarchive", "netstorage", "pcloud", "gcs", "sia", "hidrive", "doi", "quatrix", "shade", "sharefile")
     row = {"backend": backend,
            "fixture_kind": "local" if backend in ("local", "archive", "memory") else "independent_loopback" if independent else "rclone_loopback",
            "capabilities": {key: "not_run" for key in (
@@ -3519,6 +3645,10 @@ def run_backend(runtime, backend, root):
         row["capabilities"]["authentication_rejection"] = "not_applicable"
     if backend in ("hidrive", "doi"):
         row["capabilities"] = {key: "not_run" for key in (HIDRIVE_CAPABILITIES if backend == "hidrive" else DOI_CAPABILITIES)}
+    if backend in CACHED_TOKEN_BACKENDS:
+        row["capabilities"] = {key: "not_run" for key in CACHED_TOKEN_COMMON_CAPABILITIES | {backend + "_saved_token_read", backend + "_saved_token_rejection"}}
+    if backend == "quatrix":
+        row["capabilities"] = {key: "not_run" for key in QUATRIX_CAPABILITIES}
     if backend == "sia":
         row["capabilities"] = {key: "not_run" for key in SIA_CAPABILITIES}
     if backend == "netstorage":
@@ -3556,6 +3686,12 @@ def run_backend(runtime, backend, root):
         prepare_files(files_root)
     port = None
     try:
+        if backend in CACHED_TOKEN_BACKENDS:
+            cached_token_checks(runtime, root, row, expected)
+            return row
+        if backend == "quatrix":
+            quatrix_checks(runtime, root, row, expected)
+            return row
         if backend == "hidrive":
             hidrive_checks(runtime, root, row, expected)
             return row

@@ -175,7 +175,7 @@ class InternetArchiveRunnerTests(unittest.TestCase):
         self.assertEqual(len(scenario.states), 14)
         self.assertTrue(all(c.closed for c in scenario.connections))
         self.assertEqual(LAB.fixture_manifest(), EXPECTED)
-        self.assertEqual(len(LAB.BACKENDS), 23)
+        self.assertEqual(len(LAB.BACKENDS), 26)
         for index, (_, config, kwargs) in enumerate(scenario.calls, 1):
             self.assertEqual(kwargs, {})
             lines = dict(line.split(" = ", 1) for line in config.read_text().splitlines() if " = " in line)
