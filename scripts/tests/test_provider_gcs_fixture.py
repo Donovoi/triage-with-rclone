@@ -269,7 +269,7 @@ class GcsFixtureTests(unittest.TestCase):
                     fixture.close()
                     self.assertTrue(fixture.state.budget_exceeded)
                 self.assertEqual(fixture.state.events, [])
-                self.assertTrue(fixture.cleanup_complete)
+                self.assertTrue(fixture.cleanup_complete, fixture.snapshot()["transport"])
             finally:
                 connection.close()
 
