@@ -2113,6 +2113,48 @@
       "unresolved_applicability": [
         "reauthentication"
       ]
+    },
+    "protocol-pikpak-saved-token-folder-read": {
+      "required": {
+        "application": [
+          "listing",
+          "download_hash",
+          "manifest_integrity",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation",
+          "refresh"
+        ],
+        "vendor": [
+          "listing",
+          "download_hash",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation",
+          "refresh"
+        ],
+        "local_protocol": [
+          "listing",
+          "download_hash",
+          "missing_object_rejection",
+          "authentication_rejection",
+          "read_denial",
+          "source_preservation",
+          "config_preservation",
+          "fixture_write_rejection",
+          "cleanup"
+        ]
+      },
+      "review_required": false,
+      "unresolved_applicability": [
+        "reauthentication"
+      ]
     }
   },
   "providers": {
@@ -3756,18 +3798,21 @@
     "pikpak": {
       "canonical_name": "pikpak",
       "schema_sha256": "f468524aa9c7b491142fa17e41c0bb549bb84bb67135eceddd5ef6ffcf126abb",
-      "profile": "hosted-renewal-session-review",
+      "profile": "protocol-pikpak-saved-token-folder-read",
       "notes": [
         "PikPak account credentials; device/captcha handling can require interactive provider setup. Free/API eligibility and renewal semantics unresolved.",
         "Free account/API eligibility: review_required",
         "An invalid_grant recovery through password is not a successful refresh grant.",
-        "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension."
+        "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension.",
+        "Schema-27 pikpak_saved_token_folder_read_v1 qualifies only source-current Linux container evidence for a saved OAuth bearer, unexpired saved captcha token, fixed device identity and explicit root_folder_id on api-drive.mypikpak.com. All nine capabilities, private TLS/SNI/Host binding, exact complete parent/kind/phase/trashed listing filters, observed file metadata and issued download-link binding, independent SHA-256 checks, wrong-bearer rejection, missing-name rejection and native cat/copy rejection of HTTP403 with identical expected bytes are required. Metadata includes the backend-supported MD5 checksum; downloaded bytes also receive independent SHA-256 checks. Source/config preservation and listener cleanup are mandatory. The direct DELETE guard does not qualify native writes. Initial login, captcha solving, OAuth/captcha renewal, account-wide discovery, pagination/throttling, native writes and application/live-provider acceptance remain unverified. Raw feasibility/schema-1 rows are ineligible; original renewal and session-review obligations remain."
       ],
       "source_links": [
         "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/pikpak.md",
         "https://github.com/rclone/rclone/blob/v1.75.2/backend/pikpak/pikpak.go",
         "https://github.com/rclone/rclone/blob/v1.75.2/backend/pikpak/pikpak.go",
-        "https://github.com/rclone/rclone/blob/v1.75.2/backend/pikpak/pikpak.go"
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/pikpak/pikpak.go",
+        "https://github.com/rclone/rclone/blob/v1.76.0/backend/pikpak/pikpak.go",
+        "https://github.com/rclone/rclone/commit/c9f491800b7d424be89976b2a45493ce56825094"
       ],
       "renewal_modes": [
         {

@@ -543,3 +543,13 @@ Exact max=500/start=0 queries select complete collectionContents XML inventories
 Schema-26 sugarsync_saved_authorization_folder_read_v1 binds the current 37-file source closure, pinned runtime/dependencies, native output/timing, nine capabilities and containment/cleanup. Forty-eight provider regressions cover XML contracts, authority and framing rejection, container boundaries and evidence substitution. Both combined Linux and provider-smoke gates require 47 reviewed profiles and the same-run receipt; raw feasibility evidence cannot qualify this mode.
 
 The direct DELETE guard does not qualify native writes. Existing renewal and session-review obligations remain. Initial password/app authorization, renewal, account-wide discovery, continuation/throttling, native writes and application/live-provider acceptance remain unverified. See [the isolated fixture](../../scripts/provider-lab/sugarsync-fixed-api/README.md).
+
+### PikPak saved-token folder read protocol
+
+The isolated Linux PikPak profile uses a saved OAuth bearer, unexpired saved captcha token, fixed device identity and supported root_folder_id at api-drive.mypikpak.com. Private exact TLS/SNI/Host binding preserves the ordinary authority on 127.0.0.1:443; the native client receives the private CA.
+
+Exact parent/kind/phase/trashed filters and an empty continuation token select complete inventories with string sizes, timestamps and MD5 metadata. Missing-name rejection uses those inventories. Metadata and download links require a previously observed file identity. Download requests retain OAuth but omit API-only client/device/captcha headers. Three native downloads receive independent SHA-256 checks. Both native cat and copy reject HTTP403 containing the identical expected file bytes; this regression failed on 1.75.2 and passes with the upstream status fix in 1.76.0.
+
+Schema-27 pikpak_saved_token_folder_read_v1 binds the current 38-file source closure, pinned runtime/dependencies, native output/timing, nine capabilities and containment/cleanup. Both combined Linux and provider-smoke gates require 48 reviewed profiles and the same-run receipt; raw feasibility evidence cannot qualify this mode.
+
+The direct DELETE guard does not qualify native writes. Existing renewal and session-review obligations remain. Initial login, captcha solving, OAuth/captcha renewal, account-wide discovery, continuation/throttling, native writes and application/live-provider acceptance remain unverified. See [the isolated fixture](../../scripts/provider-lab/pikpak-fixed-api/README.md).

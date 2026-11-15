@@ -40,7 +40,7 @@ from email.utils import format_datetime
 
 
 BACKENDS = ("local", "http", "webdav", "ftp", "sftp", "s3", "archive", "swift", "b2", "azureblob", "azurefiles", "seafile", "memory", "koofr", "pixeldrain", "filefabric", "internetarchive", "netstorage", "pcloud", "gcs", "sia", "hidrive", "doi", "quatrix", "shade", "sharefile")
-HARNESS_FILES = ("fixture_servers.py", "run_lab.py", "fixture_tls.py", "fixture_pcloud.py", "fixture_gcs.py", "fixture_sia.py", "fixture_read_api.py", "fixture_hidrive.py", "fixture_doi.py", "fixture_quatrix.py", "fixture_shade.py", "fixture_sharefile.py", "fixture_cloudinary.py", "fixture_opendrive.py", "fixture_gofile.py", "fixture_drime.py", "fixture_fichier.py", "fixture_premiumizeme.py", "fixture_putio.py", "fixture_linkbox.py", "fixture_yandex.py", "fixture_box.py", "fixture_onedrive.py", "fixture_filelu.py", "fixture_qingstor.py", "fixture_drive.py", "fixture_dropbox.py", "fixture_oos.py", "fixture_zoho.py", "fixture_jottacloud.py", "fixture_sugarsync.py", "requirements-fixture.txt")
+HARNESS_FILES = ("fixture_servers.py", "run_lab.py", "fixture_tls.py", "fixture_pcloud.py", "fixture_gcs.py", "fixture_sia.py", "fixture_read_api.py", "fixture_hidrive.py", "fixture_doi.py", "fixture_quatrix.py", "fixture_shade.py", "fixture_sharefile.py", "fixture_cloudinary.py", "fixture_opendrive.py", "fixture_gofile.py", "fixture_drime.py", "fixture_fichier.py", "fixture_premiumizeme.py", "fixture_putio.py", "fixture_linkbox.py", "fixture_yandex.py", "fixture_box.py", "fixture_onedrive.py", "fixture_filelu.py", "fixture_qingstor.py", "fixture_drive.py", "fixture_dropbox.py", "fixture_oos.py", "fixture_zoho.py", "fixture_jottacloud.py", "fixture_sugarsync.py", "fixture_pikpak.py", "requirements-fixture.txt")
 MAX_OUTPUT = 2 * 1024 * 1024
 COMMAND_TIMEOUT = 20
 
@@ -4050,6 +4050,89 @@ def box_checks(runtime, root, row, expected):
 
 
 
+def pikpak_checks(runtime, root, row, expected):
+    from fixture_pikpak import PikpakState, serve_pikpak, ROOT, DEVICE, CAPTCHA, UA
+    secret = "synthetic-token-" + uuid.uuid4().hex
+    state, port, transport, certificates = PikpakState(secret), None, None, None
+    before = len(runtime.children)
+    caps = row["capabilities"]
+    try:
+        pcloud_dependencies()
+        with serve_pikpak(root, state) as (certificates, transport):
+            port = transport.port
+            class TrustedRuntime:
+                def run(self, args, config=None, **kwargs):
+                    pcloud_dependencies()
+                    return runtime.run([*certificates.rclone_ca_args(), *args], config, **kwargs)
+            native = TrustedRuntime()
+            expiry = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat().replace("+00:00", "Z")
+            token=lambda value:json.dumps({"access_token":value,"token_type":"Bearer","refresh_token":"synthetic-unused-refresh","expiry":expiry})
+            options={"type":"pikpak","token":token(secret),"root_folder_id":ROOT,"device_id":DEVICE,
+                     "captcha_token":json.dumps({"captcha_token":CAPTCHA,"expires_in":7200,"expiry":expiry})}
+            good=config_file(root,"pikpak-good.conf",options)
+            bad=config_file(root,"pikpak-wrong.conf",dict(options,token=token("wrong-synthetic-token")))
+            preserved = {path: path.read_bytes() for path in (good, bad)}
+            metadata_before = {name: state.metadata(name) for name in state.files}
+            auth_destination = root / "bad-auth"
+            auth_destination.mkdir(mode=0o700)
+            code, output, error = exact_copy(native, bad, "Synthetic:", "README-synthetic.txt",
+                                             str(auth_destination), "must-not-exist")
+            check(code != 0 and not list(auth_destination.iterdir()) and state.denied > 0
+                  and state.payload_bytes == 0, "pikpak_credential_rejection_missing")
+            caps["authentication_rejection"] = "passed"
+            common_checks(native, root, good, None, "Synthetic:", row, state, expected=expected)
+            read_api_listing(native, good, expected)
+            state.mode = "read_denied"
+            denied = root / "denied"
+            denied.mkdir(mode=0o700)
+            cat_code,cat_output,_=native.run(["cat","Synthetic:README-synthetic.txt"],good)
+            code,output,error=exact_copy(native,good,"Synthetic:","README-synthetic.txt",str(denied),"denied.bin")
+            accepted=denied/"denied.bin"
+            expected_bytes=state.files["README-synthetic.txt"]
+            unchanged=(served_source_unchanged(state,expected) and all(path.read_bytes()==data for path,data in preserved.items()))
+            check(unchanged,"pikpak_config_or_source_changed")
+            caps["config_preservation"]=caps["source_preservation"]="passed"
+            if (cat_code==code==0 and cat_output==expected_bytes and accepted.is_file()
+                    and accepted.read_bytes()==expected_bytes and state.read_denied==2
+                    and not state.unexpected and not state.budget_exceeded):
+                caps["read_denial"]="failed"
+                raise LabError("pikpak_http403_cat_and_copy_accepted")
+            check(cat_code!=0 and not cat_output and code!=0 and b"403" in output+error
+                  and not list(denied.iterdir()),"pikpak_status_reproduction_inconclusive")
+            state.mode = "normal"
+            connection = http.client.HTTPSConnection(transport.authority, port, timeout=3,
+                                                     context=certificates.client_context())
+            try:
+                connection.request("DELETE","/synthetic-content/file2701",headers={"Authorization":"Bearer "+secret,"User-Agent":UA})
+                response = connection.getresponse()
+                check(response.status == 405 and len(response.read(4097)) <= 4096,
+                      "pikpak_write_guard_missing")
+            finally:
+                connection.close()
+            check(not state.unexpected and not state.budget_exceeded and state.read_denied == 2 and state.rejected_mutations == 1 and state.denied > 0
+                  and all(state.events.count(("listing", path)) >= 2 for path in ("", "nested"))
+                  and state.observed == set(state.files), "pikpak_protocol_flow_mismatch")
+            check(served_source_unchanged(state, expected) and state.password == secret
+                  and {name: state.metadata(name) for name in state.files} == metadata_before,
+                  "pikpak_source_changed")
+            check(all(path.read_bytes() == data for path, data in preserved.items()), "pikpak_config_changed")
+        observed = transport.snapshot()
+        check(not observed["failure_codes"] and observed["handshake_successes"] > 0, "pikpak_tls_failed")
+        for name in caps:
+            caps[name] = "passed"
+    finally:
+        closed = (state.cleanup_complete and (port is None or listener_closed(port))
+                  and (certificates is None or certificates.cleanup_complete)
+                  and all(record[0].poll() is not None for record in runtime.children[before:]))
+        caps["cleanup"] = "passed" if closed else "failed"
+        check(closed, "pikpak_cleanup_failed")
+
+
+
+
+
+
+
 def sugarsync_checks(runtime, root, row, expected):
     from fixture_sugarsync import SugarsyncState, serve_sugarsync, ROOT, AUTHORIZATION, ORIGIN
     secret = "synthetic-token-" + uuid.uuid4().hex
@@ -4995,7 +5078,7 @@ def fichier_checks(runtime, root, row, expected):
 
 def run_backend(runtime, backend, root):
     root.mkdir(mode=0o700)
-    independent = backend in ("http", "webdav", "ftp", "swift", "b2", "azureblob", "azurefiles", "seafile", "koofr", "pixeldrain", "filefabric", "internetarchive", "netstorage", "pcloud", "gcs", "sia", "hidrive", "doi", "quatrix", "shade", "sharefile", "cloudinary", "opendrive", "gofile", "drime", "fichier", "premiumizeme", "putio", "linkbox", "yandex", "box", "onedrive", "filelu", "qingstor", "drive", "dropbox", "oos", "zoho", "jottacloud", "sugarsync")
+    independent = backend in ("http", "webdav", "ftp", "swift", "b2", "azureblob", "azurefiles", "seafile", "koofr", "pixeldrain", "filefabric", "internetarchive", "netstorage", "pcloud", "gcs", "sia", "hidrive", "doi", "quatrix", "shade", "sharefile", "cloudinary", "opendrive", "gofile", "drime", "fichier", "premiumizeme", "putio", "linkbox", "yandex", "box", "onedrive", "filelu", "qingstor", "drive", "dropbox", "oos", "zoho", "jottacloud", "sugarsync", "pikpak")
     row = {"backend": backend,
            "fixture_kind": "local" if backend in ("local", "archive", "memory") else "independent_loopback" if independent else "rclone_loopback",
            "capabilities": {key: "not_run" for key in (
@@ -5007,7 +5090,7 @@ def run_backend(runtime, backend, root):
         row["capabilities"] = {key: "not_run" for key in (HIDRIVE_CAPABILITIES if backend == "hidrive" else DOI_CAPABILITIES)}
     if backend in CACHED_TOKEN_BACKENDS:
         row["capabilities"] = {key: "not_run" for key in CACHED_TOKEN_COMMON_CAPABILITIES | {backend + "_saved_token_read", backend + "_saved_token_rejection"}}
-    if backend in ("cloudinary", "opendrive", "gofile", "drime", "fichier", "premiumizeme", "putio", "linkbox", "yandex", "box", "onedrive", "filelu", "qingstor", "drive", "dropbox", "oos", "zoho", "jottacloud", "sugarsync"):
+    if backend in ("cloudinary", "opendrive", "gofile", "drime", "fichier", "premiumizeme", "putio", "linkbox", "yandex", "box", "onedrive", "filelu", "qingstor", "drive", "dropbox", "oos", "zoho", "jottacloud", "sugarsync", "pikpak"):
         row["capabilities"] = {key: "not_run" for key in QUATRIX_CAPABILITIES}
     if backend == "quatrix":
         row["capabilities"] = {key: "not_run" for key in QUATRIX_CAPABILITIES}
@@ -5050,6 +5133,9 @@ def run_backend(runtime, backend, root):
     try:
         if backend in CACHED_TOKEN_BACKENDS:
             cached_token_checks(runtime, root, row, expected)
+            return row
+        if backend == "pikpak":
+            pikpak_checks(runtime, root, row, expected)
             return row
         if backend == "sugarsync":
             sugarsync_checks(runtime, root, row, expected)
