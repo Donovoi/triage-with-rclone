@@ -1862,6 +1862,48 @@
         "refresh",
         "reauthentication"
       ]
+    },
+    "protocol-drive-saved-token-folder-read": {
+      "required": {
+        "application": [
+          "listing",
+          "download_hash",
+          "manifest_integrity",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation",
+          "refresh"
+        ],
+        "vendor": [
+          "listing",
+          "download_hash",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation",
+          "refresh"
+        ],
+        "local_protocol": [
+          "listing",
+          "download_hash",
+          "missing_object_rejection",
+          "authentication_rejection",
+          "read_denial",
+          "source_preservation",
+          "config_preservation",
+          "fixture_write_rejection",
+          "cleanup"
+        ]
+      },
+      "review_required": false,
+      "unresolved_applicability": [
+        "reauthentication"
+      ]
     }
   },
   "providers": {
@@ -2290,11 +2332,12 @@
     "drive": {
       "canonical_name": "drive",
       "schema_sha256": "db7ad3ed79d3cfb34c893823e6b49240882f6e20b022463080db6dbd5b4dbe57",
-      "profile": "hosted-renewal-session-review",
+      "profile": "protocol-drive-saved-token-folder-read",
       "notes": [
         "Google account, authorized custom OAuth client and Drive API consent; personal/My Drive/shared-drive variants have distinct scope and root requirements.",
         "Free account/API eligibility: review_required",
-        "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension."
+        "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension.",
+        "Schema-21 drive_saved_token_folder_read_v1 qualifies only source-current Linux container evidence for a saved unexpired OAuth token and explicit synthetic root_folder_id. All nine capabilities, exact private TLS/SNI, strict native Files.List query/field/page controls, complete scoped blob inventories, string sizes and independent MD5/SHA1/SHA256 metadata, known-byte authenticated media reads, wrong-token and read denial, source/config preservation and cleanup are required. The direct DELETE media guard does not qualify native writes. Grants/refresh, service accounts, account-root discovery, shared drives, Docs exports/imports, shortcuts, resource keys, change polling, pagination, native writes and application/vendor acceptance remain unverified. Raw feasibility/schema-1 receipts are ineligible; original renewal requirements and unresolved session applicability review remain in force."
       ],
       "source_links": [
         "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/drive.md"
