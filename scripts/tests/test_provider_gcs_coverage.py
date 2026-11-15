@@ -188,7 +188,7 @@ class GcsCoverageTests(unittest.TestCase):
         self.assertEqual(self.local(report)["status"], "not_verified")
 
     def test_each_harness_file_and_legacy_framing_are_bound(self):
-        names = {"fixture_servers.py", "run_lab.py", "fixture_tls.py", "fixture_pcloud.py", "fixture_gcs.py", "fixture_sia.py", "fixture_read_api.py", "fixture_hidrive.py", "fixture_doi.py", "fixture_quatrix.py", "fixture_shade.py", "fixture_sharefile.py", "fixture_cloudinary.py", "fixture_opendrive.py", "fixture_gofile.py", "fixture_drime.py", "requirements-fixture.txt"}
+        names = {"fixture_servers.py", "run_lab.py", "fixture_tls.py", "fixture_pcloud.py", "fixture_gcs.py", "fixture_sia.py", "fixture_read_api.py", "fixture_hidrive.py", "fixture_doi.py", "fixture_quatrix.py", "fixture_shade.py", "fixture_sharefile.py", "fixture_cloudinary.py", "fixture_opendrive.py", "fixture_gofile.py", "fixture_drime.py", "fixture_fichier.py", "requirements-fixture.txt"}
         self.assertEqual(set(C.HARNESSES), names)
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

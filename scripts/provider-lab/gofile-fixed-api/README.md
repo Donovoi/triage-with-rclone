@@ -36,10 +36,10 @@ no raw transcripts.
 
 The explicit --protocol-evidence option emits closed schema-10
 gofile_configured_token_read_v1 evidence. The importer recomputes the current
-22-file source closure and runtime bindings, and validates isolation, dependencies,
+23-file source closure and runtime bindings, and validates isolation, dependencies,
 native probe, timestamps, exact output, all nine capabilities and cleanup before
 accepting only the Linux local-protocol tier. Both combined Linux and provider-smoke
-gates require 32 profiles; GoFile remains outside the 26 portable experiments.
+gates require 33 profiles; GoFile remains outside the 26 portable experiments.
 
 Without that option, feasibility receipts remain ledger-ineligible. Historical
 feasibility and schema-1 rows cannot satisfy this mode. Application/vendor
