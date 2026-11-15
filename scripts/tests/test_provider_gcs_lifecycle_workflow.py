@@ -7,7 +7,7 @@ from test_gcs_oauth_workflow_contract import command, jobs, require, scalar
 
 ROOT = Path(__file__).resolve().parents[2]
 BASELINE = set("local,archive,http,webdav,ftp,sftp,s3,swift,b2,azureblob,azurefiles,seafile,memory,koofr,pixeldrain,filefabric,netstorage,internetarchive,sia,hidrive,doi,quatrix,shade,sharefile".split(","))
-ALL = BASELINE | {"gcs", "smb", "pcloud", "cloudinary", "opendrive", "gofile", "drime", "fichier", "premiumizeme", "putio", "linkbox", "yandex", "box", "onedrive"}
+ALL = BASELINE | {"gcs", "smb", "pcloud", "cloudinary", "opendrive", "gofile", "drime", "fichier", "premiumizeme", "putio", "linkbox", "yandex", "box", "onedrive", "filelu"}
 
 
 def steps(block):
@@ -53,7 +53,7 @@ def validate(ci, smoke):
     for item in baseline: gate(item, True)
     require("gcs-oauth-lifecycle.json" not in definitions["test"], "no_linux_borrowing")
     combined = definitions["linux-provider-evidence"]
-    require(scalar(combined, "needs", 4) == "[test, smb-protocol, pcloud-oauth-authentication, gcs-oauth-lifecycle, hdfs-protocol, cloudinary-fixed-api, opendrive-fixed-api, gofile-fixed-api, drime-fixed-api, fichier-fixed-api, premiumizeme-fixed-api, putio-fixed-api, linkbox-fixed-api, yandex-fixed-api, box-fixed-api, onedrive-fixed-api]", "same_run_dependency")
+    require(scalar(combined, "needs", 4) == "[test, smb-protocol, pcloud-oauth-authentication, gcs-oauth-lifecycle, hdfs-protocol, cloudinary-fixed-api, opendrive-fixed-api, gofile-fixed-api, drime-fixed-api, fichier-fixed-api, premiumizeme-fixed-api, putio-fixed-api, linkbox-fixed-api, yandex-fixed-api, box-fixed-api, onedrive-fixed-api, filelu-fixed-api]", "same_run_dependency")
     downloaded = [part for part in steps(combined) if "name: gcs-oauth-lifecycle" in part]
     require(len(downloaded) == 1, "same_run_named_download")
     require("actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c" in downloaded[0]
@@ -91,7 +91,7 @@ class GcsLifecycleWorkflowTests(unittest.TestCase):
     def test_optional_skipped_foreign_or_unqualified_evidence_cannot_pass(self):
         for before, after in (
                 ("  gcs-oauth-lifecycle:\n", "  gcs-oauth-lifecycle:\n    if: false\n"),
-                ("[test, smb-protocol, pcloud-oauth-authentication, gcs-oauth-lifecycle, hdfs-protocol, cloudinary-fixed-api, opendrive-fixed-api, gofile-fixed-api, drime-fixed-api, fichier-fixed-api, premiumizeme-fixed-api, putio-fixed-api, linkbox-fixed-api, yandex-fixed-api, box-fixed-api, onedrive-fixed-api]", "[test, smb-protocol, pcloud-oauth-authentication, hdfs-protocol, cloudinary-fixed-api, opendrive-fixed-api, gofile-fixed-api, drime-fixed-api, fichier-fixed-api, premiumizeme-fixed-api, putio-fixed-api, linkbox-fixed-api, yandex-fixed-api, box-fixed-api, onedrive-fixed-api]"),
+                ("[test, smb-protocol, pcloud-oauth-authentication, gcs-oauth-lifecycle, hdfs-protocol, cloudinary-fixed-api, opendrive-fixed-api, gofile-fixed-api, drime-fixed-api, fichier-fixed-api, premiumizeme-fixed-api, putio-fixed-api, linkbox-fixed-api, yandex-fixed-api, box-fixed-api, onedrive-fixed-api, filelu-fixed-api]", "[test, smb-protocol, pcloud-oauth-authentication, hdfs-protocol, cloudinary-fixed-api, opendrive-fixed-api, gofile-fixed-api, drime-fixed-api, fichier-fixed-api, premiumizeme-fixed-api, putio-fixed-api, linkbox-fixed-api, yandex-fixed-api, box-fixed-api, onedrive-fixed-api, filelu-fixed-api]"),
                 ('--lifecycle-evidence \\\n', '\\\n'),
                 ('--fixture-receipt "$RUNNER_TEMP/provider-gcs/gcs-oauth-lifecycle.json"', '--fixture-receipt "$RUNNER_TEMP/provider-gcs/gcs-oauth-experiment.json"'),
                 ('          path: ${{ runner.temp }}/provider-gcs', '          run-id: 123\n          path: ${{ runner.temp }}/provider-gcs'),

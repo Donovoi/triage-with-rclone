@@ -279,11 +279,11 @@ class LinkboxWorkflowTests(unittest.TestCase):
         for before, after in (
             ("  linkbox-fixed-api:\n", "  linkbox-fixed-api:\n    if: false\n"),
             ("--rclone \"$RUNNER_TEMP/rclone-linkbox\" --protocol-evidence", "--rclone \"$RUNNER_TEMP/rclone-linkbox\""),
-            ("putio-fixed-api, linkbox-fixed-api, yandex-fixed-api, box-fixed-api, onedrive-fixed-api]", "putio-fixed-api, yandex-fixed-api, box-fixed-api, onedrive-fixed-api]"),
+            ("putio-fixed-api, linkbox-fixed-api, yandex-fixed-api, box-fixed-api, onedrive-fixed-api, filelu-fixed-api]", "putio-fixed-api, yandex-fixed-api, box-fixed-api, onedrive-fixed-api, filelu-fixed-api]"),
             ("          path: ${{ runner.temp }}/provider-linkbox",
              "          run-id: 123\n          path: ${{ runner.temp }}/provider-linkbox"),
             ('--fixture-receipt "$RUNNER_TEMP/provider-linkbox/linkbox-read-protocol.json"', ""),
-            ("sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio,linkbox,yandex,box,onedrive\n", "sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio,yandex,box,onedrive\n")):
+            ("sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio,linkbox,yandex,box,onedrive,filelu\n", "sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio,yandex,box,onedrive,filelu\n")):
             with self.subTest(before=before):
                 self.assertIn(before, self.ci)
                 with self.assertRaises(ValueError):
@@ -293,7 +293,7 @@ class LinkboxWorkflowTests(unittest.TestCase):
         for before, after in (
             ('../scripts/provider-lab/linkbox-fixed-api/run_container.py \\\n            --rclone "$RUNNER_TEMP/rclone-smoke" --protocol-evidence', '../scripts/provider-lab/linkbox-fixed-api/run_container.py \\\n            --rclone "$RUNNER_TEMP/rclone-smoke"'),
             ('--fixture-receipt "$RUNNER_TEMP/linkbox-read-protocol.json"', ""),
-            ("sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio,linkbox,yandex,box,onedrive\n", "sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio,yandex,box,onedrive\n"),
+            ("sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio,linkbox,yandex,box,onedrive,filelu\n", "sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio,yandex,box,onedrive,filelu\n"),
             ("            ${{ runner.temp }}/linkbox-read-protocol.json\n", "")):
             with self.subTest(before=before):
                 self.assertIn(before, self.smoke)

@@ -1783,6 +1783,44 @@
       "unresolved_applicability": [
         "reauthentication"
       ]
+    },
+    "protocol-filelu-configured-key-root-read": {
+      "required": {
+        "application": [
+          "listing",
+          "download_hash",
+          "manifest_integrity",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation"
+        ],
+        "vendor": [
+          "listing",
+          "download_hash",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation"
+        ],
+        "local_protocol": [
+          "listing",
+          "download_hash",
+          "missing_object_rejection",
+          "authentication_rejection",
+          "read_denial",
+          "source_preservation",
+          "config_preservation",
+          "fixture_write_rejection",
+          "cleanup"
+        ]
+      },
+      "review_required": false,
+      "unresolved_applicability": []
     }
   },
   "providers": {
@@ -2360,11 +2398,12 @@
     "filelu": {
       "canonical_name": "filelu",
       "schema_sha256": "3132176f6e982f9796404b8203b0120e1ba99987fe9e2a316c457e6978185943",
-      "profile": "hosted-static-credentials",
+      "profile": "protocol-filelu-configured-key-root-read",
       "notes": [
         "FileLu account and FileLu-specific Rclone Key; FileLu S5 is a different S3 profile, not evidence for this backend.",
         "Free account/API eligibility: review_required",
-        "Decision is for the pinned configured-key list/download route, not every vendor login method or future API. Expiring object URLs and transfer sessions need separate transfer-resilience tests."
+        "Decision is for the pinned configured-key list/download route, not every vendor login method or future API. Expiring object URLs and transfer sessions need separate transfer-resilience tests.",
+        "Schema-19 filelu_configured_key_root_read_v1 qualifies only source-current Linux container evidence for a configured Rclone key and explicit synthetic-root/ source prefix. All nine capabilities, exact private TLS/authority, complete scoped folder inventories, observed file-code info2 metadata, known-byte reads through private uncredentialed links and cleanup are required. File and missing-directory probes return Folder not found rather than fabricated inventories. Native default empty hash support is preserved; downloads use independent SHA256 checks. The direct issued-link DELETE guard does not qualify native writes. Account-root file behavior, login/account and paid-tier eligibility, key rotation, pagination, case-folding/name encoding, native HTTP Range, native mutations, real CDN and application/vendor acceptance remain unverified. Raw feasibility/schema-1 receipts are ineligible and existing acceptance obligations remain unchanged."
       ],
       "source_links": [
         "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/filelu.md",
