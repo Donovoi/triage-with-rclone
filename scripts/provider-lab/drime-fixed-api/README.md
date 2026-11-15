@@ -1,10 +1,10 @@
-# Drime configured-token read feasibility
+# Drime configured-token read protocol
 
 Run only inside a disposable Linux VM with Docker:
 
 ~~~sh
 python -B scripts/provider-lab/drime-fixed-api/run_container.py \
-  --rclone /absolute/path/to/verified/rclone \
+  --rclone /absolute/path/to/verified/rclone --protocol-evidence \
   --report /absolute/new/path/drime-fixed-api-feasibility.json
 ~~~
 
@@ -34,11 +34,19 @@ Cleanup verifies owned container/image and temporary-file removal. Shared build
 cache and the pinned public base image remain; synthetic credentials and private
 TLS material exist only in ephemeral tmpfs. No raw transcripts are published.
 
-This first feasibility receipt is ledger-ineligible. The 31 qualified Linux
-profiles remain unchanged. Account discovery, explicit token replacement,
-workspace selection, pagination beyond one page, native writes and Windows
-application/live-provider acceptance remain unverified. Wire, TLS and container
-contract tests run without Docker or fixed port/DNS requirements on the unit-test
-platforms.
+The explicit --protocol-evidence option emits closed schema-11
+drime_configured_token_read_v1 evidence. The importer recomputes the current
+22-file source closure and runtime bindings, and validates isolation, dependencies,
+native probe, timestamps, exact output, all nine capabilities and cleanup before
+accepting only the Linux local-protocol tier. Both combined Linux and provider-smoke
+gates require 32 profiles; Drime remains outside the 26 portable experiments.
+
+Without that option, feasibility receipts remain ledger-ineligible. Historical
+feasibility and schema-1 rows cannot satisfy this mode. Application/vendor
+requirements and lifecycle applicability remain unchanged. Account discovery,
+explicit token replacement, workspace selection, pagination beyond one page,
+native writes and Windows application/live-provider acceptance remain unverified.
+Forty-four wire, TLS, container, workflow and receipt regressions run without Docker
+or fixed port/DNS requirements on the unit-test platforms.
 
 Source: [rclone Drime v1.75.2](https://github.com/rclone/rclone/tree/v1.75.2/backend/drime).

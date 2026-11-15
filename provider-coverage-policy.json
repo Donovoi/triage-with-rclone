@@ -1456,6 +1456,44 @@
       },
       "review_required": false,
       "unresolved_applicability": []
+    },
+    "protocol-drime-configured-token-read": {
+      "required": {
+        "application": [
+          "listing",
+          "download_hash",
+          "manifest_integrity",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation"
+        ],
+        "vendor": [
+          "listing",
+          "download_hash",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation"
+        ],
+        "local_protocol": [
+          "listing",
+          "download_hash",
+          "missing_object_rejection",
+          "authentication_rejection",
+          "read_denial",
+          "source_preservation",
+          "config_preservation",
+          "fixture_write_rejection",
+          "cleanup"
+        ]
+      },
+      "review_required": false,
+      "unresolved_applicability": []
     }
   },
   "providers": {
@@ -1849,11 +1887,12 @@
     "drime": {
       "canonical_name": "drime",
       "schema_sha256": "cd0ba59125a275a34e1dd420cf738bec010098cf49cb5ecb4b75c0476bcd5efc",
-      "profile": "hosted-static-credentials",
+      "profile": "protocol-drime-configured-token-read",
       "notes": [
         "Drime account and developer API token from account settings; free and paid tiers are documented, current API entitlement still needs verification.",
         "Free account/API eligibility: free_plan_documented_api_entitlement_review_required",
-        "Decision is for the pinned configured-key list/download route, not every vendor login method or future API. Expiring object URLs and transfer sessions need separate transfer-resilience tests."
+        "Decision is for the pinned configured-key list/download route, not every vendor login method or future API. Expiring object URLs and transfer sessions need separate transfer-resilience tests.",
+        "Schema-11 drime_configured_token_read_v1 qualifies only source-current Linux container evidence for explicitly configured token/root ID reads. All nine protocol capabilities, private TLS/authority checks, exact payloads and cleanup are required. Native missing-object checks select names from complete inventories, without an invented missing-name endpoint. Account discovery, token replacement, workspace selection, multi-page listings and native writes remain outside scope. Raw feasibility/schema-1 receipts remain ineligible. Existing application/vendor and lifecycle applicability obligations are preserved."
       ],
       "source_links": [
         "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/drime.md",
