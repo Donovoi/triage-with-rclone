@@ -214,7 +214,7 @@ class OpenDriveContainerTests(unittest.TestCase):
         validate(workflow)
         for before, after in (("  opendrive-fixed-api:\n", "  opendrive-fixed-api:\n    if: false\n"),
                               ('--rclone "$RUNNER_TEMP/rclone-opendrive"', '--rclone "$RUNNER_TEMP/other"'),
-                              ("windows-webdav-bearer, opendrive-fixed-api]", "windows-webdav-bearer]")):
+                              ("windows-webdav-bearer, opendrive-fixed-api, gofile-fixed-api]", "windows-webdav-bearer, gofile-fixed-api]")):
             self.assertIn(before, workflow)
             with self.assertRaises(ValueError):
                 validate(workflow.replace(before, after, 1))
