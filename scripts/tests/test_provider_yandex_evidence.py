@@ -279,11 +279,11 @@ class YandexWorkflowTests(unittest.TestCase):
         for before, after in (
             ("  yandex-fixed-api:\n", "  yandex-fixed-api:\n    if: false\n"),
             ("--rclone \"$RUNNER_TEMP/rclone-yandex\" --protocol-evidence", "--rclone \"$RUNNER_TEMP/rclone-yandex\""),
-            ("linkbox-fixed-api, yandex-fixed-api]", "linkbox-fixed-api]"),
+            ("linkbox-fixed-api, yandex-fixed-api, box-fixed-api]", "linkbox-fixed-api, box-fixed-api]"),
             ("          path: ${{ runner.temp }}/provider-yandex",
              "          run-id: 123\n          path: ${{ runner.temp }}/provider-yandex"),
             ('--fixture-receipt "$RUNNER_TEMP/provider-yandex/yandex-read-protocol.json"', ""),
-            ("sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio,linkbox,yandex\n", "sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio,linkbox\n")):
+            ("sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio,linkbox,yandex,box\n", "sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio,linkbox,box\n")):
             with self.subTest(before=before):
                 self.assertIn(before, self.ci)
                 with self.assertRaises(ValueError):
@@ -293,7 +293,7 @@ class YandexWorkflowTests(unittest.TestCase):
         for before, after in (
             ('../scripts/provider-lab/yandex-fixed-api/run_container.py \\\n            --rclone "$RUNNER_TEMP/rclone-smoke" --protocol-evidence', '../scripts/provider-lab/yandex-fixed-api/run_container.py \\\n            --rclone "$RUNNER_TEMP/rclone-smoke"'),
             ('--fixture-receipt "$RUNNER_TEMP/yandex-read-protocol.json"', ""),
-            ("sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio,linkbox,yandex\n", "sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio,linkbox\n"),
+            ("sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio,linkbox,yandex,box\n", "sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio,linkbox,box\n"),
             ("            ${{ runner.temp }}/yandex-read-protocol.json\n", "")):
             with self.subTest(before=before):
                 self.assertIn(before, self.smoke)

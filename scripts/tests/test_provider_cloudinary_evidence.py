@@ -276,11 +276,11 @@ class CloudinaryWorkflowTests(unittest.TestCase):
         for before, after in (
             ("  cloudinary-fixed-api:\n", "  cloudinary-fixed-api:\n    if: false\n"),
             ("--rclone \"$RUNNER_TEMP/rclone-cloudinary\" --protocol-evidence", "--rclone \"$RUNNER_TEMP/rclone-cloudinary\""),
-            ("hdfs-protocol, cloudinary-fixed-api, opendrive-fixed-api, gofile-fixed-api, drime-fixed-api, fichier-fixed-api, premiumizeme-fixed-api, putio-fixed-api, linkbox-fixed-api, yandex-fixed-api]", "hdfs-protocol, opendrive-fixed-api, gofile-fixed-api, drime-fixed-api, fichier-fixed-api, premiumizeme-fixed-api, putio-fixed-api, linkbox-fixed-api, yandex-fixed-api]"),
+            ("hdfs-protocol, cloudinary-fixed-api, opendrive-fixed-api, gofile-fixed-api, drime-fixed-api, fichier-fixed-api, premiumizeme-fixed-api, putio-fixed-api, linkbox-fixed-api, yandex-fixed-api, box-fixed-api]", "hdfs-protocol, opendrive-fixed-api, gofile-fixed-api, drime-fixed-api, fichier-fixed-api, premiumizeme-fixed-api, putio-fixed-api, linkbox-fixed-api, yandex-fixed-api, box-fixed-api]"),
             ("          path: ${{ runner.temp }}/provider-cloudinary",
              "          run-id: 123\n          path: ${{ runner.temp }}/provider-cloudinary"),
             ('--fixture-receipt "$RUNNER_TEMP/provider-cloudinary/cloudinary-read-protocol.json"', ""),
-            ("sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio,linkbox,yandex\n", "sharefile,opendrive,gofile,drime,fichier,premiumizeme,putio,linkbox,yandex\n")):
+            ("sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio,linkbox,yandex,box\n", "sharefile,opendrive,gofile,drime,fichier,premiumizeme,putio,linkbox,yandex,box\n")):
             with self.subTest(before=before):
                 self.assertIn(before, self.ci)
                 with self.assertRaises(ValueError):
@@ -290,7 +290,7 @@ class CloudinaryWorkflowTests(unittest.TestCase):
         for before, after in (
             ('--rclone "$RUNNER_TEMP/rclone-smoke" --protocol-evidence', '--rclone "$RUNNER_TEMP/rclone-smoke"'),
             ('--fixture-receipt "$RUNNER_TEMP/cloudinary-read-protocol.json"', ""),
-            ("sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio,linkbox,yandex\n", "sharefile,opendrive,gofile,drime,fichier,premiumizeme,putio,linkbox,yandex\n"),
+            ("sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio,linkbox,yandex,box\n", "sharefile,opendrive,gofile,drime,fichier,premiumizeme,putio,linkbox,yandex,box\n"),
             ("            ${{ runner.temp }}/cloudinary-read-protocol.json\n", "")):
             with self.subTest(before=before):
                 self.assertIn(before, self.smoke)

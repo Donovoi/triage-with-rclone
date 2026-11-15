@@ -1699,6 +1699,48 @@
       "unresolved_applicability": [
         "reauthentication"
       ]
+    },
+    "protocol-box-saved-token-read": {
+      "required": {
+        "application": [
+          "listing",
+          "download_hash",
+          "manifest_integrity",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation",
+          "refresh"
+        ],
+        "vendor": [
+          "listing",
+          "download_hash",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation",
+          "refresh"
+        ],
+        "local_protocol": [
+          "listing",
+          "download_hash",
+          "missing_object_rejection",
+          "authentication_rejection",
+          "read_denial",
+          "source_preservation",
+          "config_preservation",
+          "fixture_write_rejection",
+          "cleanup"
+        ]
+      },
+      "review_required": false,
+      "unresolved_applicability": [
+        "reauthentication"
+      ]
     }
   },
   "providers": {
@@ -1997,11 +2039,12 @@
     "box": {
       "canonical_name": "box",
       "schema_sha256": "085c64cbf6031a6db88dc9e0d4dd16c1b74dc26310dcf52c93f8ab35ec85529a",
-      "profile": "hosted-renewal-session-review",
+      "profile": "protocol-box-saved-token-read",
       "notes": [
         "Box account and approved OAuth app/consent; JWT/service-account alternatives require distinct profiles and organization permissions.",
         "Free account/API eligibility: review_required",
-        "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension."
+        "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension.",
+        "Schema-17 box_saved_token_read_v1 qualifies only source-current Linux container evidence for unexpired saved OAuth Bearer reads. All nine capabilities, private TLS/authority checks, exact fields and complete marker-mode first-page inventories, non-mutating OPTIONS preflight identity discovery, SHA1 metadata, known-byte downloads and cleanup are required. Read-side OPTIONS accepts only name and parent.id, with size absent; existing files return the pinned item_name_in_use conflict schema, while the explicit missing-name probe returns no conflict. No upload is performed. The direct fixture DELETE guard does not qualify native writes. Grant/refresh, token replacement, primary access-token mode, JWT, impersonation/owned filters, case-folding/name encoding, marker continuation, real content redirects and application/vendor acceptance remain unverified. Raw feasibility/schema-1 receipts are ineligible and existing lifecycle obligations remain unchanged."
       ],
       "source_links": [
         "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/box.md"
