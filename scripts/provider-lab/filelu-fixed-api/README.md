@@ -35,12 +35,12 @@ A fresh network-none Linux container maps only filelu.com to loopback. Exact
 SNI/Host and a private CA contain requests. Nonroot identity, read-only root,
 no capabilities or host mounts/ports, private namespaces, bounded resources
 and private noexec tmpfs are enforced. Schema-19
-filelu_configured_key_root_read_v1 binds the current 30-file source closure,
+filelu_configured_key_root_read_v1 binds the current 31-file source closure,
 pinned runtime/dependencies, native output/timing, nine capabilities and cleanup.
 Generated keys are ephemeral; the shared build cache and pinned public base
 image remain.
 
-Both combined Linux and provider-smoke gates require 40 reviewed profiles and
+Both combined Linux and provider-smoke gates require 41 reviewed profiles and
 the same-run receipt. Raw feasibility/schema-1 rows cannot qualify this mode;
 the 26 portable experiments remain unchanged. Forty-seven FileLu wire/TLS,
 container and receipt tests run without Docker or fixed DNS/ports.
