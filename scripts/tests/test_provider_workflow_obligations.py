@@ -108,8 +108,8 @@ class WorkflowObligationTests(unittest.TestCase):
         # decision here; it must not silently escape the workflow's fixed list.
         unresolved = {
             "ci.yml": [
-                {"hdfs", "smb", "pcloud", "gcs", "cloudinary"},  # GCS lifecycle is separate; static GCS is gated below.
-                {"hdfs", "smb", "pcloud", "gcs", "cloudinary"},  # Windows keeps static GCS; no borrowed lifecycle.
+                {"hdfs", "smb", "pcloud", "gcs", "cloudinary", "opendrive"},  # GCS lifecycle is separate; static GCS is gated below.
+                {"hdfs", "smb", "pcloud", "gcs", "cloudinary", "opendrive"},  # Windows keeps static GCS; no borrowed lifecycle.
                 set(),                    # Combined Linux evidence includes the qualified HDFS protocol.
             ],
             "provider-smoke.yml": [set()],
@@ -130,7 +130,7 @@ class WorkflowObligationTests(unittest.TestCase):
                         self.assertEqual(gates[index].count("--require-gcs-static-token"), 1)
                         self.assertNotIn("gcs-oauth-lifecycle.json", gates[index])
                     else:
-                        self.assertEqual(len(gated), 29)
+                        self.assertEqual(len(gated), 30)
                         self.assertNotIn("--require-gcs-static-token", gates[index])
                         self.assertIn("gcs-oauth-lifecycle.json", gates[index])
                     self.assertFalse(gated & missing, "Resolved exceptions must be removed")

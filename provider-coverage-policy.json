@@ -1378,6 +1378,46 @@
       },
       "review_required": false,
       "unresolved_applicability": []
+    },
+    "protocol-opendrive-configured-session-read": {
+      "required": {
+        "application": [
+          "listing",
+          "download_hash",
+          "manifest_integrity",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation"
+        ],
+        "vendor": [
+          "listing",
+          "download_hash",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation"
+        ],
+        "local_protocol": [
+          "listing",
+          "download_hash",
+          "missing_object_rejection",
+          "authentication_rejection",
+          "read_denial",
+          "source_preservation",
+          "config_preservation",
+          "fixture_write_rejection",
+          "cleanup"
+        ]
+      },
+      "review_required": false,
+      "unresolved_applicability": [
+        "reauthentication"
+      ]
     }
   },
   "providers": {
@@ -2917,12 +2957,13 @@
     "opendrive": {
       "canonical_name": "opendrive",
       "schema_sha256": "931c49268bae34c6aae5f91fd3110c081e3ab9b9912271423cff2d81b2c12f5a",
-      "profile": "hosted-static-credentials-session-review",
+      "profile": "protocol-opendrive-configured-session-read",
       "notes": [
         "OpenDrive account username/password; current API/free-plan eligibility requires confirmation. The pinned backend creates a session during initialization and has no automatic renewal path.",
         "Free account/API eligibility: review_required",
         "Source indicates an unsupported automatic-recovery path; N/A for a refresh-grant test must not be presented as transparent session-renewal support.",
-        "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension."
+        "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension.",
+        "Schema-9 opendrive_configured_session_read_v1 qualifies only source-current Linux container evidence for configured username/password session creation and reads. All nine protocol capabilities, private TLS/authority checks, exact payloads and cleanup are required. Unknown-session rejection is a wire regression; session expiry and reauthentication are not qualified. Raw feasibility/schema-1 receipts remain ineligible. Existing application/vendor, credential-renewal and unresolved connection/session reauthentication obligations are preserved."
       ],
       "source_links": [
         "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/opendrive.md",

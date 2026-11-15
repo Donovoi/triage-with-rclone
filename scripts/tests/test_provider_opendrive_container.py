@@ -203,9 +203,9 @@ class OpenDriveContainerTests(unittest.TestCase):
             parts = steps(job)
             require(len(parts) == 5 and "persist-credentials: false" in parts[0], "closed_job")
             require(command(parts[3]) == ["python", "-B", "scripts/provider-lab/opendrive-fixed-api/run_container.py",
-                    "--rclone", "$RUNNER_TEMP/rclone-opendrive", "--report", "$RUNNER_TEMP/opendrive-fixed-api-feasibility.json"],
-                    "native_feasibility_required")
-            require(scalar(parts[4], "path", 10) == "${{ runner.temp }}/opendrive-fixed-api-feasibility.json",
+                    "--rclone", "$RUNNER_TEMP/rclone-opendrive", "--protocol-evidence", "--report", "$RUNNER_TEMP/opendrive-read-protocol.json"],
+                    "native_qualification_required")
+            require(scalar(parts[4], "path", 10) == "${{ runner.temp }}/opendrive-read-protocol.json",
                     "sanitized_receipt_only")
             require("opendrive-fixed-api" in scalar(definitions["release"], "needs", 4).strip("[]").split(", "),
                     "nightly_dependency_required")
