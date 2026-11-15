@@ -1657,6 +1657,48 @@
       "unresolved_applicability": [
         "reauthentication"
       ]
+    },
+    "protocol-yandex-saved-token-read": {
+      "required": {
+        "application": [
+          "listing",
+          "download_hash",
+          "manifest_integrity",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation",
+          "refresh"
+        ],
+        "vendor": [
+          "listing",
+          "download_hash",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation",
+          "refresh"
+        ],
+        "local_protocol": [
+          "listing",
+          "download_hash",
+          "missing_object_rejection",
+          "authentication_rejection",
+          "read_denial",
+          "source_preservation",
+          "config_preservation",
+          "fixture_write_rejection",
+          "cleanup"
+        ]
+      },
+      "review_required": false,
+      "unresolved_applicability": [
+        "reauthentication"
+      ]
     }
   },
   "providers": {
@@ -4221,12 +4263,13 @@
     "yandex": {
       "canonical_name": "yandex",
       "schema_sha256": "0df499a1f485652942a454429225675b64391f533143d73328a046da5c145116",
-      "profile": "hosted-renewal-session-review",
+      "profile": "protocol-yandex-saved-token-read",
       "notes": [
         "Yandex Disk account and browser OAuth token; the pinned backend requires a refresh token. Actual renewal success remains a separate vendor acceptance check.",
         "Free account/API eligibility: review_required",
         "A token serialization/type migration is not proof of a successful refresh grant.",
-        "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension."
+        "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension.",
+        "Schema-16 yandex_saved_token_read_v1 qualifies only source-current Linux container evidence for an unexpired saved token with OAuth token_type. A nonempty synthetic unused refresh_token meets the native constructor requirement; no grant or refresh endpoint is provided. All nine read capabilities, private TLS/authority checks, exact disk:/ metadata/root-candidate probes, complete small inventories, literal known-byte and MD5 oracles and owned cleanup are required. Private inventory/metadata-issued links use the same OAuth client. The explicit absent-object path returns DiskNotFoundError for native stat and copy probes. Raw feasibility/schema-1 receipts remain ineligible. Grant/refresh, config upgrades, token replacement, custom modification properties, full-page pagination, native mutations, real download origins and application/vendor acceptance remain unverified; existing lifecycle obligations are preserved."
       ],
       "source_links": [
         "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/yandex.md",
