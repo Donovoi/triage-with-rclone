@@ -40,7 +40,7 @@ from email.utils import format_datetime
 
 
 BACKENDS = ("local", "http", "webdav", "ftp", "sftp", "s3", "archive", "swift", "b2", "azureblob", "azurefiles", "seafile", "memory", "koofr", "pixeldrain", "filefabric", "internetarchive", "netstorage", "pcloud", "gcs", "sia", "hidrive", "doi", "quatrix", "shade", "sharefile")
-HARNESS_FILES = ("fixture_servers.py", "run_lab.py", "fixture_tls.py", "fixture_pcloud.py", "fixture_gcs.py", "fixture_sia.py", "fixture_read_api.py", "fixture_hidrive.py", "fixture_doi.py", "fixture_quatrix.py", "fixture_shade.py", "fixture_sharefile.py", "fixture_cloudinary.py", "fixture_opendrive.py", "fixture_gofile.py", "fixture_drime.py", "fixture_fichier.py", "fixture_premiumizeme.py", "fixture_putio.py", "fixture_linkbox.py", "fixture_yandex.py", "fixture_box.py", "fixture_onedrive.py", "fixture_filelu.py", "fixture_qingstor.py", "fixture_drive.py", "fixture_dropbox.py", "requirements-fixture.txt")
+HARNESS_FILES = ("fixture_servers.py", "run_lab.py", "fixture_tls.py", "fixture_pcloud.py", "fixture_gcs.py", "fixture_sia.py", "fixture_read_api.py", "fixture_hidrive.py", "fixture_doi.py", "fixture_quatrix.py", "fixture_shade.py", "fixture_sharefile.py", "fixture_cloudinary.py", "fixture_opendrive.py", "fixture_gofile.py", "fixture_drime.py", "fixture_fichier.py", "fixture_premiumizeme.py", "fixture_putio.py", "fixture_linkbox.py", "fixture_yandex.py", "fixture_box.py", "fixture_onedrive.py", "fixture_filelu.py", "fixture_qingstor.py", "fixture_drive.py", "fixture_dropbox.py", "fixture_oos.py", "requirements-fixture.txt")
 MAX_OUTPUT = 2 * 1024 * 1024
 COMMAND_TIMEOUT = 20
 
@@ -4293,6 +4293,109 @@ def filelu_checks(runtime, root, row, expected):
 
 
 
+def oos_checks(runtime, root, row, expected):
+    from fixture_oos import OosState, serve_oos, BUCKET, NAMESPACE, API, authorization
+    import email.utils
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    pcloud_dependencies()
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    wrong_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    public_der = key.public_key().public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
+    fingerprint = ":".join(f"{b:02x}" for b in hashlib.md5(public_der).digest())
+    tenancy, user = "ocid1.tenancy.oc1..synthetic", "ocid1.user.oc1..synthetic"
+    key_id = tenancy + "/" + user + "/" + fingerprint
+    material = []
+    def oci_config(label, signing_key):
+        pem = root / (label + ".pem")
+        pem.write_bytes(signing_key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.TraditionalOpenSSL,
+                                                  serialization.NoEncryption()))
+        pem.chmod(0o600)
+        config = root / (label + "-oci.conf")
+        config.write_text("[SYNTHETIC]\nuser=" + user + "\ntenancy=" + tenancy + "\nfingerprint=" + fingerprint +
+                          "\nregion=us-ashburn-1\nkey_file=" + str(pem) + "\n")
+        config.chmod(0o600)
+        material.extend([pem, config])
+        return str(config)
+    good_oci, bad_oci = oci_config("good", key), oci_config("bad", wrong_key)
+    state, port, transport, certificates = OosState(key_id, key.public_key()), None, None, None
+    before = len(runtime.children)
+    caps = row["capabilities"]
+    try:
+        pcloud_dependencies()
+        with serve_oos(root, state) as (certificates, transport):
+            port = transport.port
+            class TrustedRuntime:
+                def run(self, args, config=None, **kwargs):
+                    pcloud_dependencies()
+                    return runtime.run([*certificates.rclone_ca_args(), *args], config, **kwargs)
+            native = TrustedRuntime()
+            options = {"type": "oracleobjectstorage", "provider": "user_principal_auth", "namespace": NAMESPACE, "region": "us-ashburn-1",
+                       "config_file": good_oci, "config_profile": "SYNTHETIC"}
+            good = config_file(root, "oos-good.conf", options)
+            bad = config_file(root, "oos-wrong.conf", dict(options, config_file=bad_oci))
+            target = "Synthetic:" + BUCKET + "/"
+            preserved = {path: path.read_bytes() for path in (good, bad, *material)}
+            metadata_before = {name: state.metadata(name) for name in state.files}
+            auth_destination = root / "bad-auth"
+            auth_destination.mkdir(mode=0o700)
+            code, output, error = exact_copy(native, bad, target, "README-synthetic.txt",
+                                             str(auth_destination), "must-not-exist")
+            check(code != 0 and not list(auth_destination.iterdir()) and state.denied > 0
+                  and state.payload_bytes == 0, "oos_credential_rejection_missing")
+            caps["authentication_rejection"] = "passed"
+            common_checks(native, root, good, None, target, row, state, expected=expected)
+            read_api_listing(native, good, expected, target)
+            for directory in ("", "nested"):
+                code, output, _ = native.run(["lsjson", "--files-only", "--no-modtime", "--no-mimetype",
+                                              target + directory], good)
+                check(code == 0, "oos_scoped_listing_failed")
+                got = sorted((item["Path"], item["Size"], item["IsDir"]) for item in json.loads(output))
+                wanted = sorted((item["path"].rsplit("/", 1)[-1], item["size"], False) for item in expected
+                                if item["path"].rpartition("/")[0] == directory)
+                check(got == wanted, "oos_scoped_listing_mismatch")
+            state.mode = "read_denied"
+            denied = root / "denied"
+            denied.mkdir(mode=0o700)
+            code, output, error = exact_copy(native, good, target, "README-synthetic.txt", str(denied), "denied.bin")
+            check(code != 0 and b"403" in output + error and not list(denied.iterdir()), "oos_read_denial_missing")
+            state.mode = "normal"
+            connection = http.client.HTTPSConnection(transport.authority, port, timeout=3,
+                                                     context=certificates.client_context())
+            try:
+                path = API + "/README-synthetic.txt"
+                date = email.utils.formatdate(usegmt=True)
+                connection.request("DELETE", path, headers={"Host": transport.authority, "Date": date, "Content-Type": "application/json",
+                                   "Authorization": authorization("DELETE", path, date, key_id, key)})
+                response = connection.getresponse()
+                check(response.status == 405 and len(response.read(4097)) <= 4096,
+                      "oos_write_guard_missing")
+            finally:
+                connection.close()
+            check(read_api_flow_matches(state, expected) and state.denied > 0
+                  and all(state.events.count(("listing", path)) >= 1 for path in ("", "nested"))
+                  and state.events.count(("listing_recursive", "")) >= 2
+                  and state.observed == set(state.files) and state.missing > 0, "oos_protocol_flow_mismatch")
+            check(served_source_unchanged(state, expected) and state.key_id == key_id and state.public_key.public_numbers() == key.public_key().public_numbers()
+                  and {name: state.metadata(name) for name in state.files} == metadata_before,
+                  "oos_source_changed")
+            check(all(path.read_bytes() == data for path, data in preserved.items()), "oos_config_changed")
+        observed = transport.snapshot()
+        check(not observed["failure_codes"] and observed["handshake_successes"] > 0, "oos_tls_failed")
+        for name in caps:
+            caps[name] = "passed"
+    finally:
+        closed = (state.cleanup_complete and (port is None or listener_closed(port))
+                  and (certificates is None or certificates.cleanup_complete)
+                  and all(record[0].poll() is not None for record in runtime.children[before:]))
+        caps["cleanup"] = "passed" if closed else "failed"
+        check(closed, "oos_cleanup_failed")
+
+
+
+
+
+
 def qingstor_checks(runtime, root, row, expected):
     from fixture_qingstor import QingStorState, serve_qingstor, BUCKET, authorization
     import email.utils
@@ -4639,7 +4742,7 @@ def fichier_checks(runtime, root, row, expected):
 
 def run_backend(runtime, backend, root):
     root.mkdir(mode=0o700)
-    independent = backend in ("http", "webdav", "ftp", "swift", "b2", "azureblob", "azurefiles", "seafile", "koofr", "pixeldrain", "filefabric", "internetarchive", "netstorage", "pcloud", "gcs", "sia", "hidrive", "doi", "quatrix", "shade", "sharefile", "cloudinary", "opendrive", "gofile", "drime", "fichier", "premiumizeme", "putio", "linkbox", "yandex", "box", "onedrive", "filelu", "qingstor", "drive", "dropbox")
+    independent = backend in ("http", "webdav", "ftp", "swift", "b2", "azureblob", "azurefiles", "seafile", "koofr", "pixeldrain", "filefabric", "internetarchive", "netstorage", "pcloud", "gcs", "sia", "hidrive", "doi", "quatrix", "shade", "sharefile", "cloudinary", "opendrive", "gofile", "drime", "fichier", "premiumizeme", "putio", "linkbox", "yandex", "box", "onedrive", "filelu", "qingstor", "drive", "dropbox", "oos")
     row = {"backend": backend,
            "fixture_kind": "local" if backend in ("local", "archive", "memory") else "independent_loopback" if independent else "rclone_loopback",
            "capabilities": {key: "not_run" for key in (
@@ -4651,7 +4754,7 @@ def run_backend(runtime, backend, root):
         row["capabilities"] = {key: "not_run" for key in (HIDRIVE_CAPABILITIES if backend == "hidrive" else DOI_CAPABILITIES)}
     if backend in CACHED_TOKEN_BACKENDS:
         row["capabilities"] = {key: "not_run" for key in CACHED_TOKEN_COMMON_CAPABILITIES | {backend + "_saved_token_read", backend + "_saved_token_rejection"}}
-    if backend in ("cloudinary", "opendrive", "gofile", "drime", "fichier", "premiumizeme", "putio", "linkbox", "yandex", "box", "onedrive", "filelu", "qingstor", "drive", "dropbox"):
+    if backend in ("cloudinary", "opendrive", "gofile", "drime", "fichier", "premiumizeme", "putio", "linkbox", "yandex", "box", "onedrive", "filelu", "qingstor", "drive", "dropbox", "oos"):
         row["capabilities"] = {key: "not_run" for key in QUATRIX_CAPABILITIES}
     if backend == "quatrix":
         row["capabilities"] = {key: "not_run" for key in QUATRIX_CAPABILITIES}
@@ -4700,6 +4803,9 @@ def run_backend(runtime, backend, root):
             return row
         if backend == "drive":
             drive_checks(runtime, root, row, expected)
+            return row
+        if backend == "oos":
+            oos_checks(runtime, root, row, expected)
             return row
         if backend == "qingstor":
             qingstor_checks(runtime, root, row, expected)

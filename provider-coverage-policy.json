@@ -1946,6 +1946,47 @@
       "unresolved_applicability": [
         "reauthentication"
       ]
+    },
+    "protocol-oos-user-principal-bucket-read": {
+      "required": {
+        "application": [
+          "listing",
+          "download_hash",
+          "manifest_integrity",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation"
+        ],
+        "vendor": [
+          "listing",
+          "download_hash",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation"
+        ],
+        "local_protocol": [
+          "listing",
+          "download_hash",
+          "missing_object_rejection",
+          "authentication_rejection",
+          "read_denial",
+          "source_preservation",
+          "config_preservation",
+          "fixture_write_rejection",
+          "cleanup"
+        ]
+      },
+      "review_required": false,
+      "unresolved_applicability": [
+        "refresh",
+        "reauthentication"
+      ]
     }
   },
   "providers": {
@@ -3434,13 +3475,14 @@
     "oos": {
       "canonical_name": "oracleobjectstorage",
       "schema_sha256": "f7b3829c078c04a2fb3588393140a1ce6b6a082275c8ae9af43aa4850480f196",
-      "profile": "hosted-renewal-review-session-review",
+      "profile": "protocol-oos-user-principal-bucket-read",
       "notes": [
         "OCI tenancy, bucket, namespace and approved user-key/instance/resource/workload identity. Anonymous public buckets are separate; free-tier eligibility and identity renewal remain profile-specific.",
         "Free account/API eligibility: review_required",
         "Do not mark all OCI modes N/A because an API signing-key mode has no renewal.",
         "SDK principal and possible security-token-file modes require profile-specific follow-up.",
-        "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension."
+        "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension.",
+        "Schema-23 oos_user_principal_bucket_read_v1 qualifies only source-current Linux container evidence for user_principal_auth with an explicit OCI config/profile, ephemeral RSA-2048 API key, configured synthetic namespace/bucket and default us-ashburn-1 authority. All nine capabilities, exact TLS/SNI/Host binding, RSA PKCS1v15 SHA256 verification over date/raw request-target/host, bounded date freshness, exact list fields/prefix/delimiter and complete inventories, HEAD metadata, authenticated known-byte downloads, wrong-key rejection and read denial, source/config/key preservation and cleanup are required. The direct DELETE guard does not qualify native writes. SDK principal/session/env modes, IAM eligibility, account-wide discovery, other regions/realms, pagination, native writes and application/vendor acceptance remain unverified. Raw feasibility/schema-1 rows are ineligible; original renewal and session applicability review remain unresolved."
       ],
       "source_links": [
         "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/oracleobjectstorage/_index.md",

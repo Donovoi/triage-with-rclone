@@ -214,7 +214,7 @@ class DrimeContainerTests(unittest.TestCase):
         validate(workflow)
         for before, after in (("  drime-fixed-api:\n", "  drime-fixed-api:\n    if: false\n"),
                               ('--rclone "$RUNNER_TEMP/rclone-drime"', '--rclone "$RUNNER_TEMP/other"'),
-                              ("windows-webdav-bearer, opendrive-fixed-api, gofile-fixed-api, drime-fixed-api, fichier-fixed-api, premiumizeme-fixed-api, putio-fixed-api, linkbox-fixed-api, yandex-fixed-api, box-fixed-api, onedrive-fixed-api, filelu-fixed-api, qingstor-fixed-api, drive-fixed-api, dropbox-fixed-api]", "windows-webdav-bearer, opendrive-fixed-api, gofile-fixed-api, fichier-fixed-api, premiumizeme-fixed-api, putio-fixed-api, linkbox-fixed-api, yandex-fixed-api, box-fixed-api, onedrive-fixed-api, filelu-fixed-api, qingstor-fixed-api, drive-fixed-api, dropbox-fixed-api]")):
+                              ("windows-webdav-bearer, opendrive-fixed-api, gofile-fixed-api, drime-fixed-api, fichier-fixed-api, premiumizeme-fixed-api, putio-fixed-api, linkbox-fixed-api, yandex-fixed-api, box-fixed-api, onedrive-fixed-api, filelu-fixed-api, qingstor-fixed-api, drive-fixed-api, dropbox-fixed-api, oos-fixed-api]", "windows-webdav-bearer, opendrive-fixed-api, gofile-fixed-api, fichier-fixed-api, premiumizeme-fixed-api, putio-fixed-api, linkbox-fixed-api, yandex-fixed-api, box-fixed-api, onedrive-fixed-api, filelu-fixed-api, qingstor-fixed-api, drive-fixed-api, dropbox-fixed-api, oos-fixed-api]")):
             self.assertIn(before, workflow)
             with self.assertRaises(ValueError):
                 validate(workflow.replace(before, after, 1))
