@@ -181,6 +181,36 @@ jobs:
           path: ${{ runner.temp }}/cloudinary-read-protocol.json
           if-no-files-found: warn
           retention-days: 14
+  opendrive-fixed-api:
+    name: Isolated OpenDrive fixed-API reads
+    needs: revision
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - name: Prepare verified Linux runtime
+        shell: bash
+        run: bash scripts/download-rclone.sh --linux "$RUNNER_TEMP/rclone-opendrive"
+      - name: Check fixed-authority HTTPS reads in an isolated container
+        shell: bash
+        run: |
+          python -B scripts/provider-lab/opendrive-fixed-api/run_container.py \
+            --rclone "$RUNNER_TEMP/rclone-opendrive" \
+            --report "$RUNNER_TEMP/opendrive-fixed-api-feasibility.json"
+      # Feasibility only; this result cannot satisfy provider coverage obligations.
+      - name: Retain sanitized OpenDrive read result
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: opendrive-fixed-api-feasibility
+          path: ${{ runner.temp }}/opendrive-fixed-api-feasibility.json
+          if-no-files-found: warn
+          retention-days: 14
   pcloud-oauth-feasibility:
     name: Isolated pCloud OAuth feasibility
     needs: revision
@@ -1470,7 +1500,7 @@ jobs:
           retention-days: 14
   release:
     name: Publish Windows nightly
-    needs: [test, windows-filesystem, windows-ftp, windows-b2, windows-swift, windows-azureblob, windows-swift-cancellation, windows-swift-listing, windows-architectures, audit, python-audit, smb-protocol, linux-provider-evidence, pcloud-oauth-feasibility, pcloud-oauth-authentication, gcs-oauth-lifecycle, windows-webdav-bearer]
+    needs: [test, windows-filesystem, windows-ftp, windows-b2, windows-swift, windows-azureblob, windows-swift-cancellation, windows-swift-listing, windows-architectures, audit, python-audit, smb-protocol, linux-provider-evidence, pcloud-oauth-feasibility, pcloud-oauth-authentication, gcs-oauth-lifecycle, windows-webdav-bearer, opendrive-fixed-api]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
