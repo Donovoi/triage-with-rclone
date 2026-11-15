@@ -513,6 +513,37 @@ class BoundedHttpsServer(AbstractContextManager):
                                      "request_timeouts", "handler_failures", "aborted_connections", "closed_connections"), 0)
 
         class QuietHandler(handler_class):
+            def setup(self):
+                super().setup()
+                original = self.rfile
+                transport, connection = self.server.transport, self.connection
+
+                class DeadlineReader:
+                    # BaseHTTPRequestHandler catches socket timeouts itself.
+                    # Record them at the read boundary before they disappear,
+                    # including platforms whose socket timer fires just before
+                    # the monotonic deadline used by the worker/timer checks.
+                    def _read(self, method, *args, **kwargs):
+                        try:
+                            return getattr(original, method)(*args, **kwargs)
+                        except TimeoutError:
+                            transport._mark_expired(connection)
+                            raise
+
+                    def read(self, *args, **kwargs):
+                        return self._read("read", *args, **kwargs)
+
+                    def read1(self, *args, **kwargs):
+                        return self._read("read1", *args, **kwargs)
+
+                    def readline(self, *args, **kwargs):
+                        return self._read("readline", *args, **kwargs)
+
+                    def __getattr__(self, name):
+                        return getattr(original, name)
+
+                self.rfile = DeadlineReader()
+
             def log_message(self, *args):
                 pass
 
