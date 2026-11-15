@@ -9,7 +9,7 @@ import re
 
 HERE = Path(__file__).resolve().parent
 BASE_PATH = HERE.parent / "hdfs-kerberos-reconnect" / "reconnect_container.py"
-BASE_SHA = "fd0e805383ee7be022c702874f0c4d29fb5a0ca1c44f928a99dac02f793c1caa"
+BASE_SHA = "9f154cc7ced98f5331423e12da7b59fc608485451d266751635a718cae559522"
 base_source = BASE_PATH.read_bytes()
 if hashlib.sha256(base_source).hexdigest() != BASE_SHA:
     raise RuntimeError("contract_dependency_changed")
