@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "scope": "Selectable backend baseline plans; a plan is not acceptance evidence or coverage of all account types and configuration modes.",
-  "reviewed_runtime_version": "1.75.2",
+  "reviewed_runtime_version": "1.76.0",
   "renewal_rule": "Refresh means acquiring replacement expiring credentials or service authorization using retained authority, including OAuth grants, service-session authorization, library authorization and SDK credentials. It is distinct from connection/session reauthentication. Unknown applicability blocks complete qualification. Fixed or externally replaced credentials still require expiry/revocation denial and explicit recovery.",
   "profiles": {
     "local-storage": {
@@ -2149,7 +2149,7 @@
     },
     "azureblob": {
       "canonical_name": "azureblob",
-      "schema_sha256": "10ab09ca8da4216f95dc3cdd7c0421f8e04fbb61691e8153f8809732d382c0f0",
+      "schema_sha256": "eeeb3734ff1ccfe69899c5f003ccd97ab9051e39d3956d21f3dc833e7f7907e2",
       "profile": "azureblob-shared-key-fixture",
       "notes": [
         "The independent HTTP fixture implements a bounded Azure Blob emulator/shared-key subset without an Azure account or Azurite installation. Hosted vendor acceptance still requires an owned Azure storage resource and approved credential or identity.",
@@ -2162,7 +2162,8 @@
         "The local receipt qualifies neither credential renewal nor connection/session recovery. Static SharedKey signs each request without an access-token or refresh-token grant; repeated signatures, new connections, retries and config preservation must not be presented as renewal evidence.",
         "Anonymous public Blob access, SAS, Entra, managed/workload identity and other authentication variants retain their separate requirements. An unconstrained DefaultAzureCredential chain is not one reviewed profile: select and record its actual provider.",
         "No hosted-service, TLS, Azure Files, uploads/multipart, leases, encryption, versions, snapshots, Arrow, actual key revocation, OAuth, application cancellation or app/vendor acceptance follows from this fixture. A direct authenticated write rejection proves the fixture guard only.",
-        "Connection/session reauthentication remains unresolved; the shared-key fixture does not settle this independent lifecycle dimension or waive other credential-renewal obligations."
+        "Connection/session reauthentication remains unresolved; the shared-key fixture does not settle this independent lifecycle dimension or waive other credential-renewal obligations.",
+        "rclone 1.76.0 adds automatic HNS detection. Native setup must observe a correctly signed container Get Account Information response with x-ms-is-hns-enabled=false, verify that only hns=false was cached, and verify cache reuse. Subsequent read configurations explicitly select hns=false and retain byte-for-byte preservation. The Windows acquisition/listing modes explicitly select the same flat namespace; they do not qualify HNS directory operations."
       ],
       "source_links": [
         "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/azureblob.md",
@@ -2183,7 +2184,8 @@
         "https://learn.microsoft.com/en-us/rest/api/storageservices/authorize-with-shared-key",
         "https://learn.microsoft.com/en-us/rest/api/storageservices/list-blobs",
         "https://learn.microsoft.com/en-us/rest/api/storageservices/get-blob-properties",
-        "https://learn.microsoft.com/en-us/rest/api/storageservices/get-blob"
+        "https://learn.microsoft.com/en-us/rest/api/storageservices/get-blob",
+        "https://github.com/rclone/rclone/blob/v1.76.0/backend/azureblob/azureblob.go"
       ],
       "renewal_modes": [
         {
@@ -3028,16 +3030,18 @@
     },
     "http": {
       "canonical_name": "http",
-      "schema_sha256": "240243f6cecefd033d700a864e8b13732db488b075467033e2981d9bc21c8b2c",
+      "schema_sha256": "dcd9f507d2c191dcdd18c4ad45a484de068f54daa07c26682f8a7b05fc897b1b",
       "profile": "http-fixture",
       "notes": [
         "Owned HTTP directory-listing server and immutable fixture. Public profile has no login; authenticated reverse-proxy/header variants need separate denial coverage.",
         "Free account/API eligibility: no_vendor_account_needed",
-        "Connection/session reauthentication is N/A only for this local or public anonymous baseline; authenticated upstreams need a separate reviewed plan."
+        "Connection/session reauthentication is N/A only for this local or public anonymous baseline; authenticated upstreams need a separate reviewed plan.",
+        "rclone 1.76.0 adds no_head_size and no_head_time for no_head mode. The existing fixture retains normal HEAD metadata discovery; fabricated metadata and cross-host/downgrade redirect variants are outside this profile."
       ],
       "source_links": [
         "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/http.md",
-        "https://docs.python.org/3/library/http.server.html"
+        "https://docs.python.org/3/library/http.server.html",
+        "https://github.com/rclone/rclone/blob/v1.76.0/backend/http/http.go"
       ],
       "auth_applicability": "none",
       "refresh_applicability": "not_applicable",
@@ -3568,16 +3572,18 @@
     },
     "onedrive": {
       "canonical_name": "onedrive",
-      "schema_sha256": "1e1d68a0f4adc8099fe074ccea8a914f128f26bd87bec4b86a0af37d3abd99d5",
+      "schema_sha256": "5ea560f359f63c198d950e222c342323fe2a719f599591d1490e72fe486e3828",
       "profile": "protocol-onedrive-saved-token-read",
       "notes": [
         "Microsoft account or tenant account, own registered app/consent and exact approved drive/root; personal and business variants need separate evidence.",
         "Free account/API eligibility: review_required",
         "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension.",
-        "Schema-18 onedrive_saved_token_read_v1 qualifies only source-current Linux container evidence for a configured synthetic business drive with an unexpired saved OAuth Bearer token. All nine capabilities, private Graph TLS/authority checks, root and normalized item metadata, complete first-page inventories, default QuickXorHash metadata, known-byte reads, credential-free private content redirects and cleanup are required. The direct issued-link DELETE guard does not qualify native writes. Personal/shared drive variants, grant/refresh and token replacement, tenant_url or sovereign regions, malware overrides and OneNote, case-folding/name encoding, continuation/delta, native writes, real CDN and application/vendor acceptance remain unverified. Raw feasibility/schema-1 receipts are ineligible and existing lifecycle obligations remain unchanged."
+        "Schema-18 onedrive_saved_token_read_v1 qualifies only source-current Linux container evidence for a configured synthetic business drive with an unexpired saved OAuth Bearer token. All nine capabilities, private Graph TLS/authority checks, root and normalized item metadata, complete first-page inventories, default QuickXorHash metadata, known-byte reads, credential-free private content redirects and cleanup are required. The direct issued-link DELETE guard does not qualify native writes. Personal/shared drive variants, grant/refresh and token replacement, tenant_url or sovereign regions, malware overrides and OneNote, case-folding/name encoding, continuation/delta, native writes, real CDN and application/vendor acceptance remain unverified. Raw feasibility/schema-1 receipts are ineligible and existing lifecycle obligations remain unchanged.",
+        "rclone 1.76.0 adds tenant_api_version (default v2.0) for tenant_url and scoped SharePoint token acquisition for returned upload/job URLs. The saved-token read fixture still excludes tenant/SharePoint token exchange, upload sessions and renewal. These new paths need their own lifecycle evidence; existing renewal and session-review requirements remain. The fixture now returns an issued same-authority preauthorized URL with an exact tempauth query bound to its opaque path. Missing, altered, duplicate or additional query fields and any forwarded OAuth Authorization header are rejected."
       ],
       "source_links": [
-        "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/onedrive.md"
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/onedrive.md",
+        "https://github.com/rclone/rclone/blob/v1.76.0/backend/onedrive/onedrive.go"
       ],
       "auth_applicability": "oauth",
       "refresh_applicability": "required",
@@ -4023,7 +4029,7 @@
     },
     "s3": {
       "canonical_name": "s3",
-      "schema_sha256": "312b7a3b86663318d016bd7fc00fcdabede1c9ca5507a636400bd9af2d97751d",
+      "schema_sha256": "34c8afa083d1401a6fbf79a83e45c9558b5f25b93f41ae5e85a99117ec46a240",
       "profile": "azureblob-renewal-plan-session-review",
       "notes": [
         "Owned S3-compatible server and scoped key can cover protocol contract. Every claimed AWS/vendor, signing/region/STS/auth profile still needs its own acceptance; long-lived keys alone need no refresh.",
@@ -4031,13 +4037,15 @@
         "Local protocol fixtures do not establish hosted service or workload identity acceptance.",
         "Do not label all S3 refreshable or all S3 non-refreshable; vendor, SDK credential provider and signing mode are part of the profile.",
         "IBM IAM and unselected workload/SSO/external-process provider variants are not individually resolved.",
-        "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension."
+        "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension.",
+        "rclone 1.76.0 expands S3 provider selectors (including Autonomys, Cellar, Infomaniak, Neon and RelAix). The loopback baseline continues to exercise its explicit configured S3 provider; selector availability does not establish acceptance for any newly listed vendor."
       ],
       "source_links": [
         "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/s3.md",
         "https://garagehq.deuxfleurs.fr/documentation/quick-start/",
         "https://github.com/rclone/rclone/blob/v1.75.2/backend/s3/s3.go",
-        "https://docs.aws.amazon.com/sdk-for-go/v2/developer-guide/configure-gosdk.html"
+        "https://docs.aws.amazon.com/sdk-for-go/v2/developer-guide/configure-gosdk.html",
+        "https://github.com/rclone/rclone/blob/v1.76.0/backend/s3/s3.go"
       ],
       "renewal_modes": [
         {
@@ -4176,20 +4184,22 @@
     },
     "sftp": {
       "canonical_name": "sftp",
-      "schema_sha256": "9369cf94169fb2724666847dfabba07cddc83a8ee1cf75e33d25206efcfa24f2",
+      "schema_sha256": "cd4428412d897cc30ff008d9ce2c6158480e07eee21349e865d37e2c7b076bc7",
       "profile": "sftp-lifecycle-plan",
       "notes": [
         "Owned SSH/SFTP server, pinned host key and test password/key. Host-key rejection is required alongside invalid credentials.",
         "Free account/API eligibility: no_vendor_account_needed",
         "SSH transport key rekey is not account credential renewal. The keyboard-interactive helper answers with the configured password, so arbitrary interactive MFA is not established.",
         "Agent certificate refresh and external SSH credential lifecycle remain configuration-specific.",
-        "The current local protocol requirements do not attest connection recovery, replacement-credential renewal, or vendor-specific modes. Required application lifecycle cases remain unverified until separate evidence is supplied."
+        "The current local protocol requirements do not attest connection recovery, replacement-credential renewal, or vendor-specific modes. Required application lifecycle cases remain unverified until separate evidence is supplied.",
+        "rclone 1.76.0 adds optional multithread_upload, disabled by default, and changes default filename encoding from Display to Base. Existing bounded read fixtures must rerun with this runtime. Upload concurrency, special-character shell hashing and additional servers remain outside the read profile."
       ],
       "source_links": [
         "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/sftp.md",
         "https://www.openssh.com/",
         "https://github.com/rclone/rclone/blob/v1.75.2/backend/sftp/sftp.go",
-        "https://github.com/rclone/rclone/blob/v1.75.2/backend/sftp/sftp.go"
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/sftp/sftp.go",
+        "https://github.com/rclone/rclone/blob/v1.76.0/backend/sftp/sftp.go"
       ],
       "auth_applicability": "credentials",
       "refresh_applicability": "review_required",
@@ -4329,14 +4339,15 @@
     },
     "smb": {
       "canonical_name": "smb",
-      "schema_sha256": "13ac5be8f660e4d7b60ed1dd5f6b15c4bff9d674823144b752f7371d4d6b1e9e",
+      "schema_sha256": "f02c3395eb08bd3d14f05a25397db3ca4f794032831e1c584605f769714f0aa3",
       "profile": "smb-lifecycle-plan",
       "notes": [
         "Owned SMB server/share and test account. Guest access/domain/Kerberos variants are not established by a simple local password test.",
         "The schema-3 smb_samba_ntlm_read_v1 fixture covers only Linux/amd64 against an independent hash-locked Samba container with NTLM password authentication. Complete three-file listing, independent download hashes, wrong-password rejection, repeat successful reads, missing-member rejection, source/config preservation and both cleanup layers satisfy the bounded local protocol plan. Windows, Kerberos, session recovery, renewal, cancellation and native write denial remain unverified; feasibility receipts alone cannot qualify this tier.",
         "Free account/API eligibility: no_vendor_account_needed",
         "Cache reload consumes an external replacement, while service-ticket renewal/reacquisition can independently occur through the KDC; neither proves automatic TGT renewal. A live session does not necessarily reauthenticate merely because the file changed.",
-        "The current local protocol requirements do not attest connection recovery, replacement-credential renewal, or vendor-specific modes. Required application lifecycle cases remain unverified until separate evidence is supplied."
+        "The current local protocol requirements do not attest connection recovery, replacement-credential renewal, or vendor-specific modes. Required application lifecycle cases remain unverified until separate evidence is supplied.",
+        "rclone 1.76.0 adds optional workstation in NTLM authentication, empty by default. The existing Samba profile retains its fixed NTLM configuration; workstation-restricted accounts, Kerberos and writes are not newly qualified."
       ],
       "source_links": [
         "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/smb.md",
@@ -4346,7 +4357,8 @@
         "https://github.com/jcmturner/gokrb5/blob/v8.4.4/v8/client/client.go#L62-L111",
         "https://github.com/cloudsoda/go-smb2/blob/d8c5600d73b8/krb5.go#L35-L49",
         "https://github.com/jcmturner/gokrb5/blob/v8.4.4/v8/client/cache.go#L99-L132",
-        "https://github.com/jcmturner/gokrb5/blob/v8.4.4/v8/client/TGSExchange.go#L84-L107"
+        "https://github.com/jcmturner/gokrb5/blob/v8.4.4/v8/client/TGSExchange.go#L84-L107",
+        "https://github.com/rclone/rclone/blob/v1.76.0/backend/smb/smb.go"
       ],
       "auth_applicability": "credentials",
       "refresh_applicability": "required",
@@ -4685,19 +4697,21 @@
     },
     "yandex": {
       "canonical_name": "yandex",
-      "schema_sha256": "0df499a1f485652942a454429225675b64391f533143d73328a046da5c145116",
+      "schema_sha256": "fc865cca6910a96d06e1cc39b75c78e16a3230854db980ca276b0019703a4cf5",
       "profile": "protocol-yandex-saved-token-read",
       "notes": [
         "Yandex Disk account and browser OAuth token; the pinned backend requires a refresh token. Actual renewal success remains a separate vendor acceptance check.",
         "Free account/API eligibility: review_required",
         "A token serialization/type migration is not proof of a successful refresh grant.",
         "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension.",
-        "Schema-16 yandex_saved_token_read_v1 qualifies only source-current Linux container evidence for an unexpired saved token with OAuth token_type. A nonempty synthetic unused refresh_token meets the native constructor requirement; no grant or refresh endpoint is provided. All nine read capabilities, private TLS/authority checks, exact disk:/ metadata/root-candidate probes, complete small inventories, literal known-byte and MD5 oracles and owned cleanup are required. Private inventory/metadata-issued links use the same OAuth client. The explicit absent-object path returns DiskNotFoundError for native stat and copy probes. Raw feasibility/schema-1 receipts remain ineligible. Grant/refresh, config upgrades, token replacement, custom modification properties, full-page pagination, native mutations, real download origins and application/vendor acceptance remain unverified; existing lifecycle obligations are preserved."
+        "Schema-16 yandex_saved_token_read_v1 qualifies only source-current Linux container evidence for an unexpired saved token with OAuth token_type. A nonempty synthetic unused refresh_token meets the native constructor requirement; no grant or refresh endpoint is provided. All nine read capabilities, private TLS/authority checks, exact disk:/ metadata/root-candidate probes, complete small inventories, literal known-byte and MD5 oracles and owned cleanup are required. Private inventory/metadata-issued links use the same OAuth client. The explicit absent-object path returns DiskNotFoundError for native stat and copy probes. Raw feasibility/schema-1 receipts remain ineligible. Grant/refresh, config upgrades, token replacement, custom modification properties, full-page pagination, native mutations, real download origins and application/vendor acceptance remain unverified; existing lifecycle obligations are preserved.",
+        "rclone 1.76.0 adds app_folder=false by default. The saved-token profile still uses the disk:/ namespace. app:/ scopes, refresh, and account/application-folder permission transitions require independent evidence."
       ],
       "source_links": [
         "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/yandex.md",
         "https://github.com/rclone/rclone/blob/v1.75.2/backend/yandex/yandex.go",
-        "https://github.com/rclone/rclone/blob/v1.75.2/lib/oauthutil/oauthutil.go"
+        "https://github.com/rclone/rclone/blob/v1.75.2/lib/oauthutil/oauthutil.go",
+        "https://github.com/rclone/rclone/blob/v1.76.0/backend/yandex/yandex.go"
       ],
       "renewal_modes": [
         {
@@ -4751,8 +4765,76 @@
         }
       ],
       "reauthentication_applicability": "review_required"
+    },
+    "dosya": {
+      "canonical_name": "dosya",
+      "schema_sha256": "eac901fddecb1c8979db3e05b3d602a83f0552e9aeca601ac8ac240955525ff7",
+      "profile": "hosted-static-credentials-session-review",
+      "notes": [
+        "Added by rclone 1.76.0. This is a reviewed acceptance plan only; no native protocol, application or vendor pass is claimed.",
+        "Free account/API eligibility: review_required",
+        "Use a dedicated synthetic root and explicit drive/workspace scope. Preserve source bytes, validate missing/denied objects, and observe cleanup independently.",
+        "Connection/session reauthentication remains unresolved and is not inferred from the credential-renewal decision."
+      ],
+      "source_links": [
+        "https://github.com/rclone/rclone/blob/v1.76.0/backend/dosya/dosya.go",
+        "https://raw.githubusercontent.com/rclone/rclone/v1.76.0/docs/content/dosya.md"
+      ],
+      "auth_applicability": "credentials",
+      "refresh_applicability": "not_applicable",
+      "reauthentication_applicability": "review_required",
+      "renewal_modes": [
+        {
+          "auth_mode": "Configured static API key for one workspace",
+          "renewal_kind": "static_api_key",
+          "source_supported_behavior": "The v1.76.0 constructor attaches the configured api_key as a Bearer credential to its REST client. It selects an explicit workspace_id or resolves a uniquely accessible workspace. No OAuth refresh or credential renewal is configured for this static-key path; key replacement and session applicability still require separate evidence.",
+          "required_lifecycle_scenarios": [
+            "Validate a nonempty scoped inventory and exact object downloads with independent hashes.",
+            "Observe invalid and revoked credentials failing without silent fallback.",
+            "Verify external API-key replacement without treating it as an OAuth renewal grant.",
+            "Review and qualify connection/session reauthentication separately from credential renewal.",
+            "Preserve the owned source, reject unexpected authority/routes, and validate cancellation and cleanup."
+          ],
+          "credential_renewal_requirement": "not_applicable",
+          "connection_session_reauthentication_requirement": "review_required"
+        }
+      ]
+    },
+    "kdrive": {
+      "canonical_name": "kdrive",
+      "schema_sha256": "4d355602abdf56653b66d39ddf9e9e470cf17867fa7e152dbf6bc22ddd341833",
+      "profile": "hosted-renewal-session-review",
+      "notes": [
+        "Added by rclone 1.76.0. This is a reviewed acceptance plan only; no native protocol, application or vendor pass is claimed.",
+        "Free account/API eligibility: review_required",
+        "Use a dedicated synthetic root and explicit drive/workspace scope. Preserve source bytes, validate missing/denied objects, and observe cleanup independently.",
+        "Connection/session reauthentication remains unresolved and is not inferred from the credential-renewal decision."
+      ],
+      "source_links": [
+        "https://github.com/rclone/rclone/blob/v1.76.0/backend/kdrive/kdrive.go",
+        "https://raw.githubusercontent.com/rclone/rclone/v1.76.0/docs/content/kdrive.md"
+      ],
+      "auth_applicability": "oauth",
+      "refresh_applicability": "required",
+      "reauthentication_applicability": "review_required",
+      "renewal_modes": [
+        {
+          "auth_mode": "PKCE OAuth token for an explicitly configured drive",
+          "renewal_kind": "oauth_refresh_token",
+          "source_supported_behavior": "The v1.76.0 backend uses browser OAuth with PKCE and oauthutil.NewClient; drive_id is required at construction and root_folder_id selects private/common or an explicit folder. Saved-token reads do not prove refresh grant, persistence, revocation or connection/session recovery.",
+          "required_lifecycle_scenarios": [
+            "Validate a nonempty scoped inventory and exact object downloads with independent hashes.",
+            "Observe invalid and revoked credentials failing without silent fallback.",
+            "Observe an actual refresh grant, token persistence and expired/revoked refresh failure.",
+            "Review and qualify connection/session reauthentication separately from credential renewal.",
+            "Preserve the owned source, reject unexpected authority/routes, and validate cancellation and cleanup."
+          ],
+          "credential_renewal_requirement": "required",
+          "connection_session_reauthentication_requirement": "review_required"
+        }
+      ]
     }
   },
   "reauthentication_rule": "Reauthentication means recovering or establishing a replacement authenticated connection/session with the approved credential, distinct from issuing a replacement credential. Its applicability is reviewed independently per auth mode. Unreviewed authenticated modes remain review_required; a fresh login alone does not prove recovery after session loss. Local protocol receipts cannot substitute for application or vendor lifecycle evidence.",
-  "schema_migration_note": "Policy v2 requires separate credential-renewal and connection/session-reauthentication mode fields. Prior policy plans must be reevaluated against this policy; no prior evidence is promoted into the new lifecycle capability. None-auth local/public decisions are limited to the explicitly scoped baseline."
+  "schema_migration_note": "Policy v2 requires separate credential-renewal and connection/session-reauthentication mode fields. Prior policy plans must be reevaluated against this policy; no prior evidence is promoted into the new lifecycle capability. None-auth local/public decisions are limited to the explicitly scoped baseline. Runtime 1.76.0 retains all existing lifecycle obligations, reviews seven changed option contracts, and adds separate unqualified Dosya and kDrive acceptance plans; the selectable catalog grows from 61 to 63."
 }

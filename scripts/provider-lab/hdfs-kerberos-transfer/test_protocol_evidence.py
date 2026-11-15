@@ -29,7 +29,7 @@ class ProtocolEvidenceTests(unittest.TestCase):
         cls.native['result']['rclone_qop'] = qop['proof']
         cls.native['result']['checks']['rclone_qop'] = True
         cls.native['result']['cleanup']['qop_observer_closed'] = True
-        for key in ('source_sha256', 'context_sha256'):
+        for key in ('source_sha256', 'context_sha256', 'rclone_version', 'rclone_sha256'):
             cls.native['inputs'][key] = deepcopy(cls.bindings[key])
         cls.now = E.utc(cls.native['finished_utc']) + timedelta(seconds=1)
         cls.receipt = E.make_receipt(cls.native, cls.bindings, cls.now)

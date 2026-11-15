@@ -286,6 +286,57 @@ class AzureBlobServerTests(unittest.TestCase):
             self.assertNotIn(payload, body)
         self.assertNotIn(KEY64.encode(), body)
 
+    def test_signed_account_information_is_empty_flat_namespace_metadata(self):
+        self.start()
+        for method in ("HEAD", "GET"):
+            for query in ("comp=properties&restype=account", "restype=account&comp=properties"):
+                target = BASE + "?" + query
+                status, headers, body = self.request(method, target)
+                self.assertEqual((status, body, headers["Content-Length"]), (200, b"", "0"))
+                self.assertEqual(headers["x-ms-is-hns-enabled"], "false")
+                self.assertEqual(headers["x-ms-account-kind"], "StorageV2")
+                self.assertNotIn("Content-MD5", headers)
+        self.assertEqual((self.state.account_info, self.state.payload_bytes, self.state.unexpected), (4, 0, 0))
+        self.assertEqual(self.state.files, EXPECTED)
+
+    def test_account_information_requires_fresh_correct_shared_key(self):
+        self.start()
+        target = BASE + "?comp=properties&restype=account"
+        for method in ("HEAD", "GET"):
+            for key, date in ((bytes(v ^ 1 for v in KEY), NOW), (KEY, NOW - timedelta(seconds=901)),
+                              (KEY, NOW + timedelta(seconds=1))):
+                response = self.request(method, target, self.signed_headers(method, target, date=date, key=key))
+                self.assert_error(response, 403, "AuthenticationFailed")
+        self.assertEqual((self.state.account_info, self.state.payload_bytes), (0, 0))
+
+    def test_account_information_rejects_ranges_conditions_bodies_and_old_versions(self):
+        self.start()
+        target = BASE + "?comp=properties&restype=account"
+        for extra in ({"Range": "bytes=0-"}, {"x-ms-range": "bytes=0-"}, {"If-Match": "*"},
+                      {"x-ms-version": "2018-03-28"}, {"Content-Length": "1"}):
+            for method in ("HEAD", "GET"):
+                self.assert_error(self.request(method, target, self.signed_headers(method, target, extra=extra)), 400)
+        self.assertEqual((self.state.account_info, self.state.payload_bytes), (0, 0))
+
+    def test_account_information_is_scoped_to_exact_container_query(self):
+        self.start()
+        for target in (BASE + "?comp=properties&restype=account&extra=1",
+                       BASE + "?comp=properties&restype=account&comp=properties",
+                       BASE + "?comp=properties&restype=container", BASE + "?restype=account",
+                       BASE + "/?comp=properties&restype=account",
+                       README + "?comp=properties&restype=account",
+                       "/syntheticaccount?comp=properties&restype=account"):
+            self.assert_error(self.request("HEAD", target), 400)
+        self.assertEqual((self.state.account_info, self.state.payload_bytes), (0, 0))
+
+    def test_account_information_cannot_be_used_as_write_route(self):
+        self.start()
+        target = BASE + "?comp=properties&restype=account"
+        for method in ("POST", "PUT", "DELETE"):
+            self.assert_error(self.request(method, target), 400)
+        self.assertEqual((self.state.account_info, self.state.rejected_mutations, self.state.payload_bytes), (0, 0, 0))
+        self.assertEqual(self.state.files, EXPECTED)
+
     def test_valid_signature_reads_exact_file_while_wrong_valid_key_is_denied(self):
         self.start()
         wrong = bytes(value ^ 1 for value in KEY)

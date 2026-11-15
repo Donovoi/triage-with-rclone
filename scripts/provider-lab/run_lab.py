@@ -848,7 +848,20 @@ def b2_checks(runtime, root, row, expected):
 
 def azureblob_options(state, port):
     return {"type": "azureblob", "env_auth": "false", "use_emulator": "true", "account": state.account,
-            "key": state.password, "endpoint": f"http://127.0.0.1:{port}/{state.account}", "use_arrow_list": "false"}
+            "key": state.password, "endpoint": f"http://127.0.0.1:{port}/{state.account}", "use_arrow_list": "false", "hns": "false"}
+
+
+def azureblob_namespace_cache_matches(path, options):
+    """Only the native HNS=false cache addition may change setup semantics."""
+    if path.is_symlink() or not path.is_file() or not 0 < path.stat().st_size <= 8192:
+        return False
+    parser = configparser.ConfigParser(interpolation=None, strict=True)
+    try:
+        parser.read_string(path.read_text(encoding="utf-8"))
+        return (not parser.defaults() and parser.sections() == ["Synthetic"]
+                and dict(parser["Synthetic"]) == dict(options, hns="false"))
+    except (configparser.Error, UnicodeError):
+        return False
 
 
 def azureblob_checks(runtime, root, row, expected):
@@ -873,6 +886,24 @@ def azureblob_checks(runtime, root, row, expected):
                   and state.payload_bytes == 0, "azureblob_bad_auth_not_observed")
             denied_before = state.auth_denied
             caps["authentication_rejection"] = "passed"
+            # Exercise 1.76 namespace discovery once during configuration setup.
+            # Reads below use an explicit flat namespace and retain byte-for-byte
+            # configuration preservation, including this newly cached config.
+            discovery_options = {key: value for key, value in opts.items() if key != "hns"}
+            discovery = config_file(root, "azureblob-namespace-discovery.conf", discovery_options)
+            discovery_before = discovery.read_bytes()
+            info_before = state.account_info
+            code, output, _ = runtime.run(["lsjson", "--recursive", "--files-only", "--no-modtime",
+                                            "--no-mimetype", "Synthetic:synthetic-container"], discovery)
+            check(code == 0 and state.account_info == info_before + 1
+                  and discovery.read_bytes() != discovery_before
+                  and azureblob_namespace_cache_matches(discovery, discovery_options),
+                  "azureblob_namespace_discovery_cache_invalid")
+            preserved[discovery] = (discovery.read_bytes(), digest(discovery))
+            code, output, _ = runtime.run(["lsjson", "--recursive", "--files-only", "--no-modtime",
+                                            "--no-mimetype", "Synthetic:synthetic-container"], discovery)
+            check(code == 0 and state.account_info == info_before + 1,
+                  "azureblob_namespace_cache_not_reused")
             code, output, _ = runtime.run(["lsjson", "--recursive", "--files-only", "--no-modtime",
                                             "--no-mimetype", "Synthetic:synthetic-container"], good)
             check(code == 0, "azureblob_listing_failed")
@@ -4738,7 +4769,8 @@ def onedrive_checks(runtime, root, row, expected):
             connection = http.client.HTTPSConnection(transport.authority, port, timeout=3,
                                                      context=certificates.client_context())
             try:
-                connection.request("DELETE", "/content/" + next(key for key, value in state.links.items() if value == "README-synthetic.txt"))
+                token = next(key for key, value in state.links.items() if value == "README-synthetic.txt")
+                connection.request("DELETE", "/content/" + token + "?tempauth=" + token)
                 response = connection.getresponse()
                 check(response.status == 405 and len(response.read(4097)) <= 4096,
                       "onedrive_write_guard_missing")

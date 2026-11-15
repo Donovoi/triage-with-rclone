@@ -77,10 +77,14 @@ The pinned runtime supplies the complete backend catalog. The curated provider e
 Every Windows and Linux CI run checks:
 
 - Contracts for all 58 curated providers: backend identity, required options, authentication classification, OAuth parameters, configuration and hashes.
-- The verified native rclone executable's actual `config providers` output: currently 69 schemas and 61 selectable backends. Eight wrapper backends are intentionally excluded. Newly discovered backends use manual configuration until their authentication route is explicitly supported.
+- The verified native rclone executable's actual `config providers` output: currently 71 schemas and 63 selectable backends. Eight wrapper backends are intentionally excluded. Newly discovered backends use manual configuration until their authentication route is explicitly supported.
 - Local synthetic login protocols, credential parsing, callback state validation, PKCE and token exchange. All nine generic OAuth routes use the actual callback and exchange code against local fixtures. Drive/OneDrive/Dropbox auth-only tests cover persistence, denial and cancellation. Dropbox also checks exact read scopes, offline grant fields and rejection before saving. These tests do not prove arbitrary disk-write rollback or vendor acceptance of a login or refresh grant.
 - Existing integration tests for inventory parsing, queues, downloads, reporting, config isolation and integrity checks, plus updater regression tests.
-- Twenty baseline real-backend protocol fixtures, a separate Linux/amd64 Samba NTLM fixture and a current-runtime coverage plan for every selectable backend. New backends, removed backends and changed option contracts require an explicit policy review.
+- Twenty-six baseline real-backend protocol fixtures, a separate Linux/amd64 Samba NTLM fixture and a current-runtime coverage plan for every selectable backend. New backends, removed backends and changed option contracts require an explicit policy review.
+
+The pinned runtime is now rclone 1.76.0. Dosya and kDrive have reviewed acceptance plans but no qualified fixture evidence yet. All existing profiles require fresh evidence for the new binary; historical 1.75.2 receipts and live-account observations below remain limited to their recorded builds.
+
+Azure Blob 1.76.0 setup discovers namespace support with a signed container Get Account Information request. The native lab checks an empty metadata response with x-ms-is-hns-enabled=false, the exact config-option cache addition, and reuse without another discovery request. Read configurations and the Windows application modes explicitly select a flat namespace (hns=false); their config/source preservation checks stay strict. This does not qualify hierarchical namespace operations. See [Microsoft's account-information contract](https://learn.microsoft.com/en-us/rest/api/storageservices/get-account-information).
 
 Run the normal suite with `cargo test --locked --release -- --test-threads=1` from the crate directory. For the metadata-only runtime check, bootstrap the native runtime and set `RCLONE_PROVIDER_SCHEMA_BINARY` to its absolute path, then run:
 

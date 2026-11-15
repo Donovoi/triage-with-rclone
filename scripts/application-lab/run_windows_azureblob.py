@@ -84,8 +84,10 @@ def config_bytes(endpoint, key):
         need(len(decoded)==32 and base64.b64encode(decoded).decode("ascii")==key,"binding_failed")
     except (ValueError,UnicodeError):
         raise ProducerError("binding_failed") from None
+    # These acquisition/listing modes explicitly select a flat namespace; native
+    # HNS discovery and its config cache write are tested by provider-lab.
     return ("[Synthetic]\ntype = azureblob\nenv_auth = false\nuse_emulator = true\naccount = syntheticaccount\n"
-        +f"key = {key}\nendpoint = {endpoint}syntheticaccount\nuse_arrow_list = false\n").encode("ascii")
+        +f"key = {key}\nendpoint = {endpoint}syntheticaccount\nuse_arrow_list = false\nhns = false\n").encode("ascii")
 
 
 def create_source(case):

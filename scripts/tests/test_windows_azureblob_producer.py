@@ -72,7 +72,7 @@ class ProducerTests(unittest.TestCase):
     def test_config_and_queue_fixed_scope_without_retry_override(self):
         key=base64.b64encode(bytes(range(32))).decode()
         config=P.config_bytes(ENDPOINT,key)
-        for line in (b"env_auth = false\n", b"use_emulator = true\n", b"use_arrow_list = false\n",
+        for line in (b"env_auth = false\n", b"use_emulator = true\n", b"use_arrow_list = false\n", b"hns = false\n",
                      b"account = syntheticaccount\n", b"endpoint = http://127.0.0.1:1234/syntheticaccount\n"):
             self.assertIn(line,config)
         for token in (b"retries",b"buffer_size",b"bwlimit",b"sas_url",b"client_secret"):

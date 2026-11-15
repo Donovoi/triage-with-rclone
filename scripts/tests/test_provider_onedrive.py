@@ -90,9 +90,10 @@ class OneDriveWireTests(unittest.TestCase):
         status, headers, raw = self.link(name)
         parsed = urllib.parse.urlsplit(headers["Location"])
         self.assertEqual((status, raw, headers["Content-Length"]), (302, b"", "0"))
-        self.assertEqual((parsed.scheme, parsed.netloc, parsed.query, parsed.fragment), ("https", NAME, "", ""))
+        self.assertEqual((parsed.scheme, parsed.netloc, parsed.fragment), ("https", NAME, ""))
+        self.assertEqual(parsed.query, "tempauth=" + parsed.path.rsplit("/", 1)[-1])
         self.assertRegex(parsed.path, r"^/content/[a-f0-9]{32}$")
-        return parsed.path
+        return parsed.path + "?" + parsed.query
 
     def test_exact_bearer_scheme_and_token_required_without_renewal_fallback(self):
         for auth in (None, "", "OAuth " + SECRET, "Bearer wrong", "bearer " + SECRET):
@@ -141,7 +142,7 @@ class OneDriveWireTests(unittest.TestCase):
 
     def test_download_redirects_require_prior_metadata_or_inventory(self):
         self.assertEqual(self.link(observe=False)[0], 400)
-        self.assertEqual(self.request("GET", "/content/" + "0" * 32, auth=None)[0], 401)
+        self.assertEqual(self.request("GET", "/content/" + "0" * 32 + "?tempauth=" + "0" * 32, auth=None)[0], 401)
         self.assertEqual((self.state.payload_bytes, self.state.links), (0, {}))
         self.assertEqual(self.listing()[0], 200)
         self.assertEqual(self.link(observe=False)[0], 302)
@@ -160,13 +161,22 @@ class OneDriveWireTests(unittest.TestCase):
         path = self.content()
         for auth in ("Bearer " + SECRET, "", "OAuth wrong"):
             self.assertEqual(self.request("GET", path, auth=auth)[0], 400)
-        for query in ("?access_token=" + SECRET, "?AVOverride=1"):
+        for query in ("&access_token=" + SECRET, "&AVOverride=1"):
             self.assertEqual(self.request("GET", path + query, auth=None)[0], 400)
         for key in ("Cookie", "Prefer"):
             self.assertEqual(self.request("GET", path, auth=None, headers=((key, "synthetic"),))[0], 400)
         self.assertEqual(self.state.payload_bytes, 0)
         self.assertEqual(self.request("GET", path, auth=None)[::2], (200, PAYLOADS["README-synthetic.txt"]))
         self.assertNotEqual(path, self.content())
+
+    def test_preauthorization_query_is_required_unique_and_bound_to_issued_path(self):
+        target = self.content()
+        path, query = target.split("?", 1)
+        for altered in (path, path + "?tempauth=", path + "?tempauth=" + "0" * 32,
+                        target + "&" + query, target + "&extra=1"):
+            self.assertEqual(self.request("GET", altered, auth=None)[0], 400)
+        self.assertEqual(self.state.payload_bytes, 0)
+        self.assertEqual(self.request("GET", target, auth=None)[::2], (200, PAYLOADS["README-synthetic.txt"]))
 
     def test_missing_metadata_returns_item_not_found_without_issuing_a_redirect(self):
         for colon in (False, True):
