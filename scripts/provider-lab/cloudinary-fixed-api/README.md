@@ -1,4 +1,4 @@
-# Cloudinary fixed-authority read experiment
+# Cloudinary fixed-authority read protocol
 
 Run this only inside a disposable Linux VM with Docker. The supervisor accepts
 Linux Docker directly, including a dedicated local VM and GitHub-hosted Linux.
@@ -6,7 +6,7 @@ No browser, vendor account, real API key, user files or host trust changes are u
 
 ~~~sh
 python -B scripts/provider-lab/cloudinary-fixed-api/run_container.py \
-  --rclone /absolute/path/to/verified/rclone \
+  --rclone /absolute/path/to/verified/rclone --protocol-evidence \
   --report /absolute/new/path/cloudinary-fixed-api.json
 ~~~
 
@@ -38,10 +38,18 @@ previously issued links.
 The write check is a direct synthetic fixture guard, not native uploader/delete
 coverage. Media transformations, pagination, eventual consistency, real CDN
 origins/redirects, uploads, token lifecycle and the Windows application are outside
-this experiment. The receipt has ledger_eligible: false; it cannot satisfy
-provider coverage or live-vendor acceptance obligations. Cloudinary remains
-outside the portable baseline. Wire, authority and supervisor regressions run on
-both supported unit-test platforms without fixed DNS or port 443.
+this protocol. The explicit --protocol-evidence option emits closed schema-8
+cloudinary_static_credentials_raw_read_v1 evidence. Its validator requires the
+current source/runtime hashes, exact dependency pins, native probe, namespace
+checks, cleanup and freshness before it can satisfy only the local-protocol tier.
+Application/vendor requirements and lifecycle applicability remain unchanged.
+
+Without that option, the default feasibility receipt remains ledger-ineligible.
+Historical feasibility receipts and schema-1 rows cannot count as this mode.
+Cloudinary stays outside the 26 portable experiments; the combined Linux and
+provider-smoke gates require 29 protocol profiles. Forty-three wire, authority,
+supervisor and receipt regressions run on both supported unit-test platforms
+without fixed DNS or port 443.
 
 Sources: the pinned [rclone backend](https://github.com/rclone/rclone/blob/v1.75.2/backend/cloudinary/cloudinary.go)
 and [Cloudinary Go SDK v2.16.0](https://github.com/cloudinary/cloudinary-go/tree/v2.16.0).
