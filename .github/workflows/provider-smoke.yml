@@ -198,6 +198,12 @@ jobs:
           python -B ../scripts/provider-lab/drive-fixed-api/run_container.py \
             --rclone "$RUNNER_TEMP/rclone-smoke" --protocol-evidence \
             --report "$RUNNER_TEMP/drive-read-protocol.json"
+      - name: Isolated Dropbox saved OAuth folder reads
+        if: ${{ !cancelled() }}
+        run: |
+          python -B ../scripts/provider-lab/dropbox-fixed-api/run_container.py \
+            --rclone "$RUNNER_TEMP/rclone-smoke" --protocol-evidence \
+            --report "$RUNNER_TEMP/dropbox-read-protocol.json"
       - name: Isolated pCloud OAuth positive feasibility
         if: ${{ !cancelled() }}
         run: |
@@ -223,7 +229,7 @@ jobs:
         with:
           name: hdfs-protocol
           path: ${{ runner.temp }}/provider-hdfs
-      # All 42 Linux profiles, including the separately qualified HDFS, Cloudinary, OpenDrive, GoFile, Drime, 1Fichier, Premiumize, Put.io, Linkbox, Yandex, Box, OneDrive, FileLu, QingStor and Google Drive proofs.
+      # All 43 Linux profiles, including the separately qualified HDFS, Cloudinary, OpenDrive, GoFile, Drime, 1Fichier, Premiumize, Put.io, Linkbox, Yandex, Box, OneDrive, FileLu, QingStor, Google Drive and Dropbox proofs.
       - name: Require current provider plans and protocol evidence
         if: ${{ !cancelled() }}
         run: |
@@ -245,12 +251,13 @@ jobs:
             --fixture-receipt "$RUNNER_TEMP/putio-read-protocol.json" \
             --fixture-receipt "$RUNNER_TEMP/linkbox-read-protocol.json" \
             --fixture-receipt "$RUNNER_TEMP/yandex-read-protocol.json" \
+            --fixture-receipt "$RUNNER_TEMP/dropbox-read-protocol.json" \
             --fixture-receipt "$RUNNER_TEMP/drive-read-protocol.json" \
             --fixture-receipt "$RUNNER_TEMP/qingstor-read-protocol.json" \
             --fixture-receipt "$RUNNER_TEMP/filelu-read-protocol.json" \
             --fixture-receipt "$RUNNER_TEMP/onedrive-read-protocol.json" \
             --fixture-receipt "$RUNNER_TEMP/box-read-protocol.json" \
-            --require-plans --require-fixtures local,archive,http,webdav,ftp,sftp,s3,swift,b2,azureblob,azurefiles,seafile,memory,koofr,pixeldrain,filefabric,netstorage,internetarchive,gcs,smb,pcloud,hdfs,sia,hidrive,doi,quatrix,shade,sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio,linkbox,yandex,box,onedrive,filelu,qingstor,drive
+            --require-plans --require-fixtures local,archive,http,webdav,ftp,sftp,s3,swift,b2,azureblob,azurefiles,seafile,memory,koofr,pixeldrain,filefabric,netstorage,internetarchive,gcs,smb,pcloud,hdfs,sia,hidrive,doi,quatrix,shade,sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio,linkbox,yandex,box,onedrive,filelu,qingstor,drive,dropbox
       - name: Offline provider contracts
         run: cargo test --locked --release --test provider_smoke --test provider_matrix -- --test-threads=1
       - name: Login and credential regressions without accounts
@@ -351,6 +358,7 @@ jobs:
             ${{ runner.temp }}/putio-read-protocol.json
             ${{ runner.temp }}/linkbox-read-protocol.json
             ${{ runner.temp }}/yandex-read-protocol.json
+            ${{ runner.temp }}/dropbox-read-protocol.json
             ${{ runner.temp }}/drive-read-protocol.json
             ${{ runner.temp }}/qingstor-read-protocol.json
             ${{ runner.temp }}/filelu-read-protocol.json

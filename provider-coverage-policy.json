@@ -1904,6 +1904,48 @@
       "unresolved_applicability": [
         "reauthentication"
       ]
+    },
+    "protocol-dropbox-saved-token-folder-read": {
+      "required": {
+        "application": [
+          "listing",
+          "download_hash",
+          "manifest_integrity",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation",
+          "refresh"
+        ],
+        "vendor": [
+          "listing",
+          "download_hash",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation",
+          "refresh"
+        ],
+        "local_protocol": [
+          "listing",
+          "download_hash",
+          "missing_object_rejection",
+          "authentication_rejection",
+          "read_denial",
+          "source_preservation",
+          "config_preservation",
+          "fixture_write_rejection",
+          "cleanup"
+        ]
+      },
+      "review_required": false,
+      "unresolved_applicability": [
+        "reauthentication"
+      ]
     }
   },
   "providers": {
@@ -2365,11 +2407,12 @@
     "dropbox": {
       "canonical_name": "dropbox",
       "schema_sha256": "6dbc094f6cb9508f225149ffdefe0158c5b4bf69e658cc5a8cd1c713142534d7",
-      "profile": "hosted-renewal-session-review",
+      "profile": "protocol-dropbox-saved-token-folder-read",
       "notes": [
         "Dropbox account and OAuth app/consent; app-folder and full-account/team access need distinct profiles.",
         "Free account/API eligibility: review_required",
-        "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension."
+        "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension.",
+        "Schema-22 dropbox_saved_token_folder_read_v1 qualifies only source-current Linux container evidence for a saved unexpired OAuth bearer token and explicit synthetic-root/ source prefix. All nine capabilities, two separate exact TLS/SNI/Host authorities and private loopback addresses, exact typed RPC body/header contracts, complete scoped inventories, independent block content-hash metadata, authenticated known-byte downloads, wrong-token and typed restricted-content denial, source/config preservation and both-listener cleanup are required. The direct DELETE download guard does not qualify native writes. Grants/refresh, legacy token migration, account-root discovery, app-folder/full-account/team eligibility, namespaces/impersonation/shared modes, Paper exports, change polling, pagination, native writes and application/vendor acceptance remain unverified. Raw feasibility/schema-1 rows are ineligible; original renewal requirements and unresolved session applicability review remain."
       ],
       "source_links": [
         "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/dropbox.md",
