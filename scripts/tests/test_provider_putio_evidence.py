@@ -279,11 +279,11 @@ class PutioWorkflowTests(unittest.TestCase):
         for before, after in (
             ("  putio-fixed-api:\n", "  putio-fixed-api:\n    if: false\n"),
             ("--rclone \"$RUNNER_TEMP/rclone-putio\" --protocol-evidence", "--rclone \"$RUNNER_TEMP/rclone-putio\""),
-            ("premiumizeme-fixed-api, putio-fixed-api, linkbox-fixed-api, yandex-fixed-api]", "premiumizeme-fixed-api, linkbox-fixed-api, yandex-fixed-api]"),
+            ("premiumizeme-fixed-api, putio-fixed-api, linkbox-fixed-api, yandex-fixed-api, box-fixed-api]", "premiumizeme-fixed-api, linkbox-fixed-api, yandex-fixed-api, box-fixed-api]"),
             ("          path: ${{ runner.temp }}/provider-putio",
              "          run-id: 123\n          path: ${{ runner.temp }}/provider-putio"),
             ('--fixture-receipt "$RUNNER_TEMP/provider-putio/putio-read-protocol.json"', ""),
-            ("sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio,linkbox,yandex\n", "sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,linkbox,yandex\n")):
+            ("sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio,linkbox,yandex,box\n", "sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,linkbox,yandex,box\n")):
             with self.subTest(before=before):
                 self.assertIn(before, self.ci)
                 with self.assertRaises(ValueError):
@@ -293,7 +293,7 @@ class PutioWorkflowTests(unittest.TestCase):
         for before, after in (
             ('../scripts/provider-lab/putio-fixed-api/run_container.py \\\n            --rclone "$RUNNER_TEMP/rclone-smoke" --protocol-evidence', '../scripts/provider-lab/putio-fixed-api/run_container.py \\\n            --rclone "$RUNNER_TEMP/rclone-smoke"'),
             ('--fixture-receipt "$RUNNER_TEMP/putio-read-protocol.json"', ""),
-            ("sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio,linkbox,yandex\n", "sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,linkbox,yandex\n"),
+            ("sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio,linkbox,yandex,box\n", "sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,linkbox,yandex,box\n"),
             ("            ${{ runner.temp }}/putio-read-protocol.json\n", "")):
             with self.subTest(before=before):
                 self.assertIn(before, self.smoke)

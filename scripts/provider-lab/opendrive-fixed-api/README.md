@@ -37,7 +37,7 @@ opendrive_configured_session_read_v1 evidence. The importer recomputes current
 source/runtime bindings and validates isolation, dependencies, native probe,
 timestamps, exact output, all nine capabilities and cleanup before accepting only
 the Linux local-protocol tier. The combined Linux and provider-smoke gates now
-require 37 profiles; OpenDrive remains outside the 26 portable experiments.
+require 38 profiles; OpenDrive remains outside the 26 portable experiments.
 
 Without that option, feasibility receipts remain ledger-ineligible. Historical
 feasibility and schema-1 rows cannot satisfy this mode. Application/vendor

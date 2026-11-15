@@ -278,11 +278,11 @@ class OpenDriveWorkflowTests(unittest.TestCase):
         for before, after in (
             ("  opendrive-fixed-api:\n", "  opendrive-fixed-api:\n    if: false\n"),
             ("--rclone \"$RUNNER_TEMP/rclone-opendrive\" --protocol-evidence", "--rclone \"$RUNNER_TEMP/rclone-opendrive\""),
-            ("cloudinary-fixed-api, opendrive-fixed-api, gofile-fixed-api, drime-fixed-api, fichier-fixed-api, premiumizeme-fixed-api, putio-fixed-api, linkbox-fixed-api, yandex-fixed-api]", "cloudinary-fixed-api, gofile-fixed-api, drime-fixed-api, fichier-fixed-api, premiumizeme-fixed-api, putio-fixed-api, linkbox-fixed-api, yandex-fixed-api]"),
+            ("cloudinary-fixed-api, opendrive-fixed-api, gofile-fixed-api, drime-fixed-api, fichier-fixed-api, premiumizeme-fixed-api, putio-fixed-api, linkbox-fixed-api, yandex-fixed-api, box-fixed-api]", "cloudinary-fixed-api, gofile-fixed-api, drime-fixed-api, fichier-fixed-api, premiumizeme-fixed-api, putio-fixed-api, linkbox-fixed-api, yandex-fixed-api, box-fixed-api]"),
             ("          path: ${{ runner.temp }}/provider-opendrive",
              "          run-id: 123\n          path: ${{ runner.temp }}/provider-opendrive"),
             ('--fixture-receipt "$RUNNER_TEMP/provider-opendrive/opendrive-read-protocol.json"', ""),
-            ("sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio,linkbox,yandex\n", "sharefile,cloudinary,gofile,drime,fichier,premiumizeme,putio,linkbox,yandex\n")):
+            ("sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio,linkbox,yandex,box\n", "sharefile,cloudinary,gofile,drime,fichier,premiumizeme,putio,linkbox,yandex,box\n")):
             with self.subTest(before=before):
                 self.assertIn(before, self.ci)
                 with self.assertRaises(ValueError):
@@ -292,7 +292,7 @@ class OpenDriveWorkflowTests(unittest.TestCase):
         for before, after in (
             ('../scripts/provider-lab/opendrive-fixed-api/run_container.py \\\n            --rclone "$RUNNER_TEMP/rclone-smoke" --protocol-evidence', '../scripts/provider-lab/opendrive-fixed-api/run_container.py \\\n            --rclone "$RUNNER_TEMP/rclone-smoke"'),
             ('--fixture-receipt "$RUNNER_TEMP/opendrive-read-protocol.json"', ""),
-            ("sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio,linkbox,yandex\n", "sharefile,cloudinary,gofile,drime,fichier,premiumizeme,putio,linkbox,yandex\n"),
+            ("sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio,linkbox,yandex,box\n", "sharefile,cloudinary,gofile,drime,fichier,premiumizeme,putio,linkbox,yandex,box\n"),
             ("            ${{ runner.temp }}/opendrive-read-protocol.json\n", "")):
             with self.subTest(before=before):
                 self.assertIn(before, self.smoke)

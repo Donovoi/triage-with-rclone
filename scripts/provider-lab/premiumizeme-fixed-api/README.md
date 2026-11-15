@@ -27,13 +27,13 @@ preserves the source; native mutation support is outside scope.
 
 The supervisor enforces nonroot identity, read-only root, no capabilities or host
 mounts/ports, private namespaces, bounded resources and private noexec tmpfs.
-Schema-13 premiumizeme_saved_token_read_v1 binds the current 27-file source
+Schema-13 premiumizeme_saved_token_read_v1 binds the current 28-file source
 closure, pinned runtime/dependencies, exact native output/timing, all nine
 capabilities and owned cleanup. Private keys, generated tokens and content
 links stay ephemeral. Shared build cache and the pinned public base image remain.
 Raw transcripts are never published.
 
-Both combined Linux and provider-smoke gates require 37 reviewed profiles and
+Both combined Linux and provider-smoke gates require 38 reviewed profiles and
 the same-run named receipt. Raw feasibility and historical schema-1 rows cannot
 qualify the saved-token profile; the 26 portable experiments remain unchanged.
 Forty-four wire, TLS, container, workflow and receipt tests run on the unit-test
