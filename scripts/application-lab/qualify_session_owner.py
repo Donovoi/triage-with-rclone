@@ -15,7 +15,7 @@ import uuid
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
-QUALIFIER_SHA256 = "eb9dad5c5690e077dd02e2c9ffe63dcfe3d878635f775c0522c24fd2ab17e7ca"
+QUALIFIER_SHA256 = "68a58e303bcd460dddb0af55f2eda1cb9b84a6e05d62853a8c7b7ccee5a9b135"
 SELF_SHA256 = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
 MODES = {"delayed_release", "persistent_child"}
 
