@@ -491,7 +491,7 @@ class TicketTests(unittest.TestCase):
         (here / "runtime-classpath.json").write_bytes(b"{}")
         binary = here / "rclone"; binary.write_bytes(b"inert rclone")
         pin = here / "rclone-version.env"
-        pin.write_text("RCLONE_VERSION=1.75.2\nRCLONE_LINUX_EXE_SHA256=" + F.sha(b"inert rclone") + "\n")
+        pin.write_text("RCLONE_VERSION=1.76.0\nRCLONE_LINUX_EXE_SHA256=" + F.sha(b"inert rclone") + "\n")
         (discovery / "artifact-lock-kerberos.json").write_bytes(b"{}")
         (discovery / "artifact-lock-kerberos-remediation.json").write_bytes(b"{}")
         helper = discovery / "helper.py"; helper.write_bytes(b"# inert helper\n")
@@ -1212,7 +1212,7 @@ class JavaSourceTests(unittest.TestCase):
         for predicate, code in (
             ('version.code == 0', 'rclone_version_nonzero'),
             ('version.err.length == 0', 'rclone_version_stderr'),
-            ('startsWith("rclone v1.75.2\\n")', 'rclone_version_mismatch'),
+            ('startsWith("rclone v1.76.0\\n")', 'rclone_version_mismatch'),
             ('processIds().equals(processBaseline)', 'child_process_drift')):
             self.assertIn(predicate, version); self.assertIn('Code.' + code, version)
         self.assertIn('builder.environment().clear()', source)

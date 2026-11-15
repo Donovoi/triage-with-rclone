@@ -47,5 +47,7 @@ overrides and OneNote, case-folding/name encoding, continuation/delta,
 native writes, real CDN and application/live-provider acceptance remain
 unverified.
 
-Sources: [pinned rclone OneDrive](https://github.com/rclone/rclone/tree/v1.75.2/backend/onedrive)
+Sources: [pinned rclone OneDrive](https://github.com/rclone/rclone/tree/v1.76.0/backend/onedrive)
 and [Microsoft QuickXorHash algorithm](https://learn.microsoft.com/en-us/onedrive/developer/code-snippets/quickxorhash?view=odsp-graph-online).
+
+The rclone 1.76.0 fixture marks its issued download URL with an exact tempauth query bound to the opaque path. This preserves the preauthorized download case: OAuth Authorization remains forbidden on that hop. Missing, changed, duplicate or extra query fields are rejected. Authenticated SharePoint token exchanges remain outside this profile.

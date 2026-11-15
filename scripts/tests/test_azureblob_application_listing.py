@@ -17,7 +17,7 @@ import test_azureblob_application_fixture as old_f
 import test_windows_azureblob_producer as old_p
 import test_azureblob_application_workflow as workflow
 E,F,P=old_e.E,old_f.F,old_p.P
-ACCOUNT="/syntheticaccount?comp=list&include=deleted%2Cmetadata&maxresults=5000"
+ACCOUNT="/syntheticaccount?comp=list&include=metadata&maxresults=5000"
 FLAT="/syntheticaccount/synthetic-container?comp=list&delimiter=&include=metadata&maxresults=5000&prefix=&restype=container"
 
 
@@ -118,7 +118,7 @@ class ListingTests(unittest.TestCase):
             FLAT.replace("comp=list","comp=list&comp=list"),FLAT.replace("maxresults=5000","maxresults=True"),
             FLAT.replace("maxresults=5000","maxresults=5001"),FLAT.replace("delimiter=","delimiter=%2F"),
             FLAT.replace("prefix=","prefix=nested%2F"),FLAT.replace("include=metadata","include=snapshots"),FLAT+"&unknown=x",FLAT+"#fragment",
-            FLAT.replace("/syntheticaccount/","//syntheticaccount/",1),FLAT.replace("synthetic-container","other"),ACCOUNT.replace("deleted%2Cmetadata","metadata")]
+            FLAT.replace("/syntheticaccount/","//syntheticaccount/",1),FLAT.replace("synthetic-container","other"),ACCOUNT.replace("include=metadata","include=deleted%2Cmetadata")]
         for target in variants:
             with self.subTest(target=target),self.assertRaises(F.FixtureError):F.listing_route(target)
         self.assertEqual(F.listing_route(FLAT.replace("maxresults=5000","maxresults=4")),"flat")

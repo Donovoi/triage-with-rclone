@@ -9,7 +9,7 @@ import re
 
 HERE = Path(__file__).resolve().parent
 BASE_PATH = HERE.parent / "hdfs-kerberos-cancellation" / "cancellation_container.py"
-BASE_SHA = "39a7c0caf66f72beab39ab4b856796169f768db4ecce4218e47efa672796b51c"
+BASE_SHA = "4a870d19773a7ab79e67aa224ef8a18b00f68b2a0332b8dc8418680cb2271698"
 base_source = BASE_PATH.read_bytes()
 if hashlib.sha256(base_source).hexdigest() != BASE_SHA:
     raise RuntimeError("contract_dependency_changed")

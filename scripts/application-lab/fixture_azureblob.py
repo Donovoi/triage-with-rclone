@@ -354,8 +354,9 @@ def listing_route(target):
         limit = query.get("maxresults", "5000")
         if not re.fullmatch(r"[0-9]+", limit) or not 1 <= int(limit) <= 5000:
             raise ValueError("limit")
+        # Pinned 1.76.0 lists active containers with metadata; deleted containers are excluded.
         if url.path in {"/" + ACCOUNT, "/" + ACCOUNT + "/"}:
-            if set(query) - {"comp", "include", "maxresults", "marker"} or query.get("include") != "deleted,metadata":
+            if set(query) - {"comp", "include", "maxresults", "marker"} or query.get("include") != "metadata":
                 raise ValueError("account")
             return "account"
         if (set(query) - {"restype", "comp", "delimiter", "prefix", "marker", "maxresults", "include"}

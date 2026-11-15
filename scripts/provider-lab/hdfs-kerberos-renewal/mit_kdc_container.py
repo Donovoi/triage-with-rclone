@@ -23,7 +23,7 @@ import uuid
 
 HERE=Path(__file__).resolve().parent
 SUPPORT=HERE.parent/'hdfs-kerberos-policy-denial/policy_denial_container.py'
-SUPPORT_SHA='99304f8183f6068140e9e6f364bb96e1cc5c7c28408f1437b6a85b85fdfec2bd'
+SUPPORT_SHA='ae1d7ba7397eb4718d6dabef2fcf7667bfe48669d334560d36b700dd9dd0e3d5'
 BUNDLE_SHA='732376a8580b5f7da8605714026ef57358bd5233e4621cc112aa50dd8db867d7'
 PROFILE='kerberos-remediation'
 LABEL='org.openai.triage.mit-kdc-renewal'

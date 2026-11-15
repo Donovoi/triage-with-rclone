@@ -2,7 +2,7 @@
 
 This separate experiment tests a genuinely issued, nonrenewable reader TGT through expiry and an explicit synthetic cache replacement. It is preparation until its exact source revision passes the hosted native run. It does not establish successful ticket renewal, same-client reconnect, cancellation, application integration, vendor behavior, or provider acceptance.
 
-The fixture derives from the contained RPC probe and retains its pinned JDK, 142-JAR runtime, rclone 1.75.2, network-none container, 60-second control window, memory/CPU/PID limits, and owned cleanup checks. The new workflow explicitly selects the remediation dependency profile. No runtime pin changes, host credentials, external KDC, DataNode, payload download, or private cloud account are involved.
+The fixture derives from the contained RPC probe and retains its pinned JDK, 142-JAR runtime, rclone 1.76.0, network-none container, 60-second control window, memory/CPU/PID limits, and owned cleanup checks. The new workflow explicitly selects the remediation dependency profile. No host credentials, external KDC, DataNode, payload download, or private cloud account are involved.
 
 The owned KDC issues a ten-second FILEv3 TGT. An independent cache parser checks its principal, encryption type, flags, times and shape, then compares the stored ticket bytes and expiry with the actual KDC-issued ticket object. The fixture does not edit cache timestamps to simulate expiry.
 
@@ -17,7 +17,7 @@ The version check plus these operations permits at most five owned child process
 
 The expiry diagnostic is combined with actual issued-ticket binding, elapsed expiry, unchanged endpoint/source configuration, Kerberos-only phase attribution, and successful controls before and after. It is a client cache-expiry result, not proof of a KDC rejection. Raw stderr, cache bytes, principals, keys and ticket bytes are never publishable. Only closed categories, counts, booleans and bounded relative times enter the receipt.
 
-The distinction follows the pinned [rclone HDFS constructor](https://github.com/rclone/rclone/blob/v1.75.2/backend/hdfs/fs.go), [gokrb5 CCache client](https://github.com/jcmturner/gokrb5/blob/v8.4.4/v8/client/client.go), and [session refresh path](https://github.com/jcmturner/gokrb5/blob/v8.4.4/v8/client/session.go). External cache replacement with a new client must not be reported as automatic TGT renewal. The independent service-ticket renewal/fallback and retained-client reconnect cases remain outstanding.
+The distinction follows the pinned [rclone HDFS constructor](https://github.com/rclone/rclone/blob/v1.76.0/backend/hdfs/fs.go), [gokrb5 CCache client](https://github.com/jcmturner/gokrb5/blob/v8.4.4/v8/client/client.go), and [session refresh path](https://github.com/jcmturner/gokrb5/blob/v8.4.4/v8/client/session.go). External cache replacement with a new client must not be reported as automatic TGT renewal. The independent service-ticket renewal/fallback and retained-client reconnect cases remain outstanding.
 
 Only pure guarded checks may run locally:
 

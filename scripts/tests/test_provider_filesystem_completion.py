@@ -39,9 +39,10 @@ class FilesystemCompletionTests(unittest.TestCase):
             self.addCleanup(guard.stop)
         self.catalog = C.catalog_from_schemas([schema(key[0]) for key in FILESYSTEM])
         # Exercise the actual policy profiles/applicability for this pure
-        # two-backend catalog; substitute only its synthetic schema identities.
+        # two-backend catalog; substitute synthetic schema/runtime identities.
         path = Path(__file__).resolve().parents[2] / "provider-coverage-policy.json"
         self.policy = json.loads(path.read_text(encoding="utf-8"))
+        self.policy["reviewed_runtime_version"] = RUNTIME["version"]
         self.policy["providers"] = {key[0]: self.policy["providers"][key[0]] for key in FILESYSTEM}
         for row in self.catalog:
             plan = self.policy["providers"][row["backend"]]
