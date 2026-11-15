@@ -29,13 +29,13 @@ expired bodies fail closed.
 
 The supervisor enforces nonroot identity, read-only root, no capabilities or host
 mounts/ports, private namespaces, bounded resources and private noexec tmpfs.
-It binds the current 23-file source closure, pinned runtime/dependencies, exact
+It binds the current 24-file source closure, pinned runtime/dependencies, exact
 native output/timing, all nine capabilities and owned cleanup. Private keys,
 API credentials and issued links remain ephemeral. Shared build cache and the
 pinned public base image remain; raw transcripts are never published.
 
 Schema-12 fichier_configured_key_read_v1 qualifies only the Linux local-protocol
-tier. Both combined Linux and provider-smoke gates require 33 reviewed profiles.
+tier. Both combined Linux and provider-smoke gates require 34 reviewed profiles.
 Without --protocol-evidence, raw feasibility receipts remain ledger-ineligible;
 historical feasibility and schema-1 rows cannot satisfy this profile. The 26
 portable experiments remain unchanged.
