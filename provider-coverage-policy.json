@@ -2029,6 +2029,48 @@
       "unresolved_applicability": [
         "reauthentication"
       ]
+    },
+    "protocol-jottacloud-saved-token-folder-read": {
+      "required": {
+        "application": [
+          "listing",
+          "download_hash",
+          "manifest_integrity",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation",
+          "refresh"
+        ],
+        "vendor": [
+          "listing",
+          "download_hash",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation",
+          "refresh"
+        ],
+        "local_protocol": [
+          "listing",
+          "download_hash",
+          "missing_object_rejection",
+          "authentication_rejection",
+          "read_denial",
+          "source_preservation",
+          "config_preservation",
+          "fixture_write_rejection",
+          "cleanup"
+        ]
+      },
+      "review_required": false,
+      "unresolved_applicability": [
+        "reauthentication"
+      ]
     }
   },
   "providers": {
@@ -3175,11 +3217,12 @@
     "jottacloud": {
       "canonical_name": "jottacloud",
       "schema_sha256": "bde03a6302cb03653897492aaf4fad9a49d7a077b8e6a5a8cc8935824c127d31",
-      "profile": "hosted-renewal-session-review",
+      "profile": "protocol-jottacloud-saved-token-folder-read",
       "notes": [
         "Jottacloud or supported white-label account and provider-specific login/token setup. Rotating refresh tokens and reuse detection require serialized, isolated tests.",
         "Free account/API eligibility: review_required",
-        "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension."
+        "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension.",
+        "Schema-25 jottacloud_saved_token_folder_read_v1 qualifies only source-current Linux container evidence for configVersion=1, an unexpired saved Bearer token, default Jotta/Archive and explicit synthetic-root/. All nine capabilities, separate api.jottacloud.com and jfs.jottacloud.com TLS/SNI/Host bindings, customer JSON username selection, exact scoped XML directory/object metadata, counted recursive liststream XML, observed-path bin downloads, SHA-256 checks, XML missing-object rejection, wrong-token rejection, HTTP403 with identical expected content bytes, source/config preservation and both-listener cleanup are required. The direct DELETE guard does not qualify native writes. Initial grant/refresh, legacy auth, brand/custom device/mountpoint discovery, trash, pagination/throttling, native writes and application/vendor acceptance remain unverified. Raw feasibility/schema-1 rows are ineligible; original renewal and session-review obligations remain."
       ],
       "source_links": [
         "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/jottacloud.md"
