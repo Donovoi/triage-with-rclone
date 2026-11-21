@@ -1,0 +1,56 @@
+name: Isolated secure HDFS experiment
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/hdfs-kerberos-fixture.yml
+      - scripts/provider-lab/hdfs-kerberos-fixture/**
+      - scripts/provider-lab/hdfs-kerberos-ticket/**
+      - scripts/provider-lab/hdfs-discovery/**
+      - scripts/provider-lab/hdfs-bootstrap/**
+      - scripts/tests/test_hdfs_kerberos_fixture.py
+      - rclone-version.env
+      - scripts/download-rclone.sh
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hdfs-kerberos-fixture-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fixture:
+    name: Check secure HDFS transfers in a network-none container
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - name: Test contracts without native tools
+        run: python -B -m unittest discover -s scripts/provider-lab/hdfs-kerberos-fixture -p 'test_*.py'
+      - name: Prepare the verified rclone binary
+        run: bash scripts/download-rclone.sh --linux "$RUNNER_TEMP/rclone-secure-hdfs"
+      # Only preparation has network access, for fixed public inputs.
+      # Separate KDC, NameNode and DataNode processes use fresh test credentials.
+      # Java compilation and all clients run inside the network-none container.
+      # A successful experiment alone gives no application or vendor acceptance.
+      - name: Check login, listing, sample hashes, failures and cleanup
+        run: >-
+          python -B scripts/provider-lab/hdfs-kerberos-fixture/container_fixture.py
+          --rclone "${{ runner.temp }}/rclone-secure-hdfs"
+          --report "${{ runner.temp }}/hdfs-kerberos-fixture.json"
+      - name: Retain only the sanitized result
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: hdfs-kerberos-fixture
+          path: ${{ runner.temp }}/hdfs-kerberos-fixture.json
+          if-no-files-found: warn
+          retention-days: 14
