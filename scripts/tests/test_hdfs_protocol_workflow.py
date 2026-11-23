@@ -51,7 +51,7 @@ def validate(ci, smoke, transfer):
                 "raw_feasibility_refused")
         require(args.count("--require-fixtures") == 1, "one_fixture_gate")
         names = args[args.index("--require-fixtures") + 1].split(",")
-        require(len(names) == len(set(names)) == 56 and "hdfs" in names, "hdfs_gate_required")
+        require(len(names) == len(set(names)) == 58 and "hdfs" in names, "hdfs_gate_required")
         require(parts.index(download) < parts.index(gates[0]), "download_before_import")
     require(re.search(r"^  workflow_call:\n", transfer, re.MULTILINE), "reusable_trigger_required")
     require("${{ github.event.pull_request.head.sha || github.sha }}" in transfer,
@@ -89,7 +89,7 @@ class HdfsProtocolWorkflowTests(unittest.TestCase):
 
     def test_caller_dependency_permissions_and_foreign_artifacts_are_closed(self):
         for before, after in (
-                ("    needs: [python-audit, hdfs-protocol]", "    needs: python-audit"),
+                ("    needs: [python-audit, hdfs-protocol, storj-protocol]", "    needs: [python-audit, storj-protocol]"),
                 ("    needs: python-audit\n    uses: ./.github/workflows/hdfs-kerberos-transfer.yml",
                  "    needs: python-audit\n    if: false\n    uses: ./.github/workflows/hdfs-kerberos-transfer.yml"),
                 ("      contents: read", "      contents: write"),

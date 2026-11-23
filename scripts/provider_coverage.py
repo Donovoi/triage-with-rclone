@@ -151,6 +151,10 @@ MEMORY_REQUIRED_CAPABILITIES = frozenset({
     "source_preservation", "config_preservation", "cleanup",
 })
 SMB_MODE = "smb_samba_ntlm_read_v1"
+STORJ_MODE = "storj_saved_access_grant_native_read_v1"
+STORJ_REQUIRED_CAPABILITIES = frozenset({"listing", "download_hash", "missing_object_rejection",
+    "authentication_rejection", "read_denial", "source_preservation", "config_preservation",
+    "fixture_write_rejection", "cleanup"})
 HDFS_MODE = "hdfs_kerberos_transfer_read_v1"
 CLOUDINARY_MODE = "cloudinary_static_credentials_raw_read_v1"
 CLOUDINARY_REQUIRED_CAPABILITIES = frozenset({"listing", "download_hash", "missing_object_rejection",
@@ -1974,6 +1978,40 @@ def validate_gcs_receipt(receipt, runtime, bindings, now, max_age_hours, fixture
     return receipt
 
 
+def storj_evidence_module():
+    path = plain_path(ROOT / "scripts" / "provider-lab" / "storj-native" / "protocol_evidence.py")
+    try:
+        source = path.read_bytes()
+        if len(source) > 128 * 1024:
+            fail("storj_evidence_helper_size_limit")
+        spec = importlib.util.spec_from_file_location("coverage_storj_evidence", path)
+        module = importlib.util.module_from_spec(spec)
+        exec(compile(source, str(path), "exec"), module.__dict__)
+        return module
+    except (OSError, ValueError, TypeError, AttributeError):
+        fail("storj_evidence_helper_unavailable")
+
+def compute_storj_bindings(root):
+    try:
+        return storj_evidence_module().compute_bindings(plain_path(Path(root).absolute()))
+    except (OSError, ValueError, RuntimeError, TypeError, KeyError, AttributeError, OverflowError):
+        fail("storj_evidence_bindings_invalid")
+
+def validate_storj_receipt(receipt, runtime, bindings, now, max_age_hours):
+    if bindings is None:
+        fail("unknown_receipt_schema")
+    if runtime.get("platform") != "linux":
+        fail("receipt_runtime_mismatch")
+    try:
+        storj_evidence_module().validate_evidence(receipt, runtime, bindings, now, max_age_hours)
+    except ValueError as error:
+        code = str(error)
+        fail(code if re.fullmatch(r"[a-z][a-z0-9_]{0,80}", code) else "invalid_storj_evidence")
+    except (OSError, TypeError, KeyError, AttributeError, OverflowError):
+        fail("invalid_storj_evidence")
+    return receipt
+
+
 def hdfs_evidence_module():
     path = plain_path(ROOT / "scripts" / "provider-lab" / "hdfs-kerberos-transfer" / "protocol_evidence.py")
     try:
@@ -2204,7 +2242,9 @@ def parse_utc(value):
 
 
 def validate_receipt(receipt, runtime, harness_sha256, now, max_age_hours=MAX_AGE_HOURS,
-                     fixture_manifest_sha256=None, smb_bindings=None, pcloud_bindings=None, gcs_bindings=None, hdfs_bindings=None, cloudinary_bindings=None, opendrive_bindings=None, gofile_bindings=None, drime_bindings=None, fichier_bindings=None, premiumizeme_bindings=None, putio_bindings=None, linkbox_bindings=None, yandex_bindings=None, box_bindings=None, onedrive_bindings=None, filelu_bindings=None, qingstor_bindings=None, drive_bindings=None, dropbox_bindings=None, oos_bindings=None, zoho_bindings=None, jottacloud_bindings=None, sugarsync_bindings=None, pikpak_bindings=None, dosya_bindings=None, kdrive_bindings=None, gphotos_bindings=None, huaweidrive_bindings=None, mailru_bindings=None, ulozto_bindings=None, iclouddrive_bindings=None, internxt_bindings=None):
+                     fixture_manifest_sha256=None, smb_bindings=None, pcloud_bindings=None, gcs_bindings=None, hdfs_bindings=None, cloudinary_bindings=None, opendrive_bindings=None, gofile_bindings=None, drime_bindings=None, fichier_bindings=None, premiumizeme_bindings=None, putio_bindings=None, linkbox_bindings=None, yandex_bindings=None, box_bindings=None, onedrive_bindings=None, filelu_bindings=None, qingstor_bindings=None, drive_bindings=None, dropbox_bindings=None, oos_bindings=None, zoho_bindings=None, jottacloud_bindings=None, sugarsync_bindings=None, pikpak_bindings=None, dosya_bindings=None, kdrive_bindings=None, gphotos_bindings=None, huaweidrive_bindings=None, mailru_bindings=None, ulozto_bindings=None, iclouddrive_bindings=None, internxt_bindings=None, storj_bindings=None):
+    if isinstance(receipt, dict) and type(receipt.get("schema_version")) is int and receipt["schema_version"] == 36:
+        return validate_storj_receipt(receipt, runtime, storj_bindings, now, max_age_hours)
     if isinstance(receipt, dict) and type(receipt.get("schema_version")) is int and receipt["schema_version"] == 17:
         return validate_box_receipt(receipt, runtime, box_bindings, now, max_age_hours, fixture_manifest_sha256)
     if isinstance(receipt, dict) and type(receipt.get("schema_version")) is int and receipt["schema_version"] == 18:
@@ -2416,7 +2456,7 @@ def merge_fixture_observation(observed, capabilities, failed, run):
 
 def evaluate(catalog, policy, runtime, receipts, harness_sha256, now=None, max_age_hours=MAX_AGE_HOURS,
              fixture_manifest_sha256=None, smb_bindings=None, pcloud_bindings=None, gcs_bindings=None, hdfs_bindings=None,
-             application_receipts=(), application_bindings=None, cloudinary_bindings=None, opendrive_bindings=None, gofile_bindings=None, drime_bindings=None, fichier_bindings=None, premiumizeme_bindings=None, putio_bindings=None, linkbox_bindings=None, yandex_bindings=None, box_bindings=None, onedrive_bindings=None, filelu_bindings=None, qingstor_bindings=None, drive_bindings=None, dropbox_bindings=None, oos_bindings=None, zoho_bindings=None, jottacloud_bindings=None, sugarsync_bindings=None, pikpak_bindings=None, dosya_bindings=None, kdrive_bindings=None, gphotos_bindings=None, huaweidrive_bindings=None, mailru_bindings=None, ulozto_bindings=None, iclouddrive_bindings=None, internxt_bindings=None):
+             application_receipts=(), application_bindings=None, cloudinary_bindings=None, opendrive_bindings=None, gofile_bindings=None, drime_bindings=None, fichier_bindings=None, premiumizeme_bindings=None, putio_bindings=None, linkbox_bindings=None, yandex_bindings=None, box_bindings=None, onedrive_bindings=None, filelu_bindings=None, qingstor_bindings=None, drive_bindings=None, dropbox_bindings=None, oos_bindings=None, zoho_bindings=None, jottacloud_bindings=None, sugarsync_bindings=None, pikpak_bindings=None, dosya_bindings=None, kdrive_bindings=None, gphotos_bindings=None, huaweidrive_bindings=None, mailru_bindings=None, ulozto_bindings=None, iclouddrive_bindings=None, internxt_bindings=None, storj_bindings=None):
     """Receipts are explicit batch inputs. Failed current evidence stays failed."""
     now = now or datetime.now(timezone.utc)
     validate_policy(policy)
@@ -2442,7 +2482,7 @@ def evaluate(catalog, policy, runtime, receipts, harness_sha256, now=None, max_a
     for receipt in receipts:
         try:
             validate_receipt(receipt, runtime, harness_sha256, now, max_age_hours, fixture_manifest_sha256,
-                             smb_bindings=smb_bindings, pcloud_bindings=pcloud_bindings, gcs_bindings=gcs_bindings, hdfs_bindings=hdfs_bindings, cloudinary_bindings=cloudinary_bindings, opendrive_bindings=opendrive_bindings, gofile_bindings=gofile_bindings, drime_bindings=drime_bindings, fichier_bindings=fichier_bindings, premiumizeme_bindings=premiumizeme_bindings, putio_bindings=putio_bindings, linkbox_bindings=linkbox_bindings, yandex_bindings=yandex_bindings, box_bindings=box_bindings, onedrive_bindings=onedrive_bindings, filelu_bindings=filelu_bindings, qingstor_bindings=qingstor_bindings, drive_bindings=drive_bindings, dropbox_bindings=dropbox_bindings, oos_bindings=oos_bindings, zoho_bindings=zoho_bindings, jottacloud_bindings=jottacloud_bindings, sugarsync_bindings=sugarsync_bindings, pikpak_bindings=pikpak_bindings, dosya_bindings=dosya_bindings, kdrive_bindings=kdrive_bindings, gphotos_bindings=gphotos_bindings, huaweidrive_bindings=huaweidrive_bindings, mailru_bindings=mailru_bindings, ulozto_bindings=ulozto_bindings, iclouddrive_bindings=iclouddrive_bindings, internxt_bindings=internxt_bindings)
+                             smb_bindings=smb_bindings, pcloud_bindings=pcloud_bindings, gcs_bindings=gcs_bindings, hdfs_bindings=hdfs_bindings, cloudinary_bindings=cloudinary_bindings, opendrive_bindings=opendrive_bindings, gofile_bindings=gofile_bindings, drime_bindings=drime_bindings, fichier_bindings=fichier_bindings, premiumizeme_bindings=premiumizeme_bindings, putio_bindings=putio_bindings, linkbox_bindings=linkbox_bindings, yandex_bindings=yandex_bindings, box_bindings=box_bindings, onedrive_bindings=onedrive_bindings, filelu_bindings=filelu_bindings, qingstor_bindings=qingstor_bindings, drive_bindings=drive_bindings, dropbox_bindings=dropbox_bindings, oos_bindings=oos_bindings, zoho_bindings=zoho_bindings, jottacloud_bindings=jottacloud_bindings, sugarsync_bindings=sugarsync_bindings, pikpak_bindings=pikpak_bindings, dosya_bindings=dosya_bindings, kdrive_bindings=kdrive_bindings, gphotos_bindings=gphotos_bindings, huaweidrive_bindings=huaweidrive_bindings, mailru_bindings=mailru_bindings, ulozto_bindings=ulozto_bindings, iclouddrive_bindings=iclouddrive_bindings, internxt_bindings=internxt_bindings, storj_bindings=storj_bindings)
             for row in receipt["backends"]:
                 if row["backend"] not in {entry["backend"] for entry in catalog}:
                     fail("fixture_backend_absent_from_catalog")
@@ -2760,6 +2800,18 @@ def evaluate(catalog, policy, runtime, receipts, harness_sha256, now=None, max_a
                     mode_observed = observed.setdefault("modes", {}).setdefault(
                         SMB_MODE, {"capabilities": {}, "failed": False, "runs": []})
                     merge_fixture_observation(mode_observed, contributed, failed, run)
+                if row["backend"] in ("storj", "tardigrade"):
+                    native = receipt["native_evidence"]
+                    run.update(fixture_mode=STORJ_MODE, platform="linux", architecture="amd64",
+                               base_image=native["base_image"], image_id=native["image_id"],
+                               storj_commit=native["build"]["source_commit"],
+                               compiler_image=native["build"]["compiler_image"],
+                               helper_binary_sha256=native["build"]["binary_sha256"],
+                               source_sha256=dict(native["source_sha256"]),
+                               harness_sha256=receipt["harness_sha256"])
+                    mode_observed = observed.setdefault("modes", {}).setdefault(
+                        STORJ_MODE, {"capabilities": {}, "failed": False, "runs": []})
+                    merge_fixture_observation(mode_observed, contributed, failed, run)
                 if row["backend"] == "hdfs":
                     inputs = receipt["native_evidence"]["inputs"]
                     run.update(fixture_mode=HDFS_MODE, platform="linux", architecture="amd64",
@@ -2894,9 +2946,10 @@ def evaluate(catalog, policy, runtime, receipts, harness_sha256, now=None, max_a
                     if value in ("passed", "failed"):
                         capabilities[capability] = value
                 evidence["runs"] = observed["runs"]
-                if backend in ("filefabric", "smb", "hdfs", "internetarchive", "pcloud", "gcs", "cloudinary", "opendrive", "gofile", "drime", "fichier", "premiumizeme", "putio", "linkbox", "yandex", "box", "onedrive", "filelu", "qingstor", "drive", "dropbox", "oos", "zoho", "jottacloud", "sugarsync", "pikpak", "dosya", "kdrive", "gphotos", "huaweidrive", "mailru", "ulozto", "iclouddrive", "internxt"):
+                if backend in ("filefabric", "smb", "hdfs", "internetarchive", "pcloud", "gcs", "cloudinary", "opendrive", "gofile", "drime", "fichier", "premiumizeme", "putio", "linkbox", "yandex", "box", "onedrive", "filelu", "qingstor", "drive", "dropbox", "oos", "zoho", "jottacloud", "sugarsync", "pikpak", "dosya", "kdrive", "gphotos", "huaweidrive", "mailru", "ulozto", "iclouddrive", "internxt", "storj", "tardigrade"):
                     evidence["modes"] = {}
-                    contracts = ({SMB_MODE: SMB_REQUIRED_CAPABILITIES} if backend == "smb"
+                    contracts = ({STORJ_MODE: STORJ_REQUIRED_CAPABILITIES} if backend in ("storj", "tardigrade")
+                                 else {SMB_MODE: SMB_REQUIRED_CAPABILITIES} if backend == "smb"
                                  else {HDFS_MODE: HDFS_REQUIRED_CAPABILITIES} if backend == "hdfs"
                                  else {CLOUDINARY_MODE: CLOUDINARY_REQUIRED_CAPABILITIES} if backend == "cloudinary"
                                  else {OPENDRIVE_MODE: OPENDRIVE_REQUIRED_CAPABILITIES} if backend == "opendrive"
@@ -3470,9 +3523,12 @@ def main(argv=None):
         internxt_bindings = (compute_internxt_bindings(ROOT / "scripts" / "provider-lab" / "internxt-fixed-api")
                                if any(isinstance(receipt, dict) and type(receipt.get("schema_version")) is int
                                       and receipt["schema_version"] == 35 for receipt in receipts) else None)
+        storj_bindings = (compute_storj_bindings(ROOT / "scripts" / "provider-lab" / "storj-native")
+                          if any(isinstance(receipt, dict) and type(receipt.get("schema_version")) is int
+                                 and receipt["schema_version"] == 36 for receipt in receipts) else None)
         report = evaluate(catalog, policy, runtime, receipts, harness_sha, max_age_hours=args.max_age_hours,
                           fixture_manifest_sha256=fixture_sha, smb_bindings=smb_bindings, pcloud_bindings=pcloud_bindings, gcs_bindings=gcs_bindings, hdfs_bindings=hdfs_bindings,
-                          application_receipts=application_receipts, application_bindings=application_bindings, cloudinary_bindings=cloudinary_bindings, opendrive_bindings=opendrive_bindings, gofile_bindings=gofile_bindings, drime_bindings=drime_bindings, fichier_bindings=fichier_bindings, premiumizeme_bindings=premiumizeme_bindings, putio_bindings=putio_bindings, linkbox_bindings=linkbox_bindings, yandex_bindings=yandex_bindings, box_bindings=box_bindings, onedrive_bindings=onedrive_bindings, filelu_bindings=filelu_bindings, qingstor_bindings=qingstor_bindings, drive_bindings=drive_bindings, dropbox_bindings=dropbox_bindings, oos_bindings=oos_bindings, zoho_bindings=zoho_bindings, jottacloud_bindings=jottacloud_bindings, sugarsync_bindings=sugarsync_bindings, pikpak_bindings=pikpak_bindings, dosya_bindings=dosya_bindings, kdrive_bindings=kdrive_bindings, gphotos_bindings=gphotos_bindings, huaweidrive_bindings=huaweidrive_bindings, mailru_bindings=mailru_bindings, ulozto_bindings=ulozto_bindings, iclouddrive_bindings=iclouddrive_bindings, internxt_bindings=internxt_bindings)
+                          application_receipts=application_receipts, application_bindings=application_bindings, cloudinary_bindings=cloudinary_bindings, opendrive_bindings=opendrive_bindings, gofile_bindings=gofile_bindings, drime_bindings=drime_bindings, fichier_bindings=fichier_bindings, premiumizeme_bindings=premiumizeme_bindings, putio_bindings=putio_bindings, linkbox_bindings=linkbox_bindings, yandex_bindings=yandex_bindings, box_bindings=box_bindings, onedrive_bindings=onedrive_bindings, filelu_bindings=filelu_bindings, qingstor_bindings=qingstor_bindings, drive_bindings=drive_bindings, dropbox_bindings=dropbox_bindings, oos_bindings=oos_bindings, zoho_bindings=zoho_bindings, jottacloud_bindings=jottacloud_bindings, sugarsync_bindings=sugarsync_bindings, pikpak_bindings=pikpak_bindings, dosya_bindings=dosya_bindings, kdrive_bindings=kdrive_bindings, gphotos_bindings=gphotos_bindings, huaweidrive_bindings=huaweidrive_bindings, mailru_bindings=mailru_bindings, ulozto_bindings=ulozto_bindings, iclouddrive_bindings=iclouddrive_bindings, internxt_bindings=internxt_bindings, storj_bindings=storj_bindings)
         report["errors"] = sorted(set(report["errors"] + receipt_errors))
         report["all_complete"] = report["all_complete"] and not report["errors"]
         report["gate_errors"] = gate_errors(report, args.require_plans, required, args.require_complete,

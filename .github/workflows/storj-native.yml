@@ -1,0 +1,49 @@
+name: Isolated native Storj reads
+on:
+  workflow_call:
+permissions:
+  contents: read
+jobs:
+  native-read:
+    name: Verify Storj and Tardigrade native reads
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: storj/storj
+          ref: b2fe6e00c07c42711217c1c60c283d5e000b18ba # v1.166.4
+          path: .storj-source
+          persist-credentials: false
+          fetch-depth: 1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - name: Prepare verified Linux runtime
+        shell: bash
+        run: bash scripts/download-rclone.sh --linux "$RUNNER_TEMP/rclone-storj"
+      - name: Build the pinned test network in an owned compiler container
+        shell: bash
+        run: |
+          python -B scripts/provider-lab/storj-native/build_fixture.py \
+            --source "$GITHUB_WORKSPACE/.storj-source" \
+            --output "$RUNNER_TEMP/storj-native-build"
+      - name: Verify both native backend names with external networking disabled
+        shell: bash
+        run: |
+          python -B scripts/provider-lab/storj-native/run_container.py \
+            --build "$RUNNER_TEMP/storj-native-build" \
+            --rclone "$RUNNER_TEMP/rclone-storj" \
+            --report "$RUNNER_TEMP/storj-native-protocol.json"
+      # Never upload keys, databases, raw logs, the build directory or Docker cache.
+      - name: Retain sanitized native protocol evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: storj-native-protocol
+          path: ${{ runner.temp }}/storj-native-protocol.json
+          if-no-files-found: warn
+          retention-days: 14

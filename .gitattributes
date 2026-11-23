@@ -18,3 +18,6 @@ Dockerfile text eol=lf
 
 # HDFS native experiments hash committed source bytes, including CRLF vectors.
 /scripts/provider-lab/hdfs*/** -text
+
+# Keep the native Storj helper hash identical on Windows and Linux.
+/scripts/provider-lab/storj-native/planet_test.go text eol=lf
