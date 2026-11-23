@@ -180,7 +180,7 @@ pub fn write_acquisition_manifest(
     #[derive(Serialize)]
     struct Manifest<'a> {
         schema_version: u32,
-        written_at: chrono::DateTime<chrono::Utc>,
+        written_at: jiff::Timestamp,
         rclone_version: &'static str,
         config_path: &'a Path,
         plan: &'a AcquisitionPlan,
@@ -197,7 +197,7 @@ pub fn write_acquisition_manifest(
         &mut temp,
         &Manifest {
             schema_version: 1,
-            written_at: chrono::Utc::now(),
+            written_at: jiff::Timestamp::now(),
             rclone_version: crate::embedded::RCLONE_VERSION,
             config_path,
             plan,

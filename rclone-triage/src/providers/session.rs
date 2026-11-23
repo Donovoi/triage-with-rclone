@@ -58,7 +58,7 @@ impl Cookie {
         if self.expires == 0 {
             return false; // Session cookie
         }
-        let now = chrono::Utc::now().timestamp();
+        let now = jiff::Timestamp::now().as_second();
         self.expires < now
     }
 }

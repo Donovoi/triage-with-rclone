@@ -1,5 +1,6 @@
 //! Utility helpers (networking, path sanitization, Windows helpers).
 
+pub mod datetime;
 pub mod network;
 pub mod path;
 pub mod private_fs;
