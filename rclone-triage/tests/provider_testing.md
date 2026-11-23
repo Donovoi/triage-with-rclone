@@ -623,3 +623,13 @@ Complete inventories preserve root/nested scope, exact IDs, split names/extensio
 Schema-34 iclouddrive_saved_cookie_folder_read_v1 binds the current 45-file source closure, pinned runtime/dependencies, nine capabilities, containment and cleanup. Fifty-one provider regressions cover wire, four separate authorities, containment and evidence substitution. Both combined Linux and provider-smoke gates require 55 reviewed profiles and the same-run receipt; raw feasibility evidence cannot qualify this mode.
 
 SRP/password login, real account eligibility, 2FA, ADP/PCS, expired sessions/trust, 401/421/423 reauthentication, pagination, uploads, native writes and application/live-provider acceptance remain unverified. Independent credential-renewal/session-review obligations remain. See [the isolated fixture](../../scripts/provider-lab/iclouddrive-fixed-api/README.md).
+
+### Internxt saved-JWT rotation and encrypted folder reads
+
+The isolated Linux profile uses a synthetic saved JWT and a public test mnemonic. Every native startup rotates through the normal gateway.internxt.com refresh route and must save exactly the issued token, its Bearer type and bound expiry. All non-token configuration fields and the wrong-token configuration stay unchanged. This precise token update is required; byte-exact preservation of the token file is not claimed.
+
+Two distinct private TLS/SNI/Host/address bindings separate the gateway and issued content authority. The SDK refresh transport receives a private child-only SSL_CERT_FILE trust bundle. Complete root/nested inventories and existence checks preserve exact names, IDs, sizes and timestamps. Independent BIP39/PBKDF2-SHA512, SHA512 and AES-256-CTR produce valid encrypted shards. Native copy and cat verify all three plaintext hashes, and an unaligned range returns exact bytes. Native cat/copy must reject HTTP403 with otherwise valid ciphertext. Issued URLs remain file-bound and content requests carry no provider credentials.
+
+Schema-35 internxt_saved_jwt_rotation_folder_read_v1 binds the current 46-file source closure, nine capabilities, containment and cleanup. Fifty-one provider regressions cover the wire, authority boundaries and evidence substitution. Both combined Linux and provider-smoke gates require 56 profiles and the same-run receipt.
+
+Initial login, 2FA, account eligibility, expired-token refresh/relogin, pagination, multishard files, uploads, native writes and application/live-provider acceptance remain unverified. Independent credential/session obligations remain. See [the isolated fixture](../../scripts/provider-lab/internxt-fixed-api/README.md).

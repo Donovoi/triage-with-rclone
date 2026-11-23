@@ -2447,6 +2447,48 @@
       "unresolved_applicability": [
         "reauthentication"
       ]
+    },
+    "protocol-internxt-saved-jwt-rotation-folder-read": {
+      "required": {
+        "application": [
+          "listing",
+          "download_hash",
+          "manifest_integrity",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation",
+          "refresh"
+        ],
+        "vendor": [
+          "listing",
+          "download_hash",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation",
+          "refresh"
+        ],
+        "local_protocol": [
+          "listing",
+          "download_hash",
+          "missing_object_rejection",
+          "authentication_rejection",
+          "read_denial",
+          "source_preservation",
+          "config_preservation",
+          "fixture_write_rejection",
+          "cleanup"
+        ]
+      },
+      "review_required": false,
+      "unresolved_applicability": [
+        "reauthentication"
+      ]
     }
   },
   "providers": {
@@ -3569,17 +3611,21 @@
     "internxt": {
       "canonical_name": "internxt",
       "schema_sha256": "3d2e23e5013354519fee1751f4ed55d4f06ec0e2cf187aff8ae994f746495a96",
-      "profile": "hosted-renewal-session-review",
+      "profile": "protocol-internxt-saved-jwt-rotation-folder-read",
       "notes": [
         "Internxt account credentials; rclone warns compatibility depends on subscription/account type. Current eligible plan and session lifecycle unresolved.",
         "Free account/API eligibility: review_required",
         "Changed token from ordinary user-info rotation does not by itself prove the particular expired-token renewal path was exercised.",
-        "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension."
+        "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension.",
+        "Schema-35 internxt_saved_jwt_rotation_folder_read_v1 qualifies source-current Linux container evidence for a saved synthetic JWT and mnemonic. Each native startup must rotate through GET /drive/users/cli/refresh, persist exactly the issued token with its bound future expiry, and retain every non-token configuration field; this profile does not claim byte-exact unchanged token configuration. The normal gateway.internxt.com and issued synthetic-content.internxt.invalid use separate private TLS/SNI/Host/address bindings. The SDK default refresh client uses a private child-only SSL_CERT_FILE trust bundle alongside rclone CA arguments. Complete root/nested inventories and existence checks retain exact names/extensions, IDs, sizes and timestamps. Issued single-shard downloads require an observed file, file-bound nonce and credential-free content request; ciphertext is generated independently using BIP39/PBKDF2-SHA512, SHA512 bucket/file keys and AES-256-CTR. Three downloads and native cat receive independent plaintext SHA256 checks; a native unaligned range must return exact plaintext, and HTTP403 with otherwise valid ciphertext must be rejected by cat/copy. Wrong-token/missing-file rejection, plaintext source preservation, precise token-rotation/config invariants and cleanup are mandatory. The direct DELETE guard does not qualify native writes. Initial password login, 2FA, real account eligibility, expired-token refresh/relogin, pagination, multishard files, uploads, native writes and application/live-provider acceptance remain unverified. Raw feasibility/schema-1 evidence is ineligible; independent credential/session obligations remain."
       ],
       "source_links": [
         "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/internxt.md",
         "https://github.com/rclone/rclone/blob/v1.75.2/backend/internxt/internxt.go",
-        "https://github.com/rclone/rclone/blob/v1.75.2/backend/internxt/internxt.go"
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/internxt/internxt.go",
+        "https://github.com/rclone/rclone/blob/v1.76.0/backend/internxt/auth.go",
+        "https://github.com/internxt/rclone-adapter/blob/v0.1.0/buckets/download.go",
+        "https://github.com/internxt/rclone-adapter/blob/v0.1.0/auth/access.go"
       ],
       "renewal_modes": [
         {
