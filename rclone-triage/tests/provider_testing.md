@@ -613,3 +613,13 @@ Complete folder and file inventories retain root/nested scope, numeric sizes and
 Schema-33 ulozto_password_session_folder_read_v1 binds the current 44-file source closure, pinned runtime/dependencies, nine capabilities, containment and cleanup. Fifty-one provider regressions cover wire, two separate authorities, containment and evidence substitution. Both combined Linux and provider-smoke gates require 54 reviewed profiles and the same-run receipt; raw feasibility evidence cannot qualify this mode.
 
 Real account login, expired-session reauthentication, root discovery, pagination, duplicate names, custom-description hashes, uploads, native writes and application/live-provider acceptance remain unverified. Independent credential-renewal/session-review obligations remain. See [the isolated fixture](../../scripts/provider-lab/ulozto-fixed-api/README.md).
+
+### iCloud Drive saved-cookie folder read protocol
+
+The isolated Linux iCloud Drive profile uses a saved synthetic cookie plus trust token in non-ADP mode. Its first native listing discovers service endpoints through the normal setup.icloud.com authority; later commands reuse the native service cache. Setup, issued drive/document services, and issued content URLs retain four distinct private TLS/SNI/Host/address bindings.
+
+Complete inventories preserve root/nested scope, exact IDs, split names/extensions, numeric sizes and timestamps. Download links require an observed file and fresh nonce. The native content request deliberately carries the exact saved cookie. Three native downloads receive independent SHA-256 checks; native cat and copy reject HTTP403 with identical expected bytes. Wrong-cookie rejection after service discovery, missing-name rejection, byte-exact config/source preservation, and cleanup of the temporary service cache are mandatory.
+
+Schema-34 iclouddrive_saved_cookie_folder_read_v1 binds the current 45-file source closure, pinned runtime/dependencies, nine capabilities, containment and cleanup. Fifty-one provider regressions cover wire, four separate authorities, containment and evidence substitution. Both combined Linux and provider-smoke gates require 55 reviewed profiles and the same-run receipt; raw feasibility evidence cannot qualify this mode.
+
+SRP/password login, real account eligibility, 2FA, ADP/PCS, expired sessions/trust, 401/421/423 reauthentication, pagination, uploads, native writes and application/live-provider acceptance remain unverified. Independent credential-renewal/session-review obligations remain. See [the isolated fixture](../../scripts/provider-lab/iclouddrive-fixed-api/README.md).

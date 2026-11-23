@@ -40,7 +40,7 @@ from email.utils import format_datetime
 
 
 BACKENDS = ("local", "http", "webdav", "ftp", "sftp", "s3", "archive", "swift", "b2", "azureblob", "azurefiles", "seafile", "memory", "koofr", "pixeldrain", "filefabric", "internetarchive", "netstorage", "pcloud", "gcs", "sia", "hidrive", "doi", "quatrix", "shade", "sharefile")
-HARNESS_FILES = ("fixture_servers.py", "run_lab.py", "fixture_tls.py", "fixture_pcloud.py", "fixture_gcs.py", "fixture_sia.py", "fixture_read_api.py", "fixture_hidrive.py", "fixture_doi.py", "fixture_quatrix.py", "fixture_shade.py", "fixture_sharefile.py", "fixture_cloudinary.py", "fixture_opendrive.py", "fixture_gofile.py", "fixture_drime.py", "fixture_fichier.py", "fixture_premiumizeme.py", "fixture_putio.py", "fixture_linkbox.py", "fixture_yandex.py", "fixture_box.py", "fixture_onedrive.py", "fixture_filelu.py", "fixture_qingstor.py", "fixture_drive.py", "fixture_dropbox.py", "fixture_oos.py", "fixture_zoho.py", "fixture_jottacloud.py", "fixture_sugarsync.py", "fixture_pikpak.py", "fixture_dosya.py", "fixture_kdrive.py", "fixture_gphotos.py", "fixture_huaweidrive.py", "fixture_mailru.py", "fixture_ulozto.py", "requirements-fixture.txt")
+HARNESS_FILES = ("fixture_servers.py", "run_lab.py", "fixture_tls.py", "fixture_pcloud.py", "fixture_gcs.py", "fixture_sia.py", "fixture_read_api.py", "fixture_hidrive.py", "fixture_doi.py", "fixture_quatrix.py", "fixture_shade.py", "fixture_sharefile.py", "fixture_cloudinary.py", "fixture_opendrive.py", "fixture_gofile.py", "fixture_drime.py", "fixture_fichier.py", "fixture_premiumizeme.py", "fixture_putio.py", "fixture_linkbox.py", "fixture_yandex.py", "fixture_box.py", "fixture_onedrive.py", "fixture_filelu.py", "fixture_qingstor.py", "fixture_drive.py", "fixture_dropbox.py", "fixture_oos.py", "fixture_zoho.py", "fixture_jottacloud.py", "fixture_sugarsync.py", "fixture_pikpak.py", "fixture_dosya.py", "fixture_kdrive.py", "fixture_gphotos.py", "fixture_huaweidrive.py", "fixture_mailru.py", "fixture_ulozto.py", "fixture_iclouddrive.py", "requirements-fixture.txt")
 MAX_OUTPUT = 2 * 1024 * 1024
 COMMAND_TIMEOUT = 20
 
@@ -4050,6 +4050,90 @@ def box_checks(runtime, root, row, expected):
 
 
 
+def iclouddrive_checks(runtime, root, row, expected):
+    from fixture_iclouddrive import IclouddriveState, serve_iclouddrive, ROOT, FILES, listeners_closed
+    secret = "synthetic-token-" + uuid.uuid4().hex
+    state = IclouddriveState(secret)
+    transports, certificates = [], []
+    before = len(runtime.children)
+    caps = row["capabilities"]
+    try:
+        pcloud_dependencies()
+        with serve_iclouddrive(root, state) as (certificates, transports):
+            class TrustedRuntime:
+                def run(self, args, config=None, **kwargs):
+                    pcloud_dependencies()
+                    return runtime.run([*[part for cert in certificates for part in cert.rclone_ca_args()], *args], config, **kwargs)
+            native = TrustedRuntime()
+            cookie="X-APPLE-WEBAUTH-TOKEN="+secret
+            state.password=cookie
+            options={"type":"iclouddrive","apple_id":"synthetic@example.invalid","trust_token":"synthetic-trust-"+uuid.uuid4().hex,
+                     "client_id":str(uuid.uuid4()),"cookies":cookie}
+            good=config_file(root,"iclouddrive-good.conf",options)
+            bad=config_file(root,"iclouddrive-wrong.conf",dict(options,cookies="X-APPLE-WEBAUTH-TOKEN=wrong-synthetic"))
+            target="Synthetic:"
+            preserved = {path: path.read_bytes() for path in (good, bad)}
+            metadata_before = {name: state.metadata(name) for name in state.files}
+            auth_destination = root / "bad-auth"
+            auth_destination.mkdir(mode=0o700)
+            read_api_listing(native,good,expected,target)
+            check(state.validations==1 and state.payload_bytes==0,"iclouddrive_initial_discovery_missing")
+            code, output, error = exact_copy(native, bad, target, "README-synthetic.txt",
+                                             str(auth_destination), "must-not-exist")
+            check(code != 0 and not list(auth_destination.iterdir()) and state.denied > 0
+                  and state.payload_bytes == 0 and state.validations == 1, "iclouddrive_credential_rejection_missing")
+            caps["authentication_rejection"] = "passed"
+            common_checks(native, root, good, None, target, row, state, expected=expected)
+            read_api_listing(native, good, expected, target)
+            nested=[dict(item,path=item["path"][7:]) for item in expected if item["path"].startswith("nested/")]
+            read_api_listing(native,good,nested,target+"nested/")
+            state.mode = "read_denied"
+            denied = root / "denied"
+            denied.mkdir(mode=0o700)
+            cat_code,cat_output,_=native.run(["cat",target+"README-synthetic.txt"],good)
+            code,output,error=exact_copy(native,good,target,"README-synthetic.txt",str(denied),"denied.bin")
+            accepted=denied/"denied.bin"
+            expected_bytes=state.files["README-synthetic.txt"]
+            unchanged=(served_source_unchanged(state,expected) and all(path.read_bytes()==data for path,data in preserved.items()))
+            check(unchanged,"iclouddrive_config_or_source_changed")
+            caps["config_preservation"]=caps["source_preservation"]="passed"
+            if (cat_code==code==0 and cat_output==expected_bytes and accepted.is_file()
+                    and accepted.read_bytes()==expected_bytes and state.read_denied==2
+                    and not state.unexpected and not state.budget_exceeded):
+                caps["read_denial"]="failed"
+                raise LabError("iclouddrive_http403_cat_and_copy_accepted")
+            check(cat_code!=0 and not cat_output and code!=0 and b"403" in output+error
+                  and not list(denied.iterdir()),"iclouddrive_status_reproduction_inconclusive")
+            state.mode = "normal"
+            nonce,name=next((nonce,name) for nonce,name in state.links.items() if name=="README-synthetic.txt")
+            connection=http.client.HTTPSConnection(transports[3].authority,transports[3].port,timeout=3,context=certificates[3].client_context())
+            try:
+                connection.request("DELETE","/synthetic-content/"+FILES[name]+"/"+nonce,
+                                   headers={"Cookie":cookie,"Content-Type":"application/json",
+                                            "Origin":"https://www.icloud.com","Referer":"https://www.icloud.com/"})
+                response=connection.getresponse()
+                check(response.status==405 and len(response.read(4097))<=4096,"iclouddrive_write_guard_missing")
+            finally:connection.close()
+            check(not state.unexpected and not state.budget_exceeded and state.read_denied==2
+                  and state.rejected_mutations==1 and state.denied>=1 and state.validations==1
+                  and all(state.events.count(("listing",path))>=1 for path in ("","nested"))
+                  and state.observed==set(state.files) and len(state.links)>=5,"iclouddrive_protocol_flow_mismatch")
+            check(served_source_unchanged(state, expected) and state.password == cookie
+                  and {name: state.metadata(name) for name in state.files} == metadata_before,
+                  "iclouddrive_source_changed")
+            check(all(path.read_bytes() == data for path, data in preserved.items()), "iclouddrive_config_changed")
+        for transport in transports:
+            observed = transport.snapshot()
+            check(not observed["failure_codes"] and observed["handshake_successes"] > 0, "iclouddrive_tls_failed")
+        for name in caps:
+            caps[name] = "passed"
+    finally:
+        closed = (state.cleanup_complete and listeners_closed(transports)
+                  and all(cert.cleanup_complete for cert in certificates)
+                  and all(record[0].poll() is not None for record in runtime.children[before:]))
+        caps["cleanup"] = "passed" if closed else "failed"
+        check(closed, "iclouddrive_cleanup_failed")
+
 def ulozto_checks(runtime, root, row, expected):
     from fixture_ulozto import UloztoState, serve_ulozto, ROOT, FILES, USER, listeners_closed
     secret = "synthetic-token-" + uuid.uuid4().hex
@@ -5588,7 +5672,7 @@ def fichier_checks(runtime, root, row, expected):
 
 def run_backend(runtime, backend, root):
     root.mkdir(mode=0o700)
-    independent = backend in ("http", "webdav", "ftp", "swift", "b2", "azureblob", "azurefiles", "seafile", "koofr", "pixeldrain", "filefabric", "internetarchive", "netstorage", "pcloud", "gcs", "sia", "hidrive", "doi", "quatrix", "shade", "sharefile", "cloudinary", "opendrive", "gofile", "drime", "fichier", "premiumizeme", "putio", "linkbox", "yandex", "box", "onedrive", "filelu", "qingstor", "drive", "dropbox", "oos", "zoho", "jottacloud", "sugarsync", "pikpak", "dosya", "kdrive", "gphotos", "huaweidrive", "mailru", "ulozto")
+    independent = backend in ("http", "webdav", "ftp", "swift", "b2", "azureblob", "azurefiles", "seafile", "koofr", "pixeldrain", "filefabric", "internetarchive", "netstorage", "pcloud", "gcs", "sia", "hidrive", "doi", "quatrix", "shade", "sharefile", "cloudinary", "opendrive", "gofile", "drime", "fichier", "premiumizeme", "putio", "linkbox", "yandex", "box", "onedrive", "filelu", "qingstor", "drive", "dropbox", "oos", "zoho", "jottacloud", "sugarsync", "pikpak", "dosya", "kdrive", "gphotos", "huaweidrive", "mailru", "ulozto", "iclouddrive")
     row = {"backend": backend,
            "fixture_kind": "local" if backend in ("local", "archive", "memory") else "independent_loopback" if independent else "rclone_loopback",
            "capabilities": {key: "not_run" for key in (
@@ -5600,7 +5684,7 @@ def run_backend(runtime, backend, root):
         row["capabilities"] = {key: "not_run" for key in (HIDRIVE_CAPABILITIES if backend == "hidrive" else DOI_CAPABILITIES)}
     if backend in CACHED_TOKEN_BACKENDS:
         row["capabilities"] = {key: "not_run" for key in CACHED_TOKEN_COMMON_CAPABILITIES | {backend + "_saved_token_read", backend + "_saved_token_rejection"}}
-    if backend in ("cloudinary", "opendrive", "gofile", "drime", "fichier", "premiumizeme", "putio", "linkbox", "yandex", "box", "onedrive", "filelu", "qingstor", "drive", "dropbox", "oos", "zoho", "jottacloud", "sugarsync", "pikpak", "dosya", "kdrive", "gphotos", "huaweidrive", "mailru", "ulozto"):
+    if backend in ("cloudinary", "opendrive", "gofile", "drime", "fichier", "premiumizeme", "putio", "linkbox", "yandex", "box", "onedrive", "filelu", "qingstor", "drive", "dropbox", "oos", "zoho", "jottacloud", "sugarsync", "pikpak", "dosya", "kdrive", "gphotos", "huaweidrive", "mailru", "ulozto", "iclouddrive"):
         row["capabilities"] = {key: "not_run" for key in QUATRIX_CAPABILITIES}
     if backend == "quatrix":
         row["capabilities"] = {key: "not_run" for key in QUATRIX_CAPABILITIES}
@@ -5664,6 +5748,9 @@ def run_backend(runtime, backend, root):
             return row
         if backend == "ulozto":
             ulozto_checks(runtime, root, row, expected)
+            return row
+        if backend == "iclouddrive":
+            iclouddrive_checks(runtime, root, row, expected)
             return row
         if backend == "sugarsync":
             sugarsync_checks(runtime, root, row, expected)

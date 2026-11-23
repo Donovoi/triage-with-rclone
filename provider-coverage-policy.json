@@ -2405,6 +2405,48 @@
       "unresolved_applicability": [
         "reauthentication"
       ]
+    },
+    "protocol-iclouddrive-saved-cookie-folder-read": {
+      "required": {
+        "application": [
+          "listing",
+          "download_hash",
+          "manifest_integrity",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation",
+          "refresh"
+        ],
+        "vendor": [
+          "listing",
+          "download_hash",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation",
+          "refresh"
+        ],
+        "local_protocol": [
+          "listing",
+          "download_hash",
+          "missing_object_rejection",
+          "authentication_rejection",
+          "read_denial",
+          "source_preservation",
+          "config_preservation",
+          "fixture_write_rejection",
+          "cleanup"
+        ]
+      },
+      "review_required": false,
+      "unresolved_applicability": [
+        "reauthentication"
+      ]
     }
   },
   "providers": {
@@ -3391,17 +3433,20 @@
     "iclouddrive": {
       "canonical_name": "iclouddrive",
       "schema_sha256": "af856d4a4bd3e9d5ac84065f48234f746832ad3852d6b1748c6e77fb0c8fc9bf",
-      "profile": "hosted-renewal-session-review",
+      "profile": "protocol-iclouddrive-saved-cookie-folder-read",
       "notes": [
         "Apple account with iCloud Drive and regular password plus trusted-device/phone 2FA; app-specific passwords are not accepted. Trust/session renewal differs from OAuth refresh grant.",
         "Free account/API eligibility: review_required",
         "This proves code intent, not successful recovery. Cached-cookie fast paths are counterevidence against assuming every retry performs fresh authentication; observe the actual exchange.",
-        "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension."
+        "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension.",
+        "Schema-34 iclouddrive_saved_cookie_folder_read_v1 qualifies source-current Linux container evidence for a saved synthetic cookie plus trust token in non-ADP mode. Initial native listing must discover service endpoints from the normal setup.icloud.com authority; subsequent reads reuse the native service cache. Setup, discovered drive and document services, and issued content URLs use four distinct private TLS/SNI/Host/address bindings. Complete root/nested inventories retain exact IDs, names/extensions, numeric sizes and timestamps. Content links require an observed file and fresh nonce; the native content request deliberately carries the exact saved cookie. All nine capabilities, three independent SHA-256-checked downloads, wrong-cookie and missing-name rejection, native cat/copy rejection of HTTP403 with identical expected bytes, byte-exact config/source preservation and temporary-cache cleanup are required. The direct DELETE guard does not qualify native writes. SRP/password login, real account eligibility, 2FA, ADP/PCS, expired sessions/trust, 401/421/423 reauthentication, pagination, uploads, native writes and application/live-provider acceptance remain unverified. Raw feasibility/schema-1 rows are ineligible; independent credential-renewal/session-review obligations remain."
       ],
       "source_links": [
         "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/iclouddrive.md",
         "https://github.com/rclone/rclone/blob/v1.75.2/backend/iclouddrive/api/client.go",
-        "https://rclone.org/iclouddrive/"
+        "https://rclone.org/iclouddrive/",
+        "https://github.com/rclone/rclone/blob/v1.76.0/backend/iclouddrive/api/client.go",
+        "https://github.com/rclone/rclone/blob/v1.76.0/backend/iclouddrive/api/drive.go"
       ],
       "renewal_modes": [
         {
