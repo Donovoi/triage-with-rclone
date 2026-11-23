@@ -279,11 +279,11 @@ class PikpakWorkflowTests(unittest.TestCase):
         for before, after in (
             ("  pikpak-fixed-api:\n", "  pikpak-fixed-api:\n    if: false\n"),
             ("--rclone \"$RUNNER_TEMP/rclone-pikpak\" --protocol-evidence", "--rclone \"$RUNNER_TEMP/rclone-pikpak\""),
-            ("linkbox-fixed-api, yandex-fixed-api, box-fixed-api, onedrive-fixed-api, filelu-fixed-api, qingstor-fixed-api, drive-fixed-api, dropbox-fixed-api, oos-fixed-api, zoho-fixed-api, jottacloud-fixed-api, sugarsync-fixed-api, pikpak-fixed-api, dosya-fixed-api, kdrive-fixed-api, gphotos-fixed-api, huaweidrive-fixed-api]", 'linkbox-fixed-api, yandex-fixed-api, box-fixed-api, onedrive-fixed-api, filelu-fixed-api, qingstor-fixed-api, drive-fixed-api, dropbox-fixed-api, oos-fixed-api, zoho-fixed-api, jottacloud-fixed-api, sugarsync-fixed-api, dosya-fixed-api]'),
+            ("linkbox-fixed-api, yandex-fixed-api, box-fixed-api, onedrive-fixed-api, filelu-fixed-api, qingstor-fixed-api, drive-fixed-api, dropbox-fixed-api, oos-fixed-api, zoho-fixed-api, jottacloud-fixed-api, sugarsync-fixed-api, pikpak-fixed-api, dosya-fixed-api, kdrive-fixed-api, gphotos-fixed-api, huaweidrive-fixed-api, mailru-fixed-api]", 'linkbox-fixed-api, yandex-fixed-api, box-fixed-api, onedrive-fixed-api, filelu-fixed-api, qingstor-fixed-api, drive-fixed-api, dropbox-fixed-api, oos-fixed-api, zoho-fixed-api, jottacloud-fixed-api, sugarsync-fixed-api, dosya-fixed-api]'),
             ("          path: ${{ runner.temp }}/provider-pikpak",
              "          run-id: 123\n          path: ${{ runner.temp }}/provider-pikpak"),
             ('--fixture-receipt "$RUNNER_TEMP/provider-pikpak/pikpak-read-protocol.json"', ""),
-            ("sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio,linkbox,yandex,box,onedrive,filelu,qingstor,drive,dropbox,oos,zoho,jottacloud,sugarsync,pikpak,dosya,kdrive,gphotos,huaweidrive\n", 'sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio,linkbox,yandex,box,onedrive,filelu,qingstor,drive,dropbox,oos,zoho,jottacloud,sugarsync\n')):
+            ("sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio,linkbox,yandex,box,onedrive,filelu,qingstor,drive,dropbox,oos,zoho,jottacloud,sugarsync,pikpak,dosya,kdrive,gphotos,huaweidrive,mailru\n", 'sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio,linkbox,yandex,box,onedrive,filelu,qingstor,drive,dropbox,oos,zoho,jottacloud,sugarsync\n')):
             with self.subTest(before=before):
                 self.assertIn(before, self.ci)
                 with self.assertRaises(ValueError):
@@ -293,7 +293,7 @@ class PikpakWorkflowTests(unittest.TestCase):
         for before, after in (
             ('../scripts/provider-lab/pikpak-fixed-api/run_container.py \\\n            --rclone "$RUNNER_TEMP/rclone-smoke" --protocol-evidence', '../scripts/provider-lab/pikpak-fixed-api/run_container.py \\\n            --rclone "$RUNNER_TEMP/rclone-smoke"'),
             ('--fixture-receipt "$RUNNER_TEMP/pikpak-read-protocol.json"', ""),
-            ("sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio,linkbox,yandex,box,onedrive,filelu,qingstor,drive,dropbox,oos,zoho,jottacloud,sugarsync,pikpak,dosya,kdrive,gphotos,huaweidrive\n", 'sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio,linkbox,yandex,box,onedrive,filelu,qingstor,drive,dropbox,oos,zoho,jottacloud,sugarsync\n'),
+            ("sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio,linkbox,yandex,box,onedrive,filelu,qingstor,drive,dropbox,oos,zoho,jottacloud,sugarsync,pikpak,dosya,kdrive,gphotos,huaweidrive,mailru\n", 'sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio,linkbox,yandex,box,onedrive,filelu,qingstor,drive,dropbox,oos,zoho,jottacloud,sugarsync\n'),
             ("            ${{ runner.temp }}/pikpak-read-protocol.json\n", "")):
             with self.subTest(before=before):
                 self.assertIn(before, self.smoke)

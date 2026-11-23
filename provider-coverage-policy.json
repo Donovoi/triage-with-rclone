@@ -2321,6 +2321,48 @@
       "unresolved_applicability": [
         "reauthentication"
       ]
+    },
+    "protocol-mailru-saved-token-folder-read": {
+      "required": {
+        "application": [
+          "listing",
+          "download_hash",
+          "manifest_integrity",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation",
+          "refresh"
+        ],
+        "vendor": [
+          "listing",
+          "download_hash",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation",
+          "refresh"
+        ],
+        "local_protocol": [
+          "listing",
+          "download_hash",
+          "missing_object_rejection",
+          "authentication_rejection",
+          "read_denial",
+          "source_preservation",
+          "config_preservation",
+          "fixture_write_rejection",
+          "cleanup"
+        ]
+      },
+      "review_required": false,
+      "unresolved_applicability": [
+        "reauthentication"
+      ]
     }
   },
   "providers": {
@@ -3630,17 +3672,19 @@
     "mailru": {
       "canonical_name": "mailru",
       "schema_sha256": "5b5e693f6b6186cb6ea9f0230f7f5502eac4706fe5143ab609ef7380e34a1173",
-      "profile": "hosted-renewal-session-review",
+      "profile": "protocol-mailru-saved-token-folder-read",
       "notes": [
         "Mail.ru account and generated app password; normal account password is not supported. Session/token behavior requires provider-specific renewal review.",
         "Free account/API eligibility: review_required",
         "Access tokens are passed in query parameters by this API; record allowlisted counters/outcomes, never raw URLs.",
-        "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension."
+        "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension.",
+        "Schema-32 mailru_saved_token_folder_read_v1 qualifies source-current Linux container evidence for a canonical saved OAuth token with future expiry and saved refresh token, no password, and the default M1 folder protocol. The normal cloud.mail.ru and dispatcher.cloud.mail.ru authorities and a dispatcher-issued synthetic content authority use three distinct private TLS/SNI/Host/address bindings. Complete root/nested inventories, exact query-token authentication, native-relative and absolute metadata paths, numeric sizes, timestamps and independent Mailru hashes are mandatory. All nine capabilities, three independent SHA-256-checked downloads, wrong-token and missing-name rejection, native cat/copy rejection of HTTP403 with identical expected bytes, byte-exact config/source preservation and cleanup are required. The direct DELETE guard does not qualify native writes. Initial login, OAuth refresh, password reauthorization, binary listing, dispatcher failover, throttling, uploads, native writes and application/live-provider acceptance remain unverified. Raw feasibility/schema-1 rows are ineligible; independent renewal/session-review obligations remain."
       ],
       "source_links": [
         "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/mailru.md",
         "https://github.com/rclone/rclone/blob/v1.75.2/backend/mailru/mailru.go",
-        "https://rclone.org/mailru/"
+        "https://rclone.org/mailru/",
+        "https://github.com/rclone/rclone/blob/v1.76.0/backend/mailru/mailru.go"
       ],
       "renewal_modes": [
         {
