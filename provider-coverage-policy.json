@@ -2279,6 +2279,48 @@
       "unresolved_applicability": [
         "reauthentication"
       ]
+    },
+    "protocol-huaweidrive-saved-token-folder-read": {
+      "required": {
+        "application": [
+          "listing",
+          "download_hash",
+          "manifest_integrity",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation",
+          "refresh"
+        ],
+        "vendor": [
+          "listing",
+          "download_hash",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation",
+          "refresh"
+        ],
+        "local_protocol": [
+          "listing",
+          "download_hash",
+          "missing_object_rejection",
+          "authentication_rejection",
+          "read_denial",
+          "source_preservation",
+          "config_preservation",
+          "fixture_write_rejection",
+          "cleanup"
+        ]
+      },
+      "review_required": false,
+      "unresolved_applicability": [
+        "reauthentication"
+      ]
     }
   },
   "providers": {
@@ -3231,14 +3273,16 @@
     "huaweidrive": {
       "canonical_name": "huaweidrive",
       "schema_sha256": "7b3f82fc4028d3ff742942fb5bdee6a859e6c804523621095a2f489d53466d4c",
-      "profile": "hosted-renewal-session-review",
+      "profile": "protocol-huaweidrive-saved-token-folder-read",
       "notes": [
         "Huawei account, Drive service access and OAuth token/client setup; availability/region and app approval unresolved.",
         "Free account/API eligibility: review_required",
-        "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension."
+        "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension.",
+        "Schema-31 huaweidrive_saved_token_folder_read_v1 qualifies only source-current Linux container evidence for a saved OAuth bearer, explicit root_folder_id and the global-domain About:get result at driveapis.cloud.huawei.com.cn. All nine capabilities, exact private TLS/SNI/Host binding, complete root/nested inventories, exact parentFolder filters, containers=drive, fields=* and pageSize=1000 are mandatory. Numeric file sizes, parent identities, edited times and SHA-256 metadata must agree with independent literal values; native downloads require observed IDs and form=content. Wrong-token and missing-name rejection, native cat/copy rejection of HTTP403 with identical expected bytes, source/config preservation and cleanup are required. The direct DELETE guard does not qualify native writes. OAuth login/refresh, root autodiscovery, regional switching, pagination/throttling, empty-object shortcuts, uploads, native writes and application/live-provider acceptance remain unverified. Raw feasibility/schema-1 rows are ineligible; independent renewal/session-review obligations remain."
       ],
       "source_links": [
-        "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/huaweidrive.md"
+        "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/huaweidrive.md",
+        "https://github.com/rclone/rclone/blob/v1.76.0/backend/huaweidrive/huaweidrive.go"
       ],
       "auth_applicability": "oauth",
       "refresh_applicability": "required",
