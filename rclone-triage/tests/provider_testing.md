@@ -553,3 +553,13 @@ Exact parent/kind/phase/trashed filters and an empty continuation token select c
 Schema-27 pikpak_saved_token_folder_read_v1 binds the current 38-file source closure, pinned runtime/dependencies, native output/timing, nine capabilities and containment/cleanup. Both combined Linux and provider-smoke gates require 48 reviewed profiles and the same-run receipt; raw feasibility evidence cannot qualify this mode.
 
 The direct DELETE guard does not qualify native writes. Existing renewal and session-review obligations remain. Initial login, captcha solving, OAuth/captcha renewal, account-wide discovery, continuation/throttling, native writes and application/live-provider acceptance remain unverified. See [the isolated fixture](../../scripts/provider-lab/pikpak-fixed-api/README.md).
+
+### Dosya API-key workspace read protocol
+
+The isolated Linux Dosya profile uses a saved API key and explicit workspace_id at api.dosya.dev. Private exact TLS/SNI/Host binding preserves the ordinary authority on 127.0.0.1:443; the native client receives the private CA. Workspace discovery is excluded.
+
+Complete inventories require exact workspace/folder/page/sort parameters and contain numeric sizes/timestamps and SHA-256 metadata. Native lsjson hashes and downloaded bytes match independently known SHA-256 values. A download redirect requires an observed file identity and exact X-Dosya-Workspace hint. Its issued content signature is then used without API Authorization or the workspace hint. Both native cat and copy reject HTTP403 containing the identical expected bytes. Wrong-key and missing-name rejection, source/config preservation and cleanup are mandatory.
+
+Schema-28 dosya_api_key_workspace_read_v1 binds the current 39-file source closure, pinned runtime/dependencies, native output/timing, nine capabilities and containment/cleanup. Forty-eight provider regressions cover wire contracts, authority/framing, containment and evidence substitution. Both combined Linux and provider-smoke gates require 49 reviewed profiles and the same-run receipt; raw feasibility evidence cannot qualify this mode.
+
+The direct DELETE guard does not qualify native writes. Existing credential-renewal applicability and the independent session-review obligation remain. Workspace discovery, pagination/throttling, uploads including multipart hash availability, native writes and application/live-provider acceptance remain unverified. See [the isolated fixture](../../scripts/provider-lab/dosya-fixed-api/README.md).
