@@ -1,0 +1,25 @@
+--- a/block.go
++++ b/block.go
+@@ -2,7 +2,9 @@
+ 
+ import (
+ 	"context"
++	"fmt"
+ 	"io"
++	"net/http"
+ 
+ 	"github.com/go-resty/resty/v2"
+ )
+@@ -15,6 +17,12 @@
+ 		return nil, err
+ 	}
+ 
++	if res.StatusCode() != http.StatusOK {
++		if body := res.RawBody(); body != nil {
++			_ = body.Close()
++		}
++		return nil, fmt.Errorf("failed to download block: %s", res.Status())
++	}
+ 	return res.RawBody(), nil
+ }
+ 

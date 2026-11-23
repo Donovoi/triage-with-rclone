@@ -1,0 +1,87 @@
+{
+  "schema_version": 1,
+  "scope": "experimental_read_status_regressions_not_provider_acceptance",
+  "runtime_version": "v1.76.0-triage-readfix.1",
+  "rclone_repository": "https://github.com/rclone/rclone.git",
+  "rclone_commit": "e982ff36668f5130d94b4f70409babb3d964df42",
+  "rclone_tag": "v1.76.0",
+  "toolchain": "go1.27.4",
+  "linux_amd64_toolchain_sha256": "7226736c2339719cda28fbf3a54d71aa63bcefe376e98cef00034268dab24840",
+  "imagekit_backport_source": "2a13b4ee0a1e816fc76a5567643f13b16f8594c1",
+  "modules": [
+    {
+      "module": "github.com/FilenCloudDienste/filen-sdk-go",
+      "version": "v0.0.39",
+      "sum": "h1:tgV5jYL6dsXop9TpDTIQU6UwJjws122HrwskaEE/igY=",
+      "directory": "readfix-deps/filen"
+    },
+    {
+      "module": "github.com/rclone/go-proton-api",
+      "version": "v1.0.4",
+      "sum": "h1:AJW0e9pB4j0hVK4WqyGErFwaI+5MUQWPCtj5FYYxtPg=",
+      "directory": "readfix-deps/proton"
+    }
+  ],
+  "patches": [
+    {
+      "name": "filescom-status.patch",
+      "sha256": "4ef4344b4846cc3dacd432067b705cdbee73657dcf2a5cdb49fac046815a626f",
+      "directory": ".",
+      "source": "backend/filescom/filescom.go",
+      "before_sha256": "55b8b0e8bffb6b4f663258bbf8fae2b7fd395ed8482c04eff760dbb7872cba1d",
+      "after_sha256": "e60cc69699dbb1df05d083bf18fe3806e79bb6fb8c6e664c3a5ec4305e56aae4"
+    },
+    {
+      "name": "imagekit-status.patch",
+      "sha256": "b4d58d9f1af761c258233c58ed6dc830d525e919343b5431d1afc7f8fdc445d5",
+      "directory": ".",
+      "source": "backend/imagekit/imagekit.go",
+      "before_sha256": "7d70cfbfa96d273fa378e57d6bd4bf08b9eb8357dcdb4adbecc2efcd0f1eb339",
+      "after_sha256": "0c79d3752b0d1834cea5404d96793c88188ff87c7ed6ef050c209610541bbbb3"
+    },
+    {
+      "name": "filen-status.patch",
+      "sha256": "46382752711117a27ed275d34484343c332ee8ec710b18d0bcb503d81009e4af",
+      "directory": "readfix-deps/filen",
+      "source": "readfix-deps/filen/filen/client/client.go",
+      "before_sha256": "ee13dc39c2a99ded2a5e8019c791628084dd4de232fdd20a7d18e7a12364e421",
+      "after_sha256": "bac78b22001f28ff072c3adefadd41a1707b4e59918380801b60def7d32a778a"
+    },
+    {
+      "name": "proton-status.patch",
+      "sha256": "572392b933620fd1d2e20afe2553f6f58c356e18b4cd5e59f0dd63bbbfedcb7f",
+      "directory": "readfix-deps/proton",
+      "source": "readfix-deps/proton/block.go",
+      "before_sha256": "73ade1e1996663ab4248786fb7e1ec56fd193ccb66a24e73045896b971764229",
+      "after_sha256": "dc7a2184b49adf519a248322e5916cd98353d323986e0445480ef20a0fe2e84f"
+    }
+  ],
+  "tests": [
+    {
+      "name": "filescom_read_status_test.go",
+      "target": "backend/filescom/read_status_test.go",
+      "sha256": "31748f9b2c5d24cb4b41f895da4a78dab681ac088fca1fa1ce7e03c583b75c42"
+    },
+    {
+      "name": "imagekit_read_status_test.go",
+      "target": "backend/imagekit/read_status_test.go",
+      "sha256": "3ae12cd40f586fc39ee973a236043fdc03f0540f78f590527e797704a50048fe"
+    },
+    {
+      "name": "filen_read_status_test.go",
+      "target": "readfix-deps/filen/filen/client/zz_triage_read_status_test.go",
+      "sha256": "79a9fcb302bfe731de34b6538909e0b6acd527e0ddb503efdf66535c79944c5c"
+    },
+    {
+      "name": "proton_read_status_test.go",
+      "target": "readfix-deps/proton/zz_triage_read_status_test.go",
+      "sha256": "1575ee8dde86d24bac2f9df8e8b1937c6ccbe43ef75046c50273782e4eca9921"
+    }
+  ],
+  "platforms": [
+    "linux-amd64",
+    "windows-amd64",
+    "windows-386",
+    "windows-arm64"
+  ]
+}
