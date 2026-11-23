@@ -46,10 +46,11 @@ ZOHO_CONTENT_NAME = "download.zoho.eu"
 JOTTACLOUD_API_NAME = "api.jottacloud.com"
 JOTTACLOUD_CONTENT_NAME = "jfs.jottacloud.com"
 SUGARSYNC_API_NAME = "api.sugarsync.com"
+PIKPAK_API_NAME = "api-drive.mypikpak.com"
 
 
 def _server_name(value):
-    if value is not None and (type(value) is not str or value not in (PCLOUD_OAUTH_NAME, CLOUDINARY_API_NAME, OPENDRIVE_API_NAME, GOFILE_API_NAME, DRIME_API_NAME, FICHIER_API_NAME, PREMIUMIZEME_API_NAME, PUTIO_API_NAME, LINKBOX_API_NAME, YANDEX_API_NAME, BOX_API_NAME, ONEDRIVE_API_NAME, FILELU_API_NAME, QINGSTOR_API_NAME, OOS_API_NAME, DRIVE_API_NAME, DROPBOX_API_NAME, DROPBOX_CONTENT_NAME, ZOHO_API_NAME, ZOHO_CONTENT_NAME, JOTTACLOUD_API_NAME, JOTTACLOUD_CONTENT_NAME, SUGARSYNC_API_NAME)):
+    if value is not None and (type(value) is not str or value not in (PCLOUD_OAUTH_NAME, CLOUDINARY_API_NAME, OPENDRIVE_API_NAME, GOFILE_API_NAME, DRIME_API_NAME, FICHIER_API_NAME, PREMIUMIZEME_API_NAME, PUTIO_API_NAME, LINKBOX_API_NAME, YANDEX_API_NAME, BOX_API_NAME, ONEDRIVE_API_NAME, FILELU_API_NAME, QINGSTOR_API_NAME, OOS_API_NAME, DRIVE_API_NAME, DROPBOX_API_NAME, DROPBOX_CONTENT_NAME, ZOHO_API_NAME, ZOHO_CONTENT_NAME, JOTTACLOUD_API_NAME, JOTTACLOUD_CONTENT_NAME, SUGARSYNC_API_NAME, PIKPAK_API_NAME)):
         raise TlsError("tls_unreviewed_authority")
     return value
 
@@ -141,6 +142,12 @@ def _qingstor_sni(_socket, name, _context):
 
 def _oos_sni(_socket, name, _context):
     if name != OOS_API_NAME:
+        return ssl.ALERT_DESCRIPTION_UNRECOGNIZED_NAME
+    return None
+
+
+def _pikpak_sni(_socket, name, _context):
+    if name != PIKPAK_API_NAME:
         return ssl.ALERT_DESCRIPTION_UNRECOGNIZED_NAME
     return None
 
@@ -351,7 +358,7 @@ class FixtureCertificates(AbstractContextManager):
             context.set_alpn_protocols(["http/1.1"])
             if server_name is not None:
                 context.set_servername_callback({PCLOUD_OAUTH_NAME: _pcloud_sni, CLOUDINARY_API_NAME: _cloudinary_sni,
-                                                 OPENDRIVE_API_NAME: _opendrive_sni, GOFILE_API_NAME: _gofile_sni, DRIME_API_NAME: _drime_sni, FICHIER_API_NAME: _fichier_sni, PREMIUMIZEME_API_NAME: _premiumizeme_sni, PUTIO_API_NAME: _putio_sni, LINKBOX_API_NAME: _linkbox_sni, YANDEX_API_NAME: _yandex_sni, BOX_API_NAME: _box_sni, ONEDRIVE_API_NAME: _onedrive_sni, FILELU_API_NAME: _filelu_sni, QINGSTOR_API_NAME: _qingstor_sni, OOS_API_NAME: _oos_sni, DRIVE_API_NAME: _drive_sni, DROPBOX_API_NAME: _dropbox_api_sni, DROPBOX_CONTENT_NAME: _dropbox_content_sni, ZOHO_API_NAME: _zoho_api_sni, ZOHO_CONTENT_NAME: _zoho_content_sni, JOTTACLOUD_API_NAME: _jottacloud_api_sni, JOTTACLOUD_CONTENT_NAME: _jottacloud_content_sni, SUGARSYNC_API_NAME: _sugarsync_sni}[server_name])
+                                                 OPENDRIVE_API_NAME: _opendrive_sni, GOFILE_API_NAME: _gofile_sni, DRIME_API_NAME: _drime_sni, FICHIER_API_NAME: _fichier_sni, PREMIUMIZEME_API_NAME: _premiumizeme_sni, PUTIO_API_NAME: _putio_sni, LINKBOX_API_NAME: _linkbox_sni, YANDEX_API_NAME: _yandex_sni, BOX_API_NAME: _box_sni, ONEDRIVE_API_NAME: _onedrive_sni, FILELU_API_NAME: _filelu_sni, QINGSTOR_API_NAME: _qingstor_sni, OOS_API_NAME: _oos_sni, DRIVE_API_NAME: _drive_sni, DROPBOX_API_NAME: _dropbox_api_sni, DROPBOX_CONTENT_NAME: _dropbox_content_sni, ZOHO_API_NAME: _zoho_api_sni, ZOHO_CONTENT_NAME: _zoho_content_sni, JOTTACLOUD_API_NAME: _jottacloud_api_sni, JOTTACLOUD_CONTENT_NAME: _jottacloud_content_sni, SUGARSYNC_API_NAME: _sugarsync_sni, PIKPAK_API_NAME: _pikpak_sni}[server_name])
             if hasattr(context, "num_tickets"):
                 context.num_tickets = 0
             _validated(leaf_binding)
