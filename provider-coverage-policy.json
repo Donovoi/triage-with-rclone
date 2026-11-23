@@ -2489,6 +2489,46 @@
       "unresolved_applicability": [
         "reauthentication"
       ]
+    },
+    "protocol-storj-saved-access-grant-native-read": {
+      "required": {
+        "application": [
+          "listing",
+          "download_hash",
+          "manifest_integrity",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation"
+        ],
+        "vendor": [
+          "listing",
+          "download_hash",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation"
+        ],
+        "local_protocol": [
+          "listing",
+          "download_hash",
+          "missing_object_rejection",
+          "authentication_rejection",
+          "read_denial",
+          "source_preservation",
+          "config_preservation",
+          "fixture_write_rejection",
+          "cleanup"
+        ]
+      },
+      "review_required": false,
+      "unresolved_applicability": [
+        "reauthentication"
+      ]
     }
   },
   "providers": {
@@ -4788,19 +4828,23 @@
     "storj": {
       "canonical_name": "storj",
       "schema_sha256": "555914b6a0451bb93df8f0d4541578fe63162f6e5daa4c033cb539d0a0c4aaf1",
-      "profile": "hosted-static-credentials-session-review",
+      "profile": "protocol-storj-saved-access-grant-native-read",
       "notes": [
         "Storj satellite/project, access grant or API key plus encryption passphrase and bucket; current trial/paid entitlement unresolved. Native backend differs from Storj S3 gateway.",
         "Free account/API eligibility: review_required",
         "Native Storj only. Uplink connection/security negotiation and temporary object-transfer authorizations are not replacement of the configured access grant. Storj S3 gateway belongs to a distinct S3 profile.",
-        "Grant-renewal N/A does not establish connection/session reauthentication N/A. Pinned Uplink transport/session behavior requires separate source review and acceptance."
+        "Grant-renewal N/A does not establish connection/session reauthentication N/A. Pinned Uplink transport/session behavior requires separate source review and acceptance.",
+        "Schema-36 isolated native storj saved-grant reads qualify only listing, four full downloads, two unaligned ranges, expired-grant denial, list-only-grant download denial, strict missing-file copy rejection, rejected native writes, configuration/source preservation and disposable cleanup. The fixture includes three inline objects and a 1 MiB storage-node object. This is not live vendor/application, initial grant derivation, revocation, grant replacement or transport reconnection acceptance; existing lifecycle obligations remain."
       ],
       "source_links": [
         "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/storj.md",
         "https://github.com/rclone/rclone/blob/v1.75.2/backend/storj/fs.go",
         "https://github.com/rclone/rclone/blob/v1.75.2/backend/storj/fs.go",
         "https://storj.dev/learn/concepts/access/access-grants",
-        "https://storj.dev/learn/concepts/access/access-grants/api-key/restriction"
+        "https://storj.dev/learn/concepts/access/access-grants/api-key/restriction",
+        "https://github.com/rclone/rclone/blob/v1.76.0/backend/storj/fs.go",
+        "https://github.com/rclone/rclone/blob/v1.76.0/backend/storj/object.go",
+        "https://github.com/storj/storj/tree/b2fe6e00c07c42711217c1c60c283d5e000b18ba/private/testplanet"
       ],
       "auth_applicability": "credentials",
       "refresh_applicability": "not_applicable",
@@ -4928,13 +4972,14 @@
     "tardigrade": {
       "canonical_name": "tardigrade",
       "schema_sha256": "945f2719cbae169a6a397c67e8cc109fcc2147f8e5a1ff1780c2e91898d2a385",
-      "profile": "hosted-static-credentials-session-review",
+      "profile": "protocol-storj-saved-access-grant-native-read",
       "notes": [
         "Legacy registration alias of Storj. Reuse implementation evidence only with explicit alias-resolution test; retain catalog row and same external prerequisites.",
         "Free account/API eligibility: review_required",
         "Alias of storj; keep an explicit test case for this configured backend ID.",
         "Registered legacy alias of Storj; reuse native implementation evidence only after alias-resolution test, and retain the catalog row.",
-        "Grant-renewal N/A does not establish connection/session reauthentication N/A. Pinned Uplink transport/session behavior requires separate source review and acceptance."
+        "Grant-renewal N/A does not establish connection/session reauthentication N/A. Pinned Uplink transport/session behavior requires separate source review and acceptance.",
+        "Schema-36 isolated native tardigrade saved-grant reads qualify only listing, four full downloads, two unaligned ranges, expired-grant denial, list-only-grant download denial, strict missing-file copy rejection, rejected native writes, configuration/source preservation and disposable cleanup. The fixture includes three inline objects and a 1 MiB storage-node object. This is not live vendor/application, initial grant derivation, revocation, grant replacement or transport reconnection acceptance; existing lifecycle obligations remain."
       ],
       "source_links": [
         "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/storj.md",
@@ -4943,7 +4988,10 @@
         "https://github.com/rclone/rclone/blob/v1.75.2/backend/storj/fs.go",
         "https://storj.dev/learn/concepts/access/access-grants",
         "https://storj.dev/learn/concepts/access/access-grants/api-key/restriction",
-        "https://github.com/rclone/rclone/blob/v1.75.2/backend/storj/fs.go"
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/storj/fs.go",
+        "https://github.com/rclone/rclone/blob/v1.76.0/backend/storj/fs.go",
+        "https://github.com/rclone/rclone/blob/v1.76.0/backend/storj/object.go",
+        "https://github.com/storj/storj/tree/b2fe6e00c07c42711217c1c60c283d5e000b18ba/private/testplanet"
       ],
       "auth_applicability": "credentials",
       "refresh_applicability": "not_applicable",

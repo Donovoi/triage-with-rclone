@@ -633,3 +633,11 @@ Two distinct private TLS/SNI/Host/address bindings separate the gateway and issu
 Schema-35 internxt_saved_jwt_rotation_folder_read_v1 binds the current 46-file source closure, nine capabilities, containment and cleanup. Fifty-one provider regressions cover the wire, authority boundaries and evidence substitution. Both combined Linux and provider-smoke gates require 56 profiles and the same-run receipt.
 
 Initial login, 2FA, account eligibility, expired-token refresh/relogin, pagination, multishard files, uploads, native writes and application/live-provider acceptance remain unverified. Independent credential/session obligations remain. See [the isolated fixture](../../scripts/provider-lab/internxt-fixed-api/README.md).
+
+### Native Storj and Tardigrade saved-grant reads
+
+The isolated Linux fixture runs the pinned official Storj test network with one satellite, four storage nodes and disposable PostgreSQL. Both native configuration types run separate complete command sequences. Four known payloads include three inline objects and a 1 MiB object whose metabase entries prove storage-node pieces. Native cat/copy and two unaligned ranges verify exact bytes. List-only grants must list successfully but deny inline and remote downloads; unregistered API keys and expired grants must fail separately. Strict missing-file copy, native write rejection, byte-exact configuration preservation, source preservation and complete disposable cleanup are required.
+
+Schema 36 binds the seven-file harness, four-payload manifest, pinned source archive/compiler/runtime/resources, all 44 ordered commands and both backend rows. CI and Provider Smoke require the same-run sanitized receipt for their 58-provider Linux gates. The compiler is isolated and resource-limited; runtime networking is disabled outside the container. No vendor account or host database is used.
+
+Storj virtual prefixes are not strict file-existence oracles, so missing-object coverage uses copyto with --error-on-no-transfer. Initial key/passphrase setup, revocation, external grant replacement, session reconnection, production account eligibility, application acceptance and live-provider acceptance remain unverified. Existing independent lifecycle obligations remain. See [the native fixture](../../scripts/provider-lab/storj-native/README.md).

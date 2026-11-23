@@ -1,0 +1,468 @@
+{
+  "schema_version": 36,
+  "scope": "rclone_backend_protocol_fixture",
+  "runtime": {
+    "version": "1.76.0",
+    "sha256": "62e4d3e5432f2c685f1834b8bb342058ff0611c99d048aeb44bb8d8fd611527e"
+  },
+  "platform": "linux",
+  "architecture": "amd64",
+  "harness_sha256": "58d0dc2f7dffe95243507e5fb792a4b36ff07a41649f333d0d6405effb7de176",
+  "fixture_manifest_sha256": "0446b1f42c3fa7cdf94f4293bd3a521073fb8787ba1ad0f15c3dc6accd107bab",
+  "started_utc": "2026-11-23T06:17:31Z",
+  "finished_utc": "2026-11-23T06:17:37Z",
+  "success": true,
+  "cleanup_passed": true,
+  "backends": [
+    {
+      "backend": "storj",
+      "fixture_kind": "independent_storj_test_network",
+      "fixture_mode": "storj_saved_access_grant_native_read_v1",
+      "capabilities": {
+        "listing": "passed",
+        "download_hash": "passed",
+        "missing_object_rejection": "passed",
+        "authentication_rejection": "passed",
+        "read_denial": "passed",
+        "source_preservation": "passed",
+        "config_preservation": "passed",
+        "fixture_write_rejection": "passed",
+        "cleanup": "passed"
+      },
+      "errors": []
+    },
+    {
+      "backend": "tardigrade",
+      "fixture_kind": "independent_storj_test_network",
+      "fixture_mode": "storj_saved_access_grant_native_read_v1",
+      "capabilities": {
+        "listing": "passed",
+        "download_hash": "passed",
+        "missing_object_rejection": "passed",
+        "authentication_rejection": "passed",
+        "read_denial": "passed",
+        "source_preservation": "passed",
+        "config_preservation": "passed",
+        "fixture_write_rejection": "passed",
+        "cleanup": "passed"
+      },
+      "errors": []
+    }
+  ],
+  "errors": [],
+  "native_evidence": {
+    "source_sha256": {
+      "Dockerfile": "aed746ffa691e619729e975400e870b3c413ee25a4af4253a57892520577977a",
+      "pins.json": "d4ac2162a37e86b49aadbd5550fcf4b584e6ddfa942f0e6601909397bc8fe740",
+      "planet_test.go": "29173ff5fec7ea119eac7c201096299d627afa36d165558ed50cbf11a60a1a53",
+      "entrypoint.sh": "972ec6c9d149b8ace5bd714ae022e9055bdbd6a80bae00aa9f1733a13df6685e",
+      "build_fixture.py": "f312ec986133b8cc677c8906bebdb3026ac18769bf25d700dba4359f3e740015",
+      "run_container.py": "ab84ebd8349baa2453875b728bf1038a046214e0ad0996c52c13dd0bd71a2dac"
+    },
+    "build": {
+      "schema_version": 1,
+      "success": true,
+      "source_commit": "b2fe6e00c07c42711217c1c60c283d5e000b18ba",
+      "source_archive_sha256": "fe6c00b42023b761cc3740c86b6e5f15ca830206a2211725d75737f439cdb0cb",
+      "helper_sha256": "29173ff5fec7ea119eac7c201096299d627afa36d165558ed50cbf11a60a1a53",
+      "compiler_image": "golang@sha256:fb7cceb528b47141eccd9b60bf3cbd27d5ef5f8cf5b7d338bec866da495b50dc",
+      "compiler_version": "go1.27.4",
+      "builder_removed": true,
+      "scratch_removed": true,
+      "binary_sha256": "215f54b89df1b6a573a395dafe58d879d6a40f9f33cd2164e7935f764f4690fd",
+      "binary_bytes": 135571296,
+      "resources_sha256": {
+        "static/emails/AccountAlreadyExists.html": "dc98996668f9ba2ccf4bfa4b2db520e62675050060637d066d45542c5600108a",
+        "static/emails/AccountAlreadyExists.txt": "4818edaf19ec3572b3fbc20e466b61aaf9bd7172733829f759f2975e360565d4",
+        "static/emails/AccountDeletionSuccess.html": "7b78a90cbf810154e241af3da38af4d44f09c752387c6411ba119c5dd2e8e4d6",
+        "static/emails/AccountDeletionSuccess.txt": "3bec88ae0b292c47220eb1a0cfea23273c83b9fb1388d8f1c91cb69a7be4dc17",
+        "static/emails/ActivationLockAccount.html": "45f4edd1d22a7630e4a61f99fc9277b3156462848a7748c06401c3b0d2e8cdb8",
+        "static/emails/ActivationLockAccount.txt": "0cfbf71ec111e18a987eb946435dd0ffd31d880ab6c4d479197b69f5c48198b3",
+        "static/emails/BillingFreezeNotification.html": "b5ce7557e227dc6de3b9d9619759c6a5f2f4b7286948a088a206560b65e18333",
+        "static/emails/BillingFreezeNotification.txt": "35e2711a447c1124abf685263c419767642f0833e20b02727cc8ea0cfb41cf35",
+        "static/emails/BillingWarning.html": "981bc9506fcc4d9bc5172e3f27374ce8f11b61ead1ffd9a1ecdd96a6653e87d8",
+        "static/emails/BillingWarning.txt": "9063e9433bb04f99ca239d4bac809937a8648b76ec3808d33f94db10ba714635",
+        "static/emails/CreditCardAdded.html": "d47dde02446803f2bfcea187eee125304379cfbef6d2b509f4d19f1e5e44203a",
+        "static/emails/CreditCardAdded.txt": "544d01c6c35e7c0bfffcc7ecbbdc72cb5a90686933c4867470ee3ba92374c4af",
+        "static/emails/EmailAddressVerification.html": "710c16a60761aedc9e5acc55f741e794a0904ea5308fa71901c3b418b29aafa5",
+        "static/emails/EmailAddressVerification.txt": "7252a3dba8d58f8d199c03758b821c46f24fb3f1bbd31713bc4d3f2a235f4240",
+        "static/emails/EmailChangeSuccess.html": "2343a8fad9a7e1bec87c1166d95b1e7dc8f2e9aad2a77bb7efb2afc8bca144fe",
+        "static/emails/EmailChangeSuccess.txt": "f47fcb58cf63821a8973023dc11a8cfef773eeaaf2bfb32fb700fd8ee5d73a9b",
+        "static/emails/ExistingUserInvite.html": "094836c99a024585be7efb24bb6c0d85818b3155906e7d1ed05e52135f56e074",
+        "static/emails/ExistingUserInvite.txt": "b96c1cf5b0754da0ab9a1457ebbc9f4a6ba159c41b022a2d648e46c5e8ad4e17",
+        "static/emails/Forgot.html": "9dba58ad2a916687f45eac89f65740ef74f6b9202710d4fec21792fcd2f0f5ae",
+        "static/emails/Forgot.txt": "1550d73bb523effafa134456121ccb309299eb875f521347502aa353a3ad6326",
+        "static/emails/InactivityFreeze.html": "1bde5289ee8f2dbfeecbc45338c390e3c1f11aeddb94e645fe6d0992906fe44e",
+        "static/emails/InactivityFreeze.txt": "c3846af950ee24a692e2dc1c5a7078ba58c850787157b763b3eabd13538f7384",
+        "static/emails/InactivityWarning.html": "6075f1c5d2900abf69118c12f4ff1617df4d483b2bcc339ab7cc9f6b7cce7f4f",
+        "static/emails/InactivityWarning.txt": "a0c5b5023e284676eb4d4aa54d9be476425a28ba5d4e3acd49a59a2513f7e44e",
+        "static/emails/LoginLockAccount.html": "b85717e1c636ace224509db84ce6d6c4882d9a4ce61fbc812a8484982b347457",
+        "static/emails/LoginLockAccount.txt": "6b227ffa3132295cab88970993b62bf6225935630265c1610eccd5e57f157ea1",
+        "static/emails/MFAActivated.html": "8e4fd823d841c3d6846efe095aee2273a492fc0ddf0c531ddf4d89bd10c40059",
+        "static/emails/MFAActivated.txt": "5101fd0f652d9374cad711ccbdad28e0b1c05f4d7e47ad151c03a888ff342d3b",
+        "static/emails/MFADisabled.html": "185c2cb47ef752477b7e05609383b8055afa8f6a49834076ee492f89d5b732da",
+        "static/emails/MFADisabled.txt": "25c27297df0ac518503d0b39e1be465e5f7863a94ebf7238c494828ae8d96546",
+        "static/emails/NewPricingAccepted.html": "7f7405c2ae93c55d0282c69f9bcb42ef4eb830ed4ed54398b642ba021cea0b16",
+        "static/emails/NewPricingAccepted.txt": "94872f05983e1bc7ef69eca25315b921ea7d9d0f4f4c545f28f235d32e6e209e",
+        "static/emails/NewPricingDeclined.html": "8b6255ac2804ee31ff010cbaa1a59608259577f093cdf99fb6cededfbe5d8549",
+        "static/emails/NewPricingDeclined.txt": "cf2ed15398e4fdbdb4557b66dfe3dd9e610c2f8910251a9562701c9d88836dc9",
+        "static/emails/NewUserInvite.html": "67435ab67801329b9f5a85e9a2a680c93986c61a77341f86b3a4d9ec7ebefc7a",
+        "static/emails/NewUserInvite.txt": "907e3fdd069bff149c0d4f61550a946ebf2b1d1742279e01797c90fa104b3497",
+        "static/emails/NewUserNotificationEmail.html": "7ccd709eafc1b3be0d6b1977188ed83289ff85e22b3fd4fefa3cdf4fb2b06850",
+        "static/emails/NewUserNotificationEmail.txt": "245c0093a7292963eccbcea740a1accac81b5c8dc411ef468ca02c9eef516915",
+        "static/emails/NewUserRegistrationLink.html": "4b5789706e91ff84146988bb09fb87c26e786b96fe7ac6af14c59628f3c8063b",
+        "static/emails/NewUserRegistrationLink.txt": "d7231d06fe265d9a4e777257be3faef8d9e51b3eba5a31ee17e5318e307d6b96",
+        "static/emails/NodeBelowMinVersion.html": "a0846c9c20604e46ed937a6096e5fc6c7bfaf5747af14401327d0e1aa2acbd6c",
+        "static/emails/NodeBelowMinVersion.txt": "6bdf6e47a37415dbfbd45745cc1bbd2453579c5c3080a4a0013bbb202151e84e",
+        "static/emails/NodeDisqualified.html": "88a8d9385dde17b1b283ca2ed6dfbe36e56598ccacfe3e88d934fdb3514bcfb9",
+        "static/emails/NodeDisqualified.txt": "afbb0884ebf5784987f92a34aa8eb0b1a5bdb6e4c59c9e9781f2f588ea92249d",
+        "static/emails/NodeOffline.html": "9a5f851715b44e19a0af791d5318d616681943ec8e45d7ca69208463bcef0911",
+        "static/emails/NodeOffline.txt": "2b4ee50d0590d30cf355dbaac6e39e4cfa0840517bd0764646a547977be8833e",
+        "static/emails/NodeOfflineSuspended.html": "247be9951a866e81a6d3dc18b303218ca6b5603f5e111d05653241d78d2a2d0b",
+        "static/emails/NodeOfflineSuspended.txt": "15c0544901ae1679ef205a7d5e2f9d58db89a7efe5810229b743db44b364869e",
+        "static/emails/NodeOfflineUnsuspended.html": "f7894bd9724322eef634ba624c3f0769cfd7c27db27ca7059a739bf77d0027b6",
+        "static/emails/NodeOfflineUnsuspended.txt": "4370fe4fd07d80c64405863f0320b5b98672d2a4b79f2f96b50f2cc30bd63c13",
+        "static/emails/NodeOnline.html": "c4078a8625716b248cd165e877359cceeae01de0f57743c26c76474ed20e4343",
+        "static/emails/NodeOnline.txt": "44a162c3430380c348775901aeeb65faeebcaec459e62d821669262f4280798f",
+        "static/emails/NodeSuspended.html": "3dc5f91b73d57e51ad9af8c6ba31ea2f7ba3cc29b35311ed5fbebff9a0a648a7",
+        "static/emails/NodeSuspended.txt": "dc3ad596197a70c7e0360a68005fba352bf32fd886b0e64a5cdcea3742f756ac",
+        "static/emails/NodeUnsuspended.html": "cf2dde531456f1e2fb3863e79e8e71205b21bc3ebab4ba269eff30ab4bb89ddb",
+        "static/emails/NodeUnsuspended.txt": "61780e786d6479c51ab33ddeb631036cbdd4a71a85f4aaaa29a3baf978964729",
+        "static/emails/OptOutFreezeNotification.html": "a99305941294928d8d42c21f862237c72f20e1119cfa7c3da12f4813b4efb792",
+        "static/emails/OptOutFreezeNotification.txt": "4c4a6fea78469244c1aee08557dc99acbb3752fb811afedfd1692935815f5927",
+        "static/emails/PasswordChanged.html": "8c7fd14988b119a0cb53d78bda0f5fb6cca17b550eb683861d4ebe9c776e218d",
+        "static/emails/PasswordChanged.txt": "1a72f10e28612e270a25500694e81f788e12bc54de1844cdd64b66174152bb99",
+        "static/emails/ProjectEgressUsage100.html": "b533614c753ae1bcdce6d95ce3c2bce56eb32815386f1b2376b61a0b511a6e00",
+        "static/emails/ProjectEgressUsage100.txt": "91d494051826cef345191210536e6c40e36ae13e05cf0276734d24447ebdbc3c",
+        "static/emails/ProjectEgressUsage80.html": "17e86d092f487677e892cdf227e85cfa7d579fba62b6e2afe40b480904dc7f67",
+        "static/emails/ProjectEgressUsage80.txt": "d12f57427d4efe6d7d459f90c62abcba7894e8ab77e421f629112e4a4d470383",
+        "static/emails/ProjectStorageUsage100.html": "bdae910c7c6ca0bb04fa453033dfaecacaf7b8f5ddab1a52afbda8429ed61b95",
+        "static/emails/ProjectStorageUsage100.txt": "c4cadb58b4fca3a442b994c00384a6f2a13215a340b888a29dd4ab2351a328b2",
+        "static/emails/ProjectStorageUsage80.html": "e9095491761cfe4f6ba12c2b5e1ba0d71354c578a80ea6c22ea55560ec727241",
+        "static/emails/ProjectStorageUsage80.txt": "e3f7c66e830caa44318a5e6c7f5aba3b9f3a1aa8ccc9ad475cb88690052793c0",
+        "static/emails/README.md": "fb87e186c167b0269617e9a0c16cb38d81cbd6e129a4f9eba3837061c655f5da",
+        "static/emails/TrialExpirationEscalationReminder.html": "2c69b2ab1e024a05bd008d9409671d40025f2a18d2e785d42fbee935ed12e4ae",
+        "static/emails/TrialExpirationEscalationReminder.txt": "1e3bb8a141a83407da176906a4407163bc0b2ae021d93e2e43a55d3efe6d63e1",
+        "static/emails/TrialExpirationReminder.html": "95c3e44b42c7167cbe0b4e7daaefc540c8e21d1225b8957b37b3938c8ac51868",
+        "static/emails/TrialExpirationReminder.txt": "05f216f2c017e62c5a2fa7cdc8bca377f3d8d54c92ad961e7eed60611b4613ef",
+        "static/emails/TrialExpired.html": "cefee4c88ef5fe0d46f89614ffd9c67bf029abe2bdf5174c0d563886317e9a49",
+        "static/emails/TrialExpired.txt": "61a5fd0f3caf8313ec9caf2db2adc1f19126c2254e65a01ec04253086b421b22",
+        "static/emails/UnknownReset.html": "81f550c3ddb4b78271d0972d8c46fb7b06b3a77b919cdc70d877bb0caead683e",
+        "static/emails/UnknownReset.txt": "848e500ac9fb5de21b20a1d17da5c7f95b03736041a98192e029e00f695b2fb6",
+        "static/emails/UnverifiedUserInvite.html": "595961548ebf67deb378c71ccaefd8016827b6bb38a834c60ad98cbeccaf47c6",
+        "static/emails/UnverifiedUserInvite.txt": "b7e54189b0ed0a94b6268b43e9bec1233413ebb3e76df83aada6adad63f6c6a5",
+        "static/emails/UpgradeToPro.html": "031b76793dc303880385f5e306d822c38f1679a907572cceeef25869ae777043",
+        "static/emails/UpgradeToPro.txt": "3b87e828d17537414287292be6b3d49b0927cb3a80cfdd570ab58705f9f110f9",
+        "static/emails/Welcome.html": "9d85a56af9be1d466c9e7e89c734aab75da22da14f3fc0aabd822b6dc26bdb4a",
+        "static/emails/Welcome.txt": "385fdfde52e466267b79d10457848d9dfe1a4a923d0170eb1e8fec62eb72be0a",
+        "static/emails/WelcomeWithCode.html": "dd774e6ddf8d2752fba5d5ef747f4d0a40e2f9e26981d9fd526e7e7ed7ba8228",
+        "static/emails/WelcomeWithCode.txt": "c89088e063dca729fb931924ce74dac69c5e0592ab49937409ec8a9fe8ffc67d",
+        "static/emails/_footer.html": "94622eeac3963a11d3a20662caa0deaac9332e1e56ccc608955be4e401fe449d",
+        "static/emails/_footer.txt": "9048f429fab6b1324fbf149a5c3ddcc0a4494689e49e1b802766c6b7cb872317",
+        "static/emails/_head.html": "87ce60e9c61a9035279cab26e0a99b1a837141c7b2ec1ca87d8786ef1bca24ee",
+        "static/emails/_head.txt": "029181ad0f751780da581742742a3eb53c19948395e75029b4285cbf13d9b86d",
+        "static/emails/_header.html": "4cdd5d98c98b0e49b46f558066c55ca8e03e2c584102c03f0f28cba5edc23547",
+        "static/emails/_header.txt": "927d87a45f9cfb1516220de429455c2545b59970dd6e849ce28e88e2ab7912cd",
+        "static/emails/_layout.html": "dfca3b27b6f6f992a08ce40b6ac49c3c9d2f2ac483efd1c3d8a8c17ec98727fe",
+        "static/emails/_layout.txt": "0dd857b51bcd05ec05037f0be39363d68d177d0c9d819494a80381aa7c4e3885",
+        "static/emails/_styles.html": "ce163231f8438283abdb3e11674bfff01f901099a62535b2797e5003c2f1d279",
+        "static/emails/_styles.txt": "860576d789b6d41cda4835b9c4a6963edd331ba36229b3472b35c991145822e4",
+        "static/errors/error.css": "ce0fcf99775052997301ad598fd89674f0b497f3f8a5f280babad07b382ed737",
+        "static/errors/error.html": "97f08defd4f0582f395387c91c03ff3f082f891bbf6627590738c52bd02711c3",
+        "static/errors/logo.svg": "c855134de7575a4792a3fcc8cfb39387206adc16be8678b508c8561af225c3a9",
+        "static/errors/world.svg": "4f4bbb60d618564e14b5d7bd8b260f475cba56c8adae7fd8af4435fcab1ac11f"
+      },
+      "seconds": 551.98
+    },
+    "base_image": "postgres@sha256:194e55feb2597b1465dbee81cc9fd8d204566cd2eb42c8d22fd6c931a38781b1",
+    "image_id": "sha256:5b06739315274e1a2ffe7fafe22ccfcecdd0daef5d325804a8271b0ccc901e0d",
+    "isolation_verified": true,
+    "probe": {
+      "backends": [
+        "storj",
+        "tardigrade"
+      ],
+      "configuration_preserved": true,
+      "inline_segments": 3,
+      "native_checks": [
+        {
+          "backend": "storj",
+          "case": "listing-read",
+          "exit": 0,
+          "bytes": 663
+        },
+        {
+          "backend": "storj",
+          "case": "listing-list-only",
+          "exit": 0,
+          "bytes": 663
+        },
+        {
+          "backend": "storj",
+          "case": "cat:README-synthetic.txt",
+          "exit": 0,
+          "bytes": 62
+        },
+        {
+          "backend": "storj",
+          "case": "copy:README-synthetic.txt",
+          "exit": 0,
+          "bytes": 0
+        },
+        {
+          "backend": "storj",
+          "case": "cat:nested/bytes.bin",
+          "exit": 0,
+          "bytes": 2048
+        },
+        {
+          "backend": "storj",
+          "case": "copy:nested/bytes.bin",
+          "exit": 0,
+          "bytes": 0
+        },
+        {
+          "backend": "storj",
+          "case": "cat:nested/remote-piece.bin",
+          "exit": 0,
+          "bytes": 1048576
+        },
+        {
+          "backend": "storj",
+          "case": "copy:nested/remote-piece.bin",
+          "exit": 0,
+          "bytes": 0
+        },
+        {
+          "backend": "storj",
+          "case": "cat:nested/space name.txt",
+          "exit": 0,
+          "bytes": 26
+        },
+        {
+          "backend": "storj",
+          "case": "copy:nested/space name.txt",
+          "exit": 0,
+          "bytes": 0
+        },
+        {
+          "backend": "storj",
+          "case": "range:nested/bytes.bin",
+          "exit": 0,
+          "bytes": 11
+        },
+        {
+          "backend": "storj",
+          "case": "range:nested/remote-piece.bin",
+          "exit": 0,
+          "bytes": 8193
+        },
+        {
+          "backend": "storj",
+          "case": "unknown-key-list-denied",
+          "exit": 1,
+          "bytes": 2
+        },
+        {
+          "backend": "storj",
+          "case": "expired-list-denied",
+          "exit": 1,
+          "bytes": 2
+        },
+        {
+          "backend": "storj",
+          "case": "cat-denied",
+          "exit": 1,
+          "bytes": 0
+        },
+        {
+          "backend": "storj",
+          "case": "copy-denied",
+          "exit": 1,
+          "bytes": 0
+        },
+        {
+          "backend": "storj",
+          "case": "cat-denied",
+          "exit": 1,
+          "bytes": 0
+        },
+        {
+          "backend": "storj",
+          "case": "copy-denied",
+          "exit": 1,
+          "bytes": 0
+        },
+        {
+          "backend": "storj",
+          "case": "missing-copy",
+          "exit": 9,
+          "bytes": 0
+        },
+        {
+          "backend": "storj",
+          "case": "delete-denied",
+          "exit": 1,
+          "bytes": 0
+        },
+        {
+          "backend": "storj",
+          "case": "upload-denied",
+          "exit": 1,
+          "bytes": 0
+        },
+        {
+          "backend": "storj",
+          "case": "listing-read",
+          "exit": 0,
+          "bytes": 663
+        },
+        {
+          "backend": "tardigrade",
+          "case": "listing-read",
+          "exit": 0,
+          "bytes": 663
+        },
+        {
+          "backend": "tardigrade",
+          "case": "listing-list-only",
+          "exit": 0,
+          "bytes": 663
+        },
+        {
+          "backend": "tardigrade",
+          "case": "cat:README-synthetic.txt",
+          "exit": 0,
+          "bytes": 62
+        },
+        {
+          "backend": "tardigrade",
+          "case": "copy:README-synthetic.txt",
+          "exit": 0,
+          "bytes": 0
+        },
+        {
+          "backend": "tardigrade",
+          "case": "cat:nested/bytes.bin",
+          "exit": 0,
+          "bytes": 2048
+        },
+        {
+          "backend": "tardigrade",
+          "case": "copy:nested/bytes.bin",
+          "exit": 0,
+          "bytes": 0
+        },
+        {
+          "backend": "tardigrade",
+          "case": "cat:nested/remote-piece.bin",
+          "exit": 0,
+          "bytes": 1048576
+        },
+        {
+          "backend": "tardigrade",
+          "case": "copy:nested/remote-piece.bin",
+          "exit": 0,
+          "bytes": 0
+        },
+        {
+          "backend": "tardigrade",
+          "case": "cat:nested/space name.txt",
+          "exit": 0,
+          "bytes": 26
+        },
+        {
+          "backend": "tardigrade",
+          "case": "copy:nested/space name.txt",
+          "exit": 0,
+          "bytes": 0
+        },
+        {
+          "backend": "tardigrade",
+          "case": "range:nested/bytes.bin",
+          "exit": 0,
+          "bytes": 11
+        },
+        {
+          "backend": "tardigrade",
+          "case": "range:nested/remote-piece.bin",
+          "exit": 0,
+          "bytes": 8193
+        },
+        {
+          "backend": "tardigrade",
+          "case": "unknown-key-list-denied",
+          "exit": 1,
+          "bytes": 2
+        },
+        {
+          "backend": "tardigrade",
+          "case": "expired-list-denied",
+          "exit": 1,
+          "bytes": 2
+        },
+        {
+          "backend": "tardigrade",
+          "case": "cat-denied",
+          "exit": 1,
+          "bytes": 0
+        },
+        {
+          "backend": "tardigrade",
+          "case": "copy-denied",
+          "exit": 1,
+          "bytes": 0
+        },
+        {
+          "backend": "tardigrade",
+          "case": "cat-denied",
+          "exit": 1,
+          "bytes": 0
+        },
+        {
+          "backend": "tardigrade",
+          "case": "copy-denied",
+          "exit": 1,
+          "bytes": 0
+        },
+        {
+          "backend": "tardigrade",
+          "case": "missing-copy",
+          "exit": 9,
+          "bytes": 0
+        },
+        {
+          "backend": "tardigrade",
+          "case": "delete-denied",
+          "exit": 1,
+          "bytes": 0
+        },
+        {
+          "backend": "tardigrade",
+          "case": "upload-denied",
+          "exit": 1,
+          "bytes": 0
+        },
+        {
+          "backend": "tardigrade",
+          "case": "listing-read",
+          "exit": 0,
+          "bytes": 663
+        }
+      ],
+      "remote_pieces": 3,
+      "remote_segments": 1,
+      "source_preserved": true,
+      "success": true
+    },
+    "exit_code": 0,
+    "oom_killed": false,
+    "stdout_bytes": 83860,
+    "stderr_bytes": 0,
+    "cleanup": {
+      "image_removed": true,
+      "container_removed": true,
+      "temporary_removed": true
+    }
+  }
+}

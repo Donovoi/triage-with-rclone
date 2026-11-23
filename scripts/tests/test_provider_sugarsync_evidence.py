@@ -279,11 +279,11 @@ class SugarsyncWorkflowTests(unittest.TestCase):
         for before, after in (
             ("  sugarsync-fixed-api:\n", "  sugarsync-fixed-api:\n    if: false\n"),
             ("--rclone \"$RUNNER_TEMP/rclone-sugarsync\" --protocol-evidence", "--rclone \"$RUNNER_TEMP/rclone-sugarsync\""),
-            ("linkbox-fixed-api, yandex-fixed-api, box-fixed-api, onedrive-fixed-api, filelu-fixed-api, qingstor-fixed-api, drive-fixed-api, dropbox-fixed-api, oos-fixed-api, zoho-fixed-api, jottacloud-fixed-api, sugarsync-fixed-api, pikpak-fixed-api, dosya-fixed-api, kdrive-fixed-api, gphotos-fixed-api, huaweidrive-fixed-api, mailru-fixed-api, ulozto-fixed-api, iclouddrive-fixed-api, internxt-fixed-api]", 'linkbox-fixed-api, yandex-fixed-api, box-fixed-api, onedrive-fixed-api, filelu-fixed-api, qingstor-fixed-api, drive-fixed-api, dropbox-fixed-api, oos-fixed-api, zoho-fixed-api, jottacloud-fixed-api, pikpak-fixed-api, dosya-fixed-api]'),
+            ("linkbox-fixed-api, yandex-fixed-api, box-fixed-api, onedrive-fixed-api, filelu-fixed-api, qingstor-fixed-api, drive-fixed-api, dropbox-fixed-api, oos-fixed-api, zoho-fixed-api, jottacloud-fixed-api, sugarsync-fixed-api, pikpak-fixed-api, dosya-fixed-api, kdrive-fixed-api, gphotos-fixed-api, huaweidrive-fixed-api, mailru-fixed-api, ulozto-fixed-api, iclouddrive-fixed-api, internxt-fixed-api, storj-protocol]", "linkbox-fixed-api, yandex-fixed-api, box-fixed-api, onedrive-fixed-api, filelu-fixed-api, qingstor-fixed-api, drive-fixed-api, dropbox-fixed-api, oos-fixed-api, zoho-fixed-api, jottacloud-fixed-api, pikpak-fixed-api, dosya-fixed-api, storj-protocol]"),
             ("          path: ${{ runner.temp }}/provider-sugarsync",
              "          run-id: 123\n          path: ${{ runner.temp }}/provider-sugarsync"),
             ('--fixture-receipt "$RUNNER_TEMP/provider-sugarsync/sugarsync-read-protocol.json"', ""),
-            ("sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio,linkbox,yandex,box,onedrive,filelu,qingstor,drive,dropbox,oos,zoho,jottacloud,sugarsync,pikpak,dosya,kdrive,gphotos,huaweidrive,mailru,ulozto,iclouddrive,internxt\n", 'sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio,linkbox,yandex,box,onedrive,filelu,qingstor,drive,dropbox,oos,zoho,jottacloud\n')):
+            ("sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio,linkbox,yandex,box,onedrive,filelu,qingstor,drive,dropbox,oos,zoho,jottacloud,sugarsync,pikpak,dosya,kdrive,gphotos,huaweidrive,mailru,ulozto,iclouddrive,internxt,storj,tardigrade\n", "sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio,linkbox,yandex,box,onedrive,filelu,qingstor,drive,dropbox,oos,zoho,jottacloud,storj,tardigrade\n")):
             with self.subTest(before=before):
                 self.assertIn(before, self.ci)
                 with self.assertRaises(ValueError):
@@ -293,7 +293,7 @@ class SugarsyncWorkflowTests(unittest.TestCase):
         for before, after in (
             ('../scripts/provider-lab/sugarsync-fixed-api/run_container.py \\\n            --rclone "$RUNNER_TEMP/rclone-smoke" --protocol-evidence', '../scripts/provider-lab/sugarsync-fixed-api/run_container.py \\\n            --rclone "$RUNNER_TEMP/rclone-smoke"'),
             ('--fixture-receipt "$RUNNER_TEMP/sugarsync-read-protocol.json"', ""),
-            ("sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio,linkbox,yandex,box,onedrive,filelu,qingstor,drive,dropbox,oos,zoho,jottacloud,sugarsync,pikpak,dosya,kdrive,gphotos,huaweidrive,mailru,ulozto,iclouddrive,internxt\n", 'sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio,linkbox,yandex,box,onedrive,filelu,qingstor,drive,dropbox,oos,zoho,jottacloud\n'),
+            ("sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio,linkbox,yandex,box,onedrive,filelu,qingstor,drive,dropbox,oos,zoho,jottacloud,sugarsync,pikpak,dosya,kdrive,gphotos,huaweidrive,mailru,ulozto,iclouddrive,internxt,storj,tardigrade\n", "sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio,linkbox,yandex,box,onedrive,filelu,qingstor,drive,dropbox,oos,zoho,jottacloud,storj,tardigrade\n"),
             ("            ${{ runner.temp }}/sugarsync-read-protocol.json\n", "")):
             with self.subTest(before=before):
                 self.assertIn(before, self.smoke)
