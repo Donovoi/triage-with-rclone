@@ -56,7 +56,7 @@ jiff = { version = "1.0.2", features = ["serde"] }
 anyhow = "1.0"
 
 # Filesystem & Paths
-dirs = "5.0"
+dirs = "7.0"
 tempfile = "3.14"
 
 # CLI
