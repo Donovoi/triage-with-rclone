@@ -603,3 +603,13 @@ Complete M1 folder inventories use exact query-token authentication, offset=0, l
 Schema-32 mailru_saved_token_folder_read_v1 binds the current 43-file source closure, pinned runtime/dependencies, nine capabilities, containment and cleanup. Fifty-one provider regressions cover wire, three separate authorities, containment and evidence substitution. Both combined Linux and provider-smoke gates require 53 reviewed profiles and the same-run receipt; raw feasibility evidence cannot qualify this mode.
 
 Initial login, OAuth refresh, password reauthorization, binary listing, dispatcher failover, throttling, uploads, native writes and application/live-provider acceptance remain unverified. Independent renewal/session-review obligations remain. See [the isolated fixture](../../scripts/provider-lab/mailru-fixed-api/README.md).
+
+### Uloz.to password-session folder read protocol
+
+The isolated Linux Uloz.to profile uses an application token plus synthetic account password to obtain a fresh session, with an explicit root folder. The normal apis.uloz.to authority and an issued synthetic-content.ulozto.invalid authority retain distinct private TLS/SNI/Host/address bindings at 127.0.0.1:443 and 127.0.0.2:443.
+
+Complete folder and file inventories retain root/nested scope, numeric sizes and timestamps. Name-filtered metadata stays within the selected folder. Authenticated API calls require the exact application token and an actually issued session. Download links bind an observed file to fresh path nonces and signatures. Native redirects must strip application and session credentials before content delivery. Three native downloads receive independent SHA-256 checks; native cat and copy reject HTTP403 with identical expected bytes. Wrong-application-token, wrong-password and missing-name rejection, byte-exact config/source preservation and cleanup are mandatory.
+
+Schema-33 ulozto_password_session_folder_read_v1 binds the current 44-file source closure, pinned runtime/dependencies, nine capabilities, containment and cleanup. Fifty-one provider regressions cover wire, two separate authorities, containment and evidence substitution. Both combined Linux and provider-smoke gates require 54 reviewed profiles and the same-run receipt; raw feasibility evidence cannot qualify this mode.
+
+Real account login, expired-session reauthentication, root discovery, pagination, duplicate names, custom-description hashes, uploads, native writes and application/live-provider acceptance remain unverified. Independent credential-renewal/session-review obligations remain. See [the isolated fixture](../../scripts/provider-lab/ulozto-fixed-api/README.md).

@@ -40,7 +40,7 @@ from email.utils import format_datetime
 
 
 BACKENDS = ("local", "http", "webdav", "ftp", "sftp", "s3", "archive", "swift", "b2", "azureblob", "azurefiles", "seafile", "memory", "koofr", "pixeldrain", "filefabric", "internetarchive", "netstorage", "pcloud", "gcs", "sia", "hidrive", "doi", "quatrix", "shade", "sharefile")
-HARNESS_FILES = ("fixture_servers.py", "run_lab.py", "fixture_tls.py", "fixture_pcloud.py", "fixture_gcs.py", "fixture_sia.py", "fixture_read_api.py", "fixture_hidrive.py", "fixture_doi.py", "fixture_quatrix.py", "fixture_shade.py", "fixture_sharefile.py", "fixture_cloudinary.py", "fixture_opendrive.py", "fixture_gofile.py", "fixture_drime.py", "fixture_fichier.py", "fixture_premiumizeme.py", "fixture_putio.py", "fixture_linkbox.py", "fixture_yandex.py", "fixture_box.py", "fixture_onedrive.py", "fixture_filelu.py", "fixture_qingstor.py", "fixture_drive.py", "fixture_dropbox.py", "fixture_oos.py", "fixture_zoho.py", "fixture_jottacloud.py", "fixture_sugarsync.py", "fixture_pikpak.py", "fixture_dosya.py", "fixture_kdrive.py", "fixture_gphotos.py", "fixture_huaweidrive.py", "fixture_mailru.py", "requirements-fixture.txt")
+HARNESS_FILES = ("fixture_servers.py", "run_lab.py", "fixture_tls.py", "fixture_pcloud.py", "fixture_gcs.py", "fixture_sia.py", "fixture_read_api.py", "fixture_hidrive.py", "fixture_doi.py", "fixture_quatrix.py", "fixture_shade.py", "fixture_sharefile.py", "fixture_cloudinary.py", "fixture_opendrive.py", "fixture_gofile.py", "fixture_drime.py", "fixture_fichier.py", "fixture_premiumizeme.py", "fixture_putio.py", "fixture_linkbox.py", "fixture_yandex.py", "fixture_box.py", "fixture_onedrive.py", "fixture_filelu.py", "fixture_qingstor.py", "fixture_drive.py", "fixture_dropbox.py", "fixture_oos.py", "fixture_zoho.py", "fixture_jottacloud.py", "fixture_sugarsync.py", "fixture_pikpak.py", "fixture_dosya.py", "fixture_kdrive.py", "fixture_gphotos.py", "fixture_huaweidrive.py", "fixture_mailru.py", "fixture_ulozto.py", "requirements-fixture.txt")
 MAX_OUTPUT = 2 * 1024 * 1024
 COMMAND_TIMEOUT = 20
 
@@ -4050,6 +4050,93 @@ def box_checks(runtime, root, row, expected):
 
 
 
+def ulozto_checks(runtime, root, row, expected):
+    from fixture_ulozto import UloztoState, serve_ulozto, ROOT, FILES, USER, listeners_closed
+    secret = "synthetic-token-" + uuid.uuid4().hex
+    password = "synthetic-password-" + uuid.uuid4().hex
+    state = UloztoState(secret,password)
+    transports, certificates = [], []
+    before = len(runtime.children)
+    caps = row["capabilities"]
+    try:
+        pcloud_dependencies()
+        with serve_ulozto(root, state) as (certificates, transports):
+            class TrustedRuntime:
+                def run(self, args, config=None, **kwargs):
+                    pcloud_dependencies()
+                    return runtime.run([*[part for cert in certificates for part in cert.rclone_ca_args()], *args], config, **kwargs)
+            native = TrustedRuntime()
+            code,obscured,_=native.run(["obscure",password])
+            check(code==0,"ulozto_password_setup_failed")
+            code,wrong,_=native.run(["obscure","wrong-synthetic-password"])
+            check(code==0,"ulozto_password_setup_failed")
+            options={"type":"ulozto","app_token":secret,"username":USER,"password":obscured.decode().strip(),"root_folder_slug":ROOT}
+            good=config_file(root,"ulozto-good.conf",options)
+            bad=config_file(root,"ulozto-wrong.conf",dict(options,app_token="wrong-synthetic-app"))
+            bad_password=config_file(root,"ulozto-wrong-password.conf",dict(options,password=wrong.decode().strip()))
+            target="Synthetic:"
+            preserved = {path: path.read_bytes() for path in (good, bad, bad_password)}
+            metadata_before = {name: state.metadata(name) for name in state.files}
+            auth_destination = root / "bad-auth"
+            auth_destination.mkdir(mode=0o700)
+            for rejected in (bad,bad_password):
+                count=state.denied
+                code,output,error=exact_copy(native,rejected,target,"README-synthetic.txt",str(auth_destination),"must-not-exist")
+                check(code!=0 and not list(auth_destination.iterdir()) and state.denied>count
+                      and state.payload_bytes==0,"ulozto_credential_rejection_missing")
+            caps["authentication_rejection"] = "passed"
+            common_checks(native, root, good, None, target, row, state, expected=expected)
+            read_api_listing(native, good, expected, target)
+            nested=[dict(item,path=item["path"][7:]) for item in expected if item["path"].startswith("nested/")]
+            read_api_listing(native,good,nested,target+"nested/")
+            state.mode = "read_denied"
+            denied = root / "denied"
+            denied.mkdir(mode=0o700)
+            cat_code,cat_output,_=native.run(["cat",target+"README-synthetic.txt"],good)
+            code,output,error=exact_copy(native,good,target,"README-synthetic.txt",str(denied),"denied.bin")
+            accepted=denied/"denied.bin"
+            expected_bytes=state.files["README-synthetic.txt"]
+            unchanged=(served_source_unchanged(state,expected) and all(path.read_bytes()==data for path,data in preserved.items()))
+            check(unchanged,"ulozto_config_or_source_changed")
+            caps["config_preservation"]=caps["source_preservation"]="passed"
+            if (cat_code==code==0 and cat_output==expected_bytes and accepted.is_file()
+                    and accepted.read_bytes()==expected_bytes and state.read_denied==2
+                    and not state.unexpected and not state.budget_exceeded):
+                caps["read_denial"]="failed"
+                raise LabError("ulozto_http403_cat_and_copy_accepted")
+            check(cat_code!=0 and not cat_output and code!=0 and b"403" in output+error
+                  and not list(denied.iterdir()),"ulozto_status_reproduction_inconclusive")
+            state.mode = "normal"
+            nonce,record=next((nonce,record) for nonce,record in state.links.items() if record[0]=="README-synthetic.txt")
+            name,session,signature=record
+            connection=http.client.HTTPSConnection(transports[0].authority,transports[0].port,timeout=3,context=certificates[0].client_context())
+            try:
+                connection.request("DELETE","/synthetic-content/"+FILES[name]+"/"+nonce+"?hash="+signature,
+                                   headers={"X-Auth-Token":secret,"X-User-Token":session})
+                response=connection.getresponse()
+                check(response.status==405 and len(response.read(4097))<=4096,"ulozto_write_guard_missing")
+            finally:connection.close()
+            check(not state.unexpected and not state.budget_exceeded and state.read_denied==2
+                  and state.rejected_mutations==1 and state.denied>=2 and state.logins>0
+                  and all(state.events.count(("listing_"+kind,path,""))>=1 for kind in ("folder","file") for path in ("","nested"))
+                  and state.observed==set(state.files) and len(state.redirected)>=5,"ulozto_protocol_flow_mismatch")
+            check(served_source_unchanged(state, expected) and state.password == secret and state.login_password == password
+                  and {name: state.metadata(name) for name in state.files} == metadata_before,
+                  "ulozto_source_changed")
+            check(all(path.read_bytes() == data for path, data in preserved.items()), "ulozto_config_changed")
+        for transport in transports:
+            observed = transport.snapshot()
+            check(not observed["failure_codes"] and observed["handshake_successes"] > 0, "ulozto_tls_failed")
+        for name in caps:
+            caps[name] = "passed"
+    finally:
+        closed = (state.cleanup_complete and listeners_closed(transports)
+                  and all(cert.cleanup_complete for cert in certificates)
+                  and all(record[0].poll() is not None for record in runtime.children[before:]))
+        caps["cleanup"] = "passed" if closed else "failed"
+        check(closed, "ulozto_cleanup_failed")
+
+
 def mailru_checks(runtime, root, row, expected):
     from fixture_mailru import MailruState, serve_mailru, ROOT, mailru_hash, listeners_closed
     secret = "synthetic-token-" + uuid.uuid4().hex
@@ -5501,7 +5588,7 @@ def fichier_checks(runtime, root, row, expected):
 
 def run_backend(runtime, backend, root):
     root.mkdir(mode=0o700)
-    independent = backend in ("http", "webdav", "ftp", "swift", "b2", "azureblob", "azurefiles", "seafile", "koofr", "pixeldrain", "filefabric", "internetarchive", "netstorage", "pcloud", "gcs", "sia", "hidrive", "doi", "quatrix", "shade", "sharefile", "cloudinary", "opendrive", "gofile", "drime", "fichier", "premiumizeme", "putio", "linkbox", "yandex", "box", "onedrive", "filelu", "qingstor", "drive", "dropbox", "oos", "zoho", "jottacloud", "sugarsync", "pikpak", "dosya", "kdrive", "gphotos", "huaweidrive", "mailru")
+    independent = backend in ("http", "webdav", "ftp", "swift", "b2", "azureblob", "azurefiles", "seafile", "koofr", "pixeldrain", "filefabric", "internetarchive", "netstorage", "pcloud", "gcs", "sia", "hidrive", "doi", "quatrix", "shade", "sharefile", "cloudinary", "opendrive", "gofile", "drime", "fichier", "premiumizeme", "putio", "linkbox", "yandex", "box", "onedrive", "filelu", "qingstor", "drive", "dropbox", "oos", "zoho", "jottacloud", "sugarsync", "pikpak", "dosya", "kdrive", "gphotos", "huaweidrive", "mailru", "ulozto")
     row = {"backend": backend,
            "fixture_kind": "local" if backend in ("local", "archive", "memory") else "independent_loopback" if independent else "rclone_loopback",
            "capabilities": {key: "not_run" for key in (
@@ -5513,7 +5600,7 @@ def run_backend(runtime, backend, root):
         row["capabilities"] = {key: "not_run" for key in (HIDRIVE_CAPABILITIES if backend == "hidrive" else DOI_CAPABILITIES)}
     if backend in CACHED_TOKEN_BACKENDS:
         row["capabilities"] = {key: "not_run" for key in CACHED_TOKEN_COMMON_CAPABILITIES | {backend + "_saved_token_read", backend + "_saved_token_rejection"}}
-    if backend in ("cloudinary", "opendrive", "gofile", "drime", "fichier", "premiumizeme", "putio", "linkbox", "yandex", "box", "onedrive", "filelu", "qingstor", "drive", "dropbox", "oos", "zoho", "jottacloud", "sugarsync", "pikpak", "dosya", "kdrive", "gphotos", "huaweidrive", "mailru"):
+    if backend in ("cloudinary", "opendrive", "gofile", "drime", "fichier", "premiumizeme", "putio", "linkbox", "yandex", "box", "onedrive", "filelu", "qingstor", "drive", "dropbox", "oos", "zoho", "jottacloud", "sugarsync", "pikpak", "dosya", "kdrive", "gphotos", "huaweidrive", "mailru", "ulozto"):
         row["capabilities"] = {key: "not_run" for key in QUATRIX_CAPABILITIES}
     if backend == "quatrix":
         row["capabilities"] = {key: "not_run" for key in QUATRIX_CAPABILITIES}
@@ -5574,6 +5661,9 @@ def run_backend(runtime, backend, root):
             return row
         if backend == "mailru":
             mailru_checks(runtime, root, row, expected)
+            return row
+        if backend == "ulozto":
+            ulozto_checks(runtime, root, row, expected)
             return row
         if backend == "sugarsync":
             sugarsync_checks(runtime, root, row, expected)
