@@ -298,7 +298,7 @@ pub fn render_state(frame: &mut Frame, app: &App) {
                 .provider
                 .last_updated
                 .as_ref()
-                .map(|ts| ts.format("%Y-%m-%d %H:%M:%S").to_string())
+                .map(|ts| ts.strftime("%Y-%m-%d %H:%M:%S").to_string())
                 .unwrap_or_else(|| "never".to_string());
             let last_error = app.provider.last_error.as_deref().unwrap_or("none");
             let show_status_panel = content_chunks[1].width >= 26 && content_chunks[1].height >= 6;

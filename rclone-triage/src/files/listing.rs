@@ -1,7 +1,7 @@
 //! File listing utilities
 
 use anyhow::{bail, Context, Result};
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use serde::de::{self, SeqAccess, Visitor};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -52,7 +52,7 @@ impl ListPathOptions {
 pub struct FileEntry {
     pub path: String,
     pub size: Option<u64>,
-    pub modified: Option<DateTime<Utc>>,
+    pub modified: Option<Timestamp>,
     pub is_dir: bool,
     pub hash: Option<String>,
     pub hash_type: Option<String>,
@@ -86,7 +86,7 @@ struct RcloneLsJsonEntry {
     #[serde(rename = "Size")]
     size: i64,
     #[serde(rename = "ModTime", default, deserialize_with = "deserialize_mod_time")]
-    mod_time: Option<DateTime<Utc>>,
+    mod_time: Option<Timestamp>,
     #[serde(rename = "IsDir")]
     is_dir: bool,
     #[serde(rename = "Hashes")]
@@ -95,12 +95,12 @@ struct RcloneLsJsonEntry {
 
 fn deserialize_mod_time<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
-) -> std::result::Result<Option<DateTime<Utc>>, D::Error> {
+) -> std::result::Result<Option<Timestamp>, D::Error> {
     let value = Option::<String>::deserialize(deserializer)?;
     match value.as_deref() {
         None | Some("") => Ok(None),
-        Some(value) => DateTime::parse_from_rfc3339(value)
-            .map(|time| Some(time.with_timezone(&Utc)))
+        Some(value) => crate::utils::datetime::parse_rfc3339(value)
+            .map(Some)
             .map_err(serde::de::Error::custom),
     }
 }
@@ -1151,18 +1151,19 @@ fn parse_lsf_ps_line(line: &str, hash_type: Option<&str>) -> Option<FileEntry> {
     })
 }
 
-fn parse_lsf_modtime(value: &str) -> Option<DateTime<Utc>> {
+fn parse_lsf_modtime(value: &str) -> Option<Timestamp> {
     if value.is_empty() || value == "-" {
         return None;
     }
 
-    if let Ok(dt) = DateTime::parse_from_rfc3339(value) {
-        return Some(dt.with_timezone(&Utc));
+    if let Ok(dt) = crate::utils::datetime::parse_rfc3339(value) {
+        return Some(dt);
     }
 
     // Common rclone lsf time output: "2006-01-02 15:04:05"
-    if let Ok(naive) = chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S") {
-        return Some(DateTime::<Utc>::from_naive_utc_and_offset(naive, Utc));
+    if value.len() == 19 && value.as_bytes().get(10) == Some(&b' ') {
+        let utc = format!("{}Z", value.replace(' ', "T"));
+        return crate::utils::datetime::parse_rfc3339(&utc).ok();
     }
 
     None
@@ -1355,6 +1356,27 @@ mod tests {
         assert_eq!(count, 1);
         assert_eq!(paths, vec!["folder[1]/file].txt".to_string()]);
         assert_eq!(progress.last().copied(), Some(1));
+    }
+
+    #[test]
+    fn lsf_times_preserve_utc_and_reject_lossy_or_ambiguous_values() {
+        let expected = crate::utils::datetime::parse_rfc3339("2024-01-02T03:04:05Z").unwrap();
+        assert_eq!(parse_lsf_modtime("2024-01-02 03:04:05"), Some(expected));
+        assert_eq!(
+            parse_lsf_modtime("2024-01-02T14:04:05+11:00"),
+            Some(expected)
+        );
+        for text in [
+            "2024-01-02 03:04:60",
+            "2024-01-02 24:04:05",
+            "2024-02-30 03:04:05",
+            "2024-01-02 03:04",
+            "2024-01-02T03:04:05+25:00",
+            "-",
+            "",
+        ] {
+            assert_eq!(parse_lsf_modtime(text), None, "{text}");
+        }
     }
 
     #[test]

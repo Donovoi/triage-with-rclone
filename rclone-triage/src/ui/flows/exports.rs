@@ -1,5 +1,5 @@
 use anyhow::{bail, Result};
-use chrono::Local;
+use jiff::ZonedDateTime;
 use ratatui::Terminal;
 use serde::Serialize;
 use std::path::PathBuf;
@@ -149,7 +149,7 @@ pub(crate) fn perform_export_browser_sessions(app: &mut App) -> Result<()> {
         None => bail!("Case directories not initialized"),
     };
 
-    let ts = Local::now().format("%Y%m%d-%H%M%S").to_string();
+    let ts = ZonedDateTime::now().strftime("%Y%m%d-%H%M%S").to_string();
     let out_path = dirs.listings.join(format!("browser_sessions_{}.json", ts));
 
     let extractor = crate::providers::session::SessionExtractor::new()?;
@@ -194,7 +194,7 @@ pub(crate) fn perform_export_browser_sessions(app: &mut App) -> Result<()> {
     let payload = ExportedBrowserSessions {
         tool: "rclone-triage",
         version: env!("CARGO_PKG_VERSION"),
-        captured_at: Local::now().to_rfc3339(),
+        captured_at: crate::utils::datetime::rfc3339_local_now(),
         sessions,
         errors,
     };
@@ -296,7 +296,7 @@ pub(crate) fn perform_export_domain_cookies<
         .listings
         .clone();
 
-    let ts = Local::now().format("%Y%m%d-%H%M%S").to_string();
+    let ts = ZonedDateTime::now().strftime("%Y%m%d-%H%M%S").to_string();
     let out_path = listings_dir.join(format!("domain_cookies_{}.json", ts));
 
     let extractor = crate::providers::session::SessionExtractor::new()?;
@@ -333,7 +333,7 @@ pub(crate) fn perform_export_domain_cookies<
     let payload = ExportedDomainCookies {
         tool: "rclone-triage",
         version: env!("CARGO_PKG_VERSION"),
-        captured_at: Local::now().to_rfc3339(),
+        captured_at: crate::utils::datetime::rfc3339_local_now(),
         domain_patterns: domain_patterns.clone(),
         results,
         errors,

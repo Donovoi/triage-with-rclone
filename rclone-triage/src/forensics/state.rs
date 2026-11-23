@@ -4,7 +4,7 @@
 //! to document what changes were made by the tool.
 
 use anyhow::Result;
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -14,7 +14,7 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SystemStateSnapshot {
     /// When the snapshot was taken
-    pub timestamp: DateTime<Utc>,
+    pub timestamp: Timestamp,
     /// Description of when/why this snapshot was taken
     pub description: String,
     /// Files in the temp directory
@@ -32,7 +32,7 @@ impl SystemStateSnapshot {
     /// # Arguments
     /// * `description` - A description of when/why this snapshot is being taken
     pub fn capture(description: impl Into<String>) -> Result<Self> {
-        let timestamp = Utc::now();
+        let timestamp = Timestamp::now();
         let description = description.into();
 
         // Capture temp directory contents
@@ -216,9 +216,9 @@ impl StateDiff {
             "=== System State Diff ===\n\
              Before: {} ({})\n\
              After:  {} ({})\n\n",
-            self.before.timestamp.format("%Y-%m-%d %H:%M:%S UTC"),
+            self.before.timestamp.strftime("%Y-%m-%d %H:%M:%S UTC"),
             self.before.description,
-            self.after.timestamp.format("%Y-%m-%d %H:%M:%S UTC"),
+            self.after.timestamp.strftime("%Y-%m-%d %H:%M:%S UTC"),
             self.after.description,
         ));
 
@@ -322,7 +322,7 @@ mod tests {
 
         let mut after = before.clone();
         after.description = "after".to_string();
-        after.timestamp = Utc::now();
+        after.timestamp = Timestamp::now();
 
         // Simulate a file being added
         after
@@ -344,7 +344,7 @@ mod tests {
 
         let mut after = before.clone();
         after.description = "after operation".to_string();
-        after.timestamp = Utc::now();
+        after.timestamp = Timestamp::now();
         after.temp_files.insert(PathBuf::from("/tmp/rclone-added"));
         after
             .env_vars
