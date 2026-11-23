@@ -1,0 +1,71 @@
+name: Experimental rclone read-status regressions
+on:
+  pull_request:
+    paths:
+      - 'scripts/runtime-readfix/**'
+      - '.github/workflows/runtime-readfix.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/runtime-readfix/**'
+      - '.github/workflows/runtime-readfix.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: readfix-${{ github.ref == 'refs/heads/main' && github.run_id || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+jobs:
+  read-status:
+    name: Reproduce read defects and verify experimental builds
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - name: Set runner-local work paths
+        shell: bash
+        run: |
+          printf 'READFIX_ROOT=%s\n' "$RUNNER_TEMP/experimental-readfix" >> "$GITHUB_ENV"
+          printf 'READFIX_GO=%s\n' "$RUNNER_TEMP/experimental-go/go/bin/go" >> "$GITHUB_ENV"
+          printf 'GOPATH=%s\n' "$RUNNER_TEMP/readfix-gopath" >> "$GITHUB_ENV"
+          printf 'GOCACHE=%s\n' "$RUNNER_TEMP/readfix-go-build" >> "$GITHUB_ENV"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check regression proof and binary architecture gates
+        run: python3 -B -m unittest discover -s scripts/runtime-readfix -p 'test_*.py'
+      - name: Acquire the hash-pinned Go toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(python3 -c 'import json; print(json.load(open("scripts/runtime-readfix/build-lock.json"))["toolchain"])')
+          expected=$(python3 -c 'import json; print(json.load(open("scripts/runtime-readfix/build-lock.json"))["linux_amd64_toolchain_sha256"])')
+          test ! -e "$RUNNER_TEMP/experimental-go"
+          mkdir "$RUNNER_TEMP/experimental-go"
+          curl --proto '=https' --tlsv1.2 --fail --location --retry 2 --max-time 180 \
+            "https://go.dev/dl/$version.linux-amd64.tar.gz" -o "$RUNNER_TEMP/experimental-go.tar.gz"
+          printf '%s  %s\n' "$expected" "$RUNNER_TEMP/experimental-go.tar.gz" | sha256sum --check --status
+          tar -xzf "$RUNNER_TEMP/experimental-go.tar.gz" -C "$RUNNER_TEMP/experimental-go"
+      - name: Acquire pinned source and verify modules
+        run: python3 -B scripts/runtime-readfix/build.py prepare --work-root "$READFIX_ROOT" --go "$READFIX_GO"
+      - name: Require baseline failures and patched passes with the race detector
+        run: python3 -B scripts/runtime-readfix/build.py check --work-root "$READFIX_ROOT" --go "$READFIX_GO"
+      - name: Build Linux amd64 twice from different roots
+        run: python3 -B scripts/runtime-readfix/build.py build --work-root "$READFIX_ROOT" --go "$READFIX_GO" --platform linux-amd64
+      - name: Cross-build Windows x64 twice from different roots
+        run: python3 -B scripts/runtime-readfix/build.py build --work-root "$READFIX_ROOT" --go "$READFIX_GO" --platform windows-amd64
+      - name: Cross-build Windows x86 twice from different roots
+        run: python3 -B scripts/runtime-readfix/build.py build --work-root "$READFIX_ROOT" --go "$READFIX_GO" --platform windows-386
+      - name: Cross-build Windows ARM64 twice from different roots
+        run: python3 -B scripts/runtime-readfix/build.py build --work-root "$READFIX_ROOT" --go "$READFIX_GO" --platform windows-arm64
+      - name: Retain experimental regression and build receipts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: experimental-read-status-regressions
+          path: |
+            ${{ runner.temp }}/experimental-readfix/prepared.json
+            ${{ runner.temp }}/experimental-readfix/checks.json
+            ${{ runner.temp }}/experimental-readfix/artifacts/*/build.json
+            ${{ runner.temp }}/experimental-readfix/logs/
+          if-no-files-found: warn
+          retention-days: 14

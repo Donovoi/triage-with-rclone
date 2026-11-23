@@ -1,0 +1,42 @@
+diff --git a/backend/filescom/filescom.go b/backend/filescom/filescom.go
+index 63c577e..f07e00e 100644
+--- a/backend/filescom/filescom.go
++++ b/backend/filescom/filescom.go
+@@ -802,7 +802,8 @@ func (o *Object) Storable() bool {
+ // Open an object for read
+ func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (in io.ReadCloser, err error) {
+ 	// Offset and Count for range download
+-	var offset, count int64
++	var offset int64
++	count := o.size
+ 	fs.FixRangeOption(options, o.size)
+ 	for _, option := range options {
+ 		switch x := option.(type) {
+@@ -826,15 +827,23 @@ func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (in io.Read
+ 	}
+ 
+ 	headers := &http.Header{}
+-	headers.Set("Range", fmt.Sprintf("bytes=%v-%v", offset, offset+count-1))
++	if count > 0 {
++		headers.Set("Range", fmt.Sprintf("bytes=%v-%v", offset, offset+count-1))
++	} else if offset > 0 {
++		headers.Set("Range", fmt.Sprintf("bytes=%v-", offset))
++	}
+ 	err = o.fs.pacer.Call(func() (bool, error) {
+ 		_, err = o.fs.fileClient.Download(
+ 			params,
+ 			files_sdk.WithContext(ctx),
+ 			files_sdk.RequestHeadersOption(headers),
+-			files_sdk.ResponseBodyOption(func(closer io.ReadCloser) error {
+-				in = closer
+-				return err
++			files_sdk.ResponseOption(func(response *http.Response) error {
++				if response.StatusCode != http.StatusOK && response.StatusCode != http.StatusPartialContent {
++					_ = response.Body.Close()
++					return fmt.Errorf("failed to download %q: %s", o.remote, response.Status)
++				}
++				in = response.Body
++				return nil
+ 			}),
+ 		)
+ 		return shouldRetry(ctx, err)
