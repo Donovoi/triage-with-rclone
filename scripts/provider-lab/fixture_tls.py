@@ -57,8 +57,26 @@ MAILRU_DISPATCH_NAME = "dispatcher.cloud.mail.ru"
 MAILRU_CONTENT_NAME = "synthetic-content.mailru.invalid"
 
 
+ULOZTO_API_NAME = "apis.uloz.to"
+
+
+ULOZTO_CONTENT_NAME = "synthetic-content.ulozto.invalid"
+
+
+def _ulozto_api_sni(_socket, name, _context):
+    if name != ULOZTO_API_NAME:
+        return ssl.ALERT_DESCRIPTION_UNRECOGNIZED_NAME
+    return None
+
+
+def _ulozto_content_sni(_socket, name, _context):
+    if name != ULOZTO_CONTENT_NAME:
+        return ssl.ALERT_DESCRIPTION_UNRECOGNIZED_NAME
+    return None
+
+
 def _server_name(value):
-    if value is not None and (type(value) is not str or value not in (PCLOUD_OAUTH_NAME, CLOUDINARY_API_NAME, OPENDRIVE_API_NAME, GOFILE_API_NAME, DRIME_API_NAME, FICHIER_API_NAME, PREMIUMIZEME_API_NAME, PUTIO_API_NAME, LINKBOX_API_NAME, YANDEX_API_NAME, BOX_API_NAME, ONEDRIVE_API_NAME, FILELU_API_NAME, QINGSTOR_API_NAME, OOS_API_NAME, DRIVE_API_NAME, DROPBOX_API_NAME, DROPBOX_CONTENT_NAME, ZOHO_API_NAME, ZOHO_CONTENT_NAME, JOTTACLOUD_API_NAME, JOTTACLOUD_CONTENT_NAME, SUGARSYNC_API_NAME, PIKPAK_API_NAME, KDRIVE_API_NAME, DOSYA_API_NAME, HUAWEIDRIVE_API_NAME, GPHOTOS_API_NAME, GPHOTOS_CONTENT_NAME, MAILRU_API_NAME, MAILRU_DISPATCH_NAME, MAILRU_CONTENT_NAME)):
+    if value is not None and (type(value) is not str or value not in (PCLOUD_OAUTH_NAME, CLOUDINARY_API_NAME, OPENDRIVE_API_NAME, GOFILE_API_NAME, DRIME_API_NAME, FICHIER_API_NAME, PREMIUMIZEME_API_NAME, PUTIO_API_NAME, LINKBOX_API_NAME, YANDEX_API_NAME, BOX_API_NAME, ONEDRIVE_API_NAME, FILELU_API_NAME, QINGSTOR_API_NAME, OOS_API_NAME, DRIVE_API_NAME, DROPBOX_API_NAME, DROPBOX_CONTENT_NAME, ZOHO_API_NAME, ZOHO_CONTENT_NAME, JOTTACLOUD_API_NAME, JOTTACLOUD_CONTENT_NAME, SUGARSYNC_API_NAME, PIKPAK_API_NAME, KDRIVE_API_NAME, DOSYA_API_NAME, HUAWEIDRIVE_API_NAME, GPHOTOS_API_NAME, GPHOTOS_CONTENT_NAME, MAILRU_API_NAME, MAILRU_DISPATCH_NAME, MAILRU_CONTENT_NAME, ULOZTO_API_NAME, ULOZTO_CONTENT_NAME)):
         raise TlsError("tls_unreviewed_authority")
     return value
 
@@ -414,7 +432,7 @@ class FixtureCertificates(AbstractContextManager):
             context.set_alpn_protocols(["http/1.1"])
             if server_name is not None:
                 context.set_servername_callback({PCLOUD_OAUTH_NAME: _pcloud_sni, CLOUDINARY_API_NAME: _cloudinary_sni,
-                                                 OPENDRIVE_API_NAME: _opendrive_sni, GOFILE_API_NAME: _gofile_sni, DRIME_API_NAME: _drime_sni, FICHIER_API_NAME: _fichier_sni, PREMIUMIZEME_API_NAME: _premiumizeme_sni, PUTIO_API_NAME: _putio_sni, LINKBOX_API_NAME: _linkbox_sni, YANDEX_API_NAME: _yandex_sni, BOX_API_NAME: _box_sni, ONEDRIVE_API_NAME: _onedrive_sni, FILELU_API_NAME: _filelu_sni, QINGSTOR_API_NAME: _qingstor_sni, OOS_API_NAME: _oos_sni, DRIVE_API_NAME: _drive_sni, DROPBOX_API_NAME: _dropbox_api_sni, DROPBOX_CONTENT_NAME: _dropbox_content_sni, ZOHO_API_NAME: _zoho_api_sni, ZOHO_CONTENT_NAME: _zoho_content_sni, JOTTACLOUD_API_NAME: _jottacloud_api_sni, JOTTACLOUD_CONTENT_NAME: _jottacloud_content_sni, SUGARSYNC_API_NAME: _sugarsync_sni, PIKPAK_API_NAME: _pikpak_sni, KDRIVE_API_NAME: _kdrive_sni, HUAWEIDRIVE_API_NAME: _huaweidrive_sni, DOSYA_API_NAME: _dosya_sni, GPHOTOS_API_NAME: _gphotos_api_sni, GPHOTOS_CONTENT_NAME: _gphotos_content_sni, MAILRU_API_NAME: _mailru_api_sni, MAILRU_DISPATCH_NAME: _mailru_dispatch_sni, MAILRU_CONTENT_NAME: _mailru_content_sni}[server_name])
+                                                 OPENDRIVE_API_NAME: _opendrive_sni, GOFILE_API_NAME: _gofile_sni, DRIME_API_NAME: _drime_sni, FICHIER_API_NAME: _fichier_sni, PREMIUMIZEME_API_NAME: _premiumizeme_sni, PUTIO_API_NAME: _putio_sni, LINKBOX_API_NAME: _linkbox_sni, YANDEX_API_NAME: _yandex_sni, BOX_API_NAME: _box_sni, ONEDRIVE_API_NAME: _onedrive_sni, FILELU_API_NAME: _filelu_sni, QINGSTOR_API_NAME: _qingstor_sni, OOS_API_NAME: _oos_sni, DRIVE_API_NAME: _drive_sni, DROPBOX_API_NAME: _dropbox_api_sni, DROPBOX_CONTENT_NAME: _dropbox_content_sni, ZOHO_API_NAME: _zoho_api_sni, ZOHO_CONTENT_NAME: _zoho_content_sni, JOTTACLOUD_API_NAME: _jottacloud_api_sni, JOTTACLOUD_CONTENT_NAME: _jottacloud_content_sni, SUGARSYNC_API_NAME: _sugarsync_sni, PIKPAK_API_NAME: _pikpak_sni, KDRIVE_API_NAME: _kdrive_sni, HUAWEIDRIVE_API_NAME: _huaweidrive_sni, DOSYA_API_NAME: _dosya_sni, GPHOTOS_API_NAME: _gphotos_api_sni, GPHOTOS_CONTENT_NAME: _gphotos_content_sni, MAILRU_API_NAME: _mailru_api_sni, MAILRU_DISPATCH_NAME: _mailru_dispatch_sni, MAILRU_CONTENT_NAME: _mailru_content_sni, ULOZTO_API_NAME: _ulozto_api_sni, ULOZTO_CONTENT_NAME: _ulozto_content_sni}[server_name])
             if hasattr(context, "num_tickets"):
                 context.num_tickets = 0
             _validated(leaf_binding)
@@ -583,9 +601,9 @@ class _HttpServer(HTTPServer):
             # Linux REUSEADDR permits sequential TIME_WAIT reuse, not a second
             # live listener. REUSEPORT stays off; prior cleanup is still required.
             self.allow_reuse_address = True
-        # The reviewed Dropbox and Zoho pairs each need simultaneous HTTPS listeners.
-        # Only their content authorities select the second private loopback address.
-        address = "127.0.0.3" if transport._server_name == MAILRU_CONTENT_NAME else "127.0.0.2" if transport._server_name in (DROPBOX_CONTENT_NAME, ZOHO_CONTENT_NAME, JOTTACLOUD_CONTENT_NAME, GPHOTOS_CONTENT_NAME, MAILRU_DISPATCH_NAME) else "127.0.0.1"
+        # Each reviewed authority keeps its assigned private HTTPS listener.
+        # Mail.ru requires a third address for its dispatched content authority.
+        address = "127.0.0.3" if transport._server_name == MAILRU_CONTENT_NAME else "127.0.0.2" if transport._server_name in (DROPBOX_CONTENT_NAME, ZOHO_CONTENT_NAME, JOTTACLOUD_CONTENT_NAME, GPHOTOS_CONTENT_NAME, MAILRU_DISPATCH_NAME, ULOZTO_CONTENT_NAME) else "127.0.0.1"
         super().__init__((address, 443 if transport._server_name is not None else 0), handler)
         self.authority = transport._server_name or f"127.0.0.1:{self.server_address[1]}"
 

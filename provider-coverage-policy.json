@@ -2363,6 +2363,48 @@
       "unresolved_applicability": [
         "reauthentication"
       ]
+    },
+    "protocol-ulozto-password-session-folder-read": {
+      "required": {
+        "application": [
+          "listing",
+          "download_hash",
+          "manifest_integrity",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation",
+          "refresh"
+        ],
+        "vendor": [
+          "listing",
+          "download_hash",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation",
+          "refresh"
+        ],
+        "local_protocol": [
+          "listing",
+          "download_hash",
+          "missing_object_rejection",
+          "authentication_rejection",
+          "read_denial",
+          "source_preservation",
+          "config_preservation",
+          "fixture_write_rejection",
+          "cleanup"
+        ]
+      },
+      "review_required": false,
+      "unresolved_applicability": [
+        "reauthentication"
+      ]
     }
   },
   "providers": {
@@ -4846,16 +4888,18 @@
     "ulozto": {
       "canonical_name": "ulozto",
       "schema_sha256": "cc97bb23b537f0e6ffe00f1c7c5e6866db69f7acc458a6437f12e4439e13134a",
-      "profile": "hosted-renewal-session-review",
+      "profile": "protocol-ulozto-password-session-folder-read",
       "notes": [
         "Uloz.to account credentials and application API token from docs/support; current eligible plan, app approval and renewal semantics unresolved.",
         "Free account/API eligibility: review_required",
         "Account/session API availability and plan eligibility still require separate vendor acceptance.",
-        "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension."
+        "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension.",
+        "Schema-33 ulozto_password_session_folder_read_v1 qualifies source-current Linux container evidence for an application token plus synthetic account password obtaining a fresh session, with an explicit root folder. The normal apis.uloz.to authority and an issued synthetic content authority have distinct private TLS/SNI/Host/address bindings. Exact application/session authentication, complete root/nested folder and file inventories, name-filtered metadata, numeric sizes and timestamps are mandatory. All nine capabilities, three independent SHA-256-checked downloads, wrong-application-token and wrong-password rejection, missing-name rejection, native cat/copy rejection of HTTP403 with identical expected bytes, cross-authority credential stripping, byte-exact config/source preservation and cleanup are required. The direct DELETE guard does not qualify native writes. Real account login, expired-session reauthentication, root discovery, pagination, duplicate names, custom-description hashes, uploads, native writes and application/live-provider acceptance remain unverified. Raw feasibility/schema-1 rows are ineligible; independent credential-renewal/session-review obligations remain."
       ],
       "source_links": [
         "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/ulozto.md",
-        "https://github.com/rclone/rclone/blob/v1.75.2/backend/ulozto/ulozto.go"
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/ulozto/ulozto.go",
+        "https://github.com/rclone/rclone/blob/v1.76.0/backend/ulozto/ulozto.go"
       ],
       "renewal_modes": [
         {
