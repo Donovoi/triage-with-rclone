@@ -593,3 +593,13 @@ Root and nested folders retain scope, timestamps, parent arrays and independent 
 Schema-31 huaweidrive_saved_token_folder_read_v1 binds the current 42-file source closure, pinned runtime/dependencies, native output/timing, nine capabilities and containment/cleanup. Forty-eight provider regressions cover wire, containment and evidence substitution. Both combined Linux and provider-smoke gates require 52 reviewed profiles and the same-run receipt; raw feasibility evidence cannot qualify this mode.
 
 OAuth login/refresh, root autodiscovery, regional authority switching, pagination, throttling, native empty-object handling, uploads, native writes and application/live-provider acceptance remain unverified. Independent renewal/session-review obligations remain. See [the isolated fixture](../../scripts/provider-lab/huaweidrive-fixed-api/README.md).
+
+### Mail.ru saved-token M1 folder read protocol
+
+The isolated Linux Mail.ru profile uses a canonical saved OAuth token with future expiry and a saved refresh token, without a password. The normal cloud.mail.ru and dispatcher.cloud.mail.ru authorities retain distinct private TLS/SNI/Host/address bindings at 127.0.0.1:443 and 127.0.0.2:443. The dispatcher issues a private synthetic-content.mailru.invalid URL at 127.0.0.3:443 with a fresh prefix.
+
+Complete M1 folder inventories use exact query-token authentication, offset=0, limit=2147483647 and form-encoded home. Metadata retains root/nested scope, numeric sizes, timestamps, counts and independent Mailru hashes. Both the native-relative NewFs metadata path and absolute NewObject path are checked. Content requires dispatcher discovery, the issued prefix and an observed file. Three native downloads receive independent SHA-256 checks; native cat and copy reject HTTP403 with identical expected bytes. Wrong-token and missing-name rejection, byte-exact config/source preservation and cleanup are mandatory.
+
+Schema-32 mailru_saved_token_folder_read_v1 binds the current 43-file source closure, pinned runtime/dependencies, nine capabilities, containment and cleanup. Fifty-one provider regressions cover wire, three separate authorities, containment and evidence substitution. Both combined Linux and provider-smoke gates require 53 reviewed profiles and the same-run receipt; raw feasibility evidence cannot qualify this mode.
+
+Initial login, OAuth refresh, password reauthorization, binary listing, dispatcher failover, throttling, uploads, native writes and application/live-provider acceptance remain unverified. Independent renewal/session-review obligations remain. See [the isolated fixture](../../scripts/provider-lab/mailru-fixed-api/README.md).
