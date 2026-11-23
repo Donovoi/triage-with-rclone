@@ -1,6 +1,6 @@
 # Experimental rclone read-status regressions
 
-The pinned official rclone 1.76.0 and its SDKs accept some unsuccessful HTTP responses as readable file data. This directory reproduces four provider defects, applies narrowly scoped fixes, and builds a distinctly named experimental runtime: `v1.76.0-triage-readfix.1`.
+The pinned official rclone 1.76.0 and its SDKs accept some unsuccessful HTTP responses as readable file data. This directory reproduces four provider defects, applies narrowly scoped fixes, and builds a distinctly named experimental runtime: `v1.76.0-triage-readfix.2`.
 
 This recipe does **not** change the application's pinned runtime, downloaders, release artifacts, provider ledger, or acceptance requirements. A passing regression or cross-compilation is not native provider, Windows application, credential lifecycle, or live vendor acceptance.
 
@@ -8,12 +8,12 @@ This recipe does **not** change the application's pinned runtime, downloaders, r
 | --- | --- | --- |
 | Files.com | Accepts HTTP 403/404/500 bodies; full and empty reads send `bytes=0--1` | Reject unsuccessful status before exposing the body; close it; send a valid range for full and partial reads and no range for empty files |
 | ImageKit | Accepts HTTP 403/404/500 bodies; ignores a cancelled context | Backport the upstream download client/context/status fix; retain full, partial and ignored-range HTTP 200 behavior |
-| Filen | `DownloadFileChunk` accepts HTTP 206/403/404/500 as a complete chunk | Require HTTP 200 and close every response; preserve valid chunk bytes |
+| Filen | `DownloadFileChunk` accepts HTTP 206/403/404/500 as a complete chunk; a root-level file produces a literal `.` parent and cannot be listed by the SDK | Require HTTP 200 and close every response; normalize the parent of a root-level file to the empty remote root; retain nested file lookup |
 | Proton Drive | `GetBlock` exposes HTTP 206/403/404/500 raw bodies | Require HTTP 200 and close rejected bodies; preserve valid block reads and the existing authentication path |
 
-All denial tests supply the same otherwise valid raw body as the success case. Files.com and ImageKit tests invoke the actual rclone backend against local HTTP servers. Filen and Proton tests invoke their pinned SDK methods with in-process HTTP transports. These tests do not exercise Filen/Proton encryption or a vendor account. Files.com ignored-range fallback is outside this patch.
+All denial tests supply the same otherwise valid raw body as the success case. Files.com and ImageKit tests invoke the actual rclone backend against local HTTP servers. Filen and Proton status tests invoke their pinned SDK methods with in-process HTTP transports. A separate Filen constructor regression uses an owned HTTPS server through a CONNECT proxy that dials only that server. Its temporary TLS verification override is confined to the unit test and restored afterward; native provider fixtures must still verify their private CA. The Filen constructor test decrypts synthetic metadata; these regressions do not exercise encrypted file contents or a vendor account. Files.com ignored-range fallback is outside this patch.
 
-The ImageKit patch is a backport of the corresponding backend changes in upstream [rclone source at 2a13b4e](https://github.com/rclone/rclone/blob/2a13b4ee0a1e816fc76a5567643f13b16f8594c1/backend/imagekit/imagekit.go). The other three patches address the independently reproduced failures in the locked rclone/SDK versions.
+The ImageKit patch is a backport of the corresponding backend changes in upstream [rclone source at 2a13b4e](https://github.com/rclone/rclone/blob/2a13b4ee0a1e816fc76a5567643f13b16f8594c1/backend/imagekit/imagekit.go). The other four patches address the independently reproduced failures in the locked rclone/SDK versions.
 
 ## Reproduce in a disposable Linux VM
 

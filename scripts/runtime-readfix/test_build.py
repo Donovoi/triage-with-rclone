@@ -29,17 +29,17 @@ class RegressionProofTests(unittest.TestCase):
         return BUILD.test_result(self.log, expected)
 
     def test_all_named_baseline_failures_are_required(self):
-        self.assertEqual(len(self.check(self.events("fail"))), 5)
+        self.assertEqual(len(self.check(self.events("fail"))), 6)
 
     def test_patched_and_race_passes_are_required(self):
-        self.assertEqual(len(self.check(self.events("pass"), "pass")), 5)
+        self.assertEqual(len(self.check(self.events("pass"), "pass")), 6)
 
     def test_build_failure_does_not_prove_a_regression(self):
         with self.assertRaises(BUILD.BuildError):
             self.check([{"Package": p, "Action": "fail"} for p, _ in BUILD.EXPECTED_TESTS])
 
     def test_missing_or_wrong_named_test_fails(self):
-        for event_index in range(5):
+        for event_index in range(6):
             values = self.events("fail")
             values[event_index]["Test"] = "TestUnrelated"
             with self.subTest(index=event_index), self.assertRaises(BUILD.BuildError):
