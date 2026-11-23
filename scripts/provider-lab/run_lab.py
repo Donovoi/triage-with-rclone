@@ -40,7 +40,7 @@ from email.utils import format_datetime
 
 
 BACKENDS = ("local", "http", "webdav", "ftp", "sftp", "s3", "archive", "swift", "b2", "azureblob", "azurefiles", "seafile", "memory", "koofr", "pixeldrain", "filefabric", "internetarchive", "netstorage", "pcloud", "gcs", "sia", "hidrive", "doi", "quatrix", "shade", "sharefile")
-HARNESS_FILES = ("fixture_servers.py", "run_lab.py", "fixture_tls.py", "fixture_pcloud.py", "fixture_gcs.py", "fixture_sia.py", "fixture_read_api.py", "fixture_hidrive.py", "fixture_doi.py", "fixture_quatrix.py", "fixture_shade.py", "fixture_sharefile.py", "fixture_cloudinary.py", "fixture_opendrive.py", "fixture_gofile.py", "fixture_drime.py", "fixture_fichier.py", "fixture_premiumizeme.py", "fixture_putio.py", "fixture_linkbox.py", "fixture_yandex.py", "fixture_box.py", "fixture_onedrive.py", "fixture_filelu.py", "fixture_qingstor.py", "fixture_drive.py", "fixture_dropbox.py", "fixture_oos.py", "fixture_zoho.py", "fixture_jottacloud.py", "fixture_sugarsync.py", "fixture_pikpak.py", "fixture_dosya.py", "fixture_kdrive.py", "fixture_gphotos.py", "fixture_huaweidrive.py", "fixture_mailru.py", "fixture_ulozto.py", "fixture_iclouddrive.py", "fixture_internxt.py", "requirements-fixture.txt")
+HARNESS_FILES = ("fixture_servers.py", "run_lab.py", "fixture_tls.py", "fixture_pcloud.py", "fixture_gcs.py", "fixture_sia.py", "fixture_read_api.py", "fixture_hidrive.py", "fixture_doi.py", "fixture_quatrix.py", "fixture_shade.py", "fixture_sharefile.py", "fixture_cloudinary.py", "fixture_opendrive.py", "fixture_gofile.py", "fixture_drime.py", "fixture_fichier.py", "fixture_premiumizeme.py", "fixture_putio.py", "fixture_linkbox.py", "fixture_yandex.py", "fixture_box.py", "fixture_onedrive.py", "fixture_filelu.py", "fixture_qingstor.py", "fixture_drive.py", "fixture_dropbox.py", "fixture_oos.py", "fixture_zoho.py", "fixture_jottacloud.py", "fixture_sugarsync.py", "fixture_pikpak.py", "fixture_dosya.py", "fixture_kdrive.py", "fixture_gphotos.py", "fixture_huaweidrive.py", "fixture_mailru.py", "fixture_ulozto.py", "fixture_iclouddrive.py", "fixture_internxt.py", "fixture_mega.py", "requirements-fixture.txt")
 MAX_OUTPUT = 2 * 1024 * 1024
 COMMAND_TIMEOUT = 20
 
@@ -4050,6 +4050,77 @@ def box_checks(runtime, root, row, expected):
 
 
 
+def mega_checks(runtime, root, row, expected):
+    from fixture_mega import MegaState, serve_mega, MASTER_KEY, listeners_closed
+    state=MegaState("synthetic-session-"+uuid.uuid4().hex)
+    transports,certificates=[],[]
+    before=len(runtime.children);caps=row["capabilities"]
+    try:
+        pcloud_dependencies()
+        with serve_mega(root,state) as (certificates,transports):
+            options={"type":"mega","user":"synthetic@example.invalid","session_id":state.password,
+                     "master_key":base64.b64encode(MASTER_KEY).decode(),"use_https":"true"}
+            good=config_file(root,"mega-good.conf",options)
+            bad=config_file(root,"mega-wrong.conf",dict(options,session_id="synthetic-invalid"))
+            preserved={p:p.read_bytes() for p in (good,bad)}
+            class TrustedRuntime:
+                def run(self,args,config=None,**kwargs):
+                    check(all(p.read_bytes()==v for p,v in preserved.items()),"mega_config_changed")
+                    result=runtime.run([*[part for cert in certificates for part in cert.rclone_ca_args()],*args],config,**kwargs)
+                    check(all(p.read_bytes()==v for p,v in preserved.items()),"mega_config_changed")
+                    return result
+            native=TrustedRuntime();target="Synthetic:"
+            metadata_before=json.dumps(state.nodes,sort_keys=True)
+            auth=root/"bad-auth";auth.mkdir(mode=0o700)
+            code,_,_=exact_copy(native,bad,target,"README-synthetic.txt",str(auth),"must-not-exist")
+            check(code!=0 and not list(auth.iterdir()) and state.denied>0 and state.payload_bytes==0,
+                  "mega_credential_rejection_missing")
+            caps["authentication_rejection"]="passed"
+            common_checks(native,root,good,None,target,row,state,expected=expected)
+            read_api_listing(native,good,expected,target)
+            nested=[dict(item,path=item["path"][7:]) for item in expected if item["path"].startswith("nested/")]
+            read_api_listing(native,good,nested,target+"nested/")
+            for item in expected:
+                code,payload,_=native.run(["cat",target+item["path"]],good)
+                check(code==0 and len(payload)==item["size"] and hashlib.sha256(payload).hexdigest()==item["sha256"],
+                      "mega_cat_hash_mismatch")
+            name="README-synthetic.txt"
+            code,payload,_=native.run(["cat","--offset","3","--count","11",target+name],good)
+            check(code==0 and payload==state.files[name][3:14],"mega_range_mismatch")
+            state.mode="read_denied";denied=root/"denied";denied.mkdir(mode=0o700)
+            cat_code,cat_output,_=native.run(["cat",target+name],good)
+            code,output,error=exact_copy(native,good,target,name,str(denied),"denied.bin")
+            check(cat_code!=0 and not cat_output and code!=0 and b"403" in output+error
+                  and not list(denied.iterdir()) and state.read_denied==4,"mega_read_denial_failed")
+            caps["read_denial"]="passed";state.mode="normal"
+            nonce=next(nonce for nonce,n in state.links.items() if n==name)
+            connection=http.client.HTTPSConnection(transports[1].authority,transports[1].port,timeout=3,context=certificates[1].client_context())
+            try:
+                connection.request("DELETE","/file/"+state.ids[name]+"/"+nonce+"/0-"+str(len(state.files[name])-1))
+                response=connection.getresponse()
+                check(response.status==405 and len(response.read(4097))<=4096,"mega_write_guard_missing")
+            finally:connection.close()
+            check(not state.unexpected and not state.budget_exceeded and state.rejected_mutations==1
+                  and state.observed==set(state.files)
+                  and all((kind,"") in state.events for kind in ("listing","poll","wait"))
+                  and all(("download",name) in state.events for name in state.files),
+                  "mega_protocol_flow_mismatch")
+            check(served_source_unchanged(state,expected) and json.dumps(state.nodes,sort_keys=True)==metadata_before,
+                  "mega_source_changed")
+        for index,transport in enumerate(transports):
+            observed=transport.snapshot()
+            for failure in observed["failure_codes"]:
+                check(False,"mega_"+failure+"_"+str(index))
+            check(not observed["failure_codes"] and observed["handshake_successes"]>0,"mega_tls_failed")
+        for name in caps:caps[name]="passed"
+    finally:
+        closed=(state.cleanup_complete and listeners_closed(transports)
+                and all(cert.cleanup_complete for cert in certificates)
+                and all(record[0].poll() is not None for record in runtime.children[before:]))
+        caps["cleanup"]="passed" if closed else "failed"
+        check(closed,"mega_cleanup_failed")
+
+
 def internxt_checks(runtime, root, row, expected):
     from fixture_internxt import InternxtState, serve_internxt, MNEMONIC, listeners_closed
     state=InternxtState("synthetic-token-"+uuid.uuid4().hex)
@@ -5774,7 +5845,7 @@ def fichier_checks(runtime, root, row, expected):
 
 def run_backend(runtime, backend, root):
     root.mkdir(mode=0o700)
-    independent = backend in ("http", "webdav", "ftp", "swift", "b2", "azureblob", "azurefiles", "seafile", "koofr", "pixeldrain", "filefabric", "internetarchive", "netstorage", "pcloud", "gcs", "sia", "hidrive", "doi", "quatrix", "shade", "sharefile", "cloudinary", "opendrive", "gofile", "drime", "fichier", "premiumizeme", "putio", "linkbox", "yandex", "box", "onedrive", "filelu", "qingstor", "drive", "dropbox", "oos", "zoho", "jottacloud", "sugarsync", "pikpak", "dosya", "kdrive", "gphotos", "huaweidrive", "mailru", "ulozto", "iclouddrive", "internxt")
+    independent = backend in ("http", "webdav", "ftp", "swift", "b2", "azureblob", "azurefiles", "seafile", "koofr", "pixeldrain", "filefabric", "internetarchive", "netstorage", "pcloud", "gcs", "sia", "hidrive", "doi", "quatrix", "shade", "sharefile", "cloudinary", "opendrive", "gofile", "drime", "fichier", "premiumizeme", "putio", "linkbox", "yandex", "box", "onedrive", "filelu", "qingstor", "drive", "dropbox", "oos", "zoho", "jottacloud", "sugarsync", "pikpak", "dosya", "kdrive", "gphotos", "huaweidrive", "mailru", "ulozto", "iclouddrive", "internxt", "mega")
     row = {"backend": backend,
            "fixture_kind": "local" if backend in ("local", "archive", "memory") else "independent_loopback" if independent else "rclone_loopback",
            "capabilities": {key: "not_run" for key in (
@@ -5786,7 +5857,7 @@ def run_backend(runtime, backend, root):
         row["capabilities"] = {key: "not_run" for key in (HIDRIVE_CAPABILITIES if backend == "hidrive" else DOI_CAPABILITIES)}
     if backend in CACHED_TOKEN_BACKENDS:
         row["capabilities"] = {key: "not_run" for key in CACHED_TOKEN_COMMON_CAPABILITIES | {backend + "_saved_token_read", backend + "_saved_token_rejection"}}
-    if backend in ("cloudinary", "opendrive", "gofile", "drime", "fichier", "premiumizeme", "putio", "linkbox", "yandex", "box", "onedrive", "filelu", "qingstor", "drive", "dropbox", "oos", "zoho", "jottacloud", "sugarsync", "pikpak", "dosya", "kdrive", "gphotos", "huaweidrive", "mailru", "ulozto", "iclouddrive", "internxt"):
+    if backend in ("cloudinary", "opendrive", "gofile", "drime", "fichier", "premiumizeme", "putio", "linkbox", "yandex", "box", "onedrive", "filelu", "qingstor", "drive", "dropbox", "oos", "zoho", "jottacloud", "sugarsync", "pikpak", "dosya", "kdrive", "gphotos", "huaweidrive", "mailru", "ulozto", "iclouddrive", "internxt", "mega"):
         row["capabilities"] = {key: "not_run" for key in QUATRIX_CAPABILITIES}
     if backend == "quatrix":
         row["capabilities"] = {key: "not_run" for key in QUATRIX_CAPABILITIES}
@@ -5850,6 +5921,9 @@ def run_backend(runtime, backend, root):
             return row
         if backend == "ulozto":
             ulozto_checks(runtime, root, row, expected)
+            return row
+        if backend == "mega":
+            mega_checks(runtime, root, row, expected)
             return row
         if backend == "internxt":
             internxt_checks(runtime, root, row, expected)
