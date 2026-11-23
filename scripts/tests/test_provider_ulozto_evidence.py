@@ -279,11 +279,11 @@ class UloztoWorkflowTests(unittest.TestCase):
         for before, after in (
             ("  ulozto-fixed-api:\n", "  ulozto-fixed-api:\n    if: false\n"),
             ("--rclone \"$RUNNER_TEMP/rclone-ulozto\" --protocol-evidence", "--rclone \"$RUNNER_TEMP/rclone-ulozto\""),
-            ("linkbox-fixed-api, yandex-fixed-api, box-fixed-api, onedrive-fixed-api, filelu-fixed-api, qingstor-fixed-api, drive-fixed-api, dropbox-fixed-api, oos-fixed-api, zoho-fixed-api, jottacloud-fixed-api, sugarsync-fixed-api, pikpak-fixed-api, dosya-fixed-api, kdrive-fixed-api, gphotos-fixed-api, huaweidrive-fixed-api, mailru-fixed-api, ulozto-fixed-api]", 'linkbox-fixed-api, yandex-fixed-api, box-fixed-api, onedrive-fixed-api, filelu-fixed-api, qingstor-fixed-api, drive-fixed-api, dropbox-fixed-api, oos-fixed-api, zoho-fixed-api, jottacloud-fixed-api, sugarsync-fixed-api, pikpak-fixed-api, dosya-fixed-api, kdrive-fixed-api, gphotos-fixed-api, huaweidrive-fixed-api, mailru-fixed-api]'),
+            ("linkbox-fixed-api, yandex-fixed-api, box-fixed-api, onedrive-fixed-api, filelu-fixed-api, qingstor-fixed-api, drive-fixed-api, dropbox-fixed-api, oos-fixed-api, zoho-fixed-api, jottacloud-fixed-api, sugarsync-fixed-api, pikpak-fixed-api, dosya-fixed-api, kdrive-fixed-api, gphotos-fixed-api, huaweidrive-fixed-api, mailru-fixed-api, ulozto-fixed-api, iclouddrive-fixed-api]", 'linkbox-fixed-api, yandex-fixed-api, box-fixed-api, onedrive-fixed-api, filelu-fixed-api, qingstor-fixed-api, drive-fixed-api, dropbox-fixed-api, oos-fixed-api, zoho-fixed-api, jottacloud-fixed-api, sugarsync-fixed-api, pikpak-fixed-api, dosya-fixed-api, kdrive-fixed-api, gphotos-fixed-api, huaweidrive-fixed-api, mailru-fixed-api]'),
             ("          path: ${{ runner.temp }}/provider-ulozto",
              "          run-id: 123\n          path: ${{ runner.temp }}/provider-ulozto"),
             ('--fixture-receipt "$RUNNER_TEMP/provider-ulozto/ulozto-read-protocol.json"', ""),
-            ("sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio,linkbox,yandex,box,onedrive,filelu,qingstor,drive,dropbox,oos,zoho,jottacloud,sugarsync,pikpak,dosya,kdrive,gphotos,huaweidrive,mailru,ulozto\n", 'sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio,linkbox,yandex,box,onedrive,filelu,qingstor,drive,dropbox,oos,zoho,jottacloud,sugarsync,pikpak,dosya,kdrive,gphotos,huaweidrive,mailru\n')):
+            ("sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio,linkbox,yandex,box,onedrive,filelu,qingstor,drive,dropbox,oos,zoho,jottacloud,sugarsync,pikpak,dosya,kdrive,gphotos,huaweidrive,mailru,ulozto,iclouddrive\n", 'sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio,linkbox,yandex,box,onedrive,filelu,qingstor,drive,dropbox,oos,zoho,jottacloud,sugarsync,pikpak,dosya,kdrive,gphotos,huaweidrive,mailru\n')):
             with self.subTest(before=before):
                 self.assertIn(before, self.ci)
                 with self.assertRaises(ValueError):
@@ -293,7 +293,7 @@ class UloztoWorkflowTests(unittest.TestCase):
         for before, after in (
             ('../scripts/provider-lab/ulozto-fixed-api/run_container.py \\\n            --rclone "$RUNNER_TEMP/rclone-smoke" --protocol-evidence', '../scripts/provider-lab/ulozto-fixed-api/run_container.py \\\n            --rclone "$RUNNER_TEMP/rclone-smoke"'),
             ('--fixture-receipt "$RUNNER_TEMP/ulozto-read-protocol.json"', ""),
-            ("sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio,linkbox,yandex,box,onedrive,filelu,qingstor,drive,dropbox,oos,zoho,jottacloud,sugarsync,pikpak,dosya,kdrive,gphotos,huaweidrive,mailru,ulozto\n", 'sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio,linkbox,yandex,box,onedrive,filelu,qingstor,drive,dropbox,oos,zoho,jottacloud,sugarsync,pikpak,dosya,kdrive,gphotos,huaweidrive,mailru\n'),
+            ("sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio,linkbox,yandex,box,onedrive,filelu,qingstor,drive,dropbox,oos,zoho,jottacloud,sugarsync,pikpak,dosya,kdrive,gphotos,huaweidrive,mailru,ulozto,iclouddrive\n", 'sharefile,cloudinary,opendrive,gofile,drime,fichier,premiumizeme,putio,linkbox,yandex,box,onedrive,filelu,qingstor,drive,dropbox,oos,zoho,jottacloud,sugarsync,pikpak,dosya,kdrive,gphotos,huaweidrive,mailru\n'),
             ("            ${{ runner.temp }}/ulozto-read-protocol.json\n", "")):
             with self.subTest(before=before):
                 self.assertIn(before, self.smoke)
