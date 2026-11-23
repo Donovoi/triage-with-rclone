@@ -3,7 +3,6 @@
 //! Sets up terminal backend and renders a single frame.
 
 use anyhow::{bail, Result};
-use chrono::Local;
 use crossterm::event::{
     self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEvent, KeyEventKind,
 };
@@ -11,6 +10,7 @@ use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
+use jiff::ZonedDateTime;
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use std::collections::HashMap;
@@ -136,7 +136,7 @@ fn prepare_mobile_flow_menu(app: &mut App, providers: &[crate::providers::Provid
 }
 
 fn record_provider_refresh(app: &mut App, error: Option<String>) {
-    app.provider.last_updated = Some(Local::now());
+    app.provider.last_updated = Some(ZonedDateTime::now());
     app.provider.last_error = error;
 }
 

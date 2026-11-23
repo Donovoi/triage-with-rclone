@@ -1,7 +1,7 @@
 //! Versioned forensic hash chains. Version 2 stores canonical, escaped JSON records.
 //! Legacy pipe-delimited entries remain readable; unverified chains cannot be appended.
 use anyhow::{bail, Context, Result};
-use chrono::Utc;
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs::File;
@@ -144,7 +144,9 @@ impl ForensicLogger {
     }
     pub fn log(&self, message: impl AsRef<str>) -> Result<()> {
         let message = message.as_ref();
-        let timestamp = Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
+        let timestamp = Timestamp::now()
+            .strftime("%Y-%m-%dT%H:%M:%S%.3fZ")
+            .to_string();
         let mut state = self
             .state
             .lock()

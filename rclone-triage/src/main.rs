@@ -759,7 +759,9 @@ fn cli_download_from_queue(
     if plan.files.is_empty() {
         bail!("The queue contains no files to acquire");
     }
-    let run_id = chrono::Utc::now().format("%Y%m%dT%H%M%S%.f").to_string();
+    let run_id = jiff::Timestamp::now()
+        .strftime("%Y%m%dT%H%M%S%.f")
+        .to_string();
     let manifest_path = dirs.base.join(format!("acquisition-{}.json", run_id));
     write_acquisition_manifest(&plan, config.path(), &[], &manifest_path)?;
     let log = ForensicLogger::new(dirs.logs.join(format!("acquisition-{}.log", run_id)))?;
@@ -1006,7 +1008,7 @@ fn collect_debug_logs(args: &Cli) -> Result<()> {
         .tempdir_in(&args.output_dir)?;
     let mut sys_info = format!(
         "Date: {}\nOS: {} {}\nRelevant environment:\n",
-        chrono::Utc::now(),
+        jiff::Timestamp::now(),
         std::env::consts::OS,
         std::env::consts::ARCH
     );
@@ -1061,7 +1063,7 @@ fn collect_debug_logs(args: &Cli) -> Result<()> {
         "Local diagnostic bundle. Sensitive environment values and recognized secret fields are redacted. Listing contents are excluded. Logs and paths can still contain private case information: review before sharing. No network transmission was performed. Redacted logs are diagnostic copies, not original integrity-verifiable evidence.\n")?;
     let archive_path = args.output_dir.join(format!(
         "rclone-triage-logs-{}.tar.gz",
-        chrono::Utc::now().format("%Y%m%dT%H%M%S%.f")
+        jiff::Timestamp::now().strftime("%Y%m%dT%H%M%S%.f")
     ));
     let mut archive_options = std::fs::OpenOptions::new();
     archive_options.write(true).create_new(true);
