@@ -24,9 +24,7 @@ struct CsvFileEntry {
 
 impl From<&FileEntry> for CsvFileEntry {
     fn from(entry: &FileEntry) -> Self {
-        let modified = entry
-            .modified
-            .map(|dt| crate::utils::datetime::rfc3339_utc(dt));
+        let modified = entry.modified.map(crate::utils::datetime::rfc3339_utc);
         Self {
             path_encoding: "excel-safe-v1",
             remote: entry.remote_name.as_deref().map(excel_safe_text),
