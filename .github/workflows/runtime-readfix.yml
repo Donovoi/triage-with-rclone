@@ -20,12 +20,14 @@ jobs:
     name: Reproduce read defects and verify experimental builds
     runs-on: ubuntu-latest
     timeout-minutes: 55
-    env:
-      READFIX_ROOT: ${{ runner.temp }}/experimental-readfix
-      READFIX_GO: ${{ runner.temp }}/experimental-go/go/bin/go
-      GOPATH: ${{ runner.temp }}/readfix-gopath
-      GOCACHE: ${{ runner.temp }}/readfix-go-build
     steps:
+      - name: Set runner-local work paths
+        shell: bash
+        run: |
+          printf 'READFIX_ROOT=%s\n' "$RUNNER_TEMP/experimental-readfix" >> "$GITHUB_ENV"
+          printf 'READFIX_GO=%s\n' "$RUNNER_TEMP/experimental-go/go/bin/go" >> "$GITHUB_ENV"
+          printf 'GOPATH=%s\n' "$RUNNER_TEMP/readfix-gopath" >> "$GITHUB_ENV"
+          printf 'GOCACHE=%s\n' "$RUNNER_TEMP/readfix-go-build" >> "$GITHUB_ENV"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
