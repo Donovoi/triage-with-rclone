@@ -127,7 +127,7 @@ class OneDriveHandler(ReadHandler):
                 self.reject()
                 return
             if content:
-                if query or self.headers.get("Authorization") is not None:
+                if query != {"tempauth": content[1]} or self.headers.get("Authorization") is not None:
                     self.reject()
                 elif content[1] not in state.links:
                     self.api_error(401, "unauthenticated")
@@ -173,7 +173,8 @@ class OneDriveHandler(ReadHandler):
                 state.links[token] = name
                 state.events.append(("download_redirect", name))
                 self.send_response(302)
-                self.send_header("Location", "https://" + ONEDRIVE_API_NAME + "/content/" + token)
+                # Explicit preauthorization keeps Graph OAuth off the download hop.
+                self.send_header("Location", "https://" + ONEDRIVE_API_NAME + "/content/" + token + "?tempauth=" + token)
                 self.send_header("Content-Length", "0")
                 self.end_headers()
                 return

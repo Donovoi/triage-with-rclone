@@ -1913,7 +1913,7 @@ public final class HdfsKerberosTransferProbe {
 			Map.of("HOME", "/work/home", "PATH", "/usr/bin:/bin", "LANG", "C", "LC_ALL", "C"));
 		need(version.code == 0, Code.rclone_version_nonzero);
 		need(version.err.length == 0, Code.rclone_version_stderr);
-		need(new String(version.out, StandardCharsets.US_ASCII).startsWith("rclone v1.75.2\n"), Code.rclone_version_mismatch);
+		need(new String(version.out, StandardCharsets.US_ASCII).startsWith("rclone v1.76.0\n"), Code.rclone_version_mismatch);
 		need(processIds().equals(processBaseline), Code.child_process_drift);
 		baseline = threadIds();
 		final Set<Long> poolBaseline = Set.copyOf(baseline);

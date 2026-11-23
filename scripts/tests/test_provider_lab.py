@@ -955,7 +955,66 @@ class ProviderLabTests(unittest.TestCase):
         state = FIXTURES.AzureBlobState(key)
         self.assertEqual(LAB.azureblob_options(state, 12345), {
             "type": "azureblob", "env_auth": "false", "use_emulator": "true", "account": "syntheticaccount",
-            "key": key, "endpoint": "http://127.0.0.1:12345/syntheticaccount", "use_arrow_list": "false"})
+            "key": key, "endpoint": "http://127.0.0.1:12345/syntheticaccount", "use_arrow_list": "false", "hns": "false"})
+
+    def test_azureblob_namespace_setup_allows_only_flat_hns_cache_addition(self):
+        options = {"type": "azureblob", "account": "syntheticaccount", "key": "synthetic-key",
+                   "endpoint": "http://127.0.0.1:12345/syntheticaccount"}
+        path = LAB.config_file(self.root, "namespace.conf", dict(options, hns="false"))
+        self.assertTrue(LAB.azureblob_namespace_cache_matches(path, options))
+        for key in (*options, "hns", "extra"):
+            path = LAB.config_file(self.root, "namespace-" + key + ".conf", dict(options, hns="false", **{key: "changed"})
+                                   if key != "hns" else dict(options, hns="true"))
+            self.assertFalse(LAB.azureblob_namespace_cache_matches(path, options))
+        for text in ("", "[Synthetic]\nhns = false\n", "[DEFAULT]\nextra = 1\n[Synthetic]\nhns = false\n",
+                     "[Synthetic]\nhns=false\nhns=false\n"):
+            path.write_text(text)
+            self.assertFalse(LAB.azureblob_namespace_cache_matches(path, options))
+
+    def test_azureblob_namespace_discovery_requires_observation_cache_and_reuse(self):
+        for cause in ("no_request", "no_cache", "changed_key", "hns_true", "cache_miss"):
+            with self.subTest(cause=cause):
+                state = FIXTURES.AzureBlobState(base64.b64encode(bytes(range(32))).decode())
+                root = self.root / ("namespace-" + cause)
+                calls = []
+
+                @contextmanager
+                def fake_serve(kind, supplied):
+                    try:
+                        yield 12345
+                    finally:
+                        supplied.cleanup_complete = True
+
+                def run(args, config):
+                    calls.append(Path(config).name)
+                    if len(calls) == 1:
+                        state.auth_denied = 1
+                        return 1, b"", b"403"
+                    self.assertEqual(Path(config).name, "azureblob-namespace-discovery.conf")
+                    if len(calls) == 2:
+                        state.account_info = 0 if cause == "no_request" else 1
+                        if cause != "no_cache":
+                            options = LAB.azureblob_options(state, 12345)
+                            if cause == "changed_key":
+                                options["key"] = "changed"
+                            if cause == "hns_true":
+                                options["hns"] = "true"
+                            Path(config).write_text("[Synthetic]\n" + "".join(
+                                f"{key} = {value}\n" for key, value in options.items()))
+                    else:
+                        self.assertEqual(cause, "cache_miss")
+                        state.account_info += 1
+                    return 0, b"[]", b""
+
+                runtime = mock.Mock()
+                runtime.run.side_effect = run
+                with mock.patch.object(LAB, "AzureBlobState", return_value=state), mock.patch.object(LAB, "serve", fake_serve), \
+                        mock.patch.object(LAB, "listener_closed", return_value=True):
+                    row = LAB.run_backend(runtime, "azureblob", root)
+                expected = "azureblob_namespace_cache_not_reused" if cause == "cache_miss" else "azureblob_namespace_discovery_cache_invalid"
+                self.assertIn(expected, row["errors"])
+                self.assertNotEqual(row["capabilities"]["listing"], "passed")
+                self.assertEqual(row["capabilities"]["cleanup"], "passed")
 
     def test_azureblob_bad_auth_requires_observed_denial_with_no_data(self):
         for cause in ("no_request", "served_data", "authenticated"):

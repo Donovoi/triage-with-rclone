@@ -11,7 +11,7 @@
     },
     "hdfs-cancellation-context-build/hdfs_context_build.py": {
       "bytes": 40392,
-      "sha256": "876f4e2db4220685d2178e686422db0f9bf797872fef98032da34f08797999aa"
+      "sha256": "9c219ab7b71636db0a3e60a408834bb7da22358a0e07ad95166014452e80dfcd"
     },
     "hdfs-cancellation-context-build/inspect_context_build.go": {
       "bytes": 10666,
@@ -187,7 +187,7 @@
     },
     "hdfs-kerberos-policy-denial/policy_denial_container.py": {
       "bytes": 55021,
-      "sha256": "99304f8183f6068140e9e6f364bb96e1cc5c7c28408f1437b6a85b85fdfec2bd"
+      "sha256": "ae1d7ba7397eb4718d6dabef2fcf7667bfe48669d334560d36b700dd9dd0e3d5"
     },
     "hdfs-rclone-usage-build/assets-lock.json": {
       "bytes": 374994,

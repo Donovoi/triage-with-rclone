@@ -48,7 +48,7 @@ no persisted credentials. The container is network-none, UID/GID 10001, read-onl
 root, all capabilities dropped, no new privileges, no mounts or host ports,
 128 PIDs, 2 CPUs, 2 GiB, and one 128 MiB private `/work` tmpfs. Public dependency
 downloads remain digest/size pinned and isolated from the credential-bearing run.
-The pinned Temurin JDK image, Hadoop 3.5.0, Kerby 2.1.2 and rclone 1.75.2 identities
+The pinned Temurin JDK image, Hadoop 3.5.0, Kerby 2.1.2 and rclone 1.76.0 identities
 are recorded in the supervisor and receipt.
 
 The fixture configures `AES/CTR/NoPadding` as the supported data-transfer cipher

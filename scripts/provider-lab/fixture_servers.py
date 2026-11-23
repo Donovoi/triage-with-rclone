@@ -248,6 +248,7 @@ class AzureBlobState(State):
         self.request_timeout = 3
         self.auth_denied = self.stale_denied = self.authenticated = 0
         self.missing = self.unexpected = self.rejected_payload_bytes = 0
+        self.account_info = 0
         self.budget_exceeded = False
 
 
@@ -392,6 +393,18 @@ class AzureBlobHandler(BaseHTTPRequestHandler):
                 self.reject()
                 return
             if not name:
+                # rclone 1.76 probes the configured container for HNS support.
+                # This is signed account metadata, never a blob or list response.
+                # https://learn.microsoft.com/en-us/rest/api/storageservices/get-account-information
+                if query == {"comp": "properties", "restype": "account"}:
+                    if (any(self.headers.get(key) is not None for key in ("Range", "x-ms-range", "If-Match"))
+                            or self.headers["x-ms-version"] < "2019-07-07"):
+                        self.reject()
+                        return
+                    state.account_info += 1
+                    self.reply(200, headers={"x-ms-is-hns-enabled": "false", "x-ms-account-kind": "StorageV2",
+                                             "x-ms-sku-name": "Standard_LRS"})
+                    return
                 if self.command != "GET" or self.headers.get("Range") is not None or self.headers.get("x-ms-range") is not None:
                     self.reject()
                     return
@@ -2146,6 +2159,7 @@ class B2State(State):
         self.forced_401 = self.expired_gets = 0
         self.auth_denied = self.renewal_denied = self.storage_denied = 0
         self.missing = self.unexpected = self.rejected_payload_bytes = 0
+        self.account_info = 0
         self.budget_exceeded = False
         self.ids = {name: "synthetic-file-" + str(index) for index, name in enumerate(sorted(self.files))}
 

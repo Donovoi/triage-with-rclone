@@ -9,7 +9,7 @@ The workflow checks out the exact PR head, prepares the existing public pinned
 inputs, compiles with `javac -proc:none -implicit:none` without a network, and
 runs one unprivileged network-none container. It uses the existing Kerberos
 142-JAR classpath, Hadoop 3.5.0, Kerby 2.1.2, the pinned JDK 17 image, and rclone
-1.75.2. No additional runtime dependency is introduced. Dependency pinning is
+1.76.0. No additional runtime dependency is introduced. Dependency pinning is
 integrity evidence; the existing lock still has advisory work pending.
 
 The RPC, ticket, SIMPLE and dependency supervisors accept only the exact pinned
