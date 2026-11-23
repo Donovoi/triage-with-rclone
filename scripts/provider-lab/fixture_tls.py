@@ -75,6 +75,38 @@ def _ulozto_content_sni(_socket, name, _context):
     return None
 
 
+IMAGEKIT_API_NAME = 'api.imagekit.io'
+IMAGEKIT_CONTENT_NAME = 'synthetic-content.imagekit.invalid'
+FILEN_API_NAME = 'gateway.filen.io'
+FILEN_CONTENT_NAME = 'egest.filen.io'
+PROTON_API_NAME = 'drive-api.proton.me'
+PROTON_CONTENT_NAME = 'synthetic-content.proton.invalid'
+
+def _imagekit_api_sni(_socket, name, _context):
+    if name != IMAGEKIT_API_NAME:
+        return ssl.ALERT_DESCRIPTION_UNRECOGNIZED_NAME
+
+def _imagekit_content_sni(_socket, name, _context):
+    if name != IMAGEKIT_CONTENT_NAME:
+        return ssl.ALERT_DESCRIPTION_UNRECOGNIZED_NAME
+
+def _filen_api_sni(_socket, name, _context):
+    if name != FILEN_API_NAME:
+        return ssl.ALERT_DESCRIPTION_UNRECOGNIZED_NAME
+
+def _filen_content_sni(_socket, name, _context):
+    if name != FILEN_CONTENT_NAME:
+        return ssl.ALERT_DESCRIPTION_UNRECOGNIZED_NAME
+
+def _proton_api_sni(_socket, name, _context):
+    if name != PROTON_API_NAME:
+        return ssl.ALERT_DESCRIPTION_UNRECOGNIZED_NAME
+
+def _proton_content_sni(_socket, name, _context):
+    if name != PROTON_CONTENT_NAME:
+        return ssl.ALERT_DESCRIPTION_UNRECOGNIZED_NAME
+
+
 MEGA_API_NAME = "g.api.mega.co.nz"
 MEGA_CONTENT_NAME = "synthetic-content.mega.invalid"
 
@@ -126,7 +158,7 @@ def _icloud_content_sni(_socket, name, _context):
 
 
 def _server_name(value):
-    if value is not None and (type(value) is not str or value not in (PCLOUD_OAUTH_NAME, CLOUDINARY_API_NAME, OPENDRIVE_API_NAME, GOFILE_API_NAME, DRIME_API_NAME, FICHIER_API_NAME, PREMIUMIZEME_API_NAME, PUTIO_API_NAME, LINKBOX_API_NAME, YANDEX_API_NAME, BOX_API_NAME, ONEDRIVE_API_NAME, FILELU_API_NAME, QINGSTOR_API_NAME, OOS_API_NAME, DRIVE_API_NAME, DROPBOX_API_NAME, DROPBOX_CONTENT_NAME, ZOHO_API_NAME, ZOHO_CONTENT_NAME, JOTTACLOUD_API_NAME, JOTTACLOUD_CONTENT_NAME, SUGARSYNC_API_NAME, PIKPAK_API_NAME, KDRIVE_API_NAME, DOSYA_API_NAME, HUAWEIDRIVE_API_NAME, GPHOTOS_API_NAME, GPHOTOS_CONTENT_NAME, MAILRU_API_NAME, MAILRU_DISPATCH_NAME, MAILRU_CONTENT_NAME, ULOZTO_API_NAME, ULOZTO_CONTENT_NAME, ICLOUD_SETUP_NAME, ICLOUD_DRIVE_NAME, ICLOUD_DOCS_NAME, ICLOUD_CONTENT_NAME, INTERNXT_API_NAME, INTERNXT_CONTENT_NAME, MEGA_API_NAME, MEGA_CONTENT_NAME)):
+    if value is not None and (type(value) is not str or value not in (PCLOUD_OAUTH_NAME, CLOUDINARY_API_NAME, OPENDRIVE_API_NAME, GOFILE_API_NAME, DRIME_API_NAME, FICHIER_API_NAME, PREMIUMIZEME_API_NAME, PUTIO_API_NAME, LINKBOX_API_NAME, YANDEX_API_NAME, BOX_API_NAME, ONEDRIVE_API_NAME, FILELU_API_NAME, QINGSTOR_API_NAME, OOS_API_NAME, DRIVE_API_NAME, DROPBOX_API_NAME, DROPBOX_CONTENT_NAME, ZOHO_API_NAME, ZOHO_CONTENT_NAME, JOTTACLOUD_API_NAME, JOTTACLOUD_CONTENT_NAME, SUGARSYNC_API_NAME, PIKPAK_API_NAME, KDRIVE_API_NAME, DOSYA_API_NAME, HUAWEIDRIVE_API_NAME, GPHOTOS_API_NAME, GPHOTOS_CONTENT_NAME, MAILRU_API_NAME, MAILRU_DISPATCH_NAME, MAILRU_CONTENT_NAME, ULOZTO_API_NAME, ULOZTO_CONTENT_NAME, ICLOUD_SETUP_NAME, ICLOUD_DRIVE_NAME, ICLOUD_DOCS_NAME, ICLOUD_CONTENT_NAME, INTERNXT_API_NAME, INTERNXT_CONTENT_NAME, MEGA_API_NAME, MEGA_CONTENT_NAME, IMAGEKIT_API_NAME, IMAGEKIT_CONTENT_NAME, FILEN_API_NAME, FILEN_CONTENT_NAME, PROTON_API_NAME, PROTON_CONTENT_NAME)):
         raise TlsError("tls_unreviewed_authority")
     return value
 
@@ -482,7 +514,7 @@ class FixtureCertificates(AbstractContextManager):
             context.set_alpn_protocols(["http/1.1"])
             if server_name is not None:
                 context.set_servername_callback({PCLOUD_OAUTH_NAME: _pcloud_sni, CLOUDINARY_API_NAME: _cloudinary_sni,
-                                                 OPENDRIVE_API_NAME: _opendrive_sni, GOFILE_API_NAME: _gofile_sni, DRIME_API_NAME: _drime_sni, FICHIER_API_NAME: _fichier_sni, PREMIUMIZEME_API_NAME: _premiumizeme_sni, PUTIO_API_NAME: _putio_sni, LINKBOX_API_NAME: _linkbox_sni, YANDEX_API_NAME: _yandex_sni, BOX_API_NAME: _box_sni, ONEDRIVE_API_NAME: _onedrive_sni, FILELU_API_NAME: _filelu_sni, QINGSTOR_API_NAME: _qingstor_sni, OOS_API_NAME: _oos_sni, DRIVE_API_NAME: _drive_sni, DROPBOX_API_NAME: _dropbox_api_sni, DROPBOX_CONTENT_NAME: _dropbox_content_sni, ZOHO_API_NAME: _zoho_api_sni, ZOHO_CONTENT_NAME: _zoho_content_sni, JOTTACLOUD_API_NAME: _jottacloud_api_sni, JOTTACLOUD_CONTENT_NAME: _jottacloud_content_sni, SUGARSYNC_API_NAME: _sugarsync_sni, PIKPAK_API_NAME: _pikpak_sni, KDRIVE_API_NAME: _kdrive_sni, HUAWEIDRIVE_API_NAME: _huaweidrive_sni, DOSYA_API_NAME: _dosya_sni, GPHOTOS_API_NAME: _gphotos_api_sni, GPHOTOS_CONTENT_NAME: _gphotos_content_sni, MAILRU_API_NAME: _mailru_api_sni, MAILRU_DISPATCH_NAME: _mailru_dispatch_sni, MAILRU_CONTENT_NAME: _mailru_content_sni, ULOZTO_API_NAME: _ulozto_api_sni, ULOZTO_CONTENT_NAME: _ulozto_content_sni, ICLOUD_SETUP_NAME: _icloud_setup_sni, ICLOUD_DRIVE_NAME: _icloud_drive_sni, ICLOUD_DOCS_NAME: _icloud_docs_sni, ICLOUD_CONTENT_NAME: _icloud_content_sni, INTERNXT_API_NAME: _internxt_api_sni, INTERNXT_CONTENT_NAME: _internxt_content_sni, MEGA_API_NAME: _mega_api_sni, MEGA_CONTENT_NAME: _mega_content_sni}[server_name])
+                                                 OPENDRIVE_API_NAME: _opendrive_sni, GOFILE_API_NAME: _gofile_sni, DRIME_API_NAME: _drime_sni, FICHIER_API_NAME: _fichier_sni, PREMIUMIZEME_API_NAME: _premiumizeme_sni, PUTIO_API_NAME: _putio_sni, LINKBOX_API_NAME: _linkbox_sni, YANDEX_API_NAME: _yandex_sni, BOX_API_NAME: _box_sni, ONEDRIVE_API_NAME: _onedrive_sni, FILELU_API_NAME: _filelu_sni, QINGSTOR_API_NAME: _qingstor_sni, OOS_API_NAME: _oos_sni, DRIVE_API_NAME: _drive_sni, DROPBOX_API_NAME: _dropbox_api_sni, DROPBOX_CONTENT_NAME: _dropbox_content_sni, ZOHO_API_NAME: _zoho_api_sni, ZOHO_CONTENT_NAME: _zoho_content_sni, JOTTACLOUD_API_NAME: _jottacloud_api_sni, JOTTACLOUD_CONTENT_NAME: _jottacloud_content_sni, SUGARSYNC_API_NAME: _sugarsync_sni, PIKPAK_API_NAME: _pikpak_sni, KDRIVE_API_NAME: _kdrive_sni, HUAWEIDRIVE_API_NAME: _huaweidrive_sni, DOSYA_API_NAME: _dosya_sni, GPHOTOS_API_NAME: _gphotos_api_sni, GPHOTOS_CONTENT_NAME: _gphotos_content_sni, MAILRU_API_NAME: _mailru_api_sni, MAILRU_DISPATCH_NAME: _mailru_dispatch_sni, MAILRU_CONTENT_NAME: _mailru_content_sni, ULOZTO_API_NAME: _ulozto_api_sni, ULOZTO_CONTENT_NAME: _ulozto_content_sni, ICLOUD_SETUP_NAME: _icloud_setup_sni, ICLOUD_DRIVE_NAME: _icloud_drive_sni, ICLOUD_DOCS_NAME: _icloud_docs_sni, ICLOUD_CONTENT_NAME: _icloud_content_sni, INTERNXT_API_NAME: _internxt_api_sni, INTERNXT_CONTENT_NAME: _internxt_content_sni, MEGA_API_NAME: _mega_api_sni, MEGA_CONTENT_NAME: _mega_content_sni, IMAGEKIT_API_NAME: _imagekit_api_sni, IMAGEKIT_CONTENT_NAME: _imagekit_content_sni, FILEN_API_NAME: _filen_api_sni, FILEN_CONTENT_NAME: _filen_content_sni, PROTON_API_NAME: _proton_api_sni, PROTON_CONTENT_NAME: _proton_content_sni}[server_name])
             if hasattr(context, "num_tickets"):
                 context.num_tickets = 0
             _validated(leaf_binding)
@@ -630,7 +662,7 @@ class TlsLimits:
     cleanup_seconds: float = 5.0
 
     def validate(self):
-        if (type(self.connection_limit) is not int or not 1 <= self.connection_limit <= 128
+        if (type(self.connection_limit) is not int or not 1 <= self.connection_limit <= 512
                 or type(self.active_limit) is not int or not 1 <= self.active_limit <= 8
                 or self.active_limit > self.connection_limit):
             raise TlsError("tls_invalid_limits")
@@ -653,7 +685,7 @@ class _HttpServer(HTTPServer):
             self.allow_reuse_address = True
         # Each reviewed authority keeps its assigned private HTTPS listener.
         # Mail.ru and iCloud retain separate discovered service/content authorities.
-        address = "127.0.0.4" if transport._server_name == ICLOUD_CONTENT_NAME else "127.0.0.3" if transport._server_name in (MAILRU_CONTENT_NAME, ICLOUD_DOCS_NAME) else "127.0.0.2" if transport._server_name in (DROPBOX_CONTENT_NAME, ZOHO_CONTENT_NAME, JOTTACLOUD_CONTENT_NAME, GPHOTOS_CONTENT_NAME, MAILRU_DISPATCH_NAME, ULOZTO_CONTENT_NAME, ICLOUD_DRIVE_NAME, INTERNXT_CONTENT_NAME, MEGA_CONTENT_NAME) else "127.0.0.1"
+        address = "127.0.0.4" if transport._server_name == ICLOUD_CONTENT_NAME else "127.0.0.3" if transport._server_name in (MAILRU_CONTENT_NAME, ICLOUD_DOCS_NAME) else "127.0.0.2" if transport._server_name in (DROPBOX_CONTENT_NAME, ZOHO_CONTENT_NAME, JOTTACLOUD_CONTENT_NAME, GPHOTOS_CONTENT_NAME, MAILRU_DISPATCH_NAME, ULOZTO_CONTENT_NAME, ICLOUD_DRIVE_NAME, INTERNXT_CONTENT_NAME, MEGA_CONTENT_NAME, IMAGEKIT_CONTENT_NAME, FILEN_CONTENT_NAME, PROTON_CONTENT_NAME) else "127.0.0.1"
         super().__init__((address, 443 if transport._server_name is not None else 0), handler)
         self.authority = transport._server_name or f"127.0.0.1:{self.server_address[1]}"
 

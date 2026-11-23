@@ -448,7 +448,7 @@ class TlsTests(unittest.TestCase):
         self.assertIn("tls_http_handler_failed", server.snapshot()["failure_codes"])
 
     def test_invalid_limits_arguments_and_reuse_are_rejected(self):
-        for fields in ({"connection_limit": True}, {"active_limit": 0}, {"active_limit": 9},
+        for fields in ({"connection_limit": 513}, {"connection_limit": True}, {"active_limit": 0}, {"active_limit": 9},
                        {"connection_limit": 1, "active_limit": 2}, {"request_seconds": float("nan")},
                        {"lifetime_seconds": float("inf")}, {"cleanup_seconds": False}, {"request_seconds": 11}):
             with self.subTest(fields=fields), self.assertRaises(tls.TlsError):

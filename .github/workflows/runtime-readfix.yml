@@ -1,13 +1,15 @@
-name: Experimental rclone read-status regressions
+name: Experimental rclone regressions and native provider reads
 on:
   pull_request:
     paths:
       - 'scripts/runtime-readfix/**'
+      - 'scripts/provider-lab/**'
       - '.github/workflows/runtime-readfix.yml'
   push:
     branches: [main]
     paths:
       - 'scripts/runtime-readfix/**'
+      - 'scripts/provider-lab/**'
       - '.github/workflows/runtime-readfix.yml'
   workflow_dispatch:
 permissions:
@@ -33,6 +35,13 @@ jobs:
           persist-credentials: false
       - name: Check regression proof and binary architecture gates
         run: python3 -B -m unittest discover -s scripts/runtime-readfix -p 'test_*.py'
+      - name: Check native fixture wire boundaries and evidence gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/readfix-fixture-venv"
+          "$RUNNER_TEMP/readfix-fixture-venv/bin/python" -m pip --isolated --disable-pip-version-check install --no-cache-dir --require-hashes --only-binary=:all: --index-url https://pypi.org/simple --retries 0 --timeout 20 -r scripts/provider-lab/requirements-fixture.txt
+          "$RUNNER_TEMP/readfix-fixture-venv/bin/python" -B -m unittest discover -s scripts/provider-lab/readfix-experimental -p 'test_*.py'
       - name: Acquire the hash-pinned Go toolchain
         shell: bash
         run: |
@@ -57,6 +66,8 @@ jobs:
         run: python3 -B scripts/runtime-readfix/build.py build --work-root "$READFIX_ROOT" --go "$READFIX_GO" --platform windows-386
       - name: Cross-build Windows ARM64 twice from different roots
         run: python3 -B scripts/runtime-readfix/build.py build --work-root "$READFIX_ROOT" --go "$READFIX_GO" --platform windows-arm64
+      - name: Verify all four native read experiments in isolated containers
+        run: python3 -B scripts/provider-lab/readfix-experimental/run.py --work-root "$READFIX_ROOT" --go "$READFIX_GO" --output "$RUNNER_TEMP/native-readfix"
       - name: Retain experimental regression and build receipts
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -67,5 +78,7 @@ jobs:
             ${{ runner.temp }}/experimental-readfix/checks.json
             ${{ runner.temp }}/experimental-readfix/artifacts/*/build.json
             ${{ runner.temp }}/experimental-readfix/logs/
+            ${{ runner.temp }}/native-readfix/report.json
+            ${{ runner.temp }}/native-readfix/*.log
           if-no-files-found: warn
           retention-days: 14
