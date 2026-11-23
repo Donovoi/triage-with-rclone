@@ -3,12 +3,14 @@ on:
   pull_request:
     paths:
       - 'scripts/runtime-readfix/**'
+      - 'scripts/runtime-distribution/**'
       - 'scripts/provider-lab/**'
       - '.github/workflows/runtime-readfix.yml'
   push:
     branches: [main]
     paths:
       - 'scripts/runtime-readfix/**'
+      - 'scripts/runtime-distribution/**'
       - 'scripts/provider-lab/**'
       - '.github/workflows/runtime-readfix.yml'
   workflow_dispatch:
@@ -38,6 +40,8 @@ jobs:
           python-version: '3.12'
       - name: Check regression proof and binary architecture gates
         run: python3 -B -m unittest discover -s scripts/runtime-readfix -p 'test_*.py'
+      - name: Check archive reproducibility and distribution evidence gates
+        run: python3 -B -m unittest discover -s scripts/runtime-distribution -p 'test_*.py'
       - name: Check native fixture wire boundaries and evidence gates
         shell: bash
         run: |
@@ -71,6 +75,19 @@ jobs:
         run: python3 -B scripts/runtime-readfix/build.py build --work-root "$READFIX_ROOT" --go "$READFIX_GO" --platform windows-arm64
       - name: Verify all four native read experiments in isolated containers
         run: python3 -B scripts/provider-lab/readfix-experimental/run.py --work-root "$READFIX_ROOT" --go "$READFIX_GO" --output "$RUNNER_TEMP/native-readfix"
+      - name: Package verified runtime archives twice
+        run: python3 -B scripts/runtime-distribution/package.py --work-root "$READFIX_ROOT" --native-report "$RUNNER_TEMP/native-readfix/report.json" --output "$RUNNER_TEMP/readfix-distribution"
+      - name: Retain verified experimental runtime archives
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: experimental-readfix-runtime-distribution
+          path: |
+            ${{ runner.temp }}/readfix-distribution/*.zip
+            ${{ runner.temp }}/readfix-distribution/SHA256SUMS
+            ${{ runner.temp }}/readfix-distribution/distribution.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
       - name: Retain experimental regression and build receipts
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
