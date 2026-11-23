@@ -263,6 +263,11 @@ INTERNXT_MODE = "internxt_saved_jwt_rotation_folder_read_v1"
 INTERNXT_REQUIRED_CAPABILITIES = frozenset({"listing", "download_hash", "missing_object_rejection",
     "authentication_rejection", "read_denial", "source_preservation", "config_preservation", "fixture_write_rejection", "cleanup"})
 
+MEGA_MODE = "mega_saved_session_encrypted_read_v1"
+
+MEGA_REQUIRED_CAPABILITIES = frozenset({"listing", "download_hash", "missing_object_rejection",
+    "authentication_rejection", "read_denial", "source_preservation", "config_preservation", "fixture_write_rejection", "cleanup"})
+
 
 HDFS_REQUIRED_CAPABILITIES = frozenset({
     "listing", "download_hash", "missing_object_rejection", "authentication_rejection",
@@ -334,7 +339,7 @@ FIXTURE_CAPABILITIES = {
     "authentication_rejection", "cleanup", "truncated_download_rejection", "read_denial",
     "cancellation_cleanup", "fixture_write_rejection", "host_key_rejection", "renewal_denial",
 } | ARCHIVE_CAPABILITIES | SWIFT_ONLY_CAPABILITIES | B2_ONLY_CAPABILITIES | FILEFABRIC_ONLY_CAPABILITIES | INTERNETARCHIVE_ONLY_CAPABILITIES | PCLOUD_ONLY_CAPABILITIES | DOI_ONLY_CAPABILITIES | HIDRIVE_ONLY_CAPABILITIES | SHADE_ONLY_CAPABILITIES | SHAREFILE_ONLY_CAPABILITIES
-HARNESSES = ("fixture_servers.py", "run_lab.py", "fixture_tls.py", "fixture_pcloud.py", "fixture_gcs.py", "fixture_sia.py", "fixture_read_api.py", "fixture_hidrive.py", "fixture_doi.py", "fixture_quatrix.py", "fixture_shade.py", "fixture_sharefile.py", "fixture_cloudinary.py", "fixture_opendrive.py", "fixture_gofile.py", "fixture_drime.py", "fixture_fichier.py", "fixture_premiumizeme.py", "fixture_putio.py", "fixture_linkbox.py", "fixture_yandex.py", "fixture_box.py", "fixture_onedrive.py", "fixture_filelu.py", "fixture_qingstor.py", "fixture_drive.py", "fixture_dropbox.py", "fixture_oos.py", "fixture_zoho.py", "fixture_jottacloud.py", "fixture_sugarsync.py", "fixture_pikpak.py", "fixture_huaweidrive.py", "fixture_mailru.py", "fixture_ulozto.py", "fixture_iclouddrive.py", "fixture_internxt.py", "fixture_gphotos.py", "fixture_kdrive.py", "fixture_dosya.py", "requirements-fixture.txt")
+HARNESSES = ("fixture_servers.py", "run_lab.py", "fixture_tls.py", "fixture_pcloud.py", "fixture_gcs.py", "fixture_sia.py", "fixture_read_api.py", "fixture_hidrive.py", "fixture_doi.py", "fixture_quatrix.py", "fixture_shade.py", "fixture_sharefile.py", "fixture_cloudinary.py", "fixture_opendrive.py", "fixture_gofile.py", "fixture_drime.py", "fixture_fichier.py", "fixture_premiumizeme.py", "fixture_putio.py", "fixture_linkbox.py", "fixture_yandex.py", "fixture_box.py", "fixture_onedrive.py", "fixture_filelu.py", "fixture_qingstor.py", "fixture_drive.py", "fixture_dropbox.py", "fixture_oos.py", "fixture_zoho.py", "fixture_jottacloud.py", "fixture_sugarsync.py", "fixture_pikpak.py", "fixture_huaweidrive.py", "fixture_mailru.py", "fixture_ulozto.py", "fixture_iclouddrive.py", "fixture_internxt.py", "fixture_mega.py", "fixture_gphotos.py", "fixture_kdrive.py", "fixture_dosya.py", "requirements-fixture.txt")
 HASH_PATTERN = re.compile(r"[a-f0-9]{64}")
 ID_PATTERN = re.compile(r"[a-z0-9_]{1,80}")
 MAX_JSON = 32 * 1024 * 1024
@@ -1902,6 +1907,42 @@ def validate_internxt_receipt(receipt, runtime, bindings, now, max_age_hours, fi
     return receipt
 
 
+def mega_evidence_module():
+    """Import definitions only from the current owned stdlib supervisor."""
+    path = plain_path(ROOT / "scripts" / "provider-lab" / "mega-fixed-api" / "run_container.py")
+    try:
+        source = path.read_bytes()
+        if len(source) > MAX_RECEIPT:
+            fail("mega_evidence_helper_size_limit")
+        spec = importlib.util.spec_from_file_location("coverage_mega_evidence", path)
+        module = importlib.util.module_from_spec(spec)
+        exec(compile(source, str(path), "exec"), module.__dict__)
+        return module
+    except (ImportError, OSError, SyntaxError, AttributeError, TypeError):
+        fail("mega_evidence_helper_unavailable")
+
+def compute_mega_bindings(root):
+    try:
+        return mega_evidence_module().compute_bindings(plain_path(Path(root).absolute()))
+    except (OSError, ValueError, TypeError, KeyError, RuntimeError):
+        fail("mega_evidence_bindings_invalid")
+
+def validate_mega_receipt(receipt, runtime, bindings, now, max_age_hours, fixture_manifest_sha256):
+    if bindings is None:
+        fail("unknown_receipt_schema")
+    if (not isinstance(bindings, dict) or not valid_hash(fixture_manifest_sha256)
+            or bindings.get("fixture_manifest_sha256") != fixture_manifest_sha256):
+        fail("mega_evidence_bindings_invalid")
+    try:
+        mega_evidence_module().validate_read_evidence(receipt, runtime, bindings, now, max_age_hours)
+    except (ValueError, RuntimeError) as error:
+        code = str(error)
+        fail(code if re.fullmatch(r"[a-z][a-z0-9_]{0,80}", code) else "invalid_mega_evidence")
+    except (TypeError, KeyError, AttributeError, OverflowError):
+        fail("invalid_mega_evidence")
+    return receipt
+
+
 def pcloud_evidence_module():
     """Import definitions only from the current owned stdlib supervisor."""
     path = plain_path(ROOT / "scripts" / "provider-lab" / "pcloud-oauth" / "run_container.py")
@@ -2242,7 +2283,7 @@ def parse_utc(value):
 
 
 def validate_receipt(receipt, runtime, harness_sha256, now, max_age_hours=MAX_AGE_HOURS,
-                     fixture_manifest_sha256=None, smb_bindings=None, pcloud_bindings=None, gcs_bindings=None, hdfs_bindings=None, cloudinary_bindings=None, opendrive_bindings=None, gofile_bindings=None, drime_bindings=None, fichier_bindings=None, premiumizeme_bindings=None, putio_bindings=None, linkbox_bindings=None, yandex_bindings=None, box_bindings=None, onedrive_bindings=None, filelu_bindings=None, qingstor_bindings=None, drive_bindings=None, dropbox_bindings=None, oos_bindings=None, zoho_bindings=None, jottacloud_bindings=None, sugarsync_bindings=None, pikpak_bindings=None, dosya_bindings=None, kdrive_bindings=None, gphotos_bindings=None, huaweidrive_bindings=None, mailru_bindings=None, ulozto_bindings=None, iclouddrive_bindings=None, internxt_bindings=None, storj_bindings=None):
+                     fixture_manifest_sha256=None, smb_bindings=None, pcloud_bindings=None, gcs_bindings=None, hdfs_bindings=None, cloudinary_bindings=None, opendrive_bindings=None, gofile_bindings=None, drime_bindings=None, fichier_bindings=None, premiumizeme_bindings=None, putio_bindings=None, linkbox_bindings=None, yandex_bindings=None, box_bindings=None, onedrive_bindings=None, filelu_bindings=None, qingstor_bindings=None, drive_bindings=None, dropbox_bindings=None, oos_bindings=None, zoho_bindings=None, jottacloud_bindings=None, sugarsync_bindings=None, pikpak_bindings=None, dosya_bindings=None, kdrive_bindings=None, gphotos_bindings=None, huaweidrive_bindings=None, mailru_bindings=None, ulozto_bindings=None, iclouddrive_bindings=None, internxt_bindings=None, storj_bindings=None, mega_bindings=None):
     if isinstance(receipt, dict) and type(receipt.get("schema_version")) is int and receipt["schema_version"] == 36:
         return validate_storj_receipt(receipt, runtime, storj_bindings, now, max_age_hours)
     if isinstance(receipt, dict) and type(receipt.get("schema_version")) is int and receipt["schema_version"] == 17:
@@ -2275,6 +2316,8 @@ def validate_receipt(receipt, runtime, harness_sha256, now, max_age_hours=MAX_AG
         return validate_iclouddrive_receipt(receipt, runtime, iclouddrive_bindings, now, max_age_hours, fixture_manifest_sha256)
     if isinstance(receipt, dict) and type(receipt.get("schema_version")) is int and receipt["schema_version"] == 35:
         return validate_internxt_receipt(receipt, runtime, internxt_bindings, now, max_age_hours, fixture_manifest_sha256)
+    if isinstance(receipt, dict) and type(receipt.get("schema_version")) is int and receipt["schema_version"] == 37:
+        return validate_mega_receipt(receipt, runtime, mega_bindings, now, max_age_hours, fixture_manifest_sha256)
     if isinstance(receipt, dict) and type(receipt.get("schema_version")) is int and receipt["schema_version"] == 21:
         return validate_drive_receipt(receipt, runtime, drive_bindings, now, max_age_hours, fixture_manifest_sha256)
     if isinstance(receipt, dict) and type(receipt.get("schema_version")) is int and receipt["schema_version"] == 25:
@@ -2456,7 +2499,7 @@ def merge_fixture_observation(observed, capabilities, failed, run):
 
 def evaluate(catalog, policy, runtime, receipts, harness_sha256, now=None, max_age_hours=MAX_AGE_HOURS,
              fixture_manifest_sha256=None, smb_bindings=None, pcloud_bindings=None, gcs_bindings=None, hdfs_bindings=None,
-             application_receipts=(), application_bindings=None, cloudinary_bindings=None, opendrive_bindings=None, gofile_bindings=None, drime_bindings=None, fichier_bindings=None, premiumizeme_bindings=None, putio_bindings=None, linkbox_bindings=None, yandex_bindings=None, box_bindings=None, onedrive_bindings=None, filelu_bindings=None, qingstor_bindings=None, drive_bindings=None, dropbox_bindings=None, oos_bindings=None, zoho_bindings=None, jottacloud_bindings=None, sugarsync_bindings=None, pikpak_bindings=None, dosya_bindings=None, kdrive_bindings=None, gphotos_bindings=None, huaweidrive_bindings=None, mailru_bindings=None, ulozto_bindings=None, iclouddrive_bindings=None, internxt_bindings=None, storj_bindings=None):
+             application_receipts=(), application_bindings=None, cloudinary_bindings=None, opendrive_bindings=None, gofile_bindings=None, drime_bindings=None, fichier_bindings=None, premiumizeme_bindings=None, putio_bindings=None, linkbox_bindings=None, yandex_bindings=None, box_bindings=None, onedrive_bindings=None, filelu_bindings=None, qingstor_bindings=None, drive_bindings=None, dropbox_bindings=None, oos_bindings=None, zoho_bindings=None, jottacloud_bindings=None, sugarsync_bindings=None, pikpak_bindings=None, dosya_bindings=None, kdrive_bindings=None, gphotos_bindings=None, huaweidrive_bindings=None, mailru_bindings=None, ulozto_bindings=None, iclouddrive_bindings=None, internxt_bindings=None, storj_bindings=None, mega_bindings=None):
     """Receipts are explicit batch inputs. Failed current evidence stays failed."""
     now = now or datetime.now(timezone.utc)
     validate_policy(policy)
@@ -2482,7 +2525,7 @@ def evaluate(catalog, policy, runtime, receipts, harness_sha256, now=None, max_a
     for receipt in receipts:
         try:
             validate_receipt(receipt, runtime, harness_sha256, now, max_age_hours, fixture_manifest_sha256,
-                             smb_bindings=smb_bindings, pcloud_bindings=pcloud_bindings, gcs_bindings=gcs_bindings, hdfs_bindings=hdfs_bindings, cloudinary_bindings=cloudinary_bindings, opendrive_bindings=opendrive_bindings, gofile_bindings=gofile_bindings, drime_bindings=drime_bindings, fichier_bindings=fichier_bindings, premiumizeme_bindings=premiumizeme_bindings, putio_bindings=putio_bindings, linkbox_bindings=linkbox_bindings, yandex_bindings=yandex_bindings, box_bindings=box_bindings, onedrive_bindings=onedrive_bindings, filelu_bindings=filelu_bindings, qingstor_bindings=qingstor_bindings, drive_bindings=drive_bindings, dropbox_bindings=dropbox_bindings, oos_bindings=oos_bindings, zoho_bindings=zoho_bindings, jottacloud_bindings=jottacloud_bindings, sugarsync_bindings=sugarsync_bindings, pikpak_bindings=pikpak_bindings, dosya_bindings=dosya_bindings, kdrive_bindings=kdrive_bindings, gphotos_bindings=gphotos_bindings, huaweidrive_bindings=huaweidrive_bindings, mailru_bindings=mailru_bindings, ulozto_bindings=ulozto_bindings, iclouddrive_bindings=iclouddrive_bindings, internxt_bindings=internxt_bindings, storj_bindings=storj_bindings)
+                             smb_bindings=smb_bindings, pcloud_bindings=pcloud_bindings, gcs_bindings=gcs_bindings, hdfs_bindings=hdfs_bindings, cloudinary_bindings=cloudinary_bindings, opendrive_bindings=opendrive_bindings, gofile_bindings=gofile_bindings, drime_bindings=drime_bindings, fichier_bindings=fichier_bindings, premiumizeme_bindings=premiumizeme_bindings, putio_bindings=putio_bindings, linkbox_bindings=linkbox_bindings, yandex_bindings=yandex_bindings, box_bindings=box_bindings, onedrive_bindings=onedrive_bindings, filelu_bindings=filelu_bindings, qingstor_bindings=qingstor_bindings, drive_bindings=drive_bindings, dropbox_bindings=dropbox_bindings, oos_bindings=oos_bindings, zoho_bindings=zoho_bindings, jottacloud_bindings=jottacloud_bindings, sugarsync_bindings=sugarsync_bindings, pikpak_bindings=pikpak_bindings, dosya_bindings=dosya_bindings, kdrive_bindings=kdrive_bindings, gphotos_bindings=gphotos_bindings, huaweidrive_bindings=huaweidrive_bindings, mailru_bindings=mailru_bindings, ulozto_bindings=ulozto_bindings, iclouddrive_bindings=iclouddrive_bindings, internxt_bindings=internxt_bindings, storj_bindings=storj_bindings, mega_bindings=mega_bindings)
             for row in receipt["backends"]:
                 if row["backend"] not in {entry["backend"] for entry in catalog}:
                     fail("fixture_backend_absent_from_catalog")
@@ -2777,6 +2820,16 @@ def evaluate(catalog, policy, runtime, receipts, harness_sha256, now=None, max_a
                     mode_observed = observed.setdefault("modes", {}).setdefault(
                         INTERNXT_MODE, {"capabilities": {}, "failed": False, "runs": []})
                     merge_fixture_observation(mode_observed, contributed, failed, run)
+                if row["backend"] == "mega":
+                    native = receipt["native_evidence"]
+                    run.update(fixture_mode=MEGA_MODE, platform="linux", architecture="amd64",
+                               base_image=native["base_image"], image_id=native["image_id"],
+                               python_version=native["python_version"],
+                               dependency_lock_sha256=native["dependency_lock_sha256"],
+                               source_sha256=dict(native["source_sha256"]), harness_sha256=receipt["harness_sha256"])
+                    mode_observed = observed.setdefault("modes", {}).setdefault(
+                        MEGA_MODE, {"capabilities": {}, "failed": False, "runs": []})
+                    merge_fixture_observation(mode_observed, contributed, failed, run)
                 if row["backend"] == "gcs":
                     mode = row.get("fixture_mode", GCS_STATIC_TOKEN_MODE)
                     run["fixture_mode"] = mode
@@ -2946,7 +2999,7 @@ def evaluate(catalog, policy, runtime, receipts, harness_sha256, now=None, max_a
                     if value in ("passed", "failed"):
                         capabilities[capability] = value
                 evidence["runs"] = observed["runs"]
-                if backend in ("filefabric", "smb", "hdfs", "internetarchive", "pcloud", "gcs", "cloudinary", "opendrive", "gofile", "drime", "fichier", "premiumizeme", "putio", "linkbox", "yandex", "box", "onedrive", "filelu", "qingstor", "drive", "dropbox", "oos", "zoho", "jottacloud", "sugarsync", "pikpak", "dosya", "kdrive", "gphotos", "huaweidrive", "mailru", "ulozto", "iclouddrive", "internxt", "storj", "tardigrade"):
+                if backend in ("filefabric", "smb", "hdfs", "internetarchive", "pcloud", "gcs", "cloudinary", "opendrive", "gofile", "drime", "fichier", "premiumizeme", "putio", "linkbox", "yandex", "box", "onedrive", "filelu", "qingstor", "drive", "dropbox", "oos", "zoho", "jottacloud", "sugarsync", "pikpak", "dosya", "kdrive", "gphotos", "huaweidrive", "mailru", "ulozto", "iclouddrive", "internxt", "storj", "tardigrade", "mega"):
                     evidence["modes"] = {}
                     contracts = ({STORJ_MODE: STORJ_REQUIRED_CAPABILITIES} if backend in ("storj", "tardigrade")
                                  else {SMB_MODE: SMB_REQUIRED_CAPABILITIES} if backend == "smb"
@@ -2969,6 +3022,7 @@ def evaluate(catalog, policy, runtime, receipts, harness_sha256, now=None, max_a
                                  else {ULOZTO_MODE: ULOZTO_REQUIRED_CAPABILITIES} if backend == "ulozto"
                                  else {ICLOUDDRIVE_MODE: ICLOUDDRIVE_REQUIRED_CAPABILITIES} if backend == "iclouddrive"
                                  else {INTERNXT_MODE: INTERNXT_REQUIRED_CAPABILITIES} if backend == "internxt"
+                                 else {MEGA_MODE: MEGA_REQUIRED_CAPABILITIES} if backend == "mega"
                                  else {GPHOTOS_MODE: GPHOTOS_REQUIRED_CAPABILITIES} if backend == "gphotos"
                                  else {KDRIVE_MODE: KDRIVE_REQUIRED_CAPABILITIES} if backend == "kdrive"
                                  else {DOSYA_MODE: DOSYA_REQUIRED_CAPABILITIES} if backend == "dosya"
@@ -3523,12 +3577,15 @@ def main(argv=None):
         internxt_bindings = (compute_internxt_bindings(ROOT / "scripts" / "provider-lab" / "internxt-fixed-api")
                                if any(isinstance(receipt, dict) and type(receipt.get("schema_version")) is int
                                       and receipt["schema_version"] == 35 for receipt in receipts) else None)
+        mega_bindings = (compute_mega_bindings(ROOT / "scripts" / "provider-lab" / "mega-fixed-api")
+                               if any(isinstance(receipt, dict) and type(receipt.get("schema_version")) is int
+                                      and receipt["schema_version"] == 37 for receipt in receipts) else None)
         storj_bindings = (compute_storj_bindings(ROOT / "scripts" / "provider-lab" / "storj-native")
                           if any(isinstance(receipt, dict) and type(receipt.get("schema_version")) is int
                                  and receipt["schema_version"] == 36 for receipt in receipts) else None)
         report = evaluate(catalog, policy, runtime, receipts, harness_sha, max_age_hours=args.max_age_hours,
                           fixture_manifest_sha256=fixture_sha, smb_bindings=smb_bindings, pcloud_bindings=pcloud_bindings, gcs_bindings=gcs_bindings, hdfs_bindings=hdfs_bindings,
-                          application_receipts=application_receipts, application_bindings=application_bindings, cloudinary_bindings=cloudinary_bindings, opendrive_bindings=opendrive_bindings, gofile_bindings=gofile_bindings, drime_bindings=drime_bindings, fichier_bindings=fichier_bindings, premiumizeme_bindings=premiumizeme_bindings, putio_bindings=putio_bindings, linkbox_bindings=linkbox_bindings, yandex_bindings=yandex_bindings, box_bindings=box_bindings, onedrive_bindings=onedrive_bindings, filelu_bindings=filelu_bindings, qingstor_bindings=qingstor_bindings, drive_bindings=drive_bindings, dropbox_bindings=dropbox_bindings, oos_bindings=oos_bindings, zoho_bindings=zoho_bindings, jottacloud_bindings=jottacloud_bindings, sugarsync_bindings=sugarsync_bindings, pikpak_bindings=pikpak_bindings, dosya_bindings=dosya_bindings, kdrive_bindings=kdrive_bindings, gphotos_bindings=gphotos_bindings, huaweidrive_bindings=huaweidrive_bindings, mailru_bindings=mailru_bindings, ulozto_bindings=ulozto_bindings, iclouddrive_bindings=iclouddrive_bindings, internxt_bindings=internxt_bindings, storj_bindings=storj_bindings)
+                          application_receipts=application_receipts, application_bindings=application_bindings, cloudinary_bindings=cloudinary_bindings, opendrive_bindings=opendrive_bindings, gofile_bindings=gofile_bindings, drime_bindings=drime_bindings, fichier_bindings=fichier_bindings, premiumizeme_bindings=premiumizeme_bindings, putio_bindings=putio_bindings, linkbox_bindings=linkbox_bindings, yandex_bindings=yandex_bindings, box_bindings=box_bindings, onedrive_bindings=onedrive_bindings, filelu_bindings=filelu_bindings, qingstor_bindings=qingstor_bindings, drive_bindings=drive_bindings, dropbox_bindings=dropbox_bindings, oos_bindings=oos_bindings, zoho_bindings=zoho_bindings, jottacloud_bindings=jottacloud_bindings, sugarsync_bindings=sugarsync_bindings, pikpak_bindings=pikpak_bindings, dosya_bindings=dosya_bindings, kdrive_bindings=kdrive_bindings, gphotos_bindings=gphotos_bindings, huaweidrive_bindings=huaweidrive_bindings, mailru_bindings=mailru_bindings, ulozto_bindings=ulozto_bindings, iclouddrive_bindings=iclouddrive_bindings, internxt_bindings=internxt_bindings, storj_bindings=storj_bindings, mega_bindings=mega_bindings)
         report["errors"] = sorted(set(report["errors"] + receipt_errors))
         report["all_complete"] = report["all_complete"] and not report["errors"]
         report["gate_errors"] = gate_errors(report, args.require_plans, required, args.require_complete,

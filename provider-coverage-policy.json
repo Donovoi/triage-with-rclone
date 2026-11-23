@@ -2529,6 +2529,46 @@
       "unresolved_applicability": [
         "reauthentication"
       ]
+    },
+    "protocol-mega-saved-session-encrypted-read": {
+      "required": {
+        "application": [
+          "listing",
+          "download_hash",
+          "manifest_integrity",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation"
+        ],
+        "vendor": [
+          "listing",
+          "download_hash",
+          "source_preservation",
+          "cancellation",
+          "cleanup",
+          "authentication",
+          "denial",
+          "revocation"
+        ],
+        "local_protocol": [
+          "listing",
+          "download_hash",
+          "missing_object_rejection",
+          "authentication_rejection",
+          "read_denial",
+          "source_preservation",
+          "config_preservation",
+          "fixture_write_rejection",
+          "cleanup"
+        ]
+      },
+      "review_required": false,
+      "unresolved_applicability": [
+        "reauthentication"
+      ]
     }
   },
   "providers": {
@@ -3882,16 +3922,19 @@
     "mega": {
       "canonical_name": "mega",
       "schema_sha256": "5d632ce556fc276b934125a3f91dacd5b82e2da95c5071b90c8b4b70ea157732",
-      "profile": "hosted-static-credentials-session-review",
+      "profile": "protocol-mega-saved-session-encrypted-read",
       "notes": [
         "MEGA account credentials and any applicable account verification; account/session behavior and current free-plan limits need confirmation.",
         "Free account/API eligibility: review_required",
         "No OAuth refresh grant is exposed. This finding does not assert a vendor session lifetime or prove that any automatic upstream session renewal works.",
-        "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension."
+        "Connection/session reauthentication remains unresolved; existing credential-renewal evidence does not settle this independent lifecycle dimension.",
+        "Schema-37 mega_saved_session_encrypted_read_v1 qualifies only source-current Linux container evidence for a saved synthetic session_id and master_key with use_https=true. The normal g.api.mega.co.nz API and issued synthetic-content.mega.invalid use separate private TLS/SNI/Host/address bindings. Independently AES-encrypted node attributes, wrapped file keys, CTR ciphertext and folded CBC file MACs drive complete root/nested listings and exact SHA256 downloads and cat reads, plus an unaligned native range. Wrong-session rejection, missing-file rejection, native cat/copy rejection of HTTP403 carrying the same valid ciphertext, byte-exact configuration preservation, source preservation and complete cleanup are mandatory. A discovered single-use event wait stays on the authenticated API TLS connection to avoid racing process exit with an extra handshake; this does not qualify event synchronization or session recovery. The direct DELETE guard does not qualify native writes. Password login, 2FA, session renewal/recovery/revocation, shared nodes, multi-chunk downloads, corrupted-file rejection, native writes and application/live-provider acceptance remain unverified. Raw schema-1 feasibility is ineligible; all independent credential/session obligations remain."
       ],
       "source_links": [
         "https://raw.githubusercontent.com/rclone/rclone/v1.75.2/docs/content/mega.md",
-        "https://github.com/rclone/rclone/blob/v1.75.2/backend/mega/mega.go"
+        "https://github.com/rclone/rclone/blob/v1.75.2/backend/mega/mega.go",
+        "https://github.com/rclone/rclone/blob/v1.76.0/backend/mega/mega.go",
+        "https://github.com/t3rm1n4l/go-mega/blob/c6acd6a5bd041dbec42aa4e0f650dc2ea82d2857/mega.go"
       ],
       "renewal_modes": [
         {
