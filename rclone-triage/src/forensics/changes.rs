@@ -3,7 +3,7 @@
 //! Tracks all changes made to the system during tool execution
 //! and provides methods to document them.
 
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -33,7 +33,7 @@ pub enum ChangeType {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrackedChange {
     /// When the change was made
-    pub timestamp: DateTime<Utc>,
+    pub timestamp: Timestamp,
     /// What type of change
     pub change_type: ChangeType,
     /// Description of the change
@@ -56,7 +56,7 @@ impl ChangeTracker {
     /// Track a file creation
     pub fn track_file_created(&mut self, path: impl AsRef<Path>, description: impl Into<String>) {
         self.changes.push(TrackedChange {
-            timestamp: Utc::now(),
+            timestamp: Timestamp::now(),
             change_type: ChangeType::FileCreated {
                 path: path.as_ref().to_path_buf(),
             },
@@ -70,7 +70,7 @@ impl ChangeTracker {
         let old_value = std::env::var(&name).ok();
 
         self.changes.push(TrackedChange {
-            timestamp: Utc::now(),
+            timestamp: Timestamp::now(),
             change_type: ChangeType::EnvVarSet { name, old_value },
             description: description.into(),
         });
@@ -97,7 +97,7 @@ impl ChangeTracker {
             report.push_str(&format!(
                 "{}. {} - {}\n   {}\n\n",
                 i + 1,
-                change.timestamp.format("%H:%M:%S"),
+                change.timestamp.strftime("%H:%M:%S"),
                 change.description,
                 format_change_type(&change.change_type),
             ));

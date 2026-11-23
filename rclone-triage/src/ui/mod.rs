@@ -12,7 +12,7 @@ use crate::providers::browser::Browser;
 use crate::providers::{CloudProvider, ProviderEntry};
 use crate::rclone::MountedRemote;
 use anyhow::{Context, Result};
-use chrono::{DateTime, Local};
+use jiff::ZonedDateTime;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
@@ -214,7 +214,7 @@ pub struct ProviderSelection {
     /// Show help overlay
     pub show_help: bool,
     /// Timestamp of last refresh
-    pub last_updated: Option<DateTime<Local>>,
+    pub last_updated: Option<ZonedDateTime>,
     /// Last refresh error
     pub last_error: Option<String>,
     /// Confirmed provider choice

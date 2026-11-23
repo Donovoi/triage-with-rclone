@@ -3,7 +3,7 @@
 //! Defines session metadata and tracking of downloads.
 
 use anyhow::Result;
-use chrono::{DateTime, Local, Utc};
+use jiff::{Timestamp, ZonedDateTime};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -64,8 +64,8 @@ pub struct Case {
     /// Session/folder name
     pub name: String,
     pub output_dir: PathBuf,
-    pub start_time: DateTime<Utc>,
-    pub end_time: Option<DateTime<Utc>>,
+    pub start_time: Timestamp,
+    pub end_time: Option<Timestamp>,
     pub providers: Vec<AuthenticatedProvider>,
     pub downloaded_files: Vec<DownloadedFile>,
 }
@@ -97,7 +97,9 @@ impl Case {
         let name = sanitize_session_id(&name.into());
         let name = if name.is_empty() {
             // Default name: triage-YYYYMMDD-HHMMSS (local time for user-facing paths)
-            Local::now().format("triage-%Y%m%d-%H%M%S").to_string()
+            ZonedDateTime::now()
+                .strftime("triage-%Y%m%d-%H%M%S")
+                .to_string()
         } else {
             name
         };
@@ -105,7 +107,7 @@ impl Case {
         Ok(Self {
             name,
             output_dir,
-            start_time: Utc::now(),
+            start_time: Timestamp::now(),
             end_time: None,
             providers: Vec::new(),
             downloaded_files: Vec::new(),
@@ -113,7 +115,7 @@ impl Case {
     }
 
     pub fn finalize(&mut self) {
-        self.end_time = Some(Utc::now());
+        self.end_time = Some(Timestamp::now());
     }
 
     /// Get the session identifier (folder name)

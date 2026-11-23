@@ -24,7 +24,9 @@ struct CsvFileEntry {
 
 impl From<&FileEntry> for CsvFileEntry {
     fn from(entry: &FileEntry) -> Self {
-        let modified = entry.modified.map(|dt| dt.to_rfc3339());
+        let modified = entry
+            .modified
+            .map(|dt| crate::utils::datetime::rfc3339_utc(dt));
         Self {
             path_encoding: "excel-safe-v1",
             remote: entry.remote_name.as_deref().map(excel_safe_text),
@@ -148,7 +150,7 @@ pub fn export_listing_xlsx(entries: &[FileEntry], path: impl AsRef<Path>) -> Res
 
         if let Some(modified) = entry.modified {
             worksheet
-                .write_string(row, 3, modified.to_rfc3339())
+                .write_string(row, 3, crate::utils::datetime::rfc3339_utc(modified))
                 .context("Failed to write modified")?;
         }
 
@@ -185,7 +187,7 @@ pub fn export_listing_xlsx(entries: &[FileEntry], path: impl AsRef<Path>) -> Res
 mod tests {
     use super::*;
     use calamine::{open_workbook_auto, Data, Reader};
-    use chrono::{DateTime, Utc};
+    use jiff::Timestamp;
 
     #[test]
     fn non_private_existing_export_is_preserved_on_refusal() {
@@ -249,7 +251,7 @@ mod tests {
         let entry = FileEntry {
             path: "file.txt".to_string(),
             size: Some(123),
-            modified: Some(DateTime::<Utc>::from(std::time::SystemTime::UNIX_EPOCH)),
+            modified: Some(Timestamp::UNIX_EPOCH),
             is_dir: false,
             hash: Some("abc".to_string()),
             hash_type: Some("md5".to_string()),
@@ -270,7 +272,7 @@ mod tests {
         let entry = FileEntry {
             path: "file.txt".to_string(),
             size: Some(123),
-            modified: Some(DateTime::<Utc>::from(std::time::SystemTime::UNIX_EPOCH)),
+            modified: Some(Timestamp::UNIX_EPOCH),
             is_dir: false,
             hash: Some("abc".to_string()),
             hash_type: Some("md5".to_string()),
@@ -352,7 +354,7 @@ mod tests {
             .map(|(index, (name, size))| FileEntry {
                 path: (*name).into(),
                 size,
-                modified: Some(DateTime::<Utc>::from(std::time::SystemTime::UNIX_EPOCH)),
+                modified: Some(Timestamp::UNIX_EPOCH),
                 is_dir: false,
                 hash: Some("00112233445566778899aabbccddeeff".into()),
                 hash_type: Some("md5".into()),

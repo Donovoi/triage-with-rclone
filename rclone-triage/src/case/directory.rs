@@ -29,7 +29,7 @@ pub fn snapshot_config(source: &Path, config_dir: &Path) -> Result<PathBuf> {
         "source_path": fs::canonicalize(source)?,
         "source_sha256": hex::encode(Sha256::digest(&bytes)),
         "working_path": snapshot.path(),
-        "snapshotted_at": chrono::Utc::now(),
+        "snapshotted_at": jiff::Timestamp::now(),
     });
     let metadata_path = snapshot.path().with_extension("provenance.json");
     let mut metadata = private_fs::create_new(&metadata_path)?;

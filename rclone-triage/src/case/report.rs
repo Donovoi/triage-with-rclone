@@ -1,7 +1,7 @@
 //! Report generation
 
 use anyhow::{Context, Result};
-use chrono::Utc;
+use jiff::Timestamp;
 use sha2::{Digest, Sha256};
 use std::path::Path;
 
@@ -243,7 +243,7 @@ pub fn generate_report_with_metadata(
         report.push_str(&format!("Final Log Hash: {}\n\n", hash));
     }
 
-    report.push_str(&format!("Report generated at {}\n", Utc::now()));
+    report.push_str(&format!("Report generated at {}\n", Timestamp::now()));
 
     report
 }

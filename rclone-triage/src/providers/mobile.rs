@@ -1,7 +1,7 @@
 //! Mobile authentication helpers (QR code + token exchange)
 
 use anyhow::{bail, Context, Result};
-use chrono::{Duration, Utc};
+use jiff::{SignedDuration, Timestamp};
 use qrcode::QrCode;
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
@@ -615,11 +615,14 @@ fn token_response_to_rclone_json(token: TokenResponse) -> Result<Value> {
     }
     if let Some(expires_in) = token.expires_in {
         let seconds = i64::try_from(expires_in).context("Invalid OAuth expiry")?;
-        let lifetime = Duration::try_seconds(seconds).context("Invalid OAuth expiry")?;
-        let expiry = Utc::now()
-            .checked_add_signed(lifetime)
+        let lifetime = SignedDuration::from_secs(seconds);
+        let expiry = Timestamp::now()
+            .checked_add(lifetime)
             .context("Invalid OAuth expiry")?;
-        map.insert("expiry".to_string(), json!(expiry.to_rfc3339()));
+        map.insert(
+            "expiry".to_string(),
+            json!(crate::utils::datetime::rfc3339_utc(expiry)),
+        );
     }
     Ok(Value::Object(map))
 }
@@ -836,7 +839,7 @@ mod tests {
             "uid": "SYNTHETIC_PRIVATE_UID",
             "future": {"ignored": true}
         });
-        let before = Utc::now();
+        let before = Timestamp::now();
         let token = dropbox_response(&good.to_string()).unwrap();
         assert_eq!(token["access_token"], "synthetic-access");
         assert_eq!(token["refresh_token"], "synthetic-refresh");
@@ -844,9 +847,9 @@ mod tests {
         assert_eq!(token.as_object().unwrap().len(), 4);
         assert!(!token.to_string().contains("PRIVATE"));
         let expiry =
-            chrono::DateTime::parse_from_rfc3339(token["expiry"].as_str().unwrap()).unwrap();
-        assert!(expiry >= before + Duration::seconds(14400));
-        assert!(expiry <= Utc::now() + Duration::seconds(14400));
+            crate::utils::datetime::parse_rfc3339(token["expiry"].as_str().unwrap()).unwrap();
+        assert!(expiry >= before + SignedDuration::from_secs(14400));
+        assert!(expiry <= Timestamp::now() + SignedDuration::from_secs(14400));
         for (field, value) in [
             ("scope", json!("files.metadata.read")),
             ("scope", json!("files.metadata.read files.metadata.read")),
