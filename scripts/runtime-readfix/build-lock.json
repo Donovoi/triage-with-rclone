@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "scope": "experimental_read_status_regressions_not_provider_acceptance",
-  "runtime_version": "v1.76.0-triage-readfix.1",
+  "runtime_version": "v1.76.0-triage-readfix.2",
   "rclone_repository": "https://github.com/rclone/rclone.git",
   "rclone_commit": "e982ff36668f5130d94b4f70409babb3d964df42",
   "rclone_tag": "v1.76.0",
@@ -54,6 +54,14 @@
       "source": "readfix-deps/proton/block.go",
       "before_sha256": "73ade1e1996663ab4248786fb7e1ec56fd193ccb66a24e73045896b971764229",
       "after_sha256": "dc7a2184b49adf519a248322e5916cd98353d323986e0445480ef20a0fe2e84f"
+    },
+    {
+      "name": "filen-file-parent.patch",
+      "sha256": "7794152722b6b1d6cb5216e9b1791237a817ec968ca0d64f852dcc20a9a2a9ba",
+      "directory": ".",
+      "source": "backend/filen/filen.go",
+      "before_sha256": "3310e0a6bb6b6c04dd1a373e62c21e8585272cdbc198055a0167395621eeeb04",
+      "after_sha256": "70fec4816a432910b425633e3054bc0bd558c77650a5a004f060d450d41b48db"
     }
   ],
   "tests": [
@@ -76,6 +84,11 @@
       "name": "proton_read_status_test.go",
       "target": "readfix-deps/proton/zz_triage_read_status_test.go",
       "sha256": "1575ee8dde86d24bac2f9df8e8b1937c6ccbe43ef75046c50273782e4eca9921"
+    },
+    {
+      "name": "filen_file_parent_test.go",
+      "target": "backend/filen/file_parent_test.go",
+      "sha256": "f39cbe25688e96124cd40081d81206b5cafdbf4a88d460245ea8d92e0b906d2c"
     }
   ],
   "platforms": [

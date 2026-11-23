@@ -17,18 +17,19 @@ import time
 
 HERE = Path(__file__).resolve().parent
 PACKAGES = (
-    "./backend/filescom", "./backend/imagekit",
+    "./backend/filescom", "./backend/imagekit", "./backend/filen",
     "github.com/FilenCloudDienste/filen-sdk-go/filen/client",
     "github.com/rclone/go-proton-api",
 )
 EXPECTED_TESTS = frozenset({
+    ("github.com/rclone/rclone/backend/filen", "TestNewFsFileParent"),
     ("github.com/rclone/rclone/backend/filescom", "TestOpenReadStatus"),
     ("github.com/rclone/rclone/backend/imagekit", "TestOpenReadStatus"),
     ("github.com/rclone/rclone/backend/imagekit", "TestOpenHonorsCancelledContext"),
     ("github.com/FilenCloudDienste/filen-sdk-go/filen/client", "TestSyntheticChunkHTTPStatus"),
     ("github.com/rclone/go-proton-api", "TestSyntheticBlockHTTPStatus"),
 })
-TEST_PATTERN = "^(TestOpen(ReadStatus|HonorsCancelledContext)|TestSynthetic(Chunk|Block)HTTPStatus)$"
+TEST_PATTERN = "^(TestNewFsFileParent|TestOpen(ReadStatus|HonorsCancelledContext)|TestSynthetic(Chunk|Block)HTTPStatus)$"
 
 
 class BuildError(Exception):
